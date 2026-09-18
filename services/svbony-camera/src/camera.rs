@@ -2866,9 +2866,10 @@ mod tests {
 
     #[tokio::test]
     async fn disconnecting_cancels_an_in_flight_exposure() {
-        let handle = MockCameraHandle::default();
+        let handle = Arc::new(MockCameraHandle::default());
         handle.set_capture_delay(Duration::from_millis(300));
-        let cam = connected_device(handle);
+        let cam = SvbonyCamera::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        cam.connect().unwrap();
         cam.set_num_x(64).await.unwrap();
         cam.set_num_y(64).await.unwrap();
         cam.start_exposure(Duration::from_secs(30), true)
@@ -2876,9 +2877,20 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
         cam.set_connected(false).await.unwrap();
-        // The cancelled capture's state is the ended session's, so it is not
-        // readable here at all (state-machine step 9); what it must not do is
-        // survive into the next session as a frame nobody took.
+        // The cancellation itself, asserted where it is actually visible: the
+        // capture saw its cancel and returned no frame. `ImageReady` cannot
+        // show this — it is false while a capture is merely still running, and
+        // the reconnect below would clear it either way.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while handle.capture_outcomes().first() != Some(&Some(CaptureOutcome::Aborted)) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the disconnect did not reach the in-flight capture");
+        // Its state is the ended session's, so it is not readable here at all
+        // (state-machine step 9); what it must not do is survive into the next
+        // session as a frame nobody took.
         assert_eq!(
             cam.image_ready().await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED

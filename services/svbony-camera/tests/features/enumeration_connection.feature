@@ -11,9 +11,11 @@ Feature: Camera enumeration and connection lifecycle
   open failure leaves the device not connected (C2). Disconnecting (C3)
   closes the device, cancelling any in-flight exposure (C3b, implemented in
   Phase E over the generation-counter guard -- see
-  docs/plans/archive/svbony-camera.md); the exposure state that session
-  produced is not readable once it is disconnected (state-machine step 9), and
-  the connect that follows starts with no frame ready. With zero cameras discovered the service
+  docs/plans/archive/svbony-camera.md) — proven by the next session taking a
+  frame of its own, which a capture still holding the device would refuse;
+  the exposure state that session produced is not readable once it is
+  disconnected (state-machine step 9), and the connect that follows starts
+  with no frame ready. With zero cameras discovered the service
   still starts, registering no Camera devices and logging a warning (C0b).
   Against the
   svbony-rs simulation backend exactly one camera is present
@@ -44,7 +46,7 @@ Feature: Camera enumeration and connection lifecycle
     And I disconnect camera device 0
     Then camera device 0 reports Connected as false
 
-  Scenario: Disconnecting cancels an in-flight exposure and leaves no frame for the next session
+  Scenario: Disconnecting cancels an in-flight exposure and the next session starts clean and usable
     Given camera device 0 is connected
     And an exposure is in flight on camera device 0
     When I disconnect camera device 0
@@ -53,6 +55,9 @@ Feature: Camera enumeration and connection lifecycle
     And camera device 0 reports Connected as false
     When I connect camera device 0
     Then camera device 0 reports ImageReady as false
+    When I StartExposure on camera device 0 with BinX 1 BinY 1 NumX 64 NumY 48 StartX 0 StartY 0 Duration 0.01 Light true
+    And the exposure on camera device 0 completes
+    Then camera device 0 returns an ImageArray of 64 by 48
 
   Scenario: The service starts with no Camera devices when no camera is present
     Given the svbony-camera service running with an empty simulation backend

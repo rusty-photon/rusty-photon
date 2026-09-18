@@ -2821,9 +2821,14 @@ mod tests {
 
     #[tokio::test]
     async fn disconnect_cancels_in_flight_exposure() {
-        let handle = MockCameraHandle::default();
+        let handle = Arc::new(MockCameraHandle::default());
         handle.set_capture_delay(Duration::from_secs(5));
-        let device = connected_device(handle);
+        let device = ZwoCamera::new(
+            Arc::<MockCameraHandle>::clone(&handle),
+            None,
+            MaxAduReporting::default(),
+        );
+        device.connect().unwrap();
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
         device
@@ -2833,9 +2838,19 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
         device.set_connected(false).await.unwrap();
         assert!(!device.connected().await.unwrap());
-        // The cancelled capture's state is the ended session's, so it is not
-        // readable here at all (E11); what it must not do is survive into the
-        // next session as a frame nobody took.
+        // The cancellation itself, asserted where it is actually visible: the
+        // capture saw its stop and returned no frame. `ImageReady` cannot show
+        // this — it is false while a capture is merely still running, and the
+        // reconnect below would clear it either way.
+        wait_captures_finished(&handle, 1).await;
+        assert_eq!(
+            handle.capture_outcomes(),
+            vec![Some(CaptureOutcome::Aborted)],
+            "the disconnect did not reach the in-flight capture"
+        );
+        // Its state is the ended session's, so it is not readable here at all
+        // (E11); what it must not do is survive into the next session as a
+        // frame nobody took.
         assert_eq!(
             device.image_ready().await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
