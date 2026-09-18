@@ -695,7 +695,7 @@ graph TD;
 | `CanAbortExposure` / `CanStopExposure` | `true`, both cancel the in-flight survey fetch |
 | `CoolerOn`, `CCDTemperature`, `CanGetCoolerPower`, `CanSetCCDTemperature`, `CanPulseGuide`, `CanFastReadout`, `HasShutter`, `BayerOffsetX/Y` | All `false` / `PROPERTY_NOT_IMPLEMENTED` |
 | `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Implemented per pipeline above; `ImageArray` returns the cropped subframe with axes `[X, Y]`. `StartExposure` (E1), `ImageReady`, `ImageArray` and `ImageArrayVariant` answer `NOT_CONNECTED` while disconnected (C5); `AbortExposure` / `StopExposure` answer `INVALID_OPERATION` there, per A2 |
-| `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session — `INVALID_OPERATION` before its first exposure, and again after a disconnect, which resets them (C4); `NOT_CONNECTED` while disconnected (C5) |
+| `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session. While disconnected: `NOT_CONNECTED` (C5) — the connected check runs first, so the disconnected interval never shows the reset. Once connected: `INVALID_OPERATION` until this session has exposed, which a reconnect restores by way of C4's reset at the preceding disconnect |
 
 ConformU is the canonical ASCOM correctness check. The
 `tests/conformu_integration.rs` target (gated by the `conformu`
