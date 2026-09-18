@@ -1,8 +1,9 @@
-//! Step definitions for `connection_lifecycle.feature` (contracts C1-C4).
+//! Step definitions for `connection_lifecycle.feature` (contracts C1-C6).
 
 use crate::world::SkySurveyCameraWorld;
 use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
+use serde_json::Value;
 
 #[given("a sky-survey-camera with default optics")]
 const fn default_optics(_world: &mut SkySurveyCameraWorld) {
@@ -206,11 +207,31 @@ async fn reads_still_answer(world: &mut SkySurveyCameraWorld, step: &Step) {
         let member = row.first().expect("table row must name a member");
         world.last_ascom_error = None;
         world.get_camera(member_method(member)).await;
-        assert!(
-            world.last_ascom_error.is_none(),
-            "{member} refused with {:?} (body: {:?})",
-            world.last_ascom_error,
+        // `get_camera` leaves `last_ascom_error` unset for anything it cannot
+        // parse an `ErrorNumber` out of, so "no error" alone would also be
+        // satisfied by a 404 from a route that does not exist — which is how
+        // this step would quietly cover a member it never read. Demand the
+        // whole shape of an answer: 200, `ErrorNumber` 0, and a `Value`.
+        assert_eq!(
+            world.last_http_status,
+            Some(200),
+            "{member}: expected HTTP 200 (body: {:?})",
             world.last_http_body
+        );
+        let body = world
+            .last_http_body
+            .as_deref()
+            .unwrap_or_else(|| panic!("{member}: no response body"));
+        let value: Value = serde_json::from_str(body)
+            .unwrap_or_else(|e| panic!("{member}: response is not JSON ({e}): {body}"));
+        assert_eq!(
+            value.get("ErrorNumber").and_then(Value::as_u64),
+            Some(0),
+            "{member} refused (body: {body})"
+        );
+        assert!(
+            value.get("Value").is_some(),
+            "{member} answered without a Value (body: {body})"
         );
     }
     world.last_ascom_error = None;

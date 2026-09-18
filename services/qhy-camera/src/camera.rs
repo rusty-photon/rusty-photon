@@ -644,9 +644,9 @@ impl QhyCameraDevice {
     /// `INVALID_OPERATION` for a gain. Reporting the disconnect instead makes
     /// the answer the same one the client would have got a moment earlier or
     /// later, rather than one that depends on where in the race it landed. Only
-    /// *failures* are rewritten: a call that succeeded answers for itself, and
-    /// the capability probes that deliberately answer while disconnected
-    /// (`HasShutter`, `CanSetCCDTemperature`) return `Ok` and are untouched.
+    /// *failures* are rewritten: a call that succeeded answers for itself. A
+    /// probe that reports absence as an `Option` rather than an error never
+    /// reaches that rewrite — see [`Self::probe_handle`].
     async fn on_handle<T, F>(&self, f: F) -> ASCOMResult<T>
     where
         F: FnOnce(&dyn CameraHandle) -> ASCOMResult<T> + Send + 'static,
@@ -663,6 +663,31 @@ impl QhyCameraDevice {
             }
             outcome => outcome,
         }
+    }
+
+    /// [`Self::on_handle`] for an SDK *probe* — one whose "not present" answer
+    /// is an `Option` rather than an error.
+    ///
+    /// `is_control_available` spells a control the model lacks and a handle
+    /// that is no longer open the same way, as `None`, so the rewrite above
+    /// never fires for it: a probe dispatched a moment before a disconnect
+    /// would answer "this camera has no cooler" about a camera the driver no
+    /// longer holds — E11's fabricated negative, in the window a pre-check
+    /// cannot cover, and indistinguishable to the client from a real answer.
+    /// Re-checking once the probe is back closes that window without holding
+    /// the handle across the blocking USB call, which is the thing `on_handle`
+    /// exists to avoid. What remains is a probe that answered while the device
+    /// was still open and lost the race by a hair, which C3 already settles:
+    /// a call that succeeded answers for itself.
+    async fn probe_handle<T, F>(&self, f: F) -> ASCOMResult<T>
+    where
+        F: FnOnce(&dyn CameraHandle) -> ASCOMResult<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.ensure_connected()?;
+        let probed = self.on_handle(f).await?;
+        self.ensure_connected()?;
+        Ok(probed)
     }
 
     /// Await a spawned section that owns the device, in a way a cancelled
@@ -2243,9 +2268,11 @@ impl Camera for QhyCameraDevice {
 
     // --- sensor type / bayer ----------------------------------------------------
 
+    /// The same `Option`-shaped probe as `HasShutter`, so it takes the same
+    /// helper: its "no colour control" branch would otherwise answer
+    /// `Monochrome` for a handle that has closed under it (E11).
     async fn sensor_type(&self) -> ASCOMResult<SensorType> {
-        self.ensure_connected()?;
-        self.on_handle(|h| {
+        self.probe_handle(|h| {
             if h.is_control_available(ControlType::CamIsColor).is_none() {
                 return Ok(SensorType::Monochrome);
             }
@@ -2277,14 +2304,12 @@ impl Camera for QhyCameraDevice {
 
     // --- cooling ----------------------------------------------------------------
 
-    /// E11: `on_handle` rewrites to `NOT_CONNECTED` only when the SDK call
-    /// *errors*, and `is_control_available` reports absence as a `None` rather
-    /// than an error — so without this check a closed handle answers a clean
+    /// E11: without the connected check a closed handle answers a clean
     /// `Ok(false)`, "this camera has no cooler", about a camera the driver is
-    /// not talking to.
+    /// not talking to. `probe_handle` is the check on both sides of the SDK
+    /// hop, because absence and a dead handle arrive here as the same `None`.
     async fn can_set_ccd_temperature(&self) -> ASCOMResult<bool> {
-        self.ensure_connected()?;
-        self.on_handle(|h| Ok(h.is_control_available(ControlType::Cooler).is_some()))
+        self.probe_handle(|h| Ok(h.is_control_available(ControlType::Cooler).is_some()))
             .await
     }
 
@@ -2393,8 +2418,7 @@ impl Camera for QhyCameraDevice {
     /// shutter is the camera's property, not the driver's, and the driver
     /// cannot see it without a handle.
     async fn has_shutter(&self) -> ASCOMResult<bool> {
-        self.ensure_connected()?;
-        self.on_handle(|h| {
+        self.probe_handle(|h| {
             Ok(h.is_control_available(ControlType::CamMechanicalShutter)
                 .is_some())
         })

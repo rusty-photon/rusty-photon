@@ -438,8 +438,16 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   cannot exclude a disconnect arriving in between; rather than let the error a
   client sees depend on where in that race the request fell, an SDK failure on a
   handle that is no longer open is reported as the disconnect it is. A call that
-  *succeeded* answers for itself, and the capability properties that deliberately
-  answer while disconnected are unaffected.
+  *succeeded* answers for itself — with one exception, because
+  `is_control_available` spells "this model lacks the control" and "this handle
+  is closed" the same way, as `None`, and so never reaches that rewrite. The
+  members built on it (`HasShutter`, `CanSetCCDTemperature`, `SensorType`) take
+  the connected check on **both** sides of the SDK hop, so a probe that came
+  back after the close reports the disconnect rather than a fabricated
+  "no cooler" (E11). Serializing the probe against the close instead would mean
+  holding the handle across a blocking USB call, which is what dispatching off
+  the executor exists to avoid. The members that never touch a device
+  (`CanStopExposure`, `CanPulseGuide`, `CanAsymmetricBin`) answer throughout.
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
   camera does not affect the others enumerated on the same service.
 - **C5.** No code path in this service pushes cooler state, wheel position, or
