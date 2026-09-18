@@ -587,6 +587,38 @@ impl SkySurveyCameraWorld {
         self.put_camera("connected", &extra).await;
     }
 
+    /// GET /api/v1/camera/0/{method} with the standard ASCOM envelope,
+    /// capturing the response and any ASCOM `ErrorNumber` the way
+    /// [`Self::put_camera`] does — so a scenario can assert what a *read*
+    /// answered with, not only a command.
+    ///
+    /// Returns the parsed `ErrorNumber` (0 = success).
+    pub async fn get_camera(&mut self, method: &str) -> u32 {
+        let url = format!("{}/api/v1/camera/0/{method}", self.base_url());
+        let client = self.http();
+        let response = client
+            .get(&url)
+            .query(&[("ClientID", "1"), ("ClientTransactionID", "1")])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET /{method} failed: {e}"));
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        self.last_http_status = Some(status.as_u16());
+        self.last_http_body = Some(body.clone());
+        let mut err_num = 0;
+        if let Ok(value) = serde_json::from_str::<Value>(&body) {
+            err_num = value
+                .get("ErrorNumber")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as u32;
+            if err_num != 0 {
+                self.last_ascom_error = Some(err_num);
+            }
+        }
+        err_num
+    }
+
     /// PUT /api/v1/camera/0/{method} with the given form parameters
     /// plus the standard ASCOM `ClientID` / `ClientTransactionID`
     /// envelope. Captures the response body, HTTP status, and any

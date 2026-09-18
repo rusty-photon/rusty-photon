@@ -91,3 +91,34 @@ async fn read_connected(world: &mut SkySurveyCameraWorld) -> bool {
         .as_bool()
         .expect("Value field missing or not bool")
 }
+
+/// Read one member of the exposure-state surface and keep whatever it answered
+/// with (C5). Every member goes through the same step because the contract is
+/// about the surface as a whole: one of them answering while its neighbours
+/// refuse is the contradiction the check exists to remove.
+#[when(regex = r"^I read (\w+) from the camera$")]
+async fn read_exposure_member(world: &mut SkySurveyCameraWorld, member: String) {
+    world.last_ascom_error = None;
+    let method = match member.as_str() {
+        "CameraState" => "camerastate",
+        "ImageReady" => "imageready",
+        "PercentCompleted" => "percentcompleted",
+        "LastExposureStartTime" => "lastexposurestarttime",
+        "LastExposureDuration" => "lastexposureduration",
+        "ImageArray" => "imagearray",
+        other => panic!("unknown exposure-state member: {other}"),
+    };
+    world.get_camera(method).await;
+}
+
+#[then("the read is rejected with ASCOM NOT_CONNECTED")]
+fn read_rejected_not_connected(world: &mut SkySurveyCameraWorld) {
+    let actual = world
+        .last_ascom_error
+        .expect("no ASCOM error captured — did the When step run?");
+    assert_eq!(
+        actual, 0x407,
+        "expected NOT_CONNECTED (0x407), got {actual:#X} (body: {:?})",
+        world.last_http_body
+    );
+}

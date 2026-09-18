@@ -6,7 +6,11 @@ Feature: Connection lifecycle
   Connect latency to a network round-trip would make the simulator
   flaky on slow links and in CI. A non-writable cache directory still
   fails Connect with ASCOM UNSPECIFIED_ERROR (C2). Disconnect cancels
-  any in-flight exposure.
+  any in-flight exposure. Every member that reports exposure state --
+  CameraState, ImageReady, PercentCompleted, LastExposureStartTime,
+  LastExposureDuration and ImageArray -- answers NOT_CONNECTED while
+  the camera is disconnected rather than describing a session that is
+  not running (C5).
 
   Background:
     Given a sky-survey-camera with default optics
@@ -40,3 +44,34 @@ Feature: Connection lifecycle
     And I connect the camera
     And I disconnect the camera
     Then the camera is not connected
+
+  Scenario Outline: A camera that has never been connected reports no exposure state
+    Given a writable cache directory
+    And SkyView is reachable
+    When I start the service
+    And I read <member> from the camera
+    Then the read is rejected with ASCOM NOT_CONNECTED
+
+    Examples:
+      | member                |
+      | CameraState           |
+      | ImageReady            |
+      | PercentCompleted      |
+      | LastExposureStartTime |
+      | LastExposureDuration  |
+      | ImageArray            |
+
+  Scenario Outline: A disconnected camera reports no exposure state from the session that ended
+    Given a writable cache directory
+    And SkyView is reachable
+    When I start the service
+    And I connect the camera
+    And I disconnect the camera
+    And I read <member> from the camera
+    Then the read is rejected with ASCOM NOT_CONNECTED
+
+    Examples:
+      | member           |
+      | CameraState      |
+      | ImageReady       |
+      | PercentCompleted |

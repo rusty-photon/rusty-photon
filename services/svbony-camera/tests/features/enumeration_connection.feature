@@ -11,7 +11,9 @@ Feature: Camera enumeration and connection lifecycle
   open failure leaves the device not connected (C2). Disconnecting (C3)
   closes the device, cancelling any in-flight exposure (C3b, implemented in
   Phase E over the generation-counter guard -- see
-  docs/plans/archive/svbony-camera.md). With zero cameras discovered the service
+  docs/plans/archive/svbony-camera.md); the exposure state that session
+  produced is not readable once it is disconnected (state-machine step 9), and
+  the connect that follows starts with no frame ready. With zero cameras discovered the service
   still starts, registering no Camera devices and logging a warning (C0b).
   Against the
   svbony-rs simulation backend exactly one camera is present
@@ -42,12 +44,15 @@ Feature: Camera enumeration and connection lifecycle
     And I disconnect camera device 0
     Then camera device 0 reports Connected as false
 
-  Scenario: Disconnecting cancels an in-flight exposure
+  Scenario: Disconnecting cancels an in-flight exposure and leaves no frame for the next session
     Given camera device 0 is connected
     And an exposure is in flight on camera device 0
     When I disconnect camera device 0
-    Then camera device 0 reports ImageReady as false
+    And I try to read ImageReady from camera device 0
+    Then the call is rejected with ASCOM NOT_CONNECTED
     And camera device 0 reports Connected as false
+    When I connect camera device 0
+    Then camera device 0 reports ImageReady as false
 
   Scenario: The service starts with no Camera devices when no camera is present
     Given the svbony-camera service running with an empty simulation backend

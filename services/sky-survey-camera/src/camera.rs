@@ -212,6 +212,21 @@ impl SkySurveyCamera {
     pub fn is_connected(&self) -> bool {
         self.state.connected.load(Ordering::Acquire)
     }
+
+    /// `NOT_CONNECTED` unless this device is connected — C4's "subsequent
+    /// ASCOM operations return `NOT_CONNECTED`", spelled once so every member
+    /// that reports device state gives the same answer (C5). The sibling
+    /// camera drivers spell theirs `ensure_connected` over an SDK handle; here
+    /// there is no handle, and the connected flag is the whole session.
+    fn ensure_connected(&self) -> ASCOMResult<()> {
+        if self.is_connected() {
+            return Ok(());
+        }
+        Err(ASCOMError::new(
+            ASCOMErrorCode::NOT_CONNECTED,
+            "camera is not connected",
+        ))
+    }
 }
 
 /// The body of the spawned exposure task. Performs the cache hit /
@@ -753,11 +768,20 @@ impl Camera for SkySurveyCamera {
         Ok(())
     }
 
+    /// C5: `ImageArray` is read straight after this one and takes the same
+    /// check, so without it here the pair could contradict each other — ready
+    /// beside a frame that refuses.
     async fn image_ready(&self) -> ASCOMResult<bool> {
+        self.ensure_connected()?;
         Ok(self.state.image_ready.load(Ordering::Acquire))
     }
 
+    /// "No exposure has started yet" is an answer about the **running**
+    /// session, so the connected check comes first (C5). The stored values are
+    /// cleared on disconnect (C4), so what this prevents is not a stale
+    /// timestamp but a device with no session answering as though it had one.
     async fn last_exposure_start_time(&self) -> ASCOMResult<SystemTime> {
+        self.ensure_connected()?;
         self.state
             .last_exposure_start
             .lock()
@@ -765,6 +789,7 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn last_exposure_duration(&self) -> ASCOMResult<Duration> {
+        self.ensure_connected()?;
         self.state
             .last_exposure_duration
             .lock()
@@ -772,6 +797,7 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn image_array(&self) -> ASCOMResult<ImageArray> {
+        self.ensure_connected()?;
         // S4-S6: a stored fetch error becomes ASCOM UNSPECIFIED_ERROR.
         let last_error = self.state.last_error.lock().clone();
         if let Some(msg) = last_error {
@@ -799,7 +825,11 @@ impl Camera for SkySurveyCamera {
         Ok(ImageArray::from(array))
     }
 
+    /// C5: `Idle` is an answer about a device that is there. A supervisor
+    /// polling this across a disconnect must be told the session has gone, not
+    /// handed the idle state of a camera it is no longer connected to.
     async fn camera_state(&self) -> ASCOMResult<CameraState> {
+        self.ensure_connected()?;
         if self.state.last_error.lock().is_some() {
             return Ok(CameraState::Error);
         }
@@ -810,6 +840,7 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn percent_completed(&self) -> ASCOMResult<u8> {
+        self.ensure_connected()?;
         // The fetch-or-cache pipeline is atomic from the client's
         // perspective — there's no meaningful intermediate progress
         // to report — so percent is binary.
@@ -1008,6 +1039,16 @@ mod tests {
         SkySurveyCamera::new_static(cfg, client)
     }
 
+    /// A camera in a running session. Every member that reports exposure
+    /// state answers `NOT_CONNECTED` outside one (C5), so a test about what
+    /// those members *say* has to be connected first; `fake_camera` is for
+    /// tests about the disconnected answer itself.
+    fn connected_camera() -> SkySurveyCamera {
+        let cam = fake_camera();
+        cam.state.connected.store(true, Ordering::Release);
+        cam
+    }
+
     #[test]
     fn is_connected_starts_false() {
         let cam = fake_camera();
@@ -1070,7 +1111,7 @@ mod tests {
 
     #[tokio::test]
     async fn last_exposure_methods_pre_first_exposure() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         let err = cam.last_exposure_start_time().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
         let err = cam.last_exposure_duration().await.unwrap_err();
@@ -1079,7 +1120,7 @@ mod tests {
 
     #[tokio::test]
     async fn last_exposure_methods_after_set() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         let when = SystemTime::now();
         let duration = Duration::from_millis(500);
         *cam.state.last_exposure_start.lock() = Some(when);
@@ -1092,20 +1133,20 @@ mod tests {
 
     #[tokio::test]
     async fn image_ready_initially_false() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         assert!(!cam.image_ready().await.unwrap());
     }
 
     #[tokio::test]
     async fn image_array_returns_invalid_operation_when_empty() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         let err = cam.image_array().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
     }
 
     #[tokio::test]
     async fn image_array_surfaces_stored_error_as_unspecified() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         *cam.state.last_error.lock() = Some("survey returned status 500".into());
         let err = cam.image_array().await.unwrap_err();
         assert_eq!(err.code, UNSPECIFIED_ERROR);
@@ -1113,7 +1154,7 @@ mod tests {
 
     #[tokio::test]
     async fn image_array_returns_stored_image_when_ready() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         *cam.state.last_image.lock() = Some(ExposureOutcome {
             width: 4,
             height: 3,
@@ -1155,7 +1196,7 @@ mod tests {
 
     #[tokio::test]
     async fn camera_state_reflects_in_flight_and_error() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         assert_eq!(cam.camera_state().await.unwrap(), CameraState::Idle);
         cam.state.exposure_in_flight.store(true, Ordering::Release);
         assert_eq!(cam.camera_state().await.unwrap(), CameraState::Exposing);
@@ -1164,9 +1205,49 @@ mod tests {
         assert_eq!(cam.camera_state().await.unwrap(), CameraState::Error);
     }
 
+    /// C5: outside a session these members have nothing to report. `Idle`,
+    /// `ImageReady = false` and `PercentCompleted = 0` are answers about a
+    /// camera that is there, and `INVALID_OPERATION` ("no exposure has started
+    /// yet") speaks for a running session that has not exposed — neither is
+    /// true of a device nobody is connected to. C4 has already cleared the
+    /// stored values, so what this pins is the ASCOM shape, not a stale read.
+    #[tokio::test]
+    async fn the_exposure_state_surface_refuses_while_disconnected() {
+        let cam = fake_camera();
+        // State a previous session could have left behind; none of it is
+        // reachable while the device is disconnected.
+        cam.state.image_ready.store(true, Ordering::Release);
+        *cam.state.last_exposure_start.lock() = Some(SystemTime::now());
+        *cam.state.last_exposure_duration.lock() = Some(Duration::from_millis(500));
+        assert_eq!(
+            cam.camera_state().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.image_ready().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.percent_completed().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.last_exposure_start_time().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.last_exposure_duration().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.image_array().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
     #[tokio::test]
     async fn percent_completed_is_binary() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         assert_eq!(cam.percent_completed().await.unwrap(), 0);
         cam.state.image_ready.store(true, Ordering::Release);
         assert_eq!(cam.percent_completed().await.unwrap(), 100);

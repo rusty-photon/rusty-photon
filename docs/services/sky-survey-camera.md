@@ -485,6 +485,24 @@ scenarios in `tests/features/`. ASCOM error codes use the names from
 - **C4.** `set_connected(false)` cancels any in-flight exposure and
   resets `LastExposureStartTime` / `LastExposureDuration` to the
   unset state; subsequent ASCOM operations return `NOT_CONNECTED`.
+- **C5.** That includes every member reporting exposure state —
+  `CameraState`, `ImageReady`, `PercentCompleted`,
+  `LastExposureStartTime`, `LastExposureDuration` and `ImageArray`.
+  Each answers `NOT_CONNECTED` while the device is disconnected
+  rather than describing a session that is not running: `Idle` and
+  `ImageReady = false` are answers about a camera that is there, and
+  "no exposure has started yet" (`INVALID_OPERATION`) says the
+  running session has not exposed, which is not the same thing as
+  having no session. C4's reset means nothing stale is on offer here
+  — unlike the SDK-backed siblings, which clear at connect — so this
+  is the ASCOM shape alone, shared with `qhy-camera`'s E10,
+  `zwo-camera`'s E11 and `svbony-camera`'s state-machine step 9.
+  `Connected` itself still never throws (it is how a client asks),
+  and the capability probes (`CanAbortExposure`, `CanStopExposure`,
+  `HasShutter`) describe the driver rather than a session.
+  `AbortExposure` / `StopExposure` keep A2's `INVALID_OPERATION`:
+  nothing can be in flight on a disconnected device, so A2 already
+  covers that case.
 
 ### Pointing API
 
