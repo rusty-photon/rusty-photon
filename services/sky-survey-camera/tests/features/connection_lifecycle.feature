@@ -61,12 +61,12 @@ Feature: Connection lifecycle
       | LastExposureDuration  |
       | ImageArray            |
 
-  Scenario Outline: A disconnected camera reports no exposure state from the session that ended
-    Given a writable cache directory
-    And SkyView is reachable
-    When I start the service
-    And I connect the camera
-    And I disconnect the camera
+  Scenario Outline: A disconnected camera reports no exposure state from the session that took a frame
+    Given the camera is connected with the survey backend stubbed
+    And the survey backend returns a healthy FITS cutout
+    When I StartExposure with default parameters
+    Then the resulting image has dimensions 640 by 480
+    When I disconnect the camera
     And I read <member> from the camera
     Then the read is rejected with ASCOM NOT_CONNECTED
 
