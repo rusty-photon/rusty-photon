@@ -690,11 +690,12 @@ graph TD;
 | `Offset` family | Reports `PROPERTY_NOT_IMPLEMENTED` (no signal model) |
 | `ReadoutMode` / `ReadoutModes` | Single mode `"Default"` at index `0`; setter rejects non-zero |
 | `SensorName` / `SensorType` | `"SkyView Virtual Sensor"` / `Monochrome` |
-| `CameraState` | `Idle` / `Exposing` / `Error` based on internal state |
-| `PercentCompleted` | Binary: `0` while in flight, `100` once `ImageReady` |
+| `CameraState` | `Idle` / `Exposing` / `Error` based on internal state; `NOT_CONNECTED` while disconnected (C5) |
+| `PercentCompleted` | Binary: `0` while in flight, `100` once `ImageReady`; `NOT_CONNECTED` while disconnected (C5) |
 | `CanAbortExposure` / `CanStopExposure` | `true`, both cancel the in-flight survey fetch |
 | `CoolerOn`, `CCDTemperature`, `CanGetCoolerPower`, `CanSetCCDTemperature`, `CanPulseGuide`, `CanFastReadout`, `HasShutter`, `BayerOffsetX/Y` | All `false` / `PROPERTY_NOT_IMPLEMENTED` |
-| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Implemented per pipeline above; `ImageArray` returns the cropped subframe with axes `[X, Y]` |
+| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Implemented per pipeline above; `ImageArray` returns the cropped subframe with axes `[X, Y]`. `StartExposure` (E1), `ImageReady`, `ImageArray` and `ImageArrayVariant` answer `NOT_CONNECTED` while disconnected (C5); `AbortExposure` / `StopExposure` answer `INVALID_OPERATION` there, per A2 |
+| `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session — `INVALID_OPERATION` before its first exposure, and again after a disconnect, which resets them (C4); `NOT_CONNECTED` while disconnected (C5) |
 
 ConformU is the canonical ASCOM correctness check. The
 `tests/conformu_integration.rs` target (gated by the `conformu`

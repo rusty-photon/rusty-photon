@@ -71,7 +71,10 @@ Feature: Connection lifecycle
     Then the read is rejected with ASCOM NOT_CONNECTED
 
     Examples:
-      | member           |
-      | CameraState      |
-      | ImageReady       |
-      | PercentCompleted |
+      | member                |
+      | CameraState           |
+      | ImageReady            |
+      | PercentCompleted      |
+      | LastExposureStartTime |
+      | LastExposureDuration  |
+      | ImageArray            |
