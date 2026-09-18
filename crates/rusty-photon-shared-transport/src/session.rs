@@ -276,7 +276,11 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   successful reconnect. Runs **before** any [`Session`] escapes. On
 ///   error: rollback (count→0, available→false, transport dropped),
 ///   error propagated to the caller.
-/// * `on_last_disconnect` runs on every refcount 1→0 transition.
+/// * `on_last_disconnect` runs on every refcount 1→0 transition, and
+///   on every cold [`crate::SharedTransport::start`] before the
+///   conduit it opened is published — a start is a no-client state
+///   too, and the only one in which the device may be acting on
+///   instructions from a lifecycle this process has no memory of.
 ///   Per-service **stop-class** commands only: halt an axis, stop
 ///   tracking, abort an exposure. Not a park slew, not a cover or
 ///   lamp, not a power or dew toggle — tenet 3 names those as
@@ -284,7 +288,8 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   where only stopping is permitted.
 ///   In `LazyAcquire` mode, fires once after `while_open`
 ///   is cancelled and before transport teardown. In `ServiceLifetime`
-///   mode, fires on every 1→0 and the port stays open — may run many
+///   mode, fires on the cold `start()` and then on every 1→0 with the
+///   port staying open — may run many
 ///   times during a service's lifetime, and once more at the end of a
 ///   successful reconnect — whenever the refcount is still zero, and
 ///   also whenever an earlier invocation's commands did not reach the

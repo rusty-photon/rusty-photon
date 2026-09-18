@@ -5,6 +5,10 @@ Feature: Connection lifecycle
   client disconnects. Disconnect aborts any motion in progress and stops
   tracking before closing the transport.
 
+  Starting the service is itself a no-client state, and the driver halts
+  the mount on the way up for the same reason it halts it on the way
+  down.
+
   Scenario: Device starts disconnected
     Given a running star-adventurer service
     Then the device should be disconnected
@@ -20,7 +24,7 @@ Feature: Connection lifecycle
     motor controller. See issue #254.
     Given a running star-adventurer service
     When I connect the device
-    Then the mount should have received commands in order:
+    Then the mount should have received startup commands in order:
       | command |
       | :e1     |
       | :F1     |
@@ -32,6 +36,22 @@ Feature: Connection lifecycle
       | :g2     |
       | :j1     |
       | :j2     |
+
+  Scenario: Startup halts the mount before the driver serves anyone
+    A driver does not get to assume the device it has just opened is idle.
+    A reload builds a new transport and a restart keeps nothing at all, so
+    a halt the previous lifecycle could not land is not remembered by
+    anything in this one — but the mount is still doing whatever it was
+    doing. The startup handshake is therefore followed by the same
+    :L1, :L2, :K1 sequence a last-client disconnect issues, before the
+    HTTP listener binds and before any client can attach. See issue #1251.
+    Given a running star-adventurer service
+    Then the mount should have received startup commands in order:
+      | command |
+      | :j2     |
+      | :L1     |
+      | :L2     |
+      | :K1     |
 
   Scenario: Connect populates the parameter cache from handshake replies
     Given a mount that reports CPR 3628800 on the RA axis and 2903040 on the Dec axis

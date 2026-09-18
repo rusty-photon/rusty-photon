@@ -758,17 +758,18 @@ async fn a_reconnect_with_no_client_re_asserts_the_last_disconnect_state() {
     let stops = SafetyStopHooks::default();
     let st = build_with_factory_and_hooks(factory, stops.hooks());
 
+    // Invocation 1 is the cold start's own no-client assertion.
     st.start().await.unwrap();
     let session = st.acquire().await.unwrap();
     session.close().await.unwrap();
     assert_eq!(
         stops.calls.load(Ordering::SeqCst),
-        1,
-        "the 1→0 fires it once"
+        2,
+        "the 1→0 fires it once more"
     );
     assert_eq!(
         stops.reached_the_wire.load(Ordering::SeqCst),
-        1,
+        2,
         "the 1→0 runs against a healthy conduit"
     );
 
@@ -776,12 +777,12 @@ async fn a_reconnect_with_no_client_re_asserts_the_last_disconnect_state() {
 
     assert_eq!(
         stops.calls.load(Ordering::SeqCst),
-        2,
+        3,
         "the replacement conduit must carry the no-client state too"
     );
     assert_eq!(
         stops.reached_the_wire.load(Ordering::SeqCst),
-        2,
+        3,
         "the re-assert must run against the replacement, not the conduit the attempt closed"
     );
 
@@ -799,7 +800,9 @@ async fn a_reconnect_whose_safety_stop_did_not_land_is_not_a_recovery() {
     // short-circuited until one whose stop lands.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
-    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone());
+    // Invocation 1 is the cold start's; the reconnect's replay is 2,
+    // and that is the one this test wants to miss the wire.
+    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone()).failing_from(2);
     let st = build_with_factory_and_hooks(factory, stops.hooks());
     // A long interval keeps the supervisor out of the way: this is
     // about the state the failed attempt leaves behind.
@@ -811,13 +814,13 @@ async fn a_reconnect_whose_safety_stop_did_not_land_is_not_a_recovery() {
 
     assert_eq!(
         stops.calls.load(Ordering::SeqCst),
-        1,
+        2,
         "the replay ran on the fresh conduit"
     );
     assert_eq!(
         stops.reached_the_wire.load(Ordering::SeqCst),
-        0,
-        "and did not land, which is the case under test"
+        1,
+        "and did not land, which is the case under test — only the start's stop landed"
     );
     assert!(
         st.is_reconnecting(),
@@ -856,7 +859,9 @@ async fn a_replay_that_fails_on_the_wire_does_not_outrun_the_retry_cadence() {
 
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
-    let stops = SafetyStopHooks::failing_first(FAILURES, cfg.fail_recvs.clone());
+    // From invocation 2, so the cold start's own assertion lands and
+    // the failing ones are the replays this is about.
+    let stops = SafetyStopHooks::failing_first(FAILURES, cfg.fail_recvs.clone()).failing_from(2);
     let st = build_with_factory_and_hooks(factory, stops.hooks());
     st.set_reconnect_interval(INTERVAL).await;
 
@@ -872,7 +877,7 @@ async fn a_replay_that_fails_on_the_wire_does_not_outrun_the_retry_cadence() {
     // Let the supervisor work through the replays that keep failing.
     assert!(
         wait_until(
-            || stops.calls.load(Ordering::SeqCst) > FAILURES,
+            || stops.calls.load(Ordering::SeqCst) > FAILURES + 1,
             INTERVAL * 20
         )
         .await,
@@ -906,7 +911,9 @@ async fn a_last_disconnect_that_could_not_land_is_owed_to_the_next_reconnect() {
     // moving. The obligation has to outlive the refcount.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
-    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone());
+    // Invocation 1 is the cold start's; the 1→0 below is 2, and that
+    // is the one this test needs to miss the wire.
+    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone()).failing_from(2);
     let st = build_with_factory_and_hooks(factory, stops.hooks());
     st.set_reconnect_interval(Duration::from_secs(3600)).await;
 
@@ -923,11 +930,11 @@ async fn a_last_disconnect_that_could_not_land_is_owed_to_the_next_reconnect() {
     // A 1→0 whose safety stop does not reach the device.
     let departing = st.acquire().await.unwrap();
     departing.close().await.unwrap();
-    assert_eq!(stops.calls.load(Ordering::SeqCst), 1, "the 1→0 fired it");
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 2, "the 1→0 fired it");
     assert_eq!(
         stops.reached_the_wire.load(Ordering::SeqCst),
-        0,
-        "and it did not land, which is the case under test"
+        1,
+        "and it did not land, which is the case under test — only the start's stop did"
     );
 
     // Recording the debt has to take the transport out of service too.
@@ -955,12 +962,12 @@ async fn a_last_disconnect_that_could_not_land_is_owed_to_the_next_reconnect() {
 
     assert_eq!(
         stops.calls.load(Ordering::SeqCst),
-        2,
+        3,
         "the owed stop must be replayed even though a client is attached"
     );
     assert_eq!(
         stops.reached_the_wire.load(Ordering::SeqCst),
-        1,
+        2,
         "and it must land on the fresh conduit"
     );
 
@@ -969,7 +976,7 @@ async fn a_last_disconnect_that_could_not_land_is_owed_to_the_next_reconnect() {
     st.reconnect_now().await.unwrap();
     assert_eq!(
         stops.calls.load(Ordering::SeqCst),
-        2,
+        3,
         "a discharged obligation must not keep firing under a live client"
     );
 
@@ -986,7 +993,9 @@ async fn an_owed_stop_does_not_cross_a_shutdown_into_the_next_lifecycle() {
     // client, which is exactly what the replay must never do.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
-    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone());
+    // Invocation 1 is the cold start's; the 1→0 below is 2, and that
+    // is the one that must miss the wire.
+    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone()).failing_from(2);
     let st = build_with_factory_and_hooks(factory, stops.hooks());
 
     st.start().await.unwrap();
@@ -998,7 +1007,7 @@ async fn an_owed_stop_does_not_cross_a_shutdown_into_the_next_lifecycle() {
     let departing = st.acquire().await.unwrap();
     cfg.set_fail(true);
     departing.close().await.unwrap();
-    assert_eq!(stops.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 2);
     assert!(
         st.is_reconnecting(),
         "the failed stop took it out of service"
@@ -1011,6 +1020,9 @@ async fn an_owed_stop_does_not_cross_a_shutdown_into_the_next_lifecycle() {
     );
 
     cfg.set_fail(false);
+    // Invocation 3: this start's own no-client assertion, on its own
+    // fresh conduit — not a replay of the debt, which died with the
+    // lifecycle that incurred it.
     st.start().await.unwrap();
 
     // A fresh lifecycle with a client attached. The debt from the old
@@ -1020,7 +1032,7 @@ async fn an_owed_stop_does_not_cross_a_shutdown_into_the_next_lifecycle() {
 
     assert_eq!(
         stops.calls.load(Ordering::SeqCst),
-        1,
+        3,
         "an obligation from a finished lifecycle must not halt a live client's mount"
     );
 
@@ -1368,10 +1380,11 @@ async fn a_client_arriving_mid_attempt_does_not_cancel_the_no_client_replay() {
     let st = build_with_factory_and_hooks(Arc::new(factory), stops.hooks());
     st.set_reconnect_interval(Duration::from_secs(3600)).await;
 
+    // Invocation 1 is the cold start's own no-client assertion.
     st.start().await.unwrap();
     let departing = st.acquire().await.unwrap();
     departing.close().await.unwrap();
-    assert_eq!(stops.calls.load(Ordering::SeqCst), 1, "the 1→0 fired it");
+    assert_eq!(stops.calls.load(Ordering::SeqCst), 2, "the 1→0 fired it");
 
     // The attempt begins with nobody attached and parks in its open.
     let reconnecting = Arc::clone(&st);
@@ -1385,12 +1398,12 @@ async fn a_client_arriving_mid_attempt_does_not_cancel_the_no_client_replay() {
 
     assert_eq!(
         stops.calls.load(Ordering::SeqCst),
-        2,
+        3,
         "the replay must run because the attempt began with no client, whoever arrived since"
     );
     assert_eq!(
         stops.reached_the_wire.load(Ordering::SeqCst),
-        2,
+        3,
         "and it must have landed on the fresh conduit"
     );
 
@@ -1453,6 +1466,7 @@ async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
     let stops = SafetyStopHooks::default();
     let st = build_with_factory_and_hooks(factory, stops.hooks());
 
+    // Invocation 1 is the cold start's, before this client existed.
     st.start().await.unwrap();
     let session = st.acquire().await.unwrap();
 
@@ -1460,7 +1474,7 @@ async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
 
     assert_eq!(
         stops.calls.load(Ordering::SeqCst),
-        0,
+        1,
         "a reconnect under a live client must not run the last-disconnect hook"
     );
 
@@ -1480,10 +1494,11 @@ async fn a_client_arriving_during_the_re_assert_cannot_command_the_conduit() {
     // command one.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
-    // The 1→0 below has to run straight through: parking it would
-    // wedge the `close()` that triggers it. The reconnect's re-assert
-    // is the second invocation, and that is the one to hold open.
-    let stops = SafetyStopHooks::parking_after(1);
+    // The cold start's assertion and the 1→0 below both have to run
+    // straight through — parking the latter would wedge the `close()`
+    // that triggers it. The reconnect's re-assert is the third
+    // invocation, and that is the one to hold open.
+    let stops = SafetyStopHooks::parking_after(2);
     let st = build_with_factory_and_hooks(factory, stops.hooks());
 
     st.start().await.unwrap();
@@ -1619,11 +1634,12 @@ async fn a_stop_missed_while_the_attempt_ran_fails_the_attempt() {
     // failure at all.
     let cfg = FactoryConfig::default();
     let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
-    // Call 1 is the 1→0 that drops to zero clients, and parking that
-    // one would wedge the `close()` triggering it. Call 2 is the
-    // reconnect's re-assert, held open so the cleanup lands inside the
-    // attempt. Call 3 is that cleanup.
-    let stops = SafetyStopHooks::parking_after(1).panicking_on(3);
+    // Call 1 is the cold start's own assertion. Call 2 is the 1→0
+    // that drops to zero clients, and parking that one would wedge the
+    // `close()` triggering it. Call 3 is the reconnect's re-assert,
+    // held open so the cleanup lands inside the attempt. Call 4 is
+    // that cleanup.
+    let stops = SafetyStopHooks::parking_after(2).panicking_on(4);
     let st = build_with_factory_and_hooks(factory, stops.hooks());
 
     st.start().await.unwrap();
@@ -1641,7 +1657,7 @@ async fn a_stop_missed_while_the_attempt_ran_fails_the_attempt() {
     drop(racer);
     assert!(
         wait_until(
-            || stops.calls.load(Ordering::SeqCst) >= 3,
+            || stops.calls.load(Ordering::SeqCst) >= 4,
             Duration::from_secs(2)
         )
         .await,
@@ -1660,7 +1676,7 @@ async fn a_stop_missed_while_the_attempt_ran_fails_the_attempt() {
     );
     assert_eq!(
         stops.reached_the_wire.load(Ordering::SeqCst),
-        2,
+        3,
         "the re-assert itself landed; what is owed is the cleanup's stop"
     );
 

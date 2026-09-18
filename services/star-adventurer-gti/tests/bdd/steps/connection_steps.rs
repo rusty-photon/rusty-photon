@@ -120,15 +120,17 @@ async fn transport_opened_once(world: &mut StarAdventurerWorld) {
     // Pin the property indirectly: every connect runs the `:F1` /
     // `:F2` handshake exactly once. Counting `:F1` frames in the
     // command log is a proxy for "transport opened once".
-    let log = world.command_log().await;
+    let log = world.command_log_including_startup().await;
     let f1_count = log.iter().filter(|c| c.as_str() == ":F1\r").count();
     assert_eq!(f1_count, 1, "expected one :F1 handshake, saw log {log:?}");
 }
 
-#[then("the mount should have received commands in order:")]
+#[then("the mount should have received startup commands in order:")]
 async fn commands_received_in_order(world: &mut StarAdventurerWorld, step: &Step) {
     let table = step.table.as_ref().expect("expected a data table");
-    let log = world.command_log().await;
+    // The only step that reads past the startup mark: its scenarios
+    // are about what the driver puts on the wire while starting.
+    let log = world.command_log_including_startup().await;
     let mut log_idx = 0usize;
     for row in table.rows.iter().skip(1) {
         let want = format!("{}\r", row[0].trim());
@@ -154,19 +156,19 @@ async fn param_cache_cpr_ra(world: &mut StarAdventurerWorld, _expected: u32) {
     // assertion is that `:a1` appears in the log; the value itself is
     // pinned by the unit test
     // `transport_manager::tests::connect_runs_handshake_and_seeds_parameter_cache`.
-    let log = world.command_log().await;
+    let log = world.command_log_including_startup().await;
     assert!(log.iter().any(|c| c == ":a1\r"), "no :a1 in log");
 }
 
 #[then(expr = "the parameter cache should report CPR {int} on the Dec axis")]
 async fn param_cache_cpr_dec(world: &mut StarAdventurerWorld, _expected: u32) {
-    let log = world.command_log().await;
+    let log = world.command_log_including_startup().await;
     assert!(log.iter().any(|c| c == ":a2\r"), "no :a2 in log");
 }
 
 #[then(expr = "the parameter cache should report timer frequency {int}")]
 async fn param_cache_tmr_freq(world: &mut StarAdventurerWorld, _expected: u32) {
-    let log = world.command_log().await;
+    let log = world.command_log_including_startup().await;
     assert!(log.iter().any(|c| c == ":b1\r"), "no :b1 in log");
 }
 

@@ -19,8 +19,10 @@
 //!   port opens at `start()` and stays open until [`SharedTransport::shutdown`]
 //!   is called. `acquire()` becomes a fast refcount-bump.
 //!   `Hooks::on_last_disconnect` runs on every 1→0 and the port stays
-//!   open. `Hooks::shutdown` runs once on `shutdown()` before the port
-//!   actually closes.
+//!   open, and once more on the cold `start()` itself — nothing is
+//!   attached there either, and the device on the other end remembers
+//!   a previous lifecycle this one cannot. `Hooks::shutdown` runs once
+//!   on `shutdown()` before the port actually closes.
 //!
 //! The mode is a single [`AtomicBool`] flipped exclusively by `start()`
 //! and `shutdown()`; all branches that need to discriminate read it
@@ -441,6 +443,20 @@ impl<C: Codec> SharedTransport<C> {
     /// Idempotent: a second call observes `service_lifetime == true`
     /// and returns `Ok(())` immediately.
     ///
+    /// **A cold start asserts the no-client safety state.** After the
+    /// handshake and before the conduit is published,
+    /// [`Hooks::on_last_disconnect`] runs on it — every time, not only
+    /// when an earlier stop is recorded as missed. A driver does not
+    /// get to assume the device it has just opened is idle: the
+    /// instance that would have remembered an unlanded stop is gone
+    /// across a reload, and the process itself is gone across a
+    /// restart, while the device goes on doing whatever it was doing.
+    /// The hook is stop-class by contract, so this is a halt and
+    /// nothing more — tenet 3 permits that on a start path, and for a
+    /// hook that does nothing it costs nothing. The promote branch
+    /// does not do this: there the conduit is already live and may
+    /// have a client on it.
+    ///
     /// A cold start publishes a *new* connection cell, so [`Session`]s
     /// handed out before it keep pointing at the old one and do not
     /// follow the conduit this call opens — their requests fail with
@@ -453,7 +469,10 @@ impl<C: Codec> SharedTransport<C> {
     /// # Errors
     ///
     /// Returns a [`SessionError`] if opening the transport or running
-    /// the handshake hook fails.
+    /// the handshake hook fails, or if the safety state above did not
+    /// reach the device. Refusing to start beats advertising a device
+    /// whose safety state is unknown; the conduit is closed on the way
+    /// out, so the port is free for whoever tries next.
     pub async fn start(self: &Arc<Self>) -> Result<(), SessionError<C::Error>> {
         let _guard = self.acquire_lock.lock().await;
 
@@ -540,12 +559,29 @@ impl<C: Codec> SharedTransport<C> {
 
         self.drop_pending_reconnect_signal("tolerated by the handshake");
 
-        // A debt incurred before this call — a lazy 1→0 whose stop did
-        // not land, or a `ServiceLifetime` one that took the transport
-        // out of service — outlives the mode it was incurred in. This
-        // open is a chance to pay it, and refusing to start beats
-        // serving clients a conduit whose safety state is unknown.
-        self.discharge_owed_state(&connection).await?;
+        // Assert the no-client state on the conduit before anyone can
+        // reach it. Unconditional, not gated on a debt: the debt is
+        // this instance's memory of a stop that did not land, and the
+        // case this covers is the one where that memory does not exist
+        // — a reload builds a new `SharedTransport`, and a process
+        // restart does not even keep the process. The mount on the
+        // other end remembers what it was doing regardless, so a start
+        // that assumes it is idle is a start that can serve clients a
+        // moving mount. See #1251.
+        //
+        // The refcount is zero here by construction — a cold start
+        // publishes nothing until below — so this is the same
+        // no-client state the reconnect path re-asserts on a fresh
+        // conduit, arrived at from the other direction. Paying any
+        // standing debt falls out of it: the hook is the same one,
+        // run on a conduit no client has commanded on.
+        //
+        // Stop-class only, which is the hook's own contract, so tenet
+        // 3 permits it on a start path. For every hook in the
+        // workspace but the mount's it puts nothing on the wire at
+        // all.
+        self.assert_no_client_state(&connection, "on a cold start")
+            .await?;
 
         // Build the while_open future BEFORE publishing so a panic in
         // the closure body doesn't leave the slot populated. Mirrors
@@ -782,14 +818,14 @@ impl<C: Codec> SharedTransport<C> {
     /// Pay a safety stop an earlier cleanup could not land, on a
     /// conduit that has just handshaken and is not yet published.
     ///
-    /// Used by the two paths that open a conduit outside the reconnect
-    /// supervisor — the lazy 0→1 and a cold `start` — because each is a
-    /// chance to discharge the debt and there are no others while no
-    /// reconnect is running. The reconnect keeps its own replay: it
-    /// also fires on a zero refcount, and it verifies across the whole
-    /// attempt rather than around this one call. A client cannot have
-    /// commanded anything on a conduit that has not been published, so
-    /// asserting the stop here is safe whatever the refcount says.
+    /// Used by the lazy 0→1 open, which is a chance to discharge the
+    /// debt and, while no reconnect is running, the only one that path
+    /// gets. A cold `start` does not go through here — it asserts the
+    /// state whether or not a debt stands, see
+    /// [`assert_no_client_state`](Self::assert_no_client_state). The
+    /// reconnect keeps its own replay: it also fires on a zero
+    /// refcount, and it verifies across the whole attempt rather than
+    /// around this one call.
     ///
     /// # Errors
     ///
@@ -804,17 +840,59 @@ impl<C: Codec> SharedTransport<C> {
         if !self.safety_debt_outstanding() {
             return Ok(());
         }
+        self.assert_no_client_state(
+            connection,
+            "to discharge one owed from an earlier lifecycle",
+        )
+        .await
+    }
+
+    /// Run the stop-class last-disconnect hook on a conduit that has
+    /// just handshaken and is not yet published, and record that any
+    /// standing debt is paid.
+    ///
+    /// `context` says why, for the log line; the callers are the debt
+    /// discharge above and the cold `start`.
+    ///
+    /// Safe whatever the refcount says: a client cannot have commanded
+    /// anything on a conduit that has not been published, so the state
+    /// this asserts cannot be one a client is driving away from. That
+    /// is what lets a cold start assert it unconditionally — the
+    /// refcount is zero there in any case, but the guarantee does not
+    /// rest on reading it.
+    ///
+    /// The hook returns `()` — best-effort, by the contract its other
+    /// callers rely on — so the connection answers for it instead: a
+    /// command that did not complete on the wire bumped the failure
+    /// counter. A command the device *answered and refused* is
+    /// invisible here, as everywhere else; see
+    /// [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`SessionError`] when the state did not reach the
+    /// device. The conduit is closed and any debt left standing — the
+    /// caller must abandon this conduit rather than expose one whose
+    /// safety state is still unknown.
+    async fn assert_no_client_state(
+        &self,
+        connection: &Connection<C>,
+        context: &str,
+    ) -> Result<(), SessionError<C::Error>> {
+        // Read before the hook runs, so a cleanup that incurs a debt
+        // while this is in flight is not recorded as covered by it.
         let paying = self.safety_debt_incurred.load(Ordering::SeqCst);
 
-        debug!("discharging an owed last-disconnect state on the fresh conduit");
+        debug!(
+            context,
+            "asserting the last-disconnect state on the fresh conduit"
+        );
         let before = connection.wire_failures();
         (self.hooks.on_last_disconnect)(connection).await;
         if connection.wire_failures() != before {
             connection.close().await;
             return Err(SessionError::Transport(TransportError::Io(
-                io::Error::other(
-                    "the owed last-disconnect state did not land on the fresh conduit",
-                ),
+                io::Error::other("the last-disconnect state did not land on the fresh conduit"),
             )));
         }
 
@@ -1542,8 +1620,14 @@ impl<C: Codec> SharedTransport<C> {
         // first reconnect, under a live client, which is the one thing
         // the replay must never do.
         //
-        // Losing it is not free either: a shutdown whose own stop did
-        // not land has no successor to discharge it at all.
+        // Losing it here is not losing the obligation. A shutdown whose
+        // own stop did not land is exactly what a reload runs into,
+        // and the flag could not carry it across one anyway — the
+        // reload builds a new `SharedTransport` and this one goes
+        // away. What answers for it is the next cold `start`, which
+        // asserts the no-client state on its fresh conduit whether or
+        // not anything says a stop is owed. That covers a process
+        // restart too, which no flag on an instance can. See #1251.
         self.safety_debt_paid.fetch_max(
             self.safety_debt_incurred.load(Ordering::SeqCst),
             Ordering::SeqCst,

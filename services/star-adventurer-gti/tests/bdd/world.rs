@@ -114,6 +114,15 @@ pub struct StarAdventurerWorld {
 
     /// Doctor-subcommand smoke state (staged config file + run output).
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+
+    /// How many wire frames the driver had already emitted by the time
+    /// `start_service` returned — the startup handshake and the
+    /// no-client safety stop that follows it. [`Self::command_log`]
+    /// drops them, so a scenario asserting `:L1` or `:K1` is asserting
+    /// about its *own* traffic and not about the driver booting. The
+    /// steps that are about the boot read
+    /// [`Self::command_log_including_startup`] instead.
+    startup_mark: usize,
 }
 
 impl bdd_infra::doctor_smoke::DoctorSmokeWorld for StarAdventurerWorld {
@@ -187,6 +196,10 @@ impl StarAdventurerWorld {
         self.mount = Some(mount);
         self.service_handle = Some(handle);
         self.apply_pending_seed().await;
+        // Everything on the wire so far is the driver's own startup.
+        // Sampled once, after the service is answering, so the frames
+        // below it are exactly the ones no scenario put there.
+        self.startup_mark = self.command_log_including_startup().await.len();
     }
 
     /// The OS-assigned port the spawned service bound.
@@ -345,6 +358,28 @@ impl StarAdventurerWorld {
         timeout: Duration,
         pred: impl Fn(&[String]) -> bool,
     ) -> Result<Vec<String>, CommandLogTimeout> {
+        let mark = self.startup_mark;
+        self.wait_for_command_log_including_startup(timeout, move |log| {
+            pred(log.get(mark..).unwrap_or(&[]))
+        })
+        .await
+        .map(|log| log.into_iter().skip(mark).collect())
+        .map_err(|e| match e {
+            CommandLogTimeout::NoMatch(log) => {
+                CommandLogTimeout::NoMatch(log.into_iter().skip(mark).collect())
+            }
+            other @ CommandLogTimeout::FetchFailed(_) => other,
+        })
+    }
+
+    /// As [`Self::wait_for_command_log`], but `pred` sees the startup
+    /// frames too. Only the steps whose subject is the startup want
+    /// this.
+    pub async fn wait_for_command_log_including_startup(
+        &self,
+        timeout: Duration,
+        pred: impl Fn(&[String]) -> bool,
+    ) -> Result<Vec<String>, CommandLogTimeout> {
         let deadline = Instant::now() + timeout;
         let mut last_log: Option<Vec<String>> = None;
         let mut last_err = "no request completed".to_string();
@@ -376,11 +411,28 @@ impl StarAdventurerWorld {
         })
     }
 
-    /// Fetch the mock-mode wire-command log, retrying transient fetch
-    /// failures. Fails the scenario only if no read ever succeeds.
+    /// Fetch the mock-mode wire-command log from the point the service
+    /// finished starting, retrying transient fetch failures. Fails the
+    /// scenario only if no read ever succeeds.
+    ///
+    /// The startup frames are dropped on purpose. A cold
+    /// `SharedTransport::start` asserts the no-client safety state, so
+    /// `:L1`, `:L2` and `:K1` are on the wire before any scenario does
+    /// anything — and an assertion that a disconnect, an abort or a
+    /// tracking-off issued one of them would be satisfied by the boot
+    /// alone. Reading from the mark keeps those assertions about the
+    /// behaviour they name.
     pub async fn command_log(&self) -> Vec<String> {
+        let log = self.command_log_including_startup().await;
+        log.into_iter().skip(self.startup_mark).collect()
+    }
+
+    /// The whole log, startup included. For the steps whose subject
+    /// *is* the startup — the handshake order, the parameter cache it
+    /// seeds, the single `:F1` that proves one open.
+    pub async fn command_log_including_startup(&self) -> Vec<String> {
         match self
-            .wait_for_command_log(DEBUG_RETRY_WINDOW, |_| true)
+            .wait_for_command_log_including_startup(DEBUG_RETRY_WINDOW, |_| true)
             .await
         {
             Ok(log) => log,

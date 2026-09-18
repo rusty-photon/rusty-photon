@@ -713,12 +713,16 @@ pub struct SafetyStopHooks {
     /// cleanup leaves its debt recorded by the unwind guard rather
     /// than by a failed command. Zero (the default) never panics.
     panics_on: u32,
-    /// When set, the first `fail_first` invocations arm this flag
-    /// before their request, so the request fails on the wire the way a
-    /// stop command would on a link that came back bad — which routes
-    /// through `Connection::request`'s signal-fire path.
+    /// When set, `fail_first` invocations from `fail_from` on arm this
+    /// flag before their request, so the request fails on the wire the
+    /// way a stop command would on a link that came back bad — which
+    /// routes through `Connection::request`'s signal-fire path.
     fail_recvs: Option<Arc<AtomicBool>>,
     fail_first: u32,
+    /// First invocation the failing window covers. One by default; a
+    /// `ServiceLifetime` test that wants its *1→0* stop to fail sets
+    /// this past the cold start's own assertion of the same hook.
+    fail_from: u32,
 }
 
 impl Default for SafetyStopHooks {
@@ -732,6 +736,7 @@ impl Default for SafetyStopHooks {
             panics_on: 0,
             fail_recvs: None,
             fail_first: 0,
+            fail_from: 1,
         }
     }
 }
@@ -760,6 +765,16 @@ impl SafetyStopHooks {
             fail_first: n,
             ..Self::default()
         }
+    }
+
+    /// Open the failing window at the nth invocation rather than the
+    /// first. A cold `start()` asserts the no-client state before any
+    /// client can attach, so it is invocation 1 in every
+    /// `ServiceLifetime` test; `failing_from(2)` is how a test says it
+    /// wants the *1→0* stop to be the one that misses the wire.
+    pub const fn failing_from(mut self, nth: u32) -> Self {
+        self.fail_from = nth;
+        self
     }
 
     /// Park invocations past `free`, combinable with
@@ -795,6 +810,7 @@ impl SafetyStopHooks {
         let parks_after = self.parks_after;
         let fail_recvs = self.fail_recvs.clone();
         let fail_first = self.fail_first;
+        let fail_from = self.fail_from;
         let panics_on = self.panics_on;
         Hooks {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
@@ -810,7 +826,7 @@ impl SafetyStopHooks {
                         nth != panics_on,
                         "last-disconnect panic for test (call {nth})"
                     );
-                    if nth <= fail_first {
+                    if nth >= fail_from && nth < fail_from.saturating_add(fail_first) {
                         if let Some(flag) = fail_recvs.as_ref() {
                             flag.store(true, Ordering::SeqCst);
                         }
@@ -870,6 +886,10 @@ pub struct ParkingHandshake {
     release: Arc<tokio::sync::Notify>,
     parks_after: u32,
     fail_the_stop: Option<Arc<AtomicBool>>,
+    /// Which stop invocation fails. The cold `start()` runs the hook
+    /// once before any client exists, so a test that wants the 1→0
+    /// stop to fail names the second.
+    fail_the_stop_at: u32,
 }
 
 impl ParkingHandshake {
@@ -880,14 +900,18 @@ impl ParkingHandshake {
             release: Arc::new(tokio::sync::Notify::new()),
             parks_after: free,
             fail_the_stop: None,
+            fail_the_stop_at: 1,
         }
     }
 
     /// Also fail the last-disconnect stop on the wire, which is what
     /// puts a `ServiceLifetime` transport into recovery — and so what
     /// gets the *supervisor* as far as the handshake that parks.
-    pub fn with_a_failing_stop(mut self, fail_recvs: Arc<AtomicBool>) -> Self {
+    /// `nth` is which invocation of the hook fails; the cold `start()`
+    /// is invocation 1, so a failing *1→0* stop is invocation 2.
+    pub fn with_a_failing_stop(mut self, nth: u32, fail_recvs: Arc<AtomicBool>) -> Self {
         self.fail_the_stop = Some(fail_recvs);
+        self.fail_the_stop_at = nth;
         self
     }
 
@@ -907,6 +931,7 @@ impl ParkingHandshake {
         let release = self.release.clone();
         let parks_after = self.parks_after;
         let fail_the_stop = self.fail_the_stop.clone();
+        let fail_the_stop_at = self.fail_the_stop_at;
         let stop_calls = Arc::new(AtomicU32::new(0));
         Hooks {
             handshake: Box::new(move |_conn| {
@@ -926,12 +951,12 @@ impl ParkingHandshake {
                 let fail_the_stop = fail_the_stop.clone();
                 let stops = stop_calls.clone();
                 Box::pin(async move {
-                    // Only the first one fails: the later replays are
+                    // Only the named one fails: the later replays are
                     // what the transport does about it, and they have
                     // to be able to succeed.
                     let nth = stops.fetch_add(1, Ordering::SeqCst).saturating_add(1);
                     if let Some(flag) = fail_the_stop.as_ref() {
-                        if nth == 1 {
+                        if nth == fail_the_stop_at {
                             flag.store(true, Ordering::SeqCst);
                         }
                         let _ = conn.request(b"HALT".to_vec()).await;
