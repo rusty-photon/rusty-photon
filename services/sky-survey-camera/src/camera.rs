@@ -575,11 +575,18 @@ impl Camera for SkySurveyCamera {
         Ok(MAX_BIN)
     }
 
+    /// C6: binning, ROI and readout are the *session's* settings. A geometry a
+    /// client cannot expose with is not a geometry, and a write taken while
+    /// disconnected leaves a setting behind whose owner is a session that has
+    /// not started — so the getters and the setters alike take the check, as
+    /// the SDK-backed siblings' do.
     async fn bin_x(&self) -> ASCOMResult<u8> {
+        self.ensure_connected()?;
         Ok(self.state.bin_x.load(Ordering::Acquire))
     }
 
     async fn set_bin_x(&self, bin_x: u8) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         if !(1..=MAX_BIN).contains(&bin_x) {
             return Err(ASCOMError::invalid_value(format!(
                 "BinX {bin_x} outside [1, {MAX_BIN}]"
@@ -590,10 +597,12 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn bin_y(&self) -> ASCOMResult<u8> {
+        self.ensure_connected()?;
         Ok(self.state.bin_y.load(Ordering::Acquire))
     }
 
     async fn set_bin_y(&self, bin_y: u8) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         if !(1..=MAX_BIN).contains(&bin_y) {
             return Err(ASCOMError::invalid_value(format!(
                 "BinY {bin_y} outside [1, {MAX_BIN}]"
@@ -604,10 +613,12 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn num_x(&self) -> ASCOMResult<u32> {
+        self.ensure_connected()?;
         Ok(self.state.num_x.load(Ordering::Acquire))
     }
 
     async fn set_num_x(&self, num_x: u32) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         // ASCOM convention: sub-frame property setters accept any
         // value; geometry validation runs at StartExposure (E4/E5).
         // ConformU exercises this by setting one-past-the-edge then
@@ -617,28 +628,34 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn num_y(&self) -> ASCOMResult<u32> {
+        self.ensure_connected()?;
         Ok(self.state.num_y.load(Ordering::Acquire))
     }
 
     async fn set_num_y(&self, num_y: u32) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         self.state.num_y.store(num_y, Ordering::Release);
         Ok(())
     }
 
     async fn start_x(&self) -> ASCOMResult<u32> {
+        self.ensure_connected()?;
         Ok(self.state.start_x.load(Ordering::Acquire))
     }
 
     async fn set_start_x(&self, start_x: u32) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         self.state.start_x.store(start_x, Ordering::Release);
         Ok(())
     }
 
     async fn start_y(&self) -> ASCOMResult<u32> {
+        self.ensure_connected()?;
         Ok(self.state.start_y.load(Ordering::Acquire))
     }
 
     async fn set_start_y(&self, start_y: u32) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         self.state.start_y.store(start_y, Ordering::Release);
         Ok(())
     }
@@ -721,6 +738,19 @@ impl Camera for SkySurveyCamera {
         let state = Arc::clone(&self.state);
         tokio::spawn(run_exposure(state, light, gen, override_for_exposure));
         Ok(())
+    }
+
+    /// Both are implemented below (each cancels the in-flight survey fetch via
+    /// the generation counter), so both advertise `true` — the trait's `false`
+    /// default would have a client believe a capture it can see running cannot
+    /// be stopped. Answered while disconnected: with no hardware behind it,
+    /// what this service can do to a capture is its own knowledge (C6).
+    async fn can_abort_exposure(&self) -> ASCOMResult<bool> {
+        Ok(true)
+    }
+
+    async fn can_stop_exposure(&self) -> ASCOMResult<bool> {
+        Ok(true)
     }
 
     async fn abort_exposure(&self) -> ASCOMResult<()> {
@@ -867,7 +897,10 @@ impl Camera for SkySurveyCamera {
         Ok(0)
     }
 
+    /// The getter answers a fixed value, so it needs no session; the setter
+    /// writes to one, and so takes the check (C6).
     async fn set_readout_mode(&self, readout_mode: usize) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         if readout_mode != 0 {
             return Err(ASCOMError::invalid_value(format!(
                 "ReadoutMode {readout_mode} not supported (only index 0)"
@@ -889,6 +922,7 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn set_gain(&self, gain: i32) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         if gain != 0 {
             return Err(ASCOMError::invalid_value(format!(
                 "Gain {gain} not supported (single fixed value 0)"
@@ -1092,7 +1126,7 @@ mod tests {
 
     #[tokio::test]
     async fn bin_num_start_round_trip() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         assert_eq!(cam.bin_x().await.unwrap(), 1);
         assert_eq!(cam.bin_y().await.unwrap(), 1);
         cam.set_bin_x(2).await.unwrap();
@@ -1245,6 +1279,57 @@ mod tests {
         );
     }
 
+    /// C6. A write taken while disconnected is the worse half: it leaves a
+    /// geometry behind whose owner is a session that has not started.
+    #[tokio::test]
+    async fn the_session_settings_surface_refuses_while_disconnected() {
+        let cam = fake_camera();
+        for code in [
+            cam.bin_x().await.unwrap_err().code,
+            cam.bin_y().await.unwrap_err().code,
+            cam.num_x().await.unwrap_err().code,
+            cam.num_y().await.unwrap_err().code,
+            cam.start_x().await.unwrap_err().code,
+            cam.start_y().await.unwrap_err().code,
+            cam.set_bin_x(2).await.unwrap_err().code,
+            cam.set_bin_y(2).await.unwrap_err().code,
+            cam.set_num_x(320).await.unwrap_err().code,
+            cam.set_num_y(240).await.unwrap_err().code,
+            cam.set_start_x(8).await.unwrap_err().code,
+            cam.set_start_y(8).await.unwrap_err().code,
+            cam.set_gain(0).await.unwrap_err().code,
+            cam.set_readout_mode(0).await.unwrap_err().code,
+        ] {
+            assert_eq!(code, ASCOMErrorCode::NOT_CONNECTED);
+        }
+        // The refusal is the connection's, not the value's: a setter that
+        // rejected `INVALID_VALUE` first would pass the loop above for the
+        // wrong reason.
+        assert_eq!(
+            cam.set_bin_x(99).await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// The other half of C6: with no hardware behind it, this service's fixed
+    /// optics, sensor description and self-performed abort are its own
+    /// knowledge and keep answering — the contract would otherwise be met by a
+    /// driver that refused everything.
+    #[tokio::test]
+    async fn the_fixed_surface_still_answers_while_disconnected() {
+        let cam = fake_camera();
+        assert_eq!(cam.camera_x_size().await.unwrap(), 640);
+        assert_eq!(cam.camera_y_size().await.unwrap(), 480);
+        assert_eq!(cam.max_bin_x().await.unwrap(), MAX_BIN);
+        assert_eq!(cam.max_adu().await.unwrap(), 65535);
+        assert_eq!(cam.sensor_type().await.unwrap(), SensorType::Monochrome);
+        assert_eq!(cam.gain().await.unwrap(), 0);
+        assert_eq!(cam.readout_mode().await.unwrap(), 0);
+        assert!(!cam.has_shutter().await.unwrap());
+        assert!(cam.can_abort_exposure().await.unwrap());
+        assert!(cam.can_stop_exposure().await.unwrap());
+    }
+
     #[tokio::test]
     async fn percent_completed_is_binary() {
         let cam = connected_camera();
@@ -1255,7 +1340,7 @@ mod tests {
 
     #[tokio::test]
     async fn readout_mode_only_accepts_zero() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         assert_eq!(cam.readout_mode().await.unwrap(), 0);
         assert_eq!(cam.readout_modes().await.unwrap(), vec!["Default"]);
         cam.set_readout_mode(0).await.unwrap();
@@ -1272,7 +1357,7 @@ mod tests {
 
     #[tokio::test]
     async fn gain_reports_single_fixed_value() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         assert_eq!(cam.gain().await.unwrap(), 0);
         assert_eq!(cam.gain_min().await.unwrap(), 0);
         assert_eq!(cam.gain_max().await.unwrap(), 0);
@@ -1292,7 +1377,7 @@ mod tests {
     async fn setters_accept_out_of_range_values() {
         // ASCOM convention: NumX/NumY/StartX/StartY setters always
         // accept; geometry validation happens at StartExposure.
-        let cam = fake_camera();
+        let cam = connected_camera();
         cam.set_num_x(99_999).await.unwrap();
         cam.set_num_y(99_999).await.unwrap();
         cam.set_start_x(99_999).await.unwrap();

@@ -1,6 +1,7 @@
 //! Shared steps: service startup, connection lifecycle, boolean property
 //! reports, and the generic rejection assertions.
 
+use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 
 use crate::world::{ascom_code, CameraWorld};
@@ -74,6 +75,45 @@ async fn camera_reports_bool(
         actual, expected,
         "{property} expected {expected}, got {actual}"
     );
+}
+
+/// One scenario with a data table rather than a `Scenario Outline`: the
+/// contract is about the capability surface as a whole — one member answering
+/// while its neighbours refuse is the contradiction the check exists to remove
+/// — and an outline pays a service start per member, the cost that pushed
+/// `sky-survey-camera`'s suite past its 60s Bazel budget on Windows. The
+/// members stay named in the feature file, per testing.md §2.5.
+#[then(regex = r"^reading these members from camera device (\d+) is rejected with ASCOM (\w+):$")]
+async fn capability_reads_rejected(
+    world: &mut CameraWorld,
+    step: &Step,
+    _device: u32,
+    code: String,
+) {
+    let camera = world.camera();
+    let table = step
+        .table()
+        .expect("capability refusal step needs a data table of member names");
+    for row in table.rows.iter().skip(1) {
+        let member = &row[0];
+        let error = match member.as_str() {
+            "HasShutter" => camera.has_shutter().await.err(),
+            "CanSetCCDTemperature" => camera.can_set_ccd_temperature().await.err(),
+            "CanGetCoolerPower" => camera.can_get_cooler_power().await.err(),
+            "CanAbortExposure" => camera.can_abort_exposure().await.err(),
+            "CanStopExposure" => camera.can_stop_exposure().await.err(),
+            "CanPulseGuide" => camera.can_pulse_guide().await.err(),
+            "IsPulseGuiding" => camera.is_pulse_guiding().await.err(),
+            other => panic!("unknown capability member: {other}"),
+        };
+        let error =
+            error.unwrap_or_else(|| panic!("{member} answered instead of refusing with {code}"));
+        assert_eq!(
+            error.code.raw(),
+            ascom_code(&code),
+            "{member} refused with the wrong code"
+        );
+    }
 }
 
 // --- enumeration / health ---------------------------------------------------

@@ -497,12 +497,33 @@ scenarios in `tests/features/`. ASCOM error codes use the names from
   — unlike the SDK-backed siblings, which clear at connect — so this
   is the ASCOM shape alone, shared with `qhy-camera`'s E10,
   `zwo-camera`'s E11 and `svbony-camera`'s state-machine step 9.
-  `Connected` itself still never throws (it is how a client asks),
-  and the capability probes (`CanAbortExposure`, `CanStopExposure`,
-  `HasShutter`) describe the driver rather than a session.
+  `Connected` itself still never throws (it is how a client asks).
   `AbortExposure` / `StopExposure` keep A2's `INVALID_OPERATION`:
   nothing can be in flight on a disconnected device, so A2 already
   covers that case.
+- **C6.** Session **settings** answer the same way as session state:
+  `BinX` / `BinY`, `NumX` / `NumY`, `StartX` / `StartY` and every one
+  of their setters, plus `SetReadoutMode` and `SetGain`, return
+  `NOT_CONNECTED` while the device is disconnected, as C4 already
+  promises of "subsequent ASCOM operations". A geometry a client
+  cannot expose with is not a geometry, and a write accepted by a
+  disconnected driver is a setting the next session may or may not
+  inherit depending on where the reset falls — the SDK siblings all
+  refuse these (`qhy-camera`, `zwo-camera`, `svbony-camera`).
+  What keeps answering is the **fixed** surface: `CameraXSize` /
+  `CameraYSize`, `PixelSizeX/Y`, `MaxBinX/Y`, `CanAsymmetricBin`,
+  `ExposureMin` / `Max` / `Resolution`, `MaxADU`, `ElectronsPerADU`,
+  `FullWellCapacity`, `SensorName` / `SensorType`, the `Gain` and
+  `ReadoutMode(s)` getters (single fixed values), the
+  `PROPERTY_NOT_IMPLEMENTED` family, and `CanAbortExposure` /
+  `CanStopExposure`. Here — and only here among the four camera
+  services — those really are the driver's own knowledge: there is no
+  hardware whose capabilities a disconnect puts out of reach, only a
+  virtual sensor this service defines from its own config and a fetch
+  it cancels itself. The SDK drivers must refuse the equivalent
+  members, because theirs describe a camera on the other end of a
+  cable nobody is holding open (`qhy-camera`'s E11, `zwo-camera`'s
+  E12, `svbony-camera`'s state-machine step 10) (#1281).
 
 ### Pointing API
 
@@ -678,21 +699,21 @@ graph TD;
 |---|---|
 | `CameraXSize` / `CameraYSize` | From `optics.sensor_width_px` / `sensor_height_px` |
 | `PixelSizeX` / `PixelSizeY` | From `optics.pixel_size_*_um` |
-| `BinX` / `BinY` | Settable, integer, capped by `MaxBinX` / `MaxBinY` at the setter |
+| `BinX` / `BinY` | Settable, integer, capped by `MaxBinX` / `MaxBinY` at the setter; getters and setters `NOT_CONNECTED` while disconnected (C6) |
 | `MaxBinX` / `MaxBinY` | `4` (configurable later) |
 | `CanAsymmetricBin` | `false` |
-| `NumX` / `NumY` / `StartX` / `StartY` | Setters accept any `u32`; geometry checked at `StartExposure` (E4/E5) |
+| `NumX` / `NumY` / `StartX` / `StartY` | Setters accept any `u32`; geometry checked at `StartExposure` (E4/E5); getters and setters `NOT_CONNECTED` while disconnected (C6) |
 | `MaxADU` | `65535` (16-bit equivalent) |
 | `ElectronsPerADU` | `1.0` placeholder (no signal model in v0) |
 | `FullWellCapacity` | `65535.0` (= `MaxADU * ElectronsPerADU`) |
 | `ExposureMin` / `ExposureMax` / `ExposureResolution` | `1µs` / `3600s` / `1µs`; the spawned exposure task sleeps for `min(Duration, 5s)` so clients can observe `CameraState = Exposing` |
-| `Gain` / `GainMin` / `GainMax` | Single fixed value `0`; setter rejects non-zero with `INVALID_VALUE` |
+| `Gain` / `GainMin` / `GainMax` | Single fixed value `0`; setter rejects non-zero with `INVALID_VALUE`, and answers `NOT_CONNECTED` while disconnected (C6) |
 | `Offset` family | Reports `PROPERTY_NOT_IMPLEMENTED` (no signal model) |
-| `ReadoutMode` / `ReadoutModes` | Single mode `"Default"` at index `0`; setter rejects non-zero |
+| `ReadoutMode` / `ReadoutModes` | Single mode `"Default"` at index `0`; setter rejects non-zero, and answers `NOT_CONNECTED` while disconnected (C6) |
 | `SensorName` / `SensorType` | `"SkyView Virtual Sensor"` / `Monochrome` |
 | `CameraState` | `Idle` / `Exposing` / `Error` based on internal state; `NOT_CONNECTED` while disconnected (C5) |
 | `PercentCompleted` | Binary: `0` while in flight, `100` once `ImageReady`; `NOT_CONNECTED` while disconnected (C5) |
-| `CanAbortExposure` / `CanStopExposure` | `true`, both cancel the in-flight survey fetch |
+| `CanAbortExposure` / `CanStopExposure` | `true`, both cancel the in-flight survey fetch; answered at any time, as driver-owned facts (C6) |
 | `CoolerOn`, `CCDTemperature`, `CanGetCoolerPower`, `CanSetCCDTemperature`, `CanPulseGuide`, `CanFastReadout`, `HasShutter`, `BayerOffsetX/Y` | All `false` / `PROPERTY_NOT_IMPLEMENTED` |
 | `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Implemented per pipeline above; `ImageArray` returns the cropped subframe with axes `[X, Y]`. `StartExposure` (E1), `ImageReady`, `ImageArray` and `ImageArrayVariant` answer `NOT_CONNECTED` while disconnected (C5); `AbortExposure` / `StopExposure` answer `INVALID_OPERATION` there, per A2 |
 | `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session. While disconnected: `NOT_CONNECTED` (C5) — the connected check runs first, so the disconnected interval never shows the reset. Once connected: `INVALID_OPERATION` until this session has exposed, which a reconnect restores by way of C4's reset at the preceding disconnect |
@@ -791,9 +812,10 @@ Layered per `docs/skills/testing.md`:
   geometry checks).
 - **BDD** (`bdd-infra::ServiceHandle`) — `/sky-survey/position` round
   trips, `StartExposure` returns a non-empty array of the configured
-  dimensions when the survey backend is stubbed, the C1–C4 connection
+  dimensions when the survey backend is stubbed, the C1–C6 connection
   contracts including the warn-only behaviour for an unreachable
-  endpoint, the S1–S6 survey-error paths against a stub HTTP server,
+  endpoint and the session settings a disconnected camera neither
+  reports nor accepts, the S1–S6 survey-error paths against a stub HTTP server,
   and the F1/F2/F5/F6/F8 follow-mode contracts against tiny in-test
   axum stubs serving the two ASCOM Telescope reads (`right_ascension`,
   `declination`) and the one ASCOM Rotator read (`position`). The

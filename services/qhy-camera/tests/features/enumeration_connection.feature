@@ -12,7 +12,14 @@ Feature: Camera enumeration and connection lifecycle
   frame of its own, which a capture still holding the device would refuse;
   the exposure state that session produced is not readable once it is
   disconnected (E10), and the connect that follows starts with no frame
-  ready (C6). With zero cameras discovered the
+  ready (C6). Nor does a disconnected driver describe the camera's
+  capabilities: HasShutter, CanSetCCDTemperature, CanGetCoolerPower and
+  CanAbortExposure all answer NOT_CONNECTED, because a driver holding no
+  handle cannot see the controls it would probe, and CanAbortExposure
+  cannot promise an abort it has no device to perform. Only what this
+  driver never implements keeps answering: CanStopExposure,
+  CanPulseGuide and CanAsymmetricBin are false whatever the connection
+  state, and StopExposure stays NOT_IMPLEMENTED (E11). With zero cameras discovered the
   service still starts, registering no Camera devices and logging a warning.
   Against the qhyccd-rs simulation backend exactly one camera
   (QHY178M-Simulated, 3072x2048, monochrome, 16-bit) and one 7-position
@@ -49,6 +56,21 @@ Feature: Camera enumeration and connection lifecycle
     When I StartExposure on camera device 0 with BinX 1 BinY 1 NumX 64 NumY 48 StartX 0 StartY 0 Duration 0.01 Light true
     And the exposure on camera device 0 completes
     Then camera device 0 returns an ImageArray of 64 by 48
+
+  Scenario: A disconnected camera describes no capability it cannot verify
+    Given camera device 0 is connected
+    When I disconnect camera device 0
+    Then reading these members from camera device 0 is rejected with ASCOM NOT_CONNECTED:
+      | member               |
+      | HasShutter           |
+      | CanSetCCDTemperature |
+      | CanGetCoolerPower    |
+      | CanAbortExposure     |
+    And camera device 0 reports CanStopExposure as false
+    And camera device 0 reports CanPulseGuide as false
+    And camera device 0 reports CanAsymmetricBin as false
+    When I try to StopExposure on camera device 0
+    Then the call is rejected with ASCOM NOT_IMPLEMENTED
 
   Scenario: The service starts with no Camera devices when no camera is present
     Given the qhy-camera service running with an empty simulation backend

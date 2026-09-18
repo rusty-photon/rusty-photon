@@ -1168,11 +1168,17 @@ impl Camera for ZwoCamera {
 
     // --- cooling ----------------------------------------------------------------
 
+    /// E12: `info` is cached at enumeration, so it outlives a disconnect — and
+    /// outlives the camera being unplugged and another model plugged into the
+    /// same port. Answering from it while disconnected describes hardware that
+    /// may no longer be there, indistinguishably from a live answer.
     async fn can_set_ccd_temperature(&self) -> ASCOMResult<bool> {
+        self.ensure_connected()?;
         Ok(self.info.is_cooler_cam)
     }
 
     async fn can_get_cooler_power(&self) -> ASCOMResult<bool> {
+        self.ensure_connected()?;
         Ok(self.info.is_cooler_cam)
     }
 
@@ -1289,25 +1295,39 @@ impl Camera for ZwoCamera {
 
     async fn has_shutter(&self) -> ASCOMResult<bool> {
         // ASI sensors are shutterless; darks/bias differ only in client metadata.
+        // Read from the cached `info`, so it takes the check (E12).
+        self.ensure_connected()?;
         Ok(self.info.has_mechanical_shutter)
     }
 
+    /// E12: both are promises about what the driver can do *to a device*, and
+    /// while disconnected there is none — `AbortExposure` and `StopExposure`
+    /// themselves refuse, so answering would contradict them.
     async fn can_abort_exposure(&self) -> ASCOMResult<bool> {
+        self.ensure_connected()?;
         Ok(true)
     }
 
     async fn can_stop_exposure(&self) -> ASCOMResult<bool> {
         // ASIStopExposure is a graceful, data-preserving stop (a ZWO win).
+        self.ensure_connected()?;
         Ok(true)
     }
 
     async fn can_pulse_guide(&self) -> ASCOMResult<bool> {
+        self.ensure_connected()?;
         Ok(self.info.has_st4_port)
     }
 
+    /// The deadline this reads is cleared in `reset_exposure_state`, which runs
+    /// at the *start of a connect* and nowhere else — so without the check a
+    /// pulse issued shortly before a disconnect reports `IsPulseGuiding = true`
+    /// on a camera nobody is connected to, until someone reconnects it. Session
+    /// state, answered only for a running session, exactly as E11's members are.
     async fn is_pulse_guiding(&self) -> ASCOMResult<bool> {
         // Asynchronous: `pulse_guide` returns immediately and records a deadline;
         // the pulse is in progress until that deadline passes (PG2).
+        self.ensure_connected()?;
         Ok((*self.state.pulse_guide_until.lock())
             .is_some_and(|deadline| SystemTime::now() < deadline))
     }
@@ -2919,6 +2939,65 @@ mod tests {
         );
         assert_eq!(
             device.last_exposure_duration().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// E12. `info` is cached at enumeration, so every one of these would
+    /// otherwise answer from it while disconnected — describing a camera that
+    /// may since have been unplugged, with nothing to tell the client apart
+    /// from a live answer.
+    #[tokio::test]
+    async fn the_capability_surface_refuses_for_a_device_the_driver_does_not_hold() {
+        let device = ZwoCamera::new(
+            Arc::new(MockCameraHandle::default()),
+            None,
+            MaxAduReporting::default(),
+        );
+        assert_eq!(
+            device.can_set_ccd_temperature().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.can_get_cooler_power().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.has_shutter().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.can_pulse_guide().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.can_abort_exposure().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.can_stop_exposure().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        // The other half of the contract: what this driver never implements is
+        // its own knowledge, so it answers with no device at all.
+        assert!(!device.can_asymmetric_bin().await.unwrap());
+    }
+
+    /// The `IsPulseGuiding` half of E12, and the one with a live window: the
+    /// deadline is cleared only at the start of a connect, so the pulse below
+    /// is still "in flight" when the disconnect lands. Without the check this
+    /// reports `true` for a camera nobody is connected to.
+    #[tokio::test]
+    async fn is_pulse_guiding_refuses_for_the_session_that_ended() {
+        let device = connected_device(MockCameraHandle::default());
+        device
+            .pulse_guide(GuideDirection::North, Duration::from_mins(1))
+            .await
+            .unwrap();
+        assert!(device.is_pulse_guiding().await.unwrap());
+        device.set_connected(false).await.unwrap();
+        assert_eq!(
+            device.is_pulse_guiding().await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
         );
     }

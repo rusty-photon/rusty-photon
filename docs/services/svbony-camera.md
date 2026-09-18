@@ -1083,10 +1083,28 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
    is there at all, while `CameraState` reports device state, which ASCOM
    answers with `NOT_CONNECTED` when there is none. The state is still reset
    only at the start of a connect, not on disconnect — with these members
-   refusing there is nothing observable in between. The capability probes
-   (`CanAbortExposure`, `CanStopExposure`, `CanPulseGuide`, `HasShutter`) are
-   unaffected: they describe the driver, not a session. Shared with
+   refusing there is nothing observable in between. The capability probes beside
+   them take the same check for a related reason (step 10). Shared with
    `qhy-camera`'s E10 and `zwo-camera`'s E11.
+10. **A capability member answers while disconnected only if the driver never
+    implements it.** `CanAsymmetricBin` (`false`, B2), `CanStopExposure`
+    (`false`, confirmed permanent) with its `StopExposure`
+    (`NOT_IMPLEMENTED`), and `HasShutter` (`false` — the video-mode capture
+    path has no mechanical shutter to actuate on any model) are the driver's
+    own knowledge: no device can change them, so they answer at any time, and
+    `NOT_IMPLEMENTED` is the more useful answer than `NOT_CONNECTED` for a
+    member that will never work however the client reconnects.
+    `CanAbortExposure` is not in that set — `Ok(true)` while disconnected is a
+    promise to abort made with no device to abort on, beside an
+    `AbortExposure` that refuses — and neither is `IsPulseGuiding`, whose flag
+    is session state cleared at the start of a connect (step 9's reason, PG2).
+    Both answer `NOT_CONNECTED` while the device is disconnected. The
+    capability members that read `SVB_CAMERA_PROPERTY_EX`
+    (`CanSetCCDTemperature`, `CanGetCoolerPower`, `CanPulseGuide`,
+    `SensorType`, `BayerOffsetX/Y`) already take the check and keep it: a
+    driver holding no device cannot describe one. This supersedes the earlier
+    position that the capability probes "describe the driver rather than a
+    session"; shared with `qhy-camera`'s E11 and `zwo-camera`'s E12 (#1281).
 
 ### ROI / binning
 
@@ -1287,12 +1305,12 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 | `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from `IsColorCam` / `BayerPattern` | **Real** |
 | `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `bSupportControlTemp` | **Real** |
 | `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `bSupportControlTemp` | **Real** |
-| `HasShutter` | `false` (no mechanical shutter in video mode) | **Real** |
+| `HasShutter` | `false` (no mechanical shutter in video mode); never implemented, so answered at any time (step 10) | **Real** |
 | `CameraState` | `Idle` / `Exposing` / `Error`; `NOT_CONNECTED` while disconnected (state machine step 9) | **Real** |
 | `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100; `NOT_CONNECTED` while disconnected (step 9) | **Real** |
-| `CanAbortExposure` / `CanStopExposure` | `true` / **`false`** (no data-preserving stop) | **Real** |
+| `CanAbortExposure` / `CanStopExposure` | `true` (`NOT_CONNECTED` while disconnected, step 10) / **`false`** (no data-preserving stop; never implemented, so answered at any time) | **Real** |
 | `CanPulseGuide` | `true` iff ST4 port present (SV605CC: `false`) | **Real** |
-| `PulseGuide` / `IsPulseGuiding` | `SVBPulseGuide`, gated on ST4 capability; kept a literal blocking call (PG2) | **Real** |
+| `PulseGuide` / `IsPulseGuiding` | `SVBPulseGuide`, gated on ST4 capability; kept a literal blocking call (PG2); both `NOT_CONNECTED` while disconnected (step 10) | **Real** |
 | `StartExposure` (`Light=false`) | Accepted; captured normally (no shutter) | **Real** |
 | `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` | Per the soft-trigger video-capture state machine above; all `NOT_CONNECTED` while disconnected (step 9) | **Real** |
 | `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session; `VALUE_NOT_SET` before its first exposure, `NOT_CONNECTED` while disconnected (step 9) | **Real** |
@@ -1385,8 +1403,8 @@ Layered per [`testing.md`](../skills/testing.md).
   `Camera::video_capture_starts`, a read-only count that tells the test the
   capture's own capture restart has run, so "the cancel landed in the poll
   loop" is a fact rather than a nap.
-- **BDD** (`bdd-infra::ServiceHandle`, nine feature files, 68 scenarios /
-  286 steps) — all genuinely green, including `enumeration_connection`'s
+- **BDD** (`bdd-infra::ServiceHandle`, nine feature files, 69 scenarios /
+  295 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
   behavioural feature (`exposure`, `binning_and_roi`, `cooling`,
   `gain_offset_readout`, `sensor_properties`) — see each file's header

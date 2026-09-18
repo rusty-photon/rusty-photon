@@ -372,7 +372,8 @@ ASI C API exposes and what `zwo-rs` will wrap.
 - **Graceful stop AND abort** — `ASIStopExposure` is a single graceful,
   **data-preserving** stop ("image can still be read out"), so `CanStopExposure =
   true`; the same call backs `AbortExposure` (discarding data), so
-  `CanAbortExposure = true`. *(A ZWO win — QHY ships `CanStopExposure = false`.)*
+  `CanAbortExposure = true` (both while connected; E12). *(A ZWO win — QHY ships
+  `CanStopExposure = false`.)*
 - **PulseGuide** — native `ASIPulseGuideOn/Off` (ST4), gated on the `ST4Port`
   capability → `CanPulseGuide = true` when present. *(A ZWO win — QHY defers it.)*
 - **Gain / Offset** — current value + `Min`/`Max` from `ASIGetControlCaps`
@@ -716,10 +717,27 @@ EAF; those belong to the other zwo services.)
   answers with `NOT_CONNECTED` when there is none. The state is still reset only
   at the start of a connect, not on disconnect: with these members refusing,
   there is nothing observable in between, and a disconnect that leaves the device
-  logically connected must not blank a live session. The capability probes
-  (`CanAbortExposure`, `CanStopExposure`, `CanPulseGuide`, `HasShutter`) are
-  unaffected — they describe the driver, not a session. Shared with
+  logically connected must not blank a live session. The capability probes beside
+  them take the same check for a related reason (E12). Shared with
   `qhy-camera` (its E10) and `svbony-camera` (its state-machine step 9).
+- **E12.** A capability member answers while disconnected **only if the driver
+  never implements it**. `CanAsymmetricBin` (`false`) is the one such member
+  here: no device can change it, so it answers at any time. Every other
+  capability member — `HasShutter`, `CanSetCCDTemperature`, `CanGetCoolerPower`,
+  `CanPulseGuide`, `CanAbortExposure` and `CanStopExposure` — answers
+  `NOT_CONNECTED` while the device is disconnected. A driver holding no device
+  cannot describe one. The first four read `ASI_CAMERA_INFO` cached at
+  enumeration, which not only survives a disconnect but survives the camera
+  being unplugged and a different model plugged into the same port, so the
+  answer can describe hardware that is no longer there — indistinguishable, to
+  the client, from a live one. `CanAbortExposure`/`CanStopExposure` are the
+  opposite failure: a hard-coded promise to abort or stop, made with no device
+  to abort on, beside an `AbortExposure`/`StopExposure` that refuse — E11's
+  `ImageReady`/`ImageArray` contradiction in a second pair. `IsPulseGuiding`
+  takes the check as session state, for E11's own reason (PG2). This supersedes
+  the earlier position that these members "describe the driver rather than a
+  session"; shared with `qhy-camera`'s E11 and `svbony-camera`'s state-machine
+  step 10 (#1281).
 
 ### Gain / offset / readout
 
@@ -981,7 +999,11 @@ EAF; those belong to the other zwo services.)
   ends it (`ASIPulseGuideOff`) when the deadline passes. Blocking for the whole
   pulse would exceed ConformU's 1 s response target and stall an autoguider's
   cadence. While disconnected it returns `NOT_CONNECTED`; a model without ST4
-  returns `NOT_IMPLEMENTED`. *(The disconnected branch is a BDD scenario; the
+  returns `NOT_IMPLEMENTED`. `IsPulseGuiding` refuses while disconnected for the
+  same reason the exposure state does (E11, E12): the deadline it reads is
+  cleared only at the start of a connect, so a pulse issued shortly before a
+  disconnect would otherwise report `IsPulseGuiding = true` on a camera nobody
+  is connected to, until someone reconnects it. *(The disconnected branch is a BDD scenario; the
   no-ST4 `NOT_IMPLEMENTED` branch and the async `IsPulseGuiding` timing are
   covered by unit tests, since the `simulation` backend always reports ST4
   present.)*
@@ -1015,13 +1037,14 @@ scenarios.
 | `ReadoutMode` / `ReadoutModes` | The camera's download formats from `SupportedVideoFormat`, `Raw16` before `Raw8` (RM1); drives the download format and `MaxADU` |
 | `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from `IsColorCam` / `BayerPattern` |
 | `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `IsCoolerCam` |
-| `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `IsCoolerCam` |
-| `HasShutter` | `false` (ASI sensors are shutterless) |
+| `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `IsCoolerCam`; `NOT_CONNECTED` while disconnected (E12) |
+| `HasShutter` | `false` (ASI sensors are shutterless), read from the cached `ASI_CAMERA_INFO`; `NOT_CONNECTED` while disconnected (E12) |
 | `CameraState` | `Idle` / `Exposing` / `Error`; `NOT_CONNECTED` while disconnected (E11) |
 | `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100; `NOT_CONNECTED` while disconnected (E11) |
-| `CanAbortExposure` / `CanStopExposure` | `true` / `true` (both via `ASIStopExposure`) |
-| `CanPulseGuide` | `true` iff ST4 port present |
-| `PulseGuide` / `IsPulseGuiding` | Asynchronous `ASIPulseGuideOn/Off` (ST4): returns immediately, `IsPulseGuiding` true until `now + duration` (PG2) |
+| `CanAbortExposure` / `CanStopExposure` | `true` / `true` (both via `ASIStopExposure`); `NOT_CONNECTED` while disconnected (E12) |
+| `CanPulseGuide` | `true` iff ST4 port present; `NOT_CONNECTED` while disconnected (E12) |
+| `CanAsymmetricBin` | `false`; never implemented, so answered at any time (E12) |
+| `PulseGuide` / `IsPulseGuiding` | Asynchronous `ASIPulseGuideOn/Off` (ST4): returns immediately, `IsPulseGuiding` true until `now + duration` (PG2); both `NOT_CONNECTED` while disconnected (E12) |
 | `StartExposure` (`Light=false`) | Accepted; captured normally (no shutter) |
 | `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Per *Exposure* contracts; `ImageArray` axes `[X, Y]`; all `NOT_CONNECTED` while disconnected (E1, E11) |
 | `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session; `VALUE_NOT_SET` before its first exposure, `NOT_CONNECTED` while disconnected (E11) |
@@ -1099,7 +1122,8 @@ now stands at **87 unit tests** and **65 BDD scenarios**.
   connection lifecycle (C0–C4), ROI/bin validation (R1–R3, B1–B3), exposure
   happy-path + error paths (E1–E8, incl. the graceful-stop / abort split; E9's
   mid-exposure Error transition is unit-tested), gain/offset/readout (GO1–RM1),
-  cooling (K1–K4), sensor type & signal (ST1–ST3), pulse-guiding (PG1–PG2), and
+  cooling (K1–K4), sensor type & signal (ST1–ST3), pulse-guiding (PG1–PG2), the
+  capability surface a disconnected driver may not describe (E12), and
   config actions, driven against the `zwo-rs` `simulation` backend.
   (FilterWheel FW1–FW3 moved to the future `zwo-filterwheel` service — ADR-014.)
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)

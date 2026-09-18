@@ -13,7 +13,15 @@ Feature: Camera enumeration and connection lifecycle
   in-flight exposure (C3) — proven by the next session taking a frame of its
   own, which a capture still holding the device would refuse; the exposure
   state that session produced is not readable once it is disconnected (E11),
-  and the connect that follows starts with no frame ready. With zero cameras discovered the service still
+  and the connect that follows starts with no frame ready. Nor does a
+  disconnected driver describe the camera's capabilities: the members
+  reading the cached ASI_CAMERA_INFO (HasShutter, CanSetCCDTemperature,
+  CanGetCoolerPower, CanPulseGuide) answer NOT_CONNECTED rather than
+  describing hardware that may since have been unplugged, CanAbortExposure
+  and CanStopExposure refuse rather than promise a stop with no device to
+  stop, and IsPulseGuiding refuses rather than report a pulse from the
+  session that ended. Only CanAsymmetricBin, which this driver never
+  implements, keeps answering false (E12). With zero cameras discovered the service still
   starts, registering no Camera devices and logging a warning. Against the
   zwo-rs simulation backend exactly one camera (ASI2600MM-Pro-Simulated,
   6248x4176, monochrome, 16-bit) and one 7-position filter wheel are present.
@@ -49,6 +57,21 @@ Feature: Camera enumeration and connection lifecycle
     When I StartExposure on camera device 0 with BinX 1 BinY 1 NumX 64 NumY 48 StartX 0 StartY 0 Duration 0.01 Light true
     And the exposure on camera device 0 completes
     Then camera device 0 returns an ImageArray of 64 by 48
+
+  Scenario: A disconnected camera describes no capability it cannot verify
+    Given camera device 0 is connected
+    When I PulseGuide on camera device 0 in direction North for 200 ms
+    And I disconnect camera device 0
+    Then reading these members from camera device 0 is rejected with ASCOM NOT_CONNECTED:
+      | member               |
+      | HasShutter           |
+      | CanSetCCDTemperature |
+      | CanGetCoolerPower    |
+      | CanPulseGuide        |
+      | CanAbortExposure     |
+      | CanStopExposure      |
+      | IsPulseGuiding       |
+    And camera device 0 reports CanAsymmetricBin as false
 
   Scenario: The service starts with no Camera devices when no camera is present
     Given the zwo-camera service running with an empty simulation backend

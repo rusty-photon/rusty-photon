@@ -257,7 +257,8 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
 - **Exposure** — `ExposureMin/Max/Resolution` from the SDK; single-frame
   `StartExposure`; `ImageReady`/`ImageArray`/`ImageArrayVariant`; `CameraState`
   (`Idle`/`Exposing`/`Error`); `PercentCompleted` from remaining-exposure µs.
-- **Abort** — `CanAbortExposure = true` via the SDK abort path.
+- **Abort** — `CanAbortExposure = true` via the SDK abort path (while connected;
+  E11).
 - **Gain / Offset** — current value + `Min`/`Max` from the SDK; `NOT_IMPLEMENTED`
   when the control is unavailable on the model.
 - **Readout modes** — `ReadoutMode(s)` named from the SDK; switching updates
@@ -274,7 +275,8 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
   `Names`, `Position` (with moving state), `set_position`, `FocusOffsets`.
 - **Dark frames** — `Light = false` returns `NOT_IMPLEMENTED` on all models in
   v0 (qhyccd-rs 0.1.9 has no shutter actuation; see E4). `HasShutter` still
-  reports `CamMechanicalShutter` presence.
+  reports `CamMechanicalShutter` presence, for a device the driver is holding
+  open (E11).
 - `config.get`/`config.apply`/`config.schema` actions; hardware-derived
   `UniqueID` (camera/CFW SDK serial); in-process reload.
 - ConformU integration test driven against the `qhyccd-rs` `simulation` backend
@@ -723,9 +725,26 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
     logically connected (C3), and blanking a live session's state is the failure
     that rule exists to prevent; and once these members refuse, there is nothing
     left to observe between a disconnect that did close and the connect that
-    clears it. The `Connected`-adjacent capability probes (`CanAbortExposure`,
-    `CanStopExposure`, `CanPulseGuide`, `HasShutter`) are unaffected — they
-    describe the driver, not a session.
+    clears it. The capability probes beside them take the same check for a
+    related reason (E11).
+- **E11.** A capability member answers while disconnected **only if the driver
+  never implements it**. `CanAsymmetricBin` (`false`), `CanStopExposure`
+  (`false`, E8), `CanPulseGuide` (`false`) and `StopExposure`
+  (`NOT_IMPLEMENTED`) are the driver's own knowledge — no device can change
+  them, so they answer at any time. The rest of the capability surface —
+  `HasShutter`, `CanSetCCDTemperature`, `CanGetCoolerPower` (which delegates to
+  it) and `CanAbortExposure` — answers `NOT_CONNECTED` while the device is
+  disconnected. A driver holding no handle cannot describe the camera on the
+  other end of one. The first three probe SDK controls, and `on_handle` rewrites
+  to `NOT_CONNECTED` only when the SDK call *errors*, while
+  `is_control_available` reports absence as an `Option` rather than an error —
+  so a closed handle yields a clean `Ok(false)`, "this camera has no cooler",
+  about a camera nobody is talking to. `CanAbortExposure = true` is the opposite
+  failure: a promise to abort, made with no handle to abort with, beside an
+  `AbortExposure` that refuses — E10's `ImageReady`/`ImageArray` contradiction
+  in a second pair. This supersedes the earlier position that these four
+  "describe the driver rather than a session"; shared with `zwo-camera`'s E12
+  and `svbony-camera`'s state-machine step 10 (#1281).
 
 ### Gain / offset / readout
 
@@ -846,13 +865,13 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 | `ReadoutMode` / `ReadoutModes` | SDK named modes |
 | `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from colour control |
 | `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `Cooler` control |
-| `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `Cooler` control present |
+| `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `Cooler` control present; `NOT_CONNECTED` while disconnected (E11) |
 | `CanFastReadout` / `FastReadout` | Reflects `Speed` control (untested — see *Future Work*) |
-| `HasShutter` | `true` iff `CamMechanicalShutter` control present |
+| `HasShutter` | `true` iff `CamMechanicalShutter` control present; `NOT_CONNECTED` while disconnected (E11) |
 | `CameraState` | `Idle` / `Exposing` / `Error`; `NOT_CONNECTED` while disconnected (E10) |
 | `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100; `NOT_CONNECTED` while disconnected (E10) |
-| `CanAbortExposure` / `CanStopExposure` | `true` / `false` |
-| `CanPulseGuide` | `false` |
+| `CanAbortExposure` / `CanStopExposure` | `true` (`NOT_CONNECTED` while disconnected, E11) / `false` (never implemented, so answered at any time) |
+| `CanPulseGuide` / `CanAsymmetricBin` | `false`; never implemented, so answered at any time (E11) |
 | `StartExposure` (`Light=false`) | `NOT_IMPLEMENTED` (no shutter actuation in qhyccd-rs 0.1.9; see E4) |
 | `StartExposure` / `AbortExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Per *Exposure* contracts; `ImageArray` axes `[X, Y]`; all `NOT_CONNECTED` while disconnected (E1, E10) |
 | `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session; `VALUE_NOT_SET` before its first exposure, `NOT_CONNECTED` while disconnected (E10) |
@@ -1070,7 +1089,7 @@ Layered per [`testing.md`](../skills/testing.md).
   deliberately skips this whole layer (PF5/DR5) — it proves the config and
   enumeration contract, not the DLL layer.
 - **BDD** (`bdd-infra::ServiceHandle`) — connection lifecycle (C1–C4), ROI/bin
-  validation (R1–R2, R4, B1–B3), exposure happy-path + error paths (E1–E10),
+  validation (R1–R2, R4, B1–B3), exposure happy-path + error paths (E1–E11),
   gain/offset/readout (GO1–RM1), cooling (K1–K4), and FilterWheel (FW1–FW3 when
   enabled), driven against the `qhyccd-rs` `simulation` backend.
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)
