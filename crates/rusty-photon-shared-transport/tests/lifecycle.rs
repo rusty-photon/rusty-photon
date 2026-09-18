@@ -728,6 +728,16 @@ async fn shutdown_is_not_undone_by_the_attempt_it_interrupts() {
         "an attempt completing inside the shutdown join must not re-advertise the transport"
     );
 
+    // The cold start below runs the safety hook as call 4, and every
+    // call past the second parks. Its release has to be handed out
+    // here, explicitly. The permit call 3 never claimed would in fact
+    // cover it — `shutdown` aborts the supervisor's attempt while that
+    // call is parked, so it is dropped without consuming its release —
+    // but a test that passes on a permit leaked by an abandoned task
+    // passes by accident, and would deadlock the moment that abort
+    // raced the other way.
+    stops.release_hook();
+
     // The proof that it matters: the next start has to cold-start and
     // repopulate the slot, not promote an empty one.
     st.start().await.unwrap();

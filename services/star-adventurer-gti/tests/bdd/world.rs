@@ -78,6 +78,33 @@ pub enum CommandLogTimeout {
     FetchFailed(String),
 }
 
+/// Index of the first frame after the most recent startup block.
+///
+/// A startup block is the identity-gated handshake — which always opens
+/// with `:e1`, a frame nothing else on this wire sends — followed by the
+/// cold start's `:L1`, `:L2`, `:K1` safety assertion. Scanning for the
+/// *last* `:e1` and stepping past the halt behind it yields the point
+/// after which every frame belongs to the scenario rather than to the
+/// driver coming up, however many times it has come up.
+///
+/// Returns 0 when no startup is present (nothing has booted yet), and
+/// the position after the last `:e1` when the halt behind it has not
+/// been logged yet — mid-boot, where dropping the handshake is still
+/// right and the halt is about to follow.
+fn end_of_last_startup(log: &[String]) -> usize {
+    let Some(boot) = log.iter().rposition(|c| c.as_str() == ":e1\r") else {
+        return 0;
+    };
+    let mut idx = boot + 1;
+    for want in [":L1\r", ":L2\r", ":K1\r"] {
+        match log[idx..].iter().position(|c| c.as_str() == want) {
+            Some(hit) => idx += hit + 1,
+            None => return boot + 1,
+        }
+    }
+    idx
+}
+
 #[derive(Debug, Default, World)]
 pub struct StarAdventurerWorld {
     pub service_handle: Option<ServiceHandle>,
@@ -114,25 +141,6 @@ pub struct StarAdventurerWorld {
 
     /// Doctor-subcommand smoke state (staged config file + run output).
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
-
-    /// How many wire frames the driver had already emitted by the time
-    /// `start_service` returned — the startup handshake and the
-    /// no-client safety stop that follows it. [`Self::command_log`]
-    /// drops them, so a scenario asserting `:L1` or `:K1` is asserting
-    /// about its *own* traffic and not about the driver booting. The
-    /// steps that are about the boot read
-    /// [`Self::command_log_including_startup`] instead.
-    ///
-    /// An absolute index is only safe because the mock mount outlives a
-    /// reload: `main.rs` builds its `CapturingMockFactory` outside the
-    /// reload loop, so the log this indexes into is appended to rather
-    /// than replaced when `config.apply` rebuilds the server. A
-    /// per-iteration factory would hand the reload an empty log, and
-    /// this mark would then skip the new generation's frames — silently,
-    /// since a short log reads as "the command never came". A scenario
-    /// that respawns the binary goes through `start_service` again and
-    /// re-samples.
-    startup_mark: usize,
 }
 
 impl bdd_infra::doctor_smoke::DoctorSmokeWorld for StarAdventurerWorld {
@@ -206,10 +214,6 @@ impl StarAdventurerWorld {
         self.mount = Some(mount);
         self.service_handle = Some(handle);
         self.apply_pending_seed().await;
-        // Everything on the wire so far is the driver's own startup.
-        // Sampled once, after the service is answering, so the frames
-        // below it are exactly the ones no scenario put there.
-        self.startup_mark = self.command_log_including_startup().await.len();
     }
 
     /// The OS-assigned port the spawned service bound.
@@ -368,15 +372,20 @@ impl StarAdventurerWorld {
         timeout: Duration,
         pred: impl Fn(&[String]) -> bool,
     ) -> Result<Vec<String>, CommandLogTimeout> {
-        let mark = self.startup_mark;
+        // Recomputed on every poll, not captured once: a reload can
+        // land mid-wait, and the boundary has to move with it.
         self.wait_for_command_log_including_startup(timeout, move |log| {
-            pred(log.get(mark..).unwrap_or(&[]))
+            pred(log.get(end_of_last_startup(log)..).unwrap_or(&[]))
         })
         .await
-        .map(|log| log.into_iter().skip(mark).collect())
+        .map(|log| {
+            let from = end_of_last_startup(&log);
+            log.into_iter().skip(from).collect()
+        })
         .map_err(|e| match e {
             CommandLogTimeout::NoMatch(log) => {
-                CommandLogTimeout::NoMatch(log.into_iter().skip(mark).collect())
+                let from = end_of_last_startup(&log);
+                CommandLogTimeout::NoMatch(log.into_iter().skip(from).collect())
             }
             other @ CommandLogTimeout::FetchFailed(_) => other,
         })
@@ -421,8 +430,8 @@ impl StarAdventurerWorld {
         })
     }
 
-    /// Fetch the mock-mode wire-command log from the point the service
-    /// finished starting, retrying transient fetch failures. Fails the
+    /// Fetch the mock-mode wire-command log from the end of the most
+    /// recent startup, retrying transient fetch failures. Fails the
     /// scenario only if no read ever succeeds.
     ///
     /// The startup frames are dropped on purpose. A cold
@@ -430,11 +439,26 @@ impl StarAdventurerWorld {
     /// `:L1`, `:L2` and `:K1` are on the wire before any scenario does
     /// anything — and an assertion that a disconnect, an abort or a
     /// tracking-off issued one of them would be satisfied by the boot
-    /// alone. Reading from the mark keeps those assertions about the
-    /// behaviour they name.
+    /// alone.
+    ///
+    /// *Most recent*, not first, and that is the whole point of finding
+    /// the boundary in the log rather than counting frames at
+    /// `start_service`. A `config.apply` reload is a second startup on
+    /// the same mock mount: it runs the shutdown halt, then another
+    /// handshake, then another `:L1`/`:L2`/`:K1`. A fixed offset leaves
+    /// all of that sitting in what a scenario reads as its own traffic,
+    /// so a scenario that reloads and then asserts `:K1` would pass
+    /// without doing anything — the exact masking this helper exists to
+    /// prevent, moved rather than removed. Cutting at the last startup
+    /// drops the reload's handshake and halt, and the shutdown halt
+    /// ahead of them, because all of it precedes that boundary.
+    ///
+    /// A scenario whose subject *is* a startup reads
+    /// [`Self::command_log_including_startup`] instead.
     pub async fn command_log(&self) -> Vec<String> {
         let log = self.command_log_including_startup().await;
-        log.into_iter().skip(self.startup_mark).collect()
+        let from = end_of_last_startup(&log);
+        log.into_iter().skip(from).collect()
     }
 
     /// The whole log, startup included. For the steps whose subject
