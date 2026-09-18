@@ -21,6 +21,7 @@
 //! reply reports all six USB port states directly, so the cache is a pure
 //! function of what the device last said.
 
+use std::ops::RangeInclusive;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -87,6 +88,17 @@ pub struct CachedState {
 fn instantaneous_window(poll_interval: Duration) -> Duration {
     poll_interval.saturating_mul(3).max(Duration::from_secs(10))
 }
+
+/// The `AveragePeriod` range ASCOM allows, in hours.
+///
+/// One spelling for the two places that enforce it: the device rejects
+/// anything outside it with `INVALID_VALUE`, and
+/// [`Upbv2Manager::set_averaging_period`] holds the same line for a caller that
+/// bypasses the device. `contains` is false for NaN, so both reject it
+/// without a separate finiteness test. `config.apply` enforces the same
+/// ceiling on the persisted value as a `Duration` (`MAX_AVERAGING_PERIOD` in
+/// `config_actions.rs`); the two must agree, per the design doc.
+pub const AVERAGE_PERIOD_HOURS: RangeInclusive<f64> = 0.0..=24.0;
 
 /// The sensor window that serves `period_hours`.
 ///
@@ -172,7 +184,23 @@ impl Upbv2Manager {
     /// Takes the client's `AveragePeriod` in hours rather than a window so
     /// the requested value can be recorded verbatim for read-back; the window
     /// it maps to comes from [`effective_window`].
+    ///
+    /// A period outside [`AVERAGE_PERIOD_HOURS`] — NaN included — is ignored
+    /// entirely: windows and recorded period both keep their previous values.
     pub async fn set_averaging_period(&self, period_hours: f64) {
+        // Leave both the windows and the recorded period untouched rather
+        // than half-applying a period this manager cannot honour: recording
+        // one the windows never used would hand `AveragePeriod` back a value
+        // (NaN included) that no sensor read reflects. The device rejects
+        // these with `INVALID_VALUE` before they get here, so this guard is
+        // what makes the manager's own contract total.
+        if !AVERAGE_PERIOD_HOURS.contains(&period_hours) {
+            debug!(
+                period_hours,
+                "averaging period outside the supported range; state left unchanged"
+            );
+            return;
+        }
         let window = effective_window(period_hours, self.poll_interval);
         let mut state = self.cached_state.write().await;
         state.temp_mean.set_window(window);
@@ -652,6 +680,34 @@ mod tests {
         assert_eq!(effective_window(f64::NAN, poll), expected);
         assert_eq!(effective_window(f64::INFINITY, poll), expected);
         assert_eq!(effective_window(f64::MAX, poll), expected);
+    }
+
+    #[tokio::test]
+    async fn set_averaging_period_leaves_state_unchanged_for_an_unusable_period() {
+        // The manager records the period verbatim for read-back, so a period
+        // it cannot honour must not be recorded at all: half-applying one
+        // would fall back to the instantaneous window while `AveragePeriod`
+        // read back NaN — an invalid setting looking accepted. Reported on
+        // PR #1279 against the first cut of the #1247 fix.
+        let manager = make_manager();
+        let one_hour = 1.0;
+        manager.set_averaging_period(one_hour).await;
+        let before = manager.get_cached_state().await;
+
+        for rejected in [f64::NAN, f64::INFINITY, -1.0, 25.0] {
+            manager.set_averaging_period(rejected).await;
+            let after = manager.get_cached_state().await;
+            assert_eq!(
+                after.temp_mean.window(),
+                before.temp_mean.window(),
+                "window moved for {rejected}"
+            );
+            assert!(
+                (after.average_period_hours - one_hour).abs() < f64::EPSILON,
+                "recorded period moved to {} for {rejected}",
+                after.average_period_hours
+            );
+        }
     }
 
     #[tokio::test]

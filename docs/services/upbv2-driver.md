@@ -414,10 +414,16 @@ can send because `f64::from_str` parses `"NaN"`. The check is one range test
 rather than a pair of ordered comparisons on purpose: every ordered comparison
 against `NaN` is false, so `NaN` would otherwise pass validation and reach the
 seconds-to-`Duration` conversion, which panics on a non-finite value
-([#1247](https://github.com/rusty-photon/rusty-photon/issues/1247)). That
-conversion is fallible now as well, so a period the device should have
-rejected falls back to the instantaneous window instead of taking the driver
-down mid-session.
+([#1247](https://github.com/rusty-photon/rusty-photon/issues/1247)).
+
+The manager holds the same line for callers that do not come through the
+device: `set_averaging_period` leaves every sensor window *and* the recorded
+period untouched when handed a period outside `[0, 24]` hours. Both spellings
+of the range come from one constant, so they cannot drift apart. Half-applying
+such a period would be worse than rejecting it — the windows would fall back
+while `AveragePeriod` read back the value they never used. The
+seconds-to-`Duration` conversion underneath is fallible too, so no path
+through this code can panic.
 
 `config.apply` validates `averaging_period` against the same bounds the device
 enforces on `SetAveragePeriod`: no lower bound (zero is meaningful), and a 24
@@ -450,7 +456,7 @@ error, because the rules are enforced by the label type's own deserializer.
 | Any field unparseable | `ParseError` naming the wire field; cache untouched. |
 | Write to an auto-dew-controlled channel | `NOT_IMPLEMENTED` naming the channel and the Pegasus software — the classification ASCOM requires of a switch whose `CanWrite` is false. |
 | Switch 7 written outside 3-12 | `INVALID_VALUE`; nothing sent to the device. |
-| `SetAveragePeriod` given `NaN`, or a value outside `[0, 24]` hours | `INVALID_VALUE`; the window is left as it was. `NaN` is called out because it passes an ordered range comparison — see [`AveragePeriod`](#averageperiod-and-the-meaning-of-zero). |
+| `SetAveragePeriod` given `NaN`, or a value outside `[0, 24]` hours | `INVALID_VALUE`; the windows and the recorded period are both left as they were. `NaN` is called out because it passes an ordered range comparison — see [`AveragePeriod`](#averageperiod-and-the-meaning-of-zero). |
 | Read before first successful poll | `NOT_CONNECTED`. |
 | Sensor read after the averaging window has emptied | `VALUE_NOT_SET`. The window is applied on read, so a stalled poll loop degrades to "no value" rather than reporting an aged-out mean as current. |
 

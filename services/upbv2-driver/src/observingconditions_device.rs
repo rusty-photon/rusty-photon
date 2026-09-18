@@ -21,7 +21,7 @@ use crate::codec::Upbv2Codec;
 use crate::config::ObservingConditionsConfig;
 use crate::config_actions::Upbv2Driver;
 use crate::error::Upbv2Error;
-use crate::manager::Upbv2Manager;
+use crate::manager::{Upbv2Manager, AVERAGE_PERIOD_HOURS};
 use rusty_photon_driver::ConfigActionCtx;
 
 macro_rules! ensure_connected {
@@ -153,11 +153,16 @@ impl ObservingConditions for Upbv2ObservingConditionsDevice {
         // comparison against NaN is false, so `period < 0.0` and
         // `period > 24.0` both let NaN through to the `Duration` conversion in
         // the manager, which panics on a non-finite value. `contains` is false
-        // for NaN, so the check fails closed (#1247).
-        if !(0.0..=24.0).contains(&period) {
+        // for NaN, so the check fails closed (#1247). The bounds come from the
+        // manager so this and the manager-side guard cannot drift apart.
+        if !AVERAGE_PERIOD_HOURS.contains(&period) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!("Average period must be a finite value in [0, 24] hours, got {period}"),
+                format!(
+                    "Average period must be a finite value in [{}, {}] hours, got {period}",
+                    AVERAGE_PERIOD_HOURS.start(),
+                    AVERAGE_PERIOD_HOURS.end()
+                ),
             ));
         }
         self.manager.set_averaging_period(period).await;
