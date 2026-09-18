@@ -184,6 +184,12 @@ pub struct RpWorld {
     pub last_rotator_result: Option<Value>,
     /// Last `plate_solve` result
     pub last_plate_solve_result: Option<Value>,
+    /// Mount pointing as `(ra_hours, dec_degrees)` recorded by
+    /// `plate_solve.feature`'s "I record the mount position ..." step,
+    /// so the `use_mount_hints` assertion can pin the forwarded hints
+    /// against what the mount itself reported rather than against the
+    /// literal the scenario synced to (issue #1252).
+    pub recorded_mount_position: Option<(f64, f64)>,
     /// Last successful guider-tool result (`start_guiding`, dither,
     /// `get_guiding_stats`, ...)
     pub last_guider_result: Option<Value>,

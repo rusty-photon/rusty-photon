@@ -224,10 +224,15 @@ async fn mcp_call_abort_slew(world: &mut RpWorld) {
 
 // --- Then steps ---
 
-/// `OmniSim`'s slew echo carries sub-arcsecond drift (likely from
-/// internal topocentric ↔ J2000 transforms), so we assert tolerance,
-/// not exact equality. `0.001` hours ≈ 3.6 arcsec on RA — well under
-/// any centering workflow's tolerance and well above `OmniSim`'s drift.
+/// `OmniSim`'s slew echo carries sub-arcsecond error, so we assert
+/// tolerance, not exact equality. It is a stale clock, not float drift
+/// in a coordinate transform: the simulator builds the mount axis from
+/// a sidereal time it refreshes only on its 100 ms `MoveAxes` tick, and
+/// re-derives the echoed coordinates from a freshly read one — see
+/// docs/skills/testing.md §5.14, which also explains why the same
+/// mechanism can grow unbounded on a stalled runner (issue #1252).
+/// `0.001` hours ≈ 3.6 arcsec on RA — well under any centering
+/// workflow's tolerance and comfortably above one tick's worth.
 const SLEW_ECHO_TOLERANCE: f64 = 0.001;
 
 #[then(expr = "the slew result actual_ra should be {float}")]

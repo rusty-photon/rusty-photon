@@ -286,6 +286,46 @@ async fn mcp_call_plate_solve_no_args(world: &mut RpWorld) {
     call_plate_solve_with_args(world, PlateSolveArgs::default()).await;
 }
 
+/// Record what the mount reports, so the `use_mount_hints` assertion
+/// can pin the forwarded hints against the mount's own value instead
+/// of against the literal the scenario synced to.
+///
+/// Why that matters: `sync_mount` does not land `OmniSim` exactly on
+/// the requested RA. `OmniSim` builds the mount axis from a *cached*
+/// sidereal time (refreshed only on its 100 ms `MoveAxes` tick) and
+/// then re-derives the reported RA from a freshly read one, so the
+/// sync absorbs however stale that cache was; the device restart our
+/// per-scenario hook issues resets the tracking book-keeping that
+/// would otherwise back-fill the difference, making the offset
+/// permanent. Tracking then *holds* the offset position, so this is a
+/// fixed error and not a drift — but its size is whatever wall-clock
+/// gap the runner happened to leave, and on a loaded `windows-latest`
+/// runner it reached 46 arcsec (issue #1252). Reading the mount back
+/// takes the runner's speed out of the assertion entirely.
+///
+/// Deliberately stores into its own world field rather than
+/// `last_tool_result`: the `plate_solve` result must stay inspectable
+/// by any Then step that follows.
+#[when("I record the mount position reported by get_mount_position")]
+async fn record_mount_position(world: &mut RpWorld) {
+    ensure_mcp_client(world).await;
+    let result = world
+        .mcp()
+        .call_tool("get_mount_position", Value::Object(Map::new()))
+        .await
+        .expect("get_mount_position should succeed");
+    let ra_hours = result.get("ra").and_then(Value::as_f64).unwrap_or_else(|| {
+        panic!("expected ra field in get_mount_position result, got: {result:?}")
+    });
+    let dec_deg = result
+        .get("dec")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| {
+            panic!("expected dec field in get_mount_position result, got: {result:?}")
+        });
+    world.recorded_mount_position = Some((ra_hours, dec_deg));
+}
+
 // --- Then steps: result-shape assertions -----------------------------
 
 #[then(expr = "the plate_solve result should contain {string} with value {float}")]
@@ -350,34 +390,104 @@ fn plate_solve_wcs_matrix_matches(world: &mut RpWorld, step: &cucumber::gherkin:
 
 // --- Then steps: stub request-log inspection ------------------------
 
+/// Hours-to-degrees factor rp applies to the mount's Alpaca
+/// `RightAscension` before putting it on the wrapper wire. A missed
+/// conversion is the defect the `use_mount_hints` scenario exists to
+/// catch, so the factor is named here and spelled out in the step
+/// expression rather than folded into a tolerance.
+const RA_HOURS_TO_DEGREES: f64 = 15.0;
+
+/// Agreement budget between an explicit `pointing_hint` and what the
+/// wrapper received. rp forwards `pointing_hint` verbatim (no unit
+/// conversion, no mount involved), so the only spread is JSON f64
+/// round-tripping — exact in practice.
+const HINT_PASSTHROUGH_TOLERANCE_DEG: f64 = 1e-9;
+
+/// Agreement budget between rp's mount read (taken inside
+/// `plate_solve`) and the BDD's own `get_mount_position` read taken
+/// straight after it. Both see a *tracking* mount holding a fixed RA,
+/// so the only spread is `OmniSim`'s per-tick numerical noise —
+/// measured at ~2e-6°. 0.001° (3.6 arcsec) leaves three orders of
+/// magnitude of headroom, and is still ~5 orders tighter than a
+/// missed ×15, which lands RA ~150° out.
+///
+/// Unlike the 0.01° literal bound this replaced, it is *not* a
+/// wall-clock budget: nothing here is charged for how long the
+/// capture or the solve took, which is what made the old assertion
+/// flaky on slow runners (issue #1252).
+const MOUNT_READBACK_TOLERANCE_DEG: f64 = 0.001;
+
 #[then(
     expr = "the stub plate solver should have received a request with ra_hint {float} and dec_hint {float}"
 )]
 async fn stub_received_pointing_hints(world: &mut RpWorld, ra_hint: f64, dec_hint: f64) {
     let request = last_stub_request(world).await;
-    let actual_ra = request
+    let (actual_ra, actual_dec) = request_hints(&request);
+    assert!(
+        (actual_ra - ra_hint).abs() < HINT_PASSTHROUGH_TOLERANCE_DEG,
+        "expected ra_hint {ra_hint} forwarded verbatim, got {actual_ra}"
+    );
+    assert!(
+        (actual_dec - dec_hint).abs() < HINT_PASSTHROUGH_TOLERANCE_DEG,
+        "expected dec_hint {dec_hint} forwarded verbatim, got {actual_dec}"
+    );
+}
+
+#[then(
+    expr = "the stub plate solver should have received ra_hint equal to the recorded mount ra × 15 and dec_hint equal to the recorded mount dec"
+)]
+async fn stub_hints_match_recorded_mount(world: &mut RpWorld) {
+    let (mount_ra_hours, mount_dec_deg) = world
+        .recorded_mount_position
+        .expect("no mount position recorded — run the record step before this assertion");
+    let request = last_stub_request(world).await;
+    let (actual_ra, actual_dec) = request_hints(&request);
+    let expected_ra = mount_ra_hours * RA_HOURS_TO_DEGREES;
+    assert!(
+        (actual_ra - expected_ra).abs() < MOUNT_READBACK_TOLERANCE_DEG,
+        "ra_hint should be the mount's RA {mount_ra_hours} h × {RA_HOURS_TO_DEGREES} = {expected_ra}°, got {actual_ra}"
+    );
+    assert!(
+        (actual_dec - mount_dec_deg).abs() < MOUNT_READBACK_TOLERANCE_DEG,
+        "dec_hint should be the mount's Dec {mount_dec_deg}° forwarded verbatim, got {actual_dec}"
+    );
+}
+
+#[then(
+    expr = "the recorded mount position should be within {float} degrees of ra {float} and dec {float}"
+)]
+fn recorded_mount_position_near(
+    world: &mut RpWorld,
+    tolerance_deg: f64,
+    ra_deg: f64,
+    dec_deg: f64,
+) {
+    let (mount_ra_hours, mount_dec_deg) = world
+        .recorded_mount_position
+        .expect("no mount position recorded — run the record step before this assertion");
+    let mount_ra_deg = mount_ra_hours * RA_HOURS_TO_DEGREES;
+    assert!(
+        (mount_ra_deg - ra_deg).abs() < tolerance_deg,
+        "mount RA {mount_ra_deg}° ({mount_ra_hours} h) is more than {tolerance_deg}° from the synced {ra_deg}°"
+    );
+    assert!(
+        (mount_dec_deg - dec_deg).abs() < tolerance_deg,
+        "mount Dec {mount_dec_deg}° is more than {tolerance_deg}° from the synced {dec_deg}°"
+    );
+}
+
+/// Pull `ra_hint` / `dec_hint` out of a recorded stub request, failing
+/// loud with the whole request body when either is missing.
+fn request_hints(request: &Value) -> (f64, f64) {
+    let ra = request
         .get("ra_hint")
-        .and_then(serde_json::Value::as_f64)
+        .and_then(Value::as_f64)
         .unwrap_or_else(|| panic!("expected ra_hint in request, got: {request:?}"));
-    let actual_dec = request
+    let dec = request
         .get("dec_hint")
-        .and_then(serde_json::Value::as_f64)
+        .and_then(Value::as_f64)
         .unwrap_or_else(|| panic!("expected dec_hint in request, got: {request:?}"));
-    // Tolerance 0.01° (~36 arcsec) covers OmniSim's mount-echo
-    // float drift (~0.001° / ~3.6 arcsec, same root cause as
-    // mount.feature's slew tolerance) while still catching a missed
-    // ×15 hours-to-degrees conversion (which would put RA off by
-    // an order of magnitude). The wrapper itself searches around
-    // the hint with the configured search_radius_deg, so sub-arcsec
-    // hint precision isn't load-bearing.
-    assert!(
-        (actual_ra - ra_hint).abs() < 0.01,
-        "expected ra_hint ≈ {ra_hint}, got {actual_ra}"
-    );
-    assert!(
-        (actual_dec - dec_hint).abs() < 0.01,
-        "expected dec_hint ≈ {dec_hint}, got {actual_dec}"
-    );
+    (ra, dec)
 }
 
 #[then("the stub plate solver should have received a request with no hint fields")]
