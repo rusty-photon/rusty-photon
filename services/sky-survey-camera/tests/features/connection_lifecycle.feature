@@ -10,7 +10,8 @@ Feature: Connection lifecycle
   CameraState, ImageReady, PercentCompleted, LastExposureStartTime,
   LastExposureDuration and ImageArray -- answers NOT_CONNECTED while
   the camera is disconnected rather than describing a session that is
-  not running (C5).
+  not running (C5) — before a first connect, and again after a session
+  that took a frame.
 
   Background:
     Given a sky-survey-camera with default optics
@@ -45,14 +46,12 @@ Feature: Connection lifecycle
     And I disconnect the camera
     Then the camera is not connected
 
-  Scenario Outline: A camera that has never been connected reports no exposure state
+  Scenario: The exposure-state surface answers only for a running session
     Given a writable cache directory
     And SkyView is reachable
+    And the survey backend returns a healthy FITS cutout
     When I start the service
-    And I read <member> from the camera
-    Then the read is rejected with ASCOM NOT_CONNECTED
-
-    Examples:
+    Then reading these members is rejected with ASCOM NOT_CONNECTED:
       | member                |
       | CameraState           |
       | ImageReady            |
@@ -60,17 +59,11 @@ Feature: Connection lifecycle
       | LastExposureStartTime |
       | LastExposureDuration  |
       | ImageArray            |
-
-  Scenario Outline: A disconnected camera reports no exposure state from the session that took a frame
-    Given the camera is connected with the survey backend stubbed
-    And the survey backend returns a healthy FITS cutout
-    When I StartExposure with default parameters
+    When I connect the camera
+    And I StartExposure with default parameters
     Then the resulting image has dimensions 640 by 480
     When I disconnect the camera
-    And I read <member> from the camera
-    Then the read is rejected with ASCOM NOT_CONNECTED
-
-    Examples:
+    Then reading these members is rejected with ASCOM NOT_CONNECTED:
       | member                |
       | CameraState           |
       | ImageReady            |
