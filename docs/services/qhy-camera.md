@@ -476,7 +476,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   The clear is at the **start of a connect only**, not on disconnect: a
   disconnect that cannot take the device leaves it logically connected (C3),
   and blanking a live session's geometry is the failure this rule exists to
-  prevent.
+  prevent. What keeps the ended session's exposure state from being read back in
+  the meantime is not a second clear but the connected check every member of
+  that surface takes (E10).
 
   The same rule runs the other way: **a request made in one session does not
   commit into the next.** `set_bin_x` and `set_readout_mode` write their caches
@@ -692,6 +694,38 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **E8.** `StopExposure` returns `NOT_IMPLEMENTED`; `CanStopExposure = false`.
 - **E9.** A mid-exposure SDK error transitions `CameraState = Error`, sets
   `last_error`, leaves `ImageReady = false`, logged at `warn!`.
+- **E10.** The exposure state is a **session's** state, so the members that
+  report it — `CameraState`, `ImageReady`, `PercentCompleted`,
+  `LastExposureStartTime`, `LastExposureDuration` — answer `NOT_CONNECTED` while
+  the device is disconnected, as `StartExposure` (E1), `AbortExposure`,
+  `ImageArray` and `ImageArrayVariant` do. That state is cleared at the *start of
+  a connect* (C6) and nowhere else, so without the check each of them answers
+  from the session that has ended: a camera that took a frame and was then
+  disconnected reports `ImageReady = true` and `PercentCompleted = 100` beside an
+  `ImageArray` that refuses, one that hit E9 reports `CameraState = Error` until
+  someone reconnects it, and `LastExposureStartTime`/`Duration` name a frame from
+  a camera the client is no longer talking to. Nothing stale can be *served* —
+  `ImageArray` checks — so what is at stake is a wrong answer to a readiness
+  question, and the two members a client is told to poll together (`ImageReady`,
+  then `ImageArray`) contradicting each other.
+
+  Two decisions behind that shape:
+
+  - `CameraState` **throws** rather than answering safely the way `Connected`
+    does. `Connected` deliberately never throws because it is how a client asks
+    whether the device is there at all; `CameraState` reports device state, which
+    ASCOM answers with `NOT_CONNECTED` when there is no device, and which
+    ConformU exercises directly. A supervisor polling "is this camera exposing"
+    across a reconnect reads `Connected` first, as it already must for every
+    other member of this surface.
+  - The exposure state is still reset **only at the start of a connect** (C6),
+    not on disconnect. A disconnect that cannot take the device leaves it
+    logically connected (C3), and blanking a live session's state is the failure
+    that rule exists to prevent; and once these members refuse, there is nothing
+    left to observe between a disconnect that did close and the connect that
+    clears it. The `Connected`-adjacent capability probes (`CanAbortExposure`,
+    `CanStopExposure`, `CanPulseGuide`, `HasShutter`) are unaffected — they
+    describe the driver, not a session.
 
 ### Gain / offset / readout
 
@@ -815,12 +849,13 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 | `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `Cooler` control present |
 | `CanFastReadout` / `FastReadout` | Reflects `Speed` control (untested — see *Future Work*) |
 | `HasShutter` | `true` iff `CamMechanicalShutter` control present |
-| `CameraState` | `Idle` / `Exposing` / `Error` |
-| `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100 |
+| `CameraState` | `Idle` / `Exposing` / `Error`; `NOT_CONNECTED` while disconnected (E10) |
+| `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100; `NOT_CONNECTED` while disconnected (E10) |
 | `CanAbortExposure` / `CanStopExposure` | `true` / `false` |
 | `CanPulseGuide` | `false` |
 | `StartExposure` (`Light=false`) | `NOT_IMPLEMENTED` (no shutter actuation in qhyccd-rs 0.1.9; see E4) |
-| `StartExposure` / `AbortExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Per *Exposure* contracts; `ImageArray` axes `[X, Y]` |
+| `StartExposure` / `AbortExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Per *Exposure* contracts; `ImageArray` axes `[X, Y]`; all `NOT_CONNECTED` while disconnected (E1, E10) |
+| `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session; `VALUE_NOT_SET` before its first exposure, `NOT_CONNECTED` while disconnected (E10) |
 | `StopExposure` | `NOT_IMPLEMENTED` |
 
 ---
@@ -1017,7 +1052,9 @@ first.
 Layered per [`testing.md`](../skills/testing.md).
 
 - **Unit** — config parse/newtype validation, ROI/binning geometry math, the
-  `Camera` state machine (Idle/Exposing/Error, `ImageReady`, percent-completed),
+  `Camera` state machine (Idle/Exposing/Error, `ImageReady`, percent-completed,
+  and that whole surface refusing outside a session — E9's `Error` across a
+  disconnect, and a device that has never been connected),
   gain/offset range checks, cooling gating, Bayer-offset mapping, and the
   window between a connect's `open()` and its caches (C6, reached by holding the
   mock's `init` open) — against an
@@ -1033,7 +1070,7 @@ Layered per [`testing.md`](../skills/testing.md).
   deliberately skips this whole layer (PF5/DR5) — it proves the config and
   enumeration contract, not the DLL layer.
 - **BDD** (`bdd-infra::ServiceHandle`) — connection lifecycle (C1–C4), ROI/bin
-  validation (R1–R2, R4, B1–B3), exposure happy-path + error paths (E1–E9),
+  validation (R1–R2, R4, B1–B3), exposure happy-path + error paths (E1–E10),
   gain/offset/readout (GO1–RM1), cooling (K1–K4), and FilterWheel (FW1–FW3 when
   enabled), driven against the `qhyccd-rs` `simulation` backend.
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)

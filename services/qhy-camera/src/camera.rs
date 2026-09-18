@@ -2405,7 +2405,17 @@ impl Camera for QhyCameraDevice {
 
     // --- exposure state ---------------------------------------------------------
 
+    /// The exposure state is a *session's* state, and this is the first of the
+    /// five members that report it (E10). Each takes the connected check for the
+    /// same reason: the state is cleared at the start of a connect (C6) and
+    /// nowhere else, so answering it while disconnected answers from the session
+    /// that has ended — `Error` for a camera that has no error, `Idle` for one
+    /// nobody can expose. The capability probes beside them (`CanAbortExposure`,
+    /// `HasShutter`) describe the driver rather than a session and are
+    /// deliberately still answerable; `Connected` is the member a client reads
+    /// to find out which it is looking at.
     async fn camera_state(&self) -> ASCOMResult<CameraState> {
+        self.ensure_connected()?;
         if self.state.last_error.lock().is_some() {
             return Ok(CameraState::Error);
         }
@@ -2415,11 +2425,19 @@ impl Camera for QhyCameraDevice {
         Ok(CameraState::Idle)
     }
 
+    /// `ImageArray` is read straight after this one and takes the same check, so
+    /// without it here the pair contradict each other across a disconnect: ready
+    /// beside a frame that refuses (E10).
     async fn image_ready(&self) -> ASCOMResult<bool> {
+        self.ensure_connected()?;
         Ok(self.state.image_ready.load(Ordering::Acquire) && !self.state.exposure_in_flight())
     }
 
     async fn percent_completed(&self) -> ASCOMResult<u8> {
+        // E10: the idle branch below answers from cached state without touching
+        // the SDK, so the check has to be here — `on_handle`'s own rewrite only
+        // covers the in-flight branch.
+        self.ensure_connected()?;
         if !self.state.exposure_in_flight() {
             // Idle: 100 once a frame is ready, 0 in the Error state (so a camera
             // reporting CameraState::Error never also reports 100% complete).
@@ -2455,11 +2473,17 @@ impl Camera for QhyCameraDevice {
         ))
     }
 
+    /// `VALUE_NOT_SET` means *this session has not exposed yet*, so the
+    /// connected check comes first (E10): without it, the answer between a
+    /// disconnect and the next connect is the ended session's frame rather than
+    /// either of the two things a client can act on.
     async fn last_exposure_start_time(&self) -> ASCOMResult<SystemTime> {
+        self.ensure_connected()?;
         (*self.state.last_exposure_start_time.lock()).ok_or(ASCOMError::VALUE_NOT_SET)
     }
 
     async fn last_exposure_duration(&self) -> ASCOMResult<Duration> {
+        self.ensure_connected()?;
         // Return the stored Duration as-is; round-tripping through secs_f64 only
         // introduces floating-point rounding (the value is already exact).
         (*self.state.last_exposure_duration.lock()).ok_or(ASCOMError::VALUE_NOT_SET)
@@ -4417,6 +4441,67 @@ mod tests {
         assert_eq!(
             device.image_array().await.unwrap_err().code,
             UNSPECIFIED_ERROR
+        );
+    }
+
+    /// E10: the `Error` an E9 left behind belongs to the session that hit it.
+    /// Reported across the disconnect it would tell a supervisor polling
+    /// `CameraState` that a camera it cannot reach is faulted, and go on saying
+    /// so until somebody reconnects the device — the state is cleared at the
+    /// start of a connect (C6) and nowhere else.
+    #[tokio::test]
+    async fn an_errored_camera_answers_not_connected_once_disconnected() {
+        let handle = MockCameraHandle::default();
+        handle.fail_single_frame.store(true, Ordering::SeqCst);
+        let device = connected_device(handle).await;
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Error);
+
+        device.set_connected(false).await.unwrap();
+        assert_eq!(
+            device.camera_state().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        // The Error state's own PercentCompleted answer (0) is just as much the
+        // ended session's.
+        assert_eq!(
+            device.percent_completed().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// E10 before there is any session at all: a device nobody has connected has
+    /// no exposure state to report, and `VALUE_NOT_SET` (which says *this
+    /// session has not exposed yet*) would be the wrong half of the answer.
+    #[tokio::test]
+    async fn the_exposure_state_surface_refuses_before_a_first_connect() {
+        let device = QhyCameraDevice::new(Arc::new(MockCameraHandle::default()), None);
+        assert_eq!(
+            device.camera_state().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.image_ready().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.percent_completed().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.last_exposure_start_time().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.last_exposure_duration().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
         );
     }
 
