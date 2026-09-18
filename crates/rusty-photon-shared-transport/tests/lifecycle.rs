@@ -77,6 +77,149 @@ async fn start_opens_transport_and_runs_handshake() {
 }
 
 #[tokio::test]
+async fn a_cold_start_asserts_the_no_client_state_on_the_wire() {
+    // The device on the other end of a port this process has just
+    // opened may be acting on instructions from a lifecycle this
+    // process knows nothing about — the one before a reload, or before
+    // a restart. A start that assumes it is idle is a start that can
+    // hand a client a moving mount. See #1251.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::default();
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    st.start().await.unwrap();
+
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        1,
+        "the cold start must run the stop-class hook on the conduit it opened"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "and it must reach the device, not merely be attempted"
+    );
+    assert!(st.is_available());
+
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_stop_lost_at_shutdown_is_asserted_by_the_next_lifecycle() {
+    // The case the issue names. `Hooks::shutdown` runs its safety stop
+    // against a link that is already dead, so nothing lands; the reload
+    // then builds a *new* `SharedTransport`, which cannot inherit a
+    // flag from the instance that just went away. What answers for the
+    // lost stop is the fresh start asserting the state itself.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+
+    let (hooks, shutdown_stops_landed) = shutdown_failing_on_the_wire(cfg.fail_recvs.clone());
+    let going_down = build_with_factory_and_hooks(std::sync::Arc::clone(&factory), hooks);
+    going_down.start().await.unwrap();
+    going_down.shutdown().await.unwrap();
+    drop(going_down);
+
+    // The precondition, not an aside: without it this test would pass
+    // on a shutdown whose stop landed, and prove only what the
+    // cold-start test above already does. The lost stop is the case.
+    assert_eq!(
+        shutdown_stops_landed.load(Ordering::SeqCst),
+        0,
+        "the shutdown's own stop must have missed the wire for this to be the #1251 path"
+    );
+
+    // A new instance over the same port, with no memory of any of it.
+    let stops = SafetyStopHooks::default();
+    let coming_up = build_with_factory_and_hooks(factory, stops.hooks());
+    coming_up.start().await.unwrap();
+
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "the stop the shutdown could not land must go out on the conduit the reload opened"
+    );
+
+    coming_up.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_cold_start_whose_safety_stop_misses_the_wire_does_not_serve() {
+    // Refusing to start beats advertising a device whose safety state
+    // is unknown: the handshake proved the link was there a moment ago,
+    // so a stop that does not land on it is a stop the device may not
+    // have.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    let refused = st.start().await.unwrap_err();
+    assert!(
+        refused.to_string().contains("did not land"),
+        "the caller must be told why, got: {refused}"
+    );
+    assert!(
+        !st.is_available(),
+        "a conduit whose safety state is unknown must not be advertised"
+    );
+    assert_eq!(
+        cfg.dropped_count().await,
+        1,
+        "and the port must be released, not held by the failed start"
+    );
+
+    // And the failure has to be on the record. A first cold start that
+    // fails here leaves `service_lifetime` false — it is set only after
+    // the publish — so a caller that handles the error and opens
+    // anyway takes the lazy 0→1 path. Nothing outstanding there would
+    // mean a session on a conduit whose safety state was never
+    // asserted, which is the whole hole this change exists to close.
+    let client = st.acquire().await.unwrap();
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        2,
+        "the open after a failed startup assertion must replay it, not skip it"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "and that replay is the one that lands"
+    );
+    client.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_promoted_lazy_transport_is_not_halted_by_the_promotion() {
+    // `start()` on a transport a client already opened lazily promotes
+    // it in place. The conduit is live and the client may be driving
+    // it, so the no-client assertion the cold path makes has no
+    // business running here — tenet 3 permits a halt on a start path
+    // because nothing is attached, and here something is.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::default();
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    let client = st.acquire().await.unwrap();
+    st.start().await.unwrap();
+
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        0,
+        "promoting a transport under a live client must not halt what it is driving"
+    );
+
+    client.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn start_is_idempotent_when_already_started() {
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
@@ -179,8 +322,8 @@ async fn close_in_service_lifetime_runs_on_last_disconnect_and_keeps_port_open()
 
     assert_eq!(
         counting.teardown_calls.load(Ordering::SeqCst),
-        1,
-        "on_last_disconnect must fire on the 1→0 transition"
+        2,
+        "on_last_disconnect must fire on the cold start and again on the 1→0 transition"
     );
     assert_eq!(
         counting.shutdown_calls.load(Ordering::SeqCst),
@@ -218,8 +361,8 @@ async fn close_in_service_lifetime_fires_on_last_disconnect_each_cycle() {
     assert_eq!(counting.handshake_calls.load(Ordering::SeqCst), 1);
     assert_eq!(
         counting.teardown_calls.load(Ordering::SeqCst),
-        3,
-        "on_last_disconnect must fire on every 1→0 transition"
+        4,
+        "on_last_disconnect must fire on every 1→0 transition, plus once on the cold start"
     );
     assert_eq!(counting.shutdown_calls.load(Ordering::SeqCst), 0);
 }
@@ -246,8 +389,9 @@ async fn shutdown_runs_shutdown_hook_and_closes_port() {
     );
     assert_eq!(
         counting.teardown_calls.load(Ordering::SeqCst),
-        0,
-        "on_last_disconnect must NOT fire from shutdown() — it's only for client refcount 1→0"
+        1,
+        "shutdown() must not fire on_last_disconnect — the one call is the cold start's own \
+         no-client assertion, which `shutdown` has no business repeating"
     );
     assert!(!st.is_available());
     assert_eq!(
@@ -557,7 +701,9 @@ async fn shutdown_is_not_undone_by_the_attempt_it_interrupts() {
     // replay that answers it parks, so an attempt is in flight when the
     // shutdown below arrives.
     let stops = std::sync::Arc::new(
-        SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone()).parking_from(1),
+        SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone())
+            .failing_from(2)
+            .parking_from(2),
     );
     let st = build_with_factory_and_hooks(factory, stops.hooks());
 
@@ -581,6 +727,16 @@ async fn shutdown_is_not_undone_by_the_attempt_it_interrupts() {
         !st.is_available(),
         "an attempt completing inside the shutdown join must not re-advertise the transport"
     );
+
+    // The cold start below runs the safety hook as call 4, and every
+    // call past the second parks. Its release has to be handed out
+    // here, explicitly. The permit call 3 never claimed would in fact
+    // cover it — `shutdown` aborts the supervisor's attempt while that
+    // call is parked, so it is dropped without consuming its release —
+    // but a test that passes on a permit leaked by an abandoned task
+    // passes by accident, and would deadlock the moment that abort
+    // raced the other way.
+    stops.release_hook();
 
     // The proof that it matters: the next start has to cold-start and
     // repopulate the slot, not promote an empty one.
@@ -650,10 +806,8 @@ async fn a_shutdown_hook_failing_on_the_wire_does_not_disturb_the_next_start() {
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
-    let st = build_with_factory_and_hooks(
-        factory,
-        shutdown_failing_on_the_wire(cfg.fail_recvs.clone()),
-    );
+    let (hooks, _landed) = shutdown_failing_on_the_wire(cfg.fail_recvs.clone());
+    let st = build_with_factory_and_hooks(factory, hooks);
     st.set_reconnect_interval(Duration::from_millis(20)).await;
 
     st.start().await.unwrap();
@@ -772,7 +926,9 @@ async fn a_cleanup_hook_that_panics_takes_the_transport_out_of_service() {
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
-    let (hooks, _stops) = last_disconnect_panicking_on(1);
+    // Invocation 2: the cold start runs the same hook first, and a
+    // panic there fails `start()` rather than the cleanup this is about.
+    let (hooks, _stops) = last_disconnect_panicking_on(2);
     let st = build_with_factory_and_hooks(factory, hooks);
 
     st.start().await.unwrap();
@@ -829,7 +985,7 @@ async fn a_cold_start_stops_the_supervisor_before_opening() {
     // not stop it first asks the factory for a port this process has.
     let (factory, ports) = ExclusiveFactory::new();
     let handshakes =
-        std::sync::Arc::new(ParkingHandshake::after(1).with_a_failing_stop(ports.fail_recvs()));
+        std::sync::Arc::new(ParkingHandshake::after(1).with_a_failing_stop(2, ports.fail_recvs()));
     let st = build_with_factory_and_hooks(std::sync::Arc::new(factory), handshakes.hooks());
     st.set_reconnect_interval(Duration::from_millis(5)).await;
 
@@ -874,7 +1030,7 @@ async fn a_start_that_fails_after_taking_the_supervisor_leaves_no_false_promise(
     let cfg = FactoryConfig::default();
     let factory: std::sync::Arc<dyn TransportFactory> =
         std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
-    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone());
+    let stops = SafetyStopHooks::failing_first(1, cfg.fail_recvs.clone()).failing_from(2);
     let st = build_with_factory_and_hooks(factory, stops.hooks());
     // Long enough that the supervisor is not the one recovering here.
     st.set_reconnect_interval(Duration::from_secs(3600)).await;

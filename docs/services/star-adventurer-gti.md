@@ -135,7 +135,52 @@ The service plugs into it via:
   last Alpaca client disconnects — in service-lifetime mode the transport
   stays open, so the parameter cache is retained — and `shutdown` runs the
   same sequence once at service shutdown before the transport drops,
-  additionally clearing the parameter cache.
+  additionally clearing the parameter cache. The shared crate runs
+  `on_last_disconnect` once more, at the far end of the same cycle: on
+  the cold `start()`, before the conduit is published — see
+  [§Safety stop at startup](#safety-stop-at-startup).
+
+#### Safety stop at startup
+
+The driver halts the mount as part of starting, after the handshake and
+before the HTTP listener binds. `:L1`, `:L2`, `:K1` — the same sequence
+a last-client disconnect issues, run by the same `on_last_disconnect`
+hook, because a start is a no-client state too.
+
+It is unconditional rather than a replay of something this process
+recorded, because a start is precisely where nothing was recorded. A
+`config.apply` that needs a reload tears the old transport down and
+builds a new one; if the link was already dead when the shutdown hook
+ran — the supervisor mid-reconnect, the USB link dropped — its halt went
+nowhere, and the flag that would have remembered it belonged to the
+`SharedTransport` the reload discarded. A process restart is worse:
+nothing at all survives it. The mount, meanwhile, remembers exactly what
+it was doing. A driver that assumes the device it has just opened is
+idle is a driver that can hand the first client a mount already in
+motion. See [#1251](https://github.com/rusty-photon/rusty-photon/issues/1251).
+
+What it means for the hardware:
+
+* **Mount idle or parked** — nothing observable. All three commands are
+  idempotent against stopped axes. This is every ordinary start.
+* **Mount tracking** — tracking stops, and a client has to ask for it
+  again. A reload already did this from the shutdown hook whenever the
+  link was alive; what is new is the case where it was not, and the cold
+  process start.
+* **Mount slewing** — the slew is abandoned where it is. Position is not
+  lost: the encoders keep counting, and `:j1` / `:j2` read them back in
+  the handshake that precedes the stop.
+
+A halt that does not reach the device fails the start, so `build()`
+errors and the process exits non-zero, the same way a wrong-device
+handshake does. Advertising a mount whose safety state is unknown is the
+outcome to avoid; failing to start is visible, and the log says why.
+
+Stop-class and nothing more, which is what
+[tenet 3](../workspace.md#project-tenets) permits on a connect path: no
+park, no slew, nothing touching power, covers or dew. The `start()` that
+promotes a transport a client already opened lazily does *not* do it —
+there something is attached and may be driving it.
 
 #### Safety stop across a reconnect
 
@@ -2113,6 +2158,15 @@ init handshake:
   :g1, :g2          (high-speed ratio)     → cache
   :j1, :j2          (initial positions)    → cache + snapshot
    ↓
+safety stop:
+  :L1, :L2, :K1     (halt both axes, stop tracking) — the same
+                    no-client sequence a last-client disconnect
+                    issues, asserted here before the transport is
+                    published. A failure on the wire fails the start:
+                    build() errors and the process exits non-zero
+                    rather than advertise a mount whose state is
+                    unknown.
+   ↓
 start background polling task (interval = config.polling_interval)
 ```
 
@@ -2135,6 +2189,11 @@ Connected = false  → release the session. On the last client disconnect the
                      reconnect that completes with no client attached runs
                      the same hook again on the fresh link.
 ```
+
+A reload (`config.apply` on a field that needs one) is a shutdown
+followed by a start, so the sequence runs twice: once on the way down,
+where it may land on nothing, and once on the way back up on the fresh
+conduit, where it is asserted whatever the way down managed.
 
 ```
 Service shutdown (HTTP server stops → `SharedTransport::shutdown()`)
