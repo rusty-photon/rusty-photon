@@ -285,12 +285,16 @@ seconds-to-`Duration` conversion, which panics on a non-finite value
 
 The manager holds the same line for callers that do not come through the
 device: `set_averaging_period` leaves every sensor window *and* the recorded
-period untouched when handed a period outside `[0, 24]` hours. Both spellings
-of the range come from one constant, so they cannot drift apart. Half-applying
+period untouched when handed a period outside `[0, 24]` hours. Half-applying
 such a period would be worse than rejecting it — the windows would fall back
 while `AveragePeriod` read back the value they never used. The
 seconds-to-`Duration` conversion underneath is fallible too, so no path
 through this code can panic.
+
+All three checks — the device, the manager, and the `config.apply` bound
+below — read the ceiling from one `MAX_AVERAGING_PERIOD` constant in
+`manager.rs`, so the runtime range and the persisted range cannot drift
+apart.
 
 `config.apply` validates `averaging_period` against the same bounds the device
 enforces on `SetAveragePeriod`: no lower bound (zero is meaningful), and a 24

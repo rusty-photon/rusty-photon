@@ -17,7 +17,7 @@ use crate::codec::PpbaCodec;
 use crate::config::ObservingConditionsConfig;
 use crate::config_actions::PpbaDriver;
 use crate::error::PpbaError;
-use crate::manager::{PpbaManager, AVERAGE_PERIOD_HOURS};
+use crate::manager::{average_period_hours, PpbaManager};
 use rusty_photon_driver::ConfigActionCtx;
 
 macro_rules! ensure_connected {
@@ -141,19 +141,20 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
 
     async fn set_average_period(&self, period: f64) -> ASCOMResult<()> {
         ensure_connected!(self);
-        // One range check rather than two ordered comparisons: every ordered
-        // comparison against NaN is false, so `period < 0.0` and
-        // `period > 24.0` both let NaN through to the `Duration` conversion in
-        // the manager, which panics on a non-finite value. `contains` is false
-        // for NaN, so the check fails closed (#1247). The bounds come from the
-        // manager so this and the manager-side guard cannot drift apart.
-        if !AVERAGE_PERIOD_HOURS.contains(&period) {
+        // A range check, not a pair of ordered comparisons: every ordered
+        // comparison against NaN is false, so a `period < low || period > high`
+        // form accepts NaN and passes it to the manager's seconds-to-`Duration`
+        // conversion, which panics on a non-finite value. `contains` is false
+        // for NaN, so this rejects it. The range comes from the manager, which
+        // enforces the same bound for callers that bypass the device.
+        let allowed = average_period_hours();
+        if !allowed.contains(&period) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(
                     "Average period must be a finite value in [{}, {}] hours, got {period}",
-                    AVERAGE_PERIOD_HOURS.start(),
-                    AVERAGE_PERIOD_HOURS.end()
+                    allowed.start(),
+                    allowed.end()
                 ),
             ));
         }
@@ -414,9 +415,9 @@ mod tests {
 
     #[tokio::test]
     async fn set_average_period_nan_is_invalid_value() {
-        // NaN compares false against both range bounds, so the two ordered
-        // comparisons this check replaced let it through to the manager's
-        // `Duration` conversion, which panics on a non-finite value (#1247).
+        // NaN compares false against both range bounds, so any check built
+        // from ordered comparisons accepts it and hands it to the manager's
+        // `Duration` conversion, which panics on a non-finite value.
         let device = connected_device().await;
         let err = device.set_average_period(f64::NAN).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);

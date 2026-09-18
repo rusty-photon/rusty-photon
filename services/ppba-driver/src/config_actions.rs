@@ -9,17 +9,11 @@
 //!
 //! [`docs/services/ppba-driver.md`]: ../../../docs/services/ppba-driver.md
 
-use std::time::Duration;
-
 use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
 
 use crate::config::{CliOverrides, Config};
 
-/// ASCOM caps `ObservingConditions.AveragePeriod` at 24 hours, and
-/// `PpbaObservingConditionsDevice::set_average_period` rejects anything above
-/// it. Config validation mirrors that bound so a period cannot be persisted
-/// that the device would refuse over the wire.
-const MAX_AVERAGING_PERIOD: Duration = Duration::from_hours(24);
+use crate::manager::MAX_AVERAGING_PERIOD;
 
 /// Driver marker wiring the PPBA's full `Config` into the generic protocol.
 pub struct PpbaDriver;
@@ -120,6 +114,7 @@ impl ConfigurableDriver for PpbaDriver {
 mod tests {
     use super::*;
     use crate::config::{Config, ObservingConditionsConfig, SwitchConfig};
+    use std::time::Duration;
 
     fn valid_config() -> Config {
         Config {

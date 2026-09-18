@@ -72,16 +72,27 @@ pub fn instantaneous_window(poll_interval: Duration) -> Duration {
     poll_interval.saturating_mul(3).max(Duration::from_secs(10))
 }
 
+/// ASCOM's ceiling on `ObservingConditions.AveragePeriod`.
+///
+/// The one place the limit is written down. Three checks enforce it and all
+/// three read it from here, so none can drift from the others: the device
+/// rejects an out-of-range `SetAveragePeriod` with `INVALID_VALUE`,
+/// [`PpbaManager::set_averaging_period`] holds the same line for a caller that
+/// bypasses the device, and `config.apply` refuses to persist a longer
+/// `averaging_period` than a client could select at runtime.
+pub const MAX_AVERAGING_PERIOD: Duration = Duration::from_hours(24);
+
 /// The `AveragePeriod` range ASCOM allows, in hours.
 ///
-/// One spelling for the two places that enforce it: the device rejects
-/// anything outside it with `INVALID_VALUE`, and
-/// [`PpbaManager::set_averaging_period`] holds the same line for a caller that
-/// bypasses the device. `contains` is false for NaN, so both reject it
-/// without a separate finiteness test. `config.apply` enforces the same
-/// ceiling on the persisted value as a `Duration` (`MAX_AVERAGING_PERIOD` in
-/// `config_actions.rs`); the two must agree, per the design doc.
-pub const AVERAGE_PERIOD_HOURS: RangeInclusive<f64> = 0.0..=24.0;
+/// Derived from [`MAX_AVERAGING_PERIOD`] rather than spelled again — the
+/// conversion is not available in a `const`. There is no lower bound below
+/// zero: zero is ASCOM's "not averaging". `contains` is false for NaN, so a
+/// caller checking against this range rejects NaN without a separate
+/// finiteness test.
+#[must_use]
+pub fn average_period_hours() -> RangeInclusive<f64> {
+    0.0..=MAX_AVERAGING_PERIOD.as_secs_f64() / 3600.0
+}
 
 /// The sensor window that serves `period_hours`.
 ///
@@ -100,11 +111,11 @@ pub fn effective_window(period_hours: f64, poll_interval: Duration) -> Duration 
     }
     // `try_from_secs_f64`, not `from_secs_f64`: the panicking form takes the
     // whole driver down on a non-finite or out-of-range value, and a driver
-    // that panics at 2am ends the night's imaging (tenet 2). The device
-    // rejects those before they reach here, so the fallback is unreachable on
-    // the wire path — it is what keeps a future caller from reintroducing the
-    // panic (#1247). Falling back to the instantaneous window fails closed:
-    // the shortest window that still holds the newest sample.
+    // that panics at 2am ends the night's imaging (tenet 2). Callers validate
+    // before they get here, so the fallback is unreachable on the wire path;
+    // it is what keeps this function total for one that does not. Falling
+    // back to the instantaneous window fails closed: the shortest window that
+    // still holds the newest sample.
     Duration::try_from_secs_f64(period_hours * 3600.0)
         .unwrap_or_else(|_| instantaneous_window(poll_interval))
 }
@@ -168,7 +179,7 @@ impl PpbaManager {
     /// requested value can be recorded verbatim for read-back; the window it
     /// maps to comes from [`effective_window`].
     ///
-    /// A period outside [`AVERAGE_PERIOD_HOURS`] — NaN included — is ignored
+    /// A period outside [`average_period_hours`] — NaN included — is ignored
     /// entirely: windows and recorded period both keep their previous values.
     pub async fn set_averaging_period(&self, period_hours: f64) {
         // Leave both the windows and the recorded period untouched rather
@@ -177,7 +188,7 @@ impl PpbaManager {
         // (NaN included) that no sensor read reflects. The device rejects
         // these with `INVALID_VALUE` before they get here, so this guard is
         // what makes the manager's own contract total.
-        if !AVERAGE_PERIOD_HOURS.contains(&period_hours) {
+        if !average_period_hours().contains(&period_hours) {
             debug!(
                 period_hours,
                 "averaging period outside the supported range; state left unchanged"
@@ -408,12 +419,22 @@ mod tests {
     }
 
     #[test]
+    fn the_average_period_range_is_ascoms_zero_to_twenty_four_hours() {
+        // The contract constant, visible: every check reads this range, so a
+        // botched derivation would move all three at once and silently.
+        let allowed = average_period_hours();
+        assert!((*allowed.start() - 0.0).abs() < f64::EPSILON);
+        assert!((*allowed.end() - 24.0).abs() < f64::EPSILON);
+        assert_eq!(MAX_AVERAGING_PERIOD, Duration::from_hours(24));
+    }
+
+    #[test]
     fn effective_window_does_not_panic_on_a_non_finite_period() {
-        // Defence in depth for #1247. The device rejects a non-finite period
-        // before it reaches here, so this is the second line: a caller that
-        // did not would otherwise hit `Duration::from_secs_f64`'s panic and
-        // take the driver down mid-session. Failing closed to the shortest
-        // window keeps sensor reads honest instead.
+        // The device and `set_averaging_period` both reject a non-finite
+        // period before it reaches here, so this pins the last line: a caller
+        // that did neither must still not hit `Duration::from_secs_f64`'s
+        // panic and take the driver down mid-session. Failing closed to the
+        // shortest window keeps sensor reads honest instead.
         let poll = Duration::from_secs(5);
         let expected = instantaneous_window(poll);
         assert_eq!(effective_window(f64::NAN, poll), expected);
@@ -425,9 +446,8 @@ mod tests {
     async fn set_averaging_period_leaves_state_unchanged_for_an_unusable_period() {
         // The manager records the period verbatim for read-back, so a period
         // it cannot honour must not be recorded at all: half-applying one
-        // would fall back to the instantaneous window while `AveragePeriod`
-        // read back NaN — an invalid setting looking accepted. Reported on
-        // PR #1279 against the first cut of the #1247 fix.
+        // falls back to the instantaneous window while `AveragePeriod` reads
+        // back NaN, which is an invalid setting looking accepted.
         let manager = make_manager();
         let one_hour = 1.0;
         manager.set_averaging_period(one_hour).await;
