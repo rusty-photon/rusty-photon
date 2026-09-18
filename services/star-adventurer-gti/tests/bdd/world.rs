@@ -122,6 +122,16 @@ pub struct StarAdventurerWorld {
     /// about its *own* traffic and not about the driver booting. The
     /// steps that are about the boot read
     /// [`Self::command_log_including_startup`] instead.
+    ///
+    /// An absolute index is only safe because the mock mount outlives a
+    /// reload: `main.rs` builds its `CapturingMockFactory` outside the
+    /// reload loop, so the log this indexes into is appended to rather
+    /// than replaced when `config.apply` rebuilds the server. A
+    /// per-iteration factory would hand the reload an empty log, and
+    /// this mark would then skip the new generation's frames — silently,
+    /// since a short log reads as "the command never came". A scenario
+    /// that respawns the binary goes through `start_service` again and
+    /// re-samples.
     startup_mark: usize,
 }
 

@@ -871,17 +871,36 @@ impl<C: Codec> SharedTransport<C> {
     /// # Errors
     ///
     /// Returns a [`SessionError`] when the state did not reach the
-    /// device. The conduit is closed and any debt left standing — the
+    /// device. The conduit is closed and the debt left standing — the
     /// caller must abandon this conduit rather than expose one whose
-    /// safety state is still unknown.
+    /// safety state is still unknown, and whoever opens the next one
+    /// owes the assertion this one could not make.
     async fn assert_no_client_state(
         &self,
         connection: &Connection<C>,
         context: &str,
     ) -> Result<(), SessionError<C::Error>> {
-        // Read before the hook runs, so a cleanup that incurs a debt
-        // while this is in flight is not recorded as covered by it.
-        let paying = self.safety_debt_incurred.load(Ordering::SeqCst);
+        // Owed until proven landed, the way the reconnect replay does
+        // it. Incurring *before* the hook rather than reading the
+        // count is what leaves a record when this does not return
+        // cleanly, and a cold start is where that matters most: its
+        // failure path has nothing else to write to. `start()` sets
+        // `service_lifetime` only after the publish, so a first cold
+        // start that fails here leaves the transport lazy — and a
+        // caller that handles the error and calls `acquire()` would
+        // otherwise take the 0→1 path, find nothing outstanding, and
+        // hand out a session on a conduit whose safety state was
+        // never asserted. With the debt standing, that open replays
+        // it or refuses.
+        //
+        // It covers an unwind too: a hook that panics takes the rest
+        // of this method with it, and the honest answer for a stop
+        // that did not finish is the same as for one whose commands
+        // failed.
+        let paying = self
+            .safety_debt_incurred
+            .fetch_add(1, Ordering::SeqCst)
+            .saturating_add(1);
 
         debug!(
             context,

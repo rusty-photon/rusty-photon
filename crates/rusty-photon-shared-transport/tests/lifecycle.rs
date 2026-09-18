@@ -165,6 +165,25 @@ async fn a_cold_start_whose_safety_stop_misses_the_wire_does_not_serve() {
         1,
         "and the port must be released, not held by the failed start"
     );
+
+    // And the failure has to be on the record. A first cold start that
+    // fails here leaves `service_lifetime` false — it is set only after
+    // the publish — so a caller that handles the error and opens
+    // anyway takes the lazy 0→1 path. Nothing outstanding there would
+    // mean a session on a conduit whose safety state was never
+    // asserted, which is the whole hole this change exists to close.
+    let client = st.acquire().await.unwrap();
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        2,
+        "the open after a failed startup assertion must replay it, not skip it"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "and that replay is the one that lands"
+    );
+    client.close().await.unwrap();
 }
 
 #[tokio::test]

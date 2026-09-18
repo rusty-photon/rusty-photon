@@ -18,12 +18,13 @@ Feature: Connection lifecycle
     When I connect the device
     Then the device should be connected
 
-  Scenario: Connect runs the initialisation handshake in order
-    The :e1 motor-board-version inquiry runs first so the driver can refuse
-    to send mount-specific init commands to a device that isn't a Sky-Watcher
-    motor controller. See issue #254.
+  Scenario: Startup runs the initialisation handshake in order
+    The handshake belongs to service startup, not to Connected = true: the
+    port opens eagerly at start and a later connect is a refcount bump on
+    the already-open transport. The :e1 motor-board-version inquiry runs
+    first so the driver can refuse to send mount-specific init commands to
+    a device that isn't a Sky-Watcher motor controller. See issue #254.
     Given a running star-adventurer service
-    When I connect the device
     Then the mount should have received startup commands in order:
       | command |
       | :e1     |
@@ -52,6 +53,18 @@ Feature: Connection lifecycle
       | :L1     |
       | :L2     |
       | :K1     |
+
+  Scenario: A reload halts the mount again on its fresh conduit
+    A reload tears the transport down and builds a new one, so the mount
+    sees a second startup over the same link: the :F1 initialisation runs
+    again, and the :L1, :L2, :K1 halt runs again behind it. That second
+    halt is the one that matters — a shutdown whose link was already dead
+    cannot land its own, and nothing in the new lifecycle remembers that
+    it did not. See issue #1251.
+    Given a running star-adventurer service
+    When config.apply pins the bound port and sets the mount description to "Reloaded Mount"
+    Then the reloaded service serves mount description "Reloaded Mount"
+    And the mount should have been initialised and halted a second time
 
   Scenario: Connect populates the parameter cache from handshake replies
     Given a mount that reports CPR 3628800 on the RA axis and 2903040 on the Dec axis

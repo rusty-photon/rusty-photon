@@ -172,6 +172,59 @@ async fn param_cache_tmr_freq(world: &mut StarAdventurerWorld, _expected: u32) {
     assert!(log.iter().any(|c| c == ":b1\r"), "no :b1 in log");
 }
 
+#[then("the mount should have been initialised and halted a second time")]
+async fn reload_reinitialises_and_halts(world: &mut StarAdventurerWorld) {
+    // Both halves matter. Two `:F1` frames say the reload opened a
+    // second conduit to the *same* mount — the mock mount outlives the
+    // reload, as the hardware would — and the halt after the second one
+    // is the cold start's own safety assertion on the fresh conduit.
+    let log = world
+        .wait_for_command_log_including_startup(DEBUG_RETRY_WINDOW, |log| {
+            second_init_is_followed_by_a_halt(log)
+        })
+        .await;
+    match log {
+        Ok(_) => {}
+        Err(CommandLogTimeout::NoMatch(log)) => {
+            // The tail only: the poll loop makes this log hundreds of
+            // frames long, and the whole of it buries the count that
+            // actually says what went wrong.
+            let inits = log.iter().filter(|c| c.as_str() == ":F1\r").count();
+            let tail: Vec<&String> = log.iter().rev().take(20).collect();
+            panic!(
+                "expected a second :F1 followed by :L1, :L2, :K1; saw {inits} :F1 frames in a log \
+                 of {}; last 20 (newest-first): {tail:?}",
+                log.len()
+            );
+        }
+        Err(CommandLogTimeout::FetchFailed(e)) => {
+            panic!("could not read mock-commands: {e}")
+        }
+    }
+}
+
+/// Whether the log carries a second `:F1` with the whole halt sequence
+/// after it.
+fn second_init_is_followed_by_a_halt(log: &[String]) -> bool {
+    let mut inits = log
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.as_str() == ":F1\r")
+        .map(|(i, _)| i);
+    let Some(second) = inits.nth(1) else {
+        return false;
+    };
+    let after = &log[second..];
+    let mut idx = 0usize;
+    for want in [":L1\r", ":L2\r", ":K1\r"] {
+        match after[idx..].iter().position(|c| c.as_str() == want) {
+            Some(hit) => idx += hit + 1,
+            None => return false,
+        }
+    }
+    true
+}
+
 #[then(expr = "the mount should have received command {word}")]
 async fn mount_received_command(world: &mut StarAdventurerWorld, command: String) {
     // Wait for any in-flight watcher iteration to issue its commands;
