@@ -1396,6 +1396,72 @@ simulator: `measure_basic` / `detect_stars` / `compute_snr` assert only
 "a non-negative count" against a simulator frame for this same reason,
 and the star-level assertions live in unit tests over synthetic frames.
 
+#### 5.14 Never assert a mount read-back against the RA you synced
+
+`SyncToCoordinates` does **not** land OmniSim's telescope exactly on the
+RA you asked for, and the size of the miss is a wall-clock artefact of
+the runner. A scenario that syncs to an RA and then asserts the mount
+reports that same RA back is asserting on how fast the machine is.
+
+The mechanism, measured against the pinned OmniSim release
+(`v0.5.0-467.2`):
+
+- `MountFunctions.ConvertRaDecToAxes` builds the mount axis from the
+  **cached** `TelescopeHardware.SiderealTime`, which is refreshed only
+  by `UpdatePositions()` at the tail of each `MoveAxes()` tick
+  (`TIMER_INTERVAL` = 100 ms).
+- `SyncToTarget()` writes the axis from that cached value and then calls
+  `UpdatePositions()`, which refreshes the sidereal time and re-derives
+  the reported RA from the axis it just wrote. The reported RA is
+  therefore `requested RA + (however stale the cache was)`.
+- Normally the next tick cancels it: the tick's `dt` runs from
+  `lastUpdateTime`, which is the same tick that took the stale snapshot,
+  so the tracking back-fill absorbs the difference exactly.
+- But `TelescopeHardware.Start()` — run on every
+  `PUT /simulator/v1/telescope/0/restart`, i.e. on **every scenario**
+  via the §5.5 reset hook — sets `lastUpdateTime` without refreshing the
+  sidereal-time cache. The back-fill window is truncated and the offset
+  becomes permanent. Tracking then *holds* the mount at the offset
+  position, so this is a fixed error, not a drift.
+
+Two different numbers matter here, and they are easy to conflate.
+
+*How far the sync lands from the RA you asked for* is the wall-clock
+quantity, and it is not small: measured with bare Alpaca calls, a sync
+issued right after a restart keeps +0.0002…+0.0003° for the rest of the
+scenario; a real `rp:bdd` run on an idle container landed +0.0012° out;
+and with the simulator process stalled for 3 s across the restart, one
+trial in six kept **+0.0128°** — 46 arcsec, which is how
+`//services/rp:bdd` went red on `bazel / windows-latest`
+(issue [#1252](https://github.com/rusty-photon/rusty-photon/issues/1252),
+run
+[34675918330](https://github.com/rusty-photon/rusty-photon/actions/runs/34675918330)).
+There is no bound to quote: the offset is however long the simulator's
+timer was stalled. The same effect at its ordinary magnitude — one timer
+interval — is what `mount.feature`'s `SLEW_ECHO_TOLERANCE` absorbs; it
+is a stale clock, not float drift in a coordinate transform.
+
+*How far two reads of the same tracking mount disagree* is the other
+number, and it is tiny: ~2e-6°, the simulator's per-tick numerical
+noise. Tracking holds the mount at whatever position the sync landed on,
+so the offset above is a constant the reads share and cancel.
+
+**The rule.** Assert a forwarded pointing value against what the mount
+*reported*, not against the literal the scenario synced to. Read the
+position back (`get_mount_position`) next to the call under test and
+compare the two reads: they share the sync offset, so the budget is only
+the ~2e-6° noise above and nothing is charged for how long the runner
+took. Keep a separate, coarse bound against the synced literal when the
+scenario wants to know the mount is still pointing where it was put. `plate_solve.feature`'s
+`use_mount_hints` scenario is the worked example: a 0.001° read-to-read
+bound carries the ×15 hours-to-degrees guard, and a 0.5° sanity bound
+carries "still on target".
+
+Widening the tolerance instead is the wrong fix twice over: it is
+unbounded (the offset is however long the runner stalled), and the tight
+bound is what catches the unit-conversion defect the assertion exists
+for.
+
 ---
 
 ### 6. Unit Test Rules

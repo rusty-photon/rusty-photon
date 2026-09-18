@@ -110,6 +110,12 @@ Feature: Plate solve MCP tool
     And the MCP client calls "plate_solve" with the captured document_id and pointing_hint ra_deg 160.272 dec_deg 41.269
     Then the stub plate solver should have received a request with ra_hint 160.272 and dec_hint 41.269
 
+  # The hint is pinned against what the mount actually reported, not
+  # against the 10.6848 h we synced to: OmniSim's SyncToCoordinates
+  # does not land exactly on the requested RA, and the size of the
+  # miss is a wall-clock artefact of the runner (issue #1252). The
+  # readback keeps the ×15 hours-to-degrees guard tight; the 0.5°
+  # sanity bound still catches a mount left pointing elsewhere.
   Scenario: use_mount_hints true reads the mount and forwards converted RA and Dec
     Given a running Alpaca simulator
     And a stub plate solver returning a canned WCS
@@ -119,7 +125,9 @@ Feature: Plate solve MCP tool
     When the MCP client calls "sync_mount" with ra "10.6848" dec "41.2690"
     And the MCP client calls "capture" with camera "main-cam" for 100 ms
     And the MCP client calls "plate_solve" with the captured document_id and use_mount_hints true
-    Then the stub plate solver should have received a request with ra_hint 160.272 and dec_hint 41.269
+    And I record the mount position reported by get_mount_position
+    Then the stub plate solver should have received ra_hint equal to the recorded mount ra × 15 and dec_hint equal to the recorded mount dec
+    And the recorded mount position should be within 0.5 degrees of ra 160.272 and dec 41.269
 
   Scenario: use_mount_hints true with no mount configured returns error
     Given a running Alpaca simulator
