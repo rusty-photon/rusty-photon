@@ -45,6 +45,8 @@ async fn set_average_period(world: &mut Upbv2World, hours: f64) {
     world.oc_ref().set_average_period(hours).await.unwrap();
 }
 
+// cucumber's `{float}` matches `NaN` and `inf` as well as ordinary decimals,
+// so the NaN scenario (#1247) rides this step.
 #[when(expr = "I try to set the average period to {float} hours")]
 async fn try_set_average_period(world: &mut Upbv2World, hours: f64) {
     let result = world.oc_ref().set_average_period(hours).await;

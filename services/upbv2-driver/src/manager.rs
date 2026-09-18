@@ -93,13 +93,22 @@ fn instantaneous_window(poll_interval: Duration) -> Duration {
 /// Anything above zero is that period exactly; zero routes to
 /// [`instantaneous_window`]. `period_hours` is never negative — the device
 /// rejects that before it reaches here — so `<= 0.0` reads as "is zero"
-/// without tripping `clippy::float_cmp`.
+/// without tripping `clippy::float_cmp`. A value that should have been
+/// rejected (NaN, or a period too large for a `Duration`) also lands on the
+/// instantaneous window rather than panicking.
 fn effective_window(period_hours: f64, poll_interval: Duration) -> Duration {
     if period_hours <= 0.0 {
-        instantaneous_window(poll_interval)
-    } else {
-        Duration::from_secs_f64(period_hours * 3600.0)
+        return instantaneous_window(poll_interval);
     }
+    // `try_from_secs_f64`, not `from_secs_f64`: the panicking form takes the
+    // whole driver down on a non-finite or out-of-range value, and a driver
+    // that panics at 2am ends the night's imaging (tenet 2). The device
+    // rejects those before they reach here, so the fallback is unreachable on
+    // the wire path — it is what keeps a future caller from reintroducing the
+    // panic (#1247). Falling back to the instantaneous window fails closed:
+    // the shortest window that still holds the newest sample.
+    Duration::try_from_secs_f64(period_hours * 3600.0)
+        .unwrap_or_else(|_| instantaneous_window(poll_interval))
 }
 
 /// Manager that wraps the shared transport plus `UPBv2`-specific cached
@@ -629,6 +638,20 @@ mod tests {
         assert_eq!(state.boot_state.unwrap().variable_volts, 9);
 
         session.close().await.unwrap();
+    }
+
+    #[test]
+    fn effective_window_does_not_panic_on_a_non_finite_period() {
+        // Defence in depth for #1247. The device rejects a non-finite period
+        // before it reaches here, so this is the second line: a caller that
+        // did not would otherwise hit `Duration::from_secs_f64`'s panic and
+        // take the driver down mid-session. Failing closed to the shortest
+        // window keeps sensor reads honest instead.
+        let poll = Duration::from_secs(5);
+        let expected = instantaneous_window(poll);
+        assert_eq!(effective_window(f64::NAN, poll), expected);
+        assert_eq!(effective_window(f64::INFINITY, poll), expected);
+        assert_eq!(effective_window(f64::MAX, poll), expected);
     }
 
     #[tokio::test]

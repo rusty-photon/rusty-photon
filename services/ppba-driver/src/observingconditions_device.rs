@@ -141,16 +141,15 @@ impl ObservingConditions for PpbaObservingConditionsDevice {
 
     async fn set_average_period(&self, period: f64) -> ASCOMResult<()> {
         ensure_connected!(self);
-        if period < 0.0 {
+        // One range check rather than two ordered comparisons: every ordered
+        // comparison against NaN is false, so `period < 0.0` and
+        // `period > 24.0` both let NaN through to the `Duration` conversion in
+        // the manager, which panics on a non-finite value. `contains` is false
+        // for NaN, so the check fails closed (#1247).
+        if !(0.0..=24.0).contains(&period) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
-                format!("Average period cannot be negative, got {period}"),
-            ));
-        }
-        if period > 24.0 {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::INVALID_VALUE,
-                format!("Average period cannot exceed 24 hours, got {period}"),
+                format!("Average period must be a finite value in [0, 24] hours, got {period}"),
             ));
         }
         // Passed through in hours, not as a window: the manager is where the
@@ -404,6 +403,17 @@ mod tests {
     async fn set_average_period_too_large_is_invalid_value() {
         let device = connected_device().await;
         let err = device.set_average_period(25.0).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_average_period_nan_is_invalid_value() {
+        // NaN compares false against both range bounds, so the two ordered
+        // comparisons this check replaced let it through to the manager's
+        // `Duration` conversion, which panics on a non-finite value (#1247).
+        let device = connected_device().await;
+        let err = device.set_average_period(f64::NAN).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
         device.set_connected(false).await.unwrap();
     }

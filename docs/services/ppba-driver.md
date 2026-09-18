@@ -275,6 +275,17 @@ inferred from the resulting window. Inferring it cannot represent zero (the
 window is never zero) and makes a genuine average whose length happens to
 equal the instantaneous window indistinguishable from "not averaging".
 
+`SetAveragePeriod` accepts a finite value in `[0, 24]` hours and rejects
+everything else with `INVALID_VALUE` — including `NaN`, which an Alpaca client
+can send because `f64::from_str` parses `"NaN"`. The check is one range test
+rather than a pair of ordered comparisons on purpose: every ordered comparison
+against `NaN` is false, so `NaN` would otherwise pass validation and reach the
+seconds-to-`Duration` conversion, which panics on a non-finite value
+([#1247](https://github.com/rusty-photon/rusty-photon/issues/1247)). That
+conversion is fallible now as well, so a period the device should have
+rejected falls back to the instantaneous window instead of taking the driver
+down mid-session.
+
 `config.apply` validates `averaging_period` against the same bounds the device
 enforces on `SetAveragePeriod`: no lower bound (zero is meaningful), and a 24
 hour ceiling, which is ASCOM's. The two must agree — a period a client can
