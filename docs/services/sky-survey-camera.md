@@ -485,6 +485,24 @@ scenarios in `tests/features/`. ASCOM error codes use the names from
 - **C4.** `set_connected(false)` cancels any in-flight exposure and
   resets `LastExposureStartTime` / `LastExposureDuration` to the
   unset state; subsequent ASCOM operations return `NOT_CONNECTED`.
+- **C5.** That includes every member reporting exposure state —
+  `CameraState`, `ImageReady`, `PercentCompleted`,
+  `LastExposureStartTime`, `LastExposureDuration` and `ImageArray`.
+  Each answers `NOT_CONNECTED` while the device is disconnected
+  rather than describing a session that is not running: `Idle` and
+  `ImageReady = false` are answers about a camera that is there, and
+  "no exposure has started yet" (`INVALID_OPERATION`) says the
+  running session has not exposed, which is not the same thing as
+  having no session. C4's reset means nothing stale is on offer here
+  — unlike the SDK-backed siblings, which clear at connect — so this
+  is the ASCOM shape alone, shared with `qhy-camera`'s E10,
+  `zwo-camera`'s E11 and `svbony-camera`'s state-machine step 9.
+  `Connected` itself still never throws (it is how a client asks),
+  and the capability probes (`CanAbortExposure`, `CanStopExposure`,
+  `HasShutter`) describe the driver rather than a session.
+  `AbortExposure` / `StopExposure` keep A2's `INVALID_OPERATION`:
+  nothing can be in flight on a disconnected device, so A2 already
+  covers that case.
 
 ### Pointing API
 
@@ -672,11 +690,12 @@ graph TD;
 | `Offset` family | Reports `PROPERTY_NOT_IMPLEMENTED` (no signal model) |
 | `ReadoutMode` / `ReadoutModes` | Single mode `"Default"` at index `0`; setter rejects non-zero |
 | `SensorName` / `SensorType` | `"SkyView Virtual Sensor"` / `Monochrome` |
-| `CameraState` | `Idle` / `Exposing` / `Error` based on internal state |
-| `PercentCompleted` | Binary: `0` while in flight, `100` once `ImageReady` |
+| `CameraState` | `Idle` / `Exposing` / `Error` based on internal state; `NOT_CONNECTED` while disconnected (C5) |
+| `PercentCompleted` | Binary: `0` while in flight, `100` once `ImageReady`; `NOT_CONNECTED` while disconnected (C5) |
 | `CanAbortExposure` / `CanStopExposure` | `true`, both cancel the in-flight survey fetch |
 | `CoolerOn`, `CCDTemperature`, `CanGetCoolerPower`, `CanSetCCDTemperature`, `CanPulseGuide`, `CanFastReadout`, `HasShutter`, `BayerOffsetX/Y` | All `false` / `PROPERTY_NOT_IMPLEMENTED` |
-| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Implemented per pipeline above; `ImageArray` returns the cropped subframe with axes `[X, Y]` |
+| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Implemented per pipeline above; `ImageArray` returns the cropped subframe with axes `[X, Y]`. `StartExposure` (E1), `ImageReady`, `ImageArray` and `ImageArrayVariant` answer `NOT_CONNECTED` while disconnected (C5); `AbortExposure` / `StopExposure` answer `INVALID_OPERATION` there, per A2 |
+| `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session. While disconnected: `NOT_CONNECTED` (C5) — the connected check runs first, so the disconnected interval never shows the reset. Once connected: `INVALID_OPERATION` until this session has exposed, which a reconnect restores by way of C4's reset at the preceding disconnect |
 
 ConformU is the canonical ASCOM correctness check. The
 `tests/conformu_integration.rs` target (gated by the `conformu`

@@ -1,6 +1,7 @@
 //! Step definitions for `connection_lifecycle.feature` (contracts C1-C4).
 
 use crate::world::SkySurveyCameraWorld;
+use cucumber::gherkin::Step;
 use cucumber::{given, then, when};
 
 #[given("a sky-survey-camera with default optics")]
@@ -90,4 +91,50 @@ async fn read_connected(world: &mut SkySurveyCameraWorld) -> bool {
     body["Value"]
         .as_bool()
         .expect("Value field missing or not bool")
+}
+
+/// Read every listed member of the exposure-state surface and assert each is
+/// refused (C5). One step over a table rather than a scenario outline: the
+/// contract is about the surface as a whole — one member answering while its
+/// neighbours refuse is the contradiction the check exists to remove — and an
+/// outline would pay a service start, and for the post-frame case a survey
+/// exposure, per member. That cost is what pushed this suite past its 60s
+/// Bazel budget on Windows; the members stay listed in the feature file, which
+/// is what §2.5 of the testing skill asks for.
+#[then("reading these members is rejected with ASCOM NOT_CONNECTED:")]
+async fn reads_rejected_not_connected(world: &mut SkySurveyCameraWorld, step: &Step) {
+    let table = step
+        .table
+        .as_ref()
+        .expect("step requires a data table of member names");
+    for row in table.rows.iter().skip(1) {
+        let member = row.first().expect("table row must name a member");
+        let method = match member.as_str() {
+            "CameraState" => "camerastate",
+            "ImageReady" => "imageready",
+            "PercentCompleted" => "percentcompleted",
+            "LastExposureStartTime" => "lastexposurestarttime",
+            "LastExposureDuration" => "lastexposureduration",
+            "ImageArray" => "imagearray",
+            other => panic!("unknown exposure-state member: {other}"),
+        };
+        world.last_ascom_error = None;
+        world.get_camera(method).await;
+        let actual = world.last_ascom_error.unwrap_or_else(|| {
+            panic!(
+                "{member} answered instead of refusing (body: {:?})",
+                world.last_http_body
+            )
+        });
+        assert_eq!(
+            actual, 0x407,
+            "{member}: expected NOT_CONNECTED (0x407), got {actual:#X} (body: {:?})",
+            world.last_http_body
+        );
+    }
+    // The refusals this step asserted on are consumed here. `put_camera` only
+    // ever *sets* `last_ascom_error`, so a later step's success guard (e.g.
+    // "I connect the camera") would otherwise trip on the last read's expected
+    // 0x407 and report a connect failure that never happened.
+    world.last_ascom_error = None;
 }

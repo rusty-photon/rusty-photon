@@ -1314,7 +1314,16 @@ impl Camera for ZwoCamera {
 
     // --- exposure state ---------------------------------------------------------
 
+    /// The exposure state is a *session's* state, and this is the first of the
+    /// five members that report it (E11). Each takes the connected check for the
+    /// same reason: the state is cleared at the start of a connect (C3) and
+    /// nowhere else — a disconnect clears it only when it found a capture to
+    /// cancel — so answering it while disconnected answers from the session that
+    /// has ended. The capability probes beside them (`CanAbortExposure`,
+    /// `HasShutter`) describe the driver rather than a session and are
+    /// deliberately still answerable.
     async fn camera_state(&self) -> ASCOMResult<CameraState> {
+        self.ensure_connected()?;
         if self.state.last_error.lock().is_some() {
             return Ok(CameraState::Error);
         }
@@ -1324,11 +1333,18 @@ impl Camera for ZwoCamera {
         Ok(CameraState::Idle)
     }
 
+    /// `ImageArray` is read straight after this one and takes the same check, so
+    /// without it here the pair contradict each other across a disconnect: ready
+    /// beside a frame that refuses (E11).
     async fn image_ready(&self) -> ASCOMResult<bool> {
+        self.ensure_connected()?;
         Ok(self.state.image_ready.load(Ordering::Acquire) && !self.state.exposure_in_flight())
     }
 
     async fn percent_completed(&self) -> ASCOMResult<u8> {
+        // E11: the idle branch below answers from cached state alone, so the
+        // check belongs here rather than at the SDK read further down.
+        self.ensure_connected()?;
         if !self.state.exposure_in_flight() {
             // Idle: 100 once ready, 0 in the Error state.
             return Ok(if self.state.last_error.lock().is_some() {
@@ -1348,11 +1364,17 @@ impl Camera for ZwoCamera {
         Ok(camera_core::progress_percent(elapsed, duration))
     }
 
+    /// `VALUE_NOT_SET` means *this session has not exposed yet*, so the
+    /// connected check comes first (E11): without it the answer between a
+    /// disconnect and the next connect is the ended session's frame rather than
+    /// either of the two things a client can act on.
     async fn last_exposure_start_time(&self) -> ASCOMResult<SystemTime> {
+        self.ensure_connected()?;
         (*self.state.last_exposure_start_time.lock()).ok_or(ASCOMError::VALUE_NOT_SET)
     }
 
     async fn last_exposure_duration(&self) -> ASCOMResult<Duration> {
+        self.ensure_connected()?;
         (*self.state.last_exposure_duration.lock()).ok_or(ASCOMError::VALUE_NOT_SET)
     }
 
@@ -2799,9 +2821,14 @@ mod tests {
 
     #[tokio::test]
     async fn disconnect_cancels_in_flight_exposure() {
-        let handle = MockCameraHandle::default();
+        let handle = Arc::new(MockCameraHandle::default());
         handle.set_capture_delay(Duration::from_secs(5));
-        let device = connected_device(handle);
+        let device = ZwoCamera::new(
+            Arc::<MockCameraHandle>::clone(&handle),
+            None,
+            MaxAduReporting::default(),
+        );
+        device.connect().unwrap();
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
         device
@@ -2811,6 +2838,88 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(30)).await;
         device.set_connected(false).await.unwrap();
         assert!(!device.connected().await.unwrap());
+        // The cancellation itself, asserted where it is actually visible: the
+        // capture saw its stop and returned no frame. `ImageReady` cannot show
+        // this — it is false while a capture is merely still running, and the
+        // reconnect below would clear it either way.
+        wait_captures_finished(&handle, 1).await;
+        assert_eq!(
+            handle.capture_outcomes(),
+            vec![Some(CaptureOutcome::Aborted)],
+            "the disconnect did not reach the in-flight capture"
+        );
+        // Its state is the ended session's, so it is not readable here at all
+        // (E11); what it must not do is survive into the next session as a
+        // frame nobody took.
+        assert_eq!(
+            device.image_ready().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        device.set_connected(true).await.unwrap();
         assert!(!device.image_ready().await.unwrap());
+    }
+
+    /// E11: the `Error` an E9 left behind belongs to the session that hit it.
+    /// Reported across the disconnect it would tell a supervisor polling
+    /// `CameraState` that a camera it cannot reach is faulted, and go on saying
+    /// so until somebody reconnects the device — the state is cleared at the
+    /// start of a connect (C3) and nowhere else.
+    #[tokio::test]
+    async fn an_errored_camera_answers_not_connected_once_disconnected() {
+        let handle = Arc::new(MockCameraHandle::default());
+        handle.fail_capture.store(true, Ordering::SeqCst);
+        let device = ZwoCamera::new(handle.clone(), None, MaxAduReporting::default());
+        device.set_connected(true).await.unwrap();
+        device.set_num_x(64).await.unwrap();
+        device.set_num_y(48).await.unwrap();
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        wait_camera_state(&device, CameraState::Error).await;
+
+        device.set_connected(false).await.unwrap();
+        assert_eq!(
+            device.camera_state().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        // The Error state's own PercentCompleted answer (0) is just as much the
+        // ended session's.
+        assert_eq!(
+            device.percent_completed().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// E11 before there is any session at all: a device nobody has connected has
+    /// no exposure state to report, and `VALUE_NOT_SET` (which says *this
+    /// session has not exposed yet*) would be the wrong half of the answer.
+    #[tokio::test]
+    async fn the_exposure_state_surface_refuses_before_a_first_connect() {
+        let device = ZwoCamera::new(
+            Arc::new(MockCameraHandle::default()),
+            None,
+            MaxAduReporting::default(),
+        );
+        assert_eq!(
+            device.camera_state().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.image_ready().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.percent_completed().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.last_exposure_start_time().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.last_exposure_duration().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
     }
 }

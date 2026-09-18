@@ -20,7 +20,8 @@ valid ASI ROI), symmetric binning, ROI with the ASI `%8`/`%2` alignment rules,
 gain/offset, cooling, readout modes, asynchronous ST4 pulse guiding, and the
 snap-mode exposure state
 machine (start; abort *discards* / graceful stop *preserves*; `ImageArray`,
-`CameraState`, `PercentCompleted`, mid-exposure `Error`), plus serial-derived
+`CameraState`, `PercentCompleted`, mid-exposure `Error` — all of which report
+the **running** session and answer `NOT_CONNECTED` outside one), plus serial-derived
 identity and the `config.get`/`apply`/`schema` actions. Validated by **45 unit
 tests** (against the in-crate mock seam), **57 BDD scenarios**, and a full
 **ConformU** pass (both `alpacaprotocol` and `conformance` suites). Roadmap:

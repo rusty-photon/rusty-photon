@@ -1064,6 +1064,29 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
    `camera::tests::a_superseded_capture_does_not_release_the_new_exposures_slot`
    against the mock's capture gate for the slot half); mirrors
    `zwo-camera`'s E10.
+9. **The exposure state belongs to the running session.** `CameraState`,
+   `ImageReady`, `PercentCompleted`, `LastExposureStartTime` and
+   `LastExposureDuration` answer `NOT_CONNECTED` while the device is
+   disconnected, as `StartExposure`, `AbortExposure`, `ImageArray` and
+   `ImageArrayVariant` do. The state is cleared at the *start of a connect* (C3)
+   and, on the disconnect side, only when the disconnect found a capture to
+   cancel — so without the check a camera that took a frame and was then
+   disconnected reports `ImageReady = true` and `PercentCompleted = 100` beside
+   an `ImageArray` that refuses, and one that hit step 7's error reports
+   `CameraState = Error` until someone reconnects it. Nothing stale can be
+   *served* (`ImageArray` checks); what is at stake is a wrong answer to a
+   readiness question, and the two members a client is told to poll together
+   contradicting each other.
+
+   `CameraState` throws rather than answering safely the way `Connected` does:
+   `Connected` never throws because it is how a client asks whether the device
+   is there at all, while `CameraState` reports device state, which ASCOM
+   answers with `NOT_CONNECTED` when there is none. The state is still reset
+   only at the start of a connect, not on disconnect — with these members
+   refusing there is nothing observable in between. The capability probes
+   (`CanAbortExposure`, `CanStopExposure`, `CanPulseGuide`, `HasShutter`) are
+   unaffected: they describe the driver, not a session. Shared with
+   `qhy-camera`'s E10 and `zwo-camera`'s E11.
 
 ### ROI / binning
 
@@ -1265,13 +1288,14 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 | `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `bSupportControlTemp` | **Real** |
 | `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `bSupportControlTemp` | **Real** |
 | `HasShutter` | `false` (no mechanical shutter in video mode) | **Real** |
-| `CameraState` | `Idle` / `Exposing` / `Error` | **Real** |
-| `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100 | **Real** |
+| `CameraState` | `Idle` / `Exposing` / `Error`; `NOT_CONNECTED` while disconnected (state machine step 9) | **Real** |
+| `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100; `NOT_CONNECTED` while disconnected (step 9) | **Real** |
 | `CanAbortExposure` / `CanStopExposure` | `true` / **`false`** (no data-preserving stop) | **Real** |
 | `CanPulseGuide` | `true` iff ST4 port present (SV605CC: `false`) | **Real** |
 | `PulseGuide` / `IsPulseGuiding` | `SVBPulseGuide`, gated on ST4 capability; kept a literal blocking call (PG2) | **Real** |
 | `StartExposure` (`Light=false`) | Accepted; captured normally (no shutter) | **Real** |
-| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` | Per the soft-trigger video-capture state machine above | **Real** |
+| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` | Per the soft-trigger video-capture state machine above; all `NOT_CONNECTED` while disconnected (step 9) | **Real** |
+| `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session; `VALUE_NOT_SET` before its first exposure, `NOT_CONNECTED` while disconnected (step 9) | **Real** |
 | `Name` / `Description` / `DriverInfo` / `DriverVersion` / `Connected` / `UniqueID` | — | **Real** |
 
 ---
