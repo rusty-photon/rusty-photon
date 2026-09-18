@@ -53,6 +53,11 @@ Feature: Observing Conditions
     When I try to set the average period to 25.0 hours
     Then the last error code should be INVALID_VALUE
 
+  Scenario: Set average period to NaN rejects
+    Given a running UPBv2 server with the OC device connected
+    When I try to set the average period to NaN hours
+    Then the last error code should be INVALID_VALUE
+
   Scenario: Set average period fractional 0.5 hours
     Given a running UPBv2 server with the OC device connected
     When I set the average period to 0.5 hours
