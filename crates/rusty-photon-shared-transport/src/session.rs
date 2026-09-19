@@ -467,3 +467,39 @@ const _: fn() = || {
 const _: fn() = || {
     const fn _assert_future<F: Future<Output = ()>>() {}
 };
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::StateAssertion;
+
+    /// The fold is what a hook issuing several commands uses to answer
+    /// one question, so both directions of it are contract.
+    #[test]
+    fn a_fold_is_asserted_only_when_every_part_is() {
+        assert_eq!(
+            StateAssertion::Asserted.and(StateAssertion::Asserted),
+            StateAssertion::Asserted
+        );
+        // Every mixed pairing is not-asserted: half a halt is not a
+        // third answer, it is a mount that may still be turning.
+        assert_eq!(
+            StateAssertion::Asserted.and(StateAssertion::NotAsserted),
+            StateAssertion::NotAsserted
+        );
+        assert_eq!(
+            StateAssertion::NotAsserted.and(StateAssertion::Asserted),
+            StateAssertion::NotAsserted
+        );
+        assert_eq!(
+            StateAssertion::NotAsserted.and(StateAssertion::NotAsserted),
+            StateAssertion::NotAsserted
+        );
+    }
+
+    #[test]
+    fn only_asserted_reads_as_asserted() {
+        assert!(StateAssertion::Asserted.is_asserted());
+        assert!(!StateAssertion::NotAsserted.is_asserted());
+    }
+}

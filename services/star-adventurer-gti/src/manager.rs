@@ -1744,4 +1744,52 @@ mod tests {
             "and must not advertise a mount whose halt it could not assert"
         );
     }
+
+    /// A mount that refuses the *shutdown* halt gets the loud log and
+    /// nothing else: the lifecycle is ending, `Hooks::shutdown` has no
+    /// verdict to return, and the teardown still has to finish. The
+    /// next cold start is what re-asserts the state (#1251).
+    ///
+    /// Clearing the parameter cache is the observable proof the
+    /// teardown ran past the refusal rather than bailing at it.
+    #[tokio::test]
+    async fn a_mount_that_refuses_the_shutdown_halt_still_finishes_teardown() {
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        let manager = MountManager::new(&Config::default(), Arc::new(factory));
+
+        // Start healthy — the refusal has to come after the handshake
+        // has cached parameters, or there is nothing to clear.
+        manager.transport().start().await.unwrap();
+        assert!(
+            manager.parameters().await.is_some(),
+            "the handshake must have cached parameters before the shutdown"
+        );
+
+        // Now the mount refuses `:L`. `:K` still answers, so this is a
+        // partial refusal — which folds to not-asserted all the same.
+        state.lock().await.fail_command = Some(b'L');
+
+        manager.transport().shutdown().await.unwrap();
+
+        assert!(
+            manager.parameters().await.is_none(),
+            "the teardown must clear the cache even when the halt was refused"
+        );
+        // The premise, not an aside: `fail_command = Some(b'L')` makes
+        // the mock answer `:L1` with `!0`, so seeing `:L1` on the wire
+        // is seeing the refusal happen. Without it this test would pass
+        // just as well on a halt the mount accepted, and would be
+        // asserting nothing about the refusal path at all. The `error!`
+        // itself is a log side-effect and deliberately not asserted.
+        let log = state.lock().await.command_log.clone();
+        assert!(
+            log.iter().any(|f| f.starts_with(b":L1")),
+            "the refused halt must have gone out: {log:?}"
+        );
+        assert!(
+            log.iter().any(|f| f.starts_with(b":K1")),
+            "and the sequence must continue past it, not stop at the first refusal: {log:?}"
+        );
+    }
 }

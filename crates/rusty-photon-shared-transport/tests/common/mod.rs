@@ -726,6 +726,9 @@ pub struct SafetyStopHooks {
     /// runtime watches stays clean and only the verdict says no. Zero
     /// (the default) never refuses.
     refuse_from: u32,
+    /// How many invocations from `refuse_from` on refuse. Zero means
+    /// all of them.
+    refuse_count: u32,
     /// First invocation the failing window covers. One by default; a
     /// `ServiceLifetime` test that wants its *1→0* stop to fail sets
     /// this past the cold start's own assertion of the same hook.
@@ -745,6 +748,7 @@ impl Default for SafetyStopHooks {
             fail_first: 0,
             fail_from: 1,
             refuse_from: 0,
+            refuse_count: 0,
         }
     }
 }
@@ -794,6 +798,14 @@ impl SafetyStopHooks {
         self
     }
 
+    /// Refuse exactly the nth invocation and no other, so a test can
+    /// let the recovery that answers it succeed.
+    pub const fn refusing_once(mut self, nth: u32) -> Self {
+        self.refuse_from = nth;
+        self.refuse_count = 1;
+        self
+    }
+
     /// Park invocations past `free`, combinable with
     /// [`SafetyStopHooks::failing_first`] so a test can have the first
     /// call fail on the wire and hold the replay that answers it open.
@@ -829,6 +841,7 @@ impl SafetyStopHooks {
         let fail_first = self.fail_first;
         let fail_from = self.fail_from;
         let refuse_from = self.refuse_from;
+        let refuse_count = self.refuse_count;
         let panics_on = self.panics_on;
         Hooks {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
@@ -859,7 +872,10 @@ impl SafetyStopHooks {
                         entered.notify_one();
                         release.notified().await;
                     }
-                    if refuse_from != 0 && nth >= refuse_from {
+                    let refusing = refuse_from != 0
+                        && nth >= refuse_from
+                        && (refuse_count == 0 || nth < refuse_from.saturating_add(refuse_count));
+                    if refusing {
                         StateAssertion::NotAsserted
                     } else {
                         StateAssertion::Asserted

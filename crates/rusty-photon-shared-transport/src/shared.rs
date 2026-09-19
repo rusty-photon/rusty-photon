@@ -808,6 +808,41 @@ impl<C: Codec> SharedTransport<C> {
         }
     }
 
+    /// Advertise a recovered transport, unless a stop is owed.
+    ///
+    /// The last thing between a successful attempt and clients being
+    /// let back in. [`commit_replacement`](Self::commit_replacement)
+    /// already reads the debt, but it reads it *inside* the attempt,
+    /// and a 1→0 can land in the gap between that read and this
+    /// publish — `attempt_reconnect` does not hold `acquire_lock`, and
+    /// cannot, because `shutdown` holds it while joining the
+    /// supervisor that runs the attempt. Such a cleanup records the
+    /// debt and takes the transport out of service, and publishing
+    /// over the top of it would hand the next client a conduit to a
+    /// device whose stop never landed.
+    ///
+    /// Returns whether it published. A refusal leaves `reconnecting`
+    /// as the attempt found it — set — so the supervisor comes back
+    /// round and replays the stop before anything is advertised.
+    fn publish_recovery(&self) -> bool {
+        if self.safety_debt_outstanding() {
+            warn!(
+                "a safety stop came due while the transport was recovering; \
+                 not advertising it as recovered"
+            );
+            return false;
+        }
+        // Order matters: `Session::request` reads `reconnecting` and
+        // then `available`, so clearing the first while the second is
+        // still false gives a racing request the terminal shutdown
+        // error — for a reconnect that just succeeded. Published this
+        // way round, the worst it sees is `Reconnecting`, which is
+        // transient and retryable.
+        self.available.store(true, Ordering::SeqCst);
+        self.reconnecting.store(false, Ordering::SeqCst);
+        true
+    }
+
     /// Whether a safety stop recorded as missed has yet to be replayed
     /// onto a live conduit.
     fn safety_debt_outstanding(&self) -> bool {
@@ -980,9 +1015,12 @@ impl<C: Codec> SharedTransport<C> {
             }
 
             if signaled {
-                // Connection observed a transport error. Flip into
-                // Reconnecting (clients short-circuit immediately) and
-                // attempt recovery.
+                // Either a connection observed a transport error, or a
+                // 1→0 cleanup recorded a stop the device refused —
+                // that one completes on the wire, so it raises the
+                // signal itself rather than through `request`. Flip
+                // into Reconnecting (clients short-circuit
+                // immediately) and attempt recovery.
                 self.reconnecting.store(true, Ordering::SeqCst);
                 self.available.store(false, Ordering::SeqCst);
             }
@@ -1056,16 +1094,14 @@ impl<C: Codec> SharedTransport<C> {
 
             match outcome {
                 Ok(()) => {
-                    // Order matters: `Session::request` reads
-                    // `reconnecting` and then `available`, so clearing
-                    // the first while the second is still false gives a
-                    // racing request the terminal shutdown error — for
-                    // a reconnect that just succeeded. Published this
-                    // way round, the worst it sees is `Reconnecting`,
-                    // which is transient and retryable.
-                    self.available.store(true, Ordering::SeqCst);
-                    self.reconnecting.store(false, Ordering::SeqCst);
-                    debug!("transport reconnected successfully");
+                    if self.publish_recovery() {
+                        debug!("transport reconnected successfully");
+                    } else {
+                        // `reconnecting` is still set, so the next turn
+                        // round this loop attempts again and replays
+                        // the stop that came due.
+                        debug!("recovery withheld; a stop is owed on the fresh conduit");
+                    }
                 }
                 Err(e) => {
                     warn!(
@@ -1489,12 +1525,18 @@ impl<C: Codec> SharedTransport<C> {
             armed: true,
         };
         let result = self.attempt_reconnect().await;
-        if result.is_ok() {
-            // Availability first, for the reason given on the
-            // supervisor's own success arm.
-            self.available.store(true, Ordering::SeqCst);
-            self.reconnecting.store(false, Ordering::SeqCst);
-        } else if !self.supervisor_live.load(Ordering::SeqCst) {
+        let mut result = result;
+        if result.is_ok() && !self.publish_recovery() {
+            // The attempt itself was fine; something else left a stop
+            // owed while it ran. Saying `Ok` here would tell the caller
+            // the transport is serving when it deliberately is not.
+            result = Err(SessionError::Transport(TransportError::Io(
+                io::Error::other(
+                    "a safety stop came due while recovering; the conduit is not usable",
+                ),
+            )));
+        }
+        if result.is_err() && !self.supervisor_live.load(Ordering::SeqCst) {
             // `reconnecting` means "something is going to retry this",
             // and the supervisor is that something. Asking whether one
             // exists is the whole test: `LazyAcquire` never has one, a
@@ -2029,6 +2071,21 @@ impl<C: Codec> SharedTransport<C> {
                 if service_lifetime {
                     self.reconnecting.store(true, Ordering::SeqCst);
                     self.available.store(false, Ordering::SeqCst);
+                    // And make sure something is coming. A stop that
+                    // failed on the *wire* raised this signal from
+                    // inside `Connection::request`; a stop the device
+                    // answered and refused raised nothing, because the
+                    // request completed. Without a permit here, a
+                    // cleanup landing in the narrow gap after
+                    // `publish_recovery` has read the debt would have
+                    // its flags overwritten by that publish and no
+                    // wake left to undo it: the supervisor only
+                    // attempts while `reconnecting` says to, so it
+                    // would sit idle on an available transport with a
+                    // stop still owed. `Notify` keeps the permit, so
+                    // the next turn round the loop sets the flags back
+                    // and replays.
+                    self.reconnect_signal.notify_one();
                 }
             }
         }
@@ -2074,7 +2131,97 @@ impl Drop for RollbackGuard<'_> {
 mod tests {
     use std::time::Duration;
 
+    use async_trait::async_trait;
     use tokio::sync::Notify;
+
+    use super::{Arc, Codec, Hooks, Ordering, SharedTransport, TransportError, TransportFactory};
+    use crate::transport::FrameTransport;
+
+    /// The publish gate does no I/O, so a factory that refuses to open
+    /// is all a transport needs to exist for these tests.
+    struct NeverOpens;
+
+    #[async_trait]
+    impl TransportFactory for NeverOpens {
+        async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
+            Err(TransportError::Io(std::io::Error::other(
+                "not opened in this test",
+            )))
+        }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("unused")]
+    struct NoError;
+
+    #[derive(Clone)]
+    struct NoCodec;
+
+    impl Codec for NoCodec {
+        type Command = ();
+        type Response = ();
+        type Error = NoError;
+
+        fn encode(&self, (): &Self::Command) -> Vec<u8> {
+            Vec::new()
+        }
+
+        fn decode(&self, _bytes: &[u8]) -> Result<Self::Response, Self::Error> {
+            Ok(())
+        }
+    }
+
+    fn transport() -> Arc<SharedTransport<NoCodec>> {
+        SharedTransport::new(Arc::new(NeverOpens), NoCodec, Hooks::noop())
+    }
+
+    /// The invariant the refusal path rests on, tested where it lives
+    /// rather than through a race no caller can schedule.
+    ///
+    /// `commit_replacement` reads the debt inside the attempt; this is
+    /// the last look before clients are let back in, and it exists for
+    /// the cleanup that lands in between. That ordering cannot be
+    /// forced through the public API — `attempt_reconnect` cannot take
+    /// `acquire_lock` (shutdown holds it while joining the supervisor
+    /// that runs the attempt), and there is no seam between the
+    /// attempt returning and the publish — so the gate is asserted
+    /// directly.
+    #[test]
+    fn a_recovery_is_withheld_while_a_stop_is_owed() {
+        let st = transport();
+
+        // A cleanup landed behind the attempt's own check.
+        st.safety_debt_incurred.fetch_add(1, Ordering::SeqCst);
+
+        assert!(
+            !st.publish_recovery(),
+            "a transport with a stop owed must not be advertised as recovered"
+        );
+        assert!(
+            !st.is_available(),
+            "and the flag must be left as the attempt found it"
+        );
+    }
+
+    #[test]
+    fn a_recovery_is_published_once_the_stop_has_landed() {
+        let st = transport();
+        st.safety_debt_incurred.fetch_add(1, Ordering::SeqCst);
+        st.reconnecting.store(true, Ordering::SeqCst);
+
+        // The replay paid it.
+        st.safety_debt_paid.fetch_max(1, Ordering::SeqCst);
+
+        assert!(
+            st.publish_recovery(),
+            "a paid debt must not withhold recovery"
+        );
+        assert!(st.is_available());
+        assert!(
+            !st.is_reconnecting(),
+            "and the recovering flag is cleared only by a publish that happened"
+        );
+    }
 
     /// The cold open drains a pending reconnect notification by
     /// enabling a `Notified` and dropping it without awaiting. That
