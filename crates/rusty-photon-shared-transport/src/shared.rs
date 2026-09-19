@@ -50,7 +50,7 @@ use tracing::{debug, warn};
 use crate::codec::Codec;
 use crate::connection::Connection;
 use crate::error::{SessionError, TransportError};
-use crate::session::{ConnectionCell, Hooks, Session, WhileOpen};
+use crate::session::{ConnectionCell, Hooks, Session, StateAssertion, WhileOpen};
 use crate::transport::TransportFactory;
 
 /// Bounded join timeout for the while-open task at teardown.
@@ -861,17 +861,20 @@ impl<C: Codec> SharedTransport<C> {
     /// refcount is zero there in any case, but the guarantee does not
     /// rest on reading it.
     ///
-    /// The hook returns `()` — best-effort, by the contract its other
-    /// callers rely on — so the connection answers for it instead: a
-    /// command that did not complete on the wire bumped the failure
-    /// counter. A command the device *answered and refused* is
-    /// invisible here, as everywhere else; see
+    /// Two things can go wrong and they are read two different ways.
+    /// A command that never completed on the wire bumped the
+    /// connection's failure counter, which this compares across the
+    /// hook. A command the device *answered and refused* completes, so
+    /// that counter stays clean — the hook is the only witness, and
+    /// says so by returning [`StateAssertion::NotAsserted`]. Either
+    /// answer means the same thing to this method: the safety state is
+    /// not known to hold. See
     /// [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
     ///
     /// # Errors
     ///
     /// Returns a [`SessionError`] when the state did not reach the
-    /// device. The conduit is closed and the debt left standing — the
+    /// device, or reached it and was refused. The conduit is closed and the debt left standing — the
     /// caller must abandon this conduit rather than expose one whose
     /// safety state is still unknown, and whoever opens the next one
     /// owes the assertion this one could not make.
@@ -907,11 +910,25 @@ impl<C: Codec> SharedTransport<C> {
             "asserting the last-disconnect state on the fresh conduit"
         );
         let before = connection.wire_failures();
-        (self.hooks.on_last_disconnect)(connection).await;
-        if connection.wire_failures() != before {
+        let verdict = (self.hooks.on_last_disconnect)(connection).await;
+        // Two ways to miss, and they are not the same failure. The
+        // counter catches a command that never reached the device; the
+        // verdict catches one it answered and refused, which the
+        // counter cannot see because such a request completed. Naming
+        // them apart is what an operator reads at 3am: one says the
+        // link is gone, the other says the device is there and saying
+        // no.
+        let reason = if connection.wire_failures() != before {
+            Some("the last-disconnect state did not land on the fresh conduit")
+        } else if !verdict.is_asserted() {
+            Some("the device refused the last-disconnect state on the fresh conduit")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
             connection.close().await;
             return Err(SessionError::Transport(TransportError::Io(
-                io::Error::other("the last-disconnect state did not land on the fresh conduit"),
+                io::Error::other(reason),
             )));
         }
 
@@ -1293,6 +1310,9 @@ impl<C: Codec> SharedTransport<C> {
         // it would hand the session a conduit whose safety state is
         // still unknown.
         let mut paying = None;
+        // Asserted by default: an attempt that does not replay has no
+        // verdict to carry, and must not be failed for the lack of one.
+        let mut replay_verdict = StateAssertion::Asserted;
         let owed = self.safety_debt_outstanding();
         let replayed =
             owed || (self.service_lifetime.load(Ordering::SeqCst) && started_with_no_client);
@@ -1310,7 +1330,7 @@ impl<C: Codec> SharedTransport<C> {
                     .fetch_add(1, Ordering::SeqCst)
                     .saturating_add(1),
             );
-            (self.hooks.on_last_disconnect)(&new_conn).await;
+            replay_verdict = (self.hooks.on_last_disconnect)(&new_conn).await;
         }
 
         // Everything past the publish has returned, so the poll task
@@ -1318,7 +1338,7 @@ impl<C: Codec> SharedTransport<C> {
         // attempt's.
         post_publish.armed = false;
 
-        self.commit_replacement(&new_conn, failures_at_handshake, paying)
+        self.commit_replacement(&new_conn, failures_at_handshake, paying, replay_verdict)
             .await?;
 
         Ok(())
@@ -1330,7 +1350,8 @@ impl<C: Codec> SharedTransport<C> {
     /// `failures_at_handshake` is the conduit's wire-failure count from
     /// before the attempt put anything on it; `paying` is `Some` when
     /// the attempt replayed the last-disconnect state, carrying the
-    /// incurred count that replay covers.
+    /// incurred count that replay covers; `replay_verdict` is what that
+    /// replay said about the state (always `Asserted` when none ran).
     ///
     /// Two things disqualify a replacement.
     ///
@@ -1359,15 +1380,19 @@ impl<C: Codec> SharedTransport<C> {
     /// and the next attempt replays the stop before anything is
     /// advertised.
     ///
-    /// Neither check sees the respawned `while_open` task, which is
+    /// A third thing disqualifies it, and the counter cannot see it: a
+    /// stop the device *answered and refused*. `request_typed`-style
+    /// callers decode above [`Connection::request`], so such a request
+    /// completes and the wire counter reads clean. Only the hook knows,
+    /// and it now says so — a [`StateAssertion::NotAsserted`] from the
+    /// replay fails the attempt exactly as a dropped request does. See
+    /// [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
+    ///
+    /// None of the three sees the respawned `while_open` task, which is
     /// detached: its first request may land either side of them. A
     /// failure there raises the reconnect signal like any other, so the
     /// supervisor comes back round to it; what these guarantee is only
-    /// what the attempt itself put on the wire. Nor does either see a
-    /// command the device *answered* and rejected — `request_typed`-style
-    /// callers decode above [`Connection::request`], so a protocol-level
-    /// refusal of a stop never reaches the counter. Only the hook knows
-    /// that one, and its signature returns `()`.
+    /// what the attempt itself put on the wire.
     ///
     /// # Errors
     ///
@@ -1385,12 +1410,17 @@ impl<C: Codec> SharedTransport<C> {
         new_conn: &Connection<C>,
         failures_at_handshake: u32,
         paying: Option<u32>,
+        replay_verdict: StateAssertion,
     ) -> Result<(), SessionError<C::Error>> {
         let dropped_a_request = new_conn.wire_failures() != failures_at_handshake;
+        let refused = !replay_verdict.is_asserted();
 
         // A conduit that dropped something pays for nothing: the
-        // replay is exactly what may have gone missing on it.
-        if !dropped_a_request {
+        // replay is exactly what may have gone missing on it. Neither
+        // does one whose replay the device refused — the commands
+        // completed, so the counter above reads clean, and only the
+        // verdict says the mount never stopped.
+        if !dropped_a_request && !refused {
             if let Some(paying) = paying {
                 // Records what the replay actually covered. A cleanup
                 // whose own stop failed after it has already pushed the
@@ -1404,6 +1434,8 @@ impl<C: Codec> SharedTransport<C> {
 
         let reason = if dropped_a_request {
             "a request was dropped while recovering; the conduit is not usable"
+        } else if refused {
+            "the device refused the safety stop while recovering; the conduit is not usable"
         } else {
             "a safety stop was missed while recovering; the conduit is not usable"
         };
@@ -1948,7 +1980,7 @@ impl<C: Codec> SharedTransport<C> {
                 service_lifetime,
                 armed: true,
             };
-            (self.hooks.on_last_disconnect)(&conn).await;
+            let verdict = (self.hooks.on_last_disconnect)(&conn).await;
             unlanded.armed = false;
 
             // A 1→0 that lands mid-reconnect runs against a conduit
@@ -1959,8 +1991,23 @@ impl<C: Codec> SharedTransport<C> {
             // the next 0→1 open in `LazyAcquire` — but losing it is not
             // one of the options. The handshake that open runs is not a
             // substitute; it is not the safety hook.
-            if conn.wire_failures() != before {
-                debug!("last-disconnect state did not land; owed to the next open");
+            //
+            // The verdict is the other way this fails, and the one that
+            // matters most here. A refusal leaves the counter clean, so
+            // without it a mount that answered "no" to the halt would
+            // read exactly like one that halted — and in
+            // `ServiceLifetime` the next `acquire()` is a refcount bump
+            // that runs no handshake, so the next client would command
+            // a mount still in motion. This is the site no startup
+            // assertion can stand in for: the mount is far likelier to
+            // be moving when its last client leaves than when the
+            // process starts.
+            let refused = !verdict.is_asserted();
+            if conn.wire_failures() != before || refused {
+                debug!(
+                    refused,
+                    "last-disconnect state did not land; owed to the next open"
+                );
                 self.safety_debt_incurred.fetch_add(1, Ordering::SeqCst);
 
                 // Recording the debt is not enough on its own in

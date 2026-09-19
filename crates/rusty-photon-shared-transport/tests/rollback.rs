@@ -41,7 +41,7 @@ use common::{
     ProgrammableFactory,
 };
 use rusty_photon_shared_transport::{
-    Hooks, SessionError, SharedTransport, TransportError, TransportFactory,
+    Hooks, SessionError, SharedTransport, StateAssertion, TransportError, TransportFactory,
 };
 
 #[tokio::test]
@@ -160,7 +160,7 @@ async fn alternating_failure_and_success_does_not_leak_count() {
                 }
             })
         }),
-        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
         shutdown: Box::new(|_| Box::pin(async {})),
         while_open: None,
     };

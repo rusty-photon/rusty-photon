@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use rusty_photon_shared_transport::{
-    BoxFuture, Codec, FrameTransport, Hooks, SharedTransport, TransportError, TransportFactory,
-    WhileOpen,
+    BoxFuture, Codec, FrameTransport, Hooks, SharedTransport, StateAssertion, TransportError,
+    TransportFactory, WhileOpen,
 };
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -442,6 +442,7 @@ impl CountingHooks {
                 let td = td.clone();
                 Box::pin(async move {
                     td.fetch_add(1, Ordering::SeqCst);
+                    StateAssertion::Asserted
                 })
             }),
             shutdown: Box::new(move |_conn| {
@@ -468,7 +469,7 @@ pub fn failing_handshake_hooks() -> Hooks<EchoCodec> {
         handshake: Box::new(|_conn| {
             Box::pin(async { Err(EchoCodecError("handshake refused".into())) })
         }),
-        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
         shutdown: Box::new(|_| Box::pin(async {})),
         while_open: None,
     }
@@ -479,7 +480,7 @@ pub fn failing_handshake_hooks() -> Hooks<EchoCodec> {
 pub fn panicking_handshake_hooks() -> Hooks<EchoCodec> {
     Hooks {
         handshake: Box::new(|_conn| Box::pin(async { panic!("handshake panic for test") })),
-        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
         shutdown: Box::new(|_| Box::pin(async {})),
         while_open: None,
     }
@@ -492,7 +493,7 @@ pub fn panicking_handshake_hooks() -> Hooks<EchoCodec> {
 pub fn panicking_while_open_constructor_hooks() -> Hooks<EchoCodec> {
     Hooks {
         handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
         shutdown: Box::new(|_| Box::pin(async {})),
         while_open: Some(Box::new(|_ctx| panic!("while_open closure panic for test"))),
     }
@@ -541,7 +542,7 @@ impl WhileOpenHooks {
         let exited = self.exited.clone();
         Hooks {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
             shutdown: Box::new(|_| Box::pin(async {})),
             while_open: Some(Box::new(move |ctx: WhileOpen<EchoCodec>| {
                 let started = started.clone();
@@ -570,7 +571,7 @@ impl WhileOpenHooks {
         let started = self.started.clone();
         Hooks {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
             shutdown: Box::new(|_| Box::pin(async {})),
             while_open: Some(Box::new(move |_ctx: WhileOpen<EchoCodec>| {
                 let started = started.clone();
@@ -595,7 +596,7 @@ impl WhileOpenHooks {
         let dropped = self.dropped.clone();
         Hooks {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
             shutdown: Box::new(|_| Box::pin(async {})),
             while_open: Some(Box::new(move |_ctx: WhileOpen<EchoCodec>| {
                 let started = started.clone();
@@ -622,7 +623,7 @@ impl WhileOpenHooks {
         let started = self.started.clone();
         Hooks {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
             shutdown: Box::new(|_| Box::pin(async {})),
             while_open: Some(Box::new(move |_ctx: WhileOpen<EchoCodec>| {
                 let started = started.clone();
@@ -665,7 +666,7 @@ impl CountingWhileOpenHooks {
         let cancelled = self.cancelled.clone();
         Hooks {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
             shutdown: Box::new(|_| Box::pin(async {})),
             while_open: Some(Box::new(move |ctx: WhileOpen<EchoCodec>| {
                 let spawns = spawns.clone();
@@ -719,6 +720,12 @@ pub struct SafetyStopHooks {
     /// routes through `Connection::request`'s signal-fire path.
     fail_recvs: Option<Arc<AtomicBool>>,
     fail_first: u32,
+    /// Invocations from this one on answer `NotAsserted` while their
+    /// request still succeeds — the shape of a device that answered
+    /// and refused. Nothing fails on the wire, so the counter the
+    /// runtime watches stays clean and only the verdict says no. Zero
+    /// (the default) never refuses.
+    refuse_from: u32,
     /// First invocation the failing window covers. One by default; a
     /// `ServiceLifetime` test that wants its *1→0* stop to fail sets
     /// this past the cold start's own assertion of the same hook.
@@ -737,6 +744,7 @@ impl Default for SafetyStopHooks {
             fail_recvs: None,
             fail_first: 0,
             fail_from: 1,
+            refuse_from: 0,
         }
     }
 }
@@ -777,6 +785,15 @@ impl SafetyStopHooks {
         self
     }
 
+    /// Answer `NotAsserted` from the nth invocation on, without
+    /// failing anything on the wire. That is #1250's case: the request
+    /// completes, `wire_failures` does not move, and the hook is the
+    /// only witness to the refusal.
+    pub const fn refusing_from(mut self, nth: u32) -> Self {
+        self.refuse_from = nth;
+        self
+    }
+
     /// Park invocations past `free`, combinable with
     /// [`SafetyStopHooks::failing_first`] so a test can have the first
     /// call fail on the wire and hold the replay that answers it open.
@@ -811,6 +828,7 @@ impl SafetyStopHooks {
         let fail_recvs = self.fail_recvs.clone();
         let fail_first = self.fail_first;
         let fail_from = self.fail_from;
+        let refuse_from = self.refuse_from;
         let panics_on = self.panics_on;
         Hooks {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
@@ -841,6 +859,11 @@ impl SafetyStopHooks {
                         entered.notify_one();
                         release.notified().await;
                     }
+                    if refuse_from != 0 && nth >= refuse_from {
+                        StateAssertion::NotAsserted
+                    } else {
+                        StateAssertion::Asserted
+                    }
                 })
             }),
             shutdown: Box::new(|_| Box::pin(async {})),
@@ -866,6 +889,7 @@ pub fn last_disconnect_panicking_on(nth_call: u32) -> (Hooks<EchoCodec>, Arc<Ato
                     nth != nth_call,
                     "last-disconnect panic for test (call {nth})"
                 );
+                StateAssertion::Asserted
             })
         }),
         shutdown: Box::new(|_| Box::pin(async {})),
@@ -961,6 +985,7 @@ impl ParkingHandshake {
                         }
                         let _ = conn.request(b"HALT".to_vec()).await;
                     }
+                    StateAssertion::Asserted
                 })
             }),
             shutdown: Box::new(|_| Box::pin(async {})),
@@ -975,7 +1000,7 @@ impl ParkingHandshake {
 pub fn shutdown_panicking() -> Hooks<EchoCodec> {
     Hooks {
         handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
         shutdown: Box::new(|_| Box::pin(async { panic!("shutdown panic for test") })),
         while_open: None,
     }
@@ -998,7 +1023,7 @@ pub fn shutdown_failing_on_the_wire(
     let reached = Arc::clone(&reached_the_wire);
     let hooks = Hooks {
         handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
         shutdown: Box::new(move |conn| {
             let fail_recvs = fail_recvs.clone();
             let reached = reached.clone();
@@ -1032,7 +1057,7 @@ pub fn handshake_tolerating_a_wire_failure(fail_recvs: Arc<AtomicBool>) -> Hooks
                 Ok(())
             })
         }),
-        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
         shutdown: Box::new(|_| Box::pin(async {})),
         while_open: None,
     }
@@ -1053,7 +1078,7 @@ pub fn handshake_panicking_on(nth_call: u32) -> Hooks<EchoCodec> {
                 Ok(())
             })
         }),
-        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
         shutdown: Box::new(|_| Box::pin(async {})),
         while_open: None,
     }
@@ -1079,7 +1104,7 @@ pub fn shutdown_parking_with_a_handshake_panicking_on(nth_call: u32) -> Hooks<Ec
                 Ok(())
             })
         }),
-        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
         shutdown: Box::new(|_| Box::pin(std::future::pending::<()>())),
         while_open: None,
     }
@@ -1096,7 +1121,7 @@ pub fn while_open_constructor_panicking_on(nth_call: u32) -> Hooks<EchoCodec> {
     let calls = Arc::new(AtomicU32::new(0));
     Hooks {
         handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
         shutdown: Box::new(|_| Box::pin(async {})),
         while_open: Some(Box::new(move |_ctx: WhileOpen<EchoCodec>| {
             let nth = calls.fetch_add(1, Ordering::SeqCst).saturating_add(1);

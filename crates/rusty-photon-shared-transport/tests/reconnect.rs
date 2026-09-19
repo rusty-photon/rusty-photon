@@ -1456,6 +1456,64 @@ async fn a_lazy_reconnect_pays_an_owed_stop_before_publishing() {
 }
 
 #[tokio::test]
+async fn a_replay_the_device_refuses_is_not_a_recovery() {
+    // The companion to `a_reconnect_whose_safety_stop_did_not_land_is_not_a_recovery`,
+    // for the half the wire counter cannot see. There the replay's
+    // commands never reached the device; here they all reached it and
+    // were refused. Both mean the mount may still be moving, so both
+    // have to fail the attempt — otherwise the supervisor answers
+    // success by clearing `reconnecting` and setting `available`, and
+    // the next client drives a mount that never stopped.
+    let cfg = FactoryConfig::default();
+    let factory: Arc<dyn TransportFactory> = Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // 1 is the cold start's assertion and 2 the 1→0 that drops to zero
+    // clients; both must land. 3 is the replay under test.
+    let stops = SafetyStopHooks::default().refusing_from(3);
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+    // This is about the state the failed attempt leaves behind, not
+    // about the supervisor's cadence.
+    st.set_reconnect_interval(Duration::from_secs(3600)).await;
+
+    st.start().await.unwrap();
+    let departing = st.acquire().await.unwrap();
+    departing.close().await.unwrap();
+
+    st.reconnect_now().await.unwrap_err();
+
+    assert_eq!(
+        stops.calls.load(Ordering::SeqCst),
+        3,
+        "the replay ran on the fresh conduit"
+    );
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        3,
+        "and every one of them completed on the wire — this is the refusal path, \
+         so nothing here is a dropped request"
+    );
+    assert!(
+        st.is_reconnecting(),
+        "a refused stop must leave the transport reconnecting"
+    );
+    assert!(
+        !st.is_available(),
+        "and must not advertise the conduit as recovered"
+    );
+
+    // The debt stands too, so the next attempt replays rather than
+    // trusting the flags.
+    let client = st.acquire().await.unwrap();
+    let display = format!("{}", client.request(b"slew".to_vec()).await.unwrap_err());
+    assert!(
+        display.contains("reconnecting"),
+        "no client may command a mount whose halt the device refused, got: {display}"
+    );
+
+    client.close().await.unwrap();
+    st.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn a_reconnect_under_a_live_client_leaves_the_hook_alone() {
     // The re-assert is for the no-client case only. A client is
     // attached here, so the state the hook asserts is not the state

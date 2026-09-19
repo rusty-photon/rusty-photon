@@ -258,9 +258,51 @@ pub type HandshakeFn<C> = Box<
         + Sync,
 >;
 
+/// What a stop-class hook says about the state it was asked to
+/// assert — a judgement the hook makes, not an error it returns.
+///
+/// The distinction matters because the two are not the same question.
+/// A hook's individual requests can all succeed while the state still
+/// does not hold: the device answers, and refuses. Only the hook is in
+/// a position to know that — it issued the commands and read the
+/// replies, above the layer where [`Connection::request`] decides
+/// whether anything reached the wire.
+///
+/// A hook that issues several commands folds its own partial results.
+/// "Half of it landed" is not a third answer: the state either holds
+/// on the device or it does not, and a caller deciding whether to
+/// serve clients needs that one bit. [`StateAssertion::and`] is the
+/// fold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateAssertion {
+    /// The state the hook asserts now holds on the device.
+    Asserted,
+    /// It does not, or the hook cannot vouch that it does. The caller
+    /// must not treat this conduit as carrying a known-good safety
+    /// state.
+    NotAsserted,
+}
+
+impl StateAssertion {
+    /// Fold two verdicts: asserted only when both are.
+    #[must_use]
+    pub const fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Asserted, Self::Asserted) => Self::Asserted,
+            _ => Self::NotAsserted,
+        }
+    }
+
+    /// Whether the state holds.
+    #[must_use]
+    pub const fn is_asserted(self) -> bool {
+        matches!(self, Self::Asserted)
+    }
+}
+
 /// Closure type for the [`Hooks::on_last_disconnect`] hook.
 pub type OnLastDisconnectFn<C> =
-    Box<dyn for<'a> Fn(&'a Connection<C>) -> BoxFuture<'a, ()> + Send + Sync>;
+    Box<dyn for<'a> Fn(&'a Connection<C>) -> BoxFuture<'a, StateAssertion> + Send + Sync>;
 
 /// Closure type for the [`Hooks::shutdown`] hook.
 pub type ShutdownFn<C> = Box<dyn for<'a> Fn(&'a Connection<C>) -> BoxFuture<'a, ()> + Send + Sync>;
@@ -298,21 +340,35 @@ pub type WhileOpenFn<C> = Box<dyn Fn(WhileOpen<C>) -> BoxFuture<'static, ()> + S
 ///   it. That replay is the one invocation whose outcome is not
 ///   ignored: a command that fails on the wire there fails the
 ///   reconnect, so a stop that did not land is never reported as a
-///   recovered transport. That last one
+///   recovered transport — and a `NotAsserted` verdict fails it the
+///   same way, which is what covers the refusal the wire counter
+///   cannot see. That last one
 ///   is why the hook must stay **stop-class**: a 1→0 landing during a
 ///   reconnect runs against a connection that is dead or already
 ///   closed, so every command fails and nothing else replays it, and
 ///   re-asserting it on the replacement is what keeps a mount that was
 ///   moving when its link dropped from staying that way. Tenet 3
 ///   permits halting on a reconnect path and nothing else, so a hook
-///   that actuates does not belong here. The hook signature returns
-///   `()` and the runtime ignores any errors observed on the inner
-///   `request` calls, so the hook is **best-effort** in both modes;
-///   any failures hit while running it must be handled / logged
-///   inside the hook body itself (typically `tracing::warn!` on the
-///   request `Result`). A failed request never propagates to
-///   [`Session::close`]'s caller and never stops the rest of the
-///   cleanup.
+///   that actuates does not belong here.
+///
+///   **The hook returns a verdict.** [`StateAssertion`] answers one
+///   question — does the state this hook asserts now hold on the
+///   device? The runtime cannot work that out for itself: it watches
+///   [`Connection::request`] for commands that never reached the wire,
+///   which catches a dead link but not a device that answered and
+///   *refused*. A service whose codec decodes above the connection —
+///   as the mount's does, returning raw frames that a typed decode
+///   rejects later — turns a refusal into a value only the hook ever
+///   sees. Returning `NotAsserted` is how it says so; returning
+///   `Asserted` on a hook that issues nothing costs nothing.
+///
+///   The hook is still **best-effort about its own errors**: a failed
+///   request must be handled / logged inside the hook body (typically
+///   `tracing::warn!` on the request `Result`), never propagated. It
+///   does not fail [`Session::close`], and it does not stop the rest
+///   of the cleanup. What changes with the verdict is only what the
+///   *runtime* concludes afterwards — see the per-mode paragraph
+///   below.
 ///
 ///   A **panic** is not covered by that, and the difference matters to
 ///   whoever writes the hook. The cleanup awaits it inline, so an
@@ -383,7 +439,7 @@ impl<C: Codec> Hooks<C> {
     pub fn noop() -> Self {
         Self {
             handshake: Box::new(|_| Box::pin(async { Ok(()) })),
-            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_| Box::pin(async { StateAssertion::Asserted })),
             shutdown: Box::new(|_| Box::pin(async {})),
             while_open: None,
         }

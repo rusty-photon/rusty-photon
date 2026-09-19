@@ -173,8 +173,15 @@ What it means for the hardware:
 
 A halt that does not reach the device fails the start, so `build()`
 errors and the process exits non-zero, the same way a wrong-device
-handshake does. Advertising a mount whose safety state is unknown is the
-outcome to avoid; failing to start is visible, and the log says why.
+handshake does. So does a halt the mount *answers and refuses*: the
+handshake has just had ten commands answered at that point, so a mount
+that then declines to stop is broken or is not the device the driver
+thinks it is, and neither is something to serve clients against. The two
+are distinguished in the error — "did not land on" versus "refused" —
+because they mean different things to whoever reads the log at 3am: one
+says the link is gone, the other says the device is there and saying no.
+Advertising a mount whose safety state is unknown is the outcome to
+avoid; failing to start is visible, and the log says which it was.
 
 Stop-class and nothing more, which is what
 [tenet 3](../workspace.md#project-tenets) permits on a connect path: no
@@ -248,11 +255,28 @@ the point of reading the debt there rather than trusting the flags: the
 disconnect takes the transport out of service, and a success reported
 over the top of it would put it straight back in.
 
-What that catches is a command that never reached the mount. It does not
-catch one the mount answered and refused: `request_typed` decodes above
-the connection, so a protocol-level rejection of `:L1` is invisible to
-the shared crate, and `safety_stop` logs it and continues. Only the hook
-knows, and saying so needs a return value it does not have — see
+That catches a command that never reached the mount. A command the mount
+*answered and refused* is a separate failure, and the shared crate
+cannot see it at all: `SkywatcherCodec` hands back the `!XX` frame as a
+valid response, so the request completes and the wire counter stays
+clean. `request_typed`'s typed decode is the first thing that knows, and
+`safety_stop` is the only thing that sees the result.
+
+So `safety_stop` answers the question rather than swallowing it. It
+returns a verdict — asserted, or not — and any failed command makes it
+*not*: a stop the mount refused and a stop that never arrived leave the
+same axes possibly turning, and there is no partial credit for stopping
+one of two. Every caller treats the two identically: the reconnect
+replay fails the attempt, the last-client disconnect records the debt
+and takes the transport out of service, and a cold start refuses to
+serve (see [§Safety stop at startup](#safety-stop-at-startup)).
+
+It deliberately does not try to sort benign refusals from real ones by
+reading the mount's error code. By the time any of this runs the
+handshake has just had ten commands answered, so a mount that now
+refuses a halt is broken or is not a Sky-Watcher controller at all —
+precisely the two cases where deciding "that error code is probably
+fine" would be the wrong call. Resolves
 [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
 
 A halt that could not be attempted at all is owed, not forgotten. A
@@ -2162,10 +2186,10 @@ safety stop:
   :L1, :L2, :K1     (halt both axes, stop tracking) — the same
                     no-client sequence a last-client disconnect
                     issues, asserted here before the transport is
-                    published. A failure on the wire fails the start:
-                    build() errors and the process exits non-zero
-                    rather than advertise a mount whose state is
-                    unknown.
+                    published. A failure on the wire — or a refusal
+                    from the mount — fails the start: build() errors
+                    and the process exits non-zero rather than
+                    advertise a mount whose state is unknown.
    ↓
 start background polling task (interval = config.polling_interval)
 ```
@@ -2199,6 +2223,9 @@ conduit, where it is asserted whatever the way down managed.
 Service shutdown (HTTP server stops → `SharedTransport::shutdown()`)
    ↓
 shutdown hook runs :L1, :L2, :K1 one last time
+   (a refusal or a wire failure here is logged at error!: nothing
+    downstream can act on it, and the next cold start is what
+    re-asserts the state)
    ↓
 cancel the reconnect supervisor + the polling task
    ↓

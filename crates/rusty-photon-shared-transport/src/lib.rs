@@ -80,7 +80,7 @@ pub mod transport;
 pub use codec::Codec;
 pub use connection::Connection;
 pub use error::{SessionError, TransportError};
-pub use session::{Hooks, Session, WhileOpen};
+pub use session::{Hooks, Session, StateAssertion, WhileOpen};
 pub use shared::SharedTransport;
 pub use transport::{
     open_serial_port, FrameTransport, SerialFrameTransport, TransportFactory, UdpFrameTransport,

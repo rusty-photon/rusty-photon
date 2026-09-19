@@ -16,7 +16,8 @@ use std::time::{Duration, SystemTime};
 
 use rusty_photon_rolling_stats::SensorMean;
 use rusty_photon_shared_transport::{
-    Connection, Hooks, Session, SessionError, SharedTransport, TransportFactory, WhileOpen,
+    Connection, Hooks, Session, SessionError, SharedTransport, StateAssertion, TransportFactory,
+    WhileOpen,
 };
 use tokio::sync::RwLock;
 use tokio::time::interval;
@@ -276,7 +277,11 @@ fn build_hooks(
             let cs = Arc::clone(&cs_handshake);
             Box::pin(handshake(conn, cs))
         }),
-        on_last_disconnect: Box::new(|_| Box::pin(async {})),
+        on_last_disconnect: Box::new(|_| {
+            // Nothing to assert: this service holds no state that must
+            // survive a no-client gap, so the answer is trivially yes.
+            Box::pin(async { StateAssertion::Asserted })
+        }),
         shutdown: Box::new(|_| Box::pin(async {})),
         while_open: Some(Box::new(move |ctx| {
             let cs = Arc::clone(&cs_poll);

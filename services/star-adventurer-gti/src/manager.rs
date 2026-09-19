@@ -21,12 +21,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rusty_photon_shared_transport::{
-    Connection, Hooks, Session, SharedTransport, TransportFactory, WhileOpen,
+    Connection, Hooks, Session, SharedTransport, StateAssertion, TransportFactory, WhileOpen,
 };
 use skywatcher_motor_protocol::{Axis, AxisStatus, Command, ModeKind, MountType, Response};
 use tokio::sync::RwLock;
 use tokio::time::interval;
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use crate::codec::{decode_frame_for, SkywatcherCodec, SkywatcherCodecError};
 use crate::config::{Config, TransportConfig};
@@ -449,12 +449,32 @@ async fn handshake(
     Ok(())
 }
 
-/// Best-effort halt on both axes (`:L1`, `:L2`, `:K1`). Used by both
-/// the `on_last_disconnect` hook (every `1→0` transition) and by
-/// `shutdown_teardown` (final teardown). All errors are log-and-continue
-/// per the `Hooks::on_last_disconnect` / `Hooks::shutdown` infallible
-/// contract.
-async fn safety_stop(conn: &Connection<SkywatcherCodec>) {
+/// Halt on both axes (`:L1`, `:L2`, `:K1`), and say whether it took.
+/// Used by both the `on_last_disconnect` hook (every `1→0` transition,
+/// and every fresh conduit) and by `shutdown_teardown`.
+///
+/// Still log-and-continue per the hooks' infallible contract — a failed
+/// command never propagates and never stops the rest of the sequence —
+/// but the outcome is no longer thrown away. The shared crate watches
+/// [`Connection::request`] for commands that never reached the wire,
+/// which is blind to the case this function is the only witness to: the
+/// mount answered `!XX` and refused. `SkywatcherCodec` returns raw
+/// frames, so an error reply decodes as a perfectly good `Ok` response
+/// one layer down, and only the typed decode in [`request_typed`] sees
+/// it. Returning the verdict is what carries that out to the caller —
+/// see [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
+///
+/// Any failure means [`StateAssertion::NotAsserted`]: a stop that the
+/// mount refused, or that never reached it, leaves axes that may still
+/// be turning, and there is no partial credit for stopping one of two.
+/// This deliberately does not try to read the mount's error code and
+/// decide which refusals are benign. By the time this runs the
+/// handshake has just had ten commands answered, so a mount that now
+/// refuses a halt is a mount that is broken or is not the device we
+/// think it is — the two cases where guessing "that one's probably
+/// fine" is exactly wrong.
+async fn safety_stop(conn: &Connection<SkywatcherCodec>) -> StateAssertion {
+    let mut verdict = StateAssertion::Asserted;
     // Order matters: `:L` is the hammer (instant stop), `:K` is
     // graceful — issue the hammer first to guarantee motion stops
     // even if the graceful stop fails.
@@ -469,8 +489,10 @@ async fn safety_stop(conn: &Connection<SkywatcherCodec>) {
                 error = %e,
                 "safety stop wire command failed (continuing)"
             );
+            verdict = verdict.and(StateAssertion::NotAsserted);
         }
     }
+    verdict
 }
 
 /// Final shutdown teardown: safety-stop both axes, then clear the
@@ -481,7 +503,15 @@ async fn shutdown_teardown(
     conn: &Connection<SkywatcherCodec>,
     parameters: Arc<RwLock<Option<MountParameters>>>,
 ) {
-    safety_stop(conn).await;
+    if !safety_stop(conn).await.is_asserted() {
+        // Nothing downstream can act on this — the lifecycle is ending
+        // and `Hooks::shutdown` has no verdict to return — so the log
+        // is the whole of the report, and it is worth an `error!`. The
+        // mount may be left moving with no driver attached; the next
+        // cold start asserts the state again and refuses to serve if
+        // it cannot (see #1251), but nothing happens in between.
+        error!("the mount did not accept the shutdown safety stop; it may still be moving");
+    }
     *parameters.write().await = None;
 }
 
@@ -1665,6 +1695,53 @@ mod tests {
         assert!(
             msg.contains("transport endpoint"),
             "verify-the-port hint missing: {msg}"
+        );
+    }
+
+    /// A mount that answers the startup halt with `!XX` must stop the
+    /// driver coming up — the case behind
+    /// [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
+    ///
+    /// The refusal is invisible below this layer: `SkywatcherCodec`
+    /// hands back the `!0\r` frame as a perfectly good response, so
+    /// `Connection::request` returns `Ok` and the shared crate's
+    /// wire-failure counter never moves. Only `safety_stop`'s typed
+    /// decode sees it, and only its verdict carries it out.
+    #[tokio::test]
+    async fn a_mount_that_refuses_the_startup_halt_fails_the_start() {
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        // `:L` only: the handshake uses none of it, so the mount
+        // answers every init command and then refuses the halt.
+        state.lock().await.fail_command = Some(b'L');
+        let manager = MountManager::new(&Config::default(), Arc::new(factory));
+
+        let err = manager.transport().start().await.unwrap_err();
+
+        // The premise: this is a refusal *after* a clean handshake, not
+        // a wrong device that never got that far.
+        let log = state.lock().await.command_log.clone();
+        assert!(
+            log.iter().any(|f| f.starts_with(b":e1")),
+            "the identity probe must have run: {log:?}"
+        );
+        assert!(
+            log.iter().any(|f| f.starts_with(b":j2")),
+            "and the whole handshake with it: {log:?}"
+        );
+        assert!(
+            log.iter().any(|f| f.starts_with(b":L1")),
+            "and the halt must have been attempted: {log:?}"
+        );
+
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("refused"),
+            "the start must fail saying the device refused, got: {msg}"
+        );
+        assert!(
+            !manager.transport().is_available(),
+            "and must not advertise a mount whose halt it could not assert"
         );
     }
 }

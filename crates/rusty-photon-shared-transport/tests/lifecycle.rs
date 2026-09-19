@@ -194,6 +194,84 @@ async fn a_cold_start_whose_safety_stop_misses_the_wire_does_not_serve() {
 }
 
 #[tokio::test]
+async fn a_cold_start_the_device_refuses_does_not_serve() {
+    // #1250's case, on the startup gate. The hook's commands all
+    // *complete* — the device answers, and says no — so the wire
+    // counter the runtime watches reads perfectly clean. Only the
+    // hook's verdict carries the refusal out. A mount that has just
+    // answered a ten-command handshake and then refuses a halt is
+    // broken or is not the device we think it is; either way the
+    // driver must not come up and serve clients against it.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let stops = SafetyStopHooks::default().refusing_from(1);
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+
+    let refused = st.start().await.unwrap_err();
+
+    // The premise, asserted rather than assumed: this is the refusal
+    // path, not the wire-failure path one test above. The request
+    // reached the device and came back `Ok`.
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        1,
+        "the stop must have completed on the wire — a refusal is not a dropped request"
+    );
+    assert!(
+        refused.to_string().contains("refused"),
+        "and the caller must be told which of the two it was, got: {refused}"
+    );
+    assert!(
+        !st.is_available(),
+        "a conduit whose safety state the device refused must not be advertised"
+    );
+    assert_eq!(
+        cfg.dropped_count().await,
+        1,
+        "and the port must be released, not held by the failed start"
+    );
+}
+
+#[tokio::test]
+async fn a_disconnect_stop_the_device_refuses_takes_the_transport_out_of_service() {
+    // The site no startup assertion can stand in for. In
+    // `ServiceLifetime` the next `acquire()` is a refcount bump that
+    // runs no handshake, so a refusal here — invisible to the wire
+    // counter — would hand the next client a conduit to a mount that
+    // never stopped. And a last client is far likelier to leave
+    // mid-slew than a process is to start mid-slew.
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    // From the second: the cold start's own assertion has to land, or
+    // there is no serving transport to disconnect from.
+    let stops = SafetyStopHooks::default().refusing_from(2);
+    let st = build_with_factory_and_hooks(factory, stops.hooks());
+    // Long enough that the supervisor is not the one acting here; a
+    // refusal raises no reconnect signal, so it sits on the flag.
+    st.set_reconnect_interval(Duration::from_secs(3600)).await;
+
+    st.start().await.unwrap();
+    let departing = st.acquire().await.unwrap();
+    departing.close().await.unwrap();
+
+    assert_eq!(
+        stops.reached_the_wire.load(Ordering::SeqCst),
+        2,
+        "both stops completed on the wire; the second was refused, not dropped"
+    );
+    assert!(
+        st.is_reconnecting(),
+        "a refused stop leaves the safety state unknown, so recovery is owed"
+    );
+    assert!(
+        !st.is_available(),
+        "and the transport must stop advertising itself meanwhile"
+    );
+}
+
+#[tokio::test]
 async fn a_promoted_lazy_transport_is_not_halted_by_the_promotion() {
     // `start()` on a transport a client already opened lazily promotes
     // it in place. The conduit is live and the client may be driving
