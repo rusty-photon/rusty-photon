@@ -1470,9 +1470,11 @@ impl Camera for SvbonyCamera {
     /// connected check for the same reason: the state is cleared at the start of
     /// a connect (C3) and nowhere else — a disconnect clears it only when it
     /// found a capture to cancel — so answering it while disconnected answers
-    /// from the session that has ended. The capability probes beside them
-    /// (`CanAbortExposure`, `HasShutter`) describe the driver rather than a
-    /// session and are deliberately still answerable.
+    /// from the session that has ended. The capability members beside them take
+    /// the check for a related reason (step 10): `CanAbortExposure` and the ones
+    /// reading `SVB_CAMERA_PROPERTY_EX` describe a device, and a driver holding
+    /// none cannot describe one. What this driver never implements —
+    /// `CanStopExposure`, `HasShutter`, `CanAsymmetricBin` — answers throughout.
     async fn camera_state(&self) -> ASCOMResult<CameraState> {
         self.ensure_connected()?;
         if self.state.last_error.lock().is_some() {

@@ -1339,9 +1339,11 @@ impl Camera for ZwoCamera {
     /// same reason: the state is cleared at the start of a connect (C3) and
     /// nowhere else — a disconnect clears it only when it found a capture to
     /// cancel — so answering it while disconnected answers from the session that
-    /// has ended. The capability probes beside them (`CanAbortExposure`,
-    /// `HasShutter`) describe the driver rather than a session and are
-    /// deliberately still answerable.
+    /// has ended. The capability members beside them take the check for a
+    /// related reason (E12): `CanAbortExposure`, `CanStopExposure` and the ones
+    /// reading the cached `info` describe a device, and a driver holding none
+    /// cannot describe one. Only `CanAsymmetricBin`, which this driver never
+    /// implements, answers throughout.
     async fn camera_state(&self) -> ASCOMResult<CameraState> {
         self.ensure_connected()?;
         if self.state.last_error.lock().is_some() {
