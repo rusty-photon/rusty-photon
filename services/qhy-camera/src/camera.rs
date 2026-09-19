@@ -4570,6 +4570,30 @@ mod tests {
             device.can_abort_exposure().await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
         );
+        // `SensorType` is the third member built on the same `Option`-shaped
+        // probe: its "no colour control" branch would answer `Monochrome` off
+        // a closed handle.
+        assert_eq!(
+            device.sensor_type().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// The half of E11 a closed-handle test cannot reach: the disconnect lands
+    /// *while the probe is in the SDK*. The probe still answers — a missing
+    /// control and a dead handle are both `None` — so only `probe_handle`'s
+    /// check on the way back turns that into the disconnect it is. Delete that
+    /// second check and this test fails; delete it and the closed-handle test
+    /// above still passes, which is why this one exists.
+    #[tokio::test]
+    async fn a_probe_that_lost_its_device_mid_call_reports_the_disconnect() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        assert!(device.has_shutter().await.is_ok());
+        handle.close_during_next_probe();
+        assert_eq!(
+            device.has_shutter().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
     }
 
     /// The other half of E11: what this driver never implements is its own
