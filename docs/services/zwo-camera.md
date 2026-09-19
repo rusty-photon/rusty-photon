@@ -1021,10 +1021,13 @@ scenarios.
 
 ## ASCOM Camera surface — v0 behaviour
 
-**Every member below answers `NOT_CONNECTED` while the device is
-disconnected** unless its row says otherwise: each describes a camera, and a
-driver holding none cannot describe one (E11, E12). The one exception is
-`CanAsymmetricBin`, which this driver never implements.
+**Every member below that describes the camera or its session answers
+`NOT_CONNECTED` while the device is disconnected** unless its row says
+otherwise: a driver holding no device cannot describe one (E11, E12). Outside
+that rule: `CanAsymmetricBin`, which this driver never implements, and the
+ASCOM identity and health members (`Name`, `Description`, `DriverInfo`,
+`DriverVersion`, `Connected`, `UniqueID`), which describe the driver and are
+how a client asks whether a device is there at all.
 
 | Property / Method | v0 behaviour (backed by `zwo-rs`) |
 |---|---|

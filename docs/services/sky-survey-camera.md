@@ -506,10 +506,19 @@ scenarios in `tests/features/`. ASCOM error codes use the names from
   of their setters, plus `SetReadoutMode` and `SetGain`, return
   `NOT_CONNECTED` while the device is disconnected, as C4 already
   promises of "subsequent ASCOM operations". A geometry a client
-  cannot expose with is not a geometry, and a write accepted by a
-  disconnected driver is a setting the next session may or may not
-  inherit depending on where the reset falls — the SDK siblings all
-  refuse these (`qhy-camera`, `zwo-camera`, `svbony-camera`).
+  cannot expose with is not a geometry — the SDK siblings all refuse
+  these (`qhy-camera`, `zwo-camera`, `svbony-camera`).
+
+  The **start of a connect** puts `BinX`/`BinY`, `NumX`/`NumY` and
+  `StartX`/`StartY` back to the configured full frame at bin 1, the
+  way the SDK siblings' connect handshakes clear what they
+  republish (`qhy-camera`'s C6). A session's geometry is that
+  session's, so the next one does not inherit it. That is also what
+  settles the one case the setters' check cannot: the check runs
+  before the write and is not atomic with a concurrent disconnect,
+  so a write can still land just after one — the reset makes such a
+  write unreachable rather than a setting the next session silently
+  inherits.
   What keeps answering is the **fixed** surface: `CameraXSize` /
   `CameraYSize`, `PixelSizeX/Y`, `MaxBinX/Y`, `CanAsymmetricBin`,
   `ExposureMin` / `Max` / `Resolution`, `MaxADU`, `ElectronsPerADU`,
@@ -705,10 +714,10 @@ exposure state (C5) and its settings (C6) — and those rows say so.
 |---|---|
 | `CameraXSize` / `CameraYSize` | From `optics.sensor_width_px` / `sensor_height_px` |
 | `PixelSizeX` / `PixelSizeY` | From `optics.pixel_size_*_um` |
-| `BinX` / `BinY` | Settable, integer, capped by `MaxBinX` / `MaxBinY` at the setter; getters and setters `NOT_CONNECTED` while disconnected (C6) |
+| `BinX` / `BinY` | Settable, integer, capped by `MaxBinX` / `MaxBinY` at the setter; getters and setters `NOT_CONNECTED` while disconnected, and back to `1` at the start of a connect (C6) |
 | `MaxBinX` / `MaxBinY` | `4` (configurable later) |
 | `CanAsymmetricBin` | `false` |
-| `NumX` / `NumY` / `StartX` / `StartY` | Setters accept any `u32`; geometry checked at `StartExposure` (E4/E5); getters and setters `NOT_CONNECTED` while disconnected (C6) |
+| `NumX` / `NumY` / `StartX` / `StartY` | Setters accept any `u32`; geometry checked at `StartExposure` (E4/E5); getters and setters `NOT_CONNECTED` while disconnected, and back to the configured full frame at the start of a connect (C6) |
 | `MaxADU` | `65535` (16-bit equivalent) |
 | `ElectronsPerADU` | `1.0` placeholder (no signal model in v0) |
 | `FullWellCapacity` | `65535.0` (= `MaxADU * ElectronsPerADU`) |

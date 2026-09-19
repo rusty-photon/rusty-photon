@@ -227,6 +227,22 @@ impl SkySurveyCamera {
             "camera is not connected",
         ))
     }
+
+    /// Put the session's settings back to the configured full frame at bin 1,
+    /// the values [`Self::from_parts`] starts from (C6). Called at the start of
+    /// a connect.
+    fn reset_session_settings(&self) {
+        self.state.bin_x.store(1, Ordering::Release);
+        self.state.bin_y.store(1, Ordering::Release);
+        self.state
+            .num_x
+            .store(self.state.config.optics.sensor_width_px, Ordering::Release);
+        self.state
+            .num_y
+            .store(self.state.config.optics.sensor_height_px, Ordering::Release);
+        self.state.start_x.store(0, Ordering::Release);
+        self.state.start_y.store(0, Ordering::Release);
+    }
 }
 
 /// The body of the spawned exposure task. Performs the cache hit /
@@ -449,6 +465,16 @@ impl Device for SkySurveyCamera {
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
         if connected {
+            // C6: the settings belong to the session, so a connect starts from
+            // the configured full frame at bin 1 rather than inheriting the
+            // last session's geometry — the shape the SDK siblings' connect
+            // handshakes already have (`qhy-camera`'s C6). It also settles the
+            // one thing the setters' connected check cannot: a write that won
+            // the race against a concurrent disconnect lands in state that no
+            // session can reach, because the next connect clears it. Cleared
+            // *first*, so a connect that then fails its cache-dir check leaves
+            // nothing of the old session behind either.
+            self.reset_session_settings();
             // C2: cache_dir must be creatable AND writable. `create_
             // dir_all` succeeds on an existing read-only directory,
             // so we follow it with a probe write/delete.
@@ -1309,6 +1335,29 @@ mod tests {
             cam.set_bin_x(99).await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
         );
+    }
+
+    /// C6's other end: the settings a session did set do not outlive it. The
+    /// connected check on the setters cannot be atomic with the disconnect, so
+    /// a write can still win that race by a hair; the reset at the *start* of a
+    /// connect is what makes such a write unreachable, rather than a setting
+    /// the next session silently inherits.
+    #[tokio::test]
+    async fn a_connect_starts_from_the_configured_geometry() {
+        let cam = connected_camera();
+        cam.set_bin_x(2).await.unwrap();
+        cam.set_num_x(320).await.unwrap();
+        cam.set_start_y(8).await.unwrap();
+        cam.set_connected(false).await.unwrap();
+        // Stands in for a setter that won the race against this disconnect.
+        cam.state.start_x.store(64, Ordering::Release);
+        cam.set_connected(true).await.unwrap();
+        assert_eq!(cam.bin_x().await.unwrap(), 1);
+        assert_eq!(cam.bin_y().await.unwrap(), 1);
+        assert_eq!(cam.num_x().await.unwrap(), 640);
+        assert_eq!(cam.num_y().await.unwrap(), 480);
+        assert_eq!(cam.start_x().await.unwrap(), 0);
+        assert_eq!(cam.start_y().await.unwrap(), 0);
     }
 
     /// The other half of C6: with no hardware behind it, this service's fixed

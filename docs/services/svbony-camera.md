@@ -1289,11 +1289,14 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 
 ## ASCOM Camera surface — v0 behaviour
 
-**Every member below answers `NOT_CONNECTED` while the device is
-disconnected** unless its row says otherwise: each describes a camera, and a
-driver holding none cannot describe one (state-machine steps 9 and 10). The
-exceptions — what this driver never implements, on any model — are named in
-their rows.
+**Every member below that describes the camera or its session answers
+`NOT_CONNECTED` while the device is disconnected** unless its row says
+otherwise: a driver holding no device cannot describe one (state-machine
+steps 9 and 10). Two groups are outside that rule: what this driver never
+implements, named in its rows; and the identity and health members in the
+last row (`Name`, `Description`, `DriverInfo`, `DriverVersion`, `Connected`,
+`UniqueID`), which describe the *driver* and are how a client asks whether a
+device is there at all, so they answer throughout.
 
 | Property / Method | v0 behaviour (backed by `svbony-rs`) | Status |
 |---|---|---|
