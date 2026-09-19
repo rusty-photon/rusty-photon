@@ -1289,12 +1289,18 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 
 ## ASCOM Camera surface — v0 behaviour
 
+**Every member below answers `NOT_CONNECTED` while the device is
+disconnected** unless its row says otherwise: each describes a camera, and a
+driver holding none cannot describe one (state-machine steps 9 and 10). The
+exceptions — what this driver never implements, on any model — are named in
+their rows.
+
 | Property / Method | v0 behaviour (backed by `svbony-rs`) | Status |
 |---|---|---|
 | `CameraXSize` / `CameraYSize` | `SVB_CAMERA_PROPERTY` `MaxWidth`/`MaxHeight` aligned down so every binned full frame is a valid ROI (R4; SV605CC 3008×3008 → 2976×3000) | **Real** |
 | `PixelSizeX` / `PixelSizeY` | `SVBGetSensorPixelSize` (X == Y) | **Real** |
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` | **Real** |
-| `CanAsymmetricBin` | `false` | **Real** |
+| `CanAsymmetricBin` | `false`; never implemented, so answered at any time (step 10) | **Real** |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) | **Real** |
 | `MaxADU` | The selected readout format's full scale — 65535 (Raw16, hardware-verified) / 255 (Raw8); NOT `2^MaxBitDepth - 1` | **Real** |
 | `ElectronsPerADU` | `NOT_IMPLEMENTED` (no SDK surface, hardware-confirmed) | **Permanent stub (ST2)** |
@@ -1312,7 +1318,8 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 | `CanPulseGuide` | `true` iff ST4 port present (SV605CC: `false`) | **Real** |
 | `PulseGuide` / `IsPulseGuiding` | `SVBPulseGuide`, gated on ST4 capability; kept a literal blocking call (PG2); both `NOT_CONNECTED` while disconnected (step 10) | **Real** |
 | `StartExposure` (`Light=false`) | Accepted; captured normally (no shutter) | **Real** |
-| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` | Per the soft-trigger video-capture state machine above; all `NOT_CONNECTED` while disconnected (step 9) | **Real** |
+| `StartExposure` / `AbortExposure` / `ImageReady` / `ImageArray` | Per the soft-trigger video-capture state machine above; all `NOT_CONNECTED` while disconnected (step 9) | **Real** |
+| `StopExposure` | `NOT_IMPLEMENTED`; never implemented, so answered at any time — the truth about a member no reconnect makes work (step 10) | **Real** |
 | `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session; `VALUE_NOT_SET` before its first exposure, `NOT_CONNECTED` while disconnected (step 9) | **Real** |
 | `Name` / `Description` / `DriverInfo` / `DriverVersion` / `Connected` / `UniqueID` | — | **Real** |
 

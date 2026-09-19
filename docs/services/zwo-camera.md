@@ -1021,12 +1021,17 @@ scenarios.
 
 ## ASCOM Camera surface — v0 behaviour
 
+**Every member below answers `NOT_CONNECTED` while the device is
+disconnected** unless its row says otherwise: each describes a camera, and a
+driver holding none cannot describe one (E11, E12). The one exception is
+`CanAsymmetricBin`, which this driver never implements.
+
 | Property / Method | v0 behaviour (backed by `zwo-rs`) |
 |---|---|
 | `CameraXSize` / `CameraYSize` | Cached `ASI_CAMERA_INFO` MaxWidth/MaxHeight, aligned down so the full frame at every bin is a valid ASI ROI (R4; e.g. 6248→6240) |
 | `PixelSizeX` / `PixelSizeY` | Cached `ASI_CAMERA_INFO.PixelSize` (X == Y) |
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` |
-| `CanAsymmetricBin` | `false` |
+| `CanAsymmetricBin` | `false`; never implemented, so answered at any time (E12) |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) |
 | `MaxADU` | A saturation threshold chosen to be reachable, not an exact upper bound (ST3): 255 in Raw8; in Raw16 the ADC scale shifted into the container, one quantization step below full scale — 65528 for 14-bit, 65504 for 12-bit, 65535 for 16-bit/unknown. Where the margin applies, a sensor reaching its top code delivers one step above this; the 65535 cases are the container maximum and cannot be exceeded |
 | `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU`, read live per call — the SDK scales it by the gain register, so it tracks `Gain` (ST2) |
@@ -1043,7 +1048,6 @@ scenarios.
 | `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100; `NOT_CONNECTED` while disconnected (E11) |
 | `CanAbortExposure` / `CanStopExposure` | `true` / `true` (both via `ASIStopExposure`); `NOT_CONNECTED` while disconnected (E12) |
 | `CanPulseGuide` | `true` iff ST4 port present; `NOT_CONNECTED` while disconnected (E12) |
-| `CanAsymmetricBin` | `false`; never implemented, so answered at any time (E12) |
 | `PulseGuide` / `IsPulseGuiding` | Asynchronous `ASIPulseGuideOn/Off` (ST4): returns immediately, `IsPulseGuiding` true until `now + duration` (PG2); both `NOT_CONNECTED` while disconnected (E12) |
 | `StartExposure` (`Light=false`) | Accepted; captured normally (no shutter) |
 | `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Per *Exposure* contracts; `ImageArray` axes `[X, Y]`; all `NOT_CONNECTED` while disconnected (E1, E11) |

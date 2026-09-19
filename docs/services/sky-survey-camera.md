@@ -695,6 +695,12 @@ graph TD;
 
 ## ASCOM Camera Surface — v0 Behaviour
 
+Unlike the SDK-backed siblings, the **default here is the other way round**:
+with no hardware behind it, this service's fixed optics, sensor description
+and self-performed abort are its own knowledge and answer whether or not a
+client is connected. What refuses while disconnected is the session — its
+exposure state (C5) and its settings (C6) — and those rows say so.
+
 | Property / Method | Behaviour |
 |---|---|
 | `CameraXSize` / `CameraYSize` | From `optics.sensor_width_px` / `sensor_height_px` |

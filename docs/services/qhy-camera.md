@@ -858,12 +858,18 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
 ## ASCOM Camera surface — v0 behaviour
 
+**Every member below answers `NOT_CONNECTED` while the device is
+disconnected** unless its row says otherwise: each describes a camera, and a
+driver holding no handle cannot describe one (E10, E11). The exceptions — the
+members this driver never implements, which are its own knowledge and answer
+throughout — are named in their rows.
+
 | Property / Method | v0 behaviour (backed by `qhyccd-rs`) |
 |---|---|
 | `CameraXSize` / `CameraYSize` | The SDK's effective area at bin 1 (G1) — the region it reads out, not the chip — reduced so the full frame at every bin has even extents (R4) |
 | `PixelSizeX` / `PixelSizeY` | Cached `get_ccd_info()` pixel width/height |
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from valid binning modes |
-| `CanAsymmetricBin` | `false` |
+| `CanAsymmetricBin` | `false`; never implemented, so answered at any time (E11) |
 | `NumX` / `NumY` / `StartX` / `StartY` | Origin at the effective area's corner; default `CameraXSize`/`CameraYSize` and `0`; setters relaxed, validated (bounds R2, even extents R4) and translated at `StartExposure` |
 | `MaxADU` | `(2^transfer_bits) - 1` (65535) from `GetQHYCCDChipInfo` bpp, not `OutputDataActualBits` |
 | `ElectronsPerADU` / `FullWellCapacity` | `NOT_IMPLEMENTED` (placeholder only if ConformU demands) |
@@ -871,7 +877,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 | `Gain` / `GainMin` / `GainMax` | SDK `Gain` control; `NOT_IMPLEMENTED` if absent |
 | `Offset` / `OffsetMin` / `OffsetMax` | SDK `Offset` control; `NOT_IMPLEMENTED` if absent |
 | `ReadoutMode` / `ReadoutModes` | SDK named modes |
-| `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from colour control |
+| `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from colour control; `SensorType` is one of the `is_control_available` probes, so its "no colour control" branch takes the check on both sides of the SDK hop rather than reporting `Monochrome` off a closed handle (E11) |
 | `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `Cooler` control |
 | `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `Cooler` control present; `NOT_CONNECTED` while disconnected (E11) |
 | `CanFastReadout` / `FastReadout` | Reflects `Speed` control (untested — see *Future Work*) |
@@ -879,11 +885,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 | `CameraState` | `Idle` / `Exposing` / `Error`; `NOT_CONNECTED` while disconnected (E10) |
 | `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100; `NOT_CONNECTED` while disconnected (E10) |
 | `CanAbortExposure` / `CanStopExposure` | `true` (`NOT_CONNECTED` while disconnected, E11) / `false` (never implemented, so answered at any time) |
-| `CanPulseGuide` / `CanAsymmetricBin` | `false`; never implemented, so answered at any time (E11) |
+| `CanPulseGuide` | `false`; never implemented, so answered at any time (E11) |
 | `StartExposure` (`Light=false`) | `NOT_IMPLEMENTED` (no shutter actuation in qhyccd-rs 0.1.9; see E4) |
 | `StartExposure` / `AbortExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Per *Exposure* contracts; `ImageArray` axes `[X, Y]`; all `NOT_CONNECTED` while disconnected (E1, E10) |
 | `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session; `VALUE_NOT_SET` before its first exposure, `NOT_CONNECTED` while disconnected (E10) |
-| `StopExposure` | `NOT_IMPLEMENTED` |
+| `StopExposure` | `NOT_IMPLEMENTED`; never implemented, so answered at any time — the truth about a member no reconnect makes work (E11) |
 
 ---
 
