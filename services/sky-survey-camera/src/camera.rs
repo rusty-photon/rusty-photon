@@ -996,26 +996,45 @@ mod tests {
         AlpacaServerConfig, DeviceConfig, OpticsConfig, PointingConfig, SurveyConfig,
     };
 
-    /// A writable cache directory of this test's own.
+    /// A scratch cache directory, owned by the caller.
     ///
-    /// Connect validates `cache_dir` by creating it and probing it with a
-    /// write (C2), so a *fixed* shared path is two hazards at once: every test
-    /// in the binary shares one directory, and nothing guarantees the process
-    /// may write where it points — the Windows CI runner denies
-    /// `temp_dir()/sky-survey-camera-tests` outright ("Access is denied"),
-    /// which stayed invisible while this container ran the suite as root.
-    /// Bazel hands each test action a writable `TEST_TMPDIR`; the per-process,
-    /// per-call suffix keeps concurrent tests out of each other's way either
-    /// way.
-    fn test_cache_dir() -> std::path::PathBuf {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    /// Connect creates `cache_dir` and probes it with a write (C2), so the
+    /// tests that drive it need a real directory — one that is unique by
+    /// construction and takes itself away afterwards, on the failing paths
+    /// too (testing.md §4.3 and its scratch rule). The guard has to outlive
+    /// the camera, so it comes back alongside it. Rooted at Bazel's
+    /// per-action `TEST_TMPDIR` when set, which Bazel wipes between runs,
+    /// rather than at the machine-wide temp directory it leaves alone.
+    ///
+    /// `tempfile` directly rather than `bdd_infra::scratch::new_dir`: these
+    /// are in-process unit tests with no child process reading the path, and
+    /// the lib's unit-test target does not otherwise depend on the BDD
+    /// harness crate.
+    fn scratch_cache_dir() -> tempfile::TempDir {
         let root = std::env::var_os("TEST_TMPDIR")
             .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
-        root.join(format!(
-            "sky-survey-camera-tests-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ))
+        tempfile::Builder::new()
+            .prefix("sky-survey-camera-unit-")
+            .tempdir_in(root)
+            .expect("creating a scratch cache directory")
+    }
+
+    /// A camera whose `cache_dir` is a scratch directory — the only shape in
+    /// which a test may call `set_connected(true)`. Keep the guard alive for
+    /// the whole test.
+    fn connecting_camera(client: Arc<dyn SurveyClient>) -> (SkySurveyCamera, tempfile::TempDir) {
+        let scratch = scratch_cache_dir();
+        let mut config = fake_config();
+        config.survey.cache_dir = scratch.path().to_path_buf();
+        (SkySurveyCamera::new_static(config, client), scratch)
+    }
+
+    /// [`connecting_camera`] already in a session, for tests that drive a
+    /// *re*-connect.
+    fn connected_camera_with_scratch() -> (SkySurveyCamera, tempfile::TempDir) {
+        let (cam, scratch) = connecting_camera(Arc::new(StubSurveyClient));
+        cam.state.connected.store(true, Ordering::Release);
+        (cam, scratch)
     }
 
     fn fake_config() -> Config {
@@ -1042,7 +1061,12 @@ mod tests {
             survey: SurveyConfig {
                 name: "DSS2 Red".into(),
                 request_timeout: Duration::from_secs(5),
-                cache_dir: test_cache_dir(),
+                // Never created: the only tests that touch the filesystem are
+                // the ones that connect, and those go through
+                // `connecting_camera`, which replaces this with a scratch
+                // directory. A fixed shared path *that something creates* is
+                // the shape testing.md's scratch rule exists to stop.
+                cache_dir: std::path::PathBuf::from("sky-survey-camera-unit-tests-unused"),
                 endpoint: "http://placeholder/".into(),
             },
             server: AlpacaServerConfig::new(0),
@@ -1409,7 +1433,7 @@ mod tests {
     /// the next session silently inherits.
     #[tokio::test]
     async fn a_connect_starts_from_the_configured_geometry() {
-        let cam = connected_camera();
+        let (cam, _scratch) = connected_camera_with_scratch();
         cam.set_bin_x(2).await.unwrap();
         cam.set_num_x(320).await.unwrap();
         cam.set_start_y(8).await.unwrap();
@@ -1440,7 +1464,7 @@ mod tests {
             entered: Arc::clone(&entered),
             release: Arc::clone(&release),
         });
-        let cam = SkySurveyCamera::new_static(fake_config(), client);
+        let (cam, _scratch) = connecting_camera(client);
         cam.state.connected.store(true, Ordering::Release);
         cam.set_num_x(320).await.unwrap();
 
@@ -1475,7 +1499,7 @@ mod tests {
     /// it was about to issue.
     #[tokio::test]
     async fn re_asserting_connected_leaves_the_running_sessions_geometry_alone() {
-        let cam = connected_camera();
+        let (cam, _scratch) = connected_camera_with_scratch();
         cam.set_bin_x(2).await.unwrap();
         cam.set_num_x(320).await.unwrap();
         cam.set_connected(true).await.unwrap();
