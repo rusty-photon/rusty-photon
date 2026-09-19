@@ -269,6 +269,13 @@ async fn a_disconnect_stop_the_device_refuses_takes_the_transport_out_of_service
         !st.is_available(),
         "and the transport must stop advertising itself meanwhile"
     );
+
+    // Tear the lifecycle down rather than leaving the runtime to do
+    // it: this transport is still in `ServiceLifetime`, so its
+    // supervisor task holds an `Arc` to it and its conduit stays open.
+    // `shutdown` in the reconnecting state is itself worth exercising
+    // — it has to cancel a supervisor that is sleeping out a cadence.
+    st.shutdown().await.unwrap();
 }
 
 #[tokio::test]
