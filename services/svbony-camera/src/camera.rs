@@ -1435,12 +1435,18 @@ impl Camera for SvbonyCamera {
         Ok(false)
     }
 
+    /// Step 10: `true` is a promise to abort, and while disconnected there is
+    /// no device to abort on — `AbortExposure` itself refuses, so answering
+    /// would contradict it.
     async fn can_abort_exposure(&self) -> ASCOMResult<bool> {
+        self.ensure_connected()?;
         Ok(true)
     }
 
     async fn can_stop_exposure(&self) -> ASCOMResult<bool> {
-        // E8: no data-preserving stop exists at the SDK level.
+        // E8: no data-preserving stop exists at the SDK level. Never
+        // implemented on any model, so it answers for the driver rather than
+        // for a device and takes no connected check (step 10).
         Ok(false)
     }
 
@@ -1449,7 +1455,11 @@ impl Camera for SvbonyCamera {
         Ok(self.sensor()?.caps.supports_pulse_guide)
     }
 
+    /// The flag this reads is cleared in `reset_exposure_state`, which runs at
+    /// the *start of a connect*, so answering it while disconnected answers for
+    /// the session that ended — session state, like step 9's members.
     async fn is_pulse_guiding(&self) -> ASCOMResult<bool> {
+        self.ensure_connected()?;
         Ok(self.state.pulse_guiding.load(Ordering::Acquire))
     }
 
@@ -1460,9 +1470,11 @@ impl Camera for SvbonyCamera {
     /// connected check for the same reason: the state is cleared at the start of
     /// a connect (C3) and nowhere else — a disconnect clears it only when it
     /// found a capture to cancel — so answering it while disconnected answers
-    /// from the session that has ended. The capability probes beside them
-    /// (`CanAbortExposure`, `HasShutter`) describe the driver rather than a
-    /// session and are deliberately still answerable.
+    /// from the session that has ended. The capability members beside them take
+    /// the check for a related reason (step 10): `CanAbortExposure` and the ones
+    /// reading `SVB_CAMERA_PROPERTY_EX` describe a device, and a driver holding
+    /// none cannot describe one. What this driver never implements —
+    /// `CanStopExposure`, `HasShutter`, `CanAsymmetricBin` — answers throughout.
     async fn camera_state(&self) -> ASCOMResult<CameraState> {
         self.ensure_connected()?;
         if self.state.last_error.lock().is_some() {
@@ -1661,8 +1673,11 @@ impl Camera for SvbonyCamera {
         // E8: no data-preserving stop exists at the SDK level, so this is
         // unconditionally NOT_IMPLEMENTED rather than pretending to
         // gracefully preserve data it cannot preserve — the opposite of
-        // zwo-camera's graceful ASIStopExposure-backed stop.
-        self.ensure_connected()?;
+        // zwo-camera's graceful ASIStopExposure-backed stop. Unconditional
+        // includes the disconnected case (step 10): NOT_IMPLEMENTED is the
+        // truth about a member no reconnect will make work, where
+        // NOT_CONNECTED would invite the client to try again. Matches
+        // `qhy-camera`, whose `StopExposure` is the same dead end.
         Err(ASCOMError::NOT_IMPLEMENTED)
     }
 
@@ -3136,6 +3151,54 @@ mod tests {
         assert_eq!(
             cam.last_exposure_duration().await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// Step 10. `CanAbortExposure` promises an abort the driver has no device
+    /// to perform, and the `pulse_guiding` flag is session state cleared at the
+    /// start of a connect — set here to stand for a pulse that was in flight
+    /// when the session ended, which is what the check exists to stop being
+    /// reported. The members reading `SVB_CAMERA_PROPERTY_EX` already refused;
+    /// they are asserted alongside so the whole surface is pinned in one place.
+    #[tokio::test]
+    async fn the_capability_surface_refuses_for_a_device_the_driver_does_not_hold() {
+        let cam = SvbonyCamera::new(Arc::new(MockCameraHandle::default()), None);
+        cam.state.pulse_guiding.store(true, Ordering::Release);
+        assert_eq!(
+            cam.can_abort_exposure().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.is_pulse_guiding().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.can_set_ccd_temperature().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.can_get_cooler_power().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.can_pulse_guide().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// The other half of step 10: what this driver never implements is its own
+    /// knowledge, so it answers with no device at all — and `StopExposure`
+    /// says `NOT_IMPLEMENTED` rather than inviting a reconnect that would not
+    /// help, matching `qhy-camera`.
+    #[tokio::test]
+    async fn what_the_driver_never_implements_answers_while_disconnected() {
+        let cam = SvbonyCamera::new(Arc::new(MockCameraHandle::default()), None);
+        assert!(!cam.can_stop_exposure().await.unwrap());
+        assert!(!cam.has_shutter().await.unwrap());
+        assert!(!cam.can_asymmetric_bin().await.unwrap());
+        assert_eq!(
+            cam.stop_exposure().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_IMPLEMENTED
         );
     }
 }

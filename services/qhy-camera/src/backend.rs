@@ -776,6 +776,12 @@ pub(crate) mod mock {
         pub panic_in_readout: AtomicBool,
         /// C2 injection: make the post-open handshake (`get_ccd_info`) fail.
         pub fail_handshake: AtomicBool,
+        /// Closes the handle inside the *next* `is_control_available`, so a
+        /// test can put a disconnect in the one place it cannot otherwise
+        /// reach: after a capability probe has been dispatched and before its
+        /// answer is used. Consumed on use (a `swap`), so one arming affects
+        /// one probe. Set through [`close_during_next_probe`](Self::close_during_next_probe).
+        close_during_probe: AtomicBool,
         /// Make control *writes* (`set_bin_mode` / `set_readout_mode`) fail, to
         /// exercise the setters' SDK-failure → `INVALID_OPERATION` mapping.
         pub fail_set_controls: AtomicBool,
@@ -940,6 +946,7 @@ pub(crate) mod mock {
                 fail_abort: AtomicBool::new(false),
                 panic_in_readout: AtomicBool::new(false),
                 fail_handshake: AtomicBool::new(false),
+                close_during_probe: AtomicBool::new(false),
                 fail_set_controls: AtomicBool::new(false),
                 fail_set_roi: AtomicBool::new(false),
                 set_roi_held: AtomicBool::new(false),
@@ -1073,6 +1080,12 @@ pub(crate) mod mock {
         /// mid-close while the test drives something else past it.
         pub fn hold_close(&self) {
             self.close_held.store(true, Ordering::SeqCst);
+        }
+        /// Arm the disconnect-inside-the-probe seam: the next
+        /// `is_control_available` closes the handle and still answers, which is
+        /// the interleaving `probe_handle`'s post-check exists for (E11).
+        pub fn close_during_next_probe(&self) {
+            self.close_during_probe.store(true, Ordering::SeqCst);
         }
         /// Let a held close finish.
         pub fn release_close(&self) {
@@ -1244,7 +1257,15 @@ pub(crate) mod mock {
         fn get_current_roi(&self) -> BackendResult<CCDChipArea> {
             Ok(*self.roi.lock())
         }
+        /// Closes the handle from *inside* the probe when a test asked for it,
+        /// standing in for a disconnect that landed while the call was in the
+        /// SDK. The answer still comes back — `is_control_available` reports a
+        /// missing control and a dead handle alike, as `None` — which is the
+        /// whole reason `probe_handle` re-checks afterwards (E11).
         fn is_control_available(&self, control: ControlType) -> Option<u32> {
+            if self.close_during_probe.swap(false, Ordering::SeqCst) {
+                self.open.store(false, Ordering::SeqCst);
+            }
             self.controls.lock().get(&control).copied()
         }
         fn get_parameter(&self, control: ControlType) -> BackendResult<f64> {

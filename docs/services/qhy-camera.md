@@ -257,7 +257,8 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
 - **Exposure** — `ExposureMin/Max/Resolution` from the SDK; single-frame
   `StartExposure`; `ImageReady`/`ImageArray`/`ImageArrayVariant`; `CameraState`
   (`Idle`/`Exposing`/`Error`); `PercentCompleted` from remaining-exposure µs.
-- **Abort** — `CanAbortExposure = true` via the SDK abort path.
+- **Abort** — `CanAbortExposure = true` via the SDK abort path (while connected;
+  E11).
 - **Gain / Offset** — current value + `Min`/`Max` from the SDK; `NOT_IMPLEMENTED`
   when the control is unavailable on the model.
 - **Readout modes** — `ReadoutMode(s)` named from the SDK; switching updates
@@ -274,7 +275,8 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
   `Names`, `Position` (with moving state), `set_position`, `FocusOffsets`.
 - **Dark frames** — `Light = false` returns `NOT_IMPLEMENTED` on all models in
   v0 (qhyccd-rs 0.1.9 has no shutter actuation; see E4). `HasShutter` still
-  reports `CamMechanicalShutter` presence.
+  reports `CamMechanicalShutter` presence, for a device the driver is holding
+  open (E11).
 - `config.get`/`config.apply`/`config.schema` actions; hardware-derived
   `UniqueID` (camera/CFW SDK serial); in-process reload.
 - ConformU integration test driven against the `qhyccd-rs` `simulation` backend
@@ -436,8 +438,16 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   cannot exclude a disconnect arriving in between; rather than let the error a
   client sees depend on where in that race the request fell, an SDK failure on a
   handle that is no longer open is reported as the disconnect it is. A call that
-  *succeeded* answers for itself, and the capability properties that deliberately
-  answer while disconnected are unaffected.
+  *succeeded* answers for itself — with one exception, because
+  `is_control_available` spells "this model lacks the control" and "this handle
+  is closed" the same way, as `None`, and so never reaches that rewrite. The
+  members built on it (`HasShutter`, `CanSetCCDTemperature`, `SensorType`) take
+  the connected check on **both** sides of the SDK hop, so a probe that came
+  back after the close reports the disconnect rather than a fabricated
+  "no cooler" (E11). Serializing the probe against the close instead would mean
+  holding the handle across a blocking USB call, which is what dispatching off
+  the executor exists to avoid. The members that never touch a device
+  (`CanStopExposure`, `CanPulseGuide`, `CanAsymmetricBin`) answer throughout.
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
   camera does not affect the others enumerated on the same service.
 - **C5.** No code path in this service pushes cooler state, wheel position, or
@@ -723,9 +733,26 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
     logically connected (C3), and blanking a live session's state is the failure
     that rule exists to prevent; and once these members refuse, there is nothing
     left to observe between a disconnect that did close and the connect that
-    clears it. The `Connected`-adjacent capability probes (`CanAbortExposure`,
-    `CanStopExposure`, `CanPulseGuide`, `HasShutter`) are unaffected — they
-    describe the driver, not a session.
+    clears it. The capability probes beside them take the same check for a
+    related reason (E11).
+- **E11.** A capability member answers while disconnected **only if the driver
+  never implements it**. `CanAsymmetricBin` (`false`), `CanStopExposure`
+  (`false`, E8), `CanPulseGuide` (`false`) and `StopExposure`
+  (`NOT_IMPLEMENTED`) are the driver's own knowledge — no device can change
+  them, so they answer at any time. The rest of the capability surface —
+  `HasShutter`, `CanSetCCDTemperature`, `CanGetCoolerPower` (which delegates to
+  it) and `CanAbortExposure` — answers `NOT_CONNECTED` while the device is
+  disconnected. A driver holding no handle cannot describe the camera on the
+  other end of one. The first three probe SDK controls, and `on_handle` rewrites
+  to `NOT_CONNECTED` only when the SDK call *errors*, while
+  `is_control_available` reports absence as an `Option` rather than an error —
+  so a closed handle yields a clean `Ok(false)`, "this camera has no cooler",
+  about a camera nobody is talking to. `CanAbortExposure = true` is the opposite
+  failure: a promise to abort, made with no handle to abort with, beside an
+  `AbortExposure` that refuses — E10's `ImageReady`/`ImageArray` contradiction
+  in a second pair. This supersedes the earlier position that these four
+  "describe the driver rather than a session"; shared with `zwo-camera`'s E12
+  and `svbony-camera`'s state-machine step 10 (#1281).
 
 ### Gain / offset / readout
 
@@ -831,12 +858,21 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
 ## ASCOM Camera surface — v0 behaviour
 
+**Every member below that describes the camera or its session answers
+`NOT_CONNECTED` while the device is disconnected** unless its row says
+otherwise: a driver holding no handle cannot describe one (E10, E11). Outside
+that rule: the members this driver never implements, which are its own
+knowledge and are named in their rows, and the ASCOM identity and health
+members (`Name`, `Description`, `DriverInfo`, `DriverVersion`, `Connected`,
+`UniqueID`), which describe the driver and are how a client asks whether a
+device is there at all.
+
 | Property / Method | v0 behaviour (backed by `qhyccd-rs`) |
 |---|---|
 | `CameraXSize` / `CameraYSize` | The SDK's effective area at bin 1 (G1) — the region it reads out, not the chip — reduced so the full frame at every bin has even extents (R4) |
 | `PixelSizeX` / `PixelSizeY` | Cached `get_ccd_info()` pixel width/height |
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from valid binning modes |
-| `CanAsymmetricBin` | `false` |
+| `CanAsymmetricBin` | `false`; never implemented, so answered at any time (E11) |
 | `NumX` / `NumY` / `StartX` / `StartY` | Origin at the effective area's corner; default `CameraXSize`/`CameraYSize` and `0`; setters relaxed, validated (bounds R2, even extents R4) and translated at `StartExposure` |
 | `MaxADU` | `(2^transfer_bits) - 1` (65535) from `GetQHYCCDChipInfo` bpp, not `OutputDataActualBits` |
 | `ElectronsPerADU` / `FullWellCapacity` | `NOT_IMPLEMENTED` (placeholder only if ConformU demands) |
@@ -844,19 +880,19 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 | `Gain` / `GainMin` / `GainMax` | SDK `Gain` control; `NOT_IMPLEMENTED` if absent |
 | `Offset` / `OffsetMin` / `OffsetMax` | SDK `Offset` control; `NOT_IMPLEMENTED` if absent |
 | `ReadoutMode` / `ReadoutModes` | SDK named modes |
-| `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from colour control |
+| `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from colour control; `SensorType` is one of the `is_control_available` probes, so its "no colour control" branch takes the check on both sides of the SDK hop rather than reporting `Monochrome` off a closed handle (E11) |
 | `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `Cooler` control |
-| `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `Cooler` control present |
+| `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `Cooler` control present; `NOT_CONNECTED` while disconnected (E11) |
 | `CanFastReadout` / `FastReadout` | Reflects `Speed` control (untested — see *Future Work*) |
-| `HasShutter` | `true` iff `CamMechanicalShutter` control present |
+| `HasShutter` | `true` iff `CamMechanicalShutter` control present; `NOT_CONNECTED` while disconnected (E11) |
 | `CameraState` | `Idle` / `Exposing` / `Error`; `NOT_CONNECTED` while disconnected (E10) |
 | `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100; `NOT_CONNECTED` while disconnected (E10) |
-| `CanAbortExposure` / `CanStopExposure` | `true` / `false` |
-| `CanPulseGuide` | `false` |
+| `CanAbortExposure` / `CanStopExposure` | `true` (`NOT_CONNECTED` while disconnected, E11) / `false` (never implemented, so answered at any time) |
+| `CanPulseGuide` | `false`; never implemented, so answered at any time (E11) |
 | `StartExposure` (`Light=false`) | `NOT_IMPLEMENTED` (no shutter actuation in qhyccd-rs 0.1.9; see E4) |
 | `StartExposure` / `AbortExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Per *Exposure* contracts; `ImageArray` axes `[X, Y]`; all `NOT_CONNECTED` while disconnected (E1, E10) |
 | `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session; `VALUE_NOT_SET` before its first exposure, `NOT_CONNECTED` while disconnected (E10) |
-| `StopExposure` | `NOT_IMPLEMENTED` |
+| `StopExposure` | `NOT_IMPLEMENTED`; never implemented, so answered at any time — the truth about a member no reconnect makes work (E11) |
 
 ---
 
@@ -1070,7 +1106,7 @@ Layered per [`testing.md`](../skills/testing.md).
   deliberately skips this whole layer (PF5/DR5) — it proves the config and
   enumeration contract, not the DLL layer.
 - **BDD** (`bdd-infra::ServiceHandle`) — connection lifecycle (C1–C4), ROI/bin
-  validation (R1–R2, R4, B1–B3), exposure happy-path + error paths (E1–E10),
+  validation (R1–R2, R4, B1–B3), exposure happy-path + error paths (E1–E11),
   gain/offset/readout (GO1–RM1), cooling (K1–K4), and FilterWheel (FW1–FW3 when
   enabled), driven against the `qhyccd-rs` `simulation` backend.
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)

@@ -644,9 +644,9 @@ impl QhyCameraDevice {
     /// `INVALID_OPERATION` for a gain. Reporting the disconnect instead makes
     /// the answer the same one the client would have got a moment earlier or
     /// later, rather than one that depends on where in the race it landed. Only
-    /// *failures* are rewritten: a call that succeeded answers for itself, and
-    /// the capability probes that deliberately answer while disconnected
-    /// (`HasShutter`, `CanSetCCDTemperature`) return `Ok` and are untouched.
+    /// *failures* are rewritten: a call that succeeded answers for itself. A
+    /// probe that reports absence as an `Option` rather than an error never
+    /// reaches that rewrite — see [`Self::probe_handle`].
     async fn on_handle<T, F>(&self, f: F) -> ASCOMResult<T>
     where
         F: FnOnce(&dyn CameraHandle) -> ASCOMResult<T> + Send + 'static,
@@ -663,6 +663,31 @@ impl QhyCameraDevice {
             }
             outcome => outcome,
         }
+    }
+
+    /// [`Self::on_handle`] for an SDK *probe* — one whose "not present" answer
+    /// is an `Option` rather than an error.
+    ///
+    /// `is_control_available` spells a control the model lacks and a handle
+    /// that is no longer open the same way, as `None`, so the rewrite above
+    /// never fires for it: a probe dispatched a moment before a disconnect
+    /// would answer "this camera has no cooler" about a camera the driver no
+    /// longer holds — E11's fabricated negative, in the window a pre-check
+    /// cannot cover, and indistinguishable to the client from a real answer.
+    /// Re-checking once the probe is back closes that window without holding
+    /// the handle across the blocking USB call, which is the thing `on_handle`
+    /// exists to avoid. What remains is a probe that answered while the device
+    /// was still open and lost the race by a hair, which C3 already settles:
+    /// a call that succeeded answers for itself.
+    async fn probe_handle<T, F>(&self, f: F) -> ASCOMResult<T>
+    where
+        F: FnOnce(&dyn CameraHandle) -> ASCOMResult<T> + Send + 'static,
+        T: Send + 'static,
+    {
+        self.ensure_connected()?;
+        let probed = self.on_handle(f).await?;
+        self.ensure_connected()?;
+        Ok(probed)
     }
 
     /// Await a spawned section that owns the device, in a way a cancelled
@@ -2243,9 +2268,11 @@ impl Camera for QhyCameraDevice {
 
     // --- sensor type / bayer ----------------------------------------------------
 
+    /// The same `Option`-shaped probe as `HasShutter`, so it takes the same
+    /// helper: its "no colour control" branch would otherwise answer
+    /// `Monochrome` for a handle that has closed under it (E11).
     async fn sensor_type(&self) -> ASCOMResult<SensorType> {
-        self.ensure_connected()?;
-        self.on_handle(|h| {
+        self.probe_handle(|h| {
             if h.is_control_available(ControlType::CamIsColor).is_none() {
                 return Ok(SensorType::Monochrome);
             }
@@ -2277,8 +2304,12 @@ impl Camera for QhyCameraDevice {
 
     // --- cooling ----------------------------------------------------------------
 
+    /// E11: without the connected check a closed handle answers a clean
+    /// `Ok(false)`, "this camera has no cooler", about a camera the driver is
+    /// not talking to. `probe_handle` is the check on both sides of the SDK
+    /// hop, because absence and a dead handle arrive here as the same `None`.
     async fn can_set_ccd_temperature(&self) -> ASCOMResult<bool> {
-        self.on_handle(|h| Ok(h.is_control_available(ControlType::Cooler).is_some()))
+        self.probe_handle(|h| Ok(h.is_control_available(ControlType::Cooler).is_some()))
             .await
     }
 
@@ -2383,18 +2414,29 @@ impl Camera for QhyCameraDevice {
 
     // --- shutter / capability flags ---------------------------------------------
 
+    /// Same probe, same reason as `CanSetCCDTemperature` (E11): a mechanical
+    /// shutter is the camera's property, not the driver's, and the driver
+    /// cannot see it without a handle.
     async fn has_shutter(&self) -> ASCOMResult<bool> {
-        self.on_handle(|h| {
+        self.probe_handle(|h| {
             Ok(h.is_control_available(ControlType::CamMechanicalShutter)
                 .is_some())
         })
         .await
     }
 
+    /// E11: `true` here is a promise to abort, and while disconnected there is
+    /// no device to abort on — `AbortExposure` itself refuses, so answering
+    /// would contradict it.
     async fn can_abort_exposure(&self) -> ASCOMResult<bool> {
+        self.ensure_connected()?;
         Ok(true)
     }
 
+    /// The other half of E11: this driver never implements a data-preserving
+    /// stop (E8) or pulse guiding, on any model and whatever the connection
+    /// state, so these two answer for the driver rather than for a device and
+    /// take no check.
     async fn can_stop_exposure(&self) -> ASCOMResult<bool> {
         Ok(false)
     }
@@ -2410,10 +2452,10 @@ impl Camera for QhyCameraDevice {
     /// same reason: the state is cleared at the start of a connect (C6) and
     /// nowhere else, so answering it while disconnected answers from the session
     /// that has ended — `Error` for a camera that has no error, `Idle` for one
-    /// nobody can expose. The capability probes beside them (`CanAbortExposure`,
-    /// `HasShutter`) describe the driver rather than a session and are
-    /// deliberately still answerable; `Connected` is the member a client reads
-    /// to find out which it is looking at.
+    /// nobody can expose. The capability probes beside them take the check for a
+    /// related reason (E11): a driver holding no handle cannot describe the
+    /// camera on the other end of one either. `Connected` is the member a client
+    /// reads to find out which it is looking at.
     async fn camera_state(&self) -> ASCOMResult<CameraState> {
         self.ensure_connected()?;
         if self.state.last_error.lock().is_some() {
@@ -4502,6 +4544,70 @@ mod tests {
         assert_eq!(
             device.last_exposure_duration().await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// E11. The probes answer `Ok(false)` off a closed handle — `on_handle`
+    /// rewrites only SDK *errors*, and `is_control_available` reports absence
+    /// as a `None` — so without the check this is a fabricated "no cooler,
+    /// no shutter" about a camera nobody is talking to.
+    #[tokio::test]
+    async fn the_capability_surface_refuses_for_a_device_the_driver_does_not_hold() {
+        let device = QhyCameraDevice::new(Arc::new(MockCameraHandle::default()), None);
+        assert_eq!(
+            device.can_set_ccd_temperature().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.can_get_cooler_power().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.has_shutter().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.can_abort_exposure().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        // `SensorType` is the third member built on the same `Option`-shaped
+        // probe: its "no colour control" branch would answer `Monochrome` off
+        // a closed handle.
+        assert_eq!(
+            device.sensor_type().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// The half of E11 a closed-handle test cannot reach: the disconnect lands
+    /// *while the probe is in the SDK*. The probe still answers — a missing
+    /// control and a dead handle are both `None` — so only `probe_handle`'s
+    /// check on the way back turns that into the disconnect it is. Delete that
+    /// second check and this test fails; delete it and the closed-handle test
+    /// above still passes, which is why this one exists.
+    #[tokio::test]
+    async fn a_probe_that_lost_its_device_mid_call_reports_the_disconnect() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        assert!(device.has_shutter().await.is_ok());
+        handle.close_during_next_probe();
+        assert_eq!(
+            device.has_shutter().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// The other half of E11: what this driver never implements is its own
+    /// knowledge, so it answers with no device at all. Without this the
+    /// contract would be satisfied by a driver that refused everything.
+    #[tokio::test]
+    async fn what_the_driver_never_implements_answers_while_disconnected() {
+        let device = QhyCameraDevice::new(Arc::new(MockCameraHandle::default()), None);
+        assert!(!device.can_stop_exposure().await.unwrap());
+        assert!(!device.can_pulse_guide().await.unwrap());
+        assert!(!device.can_asymmetric_bin().await.unwrap());
+        assert_eq!(
+            device.stop_exposure().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_IMPLEMENTED
         );
     }
 

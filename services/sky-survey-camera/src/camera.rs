@@ -119,6 +119,16 @@ pub struct DeviceState {
     pub last_exposure_duration: Mutex<Option<Duration>>,
     pub exposure_generation: AtomicU64,
     pub survey_client: Arc<dyn SurveyClient>,
+    /// Serialises `set_connected`, so a connect and a disconnect cannot
+    /// interleave. The transition is not a single store: a connect validates
+    /// the cache directory and probes the survey endpoint first, and both
+    /// `await`. Without this, a redundant `Connected = true` could sit in that
+    /// probe while a `Connected = false` ended the session underneath it, and
+    /// then commit `true` over the top — a session resumed with the previous
+    /// one's geometry and none of C6's reset, because the false → true test ran
+    /// before the await. Held across the whole call so the test and the commit
+    /// belong to one transition (C6).
+    pub lifecycle: tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone, derive_more::Debug)]
@@ -187,6 +197,7 @@ impl SkySurveyCamera {
             last_exposure_duration: Mutex::new(None),
             exposure_generation: AtomicU64::new(0),
             survey_client,
+            lifecycle: tokio::sync::Mutex::new(()),
             next_pointing_override: Mutex::new(None),
         };
         Self {
@@ -226,6 +237,22 @@ impl SkySurveyCamera {
             ASCOMErrorCode::NOT_CONNECTED,
             "camera is not connected",
         ))
+    }
+
+    /// Put the session's settings back to the configured full frame at bin 1,
+    /// the values [`Self::from_parts`] starts from (C6). Called at the start of
+    /// a connect.
+    fn reset_session_settings(&self) {
+        self.state.bin_x.store(1, Ordering::Release);
+        self.state.bin_y.store(1, Ordering::Release);
+        self.state
+            .num_x
+            .store(self.state.config.optics.sensor_width_px, Ordering::Release);
+        self.state
+            .num_y
+            .store(self.state.config.optics.sensor_height_px, Ordering::Release);
+        self.state.start_x.store(0, Ordering::Release);
+        self.state.start_y.store(0, Ordering::Release);
     }
 }
 
@@ -448,7 +475,28 @@ impl Device for SkySurveyCamera {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
+        // One transition at a time: the checks below and the commit at the end
+        // are one step, not two (C6).
+        let _transition = self.state.lifecycle.lock().await;
         if connected {
+            // C6: the settings belong to the session, so a connect starts from
+            // the configured full frame at bin 1 rather than inheriting the
+            // last session's geometry — the shape the SDK siblings' connect
+            // handshakes already have (`qhy-camera`'s C6). It also settles the
+            // one thing the setters' connected check cannot: a write that won
+            // the race against a concurrent disconnect lands in state that no
+            // session can reach, because the next connect clears it. Cleared
+            // *first*, so a connect that then fails its cache-dir check leaves
+            // nothing of the old session behind either.
+            //
+            // Only on a **false → true** transition. `Connected = true` against
+            // an already-connected device is a no-op, not a new session (the
+            // SDK siblings return early on it, and ConformU writes it), so
+            // resetting there would throw away the running session's geometry
+            // between a client's `NumX` and its `StartExposure`.
+            if !self.is_connected() {
+                self.reset_session_settings();
+            }
             // C2: cache_dir must be creatable AND writable. `create_
             // dir_all` succeeds on an existing read-only directory,
             // so we follow it with a probe write/delete.
@@ -575,11 +623,18 @@ impl Camera for SkySurveyCamera {
         Ok(MAX_BIN)
     }
 
+    /// C6: binning, ROI and readout are the *session's* settings. A geometry a
+    /// client cannot expose with is not a geometry, and a write taken while
+    /// disconnected leaves a setting behind whose owner is a session that has
+    /// not started — so the getters and the setters alike take the check, as
+    /// the SDK-backed siblings' do.
     async fn bin_x(&self) -> ASCOMResult<u8> {
+        self.ensure_connected()?;
         Ok(self.state.bin_x.load(Ordering::Acquire))
     }
 
     async fn set_bin_x(&self, bin_x: u8) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         if !(1..=MAX_BIN).contains(&bin_x) {
             return Err(ASCOMError::invalid_value(format!(
                 "BinX {bin_x} outside [1, {MAX_BIN}]"
@@ -590,10 +645,12 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn bin_y(&self) -> ASCOMResult<u8> {
+        self.ensure_connected()?;
         Ok(self.state.bin_y.load(Ordering::Acquire))
     }
 
     async fn set_bin_y(&self, bin_y: u8) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         if !(1..=MAX_BIN).contains(&bin_y) {
             return Err(ASCOMError::invalid_value(format!(
                 "BinY {bin_y} outside [1, {MAX_BIN}]"
@@ -604,10 +661,12 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn num_x(&self) -> ASCOMResult<u32> {
+        self.ensure_connected()?;
         Ok(self.state.num_x.load(Ordering::Acquire))
     }
 
     async fn set_num_x(&self, num_x: u32) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         // ASCOM convention: sub-frame property setters accept any
         // value; geometry validation runs at StartExposure (E4/E5).
         // ConformU exercises this by setting one-past-the-edge then
@@ -617,28 +676,34 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn num_y(&self) -> ASCOMResult<u32> {
+        self.ensure_connected()?;
         Ok(self.state.num_y.load(Ordering::Acquire))
     }
 
     async fn set_num_y(&self, num_y: u32) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         self.state.num_y.store(num_y, Ordering::Release);
         Ok(())
     }
 
     async fn start_x(&self) -> ASCOMResult<u32> {
+        self.ensure_connected()?;
         Ok(self.state.start_x.load(Ordering::Acquire))
     }
 
     async fn set_start_x(&self, start_x: u32) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         self.state.start_x.store(start_x, Ordering::Release);
         Ok(())
     }
 
     async fn start_y(&self) -> ASCOMResult<u32> {
+        self.ensure_connected()?;
         Ok(self.state.start_y.load(Ordering::Acquire))
     }
 
     async fn set_start_y(&self, start_y: u32) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         self.state.start_y.store(start_y, Ordering::Release);
         Ok(())
     }
@@ -721,6 +786,19 @@ impl Camera for SkySurveyCamera {
         let state = Arc::clone(&self.state);
         tokio::spawn(run_exposure(state, light, gen, override_for_exposure));
         Ok(())
+    }
+
+    /// Both are implemented below (each cancels the in-flight survey fetch via
+    /// the generation counter), so both advertise `true` — the trait's `false`
+    /// default would have a client believe a capture it can see running cannot
+    /// be stopped. Answered while disconnected: with no hardware behind it,
+    /// what this service can do to a capture is its own knowledge (C6).
+    async fn can_abort_exposure(&self) -> ASCOMResult<bool> {
+        Ok(true)
+    }
+
+    async fn can_stop_exposure(&self) -> ASCOMResult<bool> {
+        Ok(true)
     }
 
     async fn abort_exposure(&self) -> ASCOMResult<()> {
@@ -867,7 +945,10 @@ impl Camera for SkySurveyCamera {
         Ok(0)
     }
 
+    /// The getter answers a fixed value, so it needs no session; the setter
+    /// writes to one, and so takes the check (C6).
     async fn set_readout_mode(&self, readout_mode: usize) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         if readout_mode != 0 {
             return Err(ASCOMError::invalid_value(format!(
                 "ReadoutMode {readout_mode} not supported (only index 0)"
@@ -889,6 +970,7 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn set_gain(&self, gain: i32) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         if gain != 0 {
             return Err(ASCOMError::invalid_value(format!(
                 "Gain {gain} not supported (single fixed value 0)"
@@ -914,6 +996,47 @@ mod tests {
         AlpacaServerConfig, DeviceConfig, OpticsConfig, PointingConfig, SurveyConfig,
     };
 
+    /// A scratch cache directory, owned by the caller.
+    ///
+    /// Connect creates `cache_dir` and probes it with a write (C2), so the
+    /// tests that drive it need a real directory — one that is unique by
+    /// construction and takes itself away afterwards, on the failing paths
+    /// too (testing.md §4.3 and its scratch rule). The guard has to outlive
+    /// the camera, so it comes back alongside it. Rooted at Bazel's
+    /// per-action `TEST_TMPDIR` when set, which Bazel wipes between runs,
+    /// rather than at the machine-wide temp directory it leaves alone.
+    ///
+    /// `tempfile` directly rather than `bdd_infra::scratch::new_dir`: these
+    /// are in-process unit tests with no child process reading the path, and
+    /// the lib's unit-test target does not otherwise depend on the BDD
+    /// harness crate.
+    fn scratch_cache_dir() -> tempfile::TempDir {
+        let root = std::env::var_os("TEST_TMPDIR")
+            .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+        tempfile::Builder::new()
+            .prefix("sky-survey-camera-unit-")
+            .tempdir_in(root)
+            .expect("creating a scratch cache directory")
+    }
+
+    /// A camera whose `cache_dir` is a scratch directory — the only shape in
+    /// which a test may call `set_connected(true)`. Keep the guard alive for
+    /// the whole test.
+    fn connecting_camera(client: Arc<dyn SurveyClient>) -> (SkySurveyCamera, tempfile::TempDir) {
+        let scratch = scratch_cache_dir();
+        let mut config = fake_config();
+        config.survey.cache_dir = scratch.path().to_path_buf();
+        (SkySurveyCamera::new_static(config, client), scratch)
+    }
+
+    /// [`connecting_camera`] already in a session, for tests that drive a
+    /// *re*-connect.
+    fn connected_camera_with_scratch() -> (SkySurveyCamera, tempfile::TempDir) {
+        let (cam, scratch) = connecting_camera(Arc::new(StubSurveyClient));
+        cam.state.connected.store(true, Ordering::Release);
+        (cam, scratch)
+    }
+
     fn fake_config() -> Config {
         Config {
             device: DeviceConfig {
@@ -938,7 +1061,12 @@ mod tests {
             survey: SurveyConfig {
                 name: "DSS2 Red".into(),
                 request_timeout: Duration::from_secs(5),
-                cache_dir: std::env::temp_dir().join("sky-survey-camera-tests"),
+                // Never created: the only tests that touch the filesystem are
+                // the ones that connect, and those go through
+                // `connecting_camera`, which replaces this with a scratch
+                // directory. A fixed shared path *that something creates* is
+                // the shape testing.md's scratch rule exists to stop.
+                cache_dir: std::path::PathBuf::from("sky-survey-camera-unit-tests-unused"),
                 endpoint: "http://placeholder/".into(),
             },
             server: AlpacaServerConfig::new(0),
@@ -1033,6 +1161,27 @@ mod tests {
         }
     }
 
+    /// A client whose `health_check` parks until a test releases it, so a
+    /// connect can be caught *inside* the awaited part of the transition —
+    /// the window the false → true test used to be read outside of.
+    #[derive(Debug)]
+    struct GatedSurveyClient {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl SurveyClient for GatedSurveyClient {
+        async fn health_check(&self) -> Result<(), SurveyError> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(())
+        }
+        async fn fetch(&self, _request: &SurveyRequest) -> Result<Vec<u8>, SurveyError> {
+            Err(SurveyError::Http("gated: fetch not implemented".into()))
+        }
+    }
+
     fn fake_camera() -> SkySurveyCamera {
         let cfg = fake_config();
         let client: Arc<dyn SurveyClient> = Arc::new(StubSurveyClient);
@@ -1092,7 +1241,7 @@ mod tests {
 
     #[tokio::test]
     async fn bin_num_start_round_trip() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         assert_eq!(cam.bin_x().await.unwrap(), 1);
         assert_eq!(cam.bin_y().await.unwrap(), 1);
         cam.set_bin_x(2).await.unwrap();
@@ -1245,6 +1394,138 @@ mod tests {
         );
     }
 
+    /// C6. A write taken while disconnected is the worse half: it leaves a
+    /// geometry behind whose owner is a session that has not started.
+    #[tokio::test]
+    async fn the_session_settings_surface_refuses_while_disconnected() {
+        let cam = fake_camera();
+        for code in [
+            cam.bin_x().await.unwrap_err().code,
+            cam.bin_y().await.unwrap_err().code,
+            cam.num_x().await.unwrap_err().code,
+            cam.num_y().await.unwrap_err().code,
+            cam.start_x().await.unwrap_err().code,
+            cam.start_y().await.unwrap_err().code,
+            cam.set_bin_x(2).await.unwrap_err().code,
+            cam.set_bin_y(2).await.unwrap_err().code,
+            cam.set_num_x(320).await.unwrap_err().code,
+            cam.set_num_y(240).await.unwrap_err().code,
+            cam.set_start_x(8).await.unwrap_err().code,
+            cam.set_start_y(8).await.unwrap_err().code,
+            cam.set_gain(0).await.unwrap_err().code,
+            cam.set_readout_mode(0).await.unwrap_err().code,
+        ] {
+            assert_eq!(code, ASCOMErrorCode::NOT_CONNECTED);
+        }
+        // The refusal is the connection's, not the value's: a setter that
+        // rejected `INVALID_VALUE` first would pass the loop above for the
+        // wrong reason.
+        assert_eq!(
+            cam.set_bin_x(99).await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// C6's other end: the settings a session did set do not outlive it. The
+    /// connected check on the setters cannot be atomic with the disconnect, so
+    /// a write can still win that race by a hair; the reset at the *start* of a
+    /// connect is what makes such a write unreachable, rather than a setting
+    /// the next session silently inherits.
+    #[tokio::test]
+    async fn a_connect_starts_from_the_configured_geometry() {
+        let (cam, _scratch) = connected_camera_with_scratch();
+        cam.set_bin_x(2).await.unwrap();
+        cam.set_num_x(320).await.unwrap();
+        cam.set_start_y(8).await.unwrap();
+        cam.set_connected(false).await.unwrap();
+        // Stands in for a setter that won the race against this disconnect.
+        cam.state.start_x.store(64, Ordering::Release);
+        cam.set_connected(true).await.unwrap();
+        assert_eq!(cam.bin_x().await.unwrap(), 1);
+        assert_eq!(cam.bin_y().await.unwrap(), 1);
+        assert_eq!(cam.num_x().await.unwrap(), 640);
+        assert_eq!(cam.num_y().await.unwrap(), 480);
+        assert_eq!(cam.start_x().await.unwrap(), 0);
+        assert_eq!(cam.start_y().await.unwrap(), 0);
+    }
+
+    /// A connect and a disconnect are one transition each, not two halves that
+    /// can interleave. The connect below is redundant, so it skips C6's reset,
+    /// and then parks in the endpoint probe — seconds of window on a slow link.
+    /// Unserialised, the disconnect lands inside it and the parked connect
+    /// commits `true` over the top: a session resumed on the previous one's
+    /// geometry, which is the bug the reset exists to prevent. Serialised, the
+    /// disconnect waits and wins, and the session that follows is a fresh one.
+    #[tokio::test]
+    async fn a_disconnect_cannot_land_inside_a_connect() {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let client: Arc<dyn SurveyClient> = Arc::new(GatedSurveyClient {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        });
+        let (cam, _scratch) = connecting_camera(client);
+        cam.state.connected.store(true, Ordering::Release);
+        cam.set_num_x(320).await.unwrap();
+
+        let connecting = {
+            let cam = cam.clone();
+            tokio::spawn(async move { cam.set_connected(true).await })
+        };
+        entered.notified().await;
+        let disconnecting = {
+            let cam = cam.clone();
+            tokio::spawn(async move { cam.set_connected(false).await })
+        };
+        release.notify_one();
+        connecting.await.unwrap().unwrap();
+        disconnecting.await.unwrap().unwrap();
+
+        assert!(
+            !cam.is_connected(),
+            "the disconnect was overwritten by a connect that started before it"
+        );
+        // The gate is per-call, so the session that follows needs its own
+        // permit (`notify_one` stores one, so arming it first is enough).
+        release.notify_one();
+        cam.set_connected(true).await.unwrap();
+        assert_eq!(cam.num_x().await.unwrap(), 640);
+    }
+
+    /// The reset belongs to the false → true transition, not to every write of
+    /// `Connected = true`: a client re-asserting the flag on a device it is
+    /// already using (`ConformU` does) is a no-op, and resetting there would
+    /// discard its geometry between the `NumX` it set and the `StartExposure`
+    /// it was about to issue.
+    #[tokio::test]
+    async fn re_asserting_connected_leaves_the_running_sessions_geometry_alone() {
+        let (cam, _scratch) = connected_camera_with_scratch();
+        cam.set_bin_x(2).await.unwrap();
+        cam.set_num_x(320).await.unwrap();
+        cam.set_connected(true).await.unwrap();
+        assert_eq!(cam.bin_x().await.unwrap(), 2);
+        assert_eq!(cam.num_x().await.unwrap(), 320);
+    }
+
+    /// The other half of C6: with no hardware behind it, this service's fixed
+    /// optics, sensor description and self-performed abort are its own
+    /// knowledge and keep answering — the contract would otherwise be met by a
+    /// driver that refused everything.
+    #[tokio::test]
+    async fn the_fixed_surface_still_answers_while_disconnected() {
+        let cam = fake_camera();
+        assert_eq!(cam.camera_x_size().await.unwrap(), 640);
+        assert_eq!(cam.camera_y_size().await.unwrap(), 480);
+        assert_eq!(cam.max_bin_x().await.unwrap(), MAX_BIN);
+        assert_eq!(cam.max_adu().await.unwrap(), 65535);
+        assert_eq!(cam.sensor_type().await.unwrap(), SensorType::Monochrome);
+        assert_eq!(cam.gain().await.unwrap(), 0);
+        assert_eq!(cam.readout_mode().await.unwrap(), 0);
+        assert!(!cam.has_shutter().await.unwrap());
+        assert!(cam.can_abort_exposure().await.unwrap());
+        assert!(cam.can_stop_exposure().await.unwrap());
+    }
+
     #[tokio::test]
     async fn percent_completed_is_binary() {
         let cam = connected_camera();
@@ -1255,7 +1536,7 @@ mod tests {
 
     #[tokio::test]
     async fn readout_mode_only_accepts_zero() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         assert_eq!(cam.readout_mode().await.unwrap(), 0);
         assert_eq!(cam.readout_modes().await.unwrap(), vec!["Default"]);
         cam.set_readout_mode(0).await.unwrap();
@@ -1272,7 +1553,7 @@ mod tests {
 
     #[tokio::test]
     async fn gain_reports_single_fixed_value() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         assert_eq!(cam.gain().await.unwrap(), 0);
         assert_eq!(cam.gain_min().await.unwrap(), 0);
         assert_eq!(cam.gain_max().await.unwrap(), 0);
@@ -1292,7 +1573,7 @@ mod tests {
     async fn setters_accept_out_of_range_values() {
         // ASCOM convention: NumX/NumY/StartX/StartY setters always
         // accept; geometry validation happens at StartExposure.
-        let cam = fake_camera();
+        let cam = connected_camera();
         cam.set_num_x(99_999).await.unwrap();
         cam.set_num_y(99_999).await.unwrap();
         cam.set_start_x(99_999).await.unwrap();
