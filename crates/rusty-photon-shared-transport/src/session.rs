@@ -263,10 +263,21 @@ pub type HandshakeFn<C> = Box<
 ///
 /// The distinction matters because the two are not the same question.
 /// A hook's individual requests can all succeed while the state still
-/// does not hold: the device answers, and refuses. Only the hook is in
-/// a position to know that — it issued the commands and read the
-/// replies, above the layer where [`Connection::request`] decides
-/// whether anything reached the wire.
+/// does not hold: the device answers, and the answer does not get the
+/// state asserted. Only the hook is in a position to know that — it
+/// issued the commands and read the replies, above the layer where
+/// [`Connection::request`] decides whether anything reached the wire.
+///
+/// This is a verdict, not a diagnosis. [`Self::NotAsserted`] is
+/// returned for an explicit refusal, for a reply that will not decode,
+/// for a device that turns out not to be the expected one, and for a
+/// command that never went out — the type carries no reason, and a
+/// caller must not read one into it. That is deliberate: the callers
+/// all do the same thing with it (decline to treat the conduit as
+/// safe), and the hook is where the concrete error is known and where
+/// it should be logged. A caller that words a log or an error as
+/// though it knows *which* failure occurred is making a claim this
+/// type does not support.
 ///
 /// A hook that issues several commands folds its own partial results.
 /// "Half of it landed" is not a third answer: the state either holds

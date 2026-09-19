@@ -173,15 +173,23 @@ What it means for the hardware:
 
 A halt that does not reach the device fails the start, so `build()`
 errors and the process exits non-zero, the same way a wrong-device
-handshake does. So does a halt the mount *answers and refuses*: the
-handshake has just had ten commands answered at that point, so a mount
-that then declines to stop is broken or is not the device the driver
-thinks it is, and neither is something to serve clients against. The two
-are distinguished in the error — "did not land on" versus "refused" —
-because they mean different things to whoever reads the log at 3am: one
-says the link is gone, the other says the device is there and saying no.
-Advertising a mount whose safety state is unknown is the outcome to
-avoid; failing to start is visible, and the log says which it was.
+handshake does. So does a halt the mount *answers* without the state
+ending up asserted — it refused, or replied with something that would
+not decode, or is not a Sky-Watcher controller at all. The handshake has
+just had ten commands answered at that point, so a mount that then
+cannot be stopped is broken or is not the device the driver thinks it
+is, and neither is something to serve clients against.
+
+The two are distinguished in the error — "did not land on" versus "was
+not asserted … though the device answered" — because they mean different
+things to whoever reads the log at 3am: one says the link is gone, the
+other says the device is there and answering. That second message says
+no more than that. It does not name a cause, because the verdict does
+not carry one: `safety_stop` logs the specific error per command as it
+sees it (`warn!` with the command and the error), and the summary line
+would only be guessing which of them it was. Advertising a mount whose
+safety state is unknown is the outcome to avoid; failing to start is
+visible, and the log above it says why.
 
 Stop-class and nothing more, which is what
 [tenet 3](../workspace.md#project-tenets) permits on a connect path: no
@@ -238,9 +246,9 @@ nothing else.
 A halt that does not land fails the reconnect, and there are two ways
 not to land. A command that failed on the *wire* is counted on the
 connection, which the shared crate reads across the attempt. A command
-the mount *answered and refused* completes, so that counter stays clean
-— the hook is the only witness, and it says so by returning
-`StateAssertion::NotAsserted`. The hook remains best-effort about its
+the mount *answered* completes, so that counter stays clean even when
+the answer leaves the state unasserted — the hook is the only witness,
+and it says so by returning `StateAssertion::NotAsserted`. The hook remains best-effort about its
 own errors, logging and continuing rather than propagating; what it no
 longer does is throw the conclusion away.
 
@@ -261,25 +269,33 @@ disconnect takes the transport out of service, and a success reported
 over the top of it would put it straight back in.
 
 That catches a command that never reached the mount. A command the mount
-*answered and refused* is a separate failure, and the shared crate
-cannot see it at all: `SkywatcherCodec` hands back the `!XX` frame as a
-valid response, so the request completes and the wire counter stays
-clean. `request_typed`'s typed decode is the first thing that knows, and
+*answered* is a separate failure, and the shared crate cannot see it at
+all: `SkywatcherCodec` hands back the `!XX` frame as a valid response,
+so the request completes and the wire counter stays clean. The same goes
+for a frame that decodes at the codec layer and then fails the typed
+decode above it. `request_typed` is the first thing that knows, and
 `safety_stop` is the only thing that sees the result.
 
 So `safety_stop` answers the question rather than swallowing it. It
 returns a verdict — asserted, or not — and any failed command makes it
-*not*: a stop the mount refused and a stop that never arrived leave the
-same axes possibly turning, and there is no partial credit for stopping
-one of two. Every caller treats the two identically: the reconnect
-replay fails the attempt, the last-client disconnect records the debt
-and takes the transport out of service, and a cold start refuses to
-serve (see [§Safety stop at startup](#safety-stop-at-startup)).
+*not*. The verdict carries the outcome, never the cause: an `!XX`
+refusal, a malformed or short payload, a reply from some other device
+and a command that never went out all fold to the same
+`StateAssertion::NotAsserted`, because they leave the same axes possibly
+turning and call for the same response. The distinction that would
+matter to a reader is already recorded where it is known — one `warn!`
+per failed command, with the command and the concrete error — so no
+caller upstream has to reconstruct it, and none of them pretends to.
 
-It deliberately does not try to sort benign refusals from real ones by
+Every caller treats the verdict identically: the reconnect replay fails
+the attempt, the last-client disconnect records the debt and takes the
+transport out of service, and a cold start refuses to serve (see
+[§Safety stop at startup](#safety-stop-at-startup)).
+
+It deliberately does not try to sort benign failures from real ones by
 reading the mount's error code. By the time any of this runs the
-handshake has just had ten commands answered, so a mount that now
-refuses a halt is broken or is not a Sky-Watcher controller at all —
+handshake has just had ten commands answered, so a mount that now cannot
+be halted is broken or is not a Sky-Watcher controller at all —
 precisely the two cases where deciding "that error code is probably
 fine" would be the wrong call. Resolves
 [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
@@ -2191,8 +2207,9 @@ safety stop:
   :L1, :L2, :K1     (halt both axes, stop tracking) — the same
                     no-client sequence a last-client disconnect
                     issues, asserted here before the transport is
-                    published. A failure on the wire — or a refusal
-                    from the mount — fails the start: build() errors
+                    published. A failure on the wire — or an answer
+                    that leaves the state unasserted, a refusal or a
+                    bad frame alike — fails the start: build() errors
                     and the process exits non-zero rather than
                     advertise a mount whose state is unknown.
    ↓
@@ -2228,7 +2245,7 @@ conduit, where it is asserted whatever the way down managed.
 Service shutdown (HTTP server stops → `SharedTransport::shutdown()`)
    ↓
 shutdown hook runs :L1, :L2, :K1 one last time
-   (a refusal or a wire failure here is logged at error!: nothing
+   (a stop that does not assert here is logged at error!: nothing
     downstream can act on it, and the next cold start is what
     re-asserts the state)
    ↓

@@ -134,8 +134,9 @@ pub struct Connection<C: Codec> {
     ///
     /// This counter answers only half the question. It sees a request
     /// that never reached the device; it cannot see one the device
-    /// answered and *refused*, which completes like any other. That
-    /// half is the hook's own verdict — see
+    /// *answered* — a refusal, or a reply that would not decode above
+    /// this layer — because such a request completes like any other.
+    /// That half is the hook's own verdict — see
     /// [`crate::StateAssertion`] — and the two are read together
     /// wherever it matters.
     wire_failures: AtomicU32,

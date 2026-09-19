@@ -467,12 +467,20 @@ async fn handshake(
 /// Any failure means [`StateAssertion::NotAsserted`]: a stop that the
 /// mount refused, or that never reached it, leaves axes that may still
 /// be turning, and there is no partial credit for stopping one of two.
-/// This deliberately does not try to read the mount's error code and
-/// decide which refusals are benign. By the time this runs the
-/// handshake has just had ten commands answered, so a mount that now
-/// refuses a halt is a mount that is broken or is not the device we
-/// think it is — the two cases where guessing "that one's probably
-/// fine" is exactly wrong.
+/// A [`StateAssertion::NotAsserted`] says only that the state could
+/// not be asserted, never why. Every failure mode folds into it: an
+/// `!XX` refusal, a reply that would not decode, a frame from some
+/// other device. The specific error is logged at the point it is seen,
+/// one `warn!` per command, and callers upstream read the verdict
+/// alone — so nothing above this has to guess at a cause, and nothing
+/// below it has to invent a taxonomy.
+///
+/// It also does not try to read the mount's error code and decide
+/// which failures are benign. By the time this runs the handshake has
+/// just had ten commands answered, so a mount that now cannot be
+/// halted is a mount that is broken or is not the device we think it
+/// is — the two cases where guessing "that one's probably fine" is
+/// exactly wrong.
 async fn safety_stop(conn: &Connection<SkywatcherCodec>) -> StateAssertion {
     let mut verdict = StateAssertion::Asserted;
     // Order matters: `:L` is the hammer (instant stop), `:K` is
@@ -510,7 +518,11 @@ async fn shutdown_teardown(
         // mount may be left moving with no driver attached; the next
         // cold start asserts the state again and refuses to serve if
         // it cannot (see #1251), but nothing happens in between.
-        error!("the mount did not accept the shutdown safety stop; it may still be moving");
+        error!(
+            "the shutdown safety stop was not asserted \
+             (see the warning above for the failing command); \
+             the mount may still be moving"
+        );
     }
     *parameters.write().await = None;
 }
@@ -1736,8 +1748,16 @@ mod tests {
 
         let msg = format!("{err}");
         assert!(
-            msg.contains("refused"),
-            "the start must fail saying the device refused, got: {msg}"
+            msg.contains("not asserted"),
+            "the start must fail saying the state was not asserted, got: {msg}"
+        );
+        // The refusal is *this* test's cause, but it is not the only
+        // one that folds to `NotAsserted` — a garbled reply does too —
+        // so the message must not name it. `safety_stop`'s own
+        // per-command `warn!` is where the specific error is reported.
+        assert!(
+            !msg.contains("refus"),
+            "and must not claim to know which failure it was, got: {msg}"
         );
         assert!(
             !manager.transport().is_available(),

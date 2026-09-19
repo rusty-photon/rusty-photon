@@ -219,8 +219,16 @@ async fn a_cold_start_the_device_refuses_does_not_serve() {
         "the stop must have completed on the wire — a refusal is not a dropped request"
     );
     assert!(
-        refused.to_string().contains("refused"),
+        refused.to_string().contains("not asserted"),
         "and the caller must be told which of the two it was, got: {refused}"
+    );
+    // A refusal is what *this* test arranges, but `NotAsserted` also
+    // covers a reply that would not decode and a device that is not
+    // the expected one. The runtime cannot tell them apart, so its
+    // message must not name one — the hook logs the concrete error.
+    assert!(
+        !refused.to_string().contains("refus"),
+        "and must not claim a cause the verdict does not carry, got: {refused}"
     );
     assert!(
         !st.is_available(),
