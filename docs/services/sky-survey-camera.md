@@ -512,7 +512,10 @@ scenarios in `tests/features/`. ASCOM error codes use the names from
   The **start of a connect** puts `BinX`/`BinY`, `NumX`/`NumY` and
   `StartX`/`StartY` back to the configured full frame at bin 1, the
   way the SDK siblings' connect handshakes clear what they
-  republish (`qhy-camera`'s C6). A session's geometry is that
+  republish (`qhy-camera`'s C6). On the **false → true transition
+  only**: `Connected = true` against an already-connected device is
+  a no-op, not a new session, so it leaves the running session's
+  geometry alone. A session's geometry is that
   session's, so the next one does not inherit it. That is also what
   settles the one case the setters' check cannot: the check runs
   before the write and is not atomic with a concurrent disconnect,
@@ -722,9 +725,11 @@ exposure state (C5) and its settings (C6) — and those rows say so.
 | `ElectronsPerADU` | `1.0` placeholder (no signal model in v0) |
 | `FullWellCapacity` | `65535.0` (= `MaxADU * ElectronsPerADU`) |
 | `ExposureMin` / `ExposureMax` / `ExposureResolution` | `1µs` / `3600s` / `1µs`; the spawned exposure task sleeps for `min(Duration, 5s)` so clients can observe `CameraState = Exposing` |
-| `Gain` / `GainMin` / `GainMax` | Single fixed value `0`; setter rejects non-zero with `INVALID_VALUE`, and answers `NOT_CONNECTED` while disconnected (C6) |
+| `Gain` / `GainMin` / `GainMax` | Single fixed value `0`; the getters answer whether or not a client is connected, since the value is fixed (C6) |
+| `SetGain` | Rejects non-zero with `INVALID_VALUE`; `NOT_CONNECTED` while disconnected — a write belongs to a session (C6) |
 | `Offset` family | Reports `PROPERTY_NOT_IMPLEMENTED` (no signal model) |
-| `ReadoutMode` / `ReadoutModes` | Single mode `"Default"` at index `0`; setter rejects non-zero, and answers `NOT_CONNECTED` while disconnected (C6) |
+| `ReadoutMode` / `ReadoutModes` | Single mode `"Default"` at index `0`; the getters answer whether or not a client is connected, since the mode is fixed (C6) |
+| `SetReadoutMode` | Rejects non-zero with `INVALID_VALUE`; `NOT_CONNECTED` while disconnected — a write belongs to a session (C6) |
 | `SensorName` / `SensorType` | `"SkyView Virtual Sensor"` / `Monochrome` |
 | `CameraState` | `Idle` / `Exposing` / `Error` based on internal state; `NOT_CONNECTED` while disconnected (C5) |
 | `PercentCompleted` | Binary: `0` while in flight, `100` once `ImageReady`; `NOT_CONNECTED` while disconnected (C5) |

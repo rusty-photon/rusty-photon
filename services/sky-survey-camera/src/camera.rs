@@ -474,7 +474,15 @@ impl Device for SkySurveyCamera {
             // session can reach, because the next connect clears it. Cleared
             // *first*, so a connect that then fails its cache-dir check leaves
             // nothing of the old session behind either.
-            self.reset_session_settings();
+            //
+            // Only on a **false → true** transition. `Connected = true` against
+            // an already-connected device is a no-op, not a new session (the
+            // SDK siblings return early on it, and ConformU writes it), so
+            // resetting there would throw away the running session's geometry
+            // between a client's `NumX` and its `StartExposure`.
+            if !self.is_connected() {
+                self.reset_session_settings();
+            }
             // C2: cache_dir must be creatable AND writable. `create_
             // dir_all` succeeds on an existing read-only directory,
             // so we follow it with a probe write/delete.
@@ -1358,6 +1366,21 @@ mod tests {
         assert_eq!(cam.num_y().await.unwrap(), 480);
         assert_eq!(cam.start_x().await.unwrap(), 0);
         assert_eq!(cam.start_y().await.unwrap(), 0);
+    }
+
+    /// The reset belongs to the false → true transition, not to every write of
+    /// `Connected = true`: a client re-asserting the flag on a device it is
+    /// already using (`ConformU` does) is a no-op, and resetting there would
+    /// discard its geometry between the `NumX` it set and the `StartExposure`
+    /// it was about to issue.
+    #[tokio::test]
+    async fn re_asserting_connected_leaves_the_running_sessions_geometry_alone() {
+        let cam = connected_camera();
+        cam.set_bin_x(2).await.unwrap();
+        cam.set_num_x(320).await.unwrap();
+        cam.set_connected(true).await.unwrap();
+        assert_eq!(cam.bin_x().await.unwrap(), 2);
+        assert_eq!(cam.num_x().await.unwrap(), 320);
     }
 
     /// The other half of C6: with no hardware behind it, this service's fixed
