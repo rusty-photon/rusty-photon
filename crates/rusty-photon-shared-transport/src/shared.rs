@@ -840,12 +840,48 @@ impl<C: Codec> SharedTransport<C> {
         // transient and retryable.
         self.available.store(true, Ordering::SeqCst);
         self.reconnecting.store(false, Ordering::SeqCst);
+
+        // The check above is not atomic with those stores, and no lock
+        // can make it so: `shutdown` waits on the supervisor while
+        // holding `acquire_lock`, so taking that lock here would stall
+        // every shutdown that coincides with a publish for the whole
+        // teardown timeout. A 1→0 cleanup landing in the gap records
+        // the debt and takes the transport out of service, and the
+        // stores above would then be written straight over the top of
+        // it.
+        //
+        // So read it once more and undo the publication if it moved.
+        // This is sound because of an ordering the cleanup guarantees:
+        // it increments the debt *before* it touches either flag, all
+        // `SeqCst`. A cleanup whose flag writes this method overwrote
+        // therefore incremented before those writes, hence before this
+        // read — so every overwrite this could have caused is one this
+        // sees.
+        //
+        // Back to exactly what the early return leaves, and in the
+        // reverse order of the publish, so a request racing the undo
+        // sees `Reconnecting` rather than the terminal error.
+        if self.safety_debt_outstanding() {
+            self.reconnecting.store(true, Ordering::SeqCst);
+            self.available.store(false, Ordering::SeqCst);
+            warn!(
+                "a safety stop came due as the transport was being advertised \
+                 as recovered; withdrawing it"
+            );
+            return false;
+        }
         true
     }
 
     /// Whether a safety stop recorded as missed has yet to be replayed
     /// onto a live conduit.
-    fn safety_debt_outstanding(&self) -> bool {
+    ///
+    /// This is the authority on whether the device may be commanded,
+    /// and [`Session::request`](crate::Session::request) reads it
+    /// directly rather than trusting `available`/`reconnecting` to
+    /// agree with it. Those two are a *publication* of this fact,
+    /// written by whoever finishes last; this is the fact.
+    pub(crate) fn safety_debt_outstanding(&self) -> bool {
         self.safety_debt_incurred.load(Ordering::SeqCst)
             != self.safety_debt_paid.load(Ordering::SeqCst)
     }
@@ -957,15 +993,21 @@ impl<C: Codec> SharedTransport<C> {
         // reads at 3am: one says the link is gone, the other says the
         // device is there and answering.
         //
-        // The second says no more than that. A hook answers
-        // `NotAsserted` for a refusal, for a reply it could not parse,
-        // and for a device that is not the one expected; guessing
-        // between them here would send the reader after the wrong
-        // fault. The hook logged the actual error when it saw it.
+        // What the second may say is bounded by what is known here,
+        // and that is only the counter: no request failed on the wire.
+        // Not that the device answered — a hook may return
+        // `NotAsserted` having issued nothing at all — and not which
+        // failure it was, since a refusal, an undecodable reply and a
+        // device that is not the expected one arrive identically. The
+        // hook is where the concrete error is known, and where it is
+        // logged; this points there rather than guessing.
         let reason = if connection.wire_failures() != before {
             Some("the last-disconnect state did not land on the fresh conduit")
         } else if !verdict.is_asserted() {
-            Some("the last-disconnect state was not asserted on the fresh conduit, though the device answered")
+            Some(
+                "the last-disconnect state was not asserted on the fresh conduit \
+                 and no request failed on the wire; see the hook's own log for the cause",
+            )
         } else {
             None
         };
@@ -1485,8 +1527,8 @@ impl<C: Codec> SharedTransport<C> {
         let reason = if dropped_a_request {
             "a request was dropped while recovering; the conduit is not usable"
         } else if not_asserted {
-            "the safety stop was not asserted while recovering, though the device answered; \
-             the conduit is not usable"
+            "the safety stop was not asserted while recovering and no request failed on \
+             the wire; see the hook's own log for the cause. The conduit is not usable"
         } else {
             "a safety stop was missed while recovering; the conduit is not usable"
         };
@@ -2158,10 +2200,39 @@ mod tests {
 
     use super::{Arc, Codec, Hooks, Ordering, SharedTransport, TransportError, TransportFactory};
     use crate::transport::FrameTransport;
+    use crate::SessionError;
 
     /// The publish gate does no I/O, so a factory that refuses to open
     /// is all a transport needs to exist for these tests.
     struct NeverOpens;
+
+    /// The request gate, by contrast, has to be reached through a live
+    /// session, so one test needs a conduit that actually opens and
+    /// answers. It answers nothing in particular — `NoCodec` discards
+    /// the bytes either way.
+    struct AlwaysOpens;
+
+    #[async_trait]
+    impl TransportFactory for AlwaysOpens {
+        async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
+            Ok(Box::new(Echo))
+        }
+    }
+
+    struct Echo;
+
+    #[async_trait]
+    impl FrameTransport for Echo {
+        async fn send_frame(&mut self, _bytes: &[u8]) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
+            buf.clear();
+            buf.push(b'\n');
+            Ok(())
+        }
+    }
 
     #[async_trait]
     impl TransportFactory for NeverOpens {
@@ -2208,6 +2279,65 @@ mod tests {
     /// that runs the attempt), and there is no seam between the
     /// attempt returning and the publish — so the gate is asserted
     /// directly.
+    /// The invariant the whole safety scheme rests on, asserted where
+    /// it is enforced: while a stop is owed, no request reaches the
+    /// device — *whatever* `available` and `reconnecting` happen to
+    /// say.
+    ///
+    /// That qualifier is the point. `publish_recovery` reads the debt
+    /// and then writes those two flags, and it cannot hold
+    /// `acquire_lock` across the pair: `shutdown` waits on the
+    /// supervisor while holding that lock, so taking it here would
+    /// stall every shutdown that coincided with a publish for the
+    /// whole teardown timeout. A 1→0 cleanup landing in the gap
+    /// records the debt and clears the flags, and the publish then
+    /// writes healthy flags over the top of it. The publish undoes
+    /// that when it sees the debt move, but a request arriving inside
+    /// that window would read only the flags.
+    ///
+    /// So the flags are set here by hand to exactly what that window
+    /// leaves — healthy, with the debt standing — rather than through
+    /// an interleaving no caller can schedule. The state is the
+    /// reachable part; asserting the gate against it is what makes the
+    /// window harmless.
+    #[tokio::test]
+    async fn a_request_is_refused_while_a_stop_is_owed_whatever_the_flags_say() {
+        let st = SharedTransport::new(Arc::new(AlwaysOpens), NoCodec, Hooks::noop());
+        st.start().await.unwrap();
+        let session = st.acquire().await.unwrap();
+
+        // The premise, not an aside: this session works when nothing
+        // is owed. Without it the assertion below would hold just as
+        // well for a session that was broken from the start, and would
+        // be testing nothing about the debt.
+        session.request(()).await.unwrap();
+
+        // Now the window's state, written directly: a cleanup recorded
+        // the stop as owed, and a publish that had already read the
+        // debt put both flags back to healthy over the top of it.
+        st.safety_debt_incurred.fetch_add(1, Ordering::SeqCst);
+        st.available.store(true, Ordering::SeqCst);
+        st.reconnecting.store(false, Ordering::SeqCst);
+        assert!(
+            st.is_available() && !st.is_reconnecting(),
+            "the flags must read healthy, or this is not the window under test"
+        );
+
+        let err = session.request(()).await.unwrap_err();
+        assert!(
+            matches!(err, SessionError::Transport(TransportError::Reconnecting)),
+            "a stop is owed, so the request must be refused as retryable, got: {err}"
+        );
+
+        // And it clears the moment the stop is paid, so the gate is a
+        // gate and not a latch.
+        st.safety_debt_paid.fetch_add(1, Ordering::SeqCst);
+        session.request(()).await.unwrap();
+
+        session.close().await.unwrap();
+        st.shutdown().await.unwrap();
+    }
+
     #[test]
     fn a_recovery_is_withheld_while_a_stop_is_owed() {
         let st = transport();

@@ -225,18 +225,33 @@ arrived after the failed halt has not been able to command anything,
 because the transport refuses requests until the stop lands. The window
 is between the failed attempt and the next successful open.
 
-One case reaches past that open, and it is worth stating rather than
-implying. A disconnect landing very late in a reconnect — after the
-attempt has read the debt and before the recovery is advertised — has
-its stop recorded but its out-of-service flags overwritten by the
-advertisement, and the supervisor only retries while those flags say
-to. What brings it back is then the signal a failed command raises on
-its own: a stop that failed on the wire fires it, the permit outlives
-the advertisement, and the supervisor's next turn round its loop
-attempts again and replays. A halt that never reached the wire at all
-— a hook that panicked — raises nothing, so that one waits for the
-next link failure or the next service start. The mount is not left
-moving for that long either way: the hook runs on every last-client
+That refusal is not a consequence of the out-of-service flags, and this
+is the part worth stating rather than implying. `Session::request`
+reads the outstanding debt itself, on every request, in addition to
+`reconnecting` and `available`. The flags are a *publication* of the
+fact; the debt is the fact, and the two can disagree for a moment.
+
+They disagree in one specific case: a disconnect landing very late in a
+reconnect — after the attempt has read the debt, while the recovery is
+being advertised — records its stop and then has its out-of-service
+flags written over by the advertisement. Because requests consult the
+debt, that overwrite cannot open a window onto the mount; it is a
+bookkeeping lag, not an opening. The advertisement also re-reads the
+debt immediately after writing the flags and withdraws itself if it
+moved, so the lag is short as well as harmless. The ordering that makes
+that check sound is the cleanup's: it records the debt *before* it
+touches either flag, so any overwrite the publish could have caused is
+one the publish then sees.
+
+The supervisor still has to come back round and replay, and it only
+retries while the flags say to. The signal a failed command raises is
+what brings it back: a stop that failed on the wire fires it, the
+permit outlives the advertisement, and the supervisor's next turn round
+its loop attempts again and replays. A halt that never reached the wire
+at all — a hook that panicked — raises nothing, so that one waits for
+the next link failure or the next service start. Throughout, no client
+can command the mount, because the debt still stands. The mount is not
+left moving for that long either way: the hook runs on every last-client
 disconnect, whatever the bookkeeping still says is owed.
 
 Either way the hook must stay stop-class: it runs on a reconnect path,

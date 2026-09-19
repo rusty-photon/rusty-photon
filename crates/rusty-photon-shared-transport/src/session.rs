@@ -94,6 +94,25 @@ impl<C: Codec> Session<C> {
             if transport.is_reconnecting() {
                 return Err(SessionError::Transport(TransportError::Reconnecting));
             }
+            // And the fact the flag above only *publishes*. A 1→0
+            // cleanup whose stop did not land records the debt and
+            // then clears the flags, while a reconnect publishing a
+            // success writes them the other way with no lock between
+            // them — `shutdown` waits on the supervisor holding
+            // `acquire_lock`, so the publish cannot take it. The two
+            // converge, but a request arriving mid-race would read
+            // flags that say healthy while a stop is still owed, and
+            // command a device that may never have halted.
+            //
+            // Reading the debt here needs no such ordering to be
+            // correct: it is the condition itself, not a publication
+            // of it. Two relaxed-cost atomic loads per request buys an
+            // invariant that does not depend on who wrote last.
+            // `Reconnecting` is the honest answer — the replay that
+            // discharges it is exactly what the caller is waiting for.
+            if transport.safety_debt_outstanding() {
+                return Err(SessionError::Transport(TransportError::Reconnecting));
+            }
             // Existing `Session`s keep `Arc` clones of the connection cell
             // even after `SharedTransport::shutdown` drops the slot's clone,
             // so without this short-circuit a session can still call
@@ -146,6 +165,13 @@ impl<C: Codec> Session<C> {
         // `attempt_reconnect` deliberately cannot take.
         if let Some(transport) = self.transport.as_ref() {
             if transport.is_reconnecting() {
+                return Err(SessionError::Transport(TransportError::Reconnecting));
+            }
+            // Re-read for the same reason the flag is re-read: a
+            // cleanup can have recorded a stop as owed while this was
+            // awaiting the cell above, and the conduit now in hand is
+            // one nothing has halted.
+            if transport.safety_debt_outstanding() {
                 return Err(SessionError::Transport(TransportError::Reconnecting));
             }
         }
