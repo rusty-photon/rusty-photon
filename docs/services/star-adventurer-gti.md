@@ -235,14 +235,19 @@ Either way the hook must stay stop-class: it runs on a reconnect path,
 where [tenet 3](../workspace.md#project-tenets) permits halting and
 nothing else.
 
-A halt that does not land fails the reconnect. The hook reports nothing
-— it is best-effort for the callers that only need it attempted — so the
-shared crate reads the connection instead: a command that failed on the
-wire is counted there. An attempt whose replay did not reach the mount
-is not a recovery, and reporting it as one would clear the reconnecting
-state and let the next client drive a mount that is still moving. The
-transport stays reconnecting until an attempt whose stop lands, retried
-at the configured cadence.
+A halt that does not land fails the reconnect, and there are two ways
+not to land. A command that failed on the *wire* is counted on the
+connection, which the shared crate reads across the attempt. A command
+the mount *answered and refused* completes, so that counter stays clean
+— the hook is the only witness, and it says so by returning
+`StateAssertion::NotAsserted`. The hook remains best-effort about its
+own errors, logging and continuing rather than propagating; what it no
+longer does is throw the conclusion away.
+
+Either answer fails the attempt. Reporting such an attempt as a recovery
+would clear the reconnecting state and let the next client drive a mount
+that is still moving, so the transport stays reconnecting until an
+attempt whose stop lands, retried at the configured cadence.
 
 That verdict covers more than the attempt's own traffic. A last client
 can disconnect while the attempt is still running, and its halt then
