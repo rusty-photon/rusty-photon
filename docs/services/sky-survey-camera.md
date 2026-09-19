@@ -515,7 +515,18 @@ scenarios in `tests/features/`. ASCOM error codes use the names from
   republish (`qhy-camera`'s C6). On the **false → true transition
   only**: `Connected = true` against an already-connected device is
   a no-op, not a new session, so it leaves the running session's
-  geometry alone. A session's geometry is that
+  geometry alone.
+
+  `set_connected` **serialises its transitions** (one lock held
+  across the whole call) to make that test and the commit one step.
+  A connect validates the cache directory and probes the survey
+  endpoint before committing, and both `await` — so without the
+  lock a redundant `Connected = true` could sit in that probe while
+  a `Connected = false` ended the session underneath it, then
+  commit `true` over the top: a session resumed on the previous
+  one's geometry, with the reset skipped because the transition
+  test ran before the await. The probe is capped (C3), so the wait
+  a contending call can see is bounded. A session's geometry is that
   session's, so the next one does not inherit it. That is also what
   settles the one case the setters' check cannot: the check runs
   before the write and is not atomic with a concurrent disconnect,

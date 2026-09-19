@@ -119,6 +119,16 @@ pub struct DeviceState {
     pub last_exposure_duration: Mutex<Option<Duration>>,
     pub exposure_generation: AtomicU64,
     pub survey_client: Arc<dyn SurveyClient>,
+    /// Serialises `set_connected`, so a connect and a disconnect cannot
+    /// interleave. The transition is not a single store: a connect validates
+    /// the cache directory and probes the survey endpoint first, and both
+    /// `await`. Without this, a redundant `Connected = true` could sit in that
+    /// probe while a `Connected = false` ended the session underneath it, and
+    /// then commit `true` over the top — a session resumed with the previous
+    /// one's geometry and none of C6's reset, because the false → true test ran
+    /// before the await. Held across the whole call so the test and the commit
+    /// belong to one transition (C6).
+    pub lifecycle: tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone, derive_more::Debug)]
@@ -187,6 +197,7 @@ impl SkySurveyCamera {
             last_exposure_duration: Mutex::new(None),
             exposure_generation: AtomicU64::new(0),
             survey_client,
+            lifecycle: tokio::sync::Mutex::new(()),
             next_pointing_override: Mutex::new(None),
         };
         Self {
@@ -464,6 +475,9 @@ impl Device for SkySurveyCamera {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
+        // One transition at a time: the checks below and the commit at the end
+        // are one step, not two (C6).
+        let _transition = self.state.lifecycle.lock().await;
         if connected {
             // C6: the settings belong to the session, so a connect starts from
             // the configured full frame at bin 1 rather than inheriting the
@@ -1101,6 +1115,27 @@ mod tests {
         }
     }
 
+    /// A client whose `health_check` parks until a test releases it, so a
+    /// connect can be caught *inside* the awaited part of the transition —
+    /// the window the false → true test used to be read outside of.
+    #[derive(Debug)]
+    struct GatedSurveyClient {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl SurveyClient for GatedSurveyClient {
+        async fn health_check(&self) -> Result<(), SurveyError> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(())
+        }
+        async fn fetch(&self, _request: &SurveyRequest) -> Result<Vec<u8>, SurveyError> {
+            Err(SurveyError::Http("gated: fetch not implemented".into()))
+        }
+    }
+
     fn fake_camera() -> SkySurveyCamera {
         let cfg = fake_config();
         let client: Arc<dyn SurveyClient> = Arc::new(StubSurveyClient);
@@ -1366,6 +1401,49 @@ mod tests {
         assert_eq!(cam.num_y().await.unwrap(), 480);
         assert_eq!(cam.start_x().await.unwrap(), 0);
         assert_eq!(cam.start_y().await.unwrap(), 0);
+    }
+
+    /// A connect and a disconnect are one transition each, not two halves that
+    /// can interleave. The connect below is redundant, so it skips C6's reset,
+    /// and then parks in the endpoint probe — seconds of window on a slow link.
+    /// Unserialised, the disconnect lands inside it and the parked connect
+    /// commits `true` over the top: a session resumed on the previous one's
+    /// geometry, which is the bug the reset exists to prevent. Serialised, the
+    /// disconnect waits and wins, and the session that follows is a fresh one.
+    #[tokio::test]
+    async fn a_disconnect_cannot_land_inside_a_connect() {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let client: Arc<dyn SurveyClient> = Arc::new(GatedSurveyClient {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        });
+        let cam = SkySurveyCamera::new_static(fake_config(), client);
+        cam.state.connected.store(true, Ordering::Release);
+        cam.set_num_x(320).await.unwrap();
+
+        let connecting = {
+            let cam = cam.clone();
+            tokio::spawn(async move { cam.set_connected(true).await })
+        };
+        entered.notified().await;
+        let disconnecting = {
+            let cam = cam.clone();
+            tokio::spawn(async move { cam.set_connected(false).await })
+        };
+        release.notify_one();
+        connecting.await.unwrap().unwrap();
+        disconnecting.await.unwrap().unwrap();
+
+        assert!(
+            !cam.is_connected(),
+            "the disconnect was overwritten by a connect that started before it"
+        );
+        // The gate is per-call, so the session that follows needs its own
+        // permit (`notify_one` stores one, so arming it first is enough).
+        release.notify_one();
+        cam.set_connected(true).await.unwrap();
+        assert_eq!(cam.num_x().await.unwrap(), 640);
     }
 
     /// The reset belongs to the false → true transition, not to every write of
