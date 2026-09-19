@@ -996,6 +996,28 @@ mod tests {
         AlpacaServerConfig, DeviceConfig, OpticsConfig, PointingConfig, SurveyConfig,
     };
 
+    /// A writable cache directory of this test's own.
+    ///
+    /// Connect validates `cache_dir` by creating it and probing it with a
+    /// write (C2), so a *fixed* shared path is two hazards at once: every test
+    /// in the binary shares one directory, and nothing guarantees the process
+    /// may write where it points — the Windows CI runner denies
+    /// `temp_dir()/sky-survey-camera-tests` outright ("Access is denied"),
+    /// which stayed invisible while this container ran the suite as root.
+    /// Bazel hands each test action a writable `TEST_TMPDIR`; the per-process,
+    /// per-call suffix keeps concurrent tests out of each other's way either
+    /// way.
+    fn test_cache_dir() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let root = std::env::var_os("TEST_TMPDIR")
+            .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+        root.join(format!(
+            "sky-survey-camera-tests-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
     fn fake_config() -> Config {
         Config {
             device: DeviceConfig {
@@ -1020,7 +1042,7 @@ mod tests {
             survey: SurveyConfig {
                 name: "DSS2 Red".into(),
                 request_timeout: Duration::from_secs(5),
-                cache_dir: std::env::temp_dir().join("sky-survey-camera-tests"),
+                cache_dir: test_cache_dir(),
                 endpoint: "http://placeholder/".into(),
             },
             server: AlpacaServerConfig::new(0),
