@@ -1391,11 +1391,11 @@ impl<C: Codec> SharedTransport<C> {
     ///
     /// Two things disqualify a replacement.
     ///
-    /// A request it failed to carry. The safety hook returns `()` —
-    /// best-effort, by the contract its other callers rely on — so its
-    /// own result cannot say whether the stop landed. The connection
-    /// can: a request that did not complete on the wire bumped that
-    /// counter. Reporting such an attempt as a success would clear
+    /// A request it failed to carry. The safety hook stays
+    /// best-effort about its own errors — it logs and continues rather
+    /// than propagating — so a request that died on the wire is not
+    /// something its verdict speaks to. The connection answers that
+    /// one: a request that did not complete bumped that counter. Reporting such an attempt as a success would clear
     /// `reconnecting` and set `available`, and a client could then
     /// acquire and drive a mount that is still moving, because the halt
     /// meant to stop it never reached the device. Compared across the
@@ -1514,7 +1514,15 @@ impl<C: Codec> SharedTransport<C> {
     /// # Errors
     ///
     /// Returns a [`SessionError`] if the reconnect attempt fails to
-    /// open the transport or re-run the handshake.
+    /// open the transport or re-run the handshake — and also when the
+    /// conduit came up fine but its safety state did not. Two shapes of
+    /// that: the attempt's own replay did not land, which
+    /// [`commit_replacement`](Self::commit_replacement) turns into a
+    /// failed attempt; and a stop that came due between that check and
+    /// the publish, which [`publish_recovery`](Self::publish_recovery)
+    /// catches. The second is the one to know about, because opening
+    /// and handshaking both succeeded: `Err` here means the transport
+    /// is deliberately not being advertised, not that the link is bad.
     pub async fn reconnect_now(self: &Arc<Self>) -> Result<(), SessionError<C::Error>> {
         self.reconnecting.store(true, Ordering::SeqCst);
         self.available.store(false, Ordering::SeqCst);
@@ -1524,8 +1532,7 @@ impl<C: Codec> SharedTransport<C> {
             supervisor_live: &self.supervisor_live,
             armed: true,
         };
-        let result = self.attempt_reconnect().await;
-        let mut result = result;
+        let mut result = self.attempt_reconnect().await;
         if result.is_ok() && !self.publish_recovery() {
             // The attempt itself was fine; something else left a stop
             // owed while it ran. Saying `Ok` here would tell the caller

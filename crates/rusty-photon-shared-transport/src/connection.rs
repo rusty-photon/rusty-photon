@@ -125,12 +125,19 @@ pub struct Connection<C: Codec> {
     reconnect_signal: Option<Arc<Notify>>,
     /// Count of requests that failed on the wire, i.e. every one that
     /// fired [`Connection::signal_reconnect`]. Lets a caller that ran
-    /// commands on this connection ask afterwards whether they landed,
-    /// which the hook signatures cannot say: `on_last_disconnect`
-    /// returns `()` by contract, because it is best-effort for the
-    /// callers that only need it attempted. The reconnect's safety
-    /// replay is the one caller that needs to know, since a stop that
-    /// did not land must not be reported as a recovered transport.
+    /// commands on this connection ask afterwards whether they landed
+    /// — which the hooks cannot say, because they stay best-effort
+    /// about their own errors and log rather than propagate. The
+    /// reconnect's safety replay is the one caller that needs to know,
+    /// since a stop that did not land must not be reported as a
+    /// recovered transport.
+    ///
+    /// This counter answers only half the question. It sees a request
+    /// that never reached the device; it cannot see one the device
+    /// answered and *refused*, which completes like any other. That
+    /// half is the hook's own verdict — see
+    /// [`crate::StateAssertion`] — and the two are read together
+    /// wherever it matters.
     wire_failures: AtomicU32,
 }
 
