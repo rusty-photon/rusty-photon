@@ -118,6 +118,18 @@ pub struct DeviceState {
     pub last_exposure_start: Mutex<Option<SystemTime>>,
     pub last_exposure_duration: Mutex<Option<Duration>>,
     pub exposure_generation: AtomicU64,
+    /// Makes a cancel's claim and a finishing exposure's commit mutually
+    /// exclusive. The commit is three separate stores — the frame, the error
+    /// slot, then `image_ready` — and only afterwards does it drop
+    /// `exposure_in_flight`. That leaves a window where the fetch is done and
+    /// the frame published while the in-flight flag still reads `true`, so a
+    /// cancel arriving inside it would win the claim and discard a frame the
+    /// exposure had already completed — the one thing A3 promises cannot
+    /// happen. Holding this across both sides collapses the window: a cancel
+    /// either arrives before the commit (and the commit's generation check
+    /// then discards the outcome) or after it (and finds nothing claimed).
+    /// `zwo-camera` carries the same lock for the same reason.
+    pub result_lock: Mutex<()>,
     pub survey_client: Arc<dyn SurveyClient>,
     /// Serialises `set_connected`, so a connect and a disconnect cannot
     /// interleave. The transition is not a single store: a connect validates
@@ -196,6 +208,7 @@ impl SkySurveyCamera {
             last_exposure_start: Mutex::new(None),
             last_exposure_duration: Mutex::new(None),
             exposure_generation: AtomicU64::new(0),
+            result_lock: Mutex::new(()),
             survey_client,
             lifecycle: tokio::sync::Mutex::new(()),
             next_pointing_override: Mutex::new(None),
@@ -252,6 +265,10 @@ impl SkySurveyCamera {
     /// generations before publishing, so it can no longer install a result.
     /// A1 ("`ImageReady` is false") holds.
     fn cancel_in_flight(&self) {
+        // Held across the claim and everything it clears, so a finishing
+        // exposure cannot commit underneath a cancel that has already decided
+        // there was something to cancel (A3).
+        let _guard = self.state.result_lock.lock();
         if !self
             .state
             .exposure_in_flight
@@ -305,6 +322,14 @@ async fn run_exposure(
     pointing_override: Option<PointingState>,
 ) {
     let result = run_exposure_inner(&state, light, pointing_override).await;
+    // The commit is one critical section: the generation test, the publish and
+    // the release of the in-flight claim. A cancel racing it therefore sees
+    // either a claim it can take (and this task's generation check then
+    // discards the outcome) or a finished exposure with nothing claimed — never
+    // the half-committed state in between, where it would discard a frame this
+    // task had already published (A3). No `await` inside, so the synchronous
+    // lock is safe to hold here.
+    let _guard = state.result_lock.lock();
     if state.exposure_generation.load(Ordering::Acquire) != gen {
         debug!(
             ?gen,
@@ -1356,6 +1381,43 @@ mod tests {
             );
             cam.image_array().await.unwrap();
         }
+    }
+
+    /// A3, at the seam the contract actually turns on. A finishing exposure
+    /// publishes the frame before it drops the in-flight claim, so without
+    /// serialisation a cancel landing between the two would win the claim and
+    /// clear a frame that was already complete. Holding `result_lock` here
+    /// stands in for that cancel: the commit must not land while it is held.
+    /// Releasing it and seeing the frame appear proves the task was alive and
+    /// parked on the lock, not merely slow.
+    /// Two workers guaranteed: the commit task has to make progress on one
+    /// while this thread blocks on the other, or the test would pass by
+    /// starving it rather than by the lock doing its job.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_commit_cannot_land_while_a_cancel_holds_the_result_lock() {
+        let cam = connected_camera();
+        cam.state.exposure_in_flight.store(true, Ordering::Release);
+        let gen = cam.state.exposure_generation.load(Ordering::Acquire);
+        let guard = cam.state.result_lock.lock();
+        // Light=false synthesises a zero frame with no network I/O, so the
+        // commit is the only thing this races.
+        let commit = tokio::spawn(run_exposure(Arc::clone(&cam.state), false, gen, None));
+        // A blocking sleep, not `tokio::time::sleep`: the guard is a
+        // synchronous lock, and awaiting while holding one is the hazard
+        // `clippy::await_holding_lock` exists to catch.
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !cam.state.image_ready.load(Ordering::Acquire),
+            "commit published while a cancel held result_lock"
+        );
+        assert!(
+            cam.state.exposure_in_flight.load(Ordering::Acquire),
+            "commit released the in-flight claim while a cancel held result_lock"
+        );
+        drop(guard);
+        commit.await.unwrap();
+        assert!(cam.state.image_ready.load(Ordering::Acquire));
+        assert!(!cam.state.exposure_in_flight.load(Ordering::Acquire));
     }
 
     /// A4. The one thing a refusal can still mean once A2 makes an idle

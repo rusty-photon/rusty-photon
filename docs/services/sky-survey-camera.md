@@ -627,7 +627,14 @@ setter because the spec defines a hard `[1, MaxBin]` range.
   a client may call either at any time. ConformU checks exactly this.
 - **A3.** A frame a completed exposure left ready is not in flight,
   so an idle cancel leaves it readable — only a fetch still running
-  has anything to discard. `ImageReady` survives A2.
+  has anything to discard. `ImageReady` survives A2. This needs the
+  commit and the cancel to be **serialised against each other**: a
+  finishing exposure publishes its frame before it drops the
+  in-flight claim, so a cancel landing between the two would take a
+  claim the exposure had already honoured and discard a completed
+  frame. A cancel therefore sees either a claim it can take — and
+  the exposure's generation check then discards that outcome — or a
+  finished exposure with nothing claimed, never the state between.
 - **A4.** `AbortExposure` or `StopExposure` while **disconnected**
   returns `NOT_CONNECTED` (C5), not the success A2 gives an idle
   connected camera. A2 cannot stand in for the disconnected case:
