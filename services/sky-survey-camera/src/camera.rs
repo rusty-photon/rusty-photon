@@ -1416,6 +1416,36 @@ mod tests {
         }
     }
 
+    /// The four tests below each hold `result_lock` to stand in for one writer
+    /// and assert another cannot proceed. Elapsed time alone cannot carry that
+    /// claim: a task that was never scheduled looks exactly like one that is
+    /// blocked, so a sleep-only test passes whether or not the lock is there.
+    /// Each worker therefore signals this rendezvous immediately before
+    /// entering the call that contends, which rules out the never-scheduled
+    /// reading; the grace window that follows only has to cover the handful of
+    /// validation instructions between the signal and the lock itself.
+    ///
+    /// Each test is also checked the other way round, by deleting the lock
+    /// from the writer it covers and confirming this assertion is what fails.
+    /// Synchronous, and the rendezvous is a `std` channel rather than a tokio
+    /// one, for the same reason the sleep below blocks: every caller holds a
+    /// `result_lock` guard across this call, and awaiting under a synchronous
+    /// guard is what `clippy::await_holding_lock` exists to catch.
+    fn assert_parked<T: Send + 'static>(
+        entered: &std::sync::mpsc::Receiver<()>,
+        handle: &tokio::task::JoinHandle<T>,
+        what: &str,
+    ) {
+        entered
+            .recv()
+            .expect("worker never reached the contended call");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !handle.is_finished(),
+            "{what} ran to completion while result_lock was held"
+        );
+    }
+
     /// A3, at the seam the contract actually turns on. A finishing exposure
     /// publishes the frame before it drops the in-flight claim, so without
     /// serialisation a cancel landing between the two would win the claim and
@@ -1423,6 +1453,7 @@ mod tests {
     /// stands in for that cancel: the commit must not land while it is held.
     /// Releasing it and seeing the frame appear proves the task was alive and
     /// parked on the lock, not merely slow.
+    ///
     /// Two workers guaranteed: the commit task has to make progress on one
     /// while this thread blocks on the other, or the test would pass by
     /// starving it rather than by the lock doing its job.
@@ -1432,13 +1463,18 @@ mod tests {
         cam.state.exposure_in_flight.store(true, Ordering::Release);
         let gen = cam.state.exposure_generation.load(Ordering::Acquire);
         let guard = cam.state.result_lock.lock();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         // Light=false synthesises a zero frame with no network I/O, so the
         // commit is the only thing this races.
-        let commit = tokio::spawn(run_exposure(Arc::clone(&cam.state), false, gen, None));
-        // A blocking sleep, not `tokio::time::sleep`: the guard is a
-        // synchronous lock, and awaiting while holding one is the hazard
-        // `clippy::await_holding_lock` exists to catch.
-        std::thread::sleep(Duration::from_millis(100));
+        let commit = {
+            let state = Arc::clone(&cam.state);
+            tokio::spawn(async move {
+                let task = run_exposure(state, false, gen, None);
+                entered_tx.send(()).expect("test dropped the rendezvous");
+                task.await;
+            })
+        };
+        assert_parked(&entered_rx, &commit, "commit");
         assert!(
             !cam.state.image_ready.load(Ordering::Acquire),
             "commit published while a cancel held result_lock"
@@ -1464,15 +1500,15 @@ mod tests {
         let cam = connected_camera();
         cam.state.exposure_in_flight.store(true, Ordering::Release);
         let guard = cam.state.result_lock.lock();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let canceller = {
             let cam = cam.clone();
-            tokio::spawn(async move { cam.abort_exposure().await })
+            tokio::spawn(async move {
+                entered_tx.send(()).expect("test dropped the rendezvous");
+                cam.abort_exposure().await
+            })
         };
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(
-            !canceller.is_finished(),
-            "cancel ran to completion while a commit held result_lock"
-        );
+        assert_parked(&entered_rx, &canceller, "cancel");
         assert!(
             cam.state.exposure_in_flight.load(Ordering::Acquire),
             "cancel took the in-flight claim while a commit held result_lock"
@@ -1495,24 +1531,29 @@ mod tests {
     async fn a_start_cannot_claim_while_a_cancel_holds_the_result_lock() {
         let cam = connected_camera();
         let guard = cam.state.result_lock.lock();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let starter = {
             let cam = cam.clone();
             // Light=false: no network I/O, so the claim is the only contended
             // step.
-            tokio::spawn(async move { cam.start_exposure(Duration::from_millis(1), false).await })
+            tokio::spawn(async move {
+                entered_tx.send(()).expect("test dropped the rendezvous");
+                cam.start_exposure(Duration::from_millis(1), false).await
+            })
         };
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(
-            !starter.is_finished(),
-            "start ran to completion while a cancel held result_lock"
-        );
+        assert_parked(&entered_rx, &starter, "start");
         assert!(
             !cam.state.exposure_in_flight.load(Ordering::Acquire),
             "start took the in-flight claim while a cancel held result_lock"
         );
         drop(guard);
         starter.await.unwrap().unwrap();
-        assert!(cam.state.exposure_in_flight.load(Ordering::Acquire));
+        // Not `exposure_in_flight`: the exposure this started sleeps 1ms and
+        // then clears that flag itself, so asserting on it here would race the
+        // task. `last_exposure_start` is written by the claim and touched by
+        // nothing afterwards, so it is the stable witness that the start got
+        // through.
+        assert!(cam.state.last_exposure_start.lock().is_some());
     }
 
     /// The fourth seam: C4's disconnect reset is the same write as a cancel's,
@@ -1530,15 +1571,15 @@ mod tests {
         });
         cam.state.image_ready.store(true, Ordering::Release);
         let guard = cam.state.result_lock.lock();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let disconnect = {
             let cam = cam.clone();
-            tokio::spawn(async move { cam.set_connected(false).await })
+            tokio::spawn(async move {
+                entered_tx.send(()).expect("test dropped the rendezvous");
+                cam.set_connected(false).await
+            })
         };
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(
-            !disconnect.is_finished(),
-            "disconnect reset ran while a commit held result_lock"
-        );
+        assert_parked(&entered_rx, &disconnect, "disconnect reset");
         assert!(
             cam.state.image_ready.load(Ordering::Acquire),
             "disconnect cleared the result state while a commit held result_lock"
