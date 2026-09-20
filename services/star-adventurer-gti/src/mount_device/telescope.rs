@@ -23,9 +23,9 @@ use tracing::debug;
 
 use crate::coordinates::{
     encoder_to_celestial, local_sidereal_time_hours, pulse_guide_step_period, ra_dec_to_alt_az,
-    select_pier_side_for_target, side_of_pier as side_of_pier_calc, sidereal_step_period,
-    SIDEREAL_DEG_PER_SEC,
+    select_pier_side_for_target, side_of_pier as side_of_pier_calc, SIDEREAL_DEG_PER_SEC,
 };
+use crate::manager::MountParameters;
 use crate::units::{Cpr, Dec, DecTicks, Ra, RaTicks};
 
 use super::inherent::validate_guide_rate;
@@ -33,6 +33,81 @@ use super::park_persistence::write_park_to_config;
 use super::slew::enable_sidereal_tracking_ra;
 use super::watchers::{clear_pulse_flag, spawn_park_completion_watcher, spawn_pulse_guide_watcher};
 use super::{pre_flip_side_for_latitude, MountDevice, SlewReservation};
+
+/// What a guide pulse in one direction does on the wire: which axis it
+/// drives, which way, at what multiple of sidereal, and that axis'
+/// sidereal step period.
+///
+/// The sidereal period is derived from the resolved axis rather than
+/// picked alongside it, because the period is per-axis: the `GTi`'s Dec
+/// axis has fewer counts per revolution than RA, so a Dec pulse sent an
+/// RA-derived period guides 1.25× too fast.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct GuidePulse {
+    pub(super) axis: Axis,
+    pub(super) ccw: bool,
+    /// Target rate as a multiple of sidereal: East/West shift RA
+    /// tracking down/up by the RA guide fraction; North/South spin Dec
+    /// from rest at the Dec guide fraction.
+    pub(super) rate_factor: f64,
+    pub(super) sidereal_period: u32,
+}
+
+impl GuidePulse {
+    pub(super) fn resolve(
+        direction: GuideDirection,
+        ra_fraction: f64,
+        dec_fraction: f64,
+        params: &MountParameters,
+    ) -> Self {
+        let (axis, ccw, rate_factor) = match direction {
+            GuideDirection::East => (Axis::Ra, false, 1.0 - ra_fraction),
+            GuideDirection::West => (Axis::Ra, false, 1.0 + ra_fraction),
+            GuideDirection::North => (Axis::Dec, false, dec_fraction),
+            GuideDirection::South => (Axis::Dec, true, dec_fraction),
+        };
+        let sidereal_period = if axis == Axis::Ra {
+            params.sidereal_step_period_ra()
+        } else {
+            params.sidereal_step_period_dec()
+        };
+        Self {
+            axis,
+            ccw,
+            rate_factor,
+            sidereal_period,
+        }
+    }
+
+    /// The `:I` step period that runs the pulsed axis at `rate_factor`
+    /// × sidereal, validated against the protocol's 24-bit payload
+    /// range — `encode_u24` silently truncates above `0x00FF_FFFF`, so
+    /// an un-validated period would wrap to an unintended speed. The
+    /// floor is `rate_factor ≥ sidereal_period / 0xFFFFFF`: ≈ 0.023 on
+    /// RA (period ≈ 380K) and ≈ 0.028 on Dec (≈ 475K). Tiny guide-rate
+    /// fractions trip this; clients see `INVALID_VALUE`.
+    pub(super) fn step_period(&self) -> ASCOMResult<u32> {
+        const MAX_STEP_PERIOD: u32 = 0x00FF_FFFF;
+
+        let Self {
+            rate_factor,
+            sidereal_period,
+            ..
+        } = *self;
+        let shifted_period = pulse_guide_step_period(sidereal_period, rate_factor);
+        if shifted_period == 0 || shifted_period > MAX_STEP_PERIOD {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!(
+                    "PulseGuide step period {shifted_period} (rate_factor {rate_factor:.4} × \
+                     sidereal_period {sidereal_period}) is outside the protocol's 24-bit \
+                     range; pick a guide rate closer to sidereal"
+                ),
+            ));
+        }
+        Ok(shifted_period)
+    }
+}
 
 #[async_trait]
 impl Telescope for MountDevice {
@@ -943,8 +1018,6 @@ impl Telescope for MountDevice {
     }
 
     async fn pulse_guide(&self, direction: GuideDirection, duration: Duration) -> ASCOMResult<()> {
-        const MAX_STEP_PERIOD: u32 = 0x00FF_FFFF;
-
         self.ensure_connected().await?;
         self.ensure_unparked().await?;
         if self.slewing().await? {
@@ -959,50 +1032,31 @@ impl Telescope for MountDevice {
         if duration.is_zero() {
             return Ok(());
         }
-        // Resolve direction → (axis, ccw, rate_factor) under a read
-        // lock. The in-flight check + flag-set happens later under a
-        // write lock so it's atomic against concurrent same-axis
-        // calls (the rate_factor / tracking_was_on snapshots taken
-        // here are stable: rates can be updated concurrently, but
-        // the worst case is a one-tick-late read which ASCOM
-        // tolerates).
-        let (axis, ccw, rate_factor, tracking_was_on) = {
-            let s = self.state.read().await;
-            let (axis, ccw, rate_factor) = match direction {
-                GuideDirection::East => (Axis::Ra, false, 1.0 - s.guide_rate_ra_fraction),
-                GuideDirection::West => (Axis::Ra, false, 1.0 + s.guide_rate_ra_fraction),
-                GuideDirection::North => (Axis::Dec, false, s.guide_rate_dec_fraction),
-                GuideDirection::South => (Axis::Dec, true, s.guide_rate_dec_fraction),
-            };
-            let tracking_was_on = axis == Axis::Ra && s.tracking_requested;
-            drop(s);
-            (axis, ccw, rate_factor, tracking_was_on)
-        };
-        // Compute the shifted step period from the cached
-        // sidereal-period helper and the rate factor. Validate against
-        // the protocol's 24-bit `:I` payload range before sending —
-        // `encode_u24` silently truncates above `0x00FF_FFFF`, so an
-        // un-validated period would wrap to an unintended speed.
-        // For sidereal_period ≈ 380K on the GTi, the floor is
-        // `rate_factor ≥ sidereal_period / 0xFFFFFF ≈ 0.023`. Tiny
-        // guide-rate fractions trip this; clients see `INVALID_VALUE`.
         let params = self
             .manager
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
-        let sidereal_period = sidereal_step_period(params.tmr_freq, Cpr::new(params.cpr_ra));
-        let shifted_period = pulse_guide_step_period(sidereal_period, rate_factor);
-        if shifted_period == 0 || shifted_period > MAX_STEP_PERIOD {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::INVALID_VALUE,
-                format!(
-                    "PulseGuide step period {shifted_period} (rate_factor {rate_factor:.4} × \
-                     sidereal_period {sidereal_period}) is outside the protocol's 24-bit \
-                     range; pick a guide rate closer to sidereal"
-                ),
-            ));
-        }
+        // Resolve the pulse under a read lock. The in-flight check +
+        // flag-set happens later under a write lock so it's atomic
+        // against concurrent same-axis calls (the rate /
+        // tracking_was_on snapshots taken here are stable: rates can
+        // be updated concurrently, but the worst case is a
+        // one-tick-late read which ASCOM tolerates).
+        let (pulse, tracking_was_on) = {
+            let s = self.state.read().await;
+            let pulse = GuidePulse::resolve(
+                direction,
+                s.guide_rate_ra_fraction,
+                s.guide_rate_dec_fraction,
+                &params,
+            );
+            let tracking_was_on = pulse.axis == Axis::Ra && s.tracking_requested;
+            drop(s);
+            (pulse, tracking_was_on)
+        };
+        let GuidePulse { axis, ccw, .. } = pulse;
+        let shifted_period = pulse.step_period()?;
         // Atomically check `pulse_guiding_<axis>` and set it to true
         // under a single write lock. This closes the TOCTOU window: a
         // concurrent same-axis `pulse_guide` either acquires the

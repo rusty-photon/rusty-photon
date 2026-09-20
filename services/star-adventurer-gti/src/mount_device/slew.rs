@@ -22,7 +22,6 @@ use skywatcher_motor_protocol::command::{ModeKind, MotionMode, Speed};
 use skywatcher_motor_protocol::{Axis, Command, Response};
 
 use crate::codec::SkywatcherCodec;
-use crate::coordinates::sidereal_step_period;
 use crate::error::StarAdvError;
 use crate::manager::{MountManager, MountParameters};
 use crate::units::{Cpr, RaTicks};
@@ -147,7 +146,7 @@ pub(super) async fn enable_sidereal_tracking_ra(
     session: &Session<SkywatcherCodec>,
     params: &MountParameters,
 ) -> crate::error::Result<()> {
-    let period = sidereal_step_period(params.tmr_freq, Cpr::new(params.cpr_ra));
+    let period = params.sidereal_step_period_ra();
     manager
         .send(
             session,

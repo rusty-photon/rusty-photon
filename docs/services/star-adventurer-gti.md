@@ -532,7 +532,7 @@ shape).
 | `:H<axis><inc24>` | Set goto-target by increment (magnitude; sign from `:G` CCW) | every slew (INDI-style sequence) |
 | `:M<axis><breaks24>` | Set goto break-point increment | every slew (INDI-style sequence) |
 | `:S<axis><pos24>` | Set goto absolute target | `Park` only (target is encoder 0) |
-| `:I<axis><period24>` | Set step period (T1 preset) | tracking (computed sidereal period from CPR / TMR_Freq); slew (fixed period 6, INDI `minperiods` default) |
+| `:I<axis><period24>` | Set step period (T1 preset) | tracking and guide pulses (sidereal period computed from TMR_Freq and the **addressed axis'** CPR — see [§PulseGuide lifecycle](#pulseguide-lifecycle)); slew (fixed period 6, INDI `minperiods` default) |
 | `:J<axis>` | Start motion | every slew, every track start |
 | `:K<axis>` | Stop motion (decelerate) | `Tracking = false` (sidereal RA tracking gracefully decelerates) |
 | `:L<axis>` | Instant stop | `AbortSlew`; preflight stop-and-wait before every `:G` (slew, park, `Tracking = true`); slew watcher's blocked-axis abort path |
@@ -911,8 +911,9 @@ PulseGuide(direction, duration)
    │     West  → (RA,  ccw=false, 1 + guide_rate_ra_fraction)
    │     North → (Dec, ccw=false, guide_rate_dec_fraction)
    │     South → (Dec, ccw=true,  guide_rate_dec_fraction)
-   ├─ compute shifted period:
-   │     period = round(sidereal_step_period(tmr_freq, cpr_ra) / rate_factor)
+   ├─ compute shifted period from the *pulsed axis'* sidereal period:
+   │     RA  pulse: period = round(sidereal_step_period(tmr_freq, cpr_ra)  / rate_factor)
+   │     Dec pulse: period = round(sidereal_step_period(tmr_freq, cpr_dec) / rate_factor)
    ├─ capture tracking_was_on = state.tracking_requested (RA pulses only)
    ├─ set pulse_guiding.<axis> = true                ; synchronous, pre-spawn
    │
@@ -963,11 +964,30 @@ celestial direction; this is consistent with the rest of the driver
 and is the autoguider's responsibility to detect (via guide
 calibration).
 
-**Step-period unit reuse.** `sidereal_step_period(tmr_freq, cpr_ra)`
-is also used for the Dec rate computation. The protocol's step-period
-units are timer-counter ticks per motor step on both axes, and
-`cpr_ra` ≈ `cpr_dec` on the GTi, so reusing the helper avoids a near-
-duplicate `sidereal_step_period_dec`. INDI takes the same shortcut.
+**The step period is per-axis.** `:I` carries the time between motor
+steps in timer-counter units, so the period that turns an axis at the
+sidereal rate depends on that axis' counts per revolution:
+`sidereal_step_period(tmr_freq, cpr) = round(tmr_freq × 86164.0905 / cpr)`.
+The GTi's axes differ — RA `3,628,800`, Dec `2,903,040`, a ratio of
+exactly 1.25 — so with `TMR_Freq = 16,000,000` the sidereal period is
+`379,912` on RA and `474,890` on Dec. A Dec pulse sent an RA-derived
+period steps the Dec motor at the RA-appropriate step rate, but each Dec
+step is a larger angle, so the axis guides 1.25× too fast (a 5 s pulse
+at 0.5 × sidereal moves 47.0″ instead of 37.6″ — measured on hardware
+with ConformU as 46.9″ / 47.3″).
+
+Callers never pick a CPR for a step period:
+`MountParameters::sidereal_step_period_ra()` /
+`sidereal_step_period_dec()` pair each axis with its own CPR, and
+`PulseGuide`'s direction table resolves the axis and its sidereal
+period in the same arm. INDI eqmod is per-axis too (`SetRARate` uses
+`RASteps360` / `RAStepsWorm`, `SetDERate` uses `DESteps360` /
+`DEStepsWorm`).
+
+The 24-bit `:I` payload bounds the slowest expressible rate at
+`rate_factor ≥ sidereal_period / 0xFFFFFF` — ≈ 0.023 on RA and ≈ 0.028
+on Dec. A guide rate below the pulsed axis' floor is rejected with
+`INVALID_VALUE`.
 
 **Guide-rate fraction validation.** Internal storage is two fractions
 in `(0.0, 1.0)` open interval (RA and Dec independently). The
@@ -2066,13 +2086,31 @@ ConformU verifies ASCOM compliance.
 The mock transport is a feature-gated in-memory state machine that
 simulates the motor controller — it accepts the same `:cmd<axis>...\r`
 frames and emits well-formed `=...\r` / `!XX\r` responses, with internal
-state for axis position, motion mode, running/stopped, and tracking. In
-**tracking mode** the mock advances the axis encoder forward by a small
-sidereal-equivalent chunk per `:j` poll (ignoring `goto_target_ticks`),
-so post-slew `RA` reads stay constant — matching what real Sky-Watcher
-firmware does once tracking is re-enabled. In **goto mode** the mock
-walks toward `goto_target_ticks` and clears `running` on arrival. BDD
-tests use the mock by default; ConformU and `test_lib.rs` use the
+state for axis position, motion mode, running/stopped, and tracking.
+
+The two motion modes are simulated differently, on purpose:
+
+- **Tracking mode is rate-faithful and runs on the clock.** A tracking
+  axis free-runs in the commanded direction at the rate the wire set:
+  `tmr_freq / step_period` steps per second (times the high-speed ratio
+  in Tracking-Fast), ignoring `goto_target_ticks`. Motion is integrated
+  up to the present at every frame the mock receives, with fractional
+  ticks carried between updates, so a `:K` stops the axis where it has
+  got to and an on-the-fly `:I` changes the rate from that instant. A
+  `step_period` of `0` (no `:I` yet) is no motion. Honouring the period
+  is what makes a *rate* error observable as an *angle* error: sidereal
+  tracking holds post-slew `RA` constant as real firmware does, a guide
+  pulse moves the axis by `guide rate × duration`, and a step period
+  derived from the wrong axis' CPR moves it the wrong distance. The
+  clock is tokio's, so unit tests run whole pulses under paused time
+  (`start_paused`) and measure the angle exactly; ConformU against the
+  mock measures it in wall time, as it does on hardware.
+- **Goto mode is poll-driven.** Each `:j` poll walks the axis a fixed
+  chunk toward `goto_target_ticks` and clears `running` on arrival, so
+  a slew completes in a handful of polls however fast the test runs.
+  Goto speed is not simulated.
+
+BDD tests use the mock by default; ConformU and `test_lib.rs` use the
 feature-gated mock so the binary itself runs against a fake mount.
 
 ### Running ConformU manually
@@ -2108,19 +2146,60 @@ re-adding `[package.metadata.conformu]` to the package's
    convention (`pierWest` for HA ∈ [-6, 0), `pierEast` for
    HA ∈ (0, +6]) and records ISSUEs for every HA > 0 case in
    both `SideofPier` and `DestinationSideofPier`.
-3. **PulseGuide rate-shifted tracking produces the wrong
-   motion on every axis.** ConformU's PulseGuide tolerance
-   check expects `guide_rate × sidereal × duration` of motion
-   on the pulsed axis and ~0 on the other. The driver fails
-   the check in all four directions across HA ±3 and ±9
-   (24 ISSUEs total): Dec North/South moves at ~2× the
-   configured rate (71.4″ vs 37.6″ expected for a 5 s pulse at
-   the default 0.5× sidereal rate); RA East slows by only ~10 %
-   instead of the configured 50 % (Δ RA 0.48 s vs 2.51 s
-   expected); and RA West pulses move east (Δ RA +0.48 s where
-   ConformU expects −2.51 s). The implementation is the
-   rate-shifted tracking burst PR #206 introduced, not a
-   Dec-vs-encoder coordinate issue.
+3. **PulseGuide misses ConformU's tolerance in RA, and guides
+   Dec backwards on the flipped pier side.** ConformU expects
+   `guide_rate × duration` of motion on the pulsed axis (5 s at
+   the default 0.5 × sidereal: 37.6″ in Dec, 2.51 s in RA) and
+   ~0 on the other, at HA ±3 and ±9. Dec North/South is within
+   tolerance (37.5″) wherever the mount is on the pre-flip side.
+   Two defects remain:
+   - **RA East/West carry a constant offset of ≈ +0.24 s of RA**
+     (East +2.74 s, West −2.26 s against ±2.51 s; tolerance
+     0.07 s). The rate itself is right — the scale solves to
+     0.996. The offset is the pulse's own `:K1` + stop-and-wait
+     (≥ 100 ms), which runs once before the shifted rate is
+     applied and once before sidereal is restored: the RA motor
+     sits stopped for those windows and the sky drifts past at
+     sidereal rate. Hardware shows the same signature, larger
+     (East +2.95 s, West −2.29 s), because a real motor takes
+     longer to decelerate than the mock's instant stop. INDI
+     eqmod changes the tracking rate without stopping the motor.
+   - **With `flip_policy.enabled = true`, North moves south and
+     South moves north at HA +3 and +9** — the right distance
+     (37.5″), the wrong way. `+Dec` always maps to `ccw = false`
+     (see the Dec sign convention under
+     [§PulseGuide lifecycle](#pulseguide-lifecycle)), but past
+     the pole a CW Dec step *decreases* celestial declination.
+     That convention was written for a driver that could not
+     flip; with flip support the driver knows its pier side and
+     performs the flip itself, so the premise no longer holds.
+
+   Earlier revisions of this section recorded a much worse
+   picture (Dec at ~2× the rate, RA West moving east). That was
+   the mock, not the driver: its tracking-mode motion advanced a
+   fixed number of ticks per `:j` poll and ignored the step
+   period, so no pulse rate could be measured against it. The
+   mock now honours `:I` (see [§Testing Strategy](#testing-strategy)).
+   The one real rate defect it had been hiding — a Dec step
+   period derived from the RA axis' CPR, a 1.25× overshoot
+   ConformU measured on hardware — is fixed.
+
+Measured against the mock with ConformU 4.5.0, per mount config
+(0 errors in every run):
+
+| Config | Issues | What they are |
+|---|---|---|
+| default (`flip_policy.enabled = false`) | 3 | RA East/West offset at HA −9 (2); then failure (1) abandons CheckMethods |
+| `cw_exclusion_zone: null` | 13 | RA East/West offset at HA ±3, ±9 (8); failure (2) `SideofPier` / `DestinationSideofPier` (5) |
+| `flip_policy.enabled = true` | 20 | RA East/West offset (8); Dec direction on the flipped side (4); slews / syncs to HA +1…+4 h rejected as inside the CW exclusion zone (8) |
+
+Enabling the flip policy clears failures (1) and (2) outright —
+`SideOfPier Write` flips, and `SideofPier` /
+`DestinationSideofPier` report the pointing state at HA ±3 and ±9.
+The eight rejections it exposes come from the pier-side selector:
+from the post-flip side a target with `|HA| > flip_range_hours`
+is sent to the pre-flip side, where HA +1…+4 h lies inside the
+exclusion zone, although the flipped side could reach it.
 
 To reproduce locally, run the in-tree integration test — same
 binary, same config, same ConformU invocation the workflow used:
@@ -2137,24 +2216,24 @@ side-of-pier model tests.
 ### Expected ConformU report
 
 These are the conformance-phase findings against the current
-driver (PR #206). They are *not* a green run — fixing (2) and (3)
-above is on the roadmap before the package is re-added to the
-nightly workflow.
+driver. They are *not* a green run — fixing (2) and (3) above is
+on the roadmap before the package is re-added to the nightly
+workflow. The per-config issue counts are in the table under
+[§Running ConformU manually](#running-conformu-manually).
 
-After (1) is worked around by widening the mock test envelope:
+After (1) is worked around by disabling the CW exclusion zone
+for the mock test config (`"cw_exclusion_zone": null`):
 
 - **0 errors** — anything here is a real driver regression.
-- **~58 issues**, dominated by:
-  - PulseGuide tolerance failures at HA ±3 and ±9 in all four
-    directions (24 entries) — driver bug (3). Each pulsed-axis
-    "Moved {N,S,E,W} but outside test tolerance" row counts
-    once, and each accompanying "{East-West,North-South}
-    movement was outside test tolerance" row (the axis the
-    pulse is *not* supposed to move) counts once.
+- **13 issues**:
+  - PulseGuide East / West "Moved {east,west} but outside test
+    tolerance" at HA ±3 and ±9 (8 entries) — driver bug (3),
+    the RA stop-window offset. North / South pass, and no pulse
+    moves the axis it is not supposed to.
   - `SideofPier` and `DestinationSideofPier`
     "`pierWest` is returned when the mount is observing at an
-    hour angle between 0.0 and +6.0" (8 entries) — driver
-    bug (2). ConformU's `SideofPier` test assumes a
+    hour angle between 0.0 and +6.0" (2 entries) — driver
+    bug (2), with the flip policy disabled. ConformU's `SideofPier` test assumes a
     flip-at-meridian GEM (EQMOD / Sky-Watcher Synscan /
     ASCOM-driver-pattern behaviour) and expects `pierEast`
     for any target west of the meridian; the driver returns
@@ -2165,7 +2244,7 @@ After (1) is worked around by widening the mock test envelope:
   - `SideofPier` / `DestinationSideofPier`
     "reports physical pier side rather than pointing state"
     and "Same value … on both sides of the meridian"
-    (4 entries) — same root cause as bug (2): a non-flipping
+    (3 entries) — same root cause as bug (2): a non-flipping
     mount lands every in-envelope target in the same
     pointing state.
 
