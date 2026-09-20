@@ -168,8 +168,29 @@ What it means for the hardware:
   link was alive; what is new is the case where it was not, and the cold
   process start.
 * **Mount slewing** — the slew is abandoned where it is. Position is not
-  lost: the encoders keep counting, and `:j1` / `:j2` read them back in
-  the handshake that precedes the stop.
+  lost: the firmware's tick counter keeps counting while no driver is
+  attached, and it keeps counting through the halt as well, so the axes
+  can be located again afterwards.
+
+  Note what the handshake's `:j1` / `:j2` do *not* tell you. They are
+  read **before** the stop goes out, and `:L` is a decelerating stop,
+  not an instantaneous one: the axis travels on for the length of its
+  ramp-down. Measured on the rig from a 5.1°/s goto, the mount covered a
+  further 30,367 Dec ticks — 3.77° — between the handshake sample and
+  coming to rest. The handshake value is therefore a pre-stop sample,
+  stale the moment the halt executes; the resting position is what the
+  200 ms poll loop reads back once the axes have stopped. Anything that
+  treated the handshake pair as the final position would be wrong by
+  degrees, and by more on a faster mount or a longer ramp.
+
+  The counter is the *commanded* one — the GTi has no closed-loop
+  feedback, so it records the steps the firmware issued rather than
+  where the axis physically is, and a lost step would look exactly like
+  success. On this mount the two agree across an abandoned slew: the
+  mount parked afterwards onto the exact `ApPark3` tick pair and was
+  confirmed by eye to be sitting on its physical park-3 index mark, so
+  the abrupt `:L` cost no steps. Measured against the physical mount on
+  [#1288](https://github.com/rusty-photon/rusty-photon/issues/1288).
 
 A halt that does not reach the device fails the start, so `build()`
 errors and the process exits non-zero, the same way a wrong-device
