@@ -276,11 +276,17 @@ impl SkySurveyCamera {
     /// connection open keeps it parked until process exit) but it compares
     /// generations before publishing, so it can no longer install a result.
     /// A1 ("`ImageReady` is false") holds.
-    fn cancel_in_flight(&self) {
+    fn cancel_in_flight(&self) -> ASCOMResult<()> {
         // Held across the claim and everything it clears, so a finishing
         // exposure cannot commit underneath a cancel that has already decided
         // there was something to cancel (A3).
         let _guard = self.state.result_lock.lock();
+        // A4's check lives here rather than in the two callers, for the same
+        // reason `start_exposure` re-checks: a disconnect stores
+        // `connected = false` before it queues for this lock, so a check taken
+        // outside can be stale by the time the claim is examined. Under the
+        // lock it cannot be.
+        self.ensure_connected()?;
         if !self
             .state
             .exposure_in_flight
@@ -290,7 +296,7 @@ impl SkySurveyCamera {
             // Idle: nothing was claimed, so nothing is discarded. Leaving the
             // stored frame alone is what lets a cancel arriving after a
             // completed exposure keep it readable (A3).
-            return;
+            return Ok(());
         }
         self.state
             .exposure_generation
@@ -298,6 +304,7 @@ impl SkySurveyCamera {
         self.state.image_ready.store(false, Ordering::Release);
         *self.state.last_error.lock() = None;
         *self.state.last_image.lock() = None;
+        Ok(())
     }
 
     /// Put the session's settings back to the configured full frame at bin 1,
@@ -836,6 +843,17 @@ impl Camera for SkySurveyCamera {
         // flag beside a counter. No `await` from here to the end of the
         // function, so the synchronous lock is safe to hold across it.
         let _guard = self.state.result_lock.lock();
+        // E1 again, and not redundantly: the check at the top of this method
+        // ran outside this lock, and a disconnect stores `connected = false`
+        // *before* it takes the lock. So a start can pass that check, park
+        // here for the whole of C4's reset, and wake to claim a device that is
+        // no longer connected — spawning an exposure the disconnect's
+        // generation bump already went past, which would then publish a frame
+        // into a dead session and leave it readable in the next one. Checking
+        // again under the lock is what linearises the two transitions; the
+        // claim below is only reached by a start that is still connected at
+        // the moment it claims.
+        self.ensure_connected()?;
         // E2: reject if another exposure is already in flight.
         if self
             .state
@@ -900,15 +918,11 @@ impl Camera for SkySurveyCamera {
     /// would now say only that there is no session at all, which is what the
     /// connected check is for (A4).
     async fn abort_exposure(&self) -> ASCOMResult<()> {
-        self.ensure_connected()?;
-        self.cancel_in_flight();
-        Ok(())
+        self.cancel_in_flight()
     }
 
     async fn stop_exposure(&self) -> ASCOMResult<()> {
-        self.ensure_connected()?;
-        self.cancel_in_flight();
-        Ok(())
+        self.cancel_in_flight()
     }
 
     /// C5: `ImageArray` is read straight after this one and takes the same
@@ -1588,6 +1602,71 @@ mod tests {
         disconnect.await.unwrap().unwrap();
         assert!(!cam.state.image_ready.load(Ordering::Acquire));
         assert!(cam.state.last_image.lock().is_none());
+    }
+
+    /// The seam between the two transitions rather than within one: a start's
+    /// connected check runs before it takes `result_lock`, and a disconnect
+    /// stores `connected = false` before it takes the lock. So a start can
+    /// pass the check, park for the whole of C4's reset, and wake to claim a
+    /// disconnected device — spawning an exposure the reset's generation bump
+    /// already went past, which publishes into a dead session and is still
+    /// readable in the next one, since a reconnect restores geometry only.
+    ///
+    /// Holding the lock and flipping `connected` underneath the parked start
+    /// reproduces that ordering exactly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_start_parked_on_the_lock_rechecks_connected_before_claiming() {
+        let cam = connected_camera();
+        let guard = cam.state.result_lock.lock();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let starter = {
+            let cam = cam.clone();
+            tokio::spawn(async move {
+                entered_tx.send(()).expect("test dropped the rendezvous");
+                cam.start_exposure(Duration::from_millis(1), false).await
+            })
+        };
+        assert_parked(&entered_rx, &starter, "start");
+        // What the disconnect does before it queues behind this lock.
+        cam.state.connected.store(false, Ordering::Release);
+        drop(guard);
+        let err = starter
+            .await
+            .unwrap()
+            .expect_err("start claimed a disconnected device");
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(
+            !cam.state.exposure_in_flight.load(Ordering::Acquire),
+            "start took the claim after the disconnect"
+        );
+    }
+
+    /// The cancel's half of the same seam, for symmetry with the start's: a
+    /// cancel parked on the lock must also re-read `connected` rather than
+    /// trust the check it took on the way in. Lower stakes than the start
+    /// case — a stale check here yields a wrong return code, not an exposure
+    /// running on a dead session — but it is the same class, and A4 is either
+    /// exact or it is not.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancel_parked_on_the_lock_rechecks_connected() {
+        let cam = connected_camera();
+        let guard = cam.state.result_lock.lock();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let canceller = {
+            let cam = cam.clone();
+            tokio::spawn(async move {
+                entered_tx.send(()).expect("test dropped the rendezvous");
+                cam.abort_exposure().await
+            })
+        };
+        assert_parked(&entered_rx, &canceller, "cancel");
+        cam.state.connected.store(false, Ordering::Release);
+        drop(guard);
+        let err = canceller
+            .await
+            .unwrap()
+            .expect_err("cancel reported success on a disconnected camera");
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
     }
 
     /// A4. The one thing a refusal can still mean once A2 makes an idle

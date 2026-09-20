@@ -641,6 +641,16 @@ setter because the spec defines a hard `[1, MaxBin]` range.
   once an idle cancel is a success, a refusal has only one thing
   left to mean, which is that there is no session to cancel in.
 
+  The check is taken **inside** A3's serialisation, not before it.
+  A disconnect marks the session dead before it queues for that
+  serialisation, so a check taken outside can be stale by the time
+  the cancel acts on it. `StartExposure`'s E1 check is re-taken the
+  same way and for the same reason — and there it matters more than
+  a return code: a start that claimed on a stale check would run an
+  exposure the disconnect's reset had already swept past, publishing
+  into a dead session and leaving that frame readable in the next
+  one, since a reconnect restores geometry only (C6).
+
 ### Telescope follow mode
 
 Active only when `pointing.telescope` is present in config. F-contracts
