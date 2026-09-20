@@ -27,7 +27,7 @@
 use std::sync::Arc;
 
 use rusty_photon_shared_transport::{
-    Connection, Hooks, Session, SharedTransport, TransportFactory,
+    Connection, Hooks, Session, SharedTransport, StateAssertion, TransportFactory,
 };
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -65,7 +65,11 @@ impl FalconManager {
                 let last = Arc::clone(&last_for_hooks);
                 Box::pin(handshake(conn, last))
             }),
-            on_last_disconnect: Box::new(|_| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_| {
+                // Nothing to assert: this service holds no state that must
+                // survive a no-client gap, so the answer is trivially yes.
+                Box::pin(async { StateAssertion::Asserted })
+            }),
             shutdown: Box::new(|_| Box::pin(async {})),
             while_open: None,
         };

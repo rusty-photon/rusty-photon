@@ -173,8 +173,23 @@ What it means for the hardware:
 
 A halt that does not reach the device fails the start, so `build()`
 errors and the process exits non-zero, the same way a wrong-device
-handshake does. Advertising a mount whose safety state is unknown is the
-outcome to avoid; failing to start is visible, and the log says why.
+handshake does. So does a halt the mount *answers* without the state
+ending up asserted — it refused, or replied with something that would
+not decode, or is not a Sky-Watcher controller at all. The handshake has
+just had ten commands answered at that point, so a mount that then
+cannot be stopped is broken or is not the device the driver thinks it
+is, and neither is something to serve clients against.
+
+The two are distinguished in the error — "did not land on" versus "was
+not asserted … though the device answered" — because they mean different
+things to whoever reads the log at 3am: one says the link is gone, the
+other says the device is there and answering. That second message says
+no more than that. It does not name a cause, because the verdict does
+not carry one: `safety_stop` logs the specific error per command as it
+sees it (`warn!` with the command and the error), and the summary line
+would only be guessing which of them it was. Advertising a mount whose
+safety state is unknown is the outcome to avoid; failing to start is
+visible, and the log above it says why.
 
 Stop-class and nothing more, which is what
 [tenet 3](../workspace.md#project-tenets) permits on a connect path: no
@@ -210,32 +225,52 @@ arrived after the failed halt has not been able to command anything,
 because the transport refuses requests until the stop lands. The window
 is between the failed attempt and the next successful open.
 
-One case reaches past that open, and it is worth stating rather than
-implying. A disconnect landing very late in a reconnect — after the
-attempt has read the debt and before the recovery is advertised — has
-its stop recorded but its out-of-service flags overwritten by the
-advertisement, and the supervisor only retries while those flags say
-to. What brings it back is then the signal a failed command raises on
-its own: a stop that failed on the wire fires it, the permit outlives
-the advertisement, and the supervisor's next turn round its loop
-attempts again and replays. A halt that never reached the wire at all
-— a hook that panicked — raises nothing, so that one waits for the
-next link failure or the next service start. The mount is not left
-moving for that long either way: the hook runs on every last-client
+That refusal is not a consequence of the out-of-service flags, and this
+is the part worth stating rather than implying. `Session::request`
+reads the outstanding debt itself, on every request, in addition to
+`reconnecting` and `available`. The flags are a *publication* of the
+fact; the debt is the fact, and the two can disagree for a moment.
+
+They disagree in one specific case: a disconnect landing very late in a
+reconnect — after the attempt has read the debt, while the recovery is
+being advertised — records its stop and then has its out-of-service
+flags written over by the advertisement. Because requests consult the
+debt, that overwrite cannot open a window onto the mount; it is a
+bookkeeping lag, not an opening. The advertisement also re-reads the
+debt immediately after writing the flags and withdraws itself if it
+moved, so the lag is short as well as harmless. The ordering that makes
+that check sound is the cleanup's: it records the debt *before* it
+touches either flag, so any overwrite the publish could have caused is
+one the publish then sees.
+
+The supervisor still has to come back round and replay, and it only
+retries while the flags say to. The signal a failed command raises is
+what brings it back: a stop that failed on the wire fires it, the
+permit outlives the advertisement, and the supervisor's next turn round
+its loop attempts again and replays. A halt that never reached the wire
+at all — a hook that panicked — raises nothing, so that one waits for
+the next link failure or the next service start. Throughout, no client
+can command the mount, because the debt still stands. The mount is not
+left moving for that long either way: the hook runs on every last-client
 disconnect, whatever the bookkeeping still says is owed.
 
 Either way the hook must stay stop-class: it runs on a reconnect path,
 where [tenet 3](../workspace.md#project-tenets) permits halting and
 nothing else.
 
-A halt that does not land fails the reconnect. The hook reports nothing
-— it is best-effort for the callers that only need it attempted — so the
-shared crate reads the connection instead: a command that failed on the
-wire is counted there. An attempt whose replay did not reach the mount
-is not a recovery, and reporting it as one would clear the reconnecting
-state and let the next client drive a mount that is still moving. The
-transport stays reconnecting until an attempt whose stop lands, retried
-at the configured cadence.
+A halt that does not land fails the reconnect, and there are two ways
+not to land. A command that failed on the *wire* is counted on the
+connection, which the shared crate reads across the attempt. A command
+the mount *answered* completes, so that counter stays clean even when
+the answer leaves the state unasserted — the hook is the only witness,
+and it says so by returning `StateAssertion::NotAsserted`. The hook remains best-effort about its
+own errors, logging and continuing rather than propagating; what it no
+longer does is throw the conclusion away.
+
+Either answer fails the attempt. Reporting such an attempt as a recovery
+would clear the reconnecting state and let the next client drive a mount
+that is still moving, so the transport stays reconnecting until an
+attempt whose stop lands, retried at the configured cadence.
 
 That verdict covers more than the attempt's own traffic. A last client
 can disconnect while the attempt is still running, and its halt then
@@ -248,11 +283,36 @@ the point of reading the debt there rather than trusting the flags: the
 disconnect takes the transport out of service, and a success reported
 over the top of it would put it straight back in.
 
-What that catches is a command that never reached the mount. It does not
-catch one the mount answered and refused: `request_typed` decodes above
-the connection, so a protocol-level rejection of `:L1` is invisible to
-the shared crate, and `safety_stop` logs it and continues. Only the hook
-knows, and saying so needs a return value it does not have — see
+That catches a command that never reached the mount. A command the mount
+*answered* is a separate failure, and the shared crate cannot see it at
+all: `SkywatcherCodec` hands back the `!XX` frame as a valid response,
+so the request completes and the wire counter stays clean. The same goes
+for a frame that decodes at the codec layer and then fails the typed
+decode above it. `request_typed` is the first thing that knows, and
+`safety_stop` is the only thing that sees the result.
+
+So `safety_stop` answers the question rather than swallowing it. It
+returns a verdict — asserted, or not — and any failed command makes it
+*not*. The verdict carries the outcome, never the cause: an `!XX`
+refusal, a malformed or short payload, a reply from some other device
+and a command that never went out all fold to the same
+`StateAssertion::NotAsserted`, because they leave the same axes possibly
+turning and call for the same response. The distinction that would
+matter to a reader is already recorded where it is known — one `warn!`
+per failed command, with the command and the concrete error — so no
+caller upstream has to reconstruct it, and none of them pretends to.
+
+Every caller treats the verdict identically: the reconnect replay fails
+the attempt, the last-client disconnect records the debt and takes the
+transport out of service, and a cold start refuses to serve (see
+[§Safety stop at startup](#safety-stop-at-startup)).
+
+It deliberately does not try to sort benign failures from real ones by
+reading the mount's error code. By the time any of this runs the
+handshake has just had ten commands answered, so a mount that now cannot
+be halted is broken or is not a Sky-Watcher controller at all —
+precisely the two cases where deciding "that error code is probably
+fine" would be the wrong call. Resolves
 [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
 
 A halt that could not be attempted at all is owed, not forgotten. A
@@ -2162,10 +2222,11 @@ safety stop:
   :L1, :L2, :K1     (halt both axes, stop tracking) — the same
                     no-client sequence a last-client disconnect
                     issues, asserted here before the transport is
-                    published. A failure on the wire fails the start:
-                    build() errors and the process exits non-zero
-                    rather than advertise a mount whose state is
-                    unknown.
+                    published. A failure on the wire — or an answer
+                    that leaves the state unasserted, a refusal or a
+                    bad frame alike — fails the start: build() errors
+                    and the process exits non-zero rather than
+                    advertise a mount whose state is unknown.
    ↓
 start background polling task (interval = config.polling_interval)
 ```
@@ -2199,6 +2260,9 @@ conduit, where it is asserted whatever the way down managed.
 Service shutdown (HTTP server stops → `SharedTransport::shutdown()`)
    ↓
 shutdown hook runs :L1, :L2, :K1 one last time
+   (a stop that does not assert here is logged at error!: nothing
+    downstream can act on it, and the next cold start is what
+    re-asserts the state)
    ↓
 cancel the reconnect supervisor + the polling task
    ↓
