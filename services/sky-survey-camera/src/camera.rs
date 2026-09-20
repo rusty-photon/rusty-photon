@@ -1420,6 +1420,37 @@ mod tests {
         assert!(!cam.state.exposure_in_flight.load(Ordering::Acquire));
     }
 
+    /// The other half of A3's mutual exclusion, driven through the public
+    /// `AbortExposure` rather than the helper: holding `result_lock` stands in
+    /// for a commit mid-transition, and the cancel must park rather than claim
+    /// an exposure the commit is in the middle of finishing. Without this the
+    /// suite pins only the commit side — dropping the lock from
+    /// `cancel_in_flight` reopens the race with every other test still green.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancel_cannot_claim_while_a_commit_holds_the_result_lock() {
+        let cam = connected_camera();
+        cam.state.exposure_in_flight.store(true, Ordering::Release);
+        let guard = cam.state.result_lock.lock();
+        let canceller = {
+            let cam = cam.clone();
+            tokio::spawn(async move { cam.abort_exposure().await })
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !canceller.is_finished(),
+            "cancel ran to completion while a commit held result_lock"
+        );
+        assert!(
+            cam.state.exposure_in_flight.load(Ordering::Acquire),
+            "cancel took the in-flight claim while a commit held result_lock"
+        );
+        drop(guard);
+        // Releasing lets it through, which also proves it was parked on the
+        // lock rather than never scheduled.
+        canceller.await.unwrap().unwrap();
+        assert!(!cam.state.exposure_in_flight.load(Ordering::Acquire));
+    }
+
     /// A4. The one thing a refusal can still mean once A2 makes an idle
     /// cancel succeed: there is no session to cancel in.
     #[tokio::test]
