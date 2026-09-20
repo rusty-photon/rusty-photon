@@ -239,6 +239,38 @@ impl SkySurveyCamera {
         ))
     }
 
+    /// Discard an in-flight survey fetch, if there is one, and report nothing
+    /// — the caller decides what an idle camera means. Shared by
+    /// `AbortExposure` and `StopExposure`, which differ only in the ASCOM
+    /// member a client reached for: neither can preserve a partial frame,
+    /// because a cutout is one HTTP body that either arrives whole or not at
+    /// all, so there is no readout to let run to completion.
+    ///
+    /// Bumping the generation is what makes the cancel stick. The fetch task
+    /// can't always be cancelled at the OS level (a stub that holds the
+    /// connection open keeps it parked until process exit) but it compares
+    /// generations before publishing, so it can no longer install a result.
+    /// A1 ("`ImageReady` is false") holds.
+    fn cancel_in_flight(&self) {
+        if !self
+            .state
+            .exposure_in_flight
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok_and(|prev| prev)
+        {
+            // Idle: nothing was claimed, so nothing is discarded. Leaving the
+            // stored frame alone is what lets a cancel arriving after a
+            // completed exposure keep it readable (A3).
+            return;
+        }
+        self.state
+            .exposure_generation
+            .fetch_add(1, Ordering::AcqRel);
+        self.state.image_ready.store(false, Ordering::Release);
+        *self.state.last_error.lock() = None;
+        *self.state.last_image.lock() = None;
+    }
+
     /// Put the session's settings back to the configured full frame at bin 1,
     /// the values [`Self::from_parts`] starts from (C6). Called at the start of
     /// a connect.
@@ -801,48 +833,23 @@ impl Camera for SkySurveyCamera {
         Ok(true)
     }
 
+    /// ASCOM holds both members to the promise the `Can*` pair above makes:
+    /// each "must not throw an exception if the camera is already idle". The
+    /// error they *do* carry is for the opposite case — busy and unstoppable,
+    /// e.g. mid-download — which cannot arise here, since detaching the fetch
+    /// is a generation bump that always succeeds. So an idle cancel reports
+    /// success (A2) rather than the refusal that once stood here; a refusal
+    /// would now say only that there is no session at all, which is what the
+    /// connected check is for (A4).
     async fn abort_exposure(&self) -> ASCOMResult<()> {
-        if !self
-            .state
-            .exposure_in_flight
-            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok_and(|prev| prev)
-        {
-            return Err(ASCOMError::invalid_operation(
-                "no exposure in progress to abort",
-            ));
-        }
-        // Bump the generation so the in-flight task discards its
-        // outcome. The actual fetch task can't always be cancelled at
-        // the OS level (e.g. a Hold stub keeps the connection open
-        // until process exit) but it can no longer publish results.
-        // A1 ("ImageReady is false") holds.
-        self.state
-            .exposure_generation
-            .fetch_add(1, Ordering::AcqRel);
-        self.state.image_ready.store(false, Ordering::Release);
-        *self.state.last_error.lock() = None;
-        *self.state.last_image.lock() = None;
+        self.ensure_connected()?;
+        self.cancel_in_flight();
         Ok(())
     }
 
     async fn stop_exposure(&self) -> ASCOMResult<()> {
-        if !self
-            .state
-            .exposure_in_flight
-            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok_and(|prev| prev)
-        {
-            return Err(ASCOMError::invalid_operation(
-                "no exposure in progress to stop",
-            ));
-        }
-        self.state
-            .exposure_generation
-            .fetch_add(1, Ordering::AcqRel);
-        self.state.image_ready.store(false, Ordering::Release);
-        *self.state.last_error.lock() = None;
-        *self.state.last_image.lock() = None;
+        self.ensure_connected()?;
+        self.cancel_in_flight();
         Ok(())
     }
 
@@ -1317,13 +1324,66 @@ mod tests {
         assert_eq!(total, (0..12i32).sum::<i32>());
     }
 
+    /// A2. ASCOM forbids an idle cancel from throwing, and `CanAbortExposure`
+    /// / `CanStopExposure` are `true`, so a client may issue either at any
+    /// point in a session.
     #[tokio::test]
-    async fn abort_stop_when_idle_return_invalid_operation() {
+    async fn abort_stop_when_idle_and_connected_succeed() {
+        let cam = connected_camera();
+        cam.abort_exposure().await.unwrap();
+        cam.stop_exposure().await.unwrap();
+    }
+
+    /// A3. Only an in-flight fetch has anything to discard, so a cancel that
+    /// arrives after one has completed leaves the frame readable.
+    #[tokio::test]
+    async fn abort_stop_when_idle_leave_a_ready_frame_readable() {
+        for cancel in ["abort", "stop"] {
+            let cam = connected_camera();
+            *cam.state.last_image.lock() = Some(ExposureOutcome {
+                width: 2,
+                height: 2,
+                data: vec![1, 2, 3, 4],
+            });
+            cam.state.image_ready.store(true, Ordering::Release);
+            match cancel {
+                "abort" => cam.abort_exposure().await.unwrap(),
+                _ => cam.stop_exposure().await.unwrap(),
+            }
+            assert!(
+                cam.image_ready().await.unwrap(),
+                "{cancel} on an idle camera discarded a completed frame"
+            );
+            cam.image_array().await.unwrap();
+        }
+    }
+
+    /// A4. The one thing a refusal can still mean once A2 makes an idle
+    /// cancel succeed: there is no session to cancel in.
+    #[tokio::test]
+    async fn abort_stop_when_disconnected_return_not_connected() {
         let cam = fake_camera();
         let err = cam.abort_exposure().await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
         let err = cam.stop_exposure().await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    /// A1 is unchanged by A2: a cancel that finds a fetch in flight still
+    /// detaches it and clears the ready flag.
+    #[tokio::test]
+    async fn abort_when_in_flight_clears_ready_and_bumps_generation() {
+        let cam = connected_camera();
+        cam.state.exposure_in_flight.store(true, Ordering::Release);
+        cam.state.image_ready.store(true, Ordering::Release);
+        let before = cam.state.exposure_generation.load(Ordering::Acquire);
+        cam.abort_exposure().await.unwrap();
+        assert!(!cam.state.exposure_in_flight.load(Ordering::Acquire));
+        assert!(!cam.state.image_ready.load(Ordering::Acquire));
+        assert_eq!(
+            cam.state.exposure_generation.load(Ordering::Acquire),
+            before + 1
+        );
     }
 
     #[tokio::test]
