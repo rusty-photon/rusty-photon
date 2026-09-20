@@ -500,6 +500,14 @@ async fn safety_stop(conn: &Connection<SkywatcherCodec>) -> StateAssertion {
             verdict = verdict.and(StateAssertion::NotAsserted);
         }
     }
+    // Report the verdict on the way out, including when nothing went
+    // wrong. The per-command `warn!` above only fires on failure, so
+    // without this line a halt that worked is invisible: on healthy
+    // hardware the whole sequence leaves no trace at any default log
+    // level, and confirming it ran at all means enabling wire tracing
+    // on the transport crate and reading raw frames. An operator asking
+    // "was the mount actually stopped?" should not have to do that.
+    debug!(verdict = ?verdict, "safety stop complete");
     verdict
 }
 
