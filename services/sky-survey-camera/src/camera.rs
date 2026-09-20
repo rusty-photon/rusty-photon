@@ -133,9 +133,14 @@ pub struct DeviceState {
     /// `start_exposure` takes it too, for the mirror hazard: its claim and the
     /// generation it spawns against are likewise two atomics that must move
     /// together, and a cancel landing between them would be silently lost.
-    /// All three sites — start, commit, cancel — therefore serialise on this,
-    /// which is what makes "a cancel that reports success cancelled
-    /// something" true rather than merely likely.
+    /// So does C4's disconnect reset, which is the same write under another
+    /// name and would otherwise be undone by a commit already past its
+    /// generation check.
+    ///
+    /// The rule is therefore the whole of it: **every writer of the exposure
+    /// result state takes this lock** — start, commit, cancel, disconnect.
+    /// The state is a bare flag beside a counter beside three mutexes, and
+    /// nothing but this lock makes them move as one.
     pub result_lock: Mutex<()>,
     pub survey_client: Arc<dyn SurveyClient>,
     /// Serialises `set_connected`, so a connect and a disconnect cannot
@@ -604,6 +609,15 @@ impl Device for SkySurveyCamera {
             // exposures since the *current* connect, so a Connect →
             // Disconnect → Connect cycle should make them error
             // again until a fresh exposure runs.
+            //
+            // This is the fourth writer of the result state, so it takes
+            // `result_lock` like the other three. Without it a commit that had
+            // already passed its generation check could republish
+            // `image_ready` and the frame *after* this reset ran, and since a
+            // reconnect restores geometry only (C6), the next session would
+            // open on the previous one's frame — C4 undone by a late task.
+            // Scoped to this block: it contains no `await`.
+            let _guard = self.state.result_lock.lock();
             self.state
                 .exposure_generation
                 .fetch_add(1, Ordering::AcqRel);
@@ -1499,6 +1513,40 @@ mod tests {
         drop(guard);
         starter.await.unwrap().unwrap();
         assert!(cam.state.exposure_in_flight.load(Ordering::Acquire));
+    }
+
+    /// The fourth seam: C4's disconnect reset is the same write as a cancel's,
+    /// so it serialises too. Otherwise a commit already past its generation
+    /// check could republish the frame after the reset cleared it, and since a
+    /// reconnect restores geometry only, the next session would open on the
+    /// previous one's frame.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_disconnect_reset_cannot_run_while_a_commit_holds_the_result_lock() {
+        let cam = connected_camera();
+        *cam.state.last_image.lock() = Some(ExposureOutcome {
+            width: 2,
+            height: 2,
+            data: vec![1, 2, 3, 4],
+        });
+        cam.state.image_ready.store(true, Ordering::Release);
+        let guard = cam.state.result_lock.lock();
+        let disconnect = {
+            let cam = cam.clone();
+            tokio::spawn(async move { cam.set_connected(false).await })
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !disconnect.is_finished(),
+            "disconnect reset ran while a commit held result_lock"
+        );
+        assert!(
+            cam.state.image_ready.load(Ordering::Acquire),
+            "disconnect cleared the result state while a commit held result_lock"
+        );
+        drop(guard);
+        disconnect.await.unwrap().unwrap();
+        assert!(!cam.state.image_ready.load(Ordering::Acquire));
+        assert!(cam.state.last_image.lock().is_none());
     }
 
     /// A4. The one thing a refusal can still mean once A2 makes an idle
