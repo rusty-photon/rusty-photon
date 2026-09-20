@@ -129,6 +129,13 @@ pub struct DeviceState {
     /// either arrives before the commit (and the commit's generation check
     /// then discards the outcome) or after it (and finds nothing claimed).
     /// `zwo-camera` carries the same lock for the same reason.
+    ///
+    /// `start_exposure` takes it too, for the mirror hazard: its claim and the
+    /// generation it spawns against are likewise two atomics that must move
+    /// together, and a cancel landing between them would be silently lost.
+    /// All three sites — start, commit, cancel — therefore serialise on this,
+    /// which is what makes "a cancel that reports success cancelled
+    /// something" true rather than merely likely.
     pub result_lock: Mutex<()>,
     pub survey_client: Arc<dyn SurveyClient>,
     /// Serialises `set_connected`, so a connect and a disconnect cannot
@@ -803,6 +810,18 @@ impl Camera for SkySurveyCamera {
                 "subframe ({sx}+{nx},{sy}+{ny}) exceeds binned sensor ({binned_sensor_width},{binned_sensor_height})"
             )));
         }
+        // The claim and the generation it is spawned against are two separate
+        // atomics, so they have to be moved as one. A cancel landing between
+        // them would release this claim and bump the generation, and the
+        // `fetch_add` below would then hand the task a generation matching the
+        // one it publishes under — the cancel silently lost, its frame
+        // published anyway, and the in-flight flag left false with a task
+        // still running. Held to the spawn so the claim, the reset and the
+        // generation are one transition. `zwo-camera` needs no such lock here
+        // because its claim *is* a mutex-guarded cell; this driver's is a bare
+        // flag beside a counter. No `await` from here to the end of the
+        // function, so the synchronous lock is safe to hold across it.
+        let _guard = self.state.result_lock.lock();
         // E2: reject if another exposure is already in flight.
         if self
             .state
@@ -1449,6 +1468,37 @@ mod tests {
         // lock rather than never scheduled.
         canceller.await.unwrap().unwrap();
         assert!(!cam.state.exposure_in_flight.load(Ordering::Acquire));
+    }
+
+    /// The third seam: a start must not take the claim while a cancel holds
+    /// the lock either. `start_exposure` sets the in-flight flag and bumps the
+    /// generation as two separate atomics, so a cancel landing between them
+    /// would release the claim and bump the generation, and the start's own
+    /// bump would then hand its task a generation matching the one it
+    /// publishes under — a cancel that reported success while the exposure it
+    /// cancelled went on to publish a frame.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_start_cannot_claim_while_a_cancel_holds_the_result_lock() {
+        let cam = connected_camera();
+        let guard = cam.state.result_lock.lock();
+        let starter = {
+            let cam = cam.clone();
+            // Light=false: no network I/O, so the claim is the only contended
+            // step.
+            tokio::spawn(async move { cam.start_exposure(Duration::from_millis(1), false).await })
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(
+            !starter.is_finished(),
+            "start ran to completion while a cancel held result_lock"
+        );
+        assert!(
+            !cam.state.exposure_in_flight.load(Ordering::Acquire),
+            "start took the in-flight claim while a cancel held result_lock"
+        );
+        drop(guard);
+        starter.await.unwrap().unwrap();
+        assert!(cam.state.exposure_in_flight.load(Ordering::Acquire));
     }
 
     /// A4. The one thing a refusal can still mean once A2 makes an idle
