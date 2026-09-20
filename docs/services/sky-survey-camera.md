@@ -592,6 +592,19 @@ setter because the spec defines a hard `[1, MaxBin]` range.
   or the analogous Y-axis condition, returns `INVALID_VALUE`.
 - **E6.** `StartExposure` with `Duration` outside
   `[ExposureMin, ExposureMax]` returns `INVALID_VALUE`.
+- **E7.** An exposure is bounded by the geometry `StartExposure`
+  validated, captured at that moment and carried into the task.
+  A `BinX` / `NumX` / `StartX` (or Y) write that lands while an
+  exposure is in flight therefore belongs to the **next** exposure,
+  not the running one — the same one-exposure-late rule F7/P7 gives
+  a pointing override, and for the same reason. Without it the
+  guarantee E4/E5 offer would be empty: the setters take no lock and
+  refuse nothing mid-exposure (per ASCOM convention they accept any
+  value — E3 aside — and `StartExposure` is where geometry is
+  judged), so a write arriving after the check would reach the
+  exposure unvalidated. The `NumX` / `NumY` **getters** report the
+  new value immediately, as ASCOM requires; it is the frame in
+  flight that keeps the old one.
 
 ### `StartExposure` survey path
 

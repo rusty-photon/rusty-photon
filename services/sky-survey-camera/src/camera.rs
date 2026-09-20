@@ -358,6 +358,27 @@ impl SkySurveyCamera {
     }
 }
 
+/// The geometry an exposure was validated against, captured at
+/// `StartExposure` and carried into the task.
+///
+/// The task cannot re-read these from the device: the setters take no lock and
+/// refuse nothing while an exposure is in flight (ASCOM convention — they
+/// accept any value, and `StartExposure` is where geometry is judged, E4/E5),
+/// so a `NumX` written a moment after `StartExposure` returned would otherwise
+/// reach the task and be used unchecked. Passing the validated values is what
+/// makes E4/E5 a property of the exposure rather than of an instant that has
+/// already passed — the same reason `pointing_override` is consumed before the
+/// spawn rather than inside the task (F7/P7).
+#[derive(Debug, Clone, Copy)]
+struct ExposureGeometry {
+    bin_x: u8,
+    bin_y: u8,
+    num_x: u32,
+    num_y: u32,
+    start_x: u32,
+    start_y: u32,
+}
+
 /// The body of the spawned exposure task. Performs the cache hit /
 /// fetch / parse / sub-frame crop; on any failure stores the message
 /// in `state.last_error` and clears `in_flight` so subsequent
@@ -372,9 +393,10 @@ async fn run_exposure(
     state: Arc<DeviceState>,
     light: bool,
     gen: u64,
+    geometry: ExposureGeometry,
     pointing_override: Option<PointingState>,
 ) {
-    let result = run_exposure_inner(&state, light, pointing_override).await;
+    let result = run_exposure_inner(&state, light, geometry, pointing_override).await;
     // The commit is one critical section: the generation test, the publish and
     // the release of the in-flight claim. A cancel racing it therefore sees
     // either a claim it can take (and this task's generation check then
@@ -408,14 +430,20 @@ async fn run_exposure(
 async fn run_exposure_inner(
     state: &Arc<DeviceState>,
     light: bool,
+    geometry: ExposureGeometry,
     pointing_override: Option<PointingState>,
 ) -> Result<ExposureOutcome, String> {
-    let bx = state.bin_x.load(Ordering::Acquire);
-    let by = state.bin_y.load(Ordering::Acquire);
-    let nx = state.num_x.load(Ordering::Acquire);
-    let ny = state.num_y.load(Ordering::Acquire);
-    let sx = state.start_x.load(Ordering::Acquire);
-    let sy = state.start_y.load(Ordering::Acquire);
+    // Destructured from what `StartExposure` validated, not re-read from the
+    // device — see [`ExposureGeometry`]. A setter that lands while this task
+    // is running belongs to the next exposure.
+    let ExposureGeometry {
+        bin_x: bx,
+        bin_y: by,
+        num_x: nx,
+        num_y: ny,
+        start_x: sx,
+        start_y: sy,
+    } = geometry;
     // `nx`/`ny` stay fixed-width for `crop_subframe`, which takes the
     // subframe as the ASCOM device state it is. The outcome carries the
     // same numbers as the geometry of the buffer it holds, so convert
@@ -839,8 +867,13 @@ impl Camera for SkySurveyCamera {
                 "Duration {duration:?} outside [{EXPOSURE_MIN:?}, {EXPOSURE_MAX:?}]"
             )));
         }
-        let bx = u32::from(self.state.bin_x.load(Ordering::Acquire));
-        let by = u32::from(self.state.bin_y.load(Ordering::Acquire));
+        // Kept in both widths: `u8` is what the device stores and what the
+        // survey request takes, `u32` is what the sensor arithmetic below
+        // needs. Loaded once either way, so the two cannot disagree.
+        let bin_x = self.state.bin_x.load(Ordering::Acquire);
+        let bin_y = self.state.bin_y.load(Ordering::Acquire);
+        let bx = u32::from(bin_x);
+        let by = u32::from(bin_y);
         let nx = self.state.num_x.load(Ordering::Acquire);
         let ny = self.state.num_y.load(Ordering::Acquire);
         let sx = self.state.start_x.load(Ordering::Acquire);
@@ -926,7 +959,23 @@ impl Camera for SkySurveyCamera {
         };
         debug!(?duration, light, gen, "exposure started");
         let state = Arc::clone(&self.state);
-        tokio::spawn(run_exposure(state, light, gen, override_for_exposure));
+        // The values E3/E4/E5 were judged against, not a fresh read: between
+        // here and the task's first use, a setter can change any of them.
+        let geometry = ExposureGeometry {
+            bin_x,
+            bin_y,
+            num_x: nx,
+            num_y: ny,
+            start_x: sx,
+            start_y: sy,
+        };
+        tokio::spawn(run_exposure(
+            state,
+            light,
+            gen,
+            geometry,
+            override_for_exposure,
+        ));
         Ok(())
     }
 
@@ -1295,6 +1344,18 @@ mod tests {
         }
     }
 
+    /// The full frame of `fake_config`'s 640x480 sensor at bin 1 — what a
+    /// `StartExposure` with untouched geometry would have validated and handed
+    /// to the task.
+    const FULL_FRAME: ExposureGeometry = ExposureGeometry {
+        bin_x: 1,
+        bin_y: 1,
+        num_x: 640,
+        num_y: 480,
+        start_x: 0,
+        start_y: 0,
+    };
+
     fn fake_camera() -> SkySurveyCamera {
         let cfg = fake_config();
         let client: Arc<dyn SurveyClient> = Arc::new(StubSurveyClient);
@@ -1526,7 +1587,7 @@ mod tests {
         let commit = {
             let state = Arc::clone(&cam.state);
             tokio::spawn(async move {
-                let task = run_exposure(state, false, gen, None);
+                let task = run_exposure(state, false, gen, FULL_FRAME, None);
                 task.await;
             })
         };
@@ -1726,7 +1787,7 @@ mod tests {
         cam.state.exposure_generation.fetch_add(1, Ordering::AcqRel);
         cam.state.exposure_in_flight.store(true, Ordering::Release);
         // Light=false synthesises a zero frame without network I/O.
-        run_exposure(Arc::clone(&cam.state), false, 0, None).await;
+        run_exposure(Arc::clone(&cam.state), false, 0, FULL_FRAME, None).await;
         // image_ready stays false because the generation check
         // triggered an early return.
         assert!(!cam.state.image_ready.load(Ordering::Acquire));
@@ -2001,12 +2062,42 @@ mod tests {
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
     }
 
+    /// The exposure is bounded by what `StartExposure` validated, not by what
+    /// the device happens to say when the task gets around to reading it. The
+    /// setters take no lock and refuse nothing mid-exposure, so a `NumX`
+    /// written a moment after `StartExposure` returned would otherwise reach
+    /// the task and be used without ever passing E4/E5.
+    ///
+    /// Driven at the task rather than through `StartExposure` on purpose: the
+    /// task reads its geometry before the simulated exposure sleep, so a
+    /// setter racing it from a test would land on either side by luck and the
+    /// test would prove nothing. Handing the task one geometry while the
+    /// device holds another is the same question asked deterministically.
+    #[tokio::test]
+    async fn the_task_exposes_the_geometry_it_was_given_not_the_devices() {
+        let cam = connected_camera();
+        cam.state.exposure_in_flight.store(true, Ordering::Release);
+        let gen = cam.state.exposure_generation.load(Ordering::Acquire);
+        // A setter that landed after this exposure was validated.
+        cam.state.num_x.store(100, Ordering::Release);
+        cam.state.num_y.store(120, Ordering::Release);
+        run_exposure(Arc::clone(&cam.state), false, gen, FULL_FRAME, None).await;
+        let img = cam.state.last_image.lock();
+        let outcome = img.as_ref().unwrap();
+        assert_eq!(
+            (outcome.width, outcome.height),
+            (640, 480),
+            "the exposure used the device's current geometry instead of the \
+             geometry it was validated against"
+        );
+    }
+
     #[tokio::test]
     async fn run_exposure_publishes_zero_frame_on_light_false_when_uncancelled() {
         let cam = fake_camera();
         cam.state.exposure_in_flight.store(true, Ordering::Release);
         let gen = cam.state.exposure_generation.load(Ordering::Acquire);
-        run_exposure(Arc::clone(&cam.state), false, gen, None).await;
+        run_exposure(Arc::clone(&cam.state), false, gen, FULL_FRAME, None).await;
         assert!(cam.state.image_ready.load(Ordering::Acquire));
         let img = cam.state.last_image.lock();
         let outcome = img.as_ref().unwrap();
