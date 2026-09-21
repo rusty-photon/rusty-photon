@@ -368,6 +368,13 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   omitted key is silent rather than a parse error — the rejection is what
   makes it loud.
 
+  **`model` and `serial` follow the same rule**: a blank one is rejected and
+  `null` is not. All three collectors return `None` for a descriptor they
+  could not read, so `""` describes no state any of them reaches — while
+  `null` describes one they reach constantly (on `rig2`, not one of the
+  three cameras publishes a USB serial), which is what keeps a captured
+  facts file stageable as it stands.
+
   **A padded value is rejected too**, on every device field. Each collector
   stores what the platform reported with nothing around it — the sysfs read
   is trimmed, each `LocationPaths` element is trimmed before the `PCIROOT(`

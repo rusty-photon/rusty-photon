@@ -248,6 +248,24 @@ impl TryFrom<StagedDocument> for StagedUsbInventory {
                              inventory failure, so stage `usb_unavailable` to get that outcome"
                         ));
                     }
+                    // A descriptor a collector could not read is `None`,
+                    // never `Some("")` — an empty string is the absence of a
+                    // name wearing the shape of one, and it would match a
+                    // `usb_model` substring check no better than `null`
+                    // while looking like a device that reported something.
+                    for (field, value) in [
+                        ("model", device.model.as_deref()),
+                        ("serial", device.serial.as_deref()),
+                    ] {
+                        if let Some(value) = value {
+                            if value.trim().is_empty() {
+                                return Err(format!(
+                                    "device {identity} has a blank `{field}`; a collector omits \
+                                     what it could not read, so write `null` or leave the key out"
+                                ));
+                            }
+                        }
+                    }
                     // Every collector stores what the platform reported
                     // with no padding around it: the sysfs read is trimmed,
                     // each `LocationPaths` element is trimmed before the
@@ -800,17 +818,9 @@ mod macos {
             inventory.push(UsbDevice {
                 vendor,
                 product,
-                model: item
-                    .get("_name")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
+                model: item.get("_name").and_then(text_field),
                 port: Some(port),
-                serial: item
-                    .get("serial_num")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string),
+                serial: item.get("serial_num").and_then(text_field),
             });
         }
         if let Some(children) = item.get("_items").and_then(|v| v.as_array()) {
@@ -835,6 +845,16 @@ mod macos {
     }
 
     /// `vendor_id` renders as `0x0403` or `0x0403  (Vendor Name)`.
+    /// A descriptor string the device actually published. An empty one is
+    /// not a shorter name, it is the absence of a name — which is what
+    /// `None` means, and what the Linux and Windows collectors already
+    /// return for the same case. `serial_num` was already read this way;
+    /// `_name` was not, and that was the inconsistency.
+    fn text_field(value: &serde_json::Value) -> Option<String> {
+        let text = value.as_str()?.trim();
+        (!text.is_empty()).then(|| text.to_string())
+    }
+
     fn hex_field(value: &serde_json::Value) -> Option<String> {
         let text = value.as_str()?;
         let hex = text.strip_prefix("0x")?;
@@ -1426,6 +1446,40 @@ mod tests {
             let path = stage(dir.path(), "{}");
             let error = StagedUsbInventory::load(&path).unwrap_err();
             assert!(error.contains("states neither"), "{error}");
+        }
+
+        /// `Some("")` is the absence of a descriptor wearing the shape of
+        /// one. All three collectors return `None` for an unreadable
+        /// descriptor, so a staged blank describes no reachable state.
+        #[test]
+        fn test_a_staged_device_with_a_blank_model_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [ { "vendor": "1618", "product": "c601", "port": "1-4.2",
+                     "model": "" } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("blank `model`"), "{error}");
+            assert!(error.contains("null"), "{error}");
+        }
+
+        /// But an explicit `null` is a state collectors reach constantly —
+        /// on rig2 not one of the three cameras publishes a USB serial — so
+        /// it stays accepted, and a captured facts file full of them stages
+        /// as it stands.
+        #[test]
+        fn test_explicit_nulls_are_a_device_that_published_neither() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [ { "vendor": "1618", "product": "c601", "port": "1-4.2",
+                     "model": null, "serial": null } ] }"#,
+            );
+            let facts = gather(&request(StagedUsbInventory::load(&path).unwrap()));
+            assert_eq!(facts.usb.len(), 1);
+            assert!(facts.usb[0].model.is_none());
+            assert!(facts.usb[0].serial.is_none());
         }
 
         /// Padding is the quieter cousin of a blank value: it passes a
