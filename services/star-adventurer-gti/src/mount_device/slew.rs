@@ -22,7 +22,7 @@ use skywatcher_motor_protocol::command::{ModeKind, MotionMode, Speed};
 use skywatcher_motor_protocol::{Axis, Command, Response};
 
 use crate::codec::SkywatcherCodec;
-use crate::coordinates::sidereal_step_period;
+use crate::coordinates::{path_crosses_binding_zone, sidereal_step_period};
 use crate::error::StarAdvError;
 use crate::manager::{MountManager, MountParameters};
 use crate::units::{Cpr, RaTicks};
@@ -243,7 +243,7 @@ pub(super) fn flip_slew_ra_delta(
         .to_mech_ha(Cpr::new(cpr))
         .value();
     let delta_ha = f64::from(canonical_delta) * 24.0 / f64::from(cpr);
-    if !canonical_path_crosses_binding_zone(cur_ha, delta_ha, binding_zone_hours) {
+    if !path_crosses_binding_zone(cur_ha, delta_ha, binding_zone_hours) {
         return Ok(canonical_delta);
     }
     // `canonical_delta` is folded to `[-cpr/2, +cpr/2)` and `cpr` is a
@@ -255,7 +255,7 @@ pub(super) fn flip_slew_ra_delta(
         canonical_delta.saturating_add(cpr_i)
     };
     let long_delta_ha = f64::from(long_way) * 24.0 / f64::from(cpr);
-    if !canonical_path_crosses_binding_zone(cur_ha, long_delta_ha, binding_zone_hours) {
+    if !path_crosses_binding_zone(cur_ha, long_delta_ha, binding_zone_hours) {
         return Ok(long_way);
     }
     Err(ASCOMError::new(
@@ -289,7 +289,7 @@ pub(super) fn check_non_flip_ra_path(
         .to_mech_ha(Cpr::new(cpr))
         .value();
     let delta_ha = f64::from(canonical_delta) * 24.0 / f64::from(cpr);
-    if !canonical_path_crosses_binding_zone(cur_ha, delta_ha, binding_zone_hours) {
+    if !path_crosses_binding_zone(cur_ha, delta_ha, binding_zone_hours) {
         return Ok(());
     }
     Err(ASCOMError::new(
@@ -301,38 +301,6 @@ pub(super) fn check_non_flip_ra_path(
             zone_max = binding_zone_hours.1,
         ),
     ))
-}
-
-/// Does the linear `mech_HA` sweep from `start_ha` by `delta_ha` enter
-/// `(zone_min, zone_max)` (modulo 24 h)? The sweep is the open
-/// interval `(min(start, start+delta), max(start, start+delta))`; the
-/// CW exclusion zone repeats every 24 hours, so we check `k ∈ {-1, 0, +1}`
-/// — enough to cover any `|delta_ha| ≤ 12` path. An empty zone
-/// (`zone_min ≥ zone_max`) is treated as no zone.
-#[expect(
-    clippy::suboptimal_flops,
-    reason = "zone + 24·k is the day-period unwrap over exact small values; nothing to fuse"
-)]
-fn canonical_path_crosses_binding_zone(
-    start_ha: f64,
-    delta_ha: f64,
-    binding_zone_hours: (f64, f64),
-) -> bool {
-    let (zone_min, zone_max) = binding_zone_hours;
-    if zone_min >= zone_max {
-        return false;
-    }
-    let path_lo = start_ha.min(start_ha + delta_ha);
-    let path_hi = start_ha.max(start_ha + delta_ha);
-    for k in [-1.0_f64, 0.0, 1.0] {
-        let bz_lo = zone_min + 24.0 * k;
-        let bz_hi = zone_max + 24.0 * k;
-        // Open-interval overlap: paths grazing the boundary stay safe.
-        if path_lo < bz_hi && bz_lo < path_hi {
-            return true;
-        }
-    }
-    false
 }
 
 /// Force a flip slew's Dec delta to traverse the **visible** celestial

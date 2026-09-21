@@ -39,8 +39,9 @@ use tracing::{debug, info};
 use crate::codec::SkywatcherCodec;
 use crate::config::ApPark;
 use crate::coordinates::{
-    local_sidereal_time_hours, ra_dec_to_alt_az, side_of_pier as side_of_pier_calc,
-    target_encoder_flipped, target_encoder_normal, SIDEREAL_DEG_PER_SEC,
+    local_sidereal_time_hours, mech_ha_in_binding_zone, ra_dec_to_alt_az,
+    side_of_pier as side_of_pier_calc, target_encoder_flipped, target_encoder_normal,
+    SIDEREAL_DEG_PER_SEC,
 };
 use crate::error::StarAdvError;
 use crate::manager::{MountParameters, MountSnapshot};
@@ -234,12 +235,14 @@ impl MountDevice {
                 normal
             }
         };
-        let (zone_min, zone_max) = self.config.cw_exclusion_zone.bounds();
+        let zone = self.config.cw_exclusion_zone.bounds();
+        let (zone_min, zone_max) = zone;
         // Open interval: target landing exactly on a boundary is OK.
-        // Disable on `min >= max` (empty zone), matching the path
-        // check's convention so destination and path checks agree on
-        // which configurations are "disabled."
-        if zone_min < zone_max && target_mech_ha > zone_min && target_mech_ha < zone_max {
+        // Disable on `min >= max` (empty zone). The predicate is shared
+        // with the path checks and the pier-side selector so every gate
+        // agrees on which configurations are "disabled" and on which
+        // side of a boundary a target sits.
+        if mech_ha_in_binding_zone(target_mech_ha, zone) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(

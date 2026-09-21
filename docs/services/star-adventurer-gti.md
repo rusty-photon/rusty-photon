@@ -635,7 +635,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `SlewToCoordinates(ra, dec)` | wraps the async variant and waits for `Slewing` to clear (bounded by a generous timeout) before returning. Mandatory per ASCOM when `CanSlew=true` |
 | `SlewToTargetAsync()` | uses last-set `TargetRightAscension`/`Declination` |
 | `SlewToTarget()` | synchronous variant of the above; same wait semantics as `SlewToCoordinates` |
-| `SyncToCoordinates(ra, dec)` | issue `:E<axis><pos>` for each axis (set encoder position), update the cached snapshot so an immediate `RightAscension` / `Declination` read reflects the sync without waiting for the next background poll, and **update `TargetRightAscension` / `TargetDeclination`** to the synced coordinates (per ASCOM ITelescopeV3 — a successful Sync writes Target) |
+| `SyncToCoordinates(ra, dec)` | issue `:E<axis><pos>` for each axis (set encoder position **for the side the mount is physically on** — see [§Sync and pier side](#sync-and-pier-side)), update the cached snapshot so an immediate `RightAscension` / `Declination` read reflects the sync without waiting for the next background poll, and **update `TargetRightAscension` / `TargetDeclination`** to the synced coordinates (per ASCOM ITelescopeV3 — a successful Sync writes Target) |
 | `SyncToTarget()` | uses last-set target |
 | `AbortSlew()` | refuse with `INVALID_WHILE_PARKED` when parked; otherwise issue `:L1` `:L2` (instant stop), clear `Slewing`, do NOT auto-restore tracking |
 | `Park()` | stop tracking, then — **only when the coordinate frame is anchored** (see [§Park lifecycle](#park-lifecycle)) — slew both axes to the in-memory park-target encoder pair; with an unanchored frame (`ap_park_0`, no sync yet, no raw tick override) Park stops both axes **in place** and issues no goto. When both axes report stopped set `AtPark=true`. **Tracking remains off after park** (per ASCOM) |
@@ -677,8 +677,10 @@ SlewToCoordinatesAsync(ra, dec)
    │
    ├─ validate: !AtPark, ra ∈ [0,24), dec ∈ [-90,90]
    ├─ remember: TargetRightAscension/Declination = (ra, dec)
-   ├─ pick pier side: flip policy (current side + target HA +
-   │           `flip_policy.enabled`) — see [§Meridian flip](#meridian-flip).
+   ├─ pick pier side: the side whose destination mech_HA and RA
+   │           path both clear the CW exclusion zone, preferring the
+   │           current side — see
+   │           [§Pier-side decision tree](#pier-side-decision-tree).
    │           With `enabled = false` always chooses the current side.
    ├─ compute: (ra_target_ticks, dec_target_ticks) from
    │           ra/dec + LST(now) + sync offset + chosen pier side.
@@ -1075,16 +1077,23 @@ a flip. Four fields:
   to Phase 5. With `enabled = true`: the capability flag flips on
   and the slew planner picks the target pier side per the policy
   below.
-- **`flip_range_hours: f64`** (default `0.5`) — half-width of the
-  target-HA window around the meridian where the flipped state is
-  mechanically reachable. Targets with `|target_HA| > flip_range_hours`
-  are unflippable (the post-flip `mech_HA` would land outside the
-  symmetric mirror band); the slew planner uses normal pointing only
-  and `DestinationSideOfPier` returns the current side. Valid range
-  `(0, 0.95]`. The upper bound matches the headroom past
-  counterweight-horizontal on the pre-flip side (Phase 1.1 hardware
-  verification); a larger value would push the post-flip `mech_HA`
-  into the unverified mirror of the CW exclusion zone.
+- **`flip_range_hours: f64`** (default `0.5`) — how far past the
+  meridian an *auto-flip* may be deferred. It bounds
+  `auto_flip_at_meridian_offset_hours` and nothing else. Valid range
+  `(0, 0.95]`, the upper bound being the CW-up allowance `x` (see
+  [§Safety envelope](#safety-envelope-cw-exclusion-zone)) — deferring
+  an auto-flip past `x` is pointless because the tracking guard stops
+  the mount at `x − tracking_guard_margin_hours` first.
+
+  **This field does not decide reachability.** Until 2026-09 the
+  pier-side selector used it as a half-width window
+  (`|target_HA| ≤ flip_range_hours` ⇒ "the flipped side covers this
+  target"), which is the wrong shape: the CW-up side's reach is
+  one-sided (`target_HA ≥ −x`, then the whole western sky), not a
+  band around the meridian. Applying it as a band made most of the
+  western sky unreachable whenever the mount was already CW-up —
+  issue #1301. Reachability now comes from the CW exclusion zone
+  alone; see [§Pier-side decision tree](#pier-side-decision-tree).
 - **`auto_flip_during_tracking: bool`** (default `false`) — when
   `true` (and `enabled` is `true`), the driver initiates a meridian
   flip on its own once continuous tracking carries the target past
@@ -1116,10 +1125,26 @@ The driver enforces this as a single interval on the **chosen-side
 encoder mech_HA**, in `MountConfig::cw_exclusion_zone` — an active
 `{ min_hours, max_hours }` interval (defaults `0.95` and `11.05` — the
 wide zone derived from the 0.95 h rule and hardware-verified at lat
-32.7°N), or `null` to disable:
+32.7°N), or `null` to disable.
+
+The zone has the shape `(x, 12 − x)`, where `x = min_hours` is the
+**CW-up allowance** — the rotation past counterweight-down the mount
+tolerates, `0.95 h = 57 min` by default. `x` is the driver's single
+mechanical constant: it sets how far tracking may run past the
+meridian, how far east of the meridian a CW-up target may be
+acquired, and how wide the band is in which both pier sides work.
+[§Pier-side decision tree](#pier-side-decision-tree) derives all
+three from it; no other setting may be used to decide what the mount
+can reach.
+
+The rules:
 
 - A slew or sync's *target* mech_HA inside the interval is rejected
   with `INVALID_VALUE` before any motion (the destination check).
+  Both resolve the target against the side the mount is on (or, for a
+  slew, the side the selector picked) — a sync while the mount is
+  CW-up validates and writes the CW-up encoder solution. See
+  [§Sync and pier side](#sync-and-pier-side).
 - A slew's *path* — the linear mech_HA sweep from current encoder to
   target encoder — is also checked. Crossings happen even when both
   endpoints sit outside the zone (e.g. cur `+0.5 h` → tgt `+11.5 h`
@@ -1313,37 +1338,113 @@ Semantics and interactions:
   like an explicit `SetSideOfPier` — guiding / imaging restart
   coordination stays with the host.
 
+#### Sync and pier side
+
+`SyncToCoordinates` / `SyncToTarget` write the encoder position for
+the side the mount is **physically on**, classified from the Dec
+encoder exactly as [`SideOfPier`](#side-of-pier) classifies it:
+
+- CW-down (pre-flip): `(mech_HA = LST − ra, dec_encoder = dec)`.
+- CW-up (post-flip): `(mech_HA = LST − ra + 12` folded`,
+  dec_encoder = sign(dec) · (180° − |dec|))` — the same pair
+  [§Slew lifecycle](#slew-lifecycle) computes for a flipped target.
+
+The CW-exclusion-zone and altitude gates then run against that side's
+`mech_HA`. Sync issues no motion, so the RA path check does not apply.
+A mount whose side reads `Unknown` (no Dec CPR) is treated as CW-down.
+
+Until 2026-09 sync assumed CW-down unconditionally. On a CW-up mount
+that had two consequences: every target in the western sky was
+refused with a CW-exclusion-zone error (its CW-down `mech_HA` is
+inside the zone even though the mount was nowhere near it), and —
+worse — an *eastern* target was accepted and written as a CW-down
+encoder pair, silently re-labelling a flipped mount as unflipped.
+`SideOfPier` then reported the wrong side and every subsequent slew
+planned from a false position. Resolving the side from the encoder
+closes both.
+
 #### Pier-side decision tree
 
+Pier side is not a policy the driver holds an opinion about. It is an
+*output*: of the two encoder solutions for a given RA/Dec, which ones
+the mount can actually be pointed at without putting the polar axis
+in — or sweeping it through — the CW exclusion zone. The zone is the
+only input; everything below is a consequence of it.
+
+Write the zone as `(x, 12 − x)` in `mech_HA` (defaults `(0.95,
+11.05)`, so `x = 0.95 h = 57 min`). `x` is the **CW-up allowance**:
+how far the polar axis may rotate past the counterweight-down
+position before the counterweight is too high. That single number
+fixes all three of the behaviours operators care about:
+
+- **Tracking past the meridian on the CW-down side** runs until
+  `mech_HA = x` (the tracking guard stops at `x −
+  tracking_guard_margin_hours`) — 57 min, 54 after the default
+  margin.
+- **Acquiring east of the meridian on the CW-up side** is legal down
+  to `target_HA = −x` (the flipped `mech_HA = target_HA + 12` stays
+  at or above `12 − x`) — 57 min east. A host that pre-positions
+  CW-up within that window tracks straight through the meridian
+  without a flip.
+- **The overlap band** where both sides reach is therefore
+  `target_HA ∈ [−x, +x]`, plus the mirror sliver at the anti-meridian.
+
+And, because the CW-up side's `mech_HA = target_HA − 12` is negative
+for every `target_HA ∈ [0, 12)`, the CW-up side reaches the **entire
+western sky**: once flipped, the mount tracks from `−x` east of the
+meridian all the way round to the anti-meridian without needing to
+flip back.
+
 `DestinationSideOfPier(ra, dec)` and `SlewToCoordinatesAsync(ra,
-dec)` share the same selector:
+dec)` share one selector:
 
 1. If `flip_policy.enabled = false`, return the current `SideOfPier`.
-2. Compute `target_HA = LST − ra` (signed, folded to `[−12, +12)`).
-3. If the *current* side can reach the target without entering the
-   CW exclusion zone, stay on the current side (no unnecessary flip):
-   - **Pre-flip side** (`pierWest` in the Northern Hemisphere,
-     `pierEast` in the Southern): "covers" means `target_HA ∉
-     binding_zone`. This is wider than the legacy
-     `[ra_min_hours, ra_max_hours]` window — the whole sky except
-     the CW exclusion zone.
-   - **Post-flip side**: "covers" means `|target_HA| ≤
-     flip_range_hours`. This is an *operational* preference (after
-     a flip, the driver expects to flip back to natural side soon),
-     not a hard mechanical constraint. The post-flip side could
-     mechanically be tracked far past `±flip_range_hours`, but the
-     decision tree treats anything outside as "should flip back".
-4. Otherwise return the *opposite* side.
+   (`Unknown` current side also returns `Unknown` — with no encoder
+   classification there is nothing to anchor a decision on.)
+2. Compute `target_HA = LST − ra` (signed, folded to `[−12, +12)`),
+   and from it each side's destination `mech_HA`: `target_HA` on the
+   CW-down (pre-flip) side, `target_HA + 12` folded on the CW-up
+   (post-flip) side.
+3. A side is **usable** when both of these hold:
+   - its destination `mech_HA` is outside the CW exclusion zone (the
+     open interval, so a target exactly on a boundary is fine); and
+   - an RA path to it exists from the current encoder `mech_HA` — the
+     canonical short sweep does not cross the zone, or (for a flip,
+     where the planner may route the long way round) the long way
+     does not. This is the same test
+     [§Through-wrap slew routing](#through-wrap-slew-routing) applies
+     when it plans the sweep.
+4. **Stay if the current side is usable**; otherwise take the
+   opposite side if it is usable. If neither is, return the current
+   side and let the slew / prediction fail with the envelope or
+   path error that names the actual obstruction.
 
-The driver does not pre-emptively flip; it only flips when the
-target can't be reached from the current side (per rule 3) or when
-`SetSideOfPier` forces it. The post-flip operational window
-(`flip_range_hours`) is small — `0.5 h` by default — so the
-practical pattern is: pre-flip side covers most of the sky; an
-explicit or implicit flip rotates the mount through the meridian to
-the post-flip side for tracking a target past meridian crossing;
-the next slew that targets HA outside the flip window auto-flips
-back to the pre-flip side.
+Consequences worth stating explicitly, because they are the
+behaviours hosts observe:
+
+- **The driver never pre-emptively flips.** Staying is preferred
+  whenever staying works, so a flip happens only when the current
+  side genuinely cannot reach the target (or `SetSideOfPier` forces
+  one).
+- **No gratuitous flip-back.** Inside the overlap band the mount
+  stays where it is. A plate-solve re-centre 35 min after a flip is a
+  small correction on the CW-up side, not a full through-wrap slew
+  back followed by the tracking guard stopping the mount minutes
+  later.
+- **The path is part of the choice, not a veto after it.** When
+  staying has no safe sweep but flipping does, the selector flips
+  instead of picking a side that is about to be refused.
+- **Refusal is rare and honest.** With a zone of the shape
+  `(x, 12 − x)` every `target_HA` is reachable from at least one side
+  on destination grounds; step 4's fall-through is reached only when
+  the *paths* are blocked from where the mount currently stands.
+- **A disabled zone means the selector never changes sides.** With
+  `cw_exclusion_zone: null` there is no mechanical reason to prefer
+  either solution, so every target is usable from the current side and
+  only `SetSideOfPier` moves the mount across. (Before 2026-09 a
+  disabled zone still flipped back whenever `|target_HA|` left the
+  `flip_range_hours` window — a flip with no safety argument behind
+  it.)
 
 Park 1 / Park 5 anti-meridian poses are reachable via
 `SlewToCoordinatesAsync` because they live at `target_HA = ±12 h`
@@ -1496,6 +1597,7 @@ The mount block is **validated at deserialize** (parse-don't-validate):
 the range-carrying fields are newtypes whose `serde` `try_from` rejects an
 out-of-range value during `load_config`, with the offending field named,
 so a bad config fails at startup rather than mid-session. `flip_range_hours`
+(the auto-flip deferral bound — it does not decide reachability)
 must be `(0, 0.95]`; `tracking_guard_margin_hours` `[0, 1.0]`; an active
 `cw_exclusion_zone` must satisfy `-12 ≤ min_hours < max_hours ≤ 12`;
 `min_altitude_degrees` must be finite in `[-90, 90]`;
@@ -1636,11 +1738,13 @@ Notes:
   specific mount (see [§Hardware validation](#hardware-validation)).
   While `false`, `CanSetPierSide` reports `false` and the driver
   ignores flip routing entirely.
-- `flip_policy.flip_range_hours` defaults `0.5`. Half-width of the
-  target-HA window around the meridian where the flipped state is
-  reachable. Valid range `(0, 0.95]`; the upper bound is the verified
-  safe headroom past counterweight-horizontal on the pre-flip side.
-  See [§Meridian flip](#meridian-flip).
+- `flip_policy.flip_range_hours` defaults `0.5`. How far past the
+  meridian an auto-flip may be deferred; it bounds
+  `auto_flip_at_meridian_offset_hours` and nothing else. Valid range
+  `(0, 0.95]`, capped at the CW-up allowance `x`. It does **not**
+  decide which targets a pier side can reach — that comes from
+  `cw_exclusion_zone` alone. See
+  [§Pier-side decision tree](#pier-side-decision-tree).
 - `flip_policy.auto_flip_during_tracking` defaults `false`. When
   `true` (and `flip_policy.enabled` is `true`), the tracking watcher
   initiates a meridian flip on its own once tracking carries the

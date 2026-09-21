@@ -24,7 +24,7 @@ use tracing::debug;
 use crate::coordinates::{
     encoder_to_celestial, local_sidereal_time_hours, pulse_guide_step_period, ra_dec_to_alt_az,
     select_pier_side_for_target, side_of_pier as side_of_pier_calc, sidereal_step_period,
-    SIDEREAL_DEG_PER_SEC,
+    target_encoder_flipped, target_encoder_normal, SIDEREAL_DEG_PER_SEC,
 };
 use crate::units::{Cpr, Dec, DecTicks, Ra, RaTicks};
 
@@ -337,10 +337,16 @@ impl Telescope for MountDevice {
             Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );
+        // The selector needs where the mount stands, not just which
+        // side it is on: a side is only usable when an RA sweep to it
+        // clears the CW exclusion zone.
+        let current_mech_ha =
+            RaTicks::new(snap.ra.position_ticks).to_mech_ha(Cpr::new(params.cpr_ra));
         let chosen_side = select_pier_side_for_target(
             Ra::new(ra),
             lst,
             current_side,
+            current_mech_ha,
             &self.config.flip_policy,
             self.config.cw_exclusion_zone.bounds(),
             self.config.site_latitude_deg,
@@ -490,20 +496,52 @@ impl Telescope for MountDevice {
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(ASCOMError::from)?;
-        // Reject syncs that would set the encoder outside the
-        // mount's safe mechanical envelope — a bad sync would let
-        // the *next* tracking step push the OTA into a hard stop.
-        // Sync uses the pre-flip envelope (`target_is_flipped =
-        // false`); operators must `AbortSlew` and re-sync the pre-
-        // flip pointing first if a manual flip left the mount in a
-        // post-flip state.
-        self.check_within_safe_envelope(ra, dec, lst.value(), false)?;
-        let mech_ha = lst.hour_angle_of(Ra::new(ra)).to_mech();
-        let ra_ticks = mech_ha.to_ticks(Cpr::new(params.cpr_ra)).value();
-        let dec_ticks = Dec::new(dec)
-            .to_mech()
-            .to_ticks(Cpr::new(params.cpr_dec))
-            .value();
+        // Sync writes the encoder pair for the side the mount is
+        // *physically* on — classified from the Dec encoder, exactly as
+        // `SideOfPier` classifies it — and validates the target against
+        // that side's `mech_HA`. Assuming the pre-flip side
+        // unconditionally (as this did until 2026-09) refuses every
+        // western target while the mount is counterweight-up, because
+        // their pre-flip `mech_HA` sits in a CW exclusion zone the
+        // mount is nowhere near; worse, it accepts the eastern ones and
+        // writes a pre-flip encoder pair, silently re-labelling a
+        // flipped mount as unflipped so every later slew plans from a
+        // false position. See the design doc's
+        // [§"Sync and pier side"](../../../../docs/services/star-adventurer-gti.md#sync-and-pier-side).
+        //
+        // Rejecting a sync that would put the encoder outside the safe
+        // mechanical envelope stays: a bad sync lets the *next*
+        // tracking step push the OTA into a hard stop.
+        let snap = self.manager.snapshot().await;
+        let current_side = side_of_pier_calc(
+            DecTicks::new(snap.dec.position_ticks),
+            Cpr::new(params.cpr_dec),
+            self.config.site_latitude_deg,
+        );
+        let pre_flip_side = pre_flip_side_for_latitude(self.config.site_latitude_deg);
+        // An `Unknown` side (no Dec CPR) is treated as pre-flip — the
+        // same fallback the rest of the driver takes when the encoder
+        // classification is unavailable.
+        let sync_is_flipped = current_side != pre_flip_side && current_side != PierSide::Unknown;
+        self.check_within_safe_envelope(ra, dec, lst.value(), sync_is_flipped)?;
+        let (ra_ticks, dec_ticks) = if sync_is_flipped {
+            target_encoder_flipped(
+                Ra::new(ra),
+                Dec::new(dec),
+                lst,
+                Cpr::new(params.cpr_ra),
+                Cpr::new(params.cpr_dec),
+            )
+        } else {
+            target_encoder_normal(
+                Ra::new(ra),
+                Dec::new(dec),
+                lst,
+                Cpr::new(params.cpr_ra),
+                Cpr::new(params.cpr_dec),
+            )
+        };
+        let (ra_ticks, dec_ticks) = (ra_ticks.value(), dec_ticks.value());
         self.send(Command::SetPosition {
             axis: Axis::Ra,
             ticks: ra_ticks,
@@ -590,10 +628,16 @@ impl Telescope for MountDevice {
             Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );
+        // The selector needs where the mount stands, not just which
+        // side it is on: a side is only usable when an RA sweep to it
+        // clears the CW exclusion zone.
+        let current_mech_ha =
+            RaTicks::new(snap.ra.position_ticks).to_mech_ha(Cpr::new(params.cpr_ra));
         let chosen_side = select_pier_side_for_target(
             Ra::new(ra),
             lst,
             current_side,
+            current_mech_ha,
             &self.config.flip_policy,
             self.config.cw_exclusion_zone.bounds(),
             self.config.site_latitude_deg,
