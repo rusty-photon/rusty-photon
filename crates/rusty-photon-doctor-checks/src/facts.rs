@@ -161,6 +161,93 @@ impl HardwareFacts {
     }
 }
 
+/// A USB inventory staged from a JSON document instead of read from the
+/// host — the simulation-build affordance in `docs/services/doctor.md`.
+///
+/// Parsed rather than validated: the two states a collector can produce are
+/// the two this type has, so a document describing neither is rejected at the
+/// boundary and never reaches a consumer as a plausible-looking inventory.
+#[cfg(feature = "mock")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StagedUsbInventory {
+    /// The bus as staged. Every device carries a port, because a gathered
+    /// candidate without one is an inventory failure, not a device.
+    Devices(Vec<UsbDevice>),
+    /// A scan that failed, carrying the reason a collector would have given.
+    Unavailable(String),
+}
+
+/// The wire shape of a staged inventory: the two inventory fields of
+/// [`HardwareFacts`] under their own names, so the `hardware` object of a
+/// facts file captured from a real rig stages unchanged. Every other key in
+/// that object is ignored.
+#[cfg(feature = "mock")]
+#[derive(Debug, Deserialize)]
+struct StagedDocument {
+    #[serde(default)]
+    usb: Vec<UsbDevice>,
+    #[serde(default)]
+    usb_unavailable: Option<String>,
+}
+
+#[cfg(feature = "mock")]
+impl TryFrom<StagedDocument> for StagedUsbInventory {
+    type Error = String;
+
+    fn try_from(document: StagedDocument) -> Result<Self, Self::Error> {
+        match document.usb_unavailable {
+            // A failed scan has no opinion about what is on the bus, so the
+            // gatherer pairs the marker with an empty list. A document
+            // claiming both would let a scenario assert on devices that a
+            // failed scan could never have reported.
+            Some(_) if !document.usb.is_empty() => Err(
+                "names both a failure and a device list; a failed scan reports no devices"
+                    .to_string(),
+            ),
+            Some(reason) => Ok(Self::Unavailable(reason)),
+            None => {
+                if let Some(portless) = document.usb.iter().find(|d| d.port.is_none()) {
+                    return Err(format!(
+                        "device {}:{} has no port; a candidate without one is an inventory \
+                         failure, so stage `usb_unavailable` to get that outcome",
+                        portless.vendor, portless.product
+                    ));
+                }
+                Ok(Self::Devices(document.usb))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "mock")]
+impl StagedUsbInventory {
+    /// Read a staged inventory from a JSON file.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the file cannot be read, is not valid JSON, or
+    /// describes a state no collector could produce.
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            format!(
+                "could not read staged USB inventory {}: {e}",
+                path.display()
+            )
+        })?;
+        let document: StagedDocument = serde_json::from_str(&content)
+            .map_err(|e| format!("staged USB inventory {} is invalid: {e}", path.display()))?;
+        Self::try_from(document).map_err(|e| format!("staged USB inventory {} {e}", path.display()))
+    }
+
+    /// The collector-shaped result this document stands in for.
+    fn into_scan(self) -> Result<Vec<UsbDevice>, String> {
+        match self {
+            Self::Devices(devices) => Ok(devices),
+            Self::Unavailable(reason) => Err(reason),
+        }
+    }
+}
+
 /// The request-scoped part of a gather: which paths to `stat`, which udev
 /// rule files to read, which user to look up — derived by callers from
 /// their catalog and configs.
@@ -180,6 +267,10 @@ pub struct ProbeRequest {
     pub udev_rules: Vec<String>,
     /// The service user to look up.
     pub service_user: String,
+    /// A staged USB inventory replacing the host scan. `None` — always, in a
+    /// release build, where the field does not exist — means scan the host.
+    #[cfg(feature = "mock")]
+    pub staged_usb: Option<StagedUsbInventory>,
 }
 
 /// Gather hardware facts from the running host, read-only. Probe failures
@@ -203,10 +294,6 @@ pub fn gather(req: &ProbeRequest) -> HardwareFacts {
     }
     #[cfg(target_os = "linux")]
     {
-        record_usb(
-            &mut facts,
-            linux::usb_inventory(Path::new("/sys/bus/usb/devices")),
-        );
         facts.udev_rules = linux::udev_rules(
             &[
                 Path::new("/etc/udev/rules.d"),
@@ -217,26 +304,48 @@ pub fn gather(req: &ProbeRequest) -> HardwareFacts {
             &req.udev_rules,
         );
     }
-    #[cfg(target_os = "macos")]
-    {
-        record_usb(&mut facts, macos::usb_inventory());
-    }
     #[cfg(windows)]
     {
         facts.com_ports = windows::com_ports();
-        record_usb(&mut facts, windows::usb_inventory());
     }
+    // Staging **replaces** the scan rather than merging with it: a staged run
+    // makes no platform query at all, so its result cannot depend on what is
+    // plugged into the machine running it.
+    #[cfg(feature = "mock")]
+    let scan = req
+        .staged_usb
+        .clone()
+        .map_or_else(host_usb_scan, StagedUsbInventory::into_scan);
+    #[cfg(not(feature = "mock"))]
+    let scan = host_usb_scan();
+    record_usb(&mut facts, scan);
     facts
+}
+
+/// The host's own USB inventory, from whichever collector this platform has.
+fn host_usb_scan() -> Result<Vec<UsbDevice>, String> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::usb_inventory(Path::new("/sys/bus/usb/devices"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::usb_inventory()
+    }
+    #[cfg(windows)]
+    {
+        windows::usb_inventory()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    {
+        Ok(Vec::new())
+    }
 }
 
 /// Land a collector's result on the facts, keeping "the scan failed"
 /// distinct from "the bus is empty". On failure the inventory is left
 /// empty *and* marked unavailable, so a consumer that ignores the marker
 /// gets no devices rather than a plausible-looking partial list.
-#[cfg_attr(
-    not(any(target_os = "linux", target_os = "macos", windows)),
-    expect(dead_code, reason = "no collector on this platform")
-)]
 fn record_usb(facts: &mut HardwareFacts, scan: Result<Vec<UsbDevice>, String>) {
     match scan {
         Ok(devices) => facts.usb = devices,
@@ -1106,6 +1215,142 @@ mod tests {
         let listing = "USB\\VID_ZZ\tBroken\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)\n";
         super::windows::parse_pnp_listing(listing)
             .expect_err("a candidate whose vendor cannot be read fails the scan");
+    }
+
+    /// The staged USB inventory — docs/services/doctor.md, "USB inventory".
+    #[cfg(feature = "mock")]
+    mod staged_inventory {
+        use std::path::{Path, PathBuf};
+
+        use super::super::{gather, ProbeRequest, StagedUsbInventory};
+
+        fn stage(dir: &Path, json: &str) -> PathBuf {
+            let path = dir.join("inventory.json");
+            std::fs::write(&path, json).unwrap();
+            path
+        }
+
+        fn request(staged: StagedUsbInventory) -> ProbeRequest {
+            ProbeRequest {
+                service_user: "rusty-photon".to_string(),
+                staged_usb: Some(staged),
+                ..Default::default()
+            }
+        }
+
+        /// Replaces the scan rather than adding to it: the gathered bus is
+        /// exactly what was staged, on a dev box whose own bus is not.
+        #[test]
+        fn test_a_staged_device_list_replaces_the_host_scan() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [ { "vendor": "1618", "product": "c601",
+                     "model": "QHY5IIISeries_IO",
+                     "port": "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)" } ] }"#,
+            );
+            let facts = gather(&request(StagedUsbInventory::load(&path).unwrap()));
+            assert_eq!(facts.usb.len(), 1);
+            assert_eq!(facts.usb[0].vendor, "1618");
+            assert_eq!(
+                facts.usb[0].port.as_deref(),
+                Some("PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)")
+            );
+            assert!(facts.usb_unavailable.is_none());
+            assert_eq!(facts.usb_present("1618", Some("c601"), None), Some(true));
+        }
+
+        /// A staged failure is a failure, not an idle bus: the marker
+        /// survives to the facts and the presence question answers nothing.
+        #[test]
+        fn test_a_staged_failure_reaches_the_facts_as_unavailable() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb_unavailable": "system_profiler did not finish within 10s" }"#,
+            );
+            let facts = gather(&request(StagedUsbInventory::load(&path).unwrap()));
+            assert!(facts.usb.is_empty());
+            assert_eq!(
+                facts.usb_unavailable.as_deref(),
+                Some("system_profiler did not finish within 10s")
+            );
+            assert_eq!(facts.usb_present("1618", None, None), None);
+        }
+
+        /// A failed scan has no opinion about what is on the bus, so a
+        /// document claiming both states describes nothing a collector could
+        /// have produced.
+        #[test]
+        fn test_a_document_naming_both_a_failure_and_a_device_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb_unavailable": "sysfs unreadable",
+                     "usb": [ { "vendor": "1618", "product": "c601", "port": "1-4.2" } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(
+                error.contains("a failed scan reports no devices"),
+                "{error}"
+            );
+        }
+
+        /// A gathered candidate without a port is an inventory failure, so
+        /// staging one would let a scenario assert on a state the runtime
+        /// rejects. The message says what to stage instead.
+        #[test]
+        fn test_a_staged_device_without_a_port_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [ { "vendor": "1618", "product": "c601" } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("1618:c601"), "{error}");
+            assert!(error.contains("usb_unavailable"), "{error}");
+        }
+
+        /// The document is `HardwareFacts`' own field names, so the
+        /// `hardware` object of a facts file captured from a real rig stages
+        /// as it stands — every other key in it ignored.
+        #[test]
+        fn test_a_captured_hardware_object_stages_unchanged() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "paths": {}, "com_ports": [], "groups": { "plugdev": 46 },
+                     "udev_rules": {},
+                     "usb": [ { "vendor": "03c3", "product": "662b",
+                                "model": "ASI662MC", "port": "1-4.2",
+                                "serial": null } ] }"#,
+            );
+            let staged = StagedUsbInventory::load(&path).unwrap();
+            assert_eq!(
+                staged,
+                StagedUsbInventory::Devices(vec![super::super::UsbDevice {
+                    vendor: "03c3".to_string(),
+                    product: "662b".to_string(),
+                    model: Some("ASI662MC".to_string()),
+                    port: Some("1-4.2".to_string()),
+                    serial: None,
+                }])
+            );
+        }
+
+        /// A staging path that cannot be read is a broken scenario, never a
+        /// simulated bus failure — it must not be mistakable for one.
+        #[test]
+        fn test_an_absent_file_names_the_path_it_could_not_read() {
+            let dir = tempfile::tempdir().unwrap();
+            let missing = dir.path().join("nothing.json");
+            let error = StagedUsbInventory::load(&missing).unwrap_err();
+            assert!(
+                error.contains("could not read staged USB inventory"),
+                "{error}"
+            );
+            assert!(error.contains("nothing.json"), "{error}");
+        }
     }
 
     #[test]

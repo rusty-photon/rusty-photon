@@ -17,6 +17,44 @@ rust_library(
     deps = all_crate_deps(normal = True),
 )
 
+# The staged USB inventory exists only under the `mock` feature, and features
+# are a compile-time concept — so covering it under Bazel takes a lib twin
+# built with the feature on, and its own test. Same shape as doctor's
+# `doctor_lib_mock`, which exists for `--platform-facts` for the same reason.
+rust_library(
+    name = "rusty-photon-doctor-checks_mock",
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_features = ["mock"],
+    crate_name = "rusty_photon_doctor_checks",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True),
+)
+
+rust_test(
+    name = "rusty-photon-doctor-checks_mock_unit_test",
+    size = "small",
+    # Same reason as the default-feature suite below: the gather() test's
+    # Windows leg shells out to PowerShell twice.
+    timeout = "moderate",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    crate = ":rusty-photon-doctor-checks_mock",
+    crate_features = ["mock"],
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
 rust_test(
     name = "rusty-photon-doctor-checks_unit_test",
     size = "small",

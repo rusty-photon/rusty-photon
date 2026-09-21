@@ -8,6 +8,14 @@ repository.workspace = true
 rust-version.workspace = true
 description = "No-SDK hardware facts and predicates shared by rusty-photon-doctor and the per-service doctor subcommands"
 
+[features]
+default = []
+# Enables the staged USB inventory: a JSON document replaces the host scan so a
+# simulation build can exercise USB-port device claims with no hardware present.
+# Same convention as doctor's own `mock` feature, and absent from release builds
+# for the same reason. See docs/services/doctor.md "USB inventory".
+mock = []
+
 [lints]
 workspace = true
 

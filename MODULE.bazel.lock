@@ -494,7 +494,7 @@
           "FILE:@@//crates/rp-targets/Cargo.toml ff0446fd2809f93a7b768b469bbd11039e7996e16e9502a57100ea660460eca7",
           "FILE:@@//crates/rusty-photon-camera-core/Cargo.toml 4259347177a843b05b68370c329f711549dd3c6074bbe287365e1647d701e272",
           "FILE:@@//crates/rusty-photon-config/Cargo.toml 40c0e84eb8fbf9124096af9669e28d99f833e0318b5124c20f71830f92f428ef",
-          "FILE:@@//crates/rusty-photon-doctor-checks/Cargo.toml 11062f39accca89ea62aaad729ce52667b8fb873c5422ebd25fec6289a8e9e1b",
+          "FILE:@@//crates/rusty-photon-doctor-checks/Cargo.toml 2035daad05ded39a9640d582df4c908eabc92954873939f377f9eb5f4af001bd",
           "FILE:@@//crates/rusty-photon-driver/Cargo.toml 73fd02f2c419c991547eec7f83ce1b70b8e71d1edcf2f52165f3d536a13b3fec",
           "FILE:@@//crates/rusty-photon-shared-transport/Cargo.toml 810ac9e20f13d883bfcbdf868157b7c199f4881f2bac3ed7d937139746bb0f46",
           "FILE:@@//crates/rusty-photon-rolling-stats/Cargo.toml dc4f7caf1102d1779240c8f63a0088108ac98d84fffa7152833f3f4196e4adf5",

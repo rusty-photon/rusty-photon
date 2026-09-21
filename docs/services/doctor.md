@@ -310,6 +310,53 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   a wedged child would hang startup rather than produce a result at all.
   Both are run under a deadline, the child killed on expiry, and expiry
   maps to the same unavailable-inventory state as a non-zero exit.
+
+  **A simulation build stages the inventory instead of scanning.** A camera
+  driver built with its `simulation` feature fabricates cameras that no host
+  scan can see, so anything selecting devices by USB port would match none of
+  them — and bypassing that selection for simulation builds would leave the
+  very join the tests exist to cover untested. The crate's `mock` feature
+  therefore enables a **staged inventory**: a JSON document that replaces the
+  collector's result wholesale. It is the same affordance as doctor's own
+  `--platform-facts` below, at the level a single driver needs, and like that
+  flag it does not exist in release builds.
+
+  The document is the two inventory fields of `HardwareFacts` under their own
+  names, so the `hardware` object of a facts file captured from a real rig can
+  be staged unchanged rather than hand-written:
+
+  ```json
+  {
+    "usb": [
+      {
+        "vendor": "1618",
+        "product": "c601",
+        "model": "QHY5IIISeries_IO",
+        "port": "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)"
+      }
+    ]
+  }
+  ```
+
+  **A staged document cannot express a state a real collector could not
+  produce**, which is what keeps the affordance from proving things that
+  cannot happen:
+
+  - `usb_unavailable` set *and* devices listed is rejected. A scan that
+    failed has no opinion about what is on the bus, so the gatherer pairs
+    the marker with an empty list; a document claiming both would let a test
+    assert on devices from a failed scan.
+  - A listed device with no `port` is rejected. A gathered candidate without
+    one is itself an inventory failure, so a scenario wanting that outcome
+    stages `usb_unavailable` with the reason and gets the same result the
+    collector would have produced.
+
+  Staging **replaces** the scan rather than merging with it: a staged run
+  makes no platform query at all, so its outcome does not depend on what is
+  plugged into the machine running it. The crate owns the document and its
+  rules; a driver exposes it as a hidden `--usb-inventory <file>` flag under
+  its own `simulation` feature as it gains device claims. No driver reads the
+  USB inventory today — doctor is its only consumer.
 - **Serial ports** (Windows) — `[System.IO.Ports.SerialPort]::GetPortNames()`.
 - **Identity** — the `rusty-photon` user's uid/gid, its account-level
   supplementary groups (the `/etc/group` member lists that name it), and
