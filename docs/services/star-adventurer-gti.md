@@ -1427,8 +1427,20 @@ that window, not close it — the reads between the test and the `:E`
 writes are `await` points, so a slew could start in between. The
 reservation's `compare_exchange` makes it exclusive: whichever
 operation gets there first, the other is refused rather than
-interleaved. A sync mutates the axes' frame, so it belongs under the
-same exclusion as the operations that mutate their position. The
+interleaved.
+
+The reservation covers slews and `Park` — the operations that own an
+axis for a stretch. **PulseGuide is deliberately outside it**: a pulse
+must not make `Slewing` read `true`, which is why `IsPulseGuiding`
+exists as a separate flag, so putting guiding under the same
+reservation would trade one wrong answer for another. Sync therefore
+cancels in-flight pulses (clearing `pulse_guiding.{ra,dec}`, which the
+pulse watcher observes and bails on) rather than excluding them, and
+the cancel leaves a window: the axis can still be turning at the
+shifted guide rate when the `:E` lands, until the watcher notices and
+restores. Syncing on top of an active guide pulse is therefore not a
+supported sequence — an autoguider that is pulsing is not a client
+that should also be re-anchoring the frame. The
 reservation is taken before the in-flight pulse-guide cancel (so a
 refused sync has no side effects) and released when the call returns —
 unlike a slew, a sync has no watcher to hand it off to. While it is
