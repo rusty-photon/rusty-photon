@@ -351,9 +351,14 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
     stages `usb_unavailable` with the reason and gets the same result the
     collector would have produced.
 
-  Staging **replaces** the scan rather than merging with it: a staged run
-  makes no platform query at all, so its outcome does not depend on what is
-  plugged into the machine running it. The crate owns the document and its
+  Staging **replaces** the USB scan rather than merging with it: a staged
+  run makes no USB platform query at all, so the inventory does not depend
+  on what is plugged into the machine running it. It bypasses nothing else —
+  the same gather still stats the requested paths and reads groups, udev
+  rules and COM ports from the host, so only the inventory is staged. (A
+  scenario that needs the rest staged too is describing doctor's
+  `--platform-facts`, which stages the whole facts document.) The crate owns
+  the document and its
   rules; a driver exposes it as a hidden `--usb-inventory <file>` flag under
   its own `simulation` feature as it gains device claims. No driver reads the
   USB inventory today — doctor is its only consumer.

@@ -308,9 +308,10 @@ pub fn gather(req: &ProbeRequest) -> HardwareFacts {
     {
         facts.com_ports = windows::com_ports();
     }
-    // Staging **replaces** the scan rather than merging with it: a staged run
-    // makes no platform query at all, so its result cannot depend on what is
-    // plugged into the machine running it.
+    // Staging replaces the USB scan rather than merging with it, so the
+    // inventory cannot depend on what is plugged into the machine running
+    // it. Only the inventory: everything gathered above still reads the
+    // host.
     #[cfg(feature = "mock")]
     let scan = req
         .staged_usb
@@ -1267,6 +1268,25 @@ mod tests {
             );
             assert!(facts.usb_unavailable.is_none());
             assert_eq!(facts.usb_present("1618", Some("c601"), None), Some(true));
+        }
+
+        /// Staging bypasses the inventory and nothing else: the same
+        /// gather still answers what the request asked about the host, so a
+        /// scenario cannot read a staged inventory as staged facts.
+        #[test]
+        fn test_staging_the_inventory_leaves_the_rest_of_the_gather_alone() {
+            let dir = tempfile::tempdir().unwrap();
+            let probed = dir.path().join("probed");
+            std::fs::write(&probed, b"x").unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [ { "vendor": "1618", "product": "c601", "port": "1-4.2" } ] }"#,
+            );
+            let mut req = request(StagedUsbInventory::load(&path).unwrap());
+            req.paths = vec![probed.clone()];
+            let facts = gather(&req);
+            assert_eq!(facts.usb.len(), 1);
+            assert!(facts.paths.contains_key(probed.to_str().unwrap()));
         }
 
         /// A staged failure is a failure, not an idle bus: the marker
