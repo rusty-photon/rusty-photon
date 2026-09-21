@@ -480,7 +480,11 @@ mod linux {
 ///
 /// Extracted shape, not a general facility: see the tracking issue for
 /// folding this and `plate-solver`'s `spawn_with_deadline` into one crate.
-#[cfg(any(target_os = "macos", windows))]
+// `test` joins the platform gates so the deadline logic is compiled —
+// and therefore linted and exercised — on every CI leg, not only the
+// two that ship it. The same reason the `windows` parsers below are
+// gated that way.
+#[cfg(any(target_os = "macos", windows, test))]
 mod bounded {
     use std::io::Read;
     use std::process::{Child, Command, Stdio};
@@ -546,11 +550,16 @@ mod bounded {
     /// a process which lingers after producing its output cannot hang the
     /// gather either.
     fn reap(child: &mut Child) -> Result<std::process::ExitStatus, String> {
-        let until = Instant::now() + REAP_GRACE;
+        // Measured as elapsed time rather than a precomputed instant: adding
+        // to an `Instant` can overflow, and there is no sensible answer for a
+        // clock that cannot represent one second from now.
+        let waiting_since = Instant::now();
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => return Ok(status),
-                Ok(None) if Instant::now() < until => thread::sleep(Duration::from_millis(10)),
+                Ok(None) if waiting_since.elapsed() < REAP_GRACE => {
+                    thread::sleep(Duration::from_millis(10));
+                }
                 Ok(None) => {
                     kill(child);
                     return Err("child produced output but did not exit".to_string());
@@ -1106,6 +1115,61 @@ mod tests {
         let listing = "USB\\VID_ZZ\tBroken\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)\n";
         super::windows::parse_pnp_listing(listing)
             .expect_err("a candidate whose vendor cannot be read fails the scan");
+    }
+
+    /// The success path, and with it `reap`: a child that writes and exits
+    /// hands back exactly what it wrote.
+    #[cfg(unix)]
+    #[test]
+    fn test_bounded_capture_returns_what_the_child_wrote() {
+        let output = bounded::capture(
+            std::process::Command::new("/bin/sh").args(["-c", "printf hello"]),
+            bounded::DEADLINE,
+        )
+        .unwrap();
+        assert_eq!(output, b"hello");
+    }
+
+    /// The reason the deadline is on the *drain* and not on the exit: a child
+    /// whose output exceeds the pipe buffer blocks writing until someone
+    /// reads, so a wait-then-read implementation deadlocks here while this
+    /// one returns the whole 200 kB.
+    #[cfg(unix)]
+    #[test]
+    fn test_bounded_capture_drains_more_than_one_pipe_buffer() {
+        let output = bounded::capture(
+            std::process::Command::new("/bin/sh").args(["-c", "head -c 200000 /dev/zero"]),
+            bounded::DEADLINE,
+        )
+        .unwrap();
+        assert_eq!(output.len(), 200_000);
+    }
+
+    /// A child that fails is a failed scan, not a short one — its partial
+    /// output must never reach a caller as an inventory.
+    #[cfg(unix)]
+    #[test]
+    fn test_bounded_capture_rejects_a_nonzero_exit_and_its_output() {
+        let error = bounded::capture(
+            std::process::Command::new("/bin/sh").args(["-c", "printf partial; exit 3"]),
+            bounded::DEADLINE,
+        )
+        .unwrap_err();
+        assert!(error.contains("exited with"), "{error}");
+    }
+
+    /// The wedged-collector case the deadline exists for: the call returns an
+    /// error instead of hanging startup, and the child is killed rather than
+    /// orphaned.
+    #[cfg(unix)]
+    #[test]
+    fn test_bounded_capture_gives_up_on_a_child_that_never_finishes() {
+        let error = bounded::capture(
+            std::process::Command::new("/bin/sh").args(["-c", "sleep 30"]),
+            std::time::Duration::from_secs(2),
+        )
+        .unwrap_err();
+        assert!(error.contains("did not finish within"), "{error}");
     }
 
     #[test]

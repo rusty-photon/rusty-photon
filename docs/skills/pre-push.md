@@ -230,6 +230,31 @@ no clippy, and its `-Dwarnings` is rustc's set, which never evaluates
 that hole off-PR (#984): a violation lands on main and surfaces within minutes
 of the merge (push) or overnight (schedule, via the `check-nightly` tracking
 issue) rather than failing only a Windows/macOS contributor's pre-commit hook.
+
+**Run it locally when your change adds OS-gated code — you do not need those
+hosts.** clippy only *checks*: it neither links nor runs tests, so a crate
+without C dependencies lints for another target from the Linux dev box, and
+reproduces a `clippy-os` failure exactly.
+
+```sh
+rustup target add x86_64-pc-windows-msvc aarch64-apple-darwin
+cargo clippy --target x86_64-pc-windows-msvc -p <crate> \
+    --all-targets --all-features -- -D warnings
+cargo clippy --target aarch64-apple-darwin -p <crate> \
+    --all-targets --all-features -- -D warnings
+```
+
+Scope it to the crates you touched: `--workspace` fails locally at the first
+build script that compiles C for the host it cannot target (`ring`,
+`aws-lc-sys`, `erfars`). Since `clippy-os` is off-PR, skipping this means the
+violation is found by the push to main — after the merge, on everyone's tree.
+
+An alternative that needs no cross-target setup, for a module whose logic is
+platform-independent: gate it `#[cfg(any(windows, test))]` (or the macOS
+equivalent) so the ubuntu `--all-targets` pass compiles and lints it on every
+PR. `rusty-photon-doctor-checks`'s USB collectors do this for their parsers
+and their bounded-subprocess helper.
+
 **Every clippy job runs two passes** (#988): `--all-features` turns `mock` /
 `simulation` ON and thereby cfgs OUT the real-hardware production slices behind
 `not(feature = "mock")` / `not(feature = "simulation")`. The second pass —
