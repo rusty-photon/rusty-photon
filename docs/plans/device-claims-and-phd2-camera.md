@@ -91,7 +91,7 @@ recorded here so the option is not lost.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | C0 | This plan | Not started | |
-| C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Spike done except a different-port move (see D2); `port`/`serial` extraction and the failed-vs-empty inventory landed | `chore/device-claims-c1-spike` |
+| C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Spike done except a different-port move (see D2); `port`/`serial` extraction, the failed-vs-empty inventory, and the staged synthetic inventory landed | `chore/device-claims-c1-spike`, `chore/device-claims-c1-synthetic-inventory` |
 | C2 | `claims` schema + `svbony-camera` — the easy case, proves schema, join and doctor output | Not started | |
 | C3 | `claims` in `zwo-camera` | Not started | |
 | C4 | `claims` in `qhy-camera` + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup entirely** (the split alone narrows the tenet-3 problem, it does not discharge it) | Not started | |
@@ -579,9 +579,23 @@ not carry a second name for the same device that could fall out of date.
    see, and the BDD and ConformU binaries depend on those being
    registered. Under `all` — their configuration — nothing changes. For
    a simulation build that wants to exercise `include`/`exclude`, C1–C4
-   inject a **synthetic inventory** alongside the synthetic cameras
+   stage a **synthetic inventory** alongside the synthetic cameras
    rather than bypassing the filter, so the tests exercise the real join
    rather than a special case around it.
+
+   **C1 built the mechanism; C2–C4 use it.** A JSON document replaces the
+   collector's result wholesale under the shared crate's `mock` feature —
+   it is the two inventory fields of `HardwareFacts` under their own
+   names, so a `hardware` object captured from a real rig stages
+   unchanged instead of being invented. It cannot express a state a
+   collector could not produce: a failure paired with devices, or a
+   device with no port, is rejected at the boundary rather than reaching
+   a consumer as a plausible-looking bus. Each driver exposes it as a
+   hidden `--usb-inventory <file>` flag under its own `simulation`
+   feature as it gains claims — the same affordance shape as doctor's
+   `--platform-facts`, and absent from release builds for the same
+   reason. The contract is in
+   [doctor.md](../services/doctor.md) under "USB inventory".
 5. **A claimed port with nothing in it** registers nothing, logs `warn!`,
    and produces a *soft* doctor finding. Never a startup failure: a
    powered-down hub is a normal Tuesday, and a driver that refuses to

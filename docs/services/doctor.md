@@ -310,6 +310,105 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   a wedged child would hang startup rather than produce a result at all.
   Both are run under a deadline, the child killed on expiry, and expiry
   maps to the same unavailable-inventory state as a non-zero exit.
+
+  **A simulation build stages the inventory instead of scanning.** A camera
+  driver built with its `simulation` feature fabricates cameras that no host
+  scan can see, so anything selecting devices by USB port would match none of
+  them — and bypassing that selection for simulation builds would leave the
+  very join the tests exist to cover untested. The crate's `mock` feature
+  therefore enables a **staged inventory**: a JSON document that replaces the
+  collector's result wholesale. It is the same affordance as doctor's own
+  `--platform-facts` below, at the level a single driver needs, and like that
+  flag it does not exist in release builds.
+
+  The document is the two inventory fields of `HardwareFacts` under their own
+  names, so the `hardware` object of a facts file captured from a real rig can
+  be staged unchanged rather than hand-written:
+
+  ```json
+  {
+    "usb": [
+      {
+        "vendor": "1618",
+        "product": "c601",
+        "model": "QHY5IIISeries_IO",
+        "port": "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)"
+      }
+    ]
+  }
+  ```
+
+  **A staged document cannot express a state a real collector could not
+  produce**, which is what keeps the affordance from proving things that
+  cannot happen:
+
+  - `usb_unavailable` set *and* devices listed is rejected. A scan that
+    failed has no opinion about what is on the bus, so the gatherer pairs
+    the marker with an empty list; a document claiming both would let a test
+    assert on devices from a failed scan.
+  - A listed device with no `port` is rejected. A gathered candidate without
+    one is itself an inventory failure, so a scenario wanting that outcome
+    stages `usb_unavailable` with the reason and gets the same result the
+    collector would have produced.
+  - A listed device with no `vendor` or no `product` is rejected. A candidate
+    is a candidate *because* it has a vendor id, and an unreadable product
+    fails the scan, so a collector reports both or reports nothing.
+  - A failure with no reason is rejected, because doctor prints the reason to
+    send an operator at the host fault rather than at a cable.
+  - `"usb": null` is rejected. It is neither an empty bus nor an omitted
+    key, and no capture produces it — `HardwareFacts` holds `usb` as a
+    `Vec`, so a serialized one always carries a list. `"usb_unavailable":
+    null` is *not* rejected, and the asymmetry has a reason rather than
+    being an oversight: that field is an `Option`, so null there is how a
+    **successful** scan serializes, and refusing it would make a healthy
+    rig's own facts file unstageable.
+  - A document naming **neither** key is rejected. An empty bus stays
+    stageable — `"usb": []` is a state every collector can report, and it is
+    how a claimed port with nothing in it gets exercised — but it has to be
+    said out loud, so that a staging file which failed to be written cannot
+    read as an idle bus and let a scenario pass for the wrong reason.
+
+  **Blank counts as absent throughout**, and is the more dangerous of the
+  two: an empty `port` or `product` matches nothing while reading like a
+  device that simply did not match, where a missing key at least looks
+  missing. `product`, `port` and `serial` all carry `serde(default)`, so an
+  omitted key is silent rather than a parse error — the rejection is what
+  makes it loud.
+
+  **`model` and `serial` follow the same rule**: a blank one is rejected and
+  `null` is not. All three collectors return `None` for a descriptor they
+  could not read, so `""` describes no state any of them reaches — while
+  `null` describes one they reach constantly (on `rig2`, not one of the
+  three cameras publishes a USB serial), which is what keeps a captured
+  facts file stageable as it stands.
+
+  **`vendor` and `product` must be four lowercase hex digits**, the form
+  every collector reports: sysfs prints it, the Windows instance id is
+  lowercased as it is parsed, and the macOS reader accepts nothing else. The
+  mistake this catches is quiet and likely — `Get-PnpDevice` prints
+  `USB\VID_1618&PID_C601`, and an id copied from it compares unequal to
+  `c601` forever.
+
+  **A padded value is rejected too**, on every device field. Each collector
+  stores what the platform reported with nothing around it — the sysfs read
+  is trimmed, each `LocationPaths` element is trimmed before the `PCIROOT(`
+  one is selected, and a macOS location id is a single whitespace-split
+  token — so `" 1-4.2"` is a state none of them can reach, and it compares
+  unequal to `"1-4.2"`: the same silent no-match, just quieter than a blank.
+  Rejected rather than trimmed on the way in, because silently rewriting a
+  staged document hides the mistake instead of reporting it.
+
+  Staging **replaces** the USB scan rather than merging with it: a staged
+  run makes no USB platform query at all, so the inventory does not depend
+  on what is plugged into the machine running it. It bypasses nothing else —
+  the same gather still stats the requested paths and reads groups, udev
+  rules and COM ports from the host, so only the inventory is staged. (A
+  scenario that needs the rest staged too is describing doctor's
+  `--platform-facts`, which stages the whole facts document.) The crate owns
+  the document and its
+  rules; a driver exposes it as a hidden `--usb-inventory <file>` flag under
+  its own `simulation` feature as it gains device claims. No driver reads the
+  USB inventory today — doctor is its only consumer.
 - **Serial ports** (Windows) — `[System.IO.Ports.SerialPort]::GetPortNames()`.
 - **Identity** — the `rusty-photon` user's uid/gid, its account-level
   supplementary groups (the `/etc/group` member lists that name it), and
