@@ -28,6 +28,9 @@ use skywatcher_motor_protocol::codec::{
 };
 use skywatcher_motor_protocol::{Direction, ModeKind, Speed};
 use tokio::sync::Mutex;
+use tokio::time::Instant;
+
+use crate::units::sat_round_i32;
 
 /// Per-axis simulator state.
 #[derive(Debug, Clone, Copy)]
@@ -49,7 +52,18 @@ pub struct AxisSimState {
     /// derive it from physical state.
     pub blocked: bool,
     pub goto_target_ticks: i32,
+    /// Last `:I` payload: timer-counter units between motor steps. In
+    /// tracking mode the axis steps at `tmr_freq / step_period` steps
+    /// per second; `0` (no `:I` received yet) means no tracking motion.
     pub step_period: u32,
+    /// Instant the tracking-mode motion has been integrated up to.
+    /// `None` while the axis is not running in tracking mode; see
+    /// [`AxisSimState::advance_tracking`].
+    pub tracking_clock: Option<Instant>,
+    /// Fraction of a tick left over from the last integration, carried
+    /// so slow rates (a 0.5 × sidereal Dec pulse is ~17 ticks/s, a few
+    /// ticks per poll) accumulate instead of truncating to a lower rate.
+    pub tracking_tick_remainder: f64,
 }
 
 impl Default for AxisSimState {
@@ -64,6 +78,8 @@ impl Default for AxisSimState {
             blocked: false,
             goto_target_ticks: 0,
             step_period: 0,
+            tracking_clock: None,
+            tracking_tick_remainder: 0.0,
         }
     }
 }
@@ -95,26 +111,15 @@ impl AxisSimState {
         [nibble_to_hex(n0), nibble_to_hex(n1), nibble_to_hex(n2)]
     }
 
-    /// Advance position by one polling step.
-    ///
-    /// In **goto mode** the axis walks toward
+    /// Advance a **goto** by one polling step: the axis walks toward
     /// `goto_target_ticks` at a high-speed chunk and stops `running`
-    /// once it arrives. In **tracking mode** the axis
-    /// steps forever in the configured direction at a small per-poll
-    /// chunk — this is the sidereal-tracking analogue: on real
-    /// hardware the encoder advances continuously while tracking, so
-    /// the resulting `RightAscension` reading stays constant after a
-    /// slew completes. Without this, post-slew `RA` reads drift at
-    /// sidereal rate (one of the issues `ConformU`'s slew tests flag).
+    /// once it arrives. Gotos are poll-driven so a slew completes in a
+    /// handful of `:j` polls however fast the test runs.
     ///
-    /// The tracking-mode chunk is chosen to approximate one sidereal
-    /// "step" per `:j` poll given the default polling cadence
-    /// (200 ms) and CPR (3.6 M): sidereal rate ≈ 42 ticks/s, so
-    /// ~8 ticks per 200 ms poll. Picking 8 directly keeps things
-    /// simple and predictable across tests that override the polling
-    /// interval.
+    /// Tracking-mode motion is not poll-driven — it runs on the clock at
+    /// the rate `:I` set; see [`Self::advance_tracking`].
     fn advance_one_step(&mut self) {
-        if !self.running {
+        if !self.running || self.mode != ModeKind::Goto {
             return;
         }
         // Direction comes from the wire-level direction bit decoded
@@ -128,47 +133,86 @@ impl AxisSimState {
         // Faithful-mock matters here: if the driver issues a
         // direction-vs-delta mismatch we want the BDD suite to
         // catch it rather than silently auto-correct.
-        let dir: i32 = if self.direction == Direction::Ccw {
-            -1
+        let dir = self.direction_sign();
+        let chunk: i32 = if self.speed == Speed::Fast {
+            100_000
         } else {
-            1
+            100
         };
-        if self.mode == ModeKind::Goto {
-            let chunk: i32 = if self.speed == Speed::Fast {
-                100_000
-            } else {
-                100
-            };
-            let delta = self.goto_target_ticks.saturating_sub(self.position_ticks);
-            if delta == 0 {
-                self.running = false;
-                return;
-            }
-            // Step in the *commanded* direction, capped by the
-            // remaining distance only when the commanded direction
-            // moves us toward the target.
-            let toward_target = delta.signum() == dir;
-            let step = if toward_target {
-                chunk.min(delta.saturating_abs()).saturating_mul(dir)
-            } else {
-                chunk.saturating_mul(dir)
-            };
-            self.position_ticks = clamp_to_wire_range(self.position_ticks.saturating_add(step));
-            if toward_target && self.position_ticks == self.goto_target_ticks {
-                self.running = false;
-            }
-        } else {
-            // Tracking mode: free-run in the configured direction at
-            // a sidereal-ish chunk per poll. Never auto-stop — only
-            // `:K` / `:L` should clear `running`. Real GTi firmware
-            // saturates at the 24-bit encoder limit too, so a
-            // long-running tracking mock matches hardware behaviour.
-            const SIDEREAL_CHUNK_PER_POLL: i32 = 8;
-            self.position_ticks = clamp_to_wire_range(
-                self.position_ticks
-                    .saturating_add(SIDEREAL_CHUNK_PER_POLL.saturating_mul(dir)),
-            );
+        let delta = self.goto_target_ticks.saturating_sub(self.position_ticks);
+        if delta == 0 {
+            self.running = false;
+            return;
         }
+        // Step in the *commanded* direction, capped by the
+        // remaining distance only when the commanded direction
+        // moves us toward the target.
+        let toward_target = delta.signum() == dir;
+        let step = if toward_target {
+            chunk.min(delta.saturating_abs()).saturating_mul(dir)
+        } else {
+            chunk.saturating_mul(dir)
+        };
+        self.position_ticks = clamp_to_wire_range(self.position_ticks.saturating_add(step));
+        if toward_target && self.position_ticks == self.goto_target_ticks {
+            self.running = false;
+        }
+    }
+
+    const fn direction_sign(&self) -> i32 {
+        match self.direction {
+            Direction::Ccw => -1,
+            Direction::Cw => 1,
+        }
+    }
+
+    /// Bring **tracking-mode** motion up to `now`.
+    ///
+    /// A tracking axis free-runs in the commanded direction at the rate
+    /// the wire set, exactly as the firmware does: `:I` carries the
+    /// time between motor steps in timer-counter units, so the axis
+    /// steps at `tmr_freq / step_period` steps per second (times the
+    /// high-speed ratio in Tracking-Fast). Honouring the period is what
+    /// lets a test — or `ConformU` against the mock — observe a rate
+    /// error as an *angle* error: a period derived from the wrong axis'
+    /// CPR moves the axis the wrong distance in a given time.
+    ///
+    /// Sidereal tracking therefore holds `RightAscension` constant after
+    /// a slew, as on hardware, and a guide pulse moves the axis by
+    /// `guide rate × duration`.
+    ///
+    /// The clock starts at the first call that finds the axis running
+    /// in tracking mode and stops when it no longer is; `:K` / `:L` are
+    /// the only things that stop a tracking axis. Real `GTi` firmware
+    /// saturates at the 24-bit encoder limit, so the position clamps
+    /// rather than wrapping. A `step_period` of `0` (no `:I` yet) is no
+    /// motion.
+    fn advance_tracking(&mut self, now: Instant, tmr_freq: u32, high_speed_ratio: u32) {
+        if !self.running || self.mode != ModeKind::Tracking {
+            self.tracking_clock = None;
+            self.tracking_tick_remainder = 0.0;
+            return;
+        }
+        let Some(last) = self.tracking_clock.replace(now) else {
+            return;
+        };
+        if self.step_period == 0 {
+            return;
+        }
+        let gearing = if self.speed == Speed::Fast {
+            f64::from(high_speed_ratio)
+        } else {
+            1.0
+        };
+        let steps_per_second = f64::from(tmr_freq) / f64::from(self.step_period) * gearing;
+        let elapsed = now.saturating_duration_since(last).as_secs_f64();
+        let ticks = steps_per_second * elapsed + self.tracking_tick_remainder;
+        let whole = ticks.floor();
+        self.tracking_tick_remainder = ticks - whole;
+        self.position_ticks = clamp_to_wire_range(
+            self.position_ticks
+                .saturating_add(sat_round_i32(whole).saturating_mul(self.direction_sign())),
+        );
     }
 }
 
@@ -285,6 +329,28 @@ impl MockMountState {
     /// Apply a `:cmd<axis><payload?>\r` request frame to the simulator,
     /// updating state and pushing the reply onto [`pending_replies`].
     fn process_command(&mut self, request: &[u8]) {
+        // The simulated motors run on the clock, not on the wire: bring
+        // both axes up to the present before the frame acts on them, so
+        // a `:K` stops an axis where it has got to and an on-the-fly
+        // `:I` changes the rate from this instant. The second pass
+        // starts the clock for an axis this frame just set running
+        // (for every other axis no time has elapsed since the first).
+        let now = Instant::now();
+        self.advance_tracking(now);
+        self.dispatch_command(request);
+        self.advance_tracking(now);
+    }
+
+    /// Integrate tracking-mode motion on both axes up to `now`; see
+    /// [`AxisSimState::advance_tracking`].
+    fn advance_tracking(&mut self, now: Instant) {
+        self.ra
+            .advance_tracking(now, self.tmr_freq, self.high_speed_ratio_ra);
+        self.dec
+            .advance_tracking(now, self.tmr_freq, self.high_speed_ratio_dec);
+    }
+
+    fn dispatch_command(&mut self, request: &[u8]) {
         self.command_log.push(request.to_vec());
         debug_assert!(request.len() >= 3, "send_frame admits only :...\\r frames");
         let (Some(&cmd), Some(&axis)) = (request.get(1), request.get(2)) else {
@@ -317,7 +383,7 @@ impl MockMountState {
     }
 
     /// Inquiries (lowercase letters): reads that never mutate device
-    /// settings — except `:j`, whose poll drives the motion model.
+    /// settings — except `:j`, whose poll drives the goto motion model.
     fn inquiry_reply(&mut self, cmd: u8, axis: u8) -> Vec<u8> {
         match cmd {
             b'a' => {
@@ -346,7 +412,9 @@ impl MockMountState {
             }
             b'j' => {
                 if let Some(ax) = self.axis_mut(axis) {
-                    // Polling-driven motion: every `:j` advances one step.
+                    // Polling-driven goto motion: every `:j` advances
+                    // one step. Tracking motion is already current —
+                    // `process_command` integrated it up to this frame.
                     ax.advance_one_step();
                     let pos = ax.position_ticks;
                     ack_with(&encode_position(pos).expect("position in range"))
@@ -649,37 +717,133 @@ mod tests {
         factory.open().await.unwrap()
     }
 
-    #[test]
-    fn advance_one_step_clamps_at_wire_range_in_tracking_mode() {
-        // Regression test: a long-running tracking mock used to panic
-        // on the next `:j` poll once `position_ticks` drifted past
-        // `POSITION_MAX`, because `encode_position` rejects
-        // out-of-range values. The fix saturates the position at the
-        // 24-bit signed encoder boundary inside `advance_one_step`
-        // itself, matching how real GTi firmware behaves.
-        let mut s = AxisSimState {
+    /// A tracking axis stepping at 10 steps/s: `tmr_freq` 16 MHz over a
+    /// 1.6 M step period. Round numbers keep the expected tick counts
+    /// exact in `f64`.
+    const TMR_FREQ: u32 = 16_000_000;
+    const TEN_STEPS_PER_SECOND: u32 = 1_600_000;
+
+    fn tracking_axis(direction: Direction, position_ticks: i32) -> AxisSimState {
+        AxisSimState {
             running: true,
             mode: ModeKind::Tracking,
-            direction: Direction::Cw,
-            position_ticks: POSITION_MAX - 4,
+            direction,
+            position_ticks,
+            step_period: TEN_STEPS_PER_SECOND,
             ..Default::default()
-        };
+        }
+    }
+
+    #[test]
+    fn tracking_steps_at_tmr_freq_over_step_period() {
+        let t0 = Instant::now();
+        let mut s = tracking_axis(Direction::Cw, 0);
+        s.advance_tracking(t0, TMR_FREQ, 32);
+        s.advance_tracking(t0 + std::time::Duration::from_secs(10), TMR_FREQ, 32);
+        assert_eq!(s.position_ticks, 100);
+    }
+
+    #[test]
+    fn tracking_rate_halves_when_the_step_period_doubles() {
+        let t0 = Instant::now();
+        let mut s = tracking_axis(Direction::Cw, 0);
+        s.step_period = TEN_STEPS_PER_SECOND * 2;
+        s.advance_tracking(t0, TMR_FREQ, 32);
+        s.advance_tracking(t0 + std::time::Duration::from_secs(10), TMR_FREQ, 32);
+        assert_eq!(s.position_ticks, 50);
+    }
+
+    #[test]
+    fn tracking_ccw_steps_backwards() {
+        let t0 = Instant::now();
+        let mut s = tracking_axis(Direction::Ccw, 0);
+        s.advance_tracking(t0, TMR_FREQ, 32);
+        s.advance_tracking(t0 + std::time::Duration::from_secs(10), TMR_FREQ, 32);
+        assert_eq!(s.position_ticks, -100);
+    }
+
+    #[test]
+    fn tracking_fast_multiplies_the_rate_by_the_high_speed_ratio() {
+        let t0 = Instant::now();
+        let mut s = tracking_axis(Direction::Cw, 0);
+        s.speed = Speed::Fast;
+        s.advance_tracking(t0, TMR_FREQ, 32);
+        s.advance_tracking(t0 + std::time::Duration::from_secs(10), TMR_FREQ, 32);
+        assert_eq!(s.position_ticks, 3200);
+    }
+
+    #[test]
+    fn tracking_carries_fractional_ticks_between_updates() {
+        // 250 ms at 10 steps/s is 2.5 ticks. Truncating each update
+        // would yield 4 ticks over two updates; carrying the half tick
+        // yields the true 5.
+        let t0 = Instant::now();
+        let mut s = tracking_axis(Direction::Cw, 0);
+        s.advance_tracking(t0, TMR_FREQ, 32);
+        s.advance_tracking(t0 + std::time::Duration::from_millis(250), TMR_FREQ, 32);
+        assert_eq!(s.position_ticks, 2);
+        s.advance_tracking(t0 + std::time::Duration::from_millis(500), TMR_FREQ, 32);
+        assert_eq!(s.position_ticks, 5);
+    }
+
+    #[test]
+    fn tracking_without_a_step_period_does_not_move() {
+        let t0 = Instant::now();
+        let mut s = tracking_axis(Direction::Cw, 7);
+        s.step_period = 0;
+        s.advance_tracking(t0, TMR_FREQ, 32);
+        s.advance_tracking(t0 + std::time::Duration::from_secs(10), TMR_FREQ, 32);
+        assert_eq!(s.position_ticks, 7);
+    }
+
+    #[test]
+    fn a_stopped_axis_does_not_accrue_tracking_motion() {
+        // Time that passes while the axis is stopped must not be paid
+        // out as motion when it restarts: the clock restarts with it.
+        let t0 = Instant::now();
+        let mut s = tracking_axis(Direction::Cw, 0);
+        s.advance_tracking(t0, TMR_FREQ, 32);
+        s.running = false;
+        s.advance_tracking(t0 + std::time::Duration::from_secs(10), TMR_FREQ, 32);
+        s.running = true;
+        s.advance_tracking(t0 + std::time::Duration::from_secs(20), TMR_FREQ, 32);
+        assert_eq!(s.position_ticks, 0);
+        s.advance_tracking(t0 + std::time::Duration::from_secs(21), TMR_FREQ, 32);
+        assert_eq!(s.position_ticks, 10);
+    }
+
+    #[test]
+    fn a_goto_axis_does_not_accrue_tracking_motion() {
+        let t0 = Instant::now();
+        let mut s = tracking_axis(Direction::Cw, 0);
+        s.mode = ModeKind::Goto;
+        s.advance_tracking(t0, TMR_FREQ, 32);
+        s.advance_tracking(t0 + std::time::Duration::from_secs(10), TMR_FREQ, 32);
+        assert_eq!(s.position_ticks, 0);
+    }
+
+    #[test]
+    fn a_tracking_axis_does_not_move_on_a_goto_poll_step() {
+        let mut s = tracking_axis(Direction::Cw, 0);
         s.advance_one_step();
-        assert_eq!(s.position_ticks, POSITION_MAX);
-        s.advance_one_step();
-        s.advance_one_step();
+        assert_eq!(s.position_ticks, 0);
+    }
+
+    #[test]
+    fn tracking_clamps_at_the_wire_range() {
+        // A long-running tracking mock must saturate at the 24-bit
+        // signed encoder boundary, as real GTi firmware does: a
+        // position past `POSITION_MAX` would panic the next `:j`
+        // handler when `encode_position` rejects it.
+        let t0 = Instant::now();
+        let mut s = tracking_axis(Direction::Cw, POSITION_MAX - 4);
+        s.advance_tracking(t0, TMR_FREQ, 32);
+        s.advance_tracking(t0 + std::time::Duration::from_secs(10), TMR_FREQ, 32);
         assert_eq!(s.position_ticks, POSITION_MAX);
 
-        let mut s = AxisSimState {
-            running: true,
-            mode: ModeKind::Tracking,
-            direction: Direction::Ccw,
-            position_ticks: POSITION_MIN + 4,
-            ..Default::default()
-        };
-        s.advance_one_step();
-        assert_eq!(s.position_ticks, POSITION_MIN);
-        s.advance_one_step();
+        let mut s = tracking_axis(Direction::Ccw, POSITION_MIN + 4);
+        s.advance_tracking(t0, TMR_FREQ, 32);
+        s.advance_tracking(t0 + std::time::Duration::from_secs(10), TMR_FREQ, 32);
         assert_eq!(s.position_ticks, POSITION_MIN);
     }
 

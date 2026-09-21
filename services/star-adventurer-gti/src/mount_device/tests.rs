@@ -3385,6 +3385,248 @@ async fn pulse_guide_east_uses_rate_factor_one_minus_fraction() {
     );
 }
 
+fn gti_mount_parameters() -> crate::manager::MountParameters {
+    crate::manager::MountParameters {
+        cpr_ra: 0x0037_5F00,
+        cpr_dec: 0x002C_4C00,
+        tmr_freq: 0x00F4_2400,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn guide_pulse_east_slows_ra_by_the_ra_fraction() {
+    use super::telescope::GuidePulse;
+    assert_eq!(
+        GuidePulse::resolve(GuideDirection::East, 0.25, 0.75, &gti_mount_parameters()),
+        GuidePulse {
+            axis: Axis::Ra,
+            ccw: false,
+            rate_factor: 0.75,
+            sidereal_period: 379_912,
+        }
+    );
+}
+
+#[test]
+fn guide_pulse_west_speeds_ra_by_the_ra_fraction() {
+    use super::telescope::GuidePulse;
+    assert_eq!(
+        GuidePulse::resolve(GuideDirection::West, 0.25, 0.75, &gti_mount_parameters()),
+        GuidePulse {
+            axis: Axis::Ra,
+            ccw: false,
+            rate_factor: 1.25,
+            sidereal_period: 379_912,
+        }
+    );
+}
+
+#[test]
+fn guide_pulse_north_runs_dec_cw_on_the_dec_sidereal_period() {
+    use super::telescope::GuidePulse;
+    assert_eq!(
+        GuidePulse::resolve(GuideDirection::North, 0.25, 0.75, &gti_mount_parameters()),
+        GuidePulse {
+            axis: Axis::Dec,
+            ccw: false,
+            rate_factor: 0.75,
+            sidereal_period: 474_890,
+        }
+    );
+}
+
+#[test]
+fn guide_pulse_south_runs_dec_ccw_on_the_dec_sidereal_period() {
+    use super::telescope::GuidePulse;
+    assert_eq!(
+        GuidePulse::resolve(GuideDirection::South, 0.25, 0.75, &gti_mount_parameters()),
+        GuidePulse {
+            axis: Axis::Dec,
+            ccw: true,
+            rate_factor: 0.75,
+            sidereal_period: 474_890,
+        }
+    );
+}
+
+// The slowest guide rate the 24-bit `:I` payload can express is
+// per-axis, because the sidereal period is: 379,912 / 0xFFFFFF ≈ 0.0226
+// on RA, 474,890 / 0xFFFFFF ≈ 0.0283 on Dec. A Dec fraction of 0.025
+// sits between the two floors.
+#[test]
+fn guide_pulse_step_period_divides_the_sidereal_period_by_the_rate() {
+    use super::telescope::GuidePulse;
+    let pulse = GuidePulse::resolve(GuideDirection::North, 0.5, 0.5, &gti_mount_parameters());
+    assert_eq!(pulse.step_period().unwrap(), 949_780);
+}
+
+#[test]
+fn guide_pulse_step_period_rejects_a_dec_rate_below_the_dec_floor() {
+    use super::telescope::GuidePulse;
+    let pulse = GuidePulse::resolve(GuideDirection::North, 0.5, 0.025, &gti_mount_parameters());
+    assert_eq!(
+        pulse.step_period().unwrap_err().code,
+        ASCOMErrorCode::INVALID_VALUE
+    );
+}
+
+#[test]
+fn guide_pulse_step_period_accepts_on_ra_a_rate_the_dec_floor_rejects() {
+    use super::telescope::GuidePulse;
+    // East at an RA fraction of 0.975 runs RA at 0.025 × sidereal.
+    let pulse = GuidePulse::resolve(GuideDirection::East, 0.975, 0.5, &gti_mount_parameters());
+    assert_eq!(pulse.step_period().unwrap(), 15_196_480);
+}
+
+/// Start a pulse in `direction` at the default 0.5 × sidereal guide rate
+/// and return the step period carried by the first `:I<axis>` frame the
+/// pulse emits. The 30 s duration keeps the watcher's restore frames
+/// out of the log.
+async fn pulse_start_step_period(direction: GuideDirection, axis_byte: u8) -> u32 {
+    use skywatcher_motor_protocol::codec::decode_u24;
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let cfg = base_config();
+    let manager = MountManager::new(&cfg, Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+
+    let baseline_len = mock.lock().await.command_log.len();
+    d.pulse_guide(direction, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let log = mock.lock().await.command_log.clone();
+    let frame = log[baseline_len..]
+        .iter()
+        .find(|f| f.len() == 10 && f[1] == b'I' && f[2] == axis_byte)
+        .unwrap();
+    let payload: &[u8; 6] = (&frame[3..9]).try_into().unwrap();
+    decode_u24(payload).unwrap()
+}
+
+// The Dec step period must come from the Dec axis' CPR. `:I` sets the
+// time between motor steps; the Dec axis has 2,903,040 counts per
+// revolution against RA's 3,628,800, so its sidereal period is
+// 16,000,000 × 86164.0905 / 2,903,040 = 474,890 — not RA's 379,912.
+// At the default 0.5 × sidereal guide rate the pulse period is twice
+// that. A period derived from the RA CPR (759,824) steps the Dec axis
+// 1.25× too fast, which is what ConformU measured on hardware.
+const DEC_PULSE_PERIOD_AT_HALF_SIDEREAL: u32 = 949_780;
+
+#[tokio::test]
+async fn pulse_guide_north_step_period_is_derived_from_the_dec_cpr() {
+    assert_eq!(
+        pulse_start_step_period(GuideDirection::North, b'2').await,
+        DEC_PULSE_PERIOD_AT_HALF_SIDEREAL
+    );
+}
+
+#[tokio::test]
+async fn pulse_guide_south_step_period_is_derived_from_the_dec_cpr() {
+    assert_eq!(
+        pulse_start_step_period(GuideDirection::South, b'2').await,
+        DEC_PULSE_PERIOD_AT_HALF_SIDEREAL
+    );
+}
+
+#[tokio::test]
+async fn pulse_guide_west_step_period_is_derived_from_the_ra_cpr() {
+    // West at 0.5 × sidereal runs RA at 1.5 × sidereal:
+    // round(379,912 / 1.5) = 253,275.
+    assert_eq!(
+        pulse_start_step_period(GuideDirection::West, b'1').await,
+        253_275
+    );
+}
+
+/// Run a complete 5 s pulse in `direction` on a mount with tracking off
+/// and return how far the pulsed axis turned, in arcseconds (signed,
+/// positive = CW). Tracking is off so the pulse is the only motion on
+/// the axis; the mock runs its tracking-mode motion on the tokio clock
+/// at the rate `:I` set, so under paused time the pulse lasts exactly
+/// 5 s and the angle is a pure function of the step period the driver
+/// sent — the same before/after measurement `ConformU` makes on
+/// hardware.
+async fn arcsec_moved_by_five_second_pulse(direction: GuideDirection) -> f64 {
+    const ARCSEC_PER_REV: f64 = 1_296_000.0;
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let cfg = base_config();
+    let manager = MountManager::new(&cfg, Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+
+    let position = |s: &MockMountState| match direction {
+        GuideDirection::East | GuideDirection::West => (s.ra.position_ticks, s.cpr_ra),
+        GuideDirection::North | GuideDirection::South => (s.dec.position_ticks, s.cpr_dec),
+    };
+    let (before, cpr) = position(&*mock.lock().await);
+    d.pulse_guide(direction, Duration::from_secs(5))
+        .await
+        .unwrap();
+    for _ in 0..1_000 {
+        if !d.is_pulse_guiding().await.unwrap() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        !d.is_pulse_guiding().await.unwrap(),
+        "the pulse never completed"
+    );
+    let (after, _) = position(&*mock.lock().await);
+    f64::from(after - before) * ARCSEC_PER_REV / f64::from(cpr)
+}
+
+/// `GuideRate × 5 s` in arcseconds at the default 0.5 × sidereal guide
+/// rate: 0.5 × 15.041″/s × 5 s = 37.6″.
+const HALF_SIDEREAL_FIVE_SECONDS_ARCSEC: f64 = 0.5 * SIDEREAL_DEG_PER_SEC * 3600.0 * 5.0;
+
+/// `ConformU`'s pulse-guide tolerance.
+const PULSE_TOLERANCE_ARCSEC: f64 = 1.0;
+
+#[tokio::test(start_paused = true)]
+async fn pulse_guide_north_moves_dec_by_guide_rate_times_duration() {
+    // A Dec period derived from the RA CPR moves 47.0″ here — the 1.25×
+    // overshoot ConformU measured on hardware.
+    let moved = arcsec_moved_by_five_second_pulse(GuideDirection::North).await;
+    assert!(
+        (moved - HALF_SIDEREAL_FIVE_SECONDS_ARCSEC).abs() < PULSE_TOLERANCE_ARCSEC,
+        "North 5 s at 0.5 × sidereal must move Dec +{HALF_SIDEREAL_FIVE_SECONDS_ARCSEC:.1}″, moved {moved:.1}″"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn pulse_guide_south_moves_dec_by_guide_rate_times_duration() {
+    let moved = arcsec_moved_by_five_second_pulse(GuideDirection::South).await;
+    assert!(
+        (moved + HALF_SIDEREAL_FIVE_SECONDS_ARCSEC).abs() < PULSE_TOLERANCE_ARCSEC,
+        "South 5 s at 0.5 × sidereal must move Dec -{HALF_SIDEREAL_FIVE_SECONDS_ARCSEC:.1}″, moved {moved:.1}″"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn pulse_guide_east_runs_ra_at_sidereal_minus_the_guide_rate() {
+    // East runs RA at (1 - 0.5) × sidereal for the pulse.
+    let moved = arcsec_moved_by_five_second_pulse(GuideDirection::East).await;
+    assert!(
+        (moved - HALF_SIDEREAL_FIVE_SECONDS_ARCSEC).abs() < PULSE_TOLERANCE_ARCSEC,
+        "East 5 s must turn RA +{HALF_SIDEREAL_FIVE_SECONDS_ARCSEC:.1}″, moved {moved:.1}″"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn pulse_guide_west_runs_ra_at_sidereal_plus_the_guide_rate() {
+    // West runs RA at (1 + 0.5) × sidereal for the pulse.
+    let expected = 3.0 * HALF_SIDEREAL_FIVE_SECONDS_ARCSEC;
+    let moved = arcsec_moved_by_five_second_pulse(GuideDirection::West).await;
+    assert!(
+        (moved - expected).abs() < PULSE_TOLERANCE_ARCSEC,
+        "West 5 s must turn RA +{expected:.1}″, moved {moved:.1}″"
+    );
+}
+
 #[tokio::test]
 async fn pulse_guide_sets_is_pulse_guiding_synchronously() {
     // The flag must flip to true before `pulse_guide` returns —

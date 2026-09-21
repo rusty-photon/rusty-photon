@@ -30,7 +30,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::codec::{decode_frame_for, SkywatcherCodec, SkywatcherCodecError};
 use crate::config::{Config, TransportConfig};
+use crate::coordinates::sidereal_step_period;
 use crate::error::{Result, StarAdvError};
+use crate::units::Cpr;
 
 /// Snapshot of the values the mount reports during the init handshake.
 /// Meaningful units are in the design doc.
@@ -44,6 +46,27 @@ pub struct MountParameters {
     pub motor_board_version: u32,
     pub ra_at_handshake_ticks: i32,
     pub dec_at_handshake_ticks: i32,
+}
+
+impl MountParameters {
+    /// Step period that turns the RA axis at the sidereal rate.
+    ///
+    /// Per-axis methods (instead of taking a CPR, or an `Axis`) keep a
+    /// caller from pairing one axis with the other's CPR: `:I` sets the
+    /// time between motor steps, the axes' CPRs differ, so a period
+    /// derived from the wrong CPR turns the axis at the wrong angular
+    /// rate by exactly the CPR ratio.
+    #[must_use]
+    pub fn sidereal_step_period_ra(&self) -> u32 {
+        sidereal_step_period(self.tmr_freq, Cpr::new(self.cpr_ra))
+    }
+
+    /// Step period that turns the Dec axis at the sidereal rate. See
+    /// [`Self::sidereal_step_period_ra`] for why this is per-axis.
+    #[must_use]
+    pub fn sidereal_step_period_dec(&self) -> u32 {
+        sidereal_step_period(self.tmr_freq, Cpr::new(self.cpr_dec))
+    }
 }
 
 /// Latest poll-loop snapshot. Updated by the background task at
@@ -952,6 +975,25 @@ mod tests {
         assert_eq!(params.tmr_freq, 0x00F4_2400);
         assert_eq!(params.motor_board_version, 0x000C_3003);
         session.close().await.unwrap();
+    }
+
+    fn gti_parameters() -> MountParameters {
+        MountParameters {
+            cpr_ra: 0x0037_5F00,
+            cpr_dec: 0x002C_4C00,
+            tmr_freq: 0x00F4_2400,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn sidereal_step_period_ra_uses_the_ra_cpr() {
+        assert_eq!(gti_parameters().sidereal_step_period_ra(), 379_912);
+    }
+
+    #[test]
+    fn sidereal_step_period_dec_uses_the_dec_cpr() {
+        assert_eq!(gti_parameters().sidereal_step_period_dec(), 474_890);
     }
 
     #[tokio::test]
