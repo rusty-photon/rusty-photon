@@ -355,6 +355,11 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
     fails the scan, so a collector reports both or reports nothing.
   - A failure with no reason is rejected, because doctor prints the reason to
     send an operator at the host fault rather than at a cable.
+  - A document naming **neither** key is rejected. An empty bus stays
+    stageable — `"usb": []` is a state every collector can report, and it is
+    how a claimed port with nothing in it gets exercised — but it has to be
+    said out loud, so that a staging file which failed to be written cannot
+    read as an idle bus and let a scenario pass for the wrong reason.
 
   **Blank counts as absent throughout**, and is the more dangerous of the
   two: an empty `port` or `product` matches nothing while reading like a

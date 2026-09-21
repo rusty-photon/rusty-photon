@@ -184,8 +184,12 @@ pub enum StagedUsbInventory {
 #[cfg(feature = "mock")]
 #[derive(Debug, Deserialize)]
 struct StagedDocument {
+    /// `Option` to tell an *explicitly* empty bus (`"usb": []`, a state
+    /// every collector can report) from a document that never mentioned the
+    /// bus at all. Both deserialize to no devices; only one of them meant
+    /// to.
     #[serde(default)]
-    usb: Vec<UsbDevice>,
+    usb: Option<Vec<UsbDevice>>,
     #[serde(default)]
     usb_unavailable: Option<String>,
 }
@@ -195,12 +199,23 @@ impl TryFrom<StagedDocument> for StagedUsbInventory {
     type Error = String;
 
     fn try_from(document: StagedDocument) -> Result<Self, Self::Error> {
+        // A document naming neither key states nothing, and the whole point
+        // of this type is that nothing and empty are different answers. An
+        // empty bus stays expressible, but has to be said out loud.
+        if document.usb.is_none() && document.usb_unavailable.is_none() {
+            return Err(
+                "states neither a device list nor a failure; write `\"usb\": []` for an \
+                 empty bus, or `usb_unavailable` with a reason for a failed scan"
+                    .to_string(),
+            );
+        }
+        let usb = document.usb.unwrap_or_default();
         match document.usb_unavailable {
             // A failed scan has no opinion about what is on the bus, so the
             // gatherer pairs the marker with an empty list. A document
             // claiming both would let a scenario assert on devices that a
             // failed scan could never have reported.
-            Some(_) if !document.usb.is_empty() => Err(
+            Some(_) if !usb.is_empty() => Err(
                 "names both a failure and a device list; a failed scan reports no devices"
                     .to_string(),
             ),
@@ -212,7 +227,7 @@ impl TryFrom<StagedDocument> for StagedUsbInventory {
             }
             Some(reason) => Ok(Self::Unavailable(reason)),
             None => {
-                for device in &document.usb {
+                for device in &usb {
                     let identity = format!("{}:{}", device.vendor, device.product);
                     // Blank is not the same absence as `None`, and it is the
                     // more dangerous one: an empty field matches nothing and
@@ -234,7 +249,7 @@ impl TryFrom<StagedDocument> for StagedUsbInventory {
                         ));
                     }
                 }
-                Ok(Self::Devices(document.usb))
+                Ok(Self::Devices(usb))
             }
         }
     }
@@ -1359,6 +1374,31 @@ mod tests {
             let error = StagedUsbInventory::load(&path).unwrap_err();
             assert!(error.contains("1618:c601"), "{error}");
             assert!(error.contains("usb_unavailable"), "{error}");
+        }
+
+        /// An empty bus is a state every collector can report, so it stays
+        /// stageable — `Ok(empty)` means a genuinely idle bus, which is how
+        /// a claimed port with nothing in it gets exercised.
+        #[test]
+        fn test_an_explicitly_empty_bus_is_an_empty_bus() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(dir.path(), r#"{ "usb": [] }"#);
+            let facts = gather(&request(StagedUsbInventory::load(&path).unwrap()));
+            assert!(facts.usb.is_empty());
+            assert!(facts.usb_unavailable.is_none());
+            assert_eq!(facts.usb_present("1618", None, None), Some(false));
+        }
+
+        /// But a document that mentions neither key states nothing, and
+        /// nothing is not empty — the distinction this whole type exists
+        /// for. A staging file that failed to be written must not read as an
+        /// idle bus and let a scenario pass for the wrong reason.
+        #[test]
+        fn test_a_document_stating_neither_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(dir.path(), "{}");
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("states neither"), "{error}");
         }
 
         /// Blank is not `None`, and it is the worse absence: an empty port
