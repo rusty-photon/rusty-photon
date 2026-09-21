@@ -1117,59 +1117,123 @@ mod tests {
             .expect_err("a candidate whose vendor cannot be read fails the scan");
     }
 
-    /// The success path, and with it `reap`: a child that writes and exits
-    /// hands back exactly what it wrote.
-    #[cfg(unix)]
-    #[test]
-    fn test_bounded_capture_returns_what_the_child_wrote() {
-        let output = bounded::capture(
-            std::process::Command::new("/bin/sh").args(["-c", "printf hello"]),
-            bounded::DEADLINE,
-        )
-        .unwrap();
-        assert_eq!(output, b"hello");
-    }
+    /// Fixtures for the bounded-subprocess helper. It ships on macOS and
+    /// Windows, so the tests run on both rather than on the Unix family
+    /// alone — the platforms differ in exactly the mechanics under test
+    /// (spawn, pipe, kill), which is what makes a Unix-only pass a weak
+    /// signal for the Windows collector.
+    #[cfg(any(unix, windows))]
+    mod bounded_capture {
+        use std::process::Command;
+        use std::time::Duration;
 
-    /// The reason the deadline is on the *drain* and not on the exit: a child
-    /// whose output exceeds the pipe buffer blocks writing until someone
-    /// reads, so a wait-then-read implementation deadlocks here while this
-    /// one returns the whole 200 kB.
-    #[cfg(unix)]
-    #[test]
-    fn test_bounded_capture_drains_more_than_one_pipe_buffer() {
-        let output = bounded::capture(
-            std::process::Command::new("/bin/sh").args(["-c", "head -c 200000 /dev/zero"]),
-            bounded::DEADLINE,
-        )
-        .unwrap();
-        assert_eq!(output.len(), 200_000);
-    }
+        use super::super::bounded;
 
-    /// A child that fails is a failed scan, not a short one — its partial
-    /// output must never reach a caller as an inventory.
-    #[cfg(unix)]
-    #[test]
-    fn test_bounded_capture_rejects_a_nonzero_exit_and_its_output() {
-        let error = bounded::capture(
-            std::process::Command::new("/bin/sh").args(["-c", "printf partial; exit 3"]),
-            bounded::DEADLINE,
-        )
-        .unwrap_err();
-        assert!(error.contains("exited with"), "{error}");
-    }
+        /// Scripts, not programs: "write this, then exit like that" has no
+        /// portable single binary, and the two shells spell it differently.
+        #[cfg(unix)]
+        const WRITE_HELLO: &str = "printf hello";
+        #[cfg(windows)]
+        const WRITE_HELLO: &str = "echo hello";
 
-    /// The wedged-collector case the deadline exists for: the call returns an
-    /// error instead of hanging startup, and the child is killed rather than
-    /// orphaned.
-    #[cfg(unix)]
-    #[test]
-    fn test_bounded_capture_gives_up_on_a_child_that_never_finishes() {
-        let error = bounded::capture(
-            std::process::Command::new("/bin/sh").args(["-c", "sleep 30"]),
-            std::time::Duration::from_secs(2),
-        )
-        .unwrap_err();
-        assert!(error.contains("did not finish within"), "{error}");
+        #[cfg(unix)]
+        const WRITE_THEN_FAIL: &str = "printf partial; exit 3";
+        #[cfg(windows)]
+        const WRITE_THEN_FAIL: &str = "echo partial & exit 3";
+
+        #[cfg(unix)]
+        const NEVER_FINISHES: &str = "sleep 30";
+        #[cfg(windows)]
+        const NEVER_FINISHES: &str = "ping -n 31 127.0.0.1 >nul";
+
+        /// Waits, then leaves a mark. Killed on time, the mark never appears.
+        #[cfg(unix)]
+        const WAIT_THEN_MARK: &str = "sleep 1; : > marker";
+        #[cfg(windows)]
+        const WAIT_THEN_MARK: &str = "ping -n 3 127.0.0.1 >nul & echo . > marker";
+
+        #[cfg(unix)]
+        const COPY_BULK: &str = "cat bulk";
+        #[cfg(windows)]
+        const COPY_BULK: &str = "type bulk";
+
+        #[cfg(unix)]
+        fn shell(script: &str) -> Command {
+            let mut cmd = Command::new("/bin/sh");
+            cmd.args(["-c", script]);
+            cmd
+        }
+
+        #[cfg(windows)]
+        fn shell(script: &str) -> Command {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/C", script]);
+            cmd
+        }
+
+        /// The success path, and with it `reap`: a child that writes and
+        /// exits hands back what it wrote.
+        #[test]
+        fn test_capture_returns_what_the_child_wrote() {
+            let output = bounded::capture(&mut shell(WRITE_HELLO), bounded::DEADLINE).unwrap();
+            // Trimmed: `cmd`'s `echo` appends a newline where `printf` does
+            // not, and which one ran is not what this test is about.
+            assert_eq!(String::from_utf8_lossy(&output).trim(), "hello");
+        }
+
+        /// Why the deadline is on the *drain* and not on the child exiting:
+        /// a child whose output exceeds the pipe buffer blocks writing until
+        /// someone reads, so a wait-then-read implementation deadlocks here.
+        #[test]
+        fn test_capture_drains_more_than_one_pipe_buffer() {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("bulk"), vec![b'x'; 200_000]).unwrap();
+            let mut cmd = shell(COPY_BULK);
+            cmd.current_dir(dir.path());
+            let output = bounded::capture(&mut cmd, bounded::DEADLINE).unwrap();
+            // Trimmed rather than length-matched: a shell may add a line
+            // ending of its own, and the claim under test is that none of
+            // the payload was lost.
+            let payload = output.trim_ascii();
+            assert_eq!(payload.len(), 200_000);
+            assert!(payload.iter().all(|b| *b == b'x'));
+        }
+
+        /// A child that fails is a failed scan, not a short one — its partial
+        /// output must never reach a caller as an inventory.
+        #[test]
+        fn test_capture_rejects_a_nonzero_exit_and_its_output() {
+            let error =
+                bounded::capture(&mut shell(WRITE_THEN_FAIL), bounded::DEADLINE).unwrap_err();
+            assert!(error.contains("exited with"), "{error}");
+        }
+
+        /// The wedged-collector case the deadline exists for: an error rather
+        /// than a hung startup.
+        #[test]
+        fn test_capture_gives_up_on_a_child_that_never_finishes() {
+            let error =
+                bounded::capture(&mut shell(NEVER_FINISHES), Duration::from_secs(2)).unwrap_err();
+            assert!(error.contains("did not finish within"), "{error}");
+        }
+
+        /// And it kills what it gave up on. An orphan would outlive the
+        /// scan, still holding whatever it had open — observable here as the
+        /// mark it would have left after the deadline had passed.
+        #[test]
+        fn test_capture_kills_the_child_it_gave_up_on() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut cmd = shell(WAIT_THEN_MARK);
+            cmd.current_dir(dir.path());
+            bounded::capture(&mut cmd, Duration::from_millis(200)).unwrap_err();
+            // Well past when the mark would have been written had the child
+            // survived the deadline.
+            std::thread::sleep(Duration::from_secs(3));
+            assert!(
+                !dir.path().join("marker").exists(),
+                "the child outlived the deadline that killed it"
+            );
+        }
     }
 
     #[test]

@@ -236,12 +236,19 @@ hosts.** clippy only *checks*: it neither links nor runs tests, so a crate
 without C dependencies lints for another target from the Linux dev box, and
 reproduces a `clippy-os` failure exactly.
 
+**Run both passes per target** — `clippy-os` runs both, for the reasons under
+*Every clippy job runs two passes* below, and the default-features one is what
+compiles code behind `not(feature = ...)`. An all-features-only run can
+therefore miss the very violation this is here to catch.
+
 ```sh
 rustup target add x86_64-pc-windows-msvc aarch64-apple-darwin
-cargo clippy --target x86_64-pc-windows-msvc -p <crate> \
-    --all-targets --all-features -- -D warnings
-cargo clippy --target aarch64-apple-darwin -p <crate> \
-    --all-targets --all-features -- -D warnings
+for target in x86_64-pc-windows-msvc aarch64-apple-darwin; do
+    cargo clippy --target "$target" -p <crate> \
+        --all-targets --all-features -- -D warnings
+    cargo clippy --target "$target" -p <crate> \
+        --lib --bins -- -D warnings
+done
 ```
 
 Scope it to the crates you touched: `--workspace` fails locally at the first
