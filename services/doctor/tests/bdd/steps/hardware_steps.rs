@@ -100,6 +100,8 @@ fn usb_device_with_model(world: &mut DoctorWorld, id: String, model: String) {
         vendor,
         product,
         model: Some(model),
+        port: None,
+        serial: None,
     });
 }
 
@@ -110,7 +112,21 @@ fn usb_device_without_model(world: &mut DoctorWorld, id: String) {
         vendor,
         product,
         model: None,
+        port: None,
+        serial: None,
     });
+}
+
+#[given(expr = "hardware facts where the USB inventory is unavailable because {string}")]
+fn usb_inventory_unavailable(world: &mut DoctorWorld, reason: String) {
+    world.hardware().usb_unavailable = Some(reason);
+}
+
+#[given(expr = "hardware facts with an empty but readable USB inventory")]
+fn usb_inventory_empty(world: &mut DoctorWorld) {
+    let hardware = world.hardware();
+    hardware.usb.clear();
+    hardware.usb_unavailable = None;
 }
 
 #[given(expr = "hardware facts with present COM ports {string}")]

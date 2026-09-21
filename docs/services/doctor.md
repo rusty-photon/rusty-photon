@@ -268,11 +268,48 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
 
 - **Paths** — `stat` results (exists, file kind, mode, owner) for every
   probed path. Never an `open`.
-- **USB inventory** — vendor:product plus the product string per device:
-  sysfs (`/sys/bus/usb/devices/*/idVendor` …) on Linux, the
-  `SYSTEM\CurrentControlSet\Enum\USB` registry tree plus the bus-reported
-  device description on Windows, `system_profiler -json SPUSBDataType` on
-  macOS.
+- **USB inventory** — per device: vendor:product, the product string, the
+  **port path**, and the **serial** when the bus publishes one. Sources:
+  sysfs on Linux (`/sys/bus/usb/devices/*/idVendor` …, where the entry's
+  own directory name *is* the port path — `1-4.2` reads as bus 1, root
+  port 4, hub port 2 — and `serial` sits beside it); `Get-PnpDevice` plus
+  `DEVPKEY_Device_LocationPaths` and `DEVPKEY_Device_BusReportedDeviceDesc`
+  on Windows; `system_profiler -json SPUSBDataType` with `location_id` on
+  macOS. All of it is cached by the kernel at enumeration, so nothing is
+  opened, claimed or reset.
+
+  The port path is the platform's **native spelling**, not a normalised
+  invention: a config that names it names one specific host's hardware and
+  is not portable across an OS boundary anyway, and a canonical form would
+  only be a second thing that can disagree with what the OS says.
+
+  On Windows `DEVPKEY_Device_LocationPaths` is **multi-valued** — a device
+  typically publishes both a `PCIROOT(…)`-rooted chain and an `ACPI(…)`
+  one, and a device whose descriptor request failed may publish only the
+  ACPI form. The collector selects the `PCIROOT(`-rooted element; a device
+  with none is a candidate with no usable port, which the rule below makes
+  an inventory failure rather than a silently port-less record.
+
+  **A failed scan is not an empty bus, and the two must not be confused.**
+  Every collector used to fold its own failure into an empty `Vec`, which
+  reads as "no devices" — indistinguishable from a genuinely idle bus, and
+  the wrong answer for any consumer deciding what hardware it may touch.
+  So the inventory reports unavailability explicitly, and
+  `HardwareFacts::usb_present` answers `None` rather than `false` when it
+  cannot know. What counts as a failure is scoped to **candidate device
+  records** — an entry presenting as a USB device (it has a vendor id, or
+  its platform equivalent). The collectors legitimately skip a great deal
+  that is not a device: the Linux walk passes over interface and root-hub
+  entries with no `idVendor`, and the macOS tree carries non-device nodes.
+  Those are skipped silently, as before. A *candidate* that cannot be read
+  or parsed fails the scan. `Ok(empty)` still means a genuinely empty bus.
+
+  **The shell-outs are bounded.** The macOS and Windows collectors invoke
+  `system_profiler` and `powershell.exe`, and an invocation that never
+  returns is a third state that no failed-vs-empty distinction helps with —
+  a wedged child would hang startup rather than produce a result at all.
+  Both are run under a deadline, the child killed on expiry, and expiry
+  maps to the same unavailable-inventory state as a non-zero exit.
 - **Serial ports** (Windows) — `[System.IO.Ports.SerialPort]::GetPortNames()`.
 - **Identity** — the `rusty-photon` user's uid/gid, its account-level
   supplementary groups (the `/etc/group` member lists that name it), and
@@ -588,7 +625,7 @@ metadata.
 |---|---|---|
 | `hardware.serial-node` | Linux, macOS, Windows | The effective serial device — the config value at the catalog's `serial_pointer`, else the platform's declared default — does not exist, or exists but is not a character device (Unix). On Windows: the configured name is not among the host's present COM ports. A service with a `serial_gate_pointer` participates only while its config holds the gate value (star-adventurer-gti on `kind: "udp"` has no serial device to check — the same pointer is a UDP port number there). |
 | `hardware.serial-access` | Linux (packaged) | The node exists but the `rusty-photon` user cannot open it, judged from the node's owner/group/mode and the identity the kernel actually grants the process: the user's uid/gid, the unit's `SupplementaryGroups=`, **and** the account's own supplementary memberships from the group database — systemd initializes the process group list from the union, so a node openable only via an account-level membership passes, with the granting mechanism named in the detail (the packaged intent is the unit file; account-level grants are host-local state worth seeing). The fail suggestion distinguishes a membership neither source confers (add `SupplementaryGroups=` to the unit) from a mode/ownership problem (udev-rule surgery). |
-| `hardware.usb-device` | Linux, macOS, Windows | No device on the bus matches the service's declared USB identity: `usb_vendor`, plus `usb_product` when declared, plus `usb_model` as a substring of the product descriptor the device publishes on the bus, when declared. The substring is what makes the check honest for devices behind generic bridge chips — the four Pegasus devices all report FTDI's `0403:6015` and the FP2 reports the RP2040's `2e8a:000a`, so VID:PID alone would confuse "the Falcon is plugged in" with "the PPBA is plugged in". The declared value must come from an observed descriptor: a device's serial protocol may name it differently (the UPBv2 answers `P#` with `UPB2_OK` and publishes `UPBv2 revA`), and a model taken from the protocol side matches nothing, which this check can only report as an absent device. |
+| `hardware.usb-device` | Linux, macOS, Windows | No device on the bus matches the service's declared USB identity: `usb_vendor`, plus `usb_product` when declared, plus `usb_model` as a substring of the product descriptor the device publishes on the bus, when declared. The substring is what makes the check honest for devices behind generic bridge chips — the four Pegasus devices all report FTDI's `0403:6015` and the FP2 reports the RP2040's `2e8a:000a`, so VID:PID alone would confuse "the Falcon is plugged in" with "the PPBA is plugged in". The declared value must come from an observed descriptor: a device's serial protocol may name it differently (the UPBv2 answers `P#` with `UPB2_OK` and publishes `UPBv2 revA`), and a model taken from the protocol side matches nothing, which this check can only report as an absent device. **When the USB inventory is unavailable the check reports that instead of an absence**, naming the collector failure: a scan that could not run says nothing about whether the device is plugged in, and reporting "not on the bus" from a failed scan sends the operator to look at a cable when the fault is on the host. |
 | `hardware.udev-rule` | Linux (packaged) | For each service shipping a udev rule, against the effective installed copy: the file is missing (`fail`/`warn` per the severity rule); a `GROUP=` it names does not resolve in the host's group database — udev **silently drops the entire rule line** on an unresolvable `GROUP=`, so file presence alone proves nothing (`fail`/`warn`); or the content differs from the packaged copy doctor embeds (`warn` always — an operator override in `/etc/udev/rules.d` is legitimate, but worth surfacing). |
 | `hardware.firmware-helper` | Linux (packaged) | qhy-camera's unit is installed but the firmware helper's three artifacts are not all present: `/lib/firmware/qhy/` (directory), `/usr/local/sbin/fxload` (executable), `/etc/udev/rules.d/85-qhyccd.rules` (file). The conjunction is the helper's own idempotency gate — any subset is a partial install that must re-converge — and the suggestion points at `/usr/sbin/rusty-photon-qhy-firmware-install` (ADR-013: proprietary firmware is never packaged, so nothing but this check verifies the operator ran it). |
 

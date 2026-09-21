@@ -91,7 +91,7 @@ recorded here so the option is not lost.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | C0 | This plan | Not started | |
-| C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Spike partly done — see D2 | `chore/device-claims-c1-spike` |
+| C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Spike done except a different-port move (see D2); `port`/`serial` extraction and the failed-vs-empty inventory landed | `chore/device-claims-c1-spike` |
 | C2 | `claims` schema + `svbony-camera` — the easy case, proves schema, join and doctor output | Not started | |
 | C3 | `claims` in `zwo-camera` | Not started | |
 | C4 | `claims` in `qhy-camera` + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup entirely** (the split alone narrows the tenet-3 problem, it does not discharge it) | Not started | |
