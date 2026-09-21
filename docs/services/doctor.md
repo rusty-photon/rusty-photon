@@ -355,6 +355,13 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
     fails the scan, so a collector reports both or reports nothing.
   - A failure with no reason is rejected, because doctor prints the reason to
     send an operator at the host fault rather than at a cable.
+  - `"usb": null` is rejected. It is neither an empty bus nor an omitted
+    key, and no capture produces it — `HardwareFacts` holds `usb` as a
+    `Vec`, so a serialized one always carries a list. `"usb_unavailable":
+    null` is *not* rejected, and the asymmetry has a reason rather than
+    being an oversight: that field is an `Option`, so null there is how a
+    **successful** scan serializes, and refusing it would make a healthy
+    rig's own facts file unstageable.
   - A document naming **neither** key is rejected. An empty bus stays
     stageable — `"usb": []` is a state every collector can report, and it is
     how a claimed port with nothing in it gets exercised — but it has to be

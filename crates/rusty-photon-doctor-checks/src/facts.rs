@@ -188,10 +188,38 @@ struct StagedDocument {
     /// every collector can report) from a document that never mentioned the
     /// bus at all. Both deserialize to no devices; only one of them meant
     /// to.
-    #[serde(default)]
+    ///
+    /// The reader rejects an explicit `null`, which neither of those is.
+    /// `usb_unavailable` deliberately does not — there, `null` is how a
+    /// *successful* scan serializes, because [`HardwareFacts`] holds it as
+    /// an `Option` where it holds `usb` as a `Vec`.
+    #[serde(default, deserialize_with = "devices_or_absent")]
     usb: Option<Vec<UsbDevice>>,
     #[serde(default)]
     usb_unavailable: Option<String>,
+}
+
+/// Read `usb` as a list that is present or absent, never null.
+///
+/// `Option::deserialize` folds `null` and a missing key into the same `None`,
+/// and a null list is neither of the two things this document can mean: a
+/// collector reports devices or reports a failure, never a nulled bus. Taking
+/// the value first is what makes the difference visible.
+#[cfg(feature = "mock")]
+fn devices_or_absent<'de, D>(deserializer: D) -> Result<Option<Vec<UsbDevice>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Err(serde::de::Error::custom(
+            "`usb` is null; write `[]` for an empty bus, or omit the key and stage \
+             `usb_unavailable` for a failed scan",
+        ));
+    }
+    serde_json::from_value(value)
+        .map(Some)
+        .map_err(serde::de::Error::custom)
 }
 
 #[cfg(feature = "mock")]
@@ -1455,6 +1483,34 @@ mod tests {
             assert!(facts.usb.is_empty());
             assert!(facts.usb_unavailable.is_none());
             assert_eq!(facts.usb_present("1618", None, None), Some(false));
+        }
+
+        /// A nulled list is neither an empty bus nor an omitted key, and
+        /// no capture produces it: `HardwareFacts` holds `usb` as a `Vec`,
+        /// so a serialized one always carries a list. Rejected rather than
+        /// folded into "absent", so the document format has one meaning per
+        /// spelling.
+        #[test]
+        fn test_a_nulled_device_list_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": null, "usb_unavailable": "sysfs gone" }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("`usb` is null"), "{error}");
+        }
+
+        /// The asymmetry is deliberate and has a reason: `usb_unavailable`
+        /// is an `Option` on `HardwareFacts`, so `null` there is how a
+        /// *successful* scan serializes — rejecting it would break staging
+        /// a real capture, which the round-trip test above pins.
+        #[test]
+        fn test_a_nulled_failure_reason_is_a_successful_scan() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(dir.path(), r#"{ "usb": [], "usb_unavailable": null }"#);
+            let staged = StagedUsbInventory::load(&path).unwrap();
+            assert_eq!(staged, StagedUsbInventory::Devices(Vec::new()));
         }
 
         /// But a document that mentions neither key states nothing, and
