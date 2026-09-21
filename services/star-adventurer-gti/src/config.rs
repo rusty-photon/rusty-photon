@@ -311,6 +311,13 @@ impl MountConfig {
     /// admitted unreachable ones (zone `(10, 11)`, offset `−1.5`, whose
     /// flip lands at `+10.5`, inside it).
     ///
+    /// The accepted set is therefore not one interval. Under the
+    /// shipped zone it is `[−12, −11.05] ∪ [−0.95, +0.90)` — the
+    /// second is the practical band around the meridian, the first
+    /// flips just past the anti-meridian wrap, which is eccentric but
+    /// not impossible. Rejecting the odd as well as the unworkable is
+    /// not this function's job.
+    ///
     /// Inert configurations are not errors: with `enabled = false`, or
     /// `auto_flip_during_tracking = false`, the offset is not consulted
     /// and any value passes. With the zone disabled there is no guard
@@ -1980,7 +1987,13 @@ mod tests {
                 "error should name the field, got: {err}"
             );
         }
-        for good in [0.0, 0.5, 0.899, -0.95] {
+        // The practical band around the meridian, plus the
+        // anti-meridian sliver: `-11.5` flips to `+0.5`, outside the
+        // zone, so it works — oddly, but the rule rejects what cannot
+        // happen, not what is merely eccentric. The accepted set is
+        // two intervals, and collapsing it back to one would
+        // reintroduce the presumed-shape bug above.
+        for good in [0.0, 0.5, 0.899, -0.95, -11.5, -12.0] {
             assert!(
                 auto_flip_at(good).auto_flip_offset_error().is_none(),
                 "offset {good} should be accepted"

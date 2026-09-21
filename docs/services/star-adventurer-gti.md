@@ -1144,7 +1144,12 @@ a flip. Four fields:
   bounds rather than presuming the `(x, 12 − x)` shape —
   `cw_exclusion_zone` accepts any `-12 ≤ min < max ≤ 12`, and off that
   shape a presumed band both rejects reachable offsets and admits
-  unreachable ones. Fail either condition and the auto-flip does not
+  unreachable ones. `[−0.95, +0.90)` is also only the *practical* part
+  of what the shipped zone accepts: offsets in `[−12, −11.05]` pass
+  too, flipping just past the anti-meridian wrap to a destination
+  outside the zone. That is eccentric rather than impossible — it buys
+  the flipped side about 24 minutes before the guard — and the rule
+  rejects what cannot work, not what is merely odd. Fail either condition and the auto-flip does not
   fire late, it never fires at all, so the config is refused at load
   (and on a runtime `config.apply`) rather than leaving
   `auto_flip_during_tracking = true` as a setting that does nothing. The rule spans two config blocks, so unlike the other
@@ -1471,8 +1476,23 @@ dec)` share one selector:
      when it plans the sweep.
 4. **Stay if the current side is usable**; otherwise take the
    opposite side if it is usable. If neither is, return the current
-   side and let the slew / prediction fail with the envelope or
-   path error that names the actual obstruction.
+   side — the selector owes the caller a side, and inventing a flip
+   that also cannot be reached helps nobody.
+
+   What happens next differs between the two callers, and that is the
+   one place where a prediction and the slew it predicts can come
+   apart. A slew goes on to plan its sweep, so it refuses with the
+   envelope or path error naming the obstruction.
+   `DestinationSideOfPier` runs the destination check only — it plans
+   no sweep — so when *both* destinations are legal and only the paths
+   are blocked, it returns a side the mount could not currently slew
+   to. Reaching that requires the encoder to already sit somewhere
+   every sweep out of it crosses the zone, which the slew gates and
+   the tracking guard exist to prevent and only a `Park` target inside
+   the zone can really produce (park writes ticks without the zone
+   check). The prediction is still the right *side* for the target; it
+   is the reachability from the mount's present position it does not
+   speak to.
 
 Consequences worth stating explicitly, because they are the
 behaviours hosts observe:
