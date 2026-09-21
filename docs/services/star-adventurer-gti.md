@@ -1413,6 +1413,17 @@ The CW-exclusion-zone and altitude gates then run against that side's
 `mech_HA`. Sync issues no motion, so the RA path check does not apply.
 A mount whose side reads `Unknown` (no Dec CPR) is treated as CW-down.
 
+**Sync refuses mid-slew** with `INVALID_OPERATION`, as
+[`SetSideOfPier`](#setsideofpierside) does and for the same reason:
+the side is read from the cached snapshot, and an asynchronous slew
+returns as soon as its completion watcher is spawned. A sync landing
+in that window — after a flip is issued, before it lands — would
+resolve the *old* side and write its encoder pair to a mount already
+on its way to the other one, which is the mislabelling this section
+exists to prevent, arriving by another route. The refusal comes before
+the in-flight pulse-guide cancel, so a refused sync has no side
+effects at all.
+
 Until 2026-09 sync assumed CW-down unconditionally. On a CW-up mount
 that had two consequences: every target in the western sky was
 refused with a CW-exclusion-zone error (its CW-down `mech_HA` is

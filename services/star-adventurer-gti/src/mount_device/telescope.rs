@@ -557,6 +557,27 @@ impl Telescope for MountDevice {
         self.ensure_connected().await?;
         Self::validate_coordinates(ra, dec)?;
         self.ensure_unparked().await?;
+        // Refuse mid-slew, for the reason `SetSideOfPier` does: the
+        // encoder pair written below is chosen from the *cached* side,
+        // and an async slew (a flip most of all) returns as soon as its
+        // completion watcher is spawned. A sync landing in that window
+        // reads the pre-flip Dec encoder, resolves the counterweight-down
+        // solution, and writes it to a mount that is on its way to the
+        // other side — re-labelling it, so every later slew plans from a
+        // false position. That is the corruption this method's
+        // side-awareness exists to prevent, arriving through the back
+        // door. Refusing beats waiting for a settled snapshot: the
+        // caller learns the mount was moving, rather than having a
+        // position write silently deferred into motion.
+        //
+        // Checked before the pulse-guide cancel below so a refused sync
+        // has no side effects at all.
+        if self.slew_in_progress.load(Ordering::SeqCst) {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "sync refused: slew already in progress",
+            ));
+        }
         // Cancel any in-flight pulse-guide on either axis — sync is
         // an axis-position mutation and we don't want the watcher
         // restoring tracking against the freshly-set encoder position.

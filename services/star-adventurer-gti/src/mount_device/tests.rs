@@ -1637,6 +1637,38 @@ async fn abort_slew_refuses_while_parked() {
 }
 
 #[tokio::test]
+async fn sync_refuses_while_a_slew_is_in_progress() {
+    // The encoder pair a sync writes is chosen from the cached pier
+    // side, so a sync during an in-flight flip would resolve the
+    // pre-flip solution and write it to a mount already on its way to
+    // the other side — re-labelling it for every later slew. An async
+    // slew returns as soon as its watcher is spawned, so that window is
+    // reachable from an ordinary client; the sync has to refuse in it.
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let mut cfg = base_config();
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    let manager = MountManager::new(&cfg, Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    d.slew_in_progress.store(true, Ordering::SeqCst);
+
+    let lst = d.sidereal_time().await.unwrap();
+    let err = d.sync_to_coordinates(lst, 0.0).await.unwrap_err();
+
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    // No `:E` on the wire: the refusal lands before anything is
+    // written — and before the pulse-guide cancel — so it has no side
+    // effects either.
+    let log = mock.lock().await.command_log.clone();
+    assert!(
+        !log.iter().any(|c| c.starts_with(b":E")),
+        "a refused sync must not write an encoder position, saw {log:?}"
+    );
+}
+
+#[tokio::test]
 async fn sync_to_coordinates_writes_the_encoder() {
     let d = connected_device().await;
     // After a sync to (RA=lst, Dec=0), the RA encoder should be at
