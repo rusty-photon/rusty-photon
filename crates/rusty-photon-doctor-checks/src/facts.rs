@@ -498,7 +498,7 @@ mod bounded {
 
     /// How long a child gets to exit after closing stdout, before it is
     /// killed. It has already produced its output at this point.
-    const REAP_GRACE: Duration = Duration::from_secs(1);
+    pub(super) const REAP_GRACE: Duration = Duration::from_secs(1);
 
     /// Run `cmd` and return its stdout, or why it could not be trusted.
     ///
@@ -549,7 +549,7 @@ mod bounded {
     /// Wait for a child that has already closed stdout, bounded — so that
     /// a process which lingers after producing its output cannot hang the
     /// gather either.
-    fn reap(child: &mut Child) -> Result<std::process::ExitStatus, String> {
+    pub(super) fn reap(child: &mut Child) -> Result<std::process::ExitStatus, String> {
         // Measured as elapsed time rather than a precomputed instant: adding
         // to an `Instant` can overflow, and there is no sensible answer for a
         // clock that cannot represent one second from now.
@@ -1125,7 +1125,7 @@ mod tests {
     #[cfg(any(unix, windows))]
     mod bounded_capture {
         use std::process::Command;
-        use std::time::Duration;
+        use std::time::{Duration, Instant};
 
         use super::super::bounded;
 
@@ -1215,6 +1215,26 @@ mod tests {
             let error =
                 bounded::capture(&mut shell(NEVER_FINISHES), Duration::from_secs(2)).unwrap_err();
             assert!(error.contains("did not finish within"), "{error}");
+        }
+
+        /// The grace period itself, which no `capture` fixture reaches: the
+        /// deadline one never gets past `recv_timeout`, and the success one
+        /// exits before the first poll. So the guard this commit changed is
+        /// pinned directly — a child that lingers gets the grace and no more.
+        #[test]
+        fn test_reap_waits_out_the_grace_period_then_gives_up() {
+            let mut cmd = shell(NEVER_FINISHES);
+            cmd.stdout(std::process::Stdio::null());
+            let mut child = cmd.spawn().unwrap();
+            let started = Instant::now();
+            let error = bounded::reap(&mut child).unwrap_err();
+            let waited = started.elapsed();
+            assert!(error.contains("did not exit"), "{error}");
+            // Bounded both ways, because both regressions are silent: a guard
+            // that never waits returns at once, and one that never expires
+            // hangs here rather than reporting.
+            assert!(waited >= bounded::REAP_GRACE, "gave up after {waited:?}");
+            assert!(waited < Duration::from_secs(5), "waited {waited:?}");
         }
 
         /// And it kills what it gave up on. An orphan would outlive the

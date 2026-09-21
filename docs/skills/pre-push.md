@@ -243,15 +243,16 @@ therefore miss the very violation this is here to catch.
 
 ```sh
 rustup target add x86_64-pc-windows-msvc aarch64-apple-darwin
+crate=rusty-photon-doctor-checks   # whichever crate your change touched
 for target in x86_64-pc-windows-msvc aarch64-apple-darwin; do
-    cargo clippy --target "$target" -p <crate> \
+    cargo clippy --target "$target" -p "$crate" \
         --all-targets --all-features -- -D warnings
-    cargo clippy --target "$target" -p <crate> \
+    cargo clippy --target "$target" -p "$crate" \
         --lib --bins -- -D warnings
 done
 ```
 
-Scope it to the crates you touched: `--workspace` fails locally at the first
+Scope it to the crates you touched — `--workspace` fails locally at the first
 build script that compiles C for the host it cannot target (`ring`,
 `aws-lc-sys`, `erfars`). Since `clippy-os` is off-PR, skipping this means the
 violation is found by the push to main — after the merge, on everyone's tree.
