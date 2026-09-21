@@ -173,9 +173,12 @@ What it means for the hardware:
   can be located again afterwards.
 
   Note what the handshake's `:j1` / `:j2` do *not* tell you. They are
-  read **before** the stop goes out, and `:L` is a decelerating stop,
-  not an instantaneous one: the axis travels on for the length of its
-  ramp-down. Measured on the rig from a 5.1°/s goto, the mount covered a
+  read **before** the stop goes out, and the axis does not come to rest
+  the instant it arrives. `:L` is the *instant stop* this document names
+  everywhere else — but that name distinguishes it from `:K`'s
+  controlled deceleration, it does not promise zero settling time: a
+  moving axis still coasts through a mechanical ramp-down that the
+  firmware counts. Measured on the rig from a 5.1°/s goto, the mount covered a
   further 30,367 Dec ticks — 3.77° — between the handshake sample and
   coming to rest. The handshake value is therefore a pre-stop sample,
   stale the moment the halt executes; the resting position is what the
