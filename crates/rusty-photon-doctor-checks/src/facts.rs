@@ -1315,7 +1315,7 @@ mod tests {
     mod staged_inventory {
         use std::path::{Path, PathBuf};
 
-        use super::super::{gather, ProbeRequest, StagedUsbInventory};
+        use super::super::{gather, HardwareFacts, ProbeRequest, StagedUsbInventory, UsbDevice};
 
         fn stage(dir: &Path, json: &str) -> PathBuf {
             let path = dir.join("inventory.json");
@@ -1462,6 +1462,38 @@ mod tests {
             let error = StagedUsbInventory::load(&path).unwrap_err();
             assert!(error.contains("blank `model`"), "{error}");
             assert!(error.contains("null"), "{error}");
+        }
+
+        /// The capture-and-stage property, end to end: what `HardwareFacts`
+        /// serializes is what this loader accepts. A *successful* scan
+        /// serializes `"usb_unavailable": null`, which is why null there
+        /// means "no failure" rather than "a failure with no reason" —
+        /// reading it the other way would make a healthy rig's own facts
+        /// file unstageable, and this document uses those field names
+        /// precisely so it does not have to be rewritten by hand.
+        #[test]
+        fn test_serialized_hardware_facts_stage_verbatim() {
+            let facts = HardwareFacts {
+                usb: vec![UsbDevice {
+                    vendor: "03c3".to_string(),
+                    product: "662b".to_string(),
+                    model: Some("ASI662MC".to_string()),
+                    port: Some("1-4.2".to_string()),
+                    serial: None,
+                }],
+                ..Default::default()
+            };
+            let document = serde_json::to_string(&facts).unwrap();
+            assert!(
+                document.contains(r#""usb_unavailable":null"#),
+                "a successful scan serializes an explicit null: {document}"
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(dir.path(), &document);
+            assert_eq!(
+                StagedUsbInventory::load(&path).unwrap(),
+                StagedUsbInventory::Devices(facts.usb)
+            );
         }
 
         /// But an explicit `null` is a state collectors reach constantly —
