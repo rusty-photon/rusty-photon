@@ -426,9 +426,22 @@ mod linux {
                         dir.display()
                     )
                 })?;
+            // `idProduct` is mandatory in the device descriptor, so a
+            // candidate missing it is an unreadable entry rather than a
+            // device without one. Defaulting it to empty would leave a
+            // plausible-looking record that no VID:PID match can hit —
+            // the "scan succeeded, device absent" answer this whole
+            // distinction exists to prevent. `model` and `serial` are
+            // genuinely optional and stay that way.
+            let product = read_attr(&dir, "idProduct").ok_or_else(|| {
+                format!(
+                    "sysfs USB entry {} declares a vendor but no readable idProduct",
+                    dir.display()
+                )
+            })?;
             inventory.push(UsbDevice {
                 vendor,
-                product: read_attr(&dir, "idProduct").unwrap_or_default(),
+                product,
                 model: read_attr(&dir, "product"),
                 port: Some(port.to_string()),
                 serial: read_attr(&dir, "serial"),
@@ -987,6 +1000,20 @@ mod tests {
             inventory[1].serial, None,
             "a device publishing no serial is normal, not a failure"
         );
+
+        // A candidate that declares a vendor but whose product cannot be
+        // read fails the scan rather than yielding an empty product that
+        // no VID:PID match could ever hit.
+        let half_read = devices.join("1-9");
+        std::fs::create_dir_all(&half_read).unwrap();
+        std::fs::write(half_read.join("idVendor"), "03c3\n").unwrap();
+        let error = linux::usb_inventory(&devices)
+            .expect_err("a candidate with no readable idProduct fails the scan");
+        assert!(
+            error.contains("idProduct"),
+            "the error should name what was missing: {error}"
+        );
+        std::fs::remove_dir_all(&half_read).unwrap();
 
         let etc = dir.path().join("etc-rules");
         let lib = dir.path().join("lib-rules");
