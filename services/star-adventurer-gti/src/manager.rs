@@ -26,7 +26,7 @@ use rusty_photon_shared_transport::{
 use skywatcher_motor_protocol::{Axis, AxisStatus, Command, ModeKind, MountType, Response};
 use tokio::sync::RwLock;
 use tokio::time::interval;
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::codec::{decode_frame_for, SkywatcherCodec, SkywatcherCodecError};
 use crate::config::{Config, TransportConfig};
@@ -500,6 +500,24 @@ async fn safety_stop(conn: &Connection<SkywatcherCodec>) -> StateAssertion {
             verdict = verdict.and(StateAssertion::NotAsserted);
         }
     }
+    // Report the verdict on the way out, including when nothing went
+    // wrong. The per-command `warn!` above only fires on failure, so
+    // without this line a halt that worked is invisible: on healthy
+    // hardware the whole sequence leaves no trace at any default log
+    // level, and confirming it ran at all means enabling wire tracing
+    // on the transport crate and reading raw frames. An operator asking
+    // "was the mount actually stopped?" should not have to do that.
+    //
+    // `info!` rather than `debug!`, against the usual preference for
+    // `debug!`: the packaged units ship `RUST_LOG=info`, so `debug!`
+    // would leave this invisible on every stock installation and the
+    // operator no better off than before. This is the record that a
+    // safety action affecting a moving telescope either did or did not
+    // reach the hardware — the one class of event where "you had to
+    // know to turn it on" is the wrong default. It fires once per start
+    // and once per last-client disconnect, so it is bounded by session
+    // count rather than by traffic.
+    info!(verdict = ?verdict, "safety stop complete");
     verdict
 }
 
