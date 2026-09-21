@@ -108,6 +108,44 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_an_auto_flip_offset_no_flip_can_happen_at() {
+        // The cross-block rule `load_config` enforces at startup has to
+        // hold on the runtime `config.apply` path too — otherwise a
+        // regression that drops this hook still passes the config
+        // tests while letting an apply install what startup refuses.
+        // Offset 0.95 is past the guard entry (0.95 - 0.05) for the
+        // shipped zone, so the auto-flip could never fire.
+        let mut config = Config::default();
+        config.mount.unique_id = "star-adv-id".to_string();
+        config.mount.flip_policy.enabled = true;
+        config.mount.flip_policy.auto_flip_during_tracking = true;
+        config.mount.flip_policy.auto_flip_at_meridian_offset_hours = 0.95;
+        let errors = StarAdvDriver::validate(&config);
+        let err = errors
+            .iter()
+            .find(|e| e.path == "mount.flip_policy.auto_flip_at_meridian_offset_hours")
+            .unwrap_or_else(|| panic!("expected the offset field error, got {errors:?}"));
+        assert!(
+            err.msg.contains("tracking guard"),
+            "error should say why the offset is unreachable, got: {msg}",
+            msg = err.msg
+        );
+    }
+
+    #[test]
+    fn validate_accepts_an_auto_flip_offset_inside_the_reachable_band() {
+        let mut config = Config::default();
+        config.mount.unique_id = "star-adv-id".to_string();
+        config.mount.flip_policy.enabled = true;
+        config.mount.flip_policy.auto_flip_during_tracking = true;
+        config.mount.flip_policy.auto_flip_at_meridian_offset_hours = 0.3;
+        assert_eq!(
+            StarAdvDriver::validate(&config),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
+    }
+
+    #[test]
     fn editability_tiers() {
         assert_eq!(StarAdvDriver::locked_paths(), &["mount.unique_id"]);
         assert!(StarAdvDriver::read_only_paths().contains(&"transport.kind"));

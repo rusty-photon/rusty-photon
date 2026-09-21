@@ -5,8 +5,15 @@
 //! `RA = LST − HA` at run time (the shared helper
 //! [`super::altitude_floor_steps::ra_for_hour_angle`]). A hardcoded RA
 //! would put the target at whatever `mech_HA` the wallclock happened to
-//! produce, which is exactly why the BDD baseline config disables the
-//! zone.
+//! produce.
+//!
+//! The baseline config runs the **shipped** zone rather than disabling
+//! it, and pins the site longitude so LST is a fixed reference at
+//! startup (`world.rs`) — that is what makes a hardcoded target
+//! deterministic. A scenario that needs a *particular* `mech_HA`, as
+//! these do, still addresses its target by hour angle; none of them
+//! should reach for `CwExclusionZone::Disabled` to get there, since
+//! that switches off the mechanism under test.
 
 use ascom_alpaca::api::telescope::PierSide;
 use cucumber::{given, then, when};

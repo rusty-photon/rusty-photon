@@ -1134,13 +1134,20 @@ a flip. Four fields:
   target HA at which the auto-flip fires. Only consulted when
   `auto_flip_during_tracking = true`. Must be a finite hour angle
   (`|offset| ≤ 12`) that also names a point a flip can actually happen
-  at: inside `[−x, x − tracking_guard_margin_hours)` for a zone
-  `(x, 12 − x)` — the band where both pier sides reach the target, up
-  to where the tracking guard stops the mount. Outside it the
-  auto-flip does not fire late, it never fires at all, so the config
-  is refused at load (and on a runtime `config.apply`) rather than
-  leaving `auto_flip_during_tracking = true` as a setting that does
-  nothing. The rule spans two config blocks, so unlike the other
+  at, which is two conditions rather than a band:
+  **tracking must reach the trigger** (`offset <
+  min_hours − tracking_guard_margin_hours`, since the guard stops the
+  mount there and a tracked target arrives from below), and **the flip
+  must land clear** (`offset + 12` folded, outside the zone, or the
+  slew is refused). With the shipped zone that works out to
+  `[−0.95, +0.90)`, but the conditions are evaluated against both zone
+  bounds rather than presuming the `(x, 12 − x)` shape —
+  `cw_exclusion_zone` accepts any `-12 ≤ min < max ≤ 12`, and off that
+  shape a presumed band both rejects reachable offsets and admits
+  unreachable ones. Fail either condition and the auto-flip does not
+  fire late, it never fires at all, so the config is refused at load
+  (and on a runtime `config.apply`) rather than leaving
+  `auto_flip_during_tracking = true` as a setting that does nothing. The rule spans two config blocks, so unlike the other
   invariants it is not a newtype — it lives in
   `MountConfig::auto_flip_offset_error`. With the zone disabled there
   is no guard and no unreachable side, so any finite offset passes.
@@ -1375,12 +1382,12 @@ Semantics and interactions:
   crossing. A small positive value (e.g. `+0.3`) waits until the
   target is that far past the meridian — the common astrophotography
   preference, letting the in-progress sub finish (matches NINA's
-  "delay meridian flip by N minutes" semantics). The value must fall
-  in `[−x, x − tracking_guard_margin_hours)` — with the shipped
-  defaults, `[−0.95, +0.90)` — and is validated at config load;
-  outside it the flip is either refused (the flipped destination is
-  inside the zone) or pre-empted by the guard, so it would never
-  fire.
+  "delay meridian flip by N minutes" semantics). With the shipped
+  defaults the usable values are `[−0.95, +0.90)`; the general rule is
+  the two conditions in [§Flip policy](#flip-policy), validated at
+  config load. Outside them the flip is either refused (the flipped
+  destination is inside the zone) or pre-empted by the guard, so it
+  would never fire.
 - **Hosts observe the flip normally.** The flip is visible as
   `Slewing = true` plus the subsequent `SideOfPier` change, exactly
   like an explicit `SetSideOfPier` — guiding / imaging restart
@@ -1797,11 +1804,10 @@ Notes:
   [§Auto-flip during tracking](#auto-flip-during-tracking).
 - `flip_policy.auto_flip_at_meridian_offset_hours` defaults `0.0`
   (flip exactly at meridian crossing; positive values delay the flip
-  past the meridian). Must be a finite hour angle that lies in
-  `[−x, x − tracking_guard_margin_hours)` — `[−0.95, +0.90)` with the
-  shipped defaults — the band where a flip is possible at all.
-  Validated at load and on `config.apply`; see
-  [§Flip policy](#flip-policy).
+  past the meridian). Must be a finite hour angle naming a point a
+  flip can happen at — `[−0.95, +0.90)` with the shipped defaults,
+  derived from both zone bounds in the general case. Validated at load
+  and on `config.apply`; see [§Flip policy](#flip-policy).
 - `flip_policy.flip_range_hours` was **removed** 2026-09 (issue
   #1301). A config still carrying it fails to load with the field
   named — see [§Flip policy](#flip-policy) for the migration.
