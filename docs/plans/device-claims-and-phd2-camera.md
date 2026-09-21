@@ -91,7 +91,7 @@ recorded here so the option is not lost.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | C0 | This plan | Not started | |
-| C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Not started | |
+| C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Spike done except a different-port move (see D2); `port`/`serial` extraction and the failed-vs-empty inventory landed | `chore/device-claims-c1-spike` |
 | C2 | `claims` schema + `svbony-camera` — the easy case, proves schema, join and doctor output | Not started | |
 | C3 | `claims` in `zwo-camera` | Not started | |
 | C4 | `claims` in `qhy-camera` + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup entirely** (the split alone narrows the tenet-3 problem, it does not discharge it) | Not started | |
@@ -133,7 +133,7 @@ rather than assumed:
 |---|---|---|---|
 | **USB port path** | **Yes** — every device on the bus has one | **Yes**, on every platform | No — one device per port |
 | SDK serial | No — many cameras report none | ZWO: no (needs `ASIOpenCamera`). QHY/SVBony: yes | No, when it exists |
-| Model name | Yes | Yes | Yes, with two of a kind |
+| Model name | Yes | Yes | Yes — and worse than that on Windows, where two *different* QHY models share one bus-reported name (D2) |
 
 Per-SDK detail for the serial route, for the record:
 
@@ -215,6 +215,109 @@ silent mis-resolution in the one field ownership depends on. So a missing
 `port` on a candidate record **is** an inventory failure (D4.4), caught
 before any SDK open; `Option` survives only as a compatibility shim for
 older serialized fixtures, which the runtime path rejects.
+
+**C1 spike results — `rig2` (Starfront, Windows 11 Pro 26200, Intel
+NUC12WSHi3), 2026-09-21.** Read entirely from the PnP cache with
+`Get-PnpDevice` + `Get-PnpDeviceProperty`; nothing was opened. The rig
+presented the contested case directly — a QHY600M (`1618:C601`) and a
+QHY5III678M (`1618:0679`) behind one SDK, plus a ZWO ASI662MC
+(`03C3:662B`), all three behind the UPBv2's hub:
+
+```
+QHY600M       PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)   Port_#0001.Hub_#0003
+QHY5III678M   PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(3)   Port_#0003.Hub_#0003
+ASI662MC      PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)    Port_#0004.Hub_#0004
+```
+
+1. **`DEVPKEY_Device_LocationPaths` is the property — settled.** It
+   carries the full chain including every hub hop, where
+   `DEVPKEY_Device_LocationInfo` carries one level only
+   (`Port_#0003.Hub_#0003`) — it names the port and the hub's index but
+   not the path to that hub, so two devices on identically-numbered ports
+   of different hubs are indistinguishable by it. That depth is the
+   disqualifier, and it is structural. (Its `Hub_#n` *looks* like an
+   enumeration index that would drift, but it did not move across the
+   reboot in (3), so that is not the reason to reject it.) D2's candidate
+   comparison closes in `LocationPaths`' favour and the schema can commit
+   to that spelling.
+
+2. **It is multi-valued, and the `PCIROOT` element is not guaranteed.**
+   Every healthy device returned two spellings — a `PCIROOT(…)` chain and
+   an `ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#…` chain — but a device whose
+   descriptor request had failed returned **only** the ACPI form. So the
+   Windows collector must *select* the `PCIROOT(`-rooted element rather
+   than take index `[0]`, and must define what a device with no such
+   element is: a candidate record with no usable port, which D4.4 already
+   classifies as an inventory failure. This shape was not anticipated —
+   the plan described the property as though it held one string.
+
+3. **Stable across a port power cycle, and unaffected by a sibling's
+   absence.** Switching the UPBv2 USB port feeding the QHY5III678M off
+   and back returned it to a byte-identical `LocationPaths` and
+   `LocationInfo`; the other two cameras kept their exact paths while it
+   was gone, and again after it returned. The same held for the
+   ASI662MC's port. That is the property Alpaca device numbers lack —
+   [#1184](https://github.com/rusty-photon/rusty-photon/issues/1184) is
+   the same rig renumbering its cameras after a power cycle — and it is
+   the direct evidence for D4.7's motivation.
+
+   **It also survives a host reboot.** The box was restarted with the
+   UPBv2 still powering all three cameras, so Windows rebuilt its USB
+   tree from scratch against an unchanged bus. Every one of the three
+   came back on a byte-identical `LocationPaths`, `LocationInfo` *and*
+   device instance id. What this leg does not cover is the cameras
+   themselves re-enumerating from cold, since the UPBv2 held them up
+   throughout; and a genuine move to a *different* port still needs
+   physical access. With those two exceptions the key is proven stable
+   on Windows across every transition C1 set out to test.
+
+4. **Windows publishes no USB serial for any of the three cameras.** The
+   third field of the instance id is a port-derived string
+   (`6&4213695&0&3`), not a serial — contrast the UPBv2's own FTDI
+   bridge, enumerated as `USB\VID_0403&PID_6015\UPB248E11M`, which
+   carries a real one. So on Windows, D5's Serial column is `—` for every
+   camera on this rig, and D4.2's serial join is simply unavailable:
+   QHY's serial exists only behind `GetQHYCCDId`, which is SDK-side.
+   D1's per-SDK table is about *SDK* serials and remains correct; what is
+   new is that the **bus** supplies no serial to join against, on the one
+   platform where the join has the least to work with.
+
+5. **The model join signal is weaker on Windows than D1 assumed, and
+   VID:PID is the repair.** Both QHY cameras report the *same*
+   bus-reported name, `QHY5IIISeries_IO` — two **different** models
+   colliding, not the "two of a kind" case D1 anticipated, so a
+   model-string join would find the bus ambiguous while the SDK sees two
+   plainly distinct cameras. Their **product ids differ** (`C601` vs
+   `0679`), and `UsbDevice` already carries `vendor`/`product`. So the
+   join described in D4.2 should read VID:PID before the model string,
+   and each driver's normalizer maps its own SDK model names onto the
+   product ids it expects. Unit tests over observed pairs get a real
+   fixture from this rig.
+
+6. **The UPBv2 presents two hubs, and which one a camera appears under is
+   not yet explained.** The box enumerates as a Microchip companion pair
+   on one upstream connector — `USB2807 Hub` at `USB(2)` (the NUC's
+   `HS02`) and `USB5807 Hub` at `USB(14)` (`SS02`) — with the UPBv2's own
+   FTDI bridge on the USB 2.0 half at downstream port 7. The vendor
+   specifies four USB 3.1 and two USB 2.0 connectors. Observed: the two
+   QHY cameras sit under the `USB5807` half at downstream ports 1 and 3,
+   and the ASI662MC under the `USB2807` half at port 4 — each confirmed
+   by switching its UPBv2 port off and watching that device, and only
+   that device, leave the bus. Downstream port numbers match the UPBv2's
+   own port labelling on both halves.
+
+   **What that does not establish**, and what the schema should not
+   assume either way: whether a camera's hub segment is fixed by which
+   connector it occupies, or can differ between enumerations of the same
+   camera in the same connector. Distinguishing the two needs an
+   observation this spike does not have — a device seen under both halves
+   — and it cannot be got from a static reading, since a USB 2.0 device
+   in a USB 3.1 connector and any device in a USB 2.0 connector are
+   indistinguishable once enumerated. Until something demonstrates
+   otherwise, the port path is treated as stable, which is what the
+   power-cycle evidence in (3) actually showed. Which of this rig's
+   connectors are the USB 2.0 pair is likewise unknown — the vendor does
+   not document the panel layout, so it needs a look at the hardware.
 
 **The port string is the platform's native spelling, not a normalised
 invention.** `1-4.2` on Linux, the location path on Windows, the location
@@ -1557,7 +1660,8 @@ are waiting on evidence or an implementation choice, each named at its
 rule — three of them block a phase outright (C1's spike, C4's
 tenet-3-safe probe path, and C7's focus-model reconciliation):
 
-- **C1 — the Windows port spelling**, waiting on hardware (D2).
+- **C1 — the Windows port spelling**, largely answered on `rig2` 2026-09-21 (D2): `DEVPKEY_Device_LocationPaths` is the property, and the spelling held across a port power cycle and a sibling's absence. Still waiting on hardware for a move to a *different* port; reboot stability was proven on the
+  same rig the same day.
 - **C6 — the capture completion watermark**, waiting on one measurement
   against a live PHD2 (D9). Until it exists the facade cannot tell a
   finished exposure from the frame before it.
