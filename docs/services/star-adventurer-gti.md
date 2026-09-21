@@ -1158,9 +1158,13 @@ The rules:
 - For flipped-side targets, `target_mech_HA = celestial_HA + 12 h`
   (folded).
 - Setting `cw_exclusion_zone` to `null` (disabled) turns off both the
-  destination and path checks — used by BDD scenarios that pass
-  hardcoded celestial coords whose computed mech_HA depends on
-  wallclock LST.
+  destination and path checks — and, with them, the tracking guard and
+  every pier-side choice the driver would otherwise make. The BDD
+  suite runs the **shipped** zone rather than a disabled one; it pins
+  the site longitude so LST is a fixed reference at startup, which
+  puts its canonical target on the meridian instead of wherever the
+  wallclock would have left it (see
+  [§Testing](#testing)).
 
 Historical note: a narrower `(+6.95, +11.05)` zone was used before
 2026-05-17. That captured only the *outer* portion of the exclusion
@@ -1218,8 +1222,11 @@ The floor accepts values in `[-90, +90]`:
   closed-roof flats). The driver logs `info!` at startup when the floor
   is negative so the relaxed state is discoverable in support
   transcripts. `-90` never rejects anything (the check is
-  effectively disabled — the BDD suite ships this in its default test
-  config because scenario targets are wallclock-LST-dependent).
+  effectively disabled — the BDD baseline ships this, since its
+  scenario targets are chosen to exercise wire behaviour rather than
+  to clear any particular horizon; the floor has its own feature file,
+  whose scenarios address targets by hour angle and set the floor
+  explicitly).
 
 Like the CW exclusion zone, the floor gates `SlewToCoordinatesAsync` /
 `SlewToTargetAsync`, `SyncToCoordinates` / `SyncToTarget`, and the
@@ -1516,10 +1523,7 @@ nudge that physically just crosses the `−12 ↔ +12` wrap; the old
 path-aware check preserves the safe canonical step.
 
 Empty zone (`zone_min ≥ zone_max`) disables the routing — the
-canonical short delta is always used. BDD tests rely on this to keep
-small-distance scenarios from accidentally triggering the long way
-when the wall-clock LST puts a synthetic target inside the default
-zone.
+canonical short delta is always used.
 
 **Dec axis:** routed through the visible celestial pole, NOT the
 below-horizon pole. For a polar-aligned mount, only one of the two
@@ -2188,6 +2192,20 @@ ConformU verifies ASCOM compliance.
 | Crate property tests (`tests/property_tests.rs`) | round-trip: random `Command` → bytes → `Command`; same for `Response`; bias-offset preservation across signed `i32` range |
 | Service unit tests (`#[cfg(test)]` per module) | `coordinates`: encoder ↔ RA/Dec across edge cases (poles, meridian, hemisphere flip); `config`: defaults, JSON round-trips, CLI overrides; `error`: ASCOM mapping |
 | Service BDD (cucumber) | every behaviour table-row above as a scenario, with the mock transport |
+
+**The BDD baseline runs the shipped safety config.** Its
+`cw_exclusion_zone` is the default `(0.95, 11.05)`, not `null`, so
+every scenario's slew and sync target passes the same gate an
+operator's would. Scenario targets used to be at the mercy of
+wallclock LST — `RA 6.0 h` lands inside the zone for ~42% of the
+sidereal day — so `world.rs` pins the site longitude at service start
+such that LST is `6.0 h`, putting that canonical target at
+`mech_HA = 0`. A scenario that needs a *specific* `mech_HA` addresses
+its target by hour angle and lets the step compute
+`RA = LST − HA` (`altitude_floor.feature`,
+`pier_side_selection.feature`, and the CW-exclusion-zone scenarios in
+`slew.feature`); a scenario whose subject is the longitude itself
+pins its own and opts out of the reference LST.
 | Service `test_lib.rs` (gated on `mock`) | server starts, binds the configured port, exposes the configured device |
 | `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance via `ConformUTestBuilder::run()` — runs both `alpacaprotocol` and `conformance` phases. **Currently NOT wired into the nightly `conformu` workflow** (issue #201): three independent conformance-phase failures need driver work first. See [§"Running ConformU manually"](#running-conformu-manually) and [§"Expected ConformU report"](#expected-conformu-report). |
 
