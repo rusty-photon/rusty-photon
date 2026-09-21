@@ -231,10 +231,15 @@ ASI662MC      PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)    Port_#0004.Hub_#0
 
 1. **`DEVPKEY_Device_LocationPaths` is the property — settled.** It
    carries the full chain including every hub hop, where
-   `DEVPKEY_Device_LocationInfo` carries one level
-   (`Port_#0003.Hub_#0003`) whose `Hub_#n` is an enumeration index rather
-   than a topology fact. D2's candidate comparison closes in
-   `LocationPaths`' favour and the schema can commit to that spelling.
+   `DEVPKEY_Device_LocationInfo` carries one level only
+   (`Port_#0003.Hub_#0003`) — it names the port and the hub's index but
+   not the path to that hub, so two devices on identically-numbered ports
+   of different hubs are indistinguishable by it. That depth is the
+   disqualifier, and it is structural. (Its `Hub_#n` *looks* like an
+   enumeration index that would drift, but it did not move across the
+   reboot in (3), so that is not the reason to reject it.) D2's candidate
+   comparison closes in `LocationPaths`' favour and the schema can commit
+   to that spelling.
 
 2. **It is multi-valued, and the `PCIROOT` element is not guaranteed.**
    Every healthy device returned two spellings — a `PCIROOT(…)` chain and
@@ -254,9 +259,17 @@ ASI662MC      PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)    Port_#0004.Hub_#0
    ASI662MC's port. That is the property Alpaca device numbers lack —
    [#1184](https://github.com/rusty-photon/rusty-photon/issues/1184) is
    the same rig renumbering its cameras after a power cycle — and it is
-   the direct evidence for D4.7's motivation. **Reboot stability is not
-   yet proven** and remains C1's open leg, along with a genuine move to a
-   *different* port, which needs physical access.
+   the direct evidence for D4.7's motivation.
+
+   **It also survives a host reboot.** The box was restarted with the
+   UPBv2 still powering all three cameras, so Windows rebuilt its USB
+   tree from scratch against an unchanged bus. Every one of the three
+   came back on a byte-identical `LocationPaths`, `LocationInfo` *and*
+   device instance id. What this leg does not cover is the cameras
+   themselves re-enumerating from cold, since the UPBv2 held them up
+   throughout; and a genuine move to a *different* port still needs
+   physical access. With those two exceptions the key is proven stable
+   on Windows across every transition C1 set out to test.
 
 4. **Windows publishes no USB serial for any of the three cameras.** The
    third field of the instance id is a port-derived string
@@ -1647,7 +1660,8 @@ are waiting on evidence or an implementation choice, each named at its
 rule — three of them block a phase outright (C1's spike, C4's
 tenet-3-safe probe path, and C7's focus-model reconciliation):
 
-- **C1 — the Windows port spelling**, largely answered on `rig2` 2026-09-21 (D2): `DEVPKEY_Device_LocationPaths` is the property, and the spelling held across a port power cycle and a sibling's absence. Still waiting on hardware for **reboot stability** and a move to a *different* port.
+- **C1 — the Windows port spelling**, largely answered on `rig2` 2026-09-21 (D2): `DEVPKEY_Device_LocationPaths` is the property, and the spelling held across a port power cycle and a sibling's absence. Still waiting on hardware for a move to a *different* port; reboot stability was proven on the
+  same rig the same day.
 - **C6 — the capture completion watermark**, waiting on one measurement
   against a live PHD2 (D9). Until it exists the facade cannot tell a
   finished exposure from the frame before it.
