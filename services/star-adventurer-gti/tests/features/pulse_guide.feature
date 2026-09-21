@@ -24,6 +24,21 @@ Feature: PulseGuide as rate-shifted tracking
   0.5 × sidereal (`SIDEREAL_DEG_PER_SEC ≈ 0.00417807`, so the default
   rate is approximately `0.00208904 deg/sec`).
 
+  The shifted period is per-axis. `:I` carries the time between motor
+  steps, and the axes have different counts per revolution, so each
+  axis has its own sidereal period
+  `round(TMR_Freq × 86164.0905 / CPR<axis>)` and the pulse sends
+  `round(sidereal period / rate factor)`. A Dec pulse sent an RA-derived
+  period guides too fast by CPR_RA / CPR_Dec = 1.25. With TMR_Freq
+  16000000 and the default 0.5 × sidereal guide rates:
+  | Axis | CPR     | sidereal period | pulse            | period | :I frame  |
+  | RA   | 3628800 | 379912          | East  (0.5 ×)    | 759824 | :I110980B |
+  | RA   | 3628800 | 379912          | West  (1.5 ×)    | 253275 | :I15BDD03 |
+  | RA   | 3628800 | 379912          | restore sidereal | 379912 | :I108CC05 |
+  | Dec  | 2903040 | 474890          | North (0.5 ×)    | 949780 | :I2147E0E |
+  | Dec  | 2903040 | 474890          | South (0.5 ×)    | 949780 | :I2147E0E |
+  (`:I` payloads are 24-bit, low byte first.)
+
   Scenario: CanPulseGuide is true when connected
     Given a running star-adventurer service
     When I connect the device
@@ -101,11 +116,11 @@ Feature: PulseGuide as rate-shifted tracking
     And I enable tracking
     And I pulse guide North for 2000 ms
     Then the mount should have received commands matching:
-      | pattern |
-      | :K2     |
-      | :G210   |
-      | :I2.*   |
-      | :J2     |
+      | pattern   |
+      | :K2       |
+      | :G210     |
+      | :I2147E0E |
+      | :J2       |
     And IsPulseGuiding should become false within 20000 ms
     And the mount should have received command :K2
 
@@ -115,11 +130,11 @@ Feature: PulseGuide as rate-shifted tracking
     And I enable tracking
     And I pulse guide South for 2000 ms
     Then the mount should have received commands matching:
-      | pattern |
-      | :K2     |
-      | :G211   |
-      | :I2.*   |
-      | :J2     |
+      | pattern   |
+      | :K2       |
+      | :G211     |
+      | :I2147E0E |
+      | :J2       |
     And IsPulseGuiding should become false within 20000 ms
 
   Scenario: PulseGuide East while tracking shifts the rate and restores sidereal
@@ -132,15 +147,15 @@ Feature: PulseGuide as rate-shifted tracking
     And I pulse guide East for 2000 ms
     Then IsPulseGuiding should become false within 20000 ms
     And the mount should have received commands matching:
-      | pattern |
-      | :K1     |
-      | :G110   |
-      | :I1.*   |
-      | :J1     |
-      | :K1     |
-      | :G110   |
-      | :I1.*   |
-      | :J1     |
+      | pattern   |
+      | :K1       |
+      | :G110     |
+      | :I110980B |
+      | :J1       |
+      | :K1       |
+      | :G110     |
+      | :I108CC05 |
+      | :J1       |
 
   Scenario: PulseGuide West while tracking shifts the rate and restores sidereal
     # West speeds tracking (period shrinks); same restore shape as East.
@@ -150,15 +165,15 @@ Feature: PulseGuide as rate-shifted tracking
     And I pulse guide West for 2000 ms
     Then IsPulseGuiding should become false within 20000 ms
     And the mount should have received commands matching:
-      | pattern |
-      | :K1     |
-      | :G110   |
-      | :I1.*   |
-      | :J1     |
-      | :K1     |
-      | :G110   |
-      | :I1.*   |
-      | :J1     |
+      | pattern   |
+      | :K1       |
+      | :G110     |
+      | :I15BDD03 |
+      | :J1       |
+      | :K1       |
+      | :G110     |
+      | :I108CC05 |
+      | :J1       |
 
   Scenario: PulseGuide East while not tracking does not restore tracking
     # Without prior tracking, the watcher's RA restore branch is skipped

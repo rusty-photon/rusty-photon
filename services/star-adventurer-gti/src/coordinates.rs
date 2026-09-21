@@ -418,15 +418,19 @@ pub fn ra_dec_to_alt_az(ra: Ra, dec: Dec, site_latitude_deg: f64, lst: Lst) -> (
 ///
 /// `period = tmr_freq * 86164.0905 / cpr`
 ///
-/// For the `GTi` defaults (`tmr_freq = 0xF42400 = 16_000_000`,
-/// `cpr = 0x375F00 = 3_628_800`), this gives roughly `379,887`.
+/// `cpr` must be the CPR of the axis the period is sent to: the `GTi`'s
+/// axes differ (RA `0x375F00 = 3_628_800`, Dec `0x2C4C00 = 2_903_040`),
+/// so with `tmr_freq = 0xF42400 = 16_000_000` the sidereal period is
+/// `379,912` on RA and `474,890` on Dec. Production callers go through
+/// `MountParameters::sidereal_step_period_{ra,dec}`, which pair the
+/// axis with its own CPR.
 #[must_use]
-pub fn sidereal_step_period(tmr_freq: u32, cpr_ra: Cpr) -> u32 {
-    if cpr_ra.get() == 0 {
+pub fn sidereal_step_period(tmr_freq: u32, cpr: Cpr) -> u32 {
+    if cpr.get() == 0 {
         return 0;
     }
     let sidereal_seconds = 86164.0905_f64;
-    sat_round_u32(f64::from(tmr_freq) * sidereal_seconds / f64::from(cpr_ra.get()))
+    sat_round_u32(f64::from(tmr_freq) * sidereal_seconds / f64::from(cpr.get()))
 }
 
 /// Sidereal rate in degrees per second.
@@ -700,10 +704,29 @@ mod tests {
     }
 
     #[test]
-    fn sidereal_step_period_for_gti_defaults() {
-        // tmr_freq = 16M, cpr = 3,628,800 → period ≈ 379,887.
-        let p = sidereal_step_period(0x00F4_2400, cpr());
-        assert!((379_000..=380_000).contains(&p), "expected ~380K, got {p}");
+    fn sidereal_step_period_for_gti_ra_axis() {
+        // 16,000,000 × 86164.0905 / 3,628,800 = 379,912.2.
+        assert_eq!(
+            sidereal_step_period(0x00F4_2400, Cpr::new(0x0037_5F00)),
+            379_912
+        );
+    }
+
+    #[test]
+    fn sidereal_step_period_for_gti_dec_axis() {
+        // 16,000,000 × 86164.0905 / 2,903,040 = 474,890.3. The Dec axis
+        // has fewer counts per revolution, so each step is a larger
+        // angle and the sidereal period is longer by cpr_ra / cpr_dec
+        // = 1.25.
+        assert_eq!(
+            sidereal_step_period(0x00F4_2400, Cpr::new(0x002C_4C00)),
+            474_890
+        );
+    }
+
+    #[test]
+    fn sidereal_step_period_is_zero_for_a_zero_cpr() {
+        assert_eq!(sidereal_step_period(0x00F4_2400, Cpr::new(0)), 0);
     }
 
     #[test]
