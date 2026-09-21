@@ -290,9 +290,11 @@ not say here — it is *not* a constraint this crate has to work around:
   value* with a range check — a different type for a different layer.
 - **If anything, ADR-006 is the precedent *for* this pattern.** Its Goal 2
   is *"construct-time / deserialize-time invariants (parse-don't-validate)"*,
-  and its `FlipRangeHours` config newtype is a private-field `f64` with
-  `#[serde(try_from = "f64", into = "f64")]` and a range-checking `TryFrom`
-  — exactly `IcrsCoord`'s shape. The `rp-targets.md` "bare decimals" choice
+  and its `TrackingGuardMarginHours` config newtype is a private-field `f64`
+  with `#[serde(try_from = "f64", into = "f64")]` and a range-checking
+  `TryFrom` — exactly `IcrsCoord`'s shape. (ADR-006 names `FlipRangeHours`
+  for the same point; that field was removed in 2026-09, but the pattern it
+  illustrated is unchanged and several sibling newtypes still carry it.) The `rp-targets.md` "bare decimals" choice
   was an *alignment* argument (match `ResolvedTarget`/`IcrsCoord`, which
   were bare `f64`), not a prohibition on validating newtypes.
 - **The "bare decimals" goals are preserved, and alignment *improves*.**

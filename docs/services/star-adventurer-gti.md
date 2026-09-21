@@ -1077,23 +1077,22 @@ a flip. Four fields:
   to Phase 5. With `enabled = true`: the capability flag flips on
   and the slew planner picks the target pier side per the policy
   below.
-- **`flip_range_hours: f64`** (default `0.5`) — how far past the
-  meridian an *auto-flip* may be deferred. It bounds
-  `auto_flip_at_meridian_offset_hours` and nothing else. Valid range
-  `(0, 0.95]`, the upper bound being the CW-up allowance `x` (see
-  [§Safety envelope](#safety-envelope-cw-exclusion-zone)) — deferring
-  an auto-flip past `x` is pointless because the tracking guard stops
-  the mount at `x − tracking_guard_margin_hours` first.
-
-  **This field does not decide reachability.** Until 2026-09 the
-  pier-side selector used it as a half-width window
-  (`|target_HA| ≤ flip_range_hours` ⇒ "the flipped side covers this
-  target"), which is the wrong shape: the CW-up side's reach is
-  one-sided (`target_HA ≥ −x`, then the whole western sky), not a
-  band around the meridian. Applying it as a band made most of the
-  western sky unreachable whenever the mount was already CW-up —
-  issue #1301. Reachability now comes from the CW exclusion zone
-  alone; see [§Pier-side decision tree](#pier-side-decision-tree).
+- **`flip_range_hours` — removed 2026-09 (issue #1301).** It
+  expressed the counterweight-up side's reach as a half-width window
+  around the meridian (`|target_HA| ≤ flip_range_hours`), which is the
+  wrong shape: that side's reach is one-sided (`target_HA ≥ −x`, then
+  the whole western sky). Applied as a band it made most of the
+  western sky unreachable whenever the mount was already
+  counterweight-up. Reachability now comes from `cw_exclusion_zone`
+  alone — see
+  [§Pier-side decision tree](#pier-side-decision-tree) — and nothing
+  else in this block has an opinion about it. The field was deleted
+  rather than accepted-and-ignored, so `deny_unknown_fields` fails a
+  config that still carries it, naming the field. **Migration:** delete
+  the `flip_range_hours` line from `flip_policy`; if it was tuned to
+  widen the flip window, the setting to reach for instead is
+  `cw_exclusion_zone.min_hours` (the counterweight-up allowance `x`),
+  and changing it is a hardware claim, not a preference.
 - **`auto_flip_during_tracking: bool`** (default `false`) — when
   `true` (and `enabled` is `true`), the driver initiates a meridian
   flip on its own once continuous tracking carries the target past
@@ -1102,10 +1101,19 @@ a flip. Four fields:
   [§Auto-flip during tracking](#auto-flip-during-tracking).
 - **`auto_flip_at_meridian_offset_hours: f64`** (default `0.0`) —
   target HA at which the auto-flip fires. Only consulted when
-  `auto_flip_during_tracking = true`. Must be finite and within
-  `[−flip_range_hours, +flip_range_hours]` (validated at config
-  load — a cross-field rule on the `flip_policy` block). See
-  [§Auto-flip during tracking](#auto-flip-during-tracking).
+  `auto_flip_during_tracking = true`. Must be a finite hour angle
+  (`|offset| ≤ 12`) that also names a point a flip can actually happen
+  at: inside `[−x, x − tracking_guard_margin_hours)` for a zone
+  `(x, 12 − x)` — the band where both pier sides reach the target, up
+  to where the tracking guard stops the mount. Outside it the
+  auto-flip does not fire late, it never fires at all, so the config
+  is refused at load (and on a runtime `config.apply`) rather than
+  leaving `auto_flip_during_tracking = true` as a setting that does
+  nothing. The rule spans two config blocks, so unlike the other
+  invariants it is not a newtype — it lives in
+  `MountConfig::auto_flip_offset_error`. With the zone disabled there
+  is no guard and no unreachable side, so any finite offset passes.
+  See [§Auto-flip during tracking](#auto-flip-during-tracking).
 
 #### Safety envelope (CW exclusion zone)
 
@@ -1336,10 +1344,12 @@ Semantics and interactions:
   crossing. A small positive value (e.g. `+0.3`) waits until the
   target is that far past the meridian — the common astrophotography
   preference, letting the in-progress sub finish (matches NINA's
-  "delay meridian flip by N minutes" semantics). Must be finite and
-  within `[−flip_range_hours, +flip_range_hours]`, validated at
-  config load; outside that window the flipped state isn't reachable
-  and the flip slew would be refused anyway.
+  "delay meridian flip by N minutes" semantics). The value must fall
+  in `[−x, x − tracking_guard_margin_hours)` — with the shipped
+  defaults, `[−0.95, +0.90)` — and is validated at config load;
+  outside it the flip is either refused (the flipped destination is
+  inside the zone) or pre-empted by the guard, so it would never
+  fire.
 - **Hosts observe the flip normally.** The flip is visible as
   `Slewing = true` plus the subsequent `SideOfPier` change, exactly
   like an explicit `SetSideOfPier` — guiding / imaging restart
@@ -1450,8 +1460,8 @@ behaviours hosts observe:
   either solution, so every target is usable from the current side and
   only `SetSideOfPier` moves the mount across. (Before 2026-09 a
   disabled zone still flipped back whenever `|target_HA|` left the
-  `flip_range_hours` window — a flip with no safety argument behind
-  it.)
+  since-removed `flip_range_hours` window — a flip with no safety
+  argument behind it.)
 
 Park 1 / Park 5 anti-meridian poses are reachable via
 `SlewToCoordinatesAsync` because they live at `target_HA = ±12 h`
@@ -1600,16 +1610,22 @@ fields. The transport block is a tagged enum: `usb` or `udp`.
 The mount block is **validated at deserialize** (parse-don't-validate):
 the range-carrying fields are newtypes whose `serde` `try_from` rejects an
 out-of-range value during `load_config`, with the offending field named,
-so a bad config fails at startup rather than mid-session. `flip_range_hours`
-(the auto-flip deferral bound — it does not decide reachability)
-must be `(0, 0.95]`; `tracking_guard_margin_hours` `[0, 1.0]`; an active
+so a bad config fails at startup rather than mid-session.
+`tracking_guard_margin_hours` must be `[0, 1.0]`; an active
 `cw_exclusion_zone` must satisfy `-12 ≤ min_hours < max_hours ≤ 12`;
 `min_altitude_degrees` must be finite in `[-90, 90]`;
-`auto_flip_at_meridian_offset_hours` must be finite and within
-`±flip_range_hours` (a cross-field rule, checked on the `flip_policy`
-block). (This
+`auto_flip_at_meridian_offset_hours` must be a finite hour angle
+(`|offset| ≤ 12`). (This
 replaced the former runtime `MountConfig::validate` / `FlipPolicy::validate`
 — see [ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md).)
+
+One rule resists that shape: the auto-flip offset must also name a
+point a flip can happen at, which the CW exclusion zone and the
+tracking-guard margin decide — two blocks a newtype on a third cannot
+see. It lives in `MountConfig::auto_flip_offset_error`, called from
+`load_config` at startup and from the config-actions `validate` hook
+so a runtime `config.apply` cannot install what startup would have
+refused.
 Every genuinely-operator-config struct (`Config`, `UsbConfig`, `UdpConfig`,
 `ServerConfig`, `MountConfig`, `FlipPolicy`, and the `cw_exclusion_zone` wire
 shape) additionally rejects unknown keys at deserialize
@@ -1648,7 +1664,6 @@ loudly at load instead of being silently ignored.
     "park_dec_ticks": null,
     "flip_policy": {
       "enabled": false,
-      "flip_range_hours": 0.5,
       "auto_flip_during_tracking": false,
       "auto_flip_at_meridian_offset_hours": 0.0
     },
@@ -1742,13 +1757,6 @@ Notes:
   specific mount (see [§Hardware validation](#hardware-validation)).
   While `false`, `CanSetPierSide` reports `false` and the driver
   ignores flip routing entirely.
-- `flip_policy.flip_range_hours` defaults `0.5`. How far past the
-  meridian an auto-flip may be deferred; it bounds
-  `auto_flip_at_meridian_offset_hours` and nothing else. Valid range
-  `(0, 0.95]`, capped at the CW-up allowance `x`. It does **not**
-  decide which targets a pier side can reach — that comes from
-  `cw_exclusion_zone` alone. See
-  [§Pier-side decision tree](#pier-side-decision-tree).
 - `flip_policy.auto_flip_during_tracking` defaults `false`. When
   `true` (and `flip_policy.enabled` is `true`), the tracking watcher
   initiates a meridian flip on its own once tracking carries the
@@ -1758,8 +1766,14 @@ Notes:
   [§Auto-flip during tracking](#auto-flip-during-tracking).
 - `flip_policy.auto_flip_at_meridian_offset_hours` defaults `0.0`
   (flip exactly at meridian crossing; positive values delay the flip
-  past the meridian). Must be finite and within `±flip_range_hours` —
-  validated at load as a cross-field rule on the `flip_policy` block.
+  past the meridian). Must be a finite hour angle that lies in
+  `[−x, x − tracking_guard_margin_hours)` — `[−0.95, +0.90)` with the
+  shipped defaults — the band where a flip is possible at all.
+  Validated at load and on `config.apply`; see
+  [§Flip policy](#flip-policy).
+- `flip_policy.flip_range_hours` was **removed** 2026-09 (issue
+  #1301). A config still carrying it fails to load with the field
+  named — see [§Flip policy](#flip-policy) for the migration.
 - `unpark_from_ap_position` is **required** (no default in the schema
   sense, but the ship default is `"ap_park_0"` — the field is the
   operator's declared physical position assumption, and "current
@@ -2439,7 +2453,7 @@ survive via the connection-cell swap. (Same service-lifetime pattern as
 | **Phase A7 — PulseGuide** | landed (issue #206) — implements `PulseGuide` as a rate-shifted tracking burst on the targeted axis (no `:P`; that's the ST4-jack rate setter, not a pulse trigger), flips `CanPulseGuide` and `CanSetGuideRates` to `true`. Re-enabled `[package.metadata.conformu]` so the full two-phase ConformU integration ran again — but the `conformance` phase, which `alpacaprotocol`-only manual runs hadn't exercised, surfaced three failures that PR #206's review hadn't caught; see Phase A8. |
 | **Phase A8 — Nightly ConformU opt-out (#201)** | landed (issue #201) — removed `[package.metadata.conformu]` again. ConformU's `conformance` phase fails for three independent reasons that need driver work first: (a) `SideOfPierTests` slews to mech-HA ±9 h, which the safety envelope correctly rejects on hardware but which ConformU treats as a fatal CheckMethods-level exception that abandons the rest of the suite; (b) `SideOfPier` always returns `pierWest` for in-envelope targets (Dec-encoder convention) where ConformU asserts the ASCOM pointing-state convention; (c) PulseGuide Dec moves at full sidereal rate instead of `guide_rate_dec_fraction × sidereal`. See [§Running ConformU manually](#running-conformu-manually) and [§Expected ConformU report](#expected-conformu-report) for the failure details and reproduction steps. |
 | **Phase 5 — user-defined `SetPark` + persistence** | landed (issue #203) — park target now sourced from `mount.park_ra_ticks` / `mount.park_dec_ticks` in the config (fallback: encoder positions captured at handshake), `SetPark` writes the current encoder pair back into the running config file via atomic rename, `CanSetPark` flips on when `--config` is provided. See [§Park lifecycle](#park-lifecycle) and [§Park persistence](#park-persistence). |
-| **Phase 6 — meridian-flip support** | hardware-validated 2026-05-16 (lat 32.7°N) — adds `MountConfig::flip_policy` (`enabled` + `flip_range_hours`), the asymmetric CW exclusion zone safety envelope, CW-exclusion zone-path-aware through-wrap RA routing, visible-pole Dec routing, `SetSideOfPier`, and flip-aware `DestinationSideOfPier`. End-to-end AP Park 1–5 traversal (including the through-wrap saddle-east flip and its flip-back) ran clean; the flip-back from the saddle-east wrap caught a sign-blind heuristic in `flip_slew_ra_delta` that the path-aware check now handles. `flip_policy.enabled` still defaults `false` (operators opt in once they've replayed the validation locally). The tracking-time CW-exclusion-zone safety guard (Part 1 of issue #259) has since landed — a background watcher stops tracking before the encoder `mech_HA` drifts into the zone (see [§Tracking-time safety guard](#tracking-time-safety-guard)). Driver-planned auto-flip-during-tracking (Phase 2.5 / Part 2 of #259) has since landed as well — the same watcher can start a standard flip on the operator's behalf once tracking carries `mech_HA` past a configured offset, opt-in via `flip_policy.auto_flip_during_tracking` and pending its own real-hardware validation (see [§Auto-flip during tracking](#auto-flip-during-tracking)). Plan: [`docs/plans/archive/star-adventurer-gti-meridian-flip.md`](../plans/archive/star-adventurer-gti-meridian-flip.md). See [§Meridian flip](#meridian-flip). |
+| **Phase 6 — meridian-flip support** | hardware-validated 2026-05-16 (lat 32.7°N) — adds `MountConfig::flip_policy` (`enabled`, plus a `flip_range_hours` window removed again in 2026-09 — see [§Flip policy](#flip-policy)), the asymmetric CW exclusion zone safety envelope, CW-exclusion zone-path-aware through-wrap RA routing, visible-pole Dec routing, `SetSideOfPier`, and flip-aware `DestinationSideOfPier`. End-to-end AP Park 1–5 traversal (including the through-wrap saddle-east flip and its flip-back) ran clean; the flip-back from the saddle-east wrap caught a sign-blind heuristic in `flip_slew_ra_delta` that the path-aware check now handles. `flip_policy.enabled` still defaults `false` (operators opt in once they've replayed the validation locally). The tracking-time CW-exclusion-zone safety guard (Part 1 of issue #259) has since landed — a background watcher stops tracking before the encoder `mech_HA` drifts into the zone (see [§Tracking-time safety guard](#tracking-time-safety-guard)). Driver-planned auto-flip-during-tracking (Phase 2.5 / Part 2 of #259) has since landed as well — the same watcher can start a standard flip on the operator's behalf once tracking carries `mech_HA` past a configured offset, opt-in via `flip_policy.auto_flip_during_tracking` and pending its own real-hardware validation (see [§Auto-flip during tracking](#auto-flip-during-tracking)). Plan: [`docs/plans/archive/star-adventurer-gti-meridian-flip.md`](../plans/archive/star-adventurer-gti-meridian-flip.md). See [§Meridian flip](#meridian-flip). |
 | **Phase 7 — altitude-based safety floor (#223)** | landed 2026-07-01 ("Phase 3" in the plan's local numbering) — replaces the rectangular celestial-Dec envelope (`dec_limits`) with `MountConfig::min_altitude_degrees`: slew / sync targets whose computed apparent altitude (`sin alt = sin lat · sin dec + cos lat · cos dec · cos HA`) is below the floor are rejected with `INVALID_VALUE`. Default `0.0` (geometric horizon); negative floors permit below-horizon pointing and log `info!` at startup. `Park` stays exempt (privileged-park pattern). See [§Altitude floor](#altitude-floor). |
 
 #### Phase 4 findings (hardware bringup)

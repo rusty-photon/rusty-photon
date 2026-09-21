@@ -373,14 +373,14 @@ fn ra_path_exists(
 ///    When neither is, return `current` and let the caller's envelope
 ///    or path check refuse with the error that names the obstruction.
 ///
-/// `policy.flip_range_hours` is deliberately **not** consulted. It was
-/// applied here as a `|target_HA| ≤ flip_range_hours` window until
-/// 2026-09, which is the wrong shape: the counterweight-up side's
-/// reach is one-sided (`HA ≥ −x` for a zone `(x, 12 − x)`, then the
-/// whole western sky), not a band around the meridian. Treating it as
-/// a band made most of the western sky unreachable from the
-/// counterweight-up side — issue #1301. The field now bounds the
-/// auto-flip deferral offset and nothing else.
+/// A `policy.flip_range_hours` field used to gate this as a
+/// `|target_HA| ≤ flip_range_hours` window, which is the wrong shape:
+/// the counterweight-up side's reach is one-sided (`HA ≥ −x` for a
+/// zone `(x, 12 − x)`, then the whole western sky), not a band around
+/// the meridian. Treating it as a band made most of the western sky
+/// unreachable from the counterweight-up side — issue #1301. The field
+/// was removed in 2026-09 rather than left as a no-op; the zone is the
+/// only input here.
 #[must_use]
 pub fn select_pier_side_for_target(
     target_ra: Ra,
@@ -1006,14 +1006,12 @@ mod tests {
     fn flip_disabled() -> FlipPolicy {
         FlipPolicy {
             enabled: false,
-            flip_range_hours: crate::config::FlipRangeHours::new(0.5),
             ..Default::default()
         }
     }
     fn flip_enabled() -> FlipPolicy {
         FlipPolicy {
             enabled: true,
-            flip_range_hours: crate::config::FlipRangeHours::new(0.5),
             ..Default::default()
         }
     }
@@ -1162,7 +1160,7 @@ mod tests {
         // |HA| ≤ x = 0.95 h is reachable from both sides, so the mount
         // stays wherever it is — no gratuitous flip-back for a target
         // the current side can already see. `0.7` is past the legacy
-        // `flip_range_hours` window (0.5), which used to force a
+        // `flip_range_hours` window (0.5) that used to force a
         // through-wrap slew back to the pre-flip side.
         let policy = flip_enabled();
         let lst = 12.0;

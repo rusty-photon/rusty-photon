@@ -196,9 +196,10 @@ This design does not conflict with
 [ADR-006](006-typed-physical-quantities-for-mount-pointing.md): that ADR is
 explicitly scoped to the mount driver's frame-safe pointing math and
 disclaims workspace-wide reach (its Non-goals and Resolved Q3). Its Goal 2
-(construct-time / deserialize-time invariants) and its `FlipRangeHours`
-`serde(try_from)` config newtype are, in fact, the precedent this crate's
-value types follow.
+(construct-time / deserialize-time invariants) and its `serde(try_from)`
+config newtypes are, in fact, the precedent this crate's value types follow.
+(The ADR names `FlipRangeHours`; that field was removed in 2026-09 —
+`TrackingGuardMarginHours` and `MinAltitudeDegrees` carry the same shape.)
 
 ## Migration plan
 

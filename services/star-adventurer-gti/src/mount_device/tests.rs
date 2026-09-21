@@ -21,8 +21,7 @@ use skywatcher_motor_protocol::Axis;
 use tokio::sync::RwLock;
 
 use crate::config::{
-    ActiveZone, Config, CwExclusionZone, FlipPolicy, FlipRangeHours, MinAltitudeDegrees,
-    TrackingGuardMarginHours,
+    ActiveZone, Config, CwExclusionZone, FlipPolicy, MinAltitudeDegrees, TrackingGuardMarginHours,
 };
 use crate::coordinates::{ra_dec_to_alt_az, SIDEREAL_DEG_PER_SEC};
 use crate::error::StarAdvError;
@@ -396,7 +395,6 @@ async fn auto_flip_device(
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.flip_policy = FlipPolicy {
         enabled: true,
-        flip_range_hours: FlipRangeHours::new(0.5),
         auto_flip_during_tracking: true,
         auto_flip_at_meridian_offset_hours: offset_hours,
     };
@@ -575,7 +573,6 @@ async fn guard_loop_tick_prefers_the_guard_inside_the_band() {
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.flip_policy = FlipPolicy {
         enabled: true,
-        flip_range_hours: FlipRangeHours::new(0.5),
         auto_flip_during_tracking: true,
         auto_flip_at_meridian_offset_hours: 0.0,
     };

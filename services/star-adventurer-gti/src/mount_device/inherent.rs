@@ -198,9 +198,9 @@ impl MountDevice {
     /// there, not here. The combination — destination check plus path
     /// check — is the safety floor.
     ///
-    /// `flip_policy.flip_range_hours` is **not** consulted here — that
-    /// rule lives in `select_pier_side_for_target` for pier-side
-    /// preference only. Park 1 / Park 5 (anti-meridian poses with
+    /// The CW exclusion zone is the whole of the mechanical rule: no
+    /// second window narrows it here or in
+    /// `select_pier_side_for_target`. Park 1 / Park 5 (anti-meridian poses with
     /// `mech_HA = ±12` on the chosen pier) are reachable via slew
     /// because their `mech_HA` is outside the CW exclusion zone.
     ///
