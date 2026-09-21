@@ -248,6 +248,33 @@ impl TryFrom<StagedDocument> for StagedUsbInventory {
                              inventory failure, so stage `usb_unavailable` to get that outcome"
                         ));
                     }
+                    // Every collector stores what the platform reported
+                    // with no padding around it: the sysfs read is trimmed,
+                    // each `LocationPaths` element is trimmed before the
+                    // `PCIROOT(` one is selected, and a macOS location id is
+                    // a single whitespace-split token. So a padded value is
+                    // unreachable — and it compares unequal to the same value
+                    // without the padding, which is precisely the silent
+                    // no-match the port key exists to rule out. Rejected
+                    // rather than trimmed: silently rewriting a document
+                    // hides the mistake instead of reporting it.
+                    for (field, value) in [
+                        ("vendor", Some(device.vendor.as_str())),
+                        ("product", Some(device.product.as_str())),
+                        ("port", device.port.as_deref()),
+                        ("model", device.model.as_deref()),
+                        ("serial", device.serial.as_deref()),
+                    ] {
+                        if let Some(value) = value {
+                            if value != value.trim() {
+                                return Err(format!(
+                                    "device {identity} has a padded `{field}` ({value:?}); a \
+                                     collector reports no padding, and a padded value compares \
+                                     unequal to the same one without it"
+                                ));
+                            }
+                        }
+                    }
                 }
                 Ok(Self::Devices(usb))
             }
@@ -1399,6 +1426,44 @@ mod tests {
             let path = stage(dir.path(), "{}");
             let error = StagedUsbInventory::load(&path).unwrap_err();
             assert!(error.contains("states neither"), "{error}");
+        }
+
+        /// Padding is the quieter cousin of a blank value: it passes a
+        /// non-empty check and then matches nothing. Every collector trims,
+        /// so no staged document should carry it — on the join keys or on
+        /// the descriptor fields.
+        #[test]
+        fn test_a_staged_device_with_a_padded_port_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [ { "vendor": "1618", "product": "c601", "port": " 1-4.2" } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("padded `port`"), "{error}");
+        }
+
+        #[test]
+        fn test_a_staged_device_with_a_padded_vendor_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [ { "vendor": "1618\n", "product": "c601", "port": "1-4.2" } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("padded `vendor`"), "{error}");
+        }
+
+        #[test]
+        fn test_a_staged_device_with_a_padded_serial_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [ { "vendor": "1618", "product": "c601", "port": "1-4.2",
+                     "serial": "UPB248E11M " } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("padded `serial`"), "{error}");
         }
 
         /// Blank is not `None`, and it is the worse absence: an empty port

@@ -368,6 +368,15 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   omitted key is silent rather than a parse error — the rejection is what
   makes it loud.
 
+  **A padded value is rejected too**, on every device field. Each collector
+  stores what the platform reported with nothing around it — the sysfs read
+  is trimmed, each `LocationPaths` element is trimmed before the `PCIROOT(`
+  one is selected, and a macOS location id is a single whitespace-split
+  token — so `" 1-4.2"` is a state none of them can reach, and it compares
+  unequal to `"1-4.2"`: the same silent no-match, just quieter than a blank.
+  Rejected rather than trimmed on the way in, because silently rewriting a
+  staged document hides the mistake instead of reporting it.
+
   Staging **replaces** the USB scan rather than merging with it: a staged
   run makes no USB platform query at all, so the inventory does not depend
   on what is plugged into the machine running it. It bypasses nothing else —
