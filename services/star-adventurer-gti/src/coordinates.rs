@@ -1266,6 +1266,36 @@ mod tests {
     }
 
     #[test]
+    fn select_pier_side_tries_the_long_way_round_for_a_negative_flip_delta() {
+        // The flip branch's long way is `delta ± 24` — plus for a
+        // negative canonical delta, minus for a positive one — and a
+        // sign error there sends the counterweight round the arc the
+        // zone exists to keep it out of. This reaches the negative
+        // case: from `mech_HA +2.5`, the opposite side's destination
+        // at `−9` is a canonical `−11.5` whose sweep crosses, so the
+        // long way `+12.5` is computed and tried. It crosses too, so
+        // the answer is the both-blocked fall-through — the point is
+        // that the alternative was evaluated, not rejected unseen.
+        //
+        // The zone is deliberately off the shipped `(x, 12 − x)`
+        // shape: engineering a current side that is unusable *and* an
+        // opposite whose short sweep crosses needs the asymmetry.
+        let policy = flip_enabled();
+        let lst = 12.0;
+        let zone = (2.0, 5.0);
+        let chosen = select_pier_side_for_target(
+            Ra::new(lst + 9.0), // HA = −9: flipped destination +3, inside the zone
+            Lst::new(lst),
+            PierSide::East,
+            MechHa::new(2.5),
+            &policy,
+            zone,
+            LAT_NORTH,
+        );
+        assert_eq!(chosen, PierSide::East);
+    }
+
+    #[test]
     fn select_pier_side_returns_current_when_neither_side_has_a_path() {
         // Degenerate: the encoder is parked *inside* the zone (a state
         // the slew and tracking gates exist to prevent), so every sweep
