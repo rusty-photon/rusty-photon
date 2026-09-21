@@ -42,7 +42,15 @@ async fn configured_with_zone(
     world.config_mut().mount.cw_exclusion_zone = CwExclusionZone::Active(
         ActiveZone::try_new(zone_min, zone_max).expect("zone bounds valid in feature file"),
     );
-    world.start_service().await;
+    // Deliberately no `start_service` here: every scenario in this
+    // feature follows with `And a running star-adventurer service`,
+    // which starts it. Some of the repo's other "configured with …"
+    // Givens do start the service, and a scenario that pairs one with
+    // the running-service Given spawns the binary twice — the first
+    // handle is dropped, which SIGTERMs it, so nothing leaks, but the
+    // spawn is wasted. Seeding does not need it: `queue_seed` only
+    // posts to a service already up, and otherwise records a pending
+    // seed that `start_service` flushes.
 }
 
 /// Wait for the driver's snapshot to carry the seeded Dec encoder
