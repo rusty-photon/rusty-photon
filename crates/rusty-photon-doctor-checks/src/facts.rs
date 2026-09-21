@@ -204,14 +204,35 @@ impl TryFrom<StagedDocument> for StagedUsbInventory {
                 "names both a failure and a device list; a failed scan reports no devices"
                     .to_string(),
             ),
+            // A collector that failed always says why — doctor prints the
+            // reason to send an operator at the host fault rather than at a
+            // cable, and a blank one would report a failure it cannot explain.
+            Some(reason) if reason.trim().is_empty() => {
+                Err("names a failure with no reason; a collector always reports one".to_string())
+            }
             Some(reason) => Ok(Self::Unavailable(reason)),
             None => {
-                if let Some(portless) = document.usb.iter().find(|d| d.port.is_none()) {
-                    return Err(format!(
-                        "device {}:{} has no port; a candidate without one is an inventory \
-                         failure, so stage `usb_unavailable` to get that outcome",
-                        portless.vendor, portless.product
-                    ));
+                for device in &document.usb {
+                    let identity = format!("{}:{}", device.vendor, device.product);
+                    // Blank is not the same absence as `None`, and it is the
+                    // more dangerous one: an empty field matches nothing and
+                    // reads like a device that simply did not match. No
+                    // collector emits one — a candidate is a candidate
+                    // because it has a vendor id, #1306 made an unreadable
+                    // product fail the scan, and every port spelling has at
+                    // least one component.
+                    if device.vendor.trim().is_empty() || device.product.trim().is_empty() {
+                        return Err(format!(
+                            "device {identity} is missing a vendor or product id; a collector \
+                             reports both for every candidate or fails the scan"
+                        ));
+                    }
+                    if device.port.as_deref().is_none_or(|p| p.trim().is_empty()) {
+                        return Err(format!(
+                            "device {identity} has no port; a candidate without one is an \
+                             inventory failure, so stage `usb_unavailable` to get that outcome"
+                        ));
+                    }
                 }
                 Ok(Self::Devices(document.usb))
             }
@@ -1338,6 +1359,44 @@ mod tests {
             let error = StagedUsbInventory::load(&path).unwrap_err();
             assert!(error.contains("1618:c601"), "{error}");
             assert!(error.contains("usb_unavailable"), "{error}");
+        }
+
+        /// Blank is not `None`, and it is the worse absence: an empty port
+        /// matches nothing while reading like a device that simply did not
+        /// match a claim. No collector emits one.
+        #[test]
+        fn test_a_staged_device_with_a_blank_port_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [ { "vendor": "1618", "product": "c601", "port": "  " } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("1618:c601"), "{error}");
+            assert!(error.contains("has no port"), "{error}");
+        }
+
+        /// `product` defaults to an empty string when the key is absent, so
+        /// an omitted one is silent rather than a parse error — and a
+        /// collector reports it for every candidate or fails the scan.
+        #[test]
+        fn test_a_staged_device_without_a_product_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [ { "vendor": "1618", "port": "1-4.2" } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("missing a vendor or product id"), "{error}");
+        }
+
+        /// A failure doctor cannot explain sends an operator nowhere.
+        #[test]
+        fn test_a_staged_failure_without_a_reason_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(dir.path(), r#"{ "usb_unavailable": "" }"#);
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("no reason"), "{error}");
         }
 
         /// The document is `HardwareFacts`' own field names, so the

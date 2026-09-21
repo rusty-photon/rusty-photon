@@ -350,6 +350,18 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
     one is itself an inventory failure, so a scenario wanting that outcome
     stages `usb_unavailable` with the reason and gets the same result the
     collector would have produced.
+  - A listed device with no `vendor` or no `product` is rejected. A candidate
+    is a candidate *because* it has a vendor id, and an unreadable product
+    fails the scan, so a collector reports both or reports nothing.
+  - A failure with no reason is rejected, because doctor prints the reason to
+    send an operator at the host fault rather than at a cable.
+
+  **Blank counts as absent throughout**, and is the more dangerous of the
+  two: an empty `port` or `product` matches nothing while reading like a
+  device that simply did not match, where a missing key at least looks
+  missing. `product`, `port` and `serial` all carry `serde(default)`, so an
+  omitted key is silent rather than a parse error — the rejection is what
+  makes it loud.
 
   Staging **replaces** the USB scan rather than merging with it: a staged
   run makes no USB platform query at all, so the inventory does not depend
