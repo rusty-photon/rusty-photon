@@ -366,8 +366,9 @@ fn ra_path_exists(
 ///    destination `mech_HA`: `HA` on the pre-flip (counterweight-down)
 ///    side, `HA + 12` folded on the post-flip (counterweight-up) side.
 /// 3. A side is **usable** when its destination `mech_HA` is outside
-///    the zone *and* [`ra_path_exists`] from the current encoder
-///    position.
+///    the zone *and* an RA path to it exists from the current encoder
+///    position (`ra_path_exists`, private — the slew planner is the
+///    public surface for that question).
 /// 4. Stay on `current` when it is usable; otherwise take
 ///    [`opposite_pier_side(current)`](opposite_pier_side) when *it* is.
 ///    When neither is, return `current` and let the caller's envelope

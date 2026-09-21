@@ -629,8 +629,10 @@ impl CwExclusionZone {
     /// `(min, max)` bounds for the path/guard/flip checks, which take a
     /// bare `(f64, f64)`. `Disabled` yields the empty interval
     /// `(+∞, −∞)` — `min > max` strictly, which every consumer
-    /// (`canonical_path_crosses_binding_zone`, `tracking_guard_breached`,
-    /// `select_pier_side_for_target`) treats as "no zone".
+    /// ([`mech_ha_in_binding_zone`](crate::coordinates::mech_ha_in_binding_zone),
+    /// [`path_crosses_binding_zone`](crate::coordinates::path_crosses_binding_zone),
+    /// `tracking_guard_breached`, `select_pier_side_for_target`) treats
+    /// as "no zone".
     #[must_use]
     pub const fn bounds(self) -> (f64, f64) {
         match self {

@@ -48,7 +48,9 @@ use tokio::time::interval;
 use tracing::{debug, info, warn};
 
 use crate::codec::SkywatcherCodec;
-use crate::coordinates::{opposite_pier_side, side_of_pier as side_of_pier_calc};
+use crate::coordinates::{
+    mech_ha_in_binding_zone, opposite_pier_side, side_of_pier as side_of_pier_calc,
+};
 use crate::manager::MountManager;
 use crate::units::{Cpr, DecTicks, RaTicks};
 
@@ -65,12 +67,19 @@ type SessionSlot = Arc<RwLock<Option<Session<SkywatcherCodec>>>>;
 ///
 /// The check is on a single folded `mech_HA` value (already in
 /// `[−12, +12)`), not a swept path, so unlike
-/// [`super::slew::canonical_path_crosses_binding_zone`] it needs no
+/// [`crate::coordinates::path_crosses_binding_zone`] it needs no
 /// 24-hour-wrap handling: the realistic zone+margin stays well within
-/// the folded range.
+/// the folded range. The interval test itself is
+/// [`mech_ha_in_binding_zone`] over the widened bounds, so the guard
+/// agrees with the destination check, the path checks and the
+/// pier-side selector on where a zone's edges are.
 ///
 /// An empty/inverted interval (`zone_min >= zone_max`) disables the
 /// guard — the same convention the slew-path binding-zone check uses.
+/// It is tested *before* the widening, deliberately: widening an empty
+/// interval by a positive margin can make it non-empty (`(5, 5)` with
+/// `0.1` becomes `(4.9, 5.1)`), which would arm a guard the operator
+/// disabled.
 /// A non-finite or negative `margin` is treated as `0.0` (stop exactly
 /// at zone entry) so a bad value fails safe rather than open. Config-file
 /// margins are already rejected at load — [`crate::config::TrackingGuardMarginHours`]
@@ -87,7 +96,7 @@ pub(super) fn tracking_guard_breached(mech_ha: f64, zone: (f64, f64), margin: f6
     } else {
         0.0
     };
-    mech_ha > zone_min - margin && mech_ha < zone_max + margin
+    mech_ha_in_binding_zone(mech_ha, (zone_min - margin, zone_max + margin))
 }
 
 /// One guard evaluation against the latest cached snapshot.
