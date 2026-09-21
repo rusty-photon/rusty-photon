@@ -1666,6 +1666,22 @@ async fn sync_refuses_while_a_slew_is_in_progress() {
         !log.iter().any(|c| c.starts_with(b":E")),
         "a refused sync must not write an encoder position, saw {log:?}"
     );
+
+    // Sync holds the reservation rather than sampling the flag, so the
+    // release path matters as much as the refusal: once the slew is
+    // done, a sync must work and must not leak the flag — a leaked one
+    // would wedge every later slew, park and sync behind a mount that
+    // looks permanently busy.
+    d.slew_in_progress.store(false, Ordering::SeqCst);
+    d.sync_to_coordinates(lst, 0.0).await.unwrap();
+    assert!(
+        !d.slew_in_progress.load(Ordering::SeqCst),
+        "sync must release the reservation it took"
+    );
+    assert!(
+        !d.slewing().await.unwrap(),
+        "Slewing must be clear after a sync"
+    );
 }
 
 #[tokio::test]

@@ -1413,16 +1413,28 @@ The CW-exclusion-zone and altitude gates then run against that side's
 `mech_HA`. Sync issues no motion, so the RA path check does not apply.
 A mount whose side reads `Unknown` (no Dec CPR) is treated as CW-down.
 
-**Sync refuses mid-slew** with `INVALID_OPERATION`, as
-[`SetSideOfPier`](#setsideofpierside) does and for the same reason:
-the side is read from the cached snapshot, and an asynchronous slew
-returns as soon as its completion watcher is spawned. A sync landing
-in that window — after a flip is issued, before it lands — would
-resolve the *old* side and write its encoder pair to a mount already
-on its way to the other one, which is the mislabelling this section
-exists to prevent, arriving by another route. The refusal comes before
-the in-flight pulse-guide cancel, so a refused sync has no side
-effects at all.
+**Sync takes the axes for its duration**, the same reservation `Park`
+holds, and refuses with `INVALID_OPERATION` when a slew or park
+already owns them. The side is read from the cached snapshot, and an
+asynchronous slew returns as soon as its completion watcher is
+spawned: a sync landing in that window — after a flip is issued,
+before it lands — would resolve the *old* side and write its encoder
+pair to a mount already on its way to the other one, the mislabelling
+this section exists to prevent, arriving by another route.
+
+Testing a flag instead of holding the reservation would only narrow
+that window, not close it — the reads between the test and the `:E`
+writes are `await` points, so a slew could start in between. The
+reservation's `compare_exchange` makes it exclusive: whichever
+operation gets there first, the other is refused rather than
+interleaved. A sync mutates the axes' frame, so it belongs under the
+same exclusion as the operations that mutate their position. The
+reservation is taken before the in-flight pulse-guide cancel (so a
+refused sync has no side effects) and released when the call returns —
+unlike a slew, a sync has no watcher to hand it off to. While it is
+held, `Slewing` reads `true`; only a *concurrent* client can observe
+that, and to one racing a sync, "the axes are busy" is the truthful
+answer.
 
 Until 2026-09 sync assumed CW-down unconditionally. On a CW-up mount
 that had two consequences: every target in the western sky was

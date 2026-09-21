@@ -4,8 +4,12 @@ Feature: Pier-side selection follows the counterweight exclusion zone
   mech_HA lies outside the CW exclusion zone and whose RA sweep from
   the current encoder position does not cross it, preferring to stay
   on the side the mount is already on. Slewing and
-  DestinationSideOfPier share that one selector, so a prediction and
-  the slew it predicts can never disagree.
+  DestinationSideOfPier share that one selector, so their side choice
+  agrees wherever a usable side exists. The exception is the case
+  where neither side has a legal path from where the mount stands:
+  the slew plans its sweep and refuses, while DestinationSideOfPier
+  runs the destination check only and still answers with a side. Do
+  not write scenarios that encode the stronger contract.
 
   The zone has the shape (x, 12 - x), x being the counterweight-up
   allowance - 0.95 h = 57 minutes by default. Three behaviours follow

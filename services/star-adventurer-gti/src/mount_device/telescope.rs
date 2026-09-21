@@ -557,27 +557,37 @@ impl Telescope for MountDevice {
         self.ensure_connected().await?;
         Self::validate_coordinates(ra, dec)?;
         self.ensure_unparked().await?;
-        // Refuse mid-slew, for the reason `SetSideOfPier` does: the
-        // encoder pair written below is chosen from the *cached* side,
-        // and an async slew (a flip most of all) returns as soon as its
-        // completion watcher is spawned. A sync landing in that window
-        // reads the pre-flip Dec encoder, resolves the counterweight-down
-        // solution, and writes it to a mount that is on its way to the
-        // other side — re-labelling it, so every later slew plans from a
-        // false position. That is the corruption this method's
-        // side-awareness exists to prevent, arriving through the back
-        // door. Refusing beats waiting for a settled snapshot: the
-        // caller learns the mount was moving, rather than having a
-        // position write silently deferred into motion.
+        // Take the axes for the duration, the way `Park` does. The
+        // encoder pair written below is chosen from the *cached* pier
+        // side, and an async slew (a flip most of all) returns as soon
+        // as its completion watcher is spawned. A sync overlapping that
+        // window reads the pre-flip Dec encoder, resolves the
+        // counterweight-down solution, and writes it to a mount already
+        // on its way to the other side — re-labelling it, so every
+        // later slew plans from a false position. That is the
+        // corruption this method's side-awareness exists to prevent,
+        // arriving through the back door.
         //
-        // Checked before the pulse-guide cancel below so a refused sync
-        // has no side effects at all.
-        if self.slew_in_progress.load(Ordering::SeqCst) {
+        // A bare `load` would not do it: the reads below are `.await`
+        // points, so a slew could win the reservation after the load
+        // and be moving by the time the `:E` writes land. The
+        // reservation's `compare_exchange` is the TOCTOU-free form —
+        // whichever of the two operations gets there first, the other
+        // is refused rather than interleaved. Sync mutates the axes'
+        // frame, so it belongs under the same exclusion as the
+        // operations that mutate their position.
+        //
+        // The guard clears the flag on drop, including on every `?`
+        // below, and is deliberately *not* dismissed: sync owns the
+        // axes only until it returns, with no watcher to hand off to.
+        // Taken before the pulse-guide cancel so a refused sync has no
+        // side effects at all.
+        let Some(_reservation) = SlewReservation::try_acquire(&self.slew_in_progress) else {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "sync refused: slew already in progress",
             ));
-        }
+        };
         // Cancel any in-flight pulse-guide on either axis — sync is
         // an axis-position mutation and we don't want the watcher
         // restoring tracking against the freshly-set encoder position.
