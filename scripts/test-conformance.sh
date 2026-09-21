@@ -16,7 +16,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFORMU_VERSION="${CONFORMU_VERSION:-latest}"
 # Linux x64 only. On macOS/Windows, install from the ConformU releases page
 # instead: https://github.com/ASCOMInitiative/ConformU/releases
-CONFORMU_ASSET="conformu.linux-x64.tar.gz"
+# Upstream ships the Linux builds xz-compressed; there is no .tar.gz asset
+# to fall back to, so a wrong extension here fails as a download 404.
+CONFORMU_ASSET="conformu.linux-x64.tar.xz"
 
 show_help() {
     echo "Usage: $0 [OPTIONS]"

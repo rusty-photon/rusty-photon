@@ -28,7 +28,7 @@ pub enum StubBehavior {
     /// HEAD 200; GET 500.
     Status500,
     /// HEAD 200; GET hangs forever (used to keep an exposure
-    /// in-flight for E2 / A1 / A2).
+    /// in-flight for E2 / A1).
     Hold,
     /// HEAD 200; GET 200 with non-FITS bytes (S6).
     Malformed,

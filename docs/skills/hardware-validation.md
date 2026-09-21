@@ -39,9 +39,12 @@ go red".
 ```
 
 The installer is **Linux x64 only** and refuses to run anywhere else — it
-fetches the `conformu.linux-x64.tar.gz` asset. On macOS or Windows,
-install the matching asset by hand from the
-[ConformU releases page](https://github.com/ASCOMInitiative/ConformU/releases/latest).
+fetches the `conformu.linux-x64.tar.xz` asset. On macOS, Windows, or a
+Linux box of another architecture (the aarch64 field rig, say), install
+the matching asset by hand from the
+[ConformU releases page](https://github.com/ASCOMInitiative/ConformU/releases/latest)
+— the arm64 asset is `conformu.linux-arm64.tar.xz`, and it unpacks flat,
+so extract it into its own directory.
 
 Either way it lands **off your `PATH`**: the installer writes
 `$HOME/tools/conformu/conformu` and changes nothing else. The bare
