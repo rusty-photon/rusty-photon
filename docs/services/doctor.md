@@ -375,6 +375,13 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   three cameras publishes a USB serial), which is what keeps a captured
   facts file stageable as it stands.
 
+  **`vendor` and `product` must be four lowercase hex digits**, the form
+  every collector reports: sysfs prints it, the Windows instance id is
+  lowercased as it is parsed, and the macOS reader accepts nothing else. The
+  mistake this catches is quiet and likely — `Get-PnpDevice` prints
+  `USB\VID_1618&PID_C601`, and an id copied from it compares unequal to
+  `c601` forever.
+
   **A padded value is rejected too**, on every device field. Each collector
   stores what the platform reported with nothing around it — the sysfs read
   is trimmed, each `LocationPaths` element is trimmed before the `PCIROOT(`

@@ -293,6 +293,27 @@ impl TryFrom<StagedDocument> for StagedUsbInventory {
                             }
                         }
                     }
+                    // `UsbDevice` documents both ids as four lowercase hex
+                    // digits, and all three collectors deliver exactly that:
+                    // sysfs reports it, the Windows instance id is
+                    // lowercased on the way in, and the macOS reader accepts
+                    // nothing else. The mistake this catches is real and
+                    // quiet — an id copied from `Get-PnpDevice` output reads
+                    // `PID_C601`, and `"C601"` compares unequal to `"c601"`
+                    // forever.
+                    for (field, value) in [("vendor", &device.vendor), ("product", &device.product)]
+                    {
+                        let canonical = value.len() == 4
+                            && value
+                                .chars()
+                                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
+                        if !canonical {
+                            return Err(format!(
+                                "device {identity} has a `{field}` of {value:?}, which is not \
+                                 the four lowercase hex digits every collector reports"
+                            ));
+                        }
+                    }
                 }
                 Ok(Self::Devices(usb))
             }
@@ -1446,6 +1467,33 @@ mod tests {
             let path = stage(dir.path(), "{}");
             let error = StagedUsbInventory::load(&path).unwrap_err();
             assert!(error.contains("states neither"), "{error}");
+        }
+
+        /// The quiet copy-paste: `Get-PnpDevice` prints `USB\VID_1618&PID_C601`,
+        /// and an id taken from it verbatim compares unequal to the
+        /// lowercase form every collector reports — forever, and silently.
+        #[test]
+        fn test_a_staged_device_with_an_uppercase_id_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [ { "vendor": "1618", "product": "C601", "port": "1-4.2" } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("four lowercase hex digits"), "{error}");
+        }
+
+        /// The other spelling a human reaches for: macOS prints `0x1618`,
+        /// and its own reader strips the prefix before storing.
+        #[test]
+        fn test_a_staged_device_with_a_prefixed_id_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [ { "vendor": "0x1618", "product": "c601", "port": "1-4.2" } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("four lowercase hex digits"), "{error}");
         }
 
         /// `Some("")` is the absence of a descriptor wearing the shape of
