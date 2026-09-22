@@ -1685,6 +1685,36 @@ async fn sync_refuses_while_a_slew_is_in_progress() {
 }
 
 #[tokio::test]
+async fn abort_waits_for_an_in_flight_sync_before_clearing_the_flag() {
+    // `AbortSlew` clears `slew_in_progress` before awaiting its `:L`
+    // sends, so the flag goes false while the motion is still running.
+    // A sync that took the axis lock in that gap would read false and
+    // write `:E` mid-slew — the flag check inside sync is only sound
+    // because nothing can falsify it while the lock is held, which
+    // means abort has to hold it too.
+    let d = connected_device().await;
+    d.slew_in_progress.store(true, Ordering::SeqCst); // a slew is running
+    let held = d.axis_ownership.lock().await; // ...and a sync owns the axes
+
+    let blocked = tokio::time::timeout(Duration::from_millis(100), d.abort_slew()).await;
+    assert!(
+        blocked.is_err(),
+        "abort must wait for the in-flight sync rather than interleave"
+    );
+    assert!(
+        d.slew_in_progress.load(Ordering::SeqCst),
+        "and must not have cleared the flag while waiting — a sync \
+         reading it would conclude no motion is in flight"
+    );
+
+    drop(held);
+    d.abort_slew()
+        .await
+        .expect("abort proceeds once the axes are free");
+    assert!(!d.slew_in_progress.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
 async fn sync_exclusion_survives_a_concurrent_abort() {
     // `AbortSlew` clears `slew_in_progress` unconditionally — right for
     // the motion it cancels, but it must not hand the axes to a new

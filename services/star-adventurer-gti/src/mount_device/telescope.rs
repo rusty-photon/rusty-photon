@@ -1026,6 +1026,18 @@ impl Telescope for MountDevice {
         // calls AbortSlew on a parked mount gets a clean error without
         // side-effects on tracking_requested or slew_in_progress.
         self.ensure_unparked().await?;
+        // Take the axes before touching the flag, and hold them through
+        // the stops. Without this, abort's own ordering — clear the
+        // flag, *then* `await` the `:L` sends — hands a waiting sync a
+        // `false` reading while the original motion is still running,
+        // and its `:E` writes land mid-slew. `axis_ownership` is what
+        // makes the flag check inside sync sound, so the operation that
+        // falsifies the flag has to hold it too.
+        //
+        // Blocking here is bounded by a sync's two encoder writes, and
+        // is the right order anyway: an abort arriving mid-sync should
+        // let the position write finish rather than interleave with it.
+        let _axes = self.axis_ownership.lock().await;
         // Clear slew_in_progress first so the slew/park watchers see the
         // abort and bail before clobbering the snapshot or at_park flag.
         // Also clear tracking_requested — `:L` halts any motion the

@@ -1433,9 +1433,14 @@ mid-write.
 What makes it exclusive is `MountDevice::axis_ownership`, a lock no
 third party can release on an owner's behalf. Sync holds it across its
 reads and writes; a slew or park takes it to reach its own
-reservation, so one arriving mid-sync waits rather than interleaving.
-Inside that lock the flag check is sound — no *new* slew can acquire
-while it is held, so a `false` reading cannot go stale. A sync is not
+reservation, and `AbortSlew` takes it before clearing the flag and
+holds it through its `:L` stops — so anything arriving mid-sync waits
+rather than interleaving. Abort belongs in that list precisely because
+it *falsifies* the flag: it clears `slew_in_progress` before awaiting
+the stops, so for a moment the flag says idle while the mount is still
+moving. Inside the lock the flag check is then sound — nothing can
+acquire or falsify it while the lock is held, so a `false` reading
+cannot go stale. A sync is not
 motion and so does not set `slew_in_progress`: `Slewing` stays `false`
 throughout, as ASCOM expects.
 
