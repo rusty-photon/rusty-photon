@@ -1414,6 +1414,19 @@ The CW-exclusion-zone and altitude gates then run against that side's
 `mech_HA`. Sync issues no motion, so the RA path check does not apply.
 A mount whose side reads `Unknown` (no Dec CPR) is treated as CW-down.
 
+Because the side comes from the cached snapshot, it carries the same
+one-`polling_interval` lag every other side-dependent read does
+(`SideOfPier`, `DestinationSideOfPier`, the slew planner, the tracking
+guard). That matters in one place operators actually reach: a mount
+stopped partway through a flip by `AbortSlew` has no well-defined side
+at all, and for up to one poll the snapshot still shows the side it
+started from. The recovery sequence the driver's own procedures point
+at — plate-solve, then `SyncToCoordinates` to ground-truth the frame —
+should let the poll catch up first (200 ms on the shipped
+`polling_interval`). The driver does not refuse the sync: after an
+aborted flip a sync is the tool the operator needs, and refusing it
+would leave the documented recovery with no way to run.
+
 **Sync takes the axes for its duration** and refuses with
 `INVALID_OPERATION` when a slew or park already owns them. The side is read from the cached snapshot, and an
 asynchronous slew returns as soon as its completion watcher is
