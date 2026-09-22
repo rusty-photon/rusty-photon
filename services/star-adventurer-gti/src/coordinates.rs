@@ -1266,6 +1266,34 @@ mod tests {
     }
 
     #[test]
+    fn ra_path_exists_takes_the_long_way_when_the_short_sweep_crosses() {
+        // Both signs of the long-way correction, asserted where it
+        // *succeeds* — the selector can only reach these branches in
+        // configurations where the answer is the both-blocked
+        // fall-through (see the test below), which would pass whether
+        // or not the alternative was ever evaluated. A sign error here
+        // sends the counterweight round the arc the zone exists to
+        // keep it out of, so it is worth pinning directly.
+        let zone = (4.0, 6.0);
+        // Positive canonical delta: 3 → 7 sweeps straight through the
+        // zone; the long way (−20, i.e. 3 → −17) does not.
+        assert!(
+            ra_path_exists(3.0, 7.0, true, zone),
+            "the long way round from +3 to +7 is clear"
+        );
+        // Negative canonical delta: 7 → 3 crosses the same way; its
+        // long way is +20 (7 → 27), also clear.
+        assert!(
+            ra_path_exists(7.0, 3.0, true, zone),
+            "the long way round from +7 to +3 is clear"
+        );
+        // A non-flip slew has no such alternative: same endpoints, no
+        // long way, so the crossing short sweep is the whole answer.
+        assert!(!ra_path_exists(3.0, 7.0, false, zone));
+        assert!(!ra_path_exists(7.0, 3.0, false, zone));
+    }
+
+    #[test]
     fn select_pier_side_tries_the_long_way_round_for_a_negative_flip_delta() {
         // The flip branch's long way is `delta ± 24` — plus for a
         // negative canonical delta, minus for a positive one — and a
