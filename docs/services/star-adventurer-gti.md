@@ -1003,6 +1003,22 @@ guides correctly with `flip_policy.enabled = false`. `PierSide::Unknown`
 (no CPR yet, so no classification) keeps the counterweight-down
 mapping — the driver does not invert on a side it cannot name.
 
+**At the pole the claim degenerates, and no sign convention saves
+it.** The side is sampled once, when the pulse starts. The one
+pointing state where that sample can go stale mid-pulse is the
+celestial pole itself: the classification boundary is `|θ| = 90°`,
+which *is* `Dec = ±90°`, so a pulse can only cross it by driving the
+OTA through the pole — and it has to start within its own travel of
+the pole to get there (37.6″ for a 5 s pulse at the default rate).
+A `guideNorth` that reaches the pole does not keep moving north,
+because there is no further north: declination peaks and comes back
+down as the axis keeps turning. That is the sky, not the encoder
+mapping, and re-resolving `ccw` mid-pulse would not change it.
+Guiding within an arcminute of the pole is degenerate for other
+reasons too — the RA axis has no meaningful direction there — so the
+driver does not special-case it, and `PulseGuide` neither refuses nor
+splits such a pulse.
+
 This was **issue #1300**. The convention it replaces (`+Dec` always
 maps to `ccw = false`, with the client expected to `SyncToCoordinates`
 after a flip to recalibrate) was written for a driver that could not

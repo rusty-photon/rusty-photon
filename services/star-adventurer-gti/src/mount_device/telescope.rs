@@ -1166,8 +1166,25 @@ impl Telescope for MountDevice {
         // axis sits past a celestial pole, so the pulse resolves
         // against the side the mount is on — the same Dec-encoder
         // classification `SideOfPier` reports, read from the same
-        // background-poll snapshot. `PulseGuide` is refused while
-        // slewing, so the side cannot change under the pulse.
+        // background-poll snapshot.
+        //
+        // Sampled once, at pulse start, and not pinned: the `slewing()`
+        // gate above is a plain read, and `PulseGuide` claims no
+        // `axis_ownership`, so a slew or auto-flip starting in the
+        // window between that check and the `:G2` below can move the
+        // Dec axis under this pulse — and its own wire commands would
+        // interleave with ours regardless of which side we sampled.
+        // That window is issue #1311 (the lock serializes the commit,
+        // not the operation); `PulseGuide` is one of the operations it
+        // covers. It is not specific to the side read, which only
+        // inherits it.
+        //
+        // The sample also cannot straddle a pole crossing *within* one
+        // pulse. That needs the OTA to start within the pulse's own
+        // travel of the celestial pole — 37.6″ for a 5 s pulse at the
+        // default rate — where declination genuinely peaks and comes
+        // back down whichever way the encoder turns. See the design
+        // doc's Dec sign convention.
         let current_side = side_of_pier_calc(
             DecTicks::new(self.manager.snapshot().await.dec.position_ticks),
             Cpr::new(params.cpr_dec),
