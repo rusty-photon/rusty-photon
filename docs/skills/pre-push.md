@@ -131,6 +131,16 @@ cargo test        --locked --workspace --all-features --test bdd
 cargo test        --locked --workspace --all-features --doc
 ```
 
+The BDD line is the one place this differs from the job. CI runs that suite
+through [`bdd-sharded`](../../.github/actions/bdd-sharded), which builds every
+`bdd` target once and then runs the binaries as parallel streams, sharding the
+suites that route their cucumber filter through
+`bdd_infra::sharding::scenario_in_current_shard`. The plain `cargo test` above
+runs the same scenarios sequentially in one process — the same coverage, and
+what you want when you are reading a failure rather than racing a clock. To
+reproduce a single CI stream instead, set the shard env on one package's
+binary; see [testing.md § 5.5](testing.md).
+
 **The BDD step needs the harness binaries the workflow installs for you.** The
 job runs [`install-omnisim`](../../.github/actions/install-omnisim) and
 [`install-pebble`](../../.github/actions/install-pebble) first, which export
@@ -330,9 +340,9 @@ runs `--workspace` (no narrowing job).
 
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|
-| **required (stable)** | `cargo nextest run --locked --workspace --all-features --all-targets` + `cargo test --locked --workspace --all-features --test bdd` | stable, cargo-nextest | Off-PR |
+| **required (stable)** | `cargo nextest run --locked --workspace --all-features --all-targets` + `cargo test --locked --workspace --all-features --test bdd` (CI shards the BDD half — see above) | stable, cargo-nextest | Off-PR |
 | **required (stable, doc)** | `cargo test --locked --workspace --all-features --doc` | stable | Off-PR |
-| **macos / windows** | same, per host OS (Windows runs BDD in one job) | -- | Off-PR |
+| **macos / windows** | same, per host OS (all three jobs shard the BDD step) | -- | Off-PR |
 
 The `macos` job runs with `RUSTFLAGS=-Dwarnings`. Nothing on a PR denies rustc
 warnings for macOS — `bazel / macos-latest` is off the PR gate and clippy runs
