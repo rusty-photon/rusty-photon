@@ -568,26 +568,32 @@ impl Telescope for MountDevice {
         // corruption this method's side-awareness exists to prevent,
         // arriving through the back door.
         //
-        // A bare `load` would not do it: the reads below are `.await`
-        // points, so a slew could win the reservation after the load
-        // and be moving by the time the `:E` writes land. The
-        // reservation's `compare_exchange` is the TOCTOU-free form —
-        // whichever of the two operations gets there first, the other
-        // is refused rather than interleaved. Sync mutates the axes'
-        // frame, so it belongs under the same exclusion as the
-        // operations that mutate their position.
+        // `axis_ownership` is what makes it exclusive, not the flag.
+        // A bare `load` would not do: the reads below are `.await`
+        // points, so a slew could start after the load and be moving
+        // by the time the `:E` writes land. Taking the slew's own
+        // `SlewReservation` would not do either — `AbortSlew` clears
+        // that flag unconditionally, correctly for the motion it
+        // cancels, but that would strip a sync of the exclusivity it
+        // is relying on and let the next slew in mid-write.
         //
-        // The guard clears the flag on drop, including on every `?`
-        // below, and is deliberately *not* dismissed: sync owns the
-        // axes only until it returns, with no watcher to hand off to.
-        // Taken before the pulse-guide cancel so a refused sync has no
-        // side effects at all.
-        let Some(_reservation) = SlewReservation::try_acquire(&self.slew_in_progress) else {
+        // So sync holds the one lock no third party can release on its
+        // behalf, and a slew or park must take it to reach its own
+        // reservation. The flag check below is then sound: while this
+        // lock is held no *new* slew can acquire, so a `true` reading
+        // means one is already under way and a `false` one cannot go
+        // stale. A sync is not motion, so it deliberately does not set
+        // the flag — `Slewing` stays honest.
+        //
+        // Both are taken before the pulse-guide cancel, so a refused
+        // sync has no side effects at all.
+        let _axes = self.axis_ownership.lock().await;
+        if self.slew_in_progress.load(Ordering::SeqCst) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "sync refused: slew already in progress",
             ));
-        };
+        }
         // Cancel any in-flight pulse-guide on either axis — sync is
         // an axis-position mutation and we don't want the watcher
         // restoring tracking against the freshly-set encoder position.
@@ -791,7 +797,15 @@ impl Telescope for MountDevice {
         // positions. The guard clears `slew_in_progress` on drop, so any
         // `?` failure below (or a failed watcher hand-off) rolls it back
         // without an explicit clear.
-        let Some(reservation) = SlewReservation::try_acquire(&self.slew_in_progress) else {
+        // Serialize with an in-flight sync's encoder writes before
+        // claiming the axes; see `axis_ownership`. Held only across the
+        // acquisition — park's own ownership is the reservation, which
+        // it hands to the park watcher.
+        let reservation = {
+            let _axes = self.axis_ownership.lock().await;
+            SlewReservation::try_acquire(&self.slew_in_progress)
+        };
+        let Some(reservation) = reservation else {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "park refused: slew already in progress",

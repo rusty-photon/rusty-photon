@@ -1676,12 +1676,47 @@ async fn sync_refuses_while_a_slew_is_in_progress() {
     d.sync_to_coordinates(lst, 0.0).await.unwrap();
     assert!(
         !d.slew_in_progress.load(Ordering::SeqCst),
-        "sync must release the reservation it took"
+        "a sync must not leave the slew flag set"
     );
     assert!(
         !d.slewing().await.unwrap(),
         "Slewing must be clear after a sync"
     );
+}
+
+#[tokio::test]
+async fn sync_exclusion_survives_a_concurrent_abort() {
+    // `AbortSlew` clears `slew_in_progress` unconditionally — right for
+    // the motion it cancels, but it must not hand the axes to a new
+    // slew while a sync sits between its snapshot read and its `:E`
+    // writes. Sync therefore holds `axis_ownership`, which abort does
+    // not touch, and a slew has to take that lock to reach its own
+    // reservation. Holding the lock here stands in for the sync;
+    // clearing the flag stands in for the abort that raced it.
+    let d = connected_device().await;
+    let held = d.axis_ownership.lock().await;
+    d.slew_in_progress.store(false, Ordering::SeqCst);
+
+    let blocked = tokio::time::timeout(
+        Duration::from_millis(100),
+        d.slew_to_coordinates_async(6.0, 30.0),
+    )
+    .await;
+    assert!(
+        blocked.is_err(),
+        "a slew must wait on the axis lock even with the flag cleared"
+    );
+    assert!(
+        !d.slew_in_progress.load(Ordering::SeqCst),
+        "and must not have claimed the reservation behind the lock"
+    );
+
+    // Released, the same slew proceeds — the lock serializes, it does
+    // not refuse.
+    drop(held);
+    d.slew_to_coordinates_async(6.0, 30.0)
+        .await
+        .expect("the slew proceeds once the axes are free");
 }
 
 #[tokio::test]

@@ -1413,21 +1413,30 @@ The CW-exclusion-zone and altitude gates then run against that side's
 `mech_HA`. Sync issues no motion, so the RA path check does not apply.
 A mount whose side reads `Unknown` (no Dec CPR) is treated as CW-down.
 
-**Sync takes the axes for its duration**, the same reservation `Park`
-holds, and refuses with `INVALID_OPERATION` when a slew or park
-already owns them. The side is read from the cached snapshot, and an
+**Sync takes the axes for its duration** and refuses with
+`INVALID_OPERATION` when a slew or park already owns them. The side is read from the cached snapshot, and an
 asynchronous slew returns as soon as its completion watcher is
 spawned: a sync landing in that window — after a flip is issued,
 before it lands — would resolve the *old* side and write its encoder
 pair to a mount already on its way to the other one, the mislabelling
 this section exists to prevent, arriving by another route.
 
-Testing a flag instead of holding the reservation would only narrow
-that window, not close it — the reads between the test and the `:E`
-writes are `await` points, so a slew could start in between. The
-reservation's `compare_exchange` makes it exclusive: whichever
-operation gets there first, the other is refused rather than
-interleaved.
+Testing a flag alone would only narrow that window, not close it — the
+reads between the test and the `:E` writes are `await` points, so a
+slew could start in between. Nor would taking the slew's own
+`slew_in_progress` reservation be enough: `AbortSlew` clears that flag
+unconditionally, which is right for the motion it cancels but would
+strip a sync of the exclusivity it depends on and let the next slew in
+mid-write.
+
+What makes it exclusive is `MountDevice::axis_ownership`, a lock no
+third party can release on an owner's behalf. Sync holds it across its
+reads and writes; a slew or park takes it to reach its own
+reservation, so one arriving mid-sync waits rather than interleaving.
+Inside that lock the flag check is sound — no *new* slew can acquire
+while it is held, so a `false` reading cannot go stale. A sync is not
+motion and so does not set `slew_in_progress`: `Slewing` stays `false`
+throughout, as ASCOM expects.
 
 The reservation covers slews and `Park` — the operations that own an
 axis for a stretch. **PulseGuide is deliberately outside it**: a pulse
@@ -1441,12 +1450,9 @@ shifted guide rate when the `:E` lands, until the watcher notices and
 restores. Syncing on top of an active guide pulse is therefore not a
 supported sequence — an autoguider that is pulsing is not a client
 that should also be re-anchoring the frame. The
-reservation is taken before the in-flight pulse-guide cancel (so a
-refused sync has no side effects) and released when the call returns —
-unlike a slew, a sync has no watcher to hand it off to. While it is
-held, `Slewing` reads `true`; only a *concurrent* client can observe
-that, and to one racing a sync, "the axes are busy" is the truthful
-answer.
+lock is taken before the in-flight pulse-guide cancel, so a refused
+sync has no side effects, and released when the call returns — unlike
+a slew, a sync has no watcher to hand ownership to.
 
 Until 2026-09 sync assumed CW-down unconditionally. On a CW-up mount
 that had two consequences: every target in the western sky was

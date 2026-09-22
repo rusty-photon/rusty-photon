@@ -727,7 +727,15 @@ impl MountDevice {
         // The returned guard clears `slew_in_progress` on drop, so every
         // `?` below — a failed wire command or a failed watcher hand-off
         // — rolls the flag back without an explicit clear.
-        let Some(reservation) = SlewReservation::try_acquire(&self.slew_in_progress) else {
+        // Serialize with an in-flight sync's encoder writes before
+        // claiming the axes; see `axis_ownership`. Held only across the
+        // acquisition — the slew's own ownership is the reservation,
+        // which it hands to the completion watcher.
+        let reservation = {
+            let _axes = self.axis_ownership.lock().await;
+            SlewReservation::try_acquire(&self.slew_in_progress)
+        };
+        let Some(reservation) = reservation else {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "slew refused: slew already in progress",
