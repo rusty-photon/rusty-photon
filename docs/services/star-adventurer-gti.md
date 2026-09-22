@@ -1138,18 +1138,17 @@ a flip. Four fields:
   **tracking must reach the trigger** (`offset <
   min_hours − tracking_guard_margin_hours`, since the guard stops the
   mount there and a tracked target arrives from below), and **the flip
-  must land clear** (`offset + 12` folded, outside the zone, or the
-  slew is refused). With the shipped zone that works out to
-  `[−0.95, +0.90)`, but the conditions are evaluated against both zone
-  bounds rather than presuming the `(x, 12 − x)` shape —
+  must land clear from anywhere the trigger can fire**. The second is
+  a swept interval, not a point: the watcher attempts a flip on the
+  first tick where `mech_HA ≥ offset`, so enabling tracking with the
+  mount already past the offset fires it from wherever the mount is.
+  Every position in `[offset, guard_entry)` therefore has to flip to a
+  destination outside the zone. With the shipped zone that works out
+  to `[−0.95, +0.90)`, but the conditions are evaluated against both
+  zone bounds rather than presuming the `(x, 12 − x)` shape —
   `cw_exclusion_zone` accepts any `-12 ≤ min < max ≤ 12`, and off that
   shape a presumed band both rejects reachable offsets and admits
-  unreachable ones. `[−0.95, +0.90)` is also only the *practical* part
-  of what the shipped zone accepts: offsets in `[−12, −11.05]` pass
-  too, flipping just past the anti-meridian wrap to a destination
-  outside the zone. That is eccentric rather than impossible — it buys
-  the flipped side about 24 minutes before the guard — and the rule
-  rejects what cannot work, not what is merely odd. Fail either condition and the auto-flip does not
+  unreachable ones. Fail either condition and the auto-flip does not
   fire late, it never fires at all, so the config is refused at load
   (and on a runtime `config.apply`) rather than leaving
   `auto_flip_during_tracking = true` as a setting that does nothing. The rule spans two config blocks, so unlike the other
@@ -1390,9 +1389,11 @@ Semantics and interactions:
   "delay meridian flip by N minutes" semantics). With the shipped
   defaults the usable values are `[−0.95, +0.90)`; the general rule is
   the two conditions in [§Flip policy](#flip-policy), validated at
-  config load. Outside them the flip is either refused (the flipped
-  destination is inside the zone) or pre-empted by the guard, so it
-  would never fire.
+  config load. Outside them the flip is either refused (somewhere
+  between the offset and the guard entry the mount would flip into the
+  zone) or pre-empted by the guard, so it would never fire — and
+  because the watcher gets one attempt per meridian crossing, a
+  refused one is not retried.
 - **Hosts observe the flip normally.** The flip is visible as
   `Slewing = true` plus the subsequent `SideOfPier` change, exactly
   like an explicit `SetSideOfPier` — guiding / imaging restart

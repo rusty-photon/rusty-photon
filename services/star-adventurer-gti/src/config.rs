@@ -10,8 +10,7 @@ use std::time::Duration;
 pub use rusty_photon_server_config::AlpacaServerConfig;
 use serde::{Deserialize, Serialize};
 
-use crate::coordinates::mech_ha_in_binding_zone;
-use crate::units::MechHa;
+use crate::coordinates::path_crosses_binding_zone;
 
 /// Top-level configuration deserialised from the JSON config file.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -286,37 +285,42 @@ impl MountConfig {
     /// when it can.
     ///
     /// The one rule that spans two config blocks, so no single newtype
-    /// can own it. An auto-flip has to clear two independent hurdles,
-    /// each read off the zone bound it actually depends on:
+    /// can own it. An auto-flip has to clear two hurdles, each read off
+    /// the zone bound it actually depends on:
     ///
     /// 1. **Tracking must reach the trigger.** The guard stops the
     ///    mount at `min_hours − tracking_guard_margin_hours`, and a
     ///    tracked target arrives at the trigger from below, so an
     ///    offset at or above that point is never reached.
-    /// 2. **The flip must land clear.** The flipped destination
-    ///    (`offset + 12` folded) has to sit outside the zone, or the
-    ///    flip slew is refused when the watcher issues it.
+    /// 2. **The flip must land clear from anywhere it can fire.** The
+    ///    watcher attempts a flip on the first tick where `mech_HA >=
+    ///    offset`, which — when tracking is enabled with the mount
+    ///    already past the offset — is wherever the mount happens to
+    ///    be, not the offset itself. So every position in
+    ///    `[offset, guard_entry)` has to flip to a destination outside
+    ///    the zone, not just the offset. That is a swept interval of
+    ///    flipped destinations, which is exactly what
+    ///    [`path_crosses_binding_zone`] answers.
     ///
     /// Fail either and the flip is not deferred, it simply never
     /// happens, leaving `auto_flip_during_tracking = true` as a setting
     /// that does nothing — discoverable only by an unattended session
-    /// failing to flip. So the config is refused at load instead.
+    /// failing to flip, one attempt per crossing, with the guard
+    /// stopping the mount afterwards. So the config is refused at load
+    /// instead.
     ///
-    /// Both hurdles are derived rather than assumed: an earlier version
+    /// Both hurdles are derived rather than assumed. An earlier version
     /// took the accepted band to be `[−min_hours, min_hours − margin)`,
     /// which is only the overlap for a zone of the symmetric shape
-    /// `(x, 12 − x)`. [`ActiveZone`] permits any `-12 ≤ min < max ≤ 12`,
-    /// and off that shape the shortcut both rejected reachable offsets
-    /// (zone `(2, 5)`, offset `−5`, whose flip lands at `+7`) and
-    /// admitted unreachable ones (zone `(10, 11)`, offset `−1.5`, whose
-    /// flip lands at `+10.5`, inside it).
-    ///
-    /// The accepted set is therefore not one interval. Under the
-    /// shipped zone it is `[−12, −11.05] ∪ [−0.95, +0.90)` — the
-    /// second is the practical band around the meridian, the first
-    /// flips just past the anti-meridian wrap, which is eccentric but
-    /// not impossible. Rejecting the odd as well as the unworkable is
-    /// not this function's job.
+    /// `(x, 12 − x)`; [`ActiveZone`] permits any
+    /// `-12 ≤ min < max ≤ 12`, and off that shape it both rejected
+    /// reachable offsets (zone `(2, 5)`, offset `−5`, flipping to `+7`)
+    /// and admitted unreachable ones (zone `(10, 11)`, offset `−1.5`,
+    /// flipping to `+10.5`, inside it). A later one checked the flipped
+    /// destination only at the offset, which let through
+    /// anti-meridian values like `−11.5`: legal at the offset, but
+    /// tracking enabled from `mech_HA = −10` fires the trigger
+    /// immediately and tries to flip to `+2`, inside the shipped zone.
     ///
     /// Inert configurations are not errors: with `enabled = false`, or
     /// `auto_flip_during_tracking = false`, the offset is not consulted
@@ -335,23 +339,27 @@ impl MountConfig {
         let offset = self.flip_policy.auto_flip_at_meridian_offset_hours;
         let margin = self.tracking_guard_margin_hours.value();
         let guard_entry = zone_min - margin;
-        let flipped = MechHa::new(offset).flipped().value();
-        let flip_lands_clear = !mech_ha_in_binding_zone(flipped, zone);
-        if offset < guard_entry && flip_lands_clear {
-            return None;
+        if offset >= guard_entry {
+            return Some(format!(
+                "flip_policy.auto_flip_at_meridian_offset_hours {offset} names a point no \
+                 flip can happen at: the tracking guard stops the mount at {guard_entry} h \
+                 (cw_exclusion_zone.min_hours {zone_min} − \
+                 tracking_guard_margin_hours {margin}), so tracking never reaches it"
+            ));
         }
-        let reason = if offset >= guard_entry {
-            format!(
-                "the tracking guard stops the mount at {guard_entry} h                  (cw_exclusion_zone.min_hours {zone_min} −                  tracking_guard_margin_hours {margin}), so tracking never reaches it"
-            )
-        } else {
-            format!(
-                "the flip would land at mech_HA {flipped} h, inside the CW exclusion zone                  ({zone_min}, {zone_max}), so the slew would be refused"
-            )
-        };
-        Some(format!(
-            "flip_policy.auto_flip_at_meridian_offset_hours {offset} names a point no flip              can happen at: {reason}"
-        ))
+        // The flipped images of every `mech_HA` in `[offset,
+        // guard_entry)` — the positions the trigger can fire from —
+        // form the sweep from `offset + 12`. None may land in the zone.
+        if path_crosses_binding_zone(offset + 12.0, guard_entry - offset, zone) {
+            return Some(format!(
+                "flip_policy.auto_flip_at_meridian_offset_hours {offset} names a point no \
+                 flip can happen at: between it and the guard entry at {guard_entry} h the \
+                 mount would flip into the CW exclusion zone ({zone_min}, {zone_max}), and \
+                 the watcher fires wherever tracking already is, not at the offset — so \
+                 the slew would be refused"
+            ));
+        }
+        None
     }
 }
 
@@ -1989,13 +1997,13 @@ mod tests {
                 "error should name the field, got: {err}"
             );
         }
-        // The practical band around the meridian, plus the
-        // anti-meridian sliver: `-11.5` flips to `+0.5`, outside the
-        // zone, so it works — oddly, but the rule rejects what cannot
-        // happen, not what is merely eccentric. The accepted set is
-        // two intervals, and collapsing it back to one would
-        // reintroduce the presumed-shape bug above.
-        for good in [0.0, 0.5, 0.899, -0.95, -11.5, -12.0] {
+        // `-11.5` and `-12.0` were accepted while the rule checked
+        // the flipped destination only at the offset: legal there
+        // (`-11.5` flips to `+0.5`), but the watcher fires wherever
+        // tracking already is, so enabling tracking at `mech_HA = -10`
+        // would try to flip to `+2`, inside the zone. The sweep check
+        // rejects them — see the dedicated test below.
+        for good in [0.0, 0.5, 0.899, -0.95] {
             assert!(
                 auto_flip_at(good).auto_flip_offset_error().is_none(),
                 "offset {good} should be accepted"
@@ -2034,9 +2042,39 @@ mod tests {
             .auto_flip_offset_error()
             .expect("offset -1.5 is unreachable under zone (10, 11)");
         assert!(
-            err.contains("10.5") && err.contains("CW exclusion zone"),
-            "error should name where the flip would land, got: {err}"
+            err.contains("CW exclusion zone") && err.contains("(10, 11)"),
+            "error should name the zone the flip would land in, got: {err}"
         );
+    }
+
+    #[test]
+    fn auto_flip_offset_must_flip_clear_from_anywhere_the_trigger_fires() {
+        // `auto_flip_tick` attempts on the first tick where `mech_HA >=
+        // offset`, so enabling tracking with the mount already past the
+        // offset fires it from wherever the mount is — not from the
+        // offset. An offset is only usable if *every* position between
+        // it and the guard entry flips clear.
+        //
+        // `-11.5` is the case that exposed the difference: its own
+        // flipped destination is `+0.5`, outside the zone, so a
+        // point-check accepts it. But tracking enabled at `mech_HA =
+        // -10` fires immediately and tries to flip to `+2`, inside the
+        // shipped zone — the slew is refused, the one attempt per
+        // crossing is spent, and the guard stops the mount later.
+        for bad in [-11.5, -12.0, -11.05] {
+            let err = auto_flip_at(bad)
+                .auto_flip_offset_error()
+                .unwrap_or_else(|| panic!("offset {bad} should be rejected"));
+            assert!(
+                err.contains("CW exclusion zone"),
+                "error should name where the flip would land, got: {err}"
+            );
+        }
+        // The band around the meridian survives precisely because the
+        // whole sweep from it to the guard entry flips clear: from
+        // `-0.95` the destinations run `+11.05` up through the wrap to
+        // `-11.1`, never entering `(0.95, 11.05)`.
+        assert!(auto_flip_at(-0.95).auto_flip_offset_error().is_none());
     }
 
     #[test]
