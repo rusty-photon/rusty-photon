@@ -12,6 +12,28 @@ Feature: Asynchronous slewing
   uses the most-recent TargetRightAscension / TargetDeclination set on
   the device.
 
+  The baseline configuration these scenarios run under ships the
+  default CW exclusion zone, (0.95, 11.05) h of mech_HA, so a slew
+  target is subject to the same safety gate an operator's mount
+  applies. The suite pins the site longitude so LST is 6.0 h at
+  startup, which puts the canonical RA 6.0 h target on the meridian
+  (mech_HA 0) rather than wherever the wallclock would have left it;
+  scenarios that care about a specific mech_HA address their targets
+  by hour angle instead.
+
+  Scenario: A target inside the CW exclusion zone is refused before any motion
+    Given a running star-adventurer service
+    When I connect the device
+    And I try to slew asynchronously to a target at hour angle 3.0 hours and Dec 30.0 degrees
+    Then the operation should fail with invalid-value
+    And the error message should mention "CW exclusion zone"
+
+  Scenario: A target outside the CW exclusion zone is accepted
+    Given a running star-adventurer service
+    When I connect the device
+    And I slew asynchronously to a target at hour angle -3.0 hours and Dec 30.0 degrees
+    Then TargetDeclination should be 30.0 degrees within 0.001
+
   Scenario: SlewToCoordinatesAsync rejects RA out of range
     Given a running star-adventurer service
     When I connect the device

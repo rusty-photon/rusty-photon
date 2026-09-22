@@ -233,6 +233,20 @@ pub struct MountDevice {
     /// `ORed` into `slewing()` and the concurrent-motion refusals, and
     /// cleared by the completion watchers, `AbortSlew`, and disconnect.
     slew_in_progress: Arc<AtomicBool>,
+    /// Serializes *taking ownership of the axes* — held across a sync's
+    /// encoder writes, and taken by a slew or park around its
+    /// [`SlewReservation`] acquisition.
+    ///
+    /// `slew_in_progress` alone cannot do this job for sync.
+    /// `AbortSlew` clears that flag unconditionally, which is right for
+    /// the motion it cancels but would strip a sync of the exclusivity
+    /// it is relying on: a slew could then win the reservation and
+    /// start moving between a sync's snapshot read and its `:E` writes.
+    /// A lock no third party can release on an owner's behalf closes
+    /// that, and keeps `Slewing` honest — a sync is not motion and does
+    /// not set the flag.
+    #[debug(skip)]
+    axis_ownership: Arc<tokio::sync::Mutex<()>>,
     #[debug(skip)]
     manager: Arc<MountManager>,
     /// Config-action context; `Some` enables `config.get` / `config.apply` /
@@ -263,6 +277,7 @@ impl MountDevice {
             session: Arc::new(RwLock::new(None)),
             state: Arc::new(RwLock::new(DriverState::default())),
             slew_in_progress: Arc::new(AtomicBool::new(false)),
+            axis_ownership: Arc::new(tokio::sync::Mutex::new(())),
             manager,
             config_ctx: None,
         }

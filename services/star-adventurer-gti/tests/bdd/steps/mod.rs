@@ -9,6 +9,7 @@ pub mod doctor_steps;
 pub mod meridian_flip_steps;
 pub mod metadata_steps;
 pub mod park_steps;
+pub mod pier_side_selection_steps;
 pub mod pulse_guide_steps;
 pub mod side_of_pier_steps;
 pub mod slew_steps;

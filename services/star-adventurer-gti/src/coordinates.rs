@@ -25,7 +25,7 @@ use erfars::timescales::{Dtf2d, Taitt, Utctai};
 
 use crate::config::FlipPolicy;
 use crate::error::{Result, StarAdvError};
-use crate::units::{sat_round_u32, Cpr, Dec, DecTicks, Lst, Ra, RaTicks};
+use crate::units::{sat_round_u32, Cpr, Dec, DecTicks, Lst, MechHa, Ra, RaTicks};
 
 /// Local apparent sidereal time in hours `[0, 24)` from the host's wall
 /// clock and the configured site longitude (east-positive, ASCOM
@@ -268,35 +268,126 @@ pub const fn opposite_pier_side(side: PierSide) -> PierSide {
     }
 }
 
+/// Is `mech_ha` inside the CW exclusion zone?
+///
+/// The zone is the **open** interval `(zone_min, zone_max)` — a value
+/// landing exactly on a boundary is outside it — and `zone_min >=
+/// zone_max` means "no zone" (what
+/// [`CwExclusionZone::Disabled`](crate::config::CwExclusionZone::Disabled)
+/// deserialises to). Every consumer shares this spelling: the slew and
+/// sync destination check, the path checks, the tracking guard, and
+/// [`select_pier_side_for_target`].
+#[must_use]
+pub fn mech_ha_in_binding_zone(mech_ha: f64, binding_zone_hours: (f64, f64)) -> bool {
+    let (zone_min, zone_max) = binding_zone_hours;
+    zone_min < zone_max && mech_ha > zone_min && mech_ha < zone_max
+}
+
+/// Does the linear `mech_HA` sweep from `start_ha` by `delta_ha` enter
+/// the CW exclusion zone (modulo 24 h)?
+///
+/// The sweep is the open interval `(min(start, start+delta),
+/// max(start, start+delta))`; the zone repeats every 24 hours, so we
+/// check `k ∈ {-1, 0, +1}` — enough to cover any `|delta_ha| ≤ 12`
+/// path. An empty zone (`zone_min ≥ zone_max`) is treated as no zone.
+#[must_use]
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "zone + 24·k is the day-period unwrap over exact small values; nothing to fuse"
+)]
+pub fn path_crosses_binding_zone(
+    start_ha: f64,
+    delta_ha: f64,
+    binding_zone_hours: (f64, f64),
+) -> bool {
+    let (zone_min, zone_max) = binding_zone_hours;
+    if zone_min >= zone_max {
+        return false;
+    }
+    let path_lo = start_ha.min(start_ha + delta_ha);
+    let path_hi = start_ha.max(start_ha + delta_ha);
+    for k in [-1.0_f64, 0.0, 1.0] {
+        let bz_lo = zone_min + 24.0 * k;
+        let bz_hi = zone_max + 24.0 * k;
+        // Open-interval overlap: paths grazing the boundary stay safe.
+        if path_lo < bz_hi && bz_lo < path_hi {
+            return true;
+        }
+    }
+    false
+}
+
+/// Is there an RA path from `current_mech_ha` to `target_mech_ha` that
+/// stays out of the CW exclusion zone?
+///
+/// Mirrors what the slew planner will actually do with the sweep:
+/// a non-flip slew has only the canonical short delta available
+/// ([`super::mount_device::slew::check_non_flip_ra_path`]'s rule),
+/// while a flip slew may also route the long way around
+/// ([`super::mount_device::slew::flip_slew_ra_delta`]). Keeping the two
+/// in agreement is the point — the selector must not hand the planner a
+/// side whose sweep the planner is about to refuse.
+fn ra_path_exists(
+    current_mech_ha: f64,
+    target_mech_ha: f64,
+    may_take_long_way: bool,
+    binding_zone_hours: (f64, f64),
+) -> bool {
+    let delta = MechHa::new(target_mech_ha - current_mech_ha).value();
+    if !path_crosses_binding_zone(current_mech_ha, delta, binding_zone_hours) {
+        return true;
+    }
+    if !may_take_long_way {
+        return false;
+    }
+    let long_way = if delta > 0.0 {
+        delta - 24.0
+    } else {
+        delta + 24.0
+    };
+    !path_crosses_binding_zone(current_mech_ha, long_way, binding_zone_hours)
+}
+
 /// Choose the target pier side for a slew (or for the
 /// `DestinationSideOfPier` prediction).
+///
+/// Pier side is an *output*, not a policy: of the two encoder
+/// solutions for a target, the driver uses one the mount can actually
+/// be pointed at. The CW exclusion zone is the only input.
 ///
 /// Decision tree (mirrors the design doc's
 /// [§"Pier-side decision tree"](../../../docs/services/star-adventurer-gti.md#pier-side-decision-tree)):
 ///
-/// 1. If `policy.enabled == false`, return `current` unchanged.
-/// 2. Compute the target's celestial-HA and the resulting `mech_HA` on
-///    each pier side (`mech_HA_normal = HA`; `mech_HA_flipped = HA + 12`
-///    folded).
-/// 3. If the *current* side can reach the target without entering the
-///    counterweight binding zone, stay on the current side. For the
-///    pre-flip side that's `mech_HA_normal ∉ binding_zone`; for the
-///    post-flip side that's `|target_HA| ≤ flip_range_hours` (the
-///    operational rule that keeps the mount on flipped only briefly
-///    past the meridian — there's no mechanical reason to leave the
-///    flipped side at e.g. `mech_HA_flipped = 0` ≈ anti-meridian, but
-///    the operational convention is to flip back).
-/// 4. Otherwise return [`opposite_pier_side(current)`](opposite_pier_side).
+/// 1. If `policy.enabled == false`, return `current` unchanged. A
+///    [`PierSide::Unknown`] `current` likewise returns `Unknown` — with
+///    no encoder classification there is nothing to anchor a decision
+///    on, mirroring how [`side_of_pier`] degrades when `cpr_dec == 0`.
+/// 2. Compute the target's celestial HA and, from it, each side's
+///    destination `mech_HA`: `HA` on the pre-flip (counterweight-down)
+///    side, `HA + 12` folded on the post-flip (counterweight-up) side.
+/// 3. A side is **usable** when its destination `mech_HA` is outside
+///    the zone *and* an RA path to it exists from the current encoder
+///    position (`ra_path_exists`, private — the slew planner is the
+///    public surface for that question).
+/// 4. Stay on `current` when it is usable; otherwise take
+///    [`opposite_pier_side(current)`](opposite_pier_side) when *it* is.
+///    When neither is, return `current` and let the caller's envelope
+///    or path check refuse with the error that names the obstruction.
 ///
-/// When `current` is [`PierSide::Unknown`] the helper returns
-/// `Unknown` regardless of policy — the driver has no encoder
-/// classification to anchor a flip decision on. This mirrors how
-/// [`side_of_pier`] degrades when `cpr_dec == 0`.
+/// A `policy.flip_range_hours` field used to gate this as a
+/// `|target_HA| ≤ flip_range_hours` window, which is the wrong shape:
+/// the counterweight-up side's reach is one-sided (`HA ≥ −x` for a
+/// zone `(x, 12 − x)`, then the whole western sky), not a band around
+/// the meridian. Treating it as a band made most of the western sky
+/// unreachable from the counterweight-up side — issue #1301. The field
+/// was removed in 2026-09 rather than left as a no-op; the zone is the
+/// only input here.
 #[must_use]
 pub fn select_pier_side_for_target(
     target_ra: Ra,
     lst: Lst,
     current: PierSide,
+    current_mech_ha: MechHa,
     policy: &FlipPolicy,
     binding_zone_hours: (f64, f64),
     site_latitude_deg: f64,
@@ -307,35 +398,34 @@ pub fn select_pier_side_for_target(
     if current == PierSide::Unknown {
         return PierSide::Unknown;
     }
-    let target_hour_angle = lst.hour_angle_of(target_ra).value();
-    let northern = site_latitude_deg >= 0.0;
-    let pre_flip_side = if northern {
+    let target_hour_angle = lst.hour_angle_of(target_ra).to_mech();
+    let pre_flip_side = if site_latitude_deg >= 0.0 {
         PierSide::West
     } else {
         PierSide::East
     };
-    let current_covers = if current == pre_flip_side {
-        // Natural side: mech_HA = celestial HA. "Covers" means not in
-        // binding zone — including the safe wrap region near ±12. The
-        // zone is the **open** interval `(zone_min, zone_max)` with
-        // `zone_min >= zone_max` meaning disabled, matching
-        // `check_within_safe_envelope`, `canonical_path_crosses_binding_zone`,
-        // and `tracking_guard_breached`. A target landing exactly on a
-        // boundary is therefore *not* in the zone — the envelope check
-        // would permit it on this side, so the selector must not force a
-        // spurious flip.
-        let (zone_min, zone_max) = binding_zone_hours;
-        !(zone_min < zone_max && target_hour_angle > zone_min && target_hour_angle < zone_max)
-    } else {
-        // Post-flip side: operational rule, stay on flipped only near
-        // meridian. The binding zone for flipped-side mech_HA is
-        // separately enforced by `check_within_safe_envelope`.
-        target_hour_angle.abs() <= policy.flip_range_hours.value()
+    let usable = |side: PierSide| {
+        let target_mech_ha = if side == pre_flip_side {
+            target_hour_angle
+        } else {
+            target_hour_angle.flipped()
+        };
+        !mech_ha_in_binding_zone(target_mech_ha.value(), binding_zone_hours)
+            && ra_path_exists(
+                current_mech_ha.value(),
+                target_mech_ha.value(),
+                side != current,
+                binding_zone_hours,
+            )
     };
-    if current_covers {
-        current
+    if usable(current) {
+        return current;
+    }
+    let opposite = opposite_pier_side(current);
+    if usable(opposite) {
+        opposite
     } else {
-        opposite_pier_side(current)
+        current
     }
 }
 
@@ -940,20 +1030,34 @@ mod tests {
     fn flip_disabled() -> FlipPolicy {
         FlipPolicy {
             enabled: false,
-            flip_range_hours: crate::config::FlipRangeHours::new(0.5),
             ..Default::default()
         }
     }
     fn flip_enabled() -> FlipPolicy {
         FlipPolicy {
             enabled: true,
-            flip_range_hours: crate::config::FlipRangeHours::new(0.5),
             ..Default::default()
         }
     }
-    const BINDING_ZONE: (f64, f64) = (6.95, 11.05);
+    /// The shipped CW exclusion zone: `(x, 12 − x)` with the
+    /// counterweight-up allowance `x = 0.95 h = 57 min`.
+    const ZONE: (f64, f64) = (0.95, 11.05);
+    /// The narrower zone the driver shipped before 2026-05-17. Kept in
+    /// the tests that predate the widening so their intent (which side
+    /// reaches what) stays readable.
+    const NARROW_ZONE: (f64, f64) = (6.95, 11.05);
     const LAT_NORTH: f64 = 45.0;
     const LAT_SOUTH: f64 = -33.0;
+
+    /// The encoder `mech_HA` a Northern-Hemisphere mount on `side`
+    /// shows while pointing at celestial hour angle `ha`.
+    fn mech_at_north(side: PierSide, ha: f64) -> MechHa {
+        if side == PierSide::West {
+            MechHa::new(ha)
+        } else {
+            MechHa::new(ha + 12.0)
+        }
+    }
 
     #[test]
     fn select_pier_side_when_policy_disabled_returns_current() {
@@ -966,8 +1070,9 @@ mod tests {
                 Ra::new(0.0),
                 Lst::new(lst),
                 current,
+                MechHa::new(0.0),
                 &policy,
-                BINDING_ZONE,
+                ZONE,
                 LAT_NORTH,
             );
             assert_eq!(chosen, current, "current={current:?}");
@@ -983,17 +1088,20 @@ mod tests {
             Ra::new(0.0),
             Lst::new(12.0),
             PierSide::Unknown,
+            MechHa::new(0.0),
             &policy,
-            BINDING_ZONE,
+            ZONE,
             LAT_NORTH,
         );
         assert_eq!(chosen, PierSide::Unknown);
     }
 
     #[test]
-    fn select_pier_side_north_pierwest_stays_for_inside_pre_flip_envelope() {
-        // Northern hemisphere, currently on the "normal" (pre-flip) side
-        // = pierWest. Target HA = −3 (well inside [−6.95, +6.95]). Stay.
+    fn select_pier_side_north_pierwest_stays_for_target_outside_the_zone() {
+        // Northern hemisphere, currently on the counterweight-down side
+        // = pierWest, pointing at HA −4. Target HA = −3: its pre-flip
+        // mech_HA is outside the zone and the sweep is a 1 h nudge
+        // through safe arc. Stay.
         let policy = flip_enabled();
         let lst = 12.0;
         let target_ra = lst + 3.0; // mech_HA = lst − ra = −3
@@ -1001,57 +1109,124 @@ mod tests {
             Ra::new(target_ra),
             Lst::new(lst),
             PierSide::West,
+            mech_at_north(PierSide::West, -4.0),
             &policy,
-            BINDING_ZONE,
+            ZONE,
             LAT_NORTH,
         );
         assert_eq!(chosen, PierSide::West);
     }
 
     #[test]
-    fn select_pier_side_north_piereast_inside_flip_window_stays() {
-        // Currently pierEast (post-flip), target_HA inside the flip
-        // window. Stay flipped (no unnecessary flip back).
+    fn select_pier_side_north_piereast_stays_for_western_target() {
+        // Issue #1301. Counterweight-up (pierEast) mount, target at
+        // HA +3 — the counterweight-down mech_HA of +3 is inside the
+        // zone, so only the counterweight-up side (mech_HA −9) reaches
+        // it. Returning the opposite side here is what made the whole
+        // western sky unreachable from the flipped side.
         let policy = flip_enabled();
         let lst = 12.0;
-        let target_ra = lst - 0.3; // mech_HA = +0.3 (within ±0.5)
+        let target_ra = lst - 3.0; // HA = +3
         let chosen = select_pier_side_for_target(
             Ra::new(target_ra),
             Lst::new(lst),
             PierSide::East,
+            mech_at_north(PierSide::East, 0.3),
             &policy,
-            BINDING_ZONE,
+            ZONE,
             LAT_NORTH,
         );
         assert_eq!(chosen, PierSide::East);
     }
 
     #[test]
-    fn select_pier_side_north_piereast_outside_flip_window_flips_back_to_west() {
-        // Currently pierEast (flipped), target outside the flip window
-        // but inside the pre-flip envelope. Auto-flip back to pierWest
-        // — the post-flip side cannot reach the target.
+    fn select_pier_side_north_piereast_reaches_the_whole_western_sky() {
+        // The counterweight-up side's mech_HA = HA − 12 is negative for
+        // every target west of the meridian, so none of them is in the
+        // zone and none of them flips the mount back.
         let policy = flip_enabled();
         let lst = 12.0;
-        let target_ra = lst + 3.0; // mech_HA = −3, outside ±0.5
+        for ha in [1.0, 2.0, 3.0, 6.0, 9.0, 11.0] {
+            let chosen = select_pier_side_for_target(
+                Ra::new(lst - ha),
+                Lst::new(lst),
+                PierSide::East,
+                mech_at_north(PierSide::East, 0.3),
+                &policy,
+                ZONE,
+                LAT_NORTH,
+            );
+            assert_eq!(chosen, PierSide::East, "target HA {ha}");
+        }
+    }
+
+    #[test]
+    fn select_pier_side_north_piereast_flips_back_when_only_pre_flip_reaches() {
+        // Target HA = −3 puts the counterweight-up mech_HA at +9,
+        // inside the zone; counterweight-down reaches it at −3.
+        let policy = flip_enabled();
+        let lst = 12.0;
+        let target_ra = lst + 3.0; // HA = −3
         let chosen = select_pier_side_for_target(
             Ra::new(target_ra),
             Lst::new(lst),
             PierSide::East,
+            mech_at_north(PierSide::East, 0.3),
             &policy,
-            BINDING_ZONE,
+            ZONE,
             LAT_NORTH,
         );
         assert_eq!(chosen, PierSide::West);
     }
 
     #[test]
+    fn select_pier_side_north_overlap_band_does_not_move_the_mount() {
+        // |HA| ≤ x = 0.95 h is reachable from both sides, so the mount
+        // stays wherever it is — no gratuitous flip-back for a target
+        // the current side can already see. `0.7` is past the legacy
+        // `flip_range_hours` window (0.5) that used to force a
+        // through-wrap slew back to the pre-flip side.
+        let policy = flip_enabled();
+        let lst = 12.0;
+        for ha in [-0.9, -0.5, 0.0, 0.5, 0.7, 0.9] {
+            for current in [PierSide::West, PierSide::East] {
+                let chosen = select_pier_side_for_target(
+                    Ra::new(lst - ha),
+                    Lst::new(lst),
+                    current,
+                    mech_at_north(current, ha),
+                    &policy,
+                    ZONE,
+                    LAT_NORTH,
+                );
+                assert_eq!(chosen, current, "target HA {ha} from {current:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn select_pier_side_north_pierwest_flips_for_target_inside_the_zone() {
+        // Counterweight-down mount, target HA +3: its pre-flip mech_HA
+        // is inside the zone, the flipped one (−9) is not.
+        let policy = flip_enabled();
+        let lst = 12.0;
+        let chosen = select_pier_side_for_target(
+            Ra::new(lst - 3.0),
+            Lst::new(lst),
+            PierSide::West,
+            mech_at_north(PierSide::West, 0.5),
+            &policy,
+            ZONE,
+            LAT_NORTH,
+        );
+        assert_eq!(chosen, PierSide::East);
+    }
+
+    #[test]
     fn select_pier_side_north_pierwest_outside_pre_flip_envelope_flips_to_east() {
-        // Currently pierWest, target HA past +6.95 (outside pre-flip
-        // envelope and outside the flip window). Selector returns the
-        // opposite side; subsequent envelope validation will reject the
-        // slew with INVALID_VALUE regardless, but the prediction is
-        // deterministic.
+        // Currently pierWest, target HA past +6.95 (outside the narrow
+        // zone's pre-flip reach). Selector returns the opposite side,
+        // whose mech_HA (−4.5) and sweep are both clear.
         let policy = flip_enabled();
         let lst = 12.0;
         let target_ra = lst - 7.5; // mech_HA = +7.5
@@ -1059,41 +1234,126 @@ mod tests {
             Ra::new(target_ra),
             Lst::new(lst),
             PierSide::West,
+            mech_at_north(PierSide::West, 0.0),
             &policy,
-            BINDING_ZONE,
+            NARROW_ZONE,
             LAT_NORTH,
         );
         assert_eq!(chosen, PierSide::East);
     }
 
     #[test]
-    fn select_pier_side_north_flip_window_boundary_at_exact_flip_range_is_covered() {
-        // |target_HA| = flip_range_hours exactly is on the *inclusive*
-        // edge of the post-flip safe band — staying flipped is
-        // valid. The slew planner's envelope check (issue-time)
-        // matches this boundary handling.
+    fn select_pier_side_flips_when_the_current_side_has_no_safe_sweep() {
+        // Both sides' *destinations* are legal, but the current side's
+        // is only reachable by sweeping the counterweight through the
+        // zone: cur mech_HA +0.5 → target mech_HA +11.5 crosses
+        // (0.95, 11.05) and a non-flip slew has no long way around.
+        // The flipped destination (−0.5) is a 1 h nudge away. Choosing
+        // the current side here would hand the planner a sweep it is
+        // about to refuse with INVALID_OPERATION.
         let policy = flip_enabled();
         let lst = 12.0;
-        let target_ra = lst - 0.5; // mech_HA = +0.5 = flip_range_hours
         let chosen = select_pier_side_for_target(
-            Ra::new(target_ra),
+            Ra::new(lst - 11.5),
             Lst::new(lst),
-            PierSide::East,
+            PierSide::West,
+            MechHa::new(0.5),
             &policy,
-            BINDING_ZONE,
+            ZONE,
             LAT_NORTH,
         );
         assert_eq!(chosen, PierSide::East);
+    }
+
+    #[test]
+    fn ra_path_exists_takes_the_long_way_when_the_short_sweep_crosses() {
+        // Both signs of the long-way correction, asserted where it
+        // *succeeds* — the selector can only reach these branches in
+        // configurations where the answer is the both-blocked
+        // fall-through (see the test below), which would pass whether
+        // or not the alternative was ever evaluated. A sign error here
+        // sends the counterweight round the arc the zone exists to
+        // keep it out of, so it is worth pinning directly.
+        let zone = (4.0, 6.0);
+        // Positive canonical delta: 3 → 7 sweeps straight through the
+        // zone; the long way (−20, i.e. 3 → −17) does not.
+        assert!(
+            ra_path_exists(3.0, 7.0, true, zone),
+            "the long way round from +3 to +7 is clear"
+        );
+        // Negative canonical delta: 7 → 3 crosses the same way; its
+        // long way is +20 (7 → 27), also clear.
+        assert!(
+            ra_path_exists(7.0, 3.0, true, zone),
+            "the long way round from +7 to +3 is clear"
+        );
+        // A non-flip slew has no such alternative: same endpoints, no
+        // long way, so the crossing short sweep is the whole answer.
+        assert!(!ra_path_exists(3.0, 7.0, false, zone));
+        assert!(!ra_path_exists(7.0, 3.0, false, zone));
+    }
+
+    #[test]
+    fn select_pier_side_tries_the_long_way_round_for_a_negative_flip_delta() {
+        // The flip branch's long way is `delta ± 24` — plus for a
+        // negative canonical delta, minus for a positive one — and a
+        // sign error there sends the counterweight round the arc the
+        // zone exists to keep it out of. This reaches the negative
+        // case: from `mech_HA +2.5`, the opposite side's destination
+        // at `−9` is a canonical `−11.5` whose sweep crosses, so the
+        // long way `+12.5` is computed and tried. It crosses too, so
+        // the answer is the both-blocked fall-through — the point is
+        // that the alternative was evaluated, not rejected unseen.
+        //
+        // The zone is deliberately off the shipped `(x, 12 − x)`
+        // shape: engineering a current side that is unusable *and* an
+        // opposite whose short sweep crosses needs the asymmetry.
+        let policy = flip_enabled();
+        let lst = 12.0;
+        let zone = (2.0, 5.0);
+        let chosen = select_pier_side_for_target(
+            Ra::new(lst + 9.0), // HA = −9: flipped destination +3, inside the zone
+            Lst::new(lst),
+            PierSide::East,
+            MechHa::new(2.5),
+            &policy,
+            zone,
+            LAT_NORTH,
+        );
+        assert_eq!(chosen, PierSide::East);
+    }
+
+    #[test]
+    fn select_pier_side_returns_current_when_neither_side_has_a_path() {
+        // Degenerate: the encoder is parked *inside* the zone (a state
+        // the slew and tracking gates exist to prevent), so every sweep
+        // out of it crosses. The selector reports the current side and
+        // lets the caller's envelope / path check produce the error
+        // that names the obstruction, rather than inventing a flip.
+        let policy = flip_enabled();
+        let lst = 12.0;
+        let chosen = select_pier_side_for_target(
+            Ra::new(lst),
+            Lst::new(lst),
+            PierSide::West,
+            MechHa::new(6.0),
+            &policy,
+            ZONE,
+            LAT_NORTH,
+        );
+        assert_eq!(chosen, PierSide::West);
     }
 
     #[test]
     fn select_pier_side_north_target_on_zone_boundary_stays_natural_side() {
         // Open-interval semantics, consistent with
         // check_within_safe_envelope: a target landing exactly on a
-        // binding-zone boundary is *not* in the zone, so the selector
-        // keeps the natural (pre-flip) side instead of forcing a
-        // spurious flip the envelope check would not require. Uses an
-        // exactly-representable zone so the boundary equality is precise.
+        // zone boundary is *not* in the zone, so the selector keeps the
+        // natural (pre-flip) side instead of forcing a spurious flip
+        // the envelope check would not require. Uses an
+        // exactly-representable zone so the boundary equality is
+        // precise, and starts the sweep from the boundary itself so the
+        // path leg can't be what decides the case.
         let policy = flip_enabled();
         let lst = 12.0;
         let zone = (6.0, 10.0);
@@ -1103,6 +1363,7 @@ mod tests {
                 Ra::new(target_ra),
                 Lst::new(lst),
                 PierSide::West,
+                MechHa::new(boundary),
                 &policy,
                 zone,
                 LAT_NORTH,
@@ -1116,35 +1377,107 @@ mod tests {
     }
 
     #[test]
-    fn select_pier_side_southern_hemisphere_inverts_normal_side_label() {
-        // In the Southern Hemisphere the "normal" pointing maps to
-        // pierEast (Dec encoder within ±90° reads as East per the
-        // existing side_of_pier convention). So a target inside the
-        // pre-flip envelope on the current normal side means: current =
-        // pierEast → stay pierEast. Mirror of the Northern test above.
+    fn select_pier_side_with_zone_disabled_never_moves_the_mount() {
+        // No zone means every destination and every sweep is legal, so
+        // the current side is always usable and the driver has no
+        // reason to flip.
         let policy = flip_enabled();
         let lst = 12.0;
-        let target_ra = lst + 3.0; // mech_HA = −3
+        let disabled = (f64::INFINITY, f64::NEG_INFINITY);
+        for ha in [-9.0, -3.0, 0.0, 3.0, 9.0] {
+            for current in [PierSide::West, PierSide::East] {
+                let chosen = select_pier_side_for_target(
+                    Ra::new(lst - ha),
+                    Lst::new(lst),
+                    current,
+                    mech_at_north(current, ha),
+                    &policy,
+                    disabled,
+                    LAT_NORTH,
+                );
+                assert_eq!(chosen, current, "target HA {ha} from {current:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn select_pier_side_southern_hemisphere_inverts_normal_side_label() {
+        // In the Southern Hemisphere the "normal" (counterweight-down)
+        // pointing maps to pierEast — a Dec encoder within ±90° reads
+        // as East per the existing side_of_pier convention. So the
+        // Northern cases mirror with the labels swapped.
+        let policy = flip_enabled();
+        let lst = 12.0;
+        // Counterweight-down (pierEast in the south), target HA −3:
+        // reachable at mech_HA −3. Stay.
         let chosen = select_pier_side_for_target(
-            Ra::new(target_ra),
+            Ra::new(lst + 3.0),
             Lst::new(lst),
             PierSide::East,
+            MechHa::new(-4.0),
             &policy,
-            BINDING_ZONE,
+            ZONE,
             LAT_SOUTH,
         );
         assert_eq!(chosen, PierSide::East);
-        // And the post-flip side (pierWest in south): outside flip
-        // window means flip back to East (normal in south).
+        // Counterweight-up (pierWest in the south), same target: its
+        // flipped mech_HA is +9, inside the zone. Flip back to East.
         let chosen = select_pier_side_for_target(
-            Ra::new(target_ra),
+            Ra::new(lst + 3.0),
             Lst::new(lst),
             PierSide::West,
+            MechHa::new(-11.7),
             &policy,
-            BINDING_ZONE,
+            ZONE,
             LAT_SOUTH,
         );
         assert_eq!(chosen, PierSide::East);
+        // Counterweight-up, western target at HA +3 (issue #1301's
+        // case): only the counterweight-up side reaches it. Stay.
+        let chosen = select_pier_side_for_target(
+            Ra::new(lst - 3.0),
+            Lst::new(lst),
+            PierSide::West,
+            MechHa::new(-11.7),
+            &policy,
+            ZONE,
+            LAT_SOUTH,
+        );
+        assert_eq!(chosen, PierSide::West);
+    }
+
+    // ---------- Phase 6: zone / path predicates ----------
+
+    #[test]
+    fn mech_ha_in_binding_zone_is_an_open_interval() {
+        assert!(mech_ha_in_binding_zone(6.0, ZONE));
+        assert!(!mech_ha_in_binding_zone(0.95, ZONE), "min boundary is out");
+        assert!(!mech_ha_in_binding_zone(11.05, ZONE), "max boundary is out");
+        assert!(!mech_ha_in_binding_zone(-9.0, ZONE));
+    }
+
+    #[test]
+    fn mech_ha_in_binding_zone_is_false_for_an_empty_zone() {
+        let disabled = (f64::INFINITY, f64::NEG_INFINITY);
+        assert!(!mech_ha_in_binding_zone(6.0, disabled));
+    }
+
+    #[test]
+    fn path_crosses_binding_zone_detects_a_sweep_through_the_zone() {
+        // cur +0.5 → tgt +11.5: both endpoints are outside the zone,
+        // the sweep is not.
+        assert!(path_crosses_binding_zone(0.5, 11.0, ZONE));
+        // The same span travelled the other way round the circle stays
+        // in the safe arc.
+        assert!(!path_crosses_binding_zone(0.5, -13.0, ZONE));
+    }
+
+    #[test]
+    fn path_crosses_binding_zone_checks_the_24_hour_replicas() {
+        // A sweep from −11.5 by −1 h wraps past −12 into the zone's
+        // k = −1 replica at (−23.05, −12.95).
+        assert!(path_crosses_binding_zone(-11.5, -2.0, ZONE));
+        assert!(!path_crosses_binding_zone(-11.5, -0.4, ZONE));
     }
 
     // ---------- Phase 6: encoder_to_celestial ----------
