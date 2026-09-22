@@ -7,18 +7,30 @@ Feature: PulseGuide as rate-shifted tracking
   `:J<axis>`, sets `IsPulseGuiding`, and spawns a watcher task that
   restores prior state after the requested duration.
 
-  Direction → (axis, ccw, rate factor of sidereal):
+  Direction → (axis, ccw, rate factor of sidereal), counterweight-down:
   | Direction | Axis | ccw   | rate factor      |
   | East      | RA   | false | 1 - ra_fraction  |
   | West      | RA   | false | 1 + ra_fraction  |
   | North     | Dec  | false | dec_fraction     |
   | South     | Dec  | true  | dec_fraction     |
 
+  `guideNorth` moves the OTA toward +Dec on both sides of the pier.
+  The Dec encoder is not a proxy for declination: past a celestial
+  pole the mapping becomes `Dec = sign(θ) · (180° − |θ|)`, so the
+  encoder counts against declination. On the counterweight-up side
+  the Dec `ccw` bit is therefore inverted — North sends `:G211` and
+  South `:G210`. RA is untouched: the flip shifts `mech_HA` by 12 h,
+  it does not mirror it, so East still slows tracking and West still
+  speeds it whichever side the mount is on. The side is the
+  Dec-encoder classification `SideOfPier` reports, not something the
+  flip policy planned, so a mount placed past the pole by hand guides
+  correctly with the policy disabled.
+
   Wire mode bytes (Tracking-Slow):
-  | Direction | :G frame |
-  | East/West | :G110    |
-  | North     | :G210    |
-  | South     | :G211    |
+  | Direction | :G frame, counterweight-down | :G frame, counterweight-up |
+  | East/West | :G110                        | :G110                      |
+  | North     | :G210                        | :G211                      |
+  | South     | :G211                        | :G210                      |
 
   Default `GuideRateRightAscension` / `GuideRateDeclination` is
   0.5 × sidereal (`SIDEREAL_DEG_PER_SEC ≈ 0.00417807`, so the default
@@ -133,6 +145,41 @@ Feature: PulseGuide as rate-shifted tracking
       | pattern   |
       | :K2       |
       | :G211     |
+      | :I2147E0E |
+      | :J2       |
+    And IsPulseGuiding should become false within 20000 ms
+
+  Scenario: PulseGuide North on the counterweight-up side still moves the OTA north
+    # Issue #1300. Seeding the Dec encoder past the pole (135°, beyond
+    # the ±90° classification boundary) is the same state a completed
+    # meridian flip leaves behind, and is how side_of_pier.feature
+    # places the mount counterweight-up. No flip policy is configured:
+    # the inversion follows the encoder, not a planned flip.
+    Given a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
+    And the Dec-axis encoder reports angle 135.0 degrees
+    And a running star-adventurer service
+    When I connect the device
+    And the mount has settled on pier side East
+    And I pulse guide North for 2000 ms
+    Then the mount should have received commands matching:
+      | pattern   |
+      | :K2       |
+      | :G211     |
+      | :I2147E0E |
+      | :J2       |
+    And IsPulseGuiding should become false within 20000 ms
+
+  Scenario: PulseGuide South on the counterweight-up side still moves the OTA south
+    Given a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
+    And the Dec-axis encoder reports angle 135.0 degrees
+    And a running star-adventurer service
+    When I connect the device
+    And the mount has settled on pier side East
+    And I pulse guide South for 2000 ms
+    Then the mount should have received commands matching:
+      | pattern   |
+      | :K2       |
+      | :G210     |
       | :I2147E0E |
       | :J2       |
     And IsPulseGuiding should become false within 20000 ms
