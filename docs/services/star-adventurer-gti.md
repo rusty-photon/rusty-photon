@@ -2473,7 +2473,10 @@ re-adding `[package.metadata.conformu]` to the package's
    way — was issue #1300, fixed: Dec pulses now resolve `ccw`
    against the side the mount is on (see the Dec sign
    convention under
-   [§PulseGuide lifecycle](#pulseguide-lifecycle)).
+   [§PulseGuide lifecycle](#pulseguide-lifecycle), including
+   what a mock run does and does not establish — the
+   counterweight-up direction is derived from the
+   counterweight-down hardware runs, not measured on that side).
 
    Earlier revisions of this section recorded a much worse
    picture (Dec at ~2× the rate, RA West moving east). That was
@@ -2508,7 +2511,11 @@ the selector now picks the side by reachability
 resolves against the side the mount is on
 ([§Sync and pier side](#sync-and-pier-side)). The four Dec-direction
 issues are #1300, also fixed — Dec pulses resolve `ccw` against the
-side the mount is on. **The `20` above was measured; the `8` is
+side the mount is on. "Fixed" there means fixed against the mock and
+derived from the counterweight-down hardware runs, not separately
+measured counterweight-up; see
+[§PulseGuide lifecycle](#pulseguide-lifecycle) ("What the mock can and
+cannot settle") before treating that row as hardware evidence. **The `20` above was measured; the `8` is
 arithmetic, not a re-run** — it assumes the RA-offset group is
 untouched, which neither fix goes near. The remaining eight are
 issue #1299 (RA offset); re-measure when it lands.
