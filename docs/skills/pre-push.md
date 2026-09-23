@@ -136,8 +136,10 @@ through [`bdd-sharded`](../../.github/actions/bdd-sharded), which builds every
 `bdd` target once and then runs the binaries as parallel streams, sharding the
 suites that route their cucumber filter through
 `bdd_infra::sharding::scenario_in_current_shard`. The plain `cargo test` above
-runs the same scenarios sequentially in one process — the same coverage, and
-what you want when you are reading a failure rather than racing a clock. To
+covers the same scenarios, one package's `bdd` binary after another — the same
+coverage, and what you want when you are reading a failure rather than racing a
+clock. Note that is sequential *processes*, not one: `@serial` and the shared
+OmniSim are per-process state, so each package's suite gets its own. To
 reproduce a single CI stream instead, set the shard env on one package's
 binary; see [testing.md § 5.5](testing.md).
 

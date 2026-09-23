@@ -52,6 +52,27 @@ runs:
           export RUSTFLAGS="$BDD_RUSTFLAGS"
         fi
 
+        # A shard count that is not a positive integer would otherwise reach
+        # the loops below and fail somewhere less legible.
+        positive_int() {  # positive_int <label> <value>
+          case "$2" in
+            '' | *[!0-9]*)
+              echo "::error::$1 must be a positive integer, got '$2'"
+              exit 1
+              ;;
+          esac
+          if [ "$2" -lt 1 ]; then
+            echo "::error::$1 must be at least 1, got '$2'"
+            exit 1
+          fi
+        }
+        positive_int rp-shards "$RP_SHARDS"
+        positive_int session-runner-shards "$SESSION_RUNNER_SHARDS"
+
+        # `wc -l` pads its count on some platforms; strip it so the value is
+        # usable in a numeric comparison.
+        count_lines() { wc -l < "$1" | tr -d '[:space:]'; }
+
         # Guarded rather than assumed: without it the artifact filter below
         # yields an empty manifest, which would surface as "no bdd test
         # binaries found" and send the reader looking at the build instead.
@@ -106,6 +127,29 @@ runs:
 
         pids=()
         names=()
+
+        # Each stream buffers to its own file so the eight do not interleave,
+        # which means nothing is on the job log until they are replayed. A
+        # stream that hangs would otherwise reach the job's timeout having
+        # printed nothing at all — the one failure this action exists to make
+        # legible. Replaying from a trap covers the cancelled path too, where
+        # the runner signals the step rather than letting it return.
+        replayed=0
+        replay_logs() {
+          if [ "$replayed" -eq 1 ] || [ "${#names[@]}" -eq 0 ]; then
+            return
+          fi
+          replayed=1
+          local name
+          for name in "${names[@]}"; do
+            echo "::group::bdd ${name}"
+            cat "$logs/${name}.log" 2>/dev/null || true
+            echo "::endgroup::"
+          done
+        }
+        trap replay_logs EXIT
+        trap 'replay_logs; exit 143' TERM
+        trap 'replay_logs; exit 130' INT
 
         # lookup <package-name> -> "<package-dir>\t<executable>"
         lookup() {
@@ -173,7 +217,7 @@ runs:
           (
             rc=0
             ran=0
-            expected=$(wc -l < "$file" | tr -d '[:space:]')
+            expected=$(count_lines "$file")
             while IFS=$'\t' read -r dir exe <&3; do
               BDD_PACKAGE_DIR="$dir" "$exe" </dev/null || rc=1
               ran=$((ran + 1))
@@ -188,6 +232,17 @@ runs:
           names+=("$name")
         }
 
+        # Every binary must land in exactly one stream. Without this an awk
+        # that matched nothing — a renamed package, a lost redirection — leaves
+        # an empty list, and an empty list runs zero suites and agrees with its
+        # own count, so the stream passes having tested nothing.
+        accounted=$(( 2 + $(count_lines "$tmp/bdd-heavy.tsv") + $(count_lines "$tmp/bdd-rest.tsv") ))
+        total=$(count_lines "$manifest")
+        if [ "$accounted" -ne "$total" ]; then
+          echo "::error::stream split covers $accounted of $total bdd binaries"
+          exit 1
+        fi
+
         run_manifest heavy "$tmp/bdd-heavy.tsv"
         run_manifest rest "$tmp/bdd-rest.tsv"
 
@@ -199,12 +254,5 @@ runs:
           fi
         done
 
-        # The streams interleave on stderr, so each buffers to its own file and
-        # is replayed here under a collapsible group.
-        for name in "${names[@]}"; do
-          echo "::group::bdd ${name}"
-          cat "$logs/${name}.log"
-          echo "::endgroup::"
-        done
-
+        replay_logs
         exit "$status"

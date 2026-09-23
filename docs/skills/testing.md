@@ -939,8 +939,9 @@ Step 2 is what does the work, and it is **not Bazel-specific**:
 are absent or malformed, so any runner can drive the same partition.
 `test.yml`'s Cargo safety net does exactly that via
 [`bdd-sharded`](../../.github/actions/bdd-sharded): one
-`cargo test --workspace --test bdd --no-run --message-format=json`
-build, then the resulting binaries run directly as parallel streams
+`cargo test --locked --workspace --all-features --test bdd --no-run
+--message-format=json` build, then the resulting binaries run directly
+as parallel streams
 (`BDD_PACKAGE_DIR` supplies the chdir cargo would otherwise do), with
 the shard env set only on the streams whose suite honours it. That
 shape avoids two traps. Setting the shard env for a *workspace*
