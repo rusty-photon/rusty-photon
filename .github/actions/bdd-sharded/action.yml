@@ -109,7 +109,8 @@ runs:
             if [ -n "$total" ]; then
               export TEST_SHARD_INDEX="$idx" TEST_TOTAL_SHARDS="$total"
             fi
-            "$exe"
+            # </dev/null: a suite that reads stdin must not drain the caller's.
+            "$exe" </dev/null
           ) >"$logs/$name.log" 2>&1 &
           pids+=("$!")
           names+=("$name")
@@ -149,13 +150,26 @@ runs:
           "$manifest" > "$tmp/bdd-rest.tsv"
 
         # run_manifest <log-name> <tsv> — every suite it lists, in sequence.
+        #
+        # The list is read on fd 3 and each suite gets </dev/null, so a suite
+        # that reads stdin cannot swallow the entries queued behind it. Sharing
+        # stdin with the loop silently truncated this list, and because the
+        # dropped suites never ran, nothing failed and the stream stayed green —
+        # so the count is checked too: a short run is an error, not a pass.
         run_manifest() {
           local name=$1 file=$2
           (
             rc=0
-            while IFS=$'\t' read -r dir exe; do
-              BDD_PACKAGE_DIR="$dir" "$exe" || rc=1
-            done < "$file"
+            ran=0
+            expected=$(wc -l < "$file" | tr -d '[:space:]')
+            while IFS=$'\t' read -r dir exe <&3; do
+              BDD_PACKAGE_DIR="$dir" "$exe" </dev/null || rc=1
+              ran=$((ran + 1))
+            done 3< "$file"
+            if [ "$ran" -ne "$expected" ]; then
+              echo "::error::stream $name ran $ran of $expected suites"
+              rc=1
+            fi
             exit "$rc"
           ) >"$logs/$name.log" 2>&1 &
           pids+=("$!")
