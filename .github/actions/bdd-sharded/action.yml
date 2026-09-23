@@ -28,6 +28,13 @@ inputs:
     description: Shard processes for session-runner's suite.
     required: false
     default: "2"
+  rustflags:
+    description: >
+      RUSTFLAGS for the build and the suite processes. Passed as an input
+      rather than inherited: a composite action's steps do not reliably see
+      `env:` set on the `uses:` step that calls them.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -37,8 +44,13 @@ runs:
       env:
         RP_SHARDS: ${{ inputs.rp-shards }}
         SESSION_RUNNER_SHARDS: ${{ inputs.session-runner-shards }}
+        BDD_RUSTFLAGS: ${{ inputs.rustflags }}
       run: |
         set -uo pipefail
+
+        if [ -n "${BDD_RUSTFLAGS:-}" ]; then
+          export RUSTFLAGS="$BDD_RUSTFLAGS"
+        fi
 
         # Guarded rather than assumed: without it the artifact filter below
         # yields an empty manifest, which would surface as "no bdd test
