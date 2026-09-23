@@ -123,6 +123,9 @@ Feature: Plate solve MCP tool
     And the mount tracking is set to true
     And an MCP client connected to rp
     When the MCP client calls "sync_mount" with ra "10.6848" dec "41.2690"
+    # OmniSim's reported RA settles for a few ticks after a sync; both reads
+    # below have to see the position tracking holds, or they straddle a tick.
+    And the mount reading has settled
     And the MCP client calls "capture" with camera "main-cam" for 100 ms
     And the MCP client calls "plate_solve" with the captured document_id and use_mount_hints true
     And I record the mount position reported by get_mount_position
