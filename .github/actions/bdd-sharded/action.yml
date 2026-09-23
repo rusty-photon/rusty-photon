@@ -52,6 +52,16 @@ runs:
           export RUSTFLAGS="$BDD_RUSTFLAGS"
         fi
 
+        # Drop any shard assignment already in the environment before starting
+        # anything. Each stream below sets these deliberately or not at all, but
+        # "not at all" means "inherits" unless they are cleared here: an ambient
+        # pair would silently narrow every stream that does not set its own —
+        # the unsharded groups, and any suite whose count is 1 — to one slice of
+        # its scenarios. The split check counts suites, not scenarios, so it
+        # would not notice. Cleared once here rather than per child so no future
+        # stream can be added that forgets to.
+        unset TEST_SHARD_INDEX TEST_TOTAL_SHARDS
+
         # A shard count that is not a positive integer would otherwise reach
         # the loops below and fail somewhere less legible.
         positive_int() {  # positive_int <label> <value>
