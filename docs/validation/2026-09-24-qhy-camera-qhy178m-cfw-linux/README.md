@@ -1,9 +1,10 @@
-# qhy-camera on Linux — QHY178M + CFW, 2026-09-24 (`Connecting` covers the handshake)
+# qhy-camera on Linux — QHY178M + CFW, 2026-09-24 (the connect window, covered and serialized)
 
 Recorded Linux ConformU run against the same physical QHY178M and 7-slot CFW as
 the [2026-08-07 record](../2026-08-07-qhy-camera-qhy178m-cfw-linux/README.md),
-taken after the fix that keeps `Connecting` true until **every** in-flight
-`Connect` / `Disconnect` has finished.
+taken after the two changes that close the connect window: `Connecting` now
+stays true until **every** in-flight `Connect` / `Disconnect` has finished (C7),
+and `set_connected` runs one of them at a time (C8).
 
 It is the first QHY record since the C6 session work landed, and it exists
 because the camera's `alpacaprotocol` suite had gone red in the interval: 1
@@ -18,7 +19,7 @@ record documented. Both are gone here.
 
 | | |
 |---|---|
-| Commit | [`72eefcef`](https://github.com/rusty-photon/rusty-photon/commit/72eefcef) |
+| Commit | [`4caf7863`](https://github.com/rusty-photon/rusty-photon/commit/4caf7863) |
 | Service | `qhy-camera`, **real-SDK** build (default features, no `QHYCCD_SKIP_NATIVE_LINK`) |
 | Build | `cargo build --release -p qhy-camera`; rustc 1.98.1 (48a229cea 2026-09-01) |
 | SDK | QHYCCD SDK **26.06.04** — `/usr/local/lib/libqhyccd.so` → `libqhyccd.so.26.6.4.16`, sha256 `f51b92f9189fae7707e98ad334cf52d3c1493a6485f33394b39a18a3f4d5c738` (byte-identical to the August and July records, so the SDK is not a variable here) |
@@ -45,7 +46,7 @@ The camera's 16 informational items are the familiar set — the protocol suite'
 four casing variants against each of `ImageArray`, `ImageArrayVariant`,
 `LastExposureDuration` and `LastExposureStartTime` before any exposure exists,
 answered with in-protocol ASCOM errors over HTTP 200. The July and August
-records carried the same 16, and the recorded run reproduced them in four
+records carried the same 16, and the recorded run reproduced them in three
 consecutive `alpacaprotocol` runs with identical counts.
 
 ## What this pins about the connect window
@@ -70,17 +71,23 @@ consecutive `alpacaprotocol` runs with identical counts.
   leaves **zero** such lines — the only two `ERROR` lines in the service log are
   the `INVALID_VALUE` refusals ConformU deliberately provokes on `Position`.
 
-## Still open: overlapping connects race inside the SDK
+## A burst of connects is now one connect
 
-The fix corrects what a client is *told*; it does not serialize what the
-requests *do*. Four `Connect` requests arriving together still run four
-handshakes concurrently on one shared `OpenQHYCCD` handle — four
-`SetQHYCCDStreamMode` / `SetQHYCCDReadMode` / `InitQHYCCD` sequences at once —
-and three of them lose the session race, answer `NOT_CONNECTED` and log
-`request outlived the session it was made in`. The generation guard keeps their
-*caches* out; nothing holds back their *SDK calls*.
+`Connecting` corrects what a client is *told*; C8 corrects what the requests
+*do*. Before it, four `Connect` requests arriving together each read a closed
+handle, each concluded a connect was needed, and each sent a handshake —
+`SetQHYCCDStreamMode` / `SetQHYCCDReadMode` / `InitQHYCCD` — down the one shared
+`OpenQHYCCD`; three then lost the session race, answered `NOT_CONNECTED` and
+logged `request outlived the session it was made in` for work the camera had
+already done.
 
-ConformU no longer reaches that state, and it is not reachable by a client that
-issues one connect at a time, so it did not block this record. It is still worth
-closing — a per-device lock across `set_connected` is the shape — and it is
-reproducible in a second with four concurrent `PUT /connect`.
+Driving four `PUT /disconnect` and then four `PUT /connect` at this build, the
+service log carries **zero** `Error changing device connection state` and
+**zero** `request outlived the session it was made in`, against three of each
+before. The same burst is also visibly shorter — `Connecting` clears at 1.31 s
+where it previously took 1.62 s, the difference being the three redundant
+handshakes that no longer run.
+
+Both ConformU service logs are clean of connection errors on both devices. The
+only `ERROR` lines in either are the two `INVALID_VALUE` refusals the suite
+deliberately provokes on the wheel's `Position`.

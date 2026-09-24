@@ -1,19 +1,19 @@
-12:28:51.529 Check Alpaca Protocol - Conform Universal 4.5.0 (Build 53834.49ab847) 
-12:28:51.530                                     
-12:28:51.530 Test FilterWheel device:  - 127.0.0.1:11121 through URL: http://127.0.0.1:11121 
-12:28:51.530                                     
-12:28:51.533 OK messages are suppressed, they can be enabled through the Alpaca and COM settings page. 
-12:28:51.533                                     
-12:28:51.533 Connecting to device...             
-12:28:52.587                                     
-12:28:52.587 Successfully connected to device, disconnecting in order to test that connection using a different PUT parameter order is successful... 
-12:28:52.689                                     
-12:28:52.689 Successfully disconnected from device, re-connecting using re-ordered PUT parameters... 
-12:28:52.689                                     
-12:28:53.703 Successfully connected to device using re-ordered PUT parameters, testing device... 
-12:28:53.703                                     
-12:28:53.707 Device exposes interface version 3  
-12:28:55.867                                     
-12:28:55.868 Successfully disconnected from device. 
-12:28:55.868                                     
-12:28:55.868 Congratulations there were no errors, issues or information alerts - Your device passes ASCOM Alpaca protocol validation!! 
+13:21:25.766 Check Alpaca Protocol - Conform Universal 4.5.0 (Build 53834.49ab847) 
+13:21:25.767                                     
+13:21:25.767 Test FilterWheel device:  - 127.0.0.1:11121 through URL: http://127.0.0.1:11121 
+13:21:25.767                                     
+13:21:25.771 OK messages are suppressed, they can be enabled through the Alpaca and COM settings page. 
+13:21:25.771                                     
+13:21:25.771 Connecting to device...             
+13:21:26.825                                     
+13:21:26.825 Successfully connected to device, disconnecting in order to test that connection using a different PUT parameter order is successful... 
+13:21:26.927                                     
+13:21:26.927 Successfully disconnected from device, re-connecting using re-ordered PUT parameters... 
+13:21:26.927                                     
+13:21:27.942 Successfully connected to device using re-ordered PUT parameters, testing device... 
+13:21:27.942                                     
+13:21:27.946 Device exposes interface version 3  
+13:21:30.103                                     
+13:21:30.104 Successfully disconnected from device. 
+13:21:30.104                                     
+13:21:30.104 Congratulations there were no errors, issues or information alerts - Your device passes ASCOM Alpaca protocol validation!! 
