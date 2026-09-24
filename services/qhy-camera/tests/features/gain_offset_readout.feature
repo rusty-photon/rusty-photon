@@ -6,7 +6,11 @@ Feature: Gain, offset, and readout modes
   GainMin / GainMax and OffsetMin / OffsetMax reflect the cached SDK limits
   (GO3). ReadoutModes is the SDK's named mode list; setting a mode validates
   the index, updates the cached resolution, and rejects an unknown index
-  with INVALID_VALUE (RM1).
+  with INVALID_VALUE (RM1). A mode change writes to the camera and rewrites
+  the geometry the next exposure is armed from, so it takes the same claim a
+  capture does and is rejected with INVALID_OPERATION while an exposure is in
+  flight — ahead of the index check, because the mode count comes off the
+  camera and the driver may not ask it during a capture (B4).
 
   Background:
     Given the qhy-camera service running with the simulation backend
@@ -39,3 +43,13 @@ Feature: Gain, offset, and readout modes
   Scenario: Selecting an out-of-range readout mode is rejected
     When I try to set ReadoutMode to 9999 on camera device 0
     Then the set is rejected with ASCOM INVALID_VALUE
+
+  Scenario: A readout-mode change while an exposure is in flight is rejected
+    Given an exposure is in flight on camera device 0
+    When I try to set ReadoutMode to 0 on camera device 0
+    Then the set is rejected with ASCOM INVALID_OPERATION
+
+  Scenario: An out-of-range readout mode during an exposure is refused as busy, not as out of range
+    Given an exposure is in flight on camera device 0
+    When I try to set ReadoutMode to 9999 on camera device 0
+    Then the set is rejected with ASCOM INVALID_OPERATION

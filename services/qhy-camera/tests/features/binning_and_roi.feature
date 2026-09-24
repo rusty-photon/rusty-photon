@@ -3,7 +3,9 @@ Feature: Binning and region-of-interest
   Binning is symmetric only: CanAsymmetricBin is false (B2) and MaxBinX /
   MaxBinY come from the SDK's valid binning modes. Setting a bin validates
   against those modes and rejects an unsupported value with INVALID_VALUE
-  (B1); a bin change rescales the cached ROI by the bin ratio (B3). The ROI
+  (B1); a bin change rescales the cached ROI by the bin ratio (B3). Setting a
+  bin writes to the camera, so it takes the same claim a capture does and is
+  rejected with INVALID_OPERATION while an exposure is in flight (B4). The ROI
   setters (StartX / StartY / NumX / NumY) accept any u32 (R1) — geometry is
   not validated at the setter but at StartExposure, which rejects a zero or
   out-of-bounds sub-frame with INVALID_VALUE (R2), and likewise an odd NumX
@@ -60,6 +62,11 @@ Feature: Binning and region-of-interest
       | num_x | num_y |
       | 101   | 100   |
       | 100   | 101   |
+
+  Scenario: A binning change while an exposure is in flight is rejected
+    Given an exposure is in flight on camera device 0
+    When I try to set BinX 2 and BinY 2 on camera device 0
+    Then the set is rejected with ASCOM INVALID_OPERATION
 
   Scenario: The ROI setters accept any value
     When I set StartX 5000 NumX 5000 StartY 5000 NumY 5000 on camera device 0

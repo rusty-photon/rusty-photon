@@ -197,7 +197,8 @@ struct DeviceState {
     /// itself exposing and nothing to cancel.
     ///
     /// **Lock order:** innermost. It is taken under
-    /// [`Self::readout_mode_lock`] (`start_exposure`, `set_readout_mode`) and
+    /// [`Self::frame_setup_lock`] (`start_exposure`, `set_readout_mode`,
+    /// `set_bin_x`) and
     /// under [`Self::result_lock`] (`cancel_exposure`, `reset_exposure_state`),
     /// never in the other direction — and no lock at all is acquired while it
     /// is held, which is what makes those two pairs the whole of the order.
@@ -227,21 +228,29 @@ struct DeviceState {
     /// **Lock order:** this one first, then [`Self::in_flight_capture`]
     /// (`cancel_exposure`, `reset_exposure_state`) — never the reverse.
     result_lock: Mutex<()>,
-    /// Serializes `set_readout_mode`'s "reject if exposing, else store" against
-    /// `start_exposure`'s "pin the download format, then claim the device".
-    /// Without it either order of the two unsynchronised halves can interleave
-    /// into a frame captured in one format while `ReadoutMode` and `MaxADU`
-    /// report the other (RM1).
+    /// Holds everything that describes the next frame still while
+    /// `start_exposure` reads it and claims the device: the download format
+    /// (RM1), and the bin and the sub-frame that are one fact between them (B3).
     ///
-    /// **Lock order:** this one first, then [`Self::sensor`] and
-    /// [`Self::in_flight_capture`] — never the reverse of either.
-    /// `start_exposure` holds it across `selected_format`'s `sensor` read and
-    /// then across the claim; `set_readout_mode` matches, reading the claim
-    /// under it. `in_flight_capture` is a leaf. Most `sensor` reads need no
-    /// lock at all and take none, and nothing ever holds `sensor` while waiting
-    /// (its accessor clones and releases), so that half of the order is
+    /// Two writers take it. `set_readout_mode` rejects-if-exposing and stores
+    /// under it; without that, either order of the two unsynchronised halves
+    /// can interleave into a frame captured in one format while `ReadoutMode`
+    /// and `MaxADU` report the other. `set_bin_x` rescales the sub-frame and
+    /// stores the bin under it, so the pair cannot be split by the read below:
+    /// `start_exposure` loads the bin and then bounds the sub-frame against it,
+    /// and a rescale landing between the two arms the rescaled extent at the bin
+    /// it was rescaled away from — half the frame the client asked for, at a bin
+    /// nobody asked for, and inside the bounds R2 checks.
+    ///
+    /// **Lock order:** this one first, then [`Self::sensor`],
+    /// [`Self::intended_roi`] and [`Self::in_flight_capture`] — never the
+    /// reverse of any. `start_exposure` holds it across `validated_geometry`'s
+    /// `intended_roi` read, `selected_format`'s `sensor` read and the claim;
+    /// both setters match. `in_flight_capture` is a leaf. Most `sensor` reads
+    /// need no lock at all and take none, and nothing ever holds `sensor` while
+    /// waiting (its accessor clones and releases), so that part of the order is
     /// discipline for future edits rather than a live hazard.
-    readout_mode_lock: Mutex<()>,
+    frame_setup_lock: Mutex<()>,
 
     /// True only for the duration of a blocking `PulseGuide` SDK call (v0
     /// keeps `PulseGuide` synchronous — see `pulse_guide`'s doc comment).
@@ -268,7 +277,7 @@ impl DeviceState {
             last_image: Mutex::new(None),
             last_error: Mutex::new(None),
             result_lock: Mutex::new(()),
-            readout_mode_lock: Mutex::new(()),
+            frame_setup_lock: Mutex::new(()),
             pulse_guiding: AtomicBool::new(false),
         }
     }
@@ -973,6 +982,15 @@ impl Camera for SvbonyCamera {
                 "bin {bin_x} is not a supported binning mode"
             )));
         }
+        // The bin and the sub-frame it rescales are one fact (B3), and
+        // `start_exposure` reads them as one. Under `frame_setup_lock` they move
+        // together or not at all, so an exposure can never arm the rescaled
+        // sub-frame at the bin it was rescaled away from. Nothing here reaches
+        // the SDK — the bin is pushed at arm time, from the capture request — so
+        // a bin change during a capture is *pinned*, not refused: it describes
+        // the next frame, which a client may legitimately set up while this one
+        // downloads.
+        let _setup_guard = self.state.frame_setup_lock.lock();
         let old = self.state.bin.load(Ordering::Acquire);
         if old == bin_x {
             return Ok(());
@@ -1215,17 +1233,17 @@ impl Camera for SvbonyCamera {
         // it (RM2), and the in-flight capture already carries the format it
         // was started with — so switching mid-exposure could only produce a
         // frame and a MaxADU that disagree. Validating and storing under
-        // `readout_mode_lock` makes that exclusion hold against a
+        // `frame_setup_lock` makes that exclusion hold against a
         // concurrently-starting exposure too, not just an already-running
         // one — see `start_exposure`'s matching critical section.
         //
-        // `readout_mode_lock` is the OUTER lock wherever it and `sensor` are
+        // `frame_setup_lock` is the OUTER lock wherever it and `sensor` are
         // both needed (`start_exposure` holds it across `selected_format`'s
         // `sensor` read), so it is taken before `sensor()` here even though
         // the bounds check alone would not need it. `sensor()` clones and
         // releases, so no path holds `sensor` while waiting on anything —
         // the fixed order is to keep that true as this code changes.
-        let _guard = self.state.readout_mode_lock.lock();
+        let _guard = self.state.frame_setup_lock.lock();
         let available = self.sensor()?.readout_formats.len();
         if readout_mode >= available {
             return Err(ASCOMError::invalid_value(format!(
@@ -1237,10 +1255,9 @@ impl Camera for SvbonyCamera {
                 "cannot change the readout mode while an exposure is in flight",
             ));
         }
-        // Lock order: `readout_mode_lock` (held) then `in_flight_capture` (taken
+        // Lock order: `frame_setup_lock` (held) then `in_flight_capture` (taken
         // and released by the claim read above) — the same direction
-        // `start_exposure` takes them, and the only pair `in_flight_capture` is
-        // in.
+        // `start_exposure` takes them.
         //
         // Bounded by the range check above, which is itself a `usize` length, so
         // this narrowing has an answer for every index that got here.
@@ -1596,16 +1613,16 @@ impl Camera for SvbonyCamera {
             )));
         }
 
-        let bin = u32::from(self.state.bin.load(Ordering::Acquire)).max(1);
-        let roi = self.validated_geometry(&sensor, bin)?;
-
-        // Pin this frame's download format and claim the device in ONE
-        // critical section against `set_readout_mode` (RM1/RM2): reading the
-        // format outside the lock lets a mode change land either side of the
-        // claim, leaving a frame in one format while `ReadoutMode`/`MaxADU`
-        // describe the other. Under the lock, a mode change either completes
-        // wholly before the claim (and this exposure uses it) or observes the
-        // claim and is rejected.
+        // Pin everything that describes this frame — the bin, the sub-frame
+        // bounded against it, and the download format — and claim the device in
+        // ONE critical section, against `set_bin_x` (B3) and `set_readout_mode`
+        // (RM1/RM2). Read outside the lock, either writer can land between two
+        // halves of one frame's description: a mode change either side of the
+        // claim leaves a frame in one format while `ReadoutMode`/`MaxADU`
+        // describe the other, and a rescale between the bin load and the
+        // sub-frame bound arms the new extent at the old bin. Under the lock,
+        // either completes wholly before the claim (and this exposure uses it)
+        // or observes the claim and is rejected.
         //
         // Installing the cancel cell *is* the claim (lose the race → already
         // exposing, E2), so there is no interval in which the device counts as
@@ -1614,11 +1631,14 @@ impl Camera for SvbonyCamera {
         // section, so a concurrent `cancel_exposure` lands wholly before this
         // exposure exists — and is the no-op it should be — or wholly after it,
         // with full effect.
-        let (format, cancel, generation) = {
-            let _readout_guard = self.state.readout_mode_lock.lock();
-            // Ordered before the claim so a failed lookup (already validated,
-            // so defensive-only) simply never claims the device, rather than
-            // having to hand back a claim it took.
+        let (bin, roi, format, cancel, generation) = {
+            let _setup_guard = self.state.frame_setup_lock.lock();
+            let bin = u32::from(self.state.bin.load(Ordering::Acquire)).max(1);
+            // Ordered before the claim so a refused geometry (R2/R3) and a
+            // failed format lookup (already validated, so defensive-only)
+            // simply never claim the device, rather than having to hand back a
+            // claim they took.
+            let roi = self.validated_geometry(&sensor, bin)?;
             let format = self.selected_format()?;
             let mut slot = self.state.in_flight_capture.lock();
             if slot.is_some() {
@@ -1638,7 +1658,7 @@ impl Camera for SvbonyCamera {
             // The claim is taken and the cell is installed: everything an
             // abort needs is in place, so the critical section ends here.
             drop(slot);
-            (format, cancel, generation)
+            (bin, roi, format, cancel, generation)
         };
 
         *self.state.last_error.lock() = None;
@@ -2165,6 +2185,53 @@ mod tests {
             cam.max_adu().await.unwrap_err().code,
             ASCOMError::INVALID_VALUE.code
         );
+    }
+
+    /// B3: the bin and the sub-frame it rescales are one fact, and
+    /// `start_exposure` reads them as one — so a bin change may not land between
+    /// the two halves of that read. It waits for `frame_setup_lock` instead,
+    /// which is what keeps an exposure from arming the rescaled extent at the
+    /// bin it was rescaled away from: half the frame the client asked for, at a
+    /// bin nobody asked for, and inside the bounds R2 checks.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bin_change_waits_for_the_frame_setup_it_would_otherwise_split() {
+        let device = connected_device(MockCameraHandle::default());
+        let before = device.state.bin.load(Ordering::Acquire);
+
+        // Hold the lock the way an exposure pinning its geometry does. On a
+        // thread rather than inline, so nothing here holds a guard across an
+        // await.
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let state = Arc::clone(&device.state);
+            std::thread::spawn(move || {
+                let _setup_guard = state.frame_setup_lock.lock();
+                held_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        };
+        held_rx.recv().unwrap();
+
+        let setting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_bin_x(2).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !setting.is_finished(),
+            "a bin change must not rewrite the pair an exposure is reading"
+        );
+        assert_eq!(
+            device.state.bin.load(Ordering::Acquire),
+            before,
+            "and nothing of it may have landed either"
+        );
+
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        setting.await.unwrap().unwrap();
+        assert_eq!(device.state.bin.load(Ordering::Acquire), 2);
     }
 
     /// RM2: selecting the 8-bit mode is what the exposure downloads and
