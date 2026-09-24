@@ -1120,7 +1120,10 @@ a flip. Four fields:
   else in this block has an opinion about it. The field was deleted
   rather than accepted-and-ignored, so `deny_unknown_fields` fails a
   config that still carries it, naming the field. **Migration:** delete
-  the `flip_range_hours` line from `flip_policy`; if it was tuned to
+  the `flip_range_hours` line from `flip_policy` — `doctor --fix` does
+  this for you (`config.retired-keys`), and matters because the
+  pre-#1301 service wrote the field into every config it self-created;
+  if it was tuned to
   widen the flip window, the setting to reach for instead is
   `cw_exclusion_zone.min_hours` (the counterweight-up allowance `x`),
   and changing it is a hardware claim, not a preference.
