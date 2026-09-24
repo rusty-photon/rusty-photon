@@ -61,7 +61,7 @@
 )]
 
 use core::fmt;
-use core::num::{NonZeroU128, NonZeroU32};
+use core::num::{NonZeroU128, NonZeroU32, NonZeroU64};
 use core::time::Duration;
 
 use ascom_alpaca::api::camera::ImageArray;
@@ -79,6 +79,116 @@ pub struct Roi {
     pub width: u32,
     /// Height in binned pixels (ASCOM `NumY`).
     pub height: u32,
+}
+
+/// A region of interest in *unbinned* sensor pixels: the region the client
+/// asked for, independent of the bin it was asked at.
+///
+/// ASCOM's `StartX`/`StartY`/`NumX`/`NumY` are **binned** members, so a driver
+/// converts on the way in and on the way out — [`unbinned`] in a setter,
+/// [`Self::binned`] in a getter and before it arms the SDK. Holding the
+/// unbinned region is what makes a bin change non-destructive: it rewrites
+/// nothing, it only changes the divisor.
+///
+/// Scaling the *previous binned value* instead — the rule this type replaces —
+/// truncated once per step and compounded, because every step started from the
+/// last step's already-truncated result. Measured on a QHY600M: a 100x100
+/// sub-frame at (200,200) walked 1 → 3 → 4 → 1 came back 96x96 at (196,196),
+/// four pixels short in both extent and origin, and stayed that way until the
+/// client wrote the ROI again or reconnected.
+///
+/// `u64` rather than `u32` because a setter multiplies: a client may set any
+/// `u32` at any bin, and reading it back at the bin it was set at has to give
+/// that value rather than a ceiling the driver imposed on the way in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct UnbinnedRoi {
+    /// Left edge, unbinned pixels from the sensor's origin.
+    pub start_x: u64,
+    /// Top edge, unbinned pixels from the sensor's origin.
+    pub start_y: u64,
+    /// Width in unbinned pixels.
+    pub width: u64,
+    /// Height in unbinned pixels.
+    pub height: u64,
+}
+
+impl UnbinnedRoi {
+    /// The whole of a `width` x `height` unbinned sensor at its origin — the
+    /// ROI ASCOM says a fresh connection reports.
+    #[must_use]
+    pub fn full_frame(width: u32, height: u32) -> Self {
+        Self {
+            start_x: 0,
+            start_y: 0,
+            width: u64::from(width),
+            height: u64::from(height),
+        }
+    }
+
+    /// This region seen at `bin`, in the binned coordinates ASCOM's members
+    /// speak.
+    ///
+    /// Only the *view* truncates; the region itself is untouched, so every
+    /// `binned` call derives from the same source and a round trip through any
+    /// sequence of bins returns the client's own frame.
+    ///
+    /// The ROI members are set independently, so only their combination can be
+    /// validated and it is — at `StartExposure`, by [`check`]. Whatever the
+    /// client last set therefore arrives here, and this derivation must not
+    /// change *which value* the eventual error is about:
+    ///
+    /// - A **sub-pixel** extent is clamped to 1. Truncating it to 0 would make
+    ///   `StartExposure` reject a zero this method invented rather than the
+    ///   client's own `NumX`.
+    /// - A **client-set 0** is preserved, so it still earns the
+    ///   [`ZeroExtent`](GeometryError::ZeroExtent) it was heading for. Clamping
+    ///   it to 1 would clear that check and move the complaint onto a value
+    ///   nobody set — or, on a driver with no alignment rule, expose a
+    ///   one-pixel frame in place of the error the client had earned.
+    ///
+    /// A zero `bin` is a bin no handshake has published yet, which is not a
+    /// scale: it divides by one.
+    ///
+    /// ```
+    /// use rusty_photon_camera_core::{unbinned, Roi, UnbinnedRoi};
+    ///
+    /// let roi = UnbinnedRoi { start_x: 200, start_y: 200, width: 100, height: 100 };
+    /// assert_eq!(roi.binned(3), Roi { start_x: 66, start_y: 66, width: 33, height: 33 });
+    /// assert_eq!(roi.binned(4), Roi { start_x: 50, start_y: 50, width: 25, height: 25 });
+    /// // The walk that used to lose four pixels: the source never moved.
+    /// assert_eq!(roi.binned(1), Roi { start_x: 200, start_y: 200, width: 100, height: 100 });
+    ///
+    /// // A sub-pixel extent survives as one pixel, not as a zero the client never set.
+    /// assert_eq!(UnbinnedRoi { width: 1, ..roi }.binned(4).width, 1);
+    /// // A client-set zero stays the zero it earned.
+    /// assert_eq!(UnbinnedRoi { width: 0, ..roi }.binned(4).width, 0);
+    /// // Any u32 set at a bin reads back at that bin exactly.
+    /// assert_eq!(UnbinnedRoi { width: unbinned(u32::MAX, 4), ..roi }.binned(4).width, u32::MAX);
+    /// ```
+    #[must_use]
+    pub fn binned(self, bin: u8) -> Roi {
+        // `NonZeroU64::MIN` is 1: a bin nobody has published is not a scale.
+        let bin = NonZeroU64::new(u64::from(bin)).unwrap_or(NonZeroU64::MIN);
+        let fit = |v: u64| u32::try_from(v).unwrap_or(u32::MAX);
+        let offset = |v: u64| fit(v / bin);
+        let extent = |v: u64| if v == 0 { 0 } else { fit((v / bin).max(1)) };
+        Roi {
+            start_x: offset(self.start_x),
+            start_y: offset(self.start_y),
+            width: extent(self.width),
+            height: extent(self.height),
+        }
+    }
+}
+
+/// The unbinned value a client's **binned** `value` denotes at `bin` — what a
+/// ROI setter stores.
+///
+/// A zero `bin` is a bin no handshake has published yet, which is not a scale:
+/// the value is already its own unbinned self.
+#[must_use]
+pub fn unbinned(value: u32, bin: u8) -> u64 {
+    u64::from(value).saturating_mul(u64::from(bin.max(1)))
 }
 
 /// A Bayer mosaic, named — as every vendor SDK names it — by the colours of its
@@ -264,54 +374,6 @@ pub fn check(
     Ok(())
 }
 
-/// Rescale a ROI in binned coordinates from bin `old` to bin `new`.
-///
-/// The ASCOM `StartX`/`NumX` members are set independently, so only their
-/// combination can be validated and it is — at `StartExposure`, by [`check`].
-/// Whatever the client last set therefore arrives here, and rescaling must not
-/// change *which value* the eventual error is about:
-///
-/// - A **sub-pixel** extent is clamped to 1. Truncating it to 0 would make
-///   `StartExposure` reject a zero this function invented rather than the
-///   client's own `NumX`.
-/// - A **client-set 0** is preserved, so it still earns the
-///   [`ZeroExtent`](GeometryError::ZeroExtent) it was heading for. Clamping it
-///   to 1 would clear that check and move the complaint onto a value nobody
-///   set — or, on a driver with no alignment rule, clear every remaining check
-///   and expose a one-pixel frame in place of the error the client had earned.
-///
-/// A zero `new` is not a scale, so the ROI is returned unchanged; the zero is
-/// then reported by [`check`], which is where a client can be told about it.
-///
-/// ```
-/// use rusty_photon_camera_core::{rescale, Roi};
-///
-/// let roi = Roi { start_x: 100, start_y: 100, width: 640, height: 480 };
-/// let binned = rescale(roi, 1, 2);
-/// assert_eq!(binned, Roi { start_x: 50, start_y: 50, width: 320, height: 240 });
-///
-/// // A sub-pixel extent survives as one pixel, not as a zero the client never set.
-/// assert_eq!(rescale(Roi { width: 1, height: 1, ..roi }, 1, 4).width, 1);
-/// ```
-#[must_use]
-pub fn rescale(roi: Roi, old: u8, new: u8) -> Roi {
-    // Exact integer scaling rather than a float ratio: `v * old / new` truncates
-    // in exactly the places the float form did, without the rounding error a
-    // divide and a multiply in `f64` can accumulate between them.
-    let old = u32::from(old);
-    let Some(new) = NonZeroU32::new(u32::from(new)) else {
-        return roi;
-    };
-    let scale = |v: u32| v.saturating_mul(old) / new;
-    let extent = |v: u32| if v == 0 { 0 } else { scale(v).max(1) };
-    Roi {
-        start_x: scale(roi.start_x),
-        start_y: scale(roi.start_y),
-        width: extent(roi.width),
-        height: extent(roi.height),
-    }
-}
-
 /// The largest extent at or below `max` such that the full frame divided by
 /// *every* supported bin is still a valid ROI — i.e. the binned extent is a
 /// multiple of `unit` (8 for width, 2 for height on both ASI and `SVBony`).
@@ -323,7 +385,7 @@ pub fn rescale(roi: Roi, old: u8, new: u8) -> Roi {
 /// 3124, not a multiple of 8, and an SV605CC's 3008 / 3 is 1002, likewise. So a
 /// driver reports the largest multiple of `lcm(unit · bin)` that fits, giving up
 /// a few edge columns at full resolution to make every binned full frame exactly
-/// achievable — and as a bonus making [`rescale`] round-trip cleanly.
+/// achievable.
 ///
 /// Degenerate inputs return `max` unchanged rather than reducing it: an empty
 /// bin list, a bin list of zeroes, or a step that already exceeds the sensor.
@@ -728,56 +790,99 @@ mod tests {
         );
     }
 
-    // --- rescale -------------------------------------------------------------
+    // --- UnbinnedRoi ---------------------------------------------------------
 
-    #[test]
-    fn rescale_scales_by_the_bin_ratio() {
-        let roi = roi_at(100, 200, 640, 480);
-        assert_eq!(rescale(roi, 1, 2), roi_at(50, 100, 320, 240));
-        assert_eq!(rescale(roi_at(50, 100, 320, 240), 2, 1), roi);
-        // Same bin is identity.
-        assert_eq!(rescale(roi, 2, 2), roi);
+    const fn unbinned_at(start_x: u64, start_y: u64, width: u64, height: u64) -> UnbinnedRoi {
+        UnbinnedRoi {
+            start_x,
+            start_y,
+            width,
+            height,
+        }
     }
 
     #[test]
-    fn rescale_clamps_a_sub_pixel_extent_to_one() {
+    fn a_sub_frame_survives_any_walk_of_the_bins() {
+        // The whole of #1194: the source never moves, so no sequence of bins
+        // can erode it. Scaling the previous *binned* value instead returned
+        // 96x96 at (196,196) from this walk.
+        let roi = unbinned_at(200, 200, 100, 100);
+        let at_bin_1 = roi.binned(1);
+        for bin in [2, 3, 4, 3, 2, 1, 4, 1] {
+            let _ = roi.binned(bin);
+        }
+        assert_eq!(roi.binned(1), at_bin_1);
+        assert_eq!(at_bin_1, roi_at(200, 200, 100, 100));
+    }
+
+    #[test]
+    fn the_binned_view_is_the_region_divided_by_the_bin() {
+        let roi = unbinned_at(200, 200, 100, 100);
+        assert_eq!(roi.binned(1), roi_at(200, 200, 100, 100));
+        assert_eq!(roi.binned(2), roi_at(100, 100, 50, 50));
+        assert_eq!(roi.binned(3), roi_at(66, 66, 33, 33));
+        assert_eq!(roi.binned(4), roi_at(50, 50, 25, 25));
+    }
+
+    #[test]
+    fn a_sub_pixel_extent_is_one_binned_pixel() {
         // 1 / 4 truncates to 0, which `check` would then reject as a zero the
         // client never set.
-        let scaled = rescale(roi_at(0, 0, 1, 1), 1, 4);
-        assert_eq!(scaled.width, 1);
-        assert_eq!(scaled.height, 1);
+        let view = unbinned_at(0, 0, 1, 1).binned(4);
+        assert_eq!(view.width, 1);
+        assert_eq!(view.height, 1);
     }
 
     #[test]
-    fn rescale_preserves_a_client_set_zero() {
+    fn a_client_set_zero_extent_stays_zero() {
         // The zero is the client's, and it has a `ZeroExtent` coming. Clamping
         // it to 1 would clear that check and complain about something else.
-        let scaled = rescale(roi_at(0, 0, 0, 0), 1, 2);
-        assert_eq!(scaled.width, 0);
-        assert_eq!(scaled.height, 0);
+        let view = unbinned_at(0, 0, 0, 0).binned(4);
+        assert_eq!(view.width, 0);
+        assert_eq!(view.height, 0);
     }
 
     #[test]
-    fn rescale_leaves_the_origin_alone_at_zero() {
-        // A start of 0 scales to 0 — it is a coordinate, not an extent, so the
-        // minimum-of-one rule must not touch it.
-        assert_eq!(rescale(roi_at(0, 0, 64, 64), 1, 2).start_x, 0);
+    fn the_origin_is_a_coordinate_not_an_extent() {
+        // A sub-pixel *offset* truncates to 0; the minimum-of-one rule is for
+        // extents only, and moving an origin off zero would relocate the frame.
+        assert_eq!(unbinned_at(1, 1, 64, 64).binned(4).start_x, 0);
     }
 
     #[test]
-    fn rescale_by_a_zero_bin_is_the_identity() {
-        // Not a scale, so nothing to do; `check` reports the zero to the client.
-        let roi = roi_at(10, 20, 64, 48);
-        assert_eq!(rescale(roi, 1, 0), roi);
+    fn an_unpublished_bin_divides_by_one() {
+        // Zero is the "no handshake has published a bin yet" sentinel, not a
+        // scale; dividing by it would panic and inventing one would lie.
+        let roi = unbinned_at(10, 20, 64, 48);
+        assert_eq!(roi.binned(0), roi.binned(1));
     }
 
     #[test]
-    fn rescale_saturates_rather_than_wrapping() {
-        // `u32::MAX * 4` does not fit; saturating keeps the result absurd-but-
-        // bounded, which `check` then rejects, rather than wrapping it small
-        // enough to pass.
-        let scaled = rescale(roi_at(0, 0, u32::MAX, u32::MAX), 4, 1);
-        assert_eq!(scaled.width, u32::MAX);
+    fn any_u32_set_at_a_bin_reads_back_at_that_bin_exactly() {
+        // Why the store is `u64`: a `u32` store would saturate on the way in
+        // and `StartExposure` would then complain about a number the client
+        // never set.
+        for bin in [1, 2, 3, 4, 8, u8::MAX] {
+            let roi = UnbinnedRoi {
+                start_x: unbinned(u32::MAX, bin),
+                start_y: unbinned(12_345, bin),
+                width: unbinned(u32::MAX, bin),
+                height: unbinned(101, bin),
+            };
+            assert_eq!(roi.binned(bin), roi_at(u32::MAX, 12_345, u32::MAX, 101));
+        }
+    }
+
+    #[test]
+    fn a_full_frame_is_the_whole_sensor_at_the_origin() {
+        assert_eq!(
+            UnbinnedRoi::full_frame(9576, 6384).binned(1),
+            roi_at(0, 0, 9576, 6384)
+        );
+        assert_eq!(
+            UnbinnedRoi::full_frame(9576, 6384).binned(3),
+            roi_at(0, 0, 3192, 2128)
+        );
     }
 
     // --- aligned_sensor_extent -----------------------------------------------

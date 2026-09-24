@@ -31,7 +31,9 @@ use ascom_alpaca::api::camera::{CameraState, GuideDirection, ImageArray, SensorT
 use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use parking_lot::Mutex;
-use rusty_photon_camera_core::{self as camera_core, Alignment, PixelDepth, Roi};
+use rusty_photon_camera_core::{
+    self as camera_core, unbinned, Alignment, PixelDepth, Roi, UnbinnedRoi,
+};
 use tracing::{debug, warn};
 use zwo_rs::{BayerPattern, CameraInfo, ControlCaps, ControlType, ImageType};
 
@@ -118,7 +120,10 @@ struct DeviceState {
     /// 0 (the camera's highest-precision format) on every connect.
     readout_mode: AtomicU8,
     /// Intended ROI in *binned* pixel coordinates (rescaled on bin change).
-    intended_roi: Mutex<Option<Roi>>,
+    /// Intended ROI in *unbinned* sensor pixels (B3): the region the client
+    /// asked for, which a bin change does not rewrite. The binned members
+    /// ASCOM exposes are a view of it at the bin in force.
+    intended_roi: Mutex<Option<UnbinnedRoi>>,
     /// `(min, max)` exposure microseconds from `ASIGetControlCaps(ASI_EXPOSURE)`.
     exposure_range_us: Mutex<Option<(i64, i64)>>,
     /// Gain range in ASCOM's own width, converted once at the open handshake
@@ -397,12 +402,7 @@ impl ZwoCamera {
         self.state.bin.store(1, Ordering::Release);
         self.state.readout_mode.store(0, Ordering::Release);
         let (width, height) = self.reported_sensor();
-        *self.state.intended_roi.lock() = Some(Roi {
-            start_x: 0,
-            start_y: 0,
-            width,
-            height,
-        });
+        *self.state.intended_roi.lock() = Some(UnbinnedRoi::full_frame(width, height));
         *self.state.target_temperature.lock() = None;
         Ok(())
     }
@@ -466,12 +466,34 @@ impl ZwoCamera {
 
     /// Validate the cached ROI against the binned sensor geometry (R2/R3),
     /// returning the [`CaptureRequest`] geometry to push to the SDK.
-    fn validated_geometry(&self, bin: u32) -> ASCOMResult<Roi> {
+    fn validated_geometry(&self, bin: u8) -> ASCOMResult<Roi> {
         let roi = (*self.state.intended_roi.lock())
             .ok_or_else(|| ASCOMError::invalid_value("no ROI defined for camera"))?;
         let (sensor_w, sensor_h) = self.reported_sensor();
-        check_geometry(roi, sensor_w, sensor_h, bin)?;
-        Ok(roi)
+        // The unbinned region becomes a binned view exactly once, here, so the
+        // geometry that is checked is the geometry that is armed.
+        let view = roi.binned(bin);
+        check_geometry(view, sensor_w, sensor_h, u32::from(bin).max(1))?;
+        Ok(view)
+    }
+
+    /// The cached ROI as ASCOM's binned members see it, at the bin in force.
+    fn binned_roi(&self) -> ASCOMResult<Roi> {
+        let roi = (*self.state.intended_roi.lock()).ok_or(ASCOMError::VALUE_NOT_SET)?;
+        Ok(roi.binned(self.state.bin.load(Ordering::Acquire)))
+    }
+
+    /// Apply `edit` to the cached ROI, told the bin in force.
+    ///
+    /// The bin is read under the lock the ROI is written under: the client's
+    /// value is binned, so the factor it is stored against has to be the one
+    /// that was in force when the client set it.
+    fn edit_roi(&self, edit: impl FnOnce(UnbinnedRoi, u8) -> UnbinnedRoi) -> ASCOMResult<()> {
+        let mut roi = self.state.intended_roi.lock();
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(edit(area, self.state.bin.load(Ordering::Acquire)));
+        drop(roi);
+        Ok(())
     }
 
     fn gain_available(&self) -> bool {
@@ -875,12 +897,8 @@ impl Camera for ZwoCamera {
         if old == bin_x {
             return Ok(());
         }
-        {
-            let mut roi = self.state.intended_roi.lock();
-            if let Some(area) = *roi {
-                *roi = Some(camera_core::rescale(area, old, bin_x));
-            }
-        }
+        // Nothing to rewrite: the ROI is held in unbinned pixels (B3), and the
+        // bin stored below is only the divisor its binned view is read through.
         self.state.bin.store(bin_x, Ordering::Release);
         Ok(())
     }
@@ -912,72 +930,54 @@ impl Camera for ZwoCamera {
 
     async fn num_x(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.width)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.width)
     }
 
     async fn num_y(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.height)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.height)
     }
 
     async fn start_x(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.start_x)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.start_x)
     }
 
     async fn start_y(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.start_y)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.start_y)
     }
 
     async fn set_num_x(&self, num_x: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(Roi {
-            width: num_x,
+        self.edit_roi(|area, bin| UnbinnedRoi {
+            width: unbinned(num_x, bin),
             ..area
-        });
-        drop(roi);
-        Ok(())
+        })
     }
 
     async fn set_num_y(&self, num_y: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(Roi {
-            height: num_y,
+        self.edit_roi(|area, bin| UnbinnedRoi {
+            height: unbinned(num_y, bin),
             ..area
-        });
-        drop(roi);
-        Ok(())
+        })
     }
 
     async fn set_start_x(&self, start_x: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(Roi { start_x, ..area });
-        drop(roi);
-        Ok(())
+        self.edit_roi(|area, bin| UnbinnedRoi {
+            start_x: unbinned(start_x, bin),
+            ..area
+        })
     }
 
     async fn set_start_y(&self, start_y: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(Roi { start_y, ..area });
-        drop(roi);
-        Ok(())
+        self.edit_roi(|area, bin| UnbinnedRoi {
+            start_y: unbinned(start_y, bin),
+            ..area
+        })
     }
 
     // --- exposure range ---------------------------------------------------------
@@ -1444,8 +1444,9 @@ impl Camera for ZwoCamera {
             )));
         }
 
-        let bin = u32::from(self.state.bin.load(Ordering::Acquire)).max(1);
-        let roi = self.validated_geometry(bin)?;
+        let bin_x = self.state.bin.load(Ordering::Acquire);
+        let bin = u32::from(bin_x).max(1);
+        let roi = self.validated_geometry(bin_x)?;
 
         // Pin this frame's download format and claim the device in ONE critical
         // section against `set_readout_mode` (RM1/RM2): reading the format
@@ -1846,13 +1847,13 @@ mod tests {
     }
 
     #[test]
-    fn a_bin_change_rescales_a_client_set_zero_into_the_error_it_earned() {
-        // The rescale arithmetic and its full case list live in
+    fn a_client_set_zero_survives_the_binned_view_into_the_error_it_earned() {
+        // The derivation and its full case list live in
         // `rusty-photon-camera-core`; what this pins is that the two halves
         // are wired together — a 0 the client set survives the bin change and
         // `StartExposure` still answers about that 0, rather than about the %8
         // alignment rule a clamped 1 would trip instead.
-        let scaled = camera_core::rescale(roi(0, 0, 0, 0), 1, 2);
+        let scaled = UnbinnedRoi::default().binned(2);
         let err = check_geometry(scaled, 6248, 4176, 2).unwrap_err();
         assert!(err.message.contains("greater than 0"), "{}", err.message);
     }
