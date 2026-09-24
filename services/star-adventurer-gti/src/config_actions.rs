@@ -5,7 +5,7 @@
 //! actions) lives in [`rusty_photon_driver`]; this module supplies only what
 //! varies for the `GTi` — its `Config`, validation, secrets, and editability tiers.
 //!
-//! The mount's parse-don't-validate config types (`FlipRangeHours`, `MinAltitudeDegrees`,
+//! The mount's parse-don't-validate config types (`MinAltitudeDegrees`,
 //! the `Usb|Udp` transport enum, the custom-serde `ApPark`, …) self-validate at
 //! **deserialize** time, so a bad submission fails with `ApplyError::Parse`
 //! before `validate` runs. `Overrides = ()`: the CLI transport/server-port
@@ -30,13 +30,24 @@ impl ConfigurableDriver for StarAdvDriver {
     fn normalize(_config: &mut Config) {}
 
     fn validate(config: &Config) -> Vec<FieldError> {
-        // The typed config self-validates at deserialize (parse-don't-validate
-        // newtypes), so only the minted identity needs a domain check here.
+        // The typed config self-validates at deserialize
+        // (parse-don't-validate newtypes), so only the minted identity
+        // and the one cross-block rule need a domain check here.
         let mut errors = Vec::new();
         if config.mount.unique_id.trim().is_empty() {
             errors.push(FieldError {
                 path: "mount.unique_id".to_string(),
                 msg: "must not be empty (it is the device's stable ASCOM UniqueID)".to_string(),
+            });
+        }
+        // An auto-flip offset outside the band where a flip is
+        // possible is a setting that silently does nothing. `load_config`
+        // refuses it at startup; refusing it here too keeps a runtime
+        // apply from installing what startup would have rejected.
+        if let Some(msg) = config.mount.auto_flip_offset_error() {
+            errors.push(FieldError {
+                path: "mount.flip_policy.auto_flip_at_meridian_offset_hours".to_string(),
+                msg,
             });
         }
         errors
@@ -90,6 +101,44 @@ mod tests {
     fn validate_accepts_populated_unique_id() {
         let mut config = Config::default();
         config.mount.unique_id = "star-adv-id".to_string();
+        assert_eq!(
+            StarAdvDriver::validate(&config),
+            Vec::<rusty_photon_config::actions::FieldError>::new()
+        );
+    }
+
+    #[test]
+    fn validate_rejects_an_auto_flip_offset_no_flip_can_happen_at() {
+        // The cross-block rule `load_config` enforces at startup has to
+        // hold on the runtime `config.apply` path too — otherwise a
+        // regression that drops this hook still passes the config
+        // tests while letting an apply install what startup refuses.
+        // Offset 0.95 is past the guard entry (0.95 - 0.05) for the
+        // shipped zone, so the auto-flip could never fire.
+        let mut config = Config::default();
+        config.mount.unique_id = "star-adv-id".to_string();
+        config.mount.flip_policy.enabled = true;
+        config.mount.flip_policy.auto_flip_during_tracking = true;
+        config.mount.flip_policy.auto_flip_at_meridian_offset_hours = 0.95;
+        let errors = StarAdvDriver::validate(&config);
+        let err = errors
+            .iter()
+            .find(|e| e.path == "mount.flip_policy.auto_flip_at_meridian_offset_hours")
+            .unwrap_or_else(|| panic!("expected the offset field error, got {errors:?}"));
+        assert!(
+            err.msg.contains("tracking guard"),
+            "error should say why the offset is unreachable, got: {msg}",
+            msg = err.msg
+        );
+    }
+
+    #[test]
+    fn validate_accepts_an_auto_flip_offset_inside_the_reachable_band() {
+        let mut config = Config::default();
+        config.mount.unique_id = "star-adv-id".to_string();
+        config.mount.flip_policy.enabled = true;
+        config.mount.flip_policy.auto_flip_during_tracking = true;
+        config.mount.flip_policy.auto_flip_at_meridian_offset_hours = 0.3;
         assert_eq!(
             StarAdvDriver::validate(&config),
             Vec::<rusty_photon_config::actions::FieldError>::new()

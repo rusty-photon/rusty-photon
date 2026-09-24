@@ -1431,7 +1431,7 @@ mod tests {
                 r#"{ "usb_unavailable": "system_profiler did not finish within 10s" }"#,
             );
             let facts = gather(&request(StagedUsbInventory::load(&path).unwrap()));
-            assert!(facts.usb.is_empty());
+            assert_eq!(facts.usb, Vec::<UsbDevice>::new());
             assert_eq!(
                 facts.usb_unavailable.as_deref(),
                 Some("system_profiler did not finish within 10s")
@@ -1480,7 +1480,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = stage(dir.path(), r#"{ "usb": [] }"#);
             let facts = gather(&request(StagedUsbInventory::load(&path).unwrap()));
-            assert!(facts.usb.is_empty());
+            assert_eq!(facts.usb, Vec::<UsbDevice>::new());
             assert!(facts.usb_unavailable.is_none());
             assert_eq!(facts.usb_present("1618", None, None), Some(false));
         }

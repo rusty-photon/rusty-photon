@@ -36,13 +36,13 @@ async fn configured_with_site_latitude_no_unit(world: &mut StarAdventurerWorld, 
 
 #[given(expr = "a star-adventurer service configured with site longitude {float} degrees")]
 async fn configured_with_site_longitude(world: &mut StarAdventurerWorld, deg: f64) {
-    world.config_mut().mount.site_longitude_deg = deg;
+    world.pin_site_longitude(deg);
     world.start_service().await;
 }
 
 #[given(expr = "a star-adventurer service configured with site longitude {float}")]
 async fn configured_with_site_longitude_no_unit(world: &mut StarAdventurerWorld, deg: f64) {
-    world.config_mut().mount.site_longitude_deg = deg;
+    world.pin_site_longitude(deg);
     world.start_service().await;
 }
 

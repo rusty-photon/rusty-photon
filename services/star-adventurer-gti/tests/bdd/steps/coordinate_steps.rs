@@ -37,7 +37,7 @@ async fn dec_encoder_reads(world: &mut StarAdventurerWorld, ticks: i32) {
 
 #[given(expr = "site longitude is {float} degrees")]
 async fn site_longitude_is(world: &mut StarAdventurerWorld, deg: f64) {
-    world.config_mut().mount.site_longitude_deg = deg;
+    world.pin_site_longitude(deg);
 }
 
 #[given(expr = "UTC is {string}")]

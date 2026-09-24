@@ -23,7 +23,8 @@ use tracing::debug;
 
 use crate::coordinates::{
     encoder_to_celestial, local_sidereal_time_hours, pulse_guide_step_period, ra_dec_to_alt_az,
-    select_pier_side_for_target, side_of_pier as side_of_pier_calc, SIDEREAL_DEG_PER_SEC,
+    select_pier_side_for_target, side_of_pier as side_of_pier_calc, target_encoder_flipped,
+    target_encoder_normal, SIDEREAL_DEG_PER_SEC,
 };
 use crate::manager::MountParameters;
 use crate::units::{Cpr, Dec, DecTicks, Ra, RaTicks};
@@ -412,10 +413,16 @@ impl Telescope for MountDevice {
             Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );
+        // The selector needs where the mount stands, not just which
+        // side it is on: a side is only usable when an RA sweep to it
+        // clears the CW exclusion zone.
+        let current_mech_ha =
+            RaTicks::new(snap.ra.position_ticks).to_mech_ha(Cpr::new(params.cpr_ra));
         let chosen_side = select_pier_side_for_target(
             Ra::new(ra),
             lst,
             current_side,
+            current_mech_ha,
             &self.config.flip_policy,
             self.config.cw_exclusion_zone.bounds(),
             self.config.site_latitude_deg,
@@ -550,6 +557,43 @@ impl Telescope for MountDevice {
         self.ensure_connected().await?;
         Self::validate_coordinates(ra, dec)?;
         self.ensure_unparked().await?;
+        // Take the axes for the duration, the way `Park` does. The
+        // encoder pair written below is chosen from the *cached* pier
+        // side, and an async slew (a flip most of all) returns as soon
+        // as its completion watcher is spawned. A sync overlapping that
+        // window reads the pre-flip Dec encoder, resolves the
+        // counterweight-down solution, and writes it to a mount already
+        // on its way to the other side — re-labelling it, so every
+        // later slew plans from a false position. That is the
+        // corruption this method's side-awareness exists to prevent,
+        // arriving through the back door.
+        //
+        // `axis_ownership` is what makes it exclusive, not the flag.
+        // A bare `load` would not do: the reads below are `.await`
+        // points, so a slew could start after the load and be moving
+        // by the time the `:E` writes land. Taking the slew's own
+        // `SlewReservation` would not do either — `AbortSlew` clears
+        // that flag unconditionally, correctly for the motion it
+        // cancels, but that would strip a sync of the exclusivity it
+        // is relying on and let the next slew in mid-write.
+        //
+        // So sync holds the one lock no third party can release on its
+        // behalf, and a slew or park must take it to reach its own
+        // reservation. The flag check below is then sound: while this
+        // lock is held no *new* slew can acquire, so a `true` reading
+        // means one is already under way and a `false` one cannot go
+        // stale. A sync is not motion, so it deliberately does not set
+        // the flag — `Slewing` stays honest.
+        //
+        // Both are taken before the pulse-guide cancel, so a refused
+        // sync has no side effects at all.
+        let _axes = self.axis_ownership.lock().await;
+        if self.slew_in_progress.load(Ordering::SeqCst) {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "sync refused: slew already in progress",
+            ));
+        }
         // Cancel any in-flight pulse-guide on either axis — sync is
         // an axis-position mutation and we don't want the watcher
         // restoring tracking against the freshly-set encoder position.
@@ -565,20 +609,52 @@ impl Telescope for MountDevice {
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(ASCOMError::from)?;
-        // Reject syncs that would set the encoder outside the
-        // mount's safe mechanical envelope — a bad sync would let
-        // the *next* tracking step push the OTA into a hard stop.
-        // Sync uses the pre-flip envelope (`target_is_flipped =
-        // false`); operators must `AbortSlew` and re-sync the pre-
-        // flip pointing first if a manual flip left the mount in a
-        // post-flip state.
-        self.check_within_safe_envelope(ra, dec, lst.value(), false)?;
-        let mech_ha = lst.hour_angle_of(Ra::new(ra)).to_mech();
-        let ra_ticks = mech_ha.to_ticks(Cpr::new(params.cpr_ra)).value();
-        let dec_ticks = Dec::new(dec)
-            .to_mech()
-            .to_ticks(Cpr::new(params.cpr_dec))
-            .value();
+        // Sync writes the encoder pair for the side the mount is
+        // *physically* on — classified from the Dec encoder, exactly as
+        // `SideOfPier` classifies it — and validates the target against
+        // that side's `mech_HA`. Assuming the pre-flip side
+        // unconditionally (as this did until 2026-09) refuses every
+        // western target while the mount is counterweight-up, because
+        // their pre-flip `mech_HA` sits in a CW exclusion zone the
+        // mount is nowhere near; worse, it accepts the eastern ones and
+        // writes a pre-flip encoder pair, silently re-labelling a
+        // flipped mount as unflipped so every later slew plans from a
+        // false position. See the design doc's
+        // [§"Sync and pier side"](../../../../docs/services/star-adventurer-gti.md#sync-and-pier-side).
+        //
+        // Rejecting a sync that would put the encoder outside the safe
+        // mechanical envelope stays: a bad sync lets the *next*
+        // tracking step push the OTA into a hard stop.
+        let snap = self.manager.snapshot().await;
+        let current_side = side_of_pier_calc(
+            DecTicks::new(snap.dec.position_ticks),
+            Cpr::new(params.cpr_dec),
+            self.config.site_latitude_deg,
+        );
+        let pre_flip_side = pre_flip_side_for_latitude(self.config.site_latitude_deg);
+        // An `Unknown` side (no Dec CPR) is treated as pre-flip — the
+        // same fallback the rest of the driver takes when the encoder
+        // classification is unavailable.
+        let sync_is_flipped = current_side != pre_flip_side && current_side != PierSide::Unknown;
+        self.check_within_safe_envelope(ra, dec, lst.value(), sync_is_flipped)?;
+        let (ra_ticks, dec_ticks) = if sync_is_flipped {
+            target_encoder_flipped(
+                Ra::new(ra),
+                Dec::new(dec),
+                lst,
+                Cpr::new(params.cpr_ra),
+                Cpr::new(params.cpr_dec),
+            )
+        } else {
+            target_encoder_normal(
+                Ra::new(ra),
+                Dec::new(dec),
+                lst,
+                Cpr::new(params.cpr_ra),
+                Cpr::new(params.cpr_dec),
+            )
+        };
+        let (ra_ticks, dec_ticks) = (ra_ticks.value(), dec_ticks.value());
         self.send(Command::SetPosition {
             axis: Axis::Ra,
             ticks: ra_ticks,
@@ -665,10 +741,16 @@ impl Telescope for MountDevice {
             Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );
+        // The selector needs where the mount stands, not just which
+        // side it is on: a side is only usable when an RA sweep to it
+        // clears the CW exclusion zone.
+        let current_mech_ha =
+            RaTicks::new(snap.ra.position_ticks).to_mech_ha(Cpr::new(params.cpr_ra));
         let chosen_side = select_pier_side_for_target(
             Ra::new(ra),
             lst,
             current_side,
+            current_mech_ha,
             &self.config.flip_policy,
             self.config.cw_exclusion_zone.bounds(),
             self.config.site_latitude_deg,
@@ -715,7 +797,15 @@ impl Telescope for MountDevice {
         // positions. The guard clears `slew_in_progress` on drop, so any
         // `?` failure below (or a failed watcher hand-off) rolls it back
         // without an explicit clear.
-        let Some(reservation) = SlewReservation::try_acquire(&self.slew_in_progress) else {
+        // Serialize with an in-flight sync's encoder writes before
+        // claiming the axes; see `axis_ownership`. Held only across the
+        // acquisition — park's own ownership is the reservation, which
+        // it hands to the park watcher.
+        let reservation = {
+            let _axes = self.axis_ownership.lock().await;
+            SlewReservation::try_acquire(&self.slew_in_progress)
+        };
+        let Some(reservation) = reservation else {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "park refused: slew already in progress",
@@ -936,6 +1026,18 @@ impl Telescope for MountDevice {
         // calls AbortSlew on a parked mount gets a clean error without
         // side-effects on tracking_requested or slew_in_progress.
         self.ensure_unparked().await?;
+        // Take the axes before touching the flag, and hold them through
+        // the stops. Without this, abort's own ordering — clear the
+        // flag, *then* `await` the `:L` sends — hands a waiting sync a
+        // `false` reading while the original motion is still running,
+        // and its `:E` writes land mid-slew. `axis_ownership` is what
+        // makes the flag check inside sync sound, so the operation that
+        // falsifies the flag has to hold it too.
+        //
+        // Blocking here is bounded by a sync's two encoder writes, and
+        // is the right order anyway: an abort arriving mid-sync should
+        // let the position write finish rather than interleave with it.
+        let _axes = self.axis_ownership.lock().await;
         // Clear slew_in_progress first so the slew/park watchers see the
         // abort and bail before clobbering the snapshot or at_park flag.
         // Also clear tracking_requested — `:L` halts any motion the

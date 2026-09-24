@@ -21,8 +21,7 @@ use skywatcher_motor_protocol::Axis;
 use tokio::sync::RwLock;
 
 use crate::config::{
-    ActiveZone, Config, CwExclusionZone, FlipPolicy, FlipRangeHours, MinAltitudeDegrees,
-    TrackingGuardMarginHours,
+    ActiveZone, Config, CwExclusionZone, FlipPolicy, MinAltitudeDegrees, TrackingGuardMarginHours,
 };
 use crate::coordinates::{ra_dec_to_alt_az, SIDEREAL_DEG_PER_SEC};
 use crate::error::StarAdvError;
@@ -396,7 +395,6 @@ async fn auto_flip_device(
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.flip_policy = FlipPolicy {
         enabled: true,
-        flip_range_hours: FlipRangeHours::new(0.5),
         auto_flip_during_tracking: true,
         auto_flip_at_meridian_offset_hours: offset_hours,
     };
@@ -575,7 +573,6 @@ async fn guard_loop_tick_prefers_the_guard_inside_the_band() {
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.flip_policy = FlipPolicy {
         enabled: true,
-        flip_range_hours: FlipRangeHours::new(0.5),
         auto_flip_during_tracking: true,
         auto_flip_at_meridian_offset_hours: 0.0,
     };
@@ -1637,6 +1634,119 @@ async fn abort_slew_refuses_while_parked() {
     }
     let err = d.abort_slew().await.unwrap_err();
     assert_eq!(err.code, ASCOMErrorCode::INVALID_WHILE_PARKED);
+}
+
+#[tokio::test]
+async fn sync_refuses_while_a_slew_is_in_progress() {
+    // The encoder pair a sync writes is chosen from the cached pier
+    // side, so a sync during an in-flight flip would resolve the
+    // pre-flip solution and write it to a mount already on its way to
+    // the other side — re-labelling it for every later slew. An async
+    // slew returns as soon as its watcher is spawned, so that window is
+    // reachable from an ordinary client; the sync has to refuse in it.
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let mut cfg = base_config();
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    let manager = MountManager::new(&cfg, Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    d.slew_in_progress.store(true, Ordering::SeqCst);
+
+    let lst = d.sidereal_time().await.unwrap();
+    let err = d.sync_to_coordinates(lst, 0.0).await.unwrap_err();
+
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    // No `:E` on the wire: the refusal lands before anything is
+    // written — and before the pulse-guide cancel — so it has no side
+    // effects either.
+    let log = mock.lock().await.command_log.clone();
+    assert!(
+        !log.iter().any(|c| c.starts_with(b":E")),
+        "a refused sync must not write an encoder position, saw {log:?}"
+    );
+
+    // Sync holds the reservation rather than sampling the flag, so the
+    // release path matters as much as the refusal: once the slew is
+    // done, a sync must work and must not leak the flag — a leaked one
+    // would wedge every later slew, park and sync behind a mount that
+    // looks permanently busy.
+    d.slew_in_progress.store(false, Ordering::SeqCst);
+    d.sync_to_coordinates(lst, 0.0).await.unwrap();
+    assert!(
+        !d.slew_in_progress.load(Ordering::SeqCst),
+        "a sync must not leave the slew flag set"
+    );
+    assert!(
+        !d.slewing().await.unwrap(),
+        "Slewing must be clear after a sync"
+    );
+}
+
+#[tokio::test]
+async fn abort_waits_for_an_in_flight_sync_before_clearing_the_flag() {
+    // `AbortSlew` clears `slew_in_progress` before awaiting its `:L`
+    // sends, so the flag goes false while the motion is still running.
+    // A sync that took the axis lock in that gap would read false and
+    // write `:E` mid-slew — the flag check inside sync is only sound
+    // because nothing can falsify it while the lock is held, which
+    // means abort has to hold it too.
+    let d = connected_device().await;
+    d.slew_in_progress.store(true, Ordering::SeqCst); // a slew is running
+    let held = d.axis_ownership.lock().await; // ...and a sync owns the axes
+
+    let blocked = tokio::time::timeout(Duration::from_millis(100), d.abort_slew()).await;
+    assert!(
+        blocked.is_err(),
+        "abort must wait for the in-flight sync rather than interleave"
+    );
+    assert!(
+        d.slew_in_progress.load(Ordering::SeqCst),
+        "and must not have cleared the flag while waiting — a sync \
+         reading it would conclude no motion is in flight"
+    );
+
+    drop(held);
+    d.abort_slew()
+        .await
+        .expect("abort proceeds once the axes are free");
+    assert!(!d.slew_in_progress.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn sync_exclusion_survives_a_concurrent_abort() {
+    // `AbortSlew` clears `slew_in_progress` unconditionally — right for
+    // the motion it cancels, but it must not hand the axes to a new
+    // slew while a sync sits between its snapshot read and its `:E`
+    // writes. Sync therefore holds `axis_ownership`, which abort does
+    // not touch, and a slew has to take that lock to reach its own
+    // reservation. Holding the lock here stands in for the sync;
+    // clearing the flag stands in for the abort that raced it.
+    let d = connected_device().await;
+    let held = d.axis_ownership.lock().await;
+    d.slew_in_progress.store(false, Ordering::SeqCst);
+
+    let blocked = tokio::time::timeout(
+        Duration::from_millis(100),
+        d.slew_to_coordinates_async(6.0, 30.0),
+    )
+    .await;
+    assert!(
+        blocked.is_err(),
+        "a slew must wait on the axis lock even with the flag cleared"
+    );
+    assert!(
+        !d.slew_in_progress.load(Ordering::SeqCst),
+        "and must not have claimed the reservation behind the lock"
+    );
+
+    // Released, the same slew proceeds — the lock serializes, it does
+    // not refuse.
+    drop(held);
+    d.slew_to_coordinates_async(6.0, 30.0)
+        .await
+        .expect("the slew proceeds once the axes are free");
 }
 
 #[tokio::test]
