@@ -931,7 +931,26 @@ Bazel `shard_count`. To shard a suite: (1) set `shard_count` on its
 `bdd_infra::sharding::scenario_in_current_shard(feat.path.as_deref(),
 &feat.name, sc.position.line)` — `bdd_main!` already advertises
 sharding support to Bazel. Skipping step 2 silently makes every shard
-run the whole suite. Scenarios are partitioned by a stable hash of
+run the whole suite.
+
+Step 2 is what does the work, and it is **not Bazel-specific**:
+`bdd_infra::sharding` reads plain `TEST_SHARD_INDEX` /
+`TEST_TOTAL_SHARDS` env vars and degrades to "run everything" when they
+are absent or malformed, so any runner can drive the same partition.
+`test.yml`'s Cargo safety net does exactly that via
+[`bdd-sharded`](../../.github/actions/bdd-sharded): one
+`cargo test --locked --workspace --all-features --test bdd --no-run
+--message-format=json` build, then the resulting binaries run directly
+as parallel streams
+(`BDD_PACKAGE_DIR` supplies the chdir cargo would otherwise do), with
+the shard env set only on the streams whose suite honours it. That
+shape avoids two traps. Setting the shard env for a *workspace*
+`cargo test` makes the suites that ignore it run in full in every shard.
+And re-invoking `cargo test -p <pkg>` per stream resolves a different
+feature unification than the workspace build, so each stream rebuilds
+dozens of crates while holding cargo's exclusive build-directory lock —
+the streams then serialize on each other instead of running in
+parallel. Scenarios are partitioned by a stable hash of
 (feature file name, scenario line), and `@serial` still applies within
 each shard, which is exactly the scope it protects — one process's
 shared instance. This holds on every OS: profile-store isolation uses
