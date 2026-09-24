@@ -802,26 +802,25 @@ mod tests {
     }
 
     #[test]
-    fn a_sub_frame_survives_any_walk_of_the_bins() {
-        // The whole of #1194: the source never moves, so no sequence of bins
-        // can erode it. Scaling the previous *binned* value instead returned
-        // 96x96 at (196,196) from this walk.
-        let roi = unbinned_at(200, 200, 100, 100);
-        let at_bin_1 = roi.binned(1);
-        for bin in [2, 3, 4, 3, 2, 1, 4, 1] {
-            let _ = roi.binned(bin);
-        }
-        assert_eq!(roi.binned(1), at_bin_1);
-        assert_eq!(at_bin_1, roi_at(200, 200, 100, 100));
-    }
-
-    #[test]
     fn the_binned_view_is_the_region_divided_by_the_bin() {
+        // #1194's arithmetic half. Every view derives from the same untouched
+        // source, so walking the bins and coming back returns the client's own
+        // frame. Scaling the *previous binned value* instead agreed at bin 3
+        // and then diverged — 24x24 at (49,49) at bin 4, and 96x96 at
+        // (196,196) back at bin 1, both measured on a QHY600M.
+        //
+        // Each bin is asserted rather than looped over: `binned` takes `self`
+        // by value and is pure, so a loop that discarded its results would
+        // pass just as well with the chaining restored. Chaining lived in the
+        // drivers' `set_bin_x`, so the regression itself is caught by their
+        // BDD round-trip scenarios, not here.
         let roi = unbinned_at(200, 200, 100, 100);
         assert_eq!(roi.binned(1), roi_at(200, 200, 100, 100));
         assert_eq!(roi.binned(2), roi_at(100, 100, 50, 50));
         assert_eq!(roi.binned(3), roi_at(66, 66, 33, 33));
         assert_eq!(roi.binned(4), roi_at(50, 50, 25, 25));
+        // ...and back, from that same source rather than from the bin-4 view.
+        assert_eq!(roi.binned(1), roi_at(200, 200, 100, 100));
     }
 
     #[test]

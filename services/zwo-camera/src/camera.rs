@@ -899,7 +899,15 @@ impl Camera for ZwoCamera {
         }
         // Nothing to rewrite: the ROI is held in unbinned pixels (B3), and the
         // bin stored below is only the divisor its binned view is read through.
+        //
+        // The store still takes the ROI lock, because `edit_roi` reads the bin
+        // under it: a setter that read the old bin and had not yet written its
+        // multiplied value would otherwise land that value against a bin the
+        // client never set it at. `qhy-camera` gets the same serialization from
+        // its `commit_guard`, which both paths already hold.
+        let roi = self.state.intended_roi.lock();
         self.state.bin.store(bin_x, Ordering::Release);
+        drop(roi);
         Ok(())
     }
 
