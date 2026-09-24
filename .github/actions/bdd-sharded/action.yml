@@ -157,9 +157,26 @@ runs:
             echo "::endgroup::"
           done
         }
-        trap replay_logs EXIT
-        trap 'replay_logs; exit 143' TERM
-        trap 'replay_logs; exit 130' INT
+        # Reap before replaying. Validation all happens before the first
+        # launch, so no ordinary refusal can strand a stream — but an
+        # unexpected exit or a cancelled step still can, and a stream left
+        # running would keep a simulator and a service alive for the rest of
+        # the job. Already-reaped pids simply fail to signal.
+        cleanup() {
+          if [ "${#pids[@]}" -gt 0 ]; then
+            local pid
+            for pid in "${pids[@]}"; do
+              kill "$pid" 2>/dev/null || true
+            done
+            for pid in "${pids[@]}"; do
+              wait "$pid" 2>/dev/null || true
+            done
+          fi
+          replay_logs
+        }
+        trap cleanup EXIT
+        trap 'cleanup; exit 143' TERM
+        trap 'cleanup; exit 130' INT
 
         # lookup <package-name> -> "<package-dir>\t<executable>"
         lookup() {
@@ -182,38 +199,16 @@ runs:
           names+=("$name")
         }
 
-        shard_suite() {  # shard_suite <package> <count>
-          local pkg=$1 count=$2 dir exe i
-          IFS=$'\t' read -r dir exe < <(lookup "$pkg")
-          if [ -z "${dir:-}" ]; then
-            echo "::error::no bdd binary for $pkg"
+        # require_suite <package> — "<dir>\t<executable>", or fail naming it.
+        require_suite() {
+          local line
+          line=$(lookup "$1")
+          if [ -z "$line" ]; then
+            echo "::error::no bdd binary for $1"
             exit 1
           fi
-          if [ "$count" -le 1 ]; then
-            start "$pkg" "$dir" "$exe"
-            return
-          fi
-          for ((i = 0; i < count; i++)); do
-            start "$pkg-$i" "$dir" "$exe" "$i" "$count"
-          done
+          printf '%s\n' "$line"
         }
-
-        shard_suite rp "$RP_SHARDS"
-        shard_suite session-runner "$SESSION_RUNNER_SHARDS"
-
-        # polar-align is shard-aware but small; filemonitor is the largest suite
-        # that is not shard-aware. Together they are about one rp shard's work.
-        # Everything else is 21 suites totalling ~5 min, run in one stream.
-        #
-        # Split into manifest files rather than bash arrays-by-reference: the
-        # macOS runner's /bin/bash is 3.2, which has no namerefs.
-        awk -F'\t' '{ n = $1; sub(/.*\//, "", n);
-                      if (n == "polar-align" || n == "filemonitor") print }' \
-          "$manifest" > "$tmp/bdd-heavy.tsv"
-        awk -F'\t' '{ n = $1; sub(/.*\//, "", n);
-                      if (n != "rp" && n != "session-runner" &&
-                          n != "polar-align" && n != "filemonitor") print }' \
-          "$manifest" > "$tmp/bdd-rest.tsv"
 
         # run_manifest <log-name> <tsv> — every suite it lists, in sequence.
         #
@@ -242,6 +237,30 @@ runs:
           names+=("$name")
         }
 
+        # --- resolve and check every stream BEFORE launching any of them ------
+        #
+        # Order matters, not just correctness of each step: a check that runs
+        # after the first children are started cannot fail cleanly, because
+        # exiting then leaves those children running on the runner for the rest
+        # of the job. So everything that can refuse the run happens here, while
+        # nothing has been spawned yet.
+        IFS=$'\t' read -r rp_dir rp_exe < <(require_suite rp)
+        IFS=$'\t' read -r sr_dir sr_exe < <(require_suite session-runner)
+
+        # polar-align is shard-aware but small; filemonitor is the largest suite
+        # that is not shard-aware. Together they are about one rp shard's work.
+        # Everything else is 21 suites totalling ~5 min, run in one stream.
+        #
+        # Split into manifest files rather than bash arrays-by-reference: the
+        # macOS runner's /bin/bash is 3.2, which has no namerefs.
+        awk -F'\t' '{ n = $1; sub(/.*\//, "", n);
+                      if (n == "polar-align" || n == "filemonitor") print }' \
+          "$manifest" > "$tmp/bdd-heavy.tsv"
+        awk -F'\t' '{ n = $1; sub(/.*\//, "", n);
+                      if (n != "rp" && n != "session-runner" &&
+                          n != "polar-align" && n != "filemonitor") print }' \
+          "$manifest" > "$tmp/bdd-rest.tsv"
+
         # Every binary must land in exactly one stream. Without this an awk
         # that matched nothing — a renamed package, a lost redirection — leaves
         # an empty list, and an empty list runs zero suites and agrees with its
@@ -253,6 +272,20 @@ runs:
           exit 1
         fi
 
+        # --- launch ----------------------------------------------------------
+        launch_shards() {  # launch_shards <name> <dir> <exe> <count>
+          local name=$1 dir=$2 exe=$3 count=$4 i
+          if [ "$count" -le 1 ]; then
+            start "$name" "$dir" "$exe"
+            return
+          fi
+          for ((i = 0; i < count; i++)); do
+            start "$name-$i" "$dir" "$exe" "$i" "$count"
+          done
+        }
+
+        launch_shards rp "$rp_dir" "$rp_exe" "$RP_SHARDS"
+        launch_shards session-runner "$sr_dir" "$sr_exe" "$SESSION_RUNNER_SHARDS"
         run_manifest heavy "$tmp/bdd-heavy.tsv"
         run_manifest rest "$tmp/bdd-rest.tsv"
 
@@ -264,5 +297,5 @@ runs:
           fi
         done
 
-        replay_logs
+        cleanup
         exit "$status"
