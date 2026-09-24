@@ -1169,6 +1169,14 @@ pub(crate) mod mock {
         }
         fn close(&self) -> BackendResult<()> {
             self.close_calls.fetch_add(1, Ordering::SeqCst);
+            // Cleared FIRST, where `SharedCameraConnection::disconnect` clears
+            // the per-device flag: before the SDK's `CloseQHYCCD` rather than
+            // after it, and left clear when that call fails. So the handle
+            // reports itself closed for the whole length of a close and after
+            // one that errored, which is what lets a test stand a request up in
+            // the window the real handle actually has — the window where the
+            // session is still the running one on a device already gone.
+            self.open.store(false, Ordering::SeqCst);
             self.in_close.store(true, Ordering::SeqCst);
             // Same shape (and same runaway backstop) as the held abort below.
             let deadline = std::time::Instant::now() + Duration::from_mins(1);
@@ -1179,7 +1187,6 @@ pub(crate) mod mock {
             if self.fail_close.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated close failure".to_string()));
             }
-            self.open.store(false, Ordering::SeqCst);
             Ok(())
         }
         fn is_open(&self) -> BackendResult<bool> {

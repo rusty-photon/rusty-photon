@@ -425,12 +425,16 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **C3.** `set_connected(false)` closes that device and returns `NOT_CONNECTED`
   for subsequent operations; an in-flight exposure on it is aborted first.
   Disconnect **owns the device from the moment it is quiescent until the handle
-  is closed**, so a `StartExposure` arriving in that window is refused with
-  `INVALID_OPERATION` instead of racing the close. One that gets in earlier,
-  while the drain is still running, is aborted as well — a disconnect wins over
-  an exposure that starts during it — within the same deadline. If the device
-  cannot be got out of the SDK before that deadline, the handle is left open and
-  the call errors rather than close under a live USB transfer.
+  is closed**, so a `StartExposure` arriving in that window is refused instead of
+  racing the close — with `NOT_CONNECTED` once the handle's connected flag is
+  clear, which `SharedCameraConnection` does before `CloseQHYCCD` and so covers
+  all but the brief head of that window, and with the claim's
+  `INVALID_OPERATION` in the head itself, between the seize and the clear. One
+  that gets in earlier, while the drain is still running, is aborted as well — a
+  disconnect wins over an exposure that starts during it — within the same
+  deadline. If the device cannot be got out of the SDK before that deadline, the
+  handle is left open and the call errors rather than close under a live USB
+  transfer.
 
   A request already in flight when the close lands also answers `NOT_CONNECTED`,
   not whatever that call site would otherwise spell a dead handle as. The
@@ -1096,6 +1100,18 @@ Layered per [`testing.md`](../skills/testing.md).
   mock's `init` open) — against an
   in-crate trait seam over the SDK (mockall doubles), so unit tests need **neither
   hardware nor the SDK linked** where possible.
+- **The double's close window** — `MockCameraHandle::close` clears its connected
+  flag where `SharedCameraConnection::disconnect` clears the real one: *before*
+  the SDK close, and left clear when that call fails. This matters because the
+  close is long. Measured on a QHY178M-Cool, `CloseQHYCCD` takes ~1.0 s (the
+  CFW's ~0.1 s), and a request racing it is answered `NOT_CONNECTED` for all but
+  the first few tens of milliseconds — the brief head of the window, between the
+  disconnect seizing the device and the flag clearing, is the only part where the
+  claim is the rule that refuses (`INVALID_OPERATION`). A double that clears the
+  flag last inverts those proportions and models only that head, so a test
+  written against it pins the answer hardware gives for roughly 5% of a close as
+  though it were the answer for all of it. The claim's own refusal is covered on
+  an open handle instead, by `second_exposure_while_in_flight_is_rejected`.
 - **Windows DLL resolution** — the preflight's candidate ordering/selection are
   pure functions with **injected** environment and fs-existence checkers, and
   the doctor's check assembly / prompt parsing are pure over plain data —
@@ -1317,8 +1333,10 @@ the "how" decisions made while building.
   `disconnect` holds a claim of its own across both, releasing it only after
   `close()` has returned (also when `close()` *fails*, so a refused close cannot
   wedge the device claimed forever). While that claim is installed a racing
-  `StartExposure` is refused by the ordinary E2 path, which is what makes the
-  close safe rather than merely likely to be safe.
+  `StartExposure` is refused — by the connected check once
+  `SharedCameraConnection` has cleared the flag, and by the ordinary E2 path in
+  the window before that. The claim is what makes the close safe rather than
+  merely likely to be safe: it owns the device even where the flag is still set.
 
   **A section that owns the device runs where cancellation cannot reach it.**
   Every SDK call runs off the executor, so each path that owns the device —
@@ -1380,13 +1398,16 @@ the "how" decisions made while building.
   keeps the opposite rule — E7: it cancels the capture it was issued against and
   no other, so finding the device re-claimed means its target is already gone
   and it returns `OK`.) The alternative considered and rejected was clearing the
-  device's logical `connected` flag *first*, so racing `StartExposure`s bounce
-  on `NOT_CONNECTED` and there is no contest at all: cleaner in the device
-  layer, but `SharedCameraConnection::connect` reads that flag and takes its
-  refcount in one critical section, so clearing it without dropping the ref lets
-  a concurrent connect take a second ref and leak the physical handle open. That
-  is a change to the one invariant in this service with a dedicated concurrency
-  test, for a race the claim already closes.
+  device's logical `connected` flag *in the device layer*, ahead of the seize, so
+  racing `StartExposure`s bounce on `NOT_CONNECTED` and there is no contest at
+  all: cleaner there, but `SharedCameraConnection::connect` reads that flag and
+  takes its refcount in one critical section, so clearing it outside that
+  section without dropping the ref lets a concurrent connect take a second ref
+  and leak the physical handle open. That is a change to the one invariant in
+  this service with a dedicated concurrency test, for a race the claim already
+  closes. `disconnect` does clear the flag before `CloseQHYCCD`, but *inside*
+  that critical section — which is what makes it safe there, and why a racing
+  request sees `NOT_CONNECTED` for most of the close regardless.
 - **Camera + CFW share one physical handle — refcounted shared connection.**
   `qhyccd-rs` derives the CFW from the *same* camera id as the enumerated camera
   (a QHY CFW is driven over the camera's USB, not a separate device). The SDK

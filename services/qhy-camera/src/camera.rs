@@ -3389,10 +3389,13 @@ mod tests {
     /// before `CloseQHYCCD` and leaves it clear when that call fails, so a close
     /// that errored has still disconnected the device.
     ///
-    /// The mock keeps reporting itself open after a close it failed, where the
-    /// real handle has already cleared that flag — so what this pins is the
-    /// session ending on its own, with the connected check unable to stand in
-    /// for it.
+    /// Once the close has returned, the connected check refuses a commit just as
+    /// the session check does, and no request can tell them apart — so the
+    /// session ending is asserted directly rather than inferred from a refusal
+    /// either rule would produce. `commit_guard` needs both, and the one that
+    /// isolates the session is `a_superseded_handshake_neither_publishes_nor_closes`,
+    /// where a later connect has reopened the handle and only the session is
+    /// stale.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_close_that_errored_still_ends_the_session() {
         let handle = Arc::new(MockCameraHandle::default());
@@ -3403,6 +3406,10 @@ mod tests {
         handle.fail_close.store(true, Ordering::SeqCst);
         device.disconnect().await.unwrap_err();
 
+        assert!(
+            !device.state.is_session(session),
+            "a close that errored left its session running"
+        );
         assert_eq!(
             device
                 .edit_roi(session, |area| CCDChipArea { width: 64, ..area })
@@ -4843,6 +4850,14 @@ mod tests {
     /// `StartExposure` is waiting for. A disconnect therefore keeps the device
     /// across the close, so an exposure arriving mid-close is refused instead of
     /// racing a handle being freed underneath it.
+    ///
+    /// What turns that exposure away is the connected check rather than the
+    /// claim: `SharedCameraConnection` clears the handle's flag before
+    /// `CloseQHYCCD`, so it reads false for the whole length of the close. The
+    /// claim is the backstop behind it, and its own refusal is
+    /// `second_exposure_while_in_flight_is_rejected`, which reaches it on an
+    /// open handle rather than a closing one. Either way the SDK sees nothing,
+    /// which is the part that matters here.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_disconnect_holds_the_device_across_the_close() {
         let handle = Arc::new(MockCameraHandle::default());
@@ -4858,13 +4873,14 @@ mod tests {
         };
         await_close(&handle).await;
 
-        // The handle still reports open, so this gets past the connected check
-        // and reaches the claim — which is the point: the claim is what stops it.
+        // The handle already reports closed, so this never gets as far as the
+        // claim: the connected check turns it away first, which is the answer a
+        // client racing a real disconnect gets.
         let err = device
             .start_exposure(Duration::from_millis(10), true)
             .await
             .unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
 
         handle.release_close();
         closing.await.unwrap().unwrap();
@@ -4883,8 +4899,12 @@ mod tests {
     /// The claim a disconnect holds says "this device is owned", not "a capture
     /// is running". A client polling `PercentCompleted` across the close must
     /// therefore not read the SDK: `GetQHYCCDExposureRemaining` racing
-    /// `CloseQHYCCD` is the same free-under-a-live-call this PR closes, reached
-    /// by a reader instead of a capture.
+    /// `CloseQHYCCD` is a free-under-a-live-call reached by a reader instead of
+    /// a capture.
+    ///
+    /// The refusal comes from the connected check — the handle's flag is clear
+    /// for the length of the close — so the poll is turned away before it can
+    /// reach the claim, let alone the SDK.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_progress_poll_across_the_close_does_not_reach_the_sdk() {
         let handle = Arc::new(MockCameraHandle::default());
@@ -4908,7 +4928,10 @@ mod tests {
         await_close(&handle).await;
 
         let polls_before = handle.remaining_calls.load(Ordering::SeqCst);
-        assert_eq!(device.percent_completed().await.unwrap(), 0);
+        assert_eq!(
+            device.percent_completed().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
         assert_eq!(
             handle.remaining_calls.load(Ordering::SeqCst),
             polls_before,
@@ -5014,6 +5037,13 @@ mod tests {
 
     /// A close the SDK refuses must still hand the device back: one left claimed
     /// would refuse every later exposure with nothing in flight to explain it.
+    ///
+    /// A close that errored has still disconnected the device — the flag is
+    /// cleared before `CloseQHYCCD` and stays clear when it fails — so the claim
+    /// is not observable through a device that is usable on the spot. It shows
+    /// up on the far side of a reconnect instead: a claim stranded by the failed
+    /// close outlives the session that stranded it, and the exposure below is
+    /// what would meet it.
     #[tokio::test]
     async fn a_refused_close_still_hands_the_device_back() {
         let handle = MockCameraHandle::default();
@@ -5022,11 +5052,14 @@ mod tests {
 
         let err = device.disconnect().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
-        assert!(handle.is_open().unwrap());
-        assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
+        assert!(
+            !handle.is_open().unwrap(),
+            "a close that errored has still disconnected the device"
+        );
 
-        // The device is usable again, which is the whole point of releasing the
-        // claim on the failed path.
+        handle.fail_close.store(false, Ordering::SeqCst);
+        device.connect().await.unwrap();
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
         device
