@@ -144,7 +144,7 @@ dependencies = [
 [[package]]
 name = "ascom-alpaca"
 version = "1.0.0-beta.10"
-source = "git+https://github.com/RReverser/ascom-alpaca-rs.git?branch=main#9fcab81973f76d34351fbf54c4b634cb11e54df2"
+source = "git+https://github.com/rusty-photon/ascom-alpaca-rs.git?branch=fix%2Fconnecting-counts-in-flight-operations#e7d8eebe2cab0cd06aeba6cd46d09942d7e87606"
 dependencies = [
  "async-fn-stream",
  "async-trait",

@@ -560,6 +560,24 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   capture claim exists to prevent. Readers take no lock, so those few stores are
   not atomic against them; what the section removes is the handshake-long
   stretch in which some caches answered and others did not.
+- **C7.** `Connect` and `Disconnect` are asynchronous and `Connecting` is what a
+  client waits on, so `Connecting` is the only thing standing between a client
+  and the C6 window: a client told the operation has finished is entitled to
+  find the caches published. The server layer owns those three endpoints — this
+  service supplies only the `set_connected` they drive, and never sees the
+  requests — so it must keep `Connecting` true until **every** operation in
+  flight against the device has finished, not merely the first. Tracked per
+  device rather than per operation, several outstanding at once collapse into
+  one fact and the first to complete answers for the rest; a client polling
+  exactly as it should is then released into the middle of the handshake, where
+  the device reports `Connected == true` and every cache-backed member answers
+  `VALUE_NOT_SET` until the surviving handshake commits. ConformU's
+  `alpacaprotocol` suite reaches that state on ordinary hardware: it fires its
+  four casing variants at `disconnect` and then, ~18 ms later, at `connect`, and
+  the ~1 s `CloseQHYCCD` completing first is what clears the flag while four
+  connects are still running. The workspace therefore pins an `ascom-alpaca`
+  fork that counts the operations in flight instead (see the pin's comment in
+  the workspace `Cargo.toml`); nothing in this service can substitute for it.
 
 ### Geometry, binning, ROI
 
