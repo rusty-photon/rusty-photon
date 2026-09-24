@@ -572,6 +572,23 @@ pub struct QhyCameraDevice {
     /// of it. A field so tests can shorten it and exercise the refuse-to-close
     /// branch without a 30 s wait.
     drain_timeout: Duration,
+    /// Holds `set_connected` to one connect or disconnect at a time (C8).
+    ///
+    /// Alpaca gives a client no reason to keep its connects and disconnects
+    /// apart, and `ConformU` issues four of each as a matter of course. The
+    /// collision that matters is not the two flags — it is that each request
+    /// reads a closed handle, each concludes a connect is needed, and each then
+    /// sends a dozen SDK calls, `InitQHYCCD` among them, down the one
+    /// `OpenQHYCCD` this camera shares with its CFW. The session generation is
+    /// no answer to that: it governs what a handshake may *publish*, not what it
+    /// may *send*, so the losers are refused their caches long after their SDK
+    /// calls have gone.
+    ///
+    /// It therefore spans the decision **and** the act — splitting them is the
+    /// race — and it is taken here and nowhere else, so a `Connected` read never
+    /// queues behind a close that is waiting out its drain.
+    #[debug(skip)]
+    connection_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl QhyCameraDevice {
@@ -594,6 +611,7 @@ impl QhyCameraDevice {
             state: Arc::new(DeviceState::new()),
             config_ctx: None,
             drain_timeout: CAPTURE_DRAIN_TIMEOUT,
+            connection_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -1805,6 +1823,11 @@ impl Device for QhyCameraDevice {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
+        // Taken before the state is read, not after (C8): read ahead of it,
+        // every request in a burst of connects sees the same closed handle and
+        // runs a handshake of its own. Read behind it, the first does the work
+        // and the rest find the device already where they wanted it.
+        let _lifecycle = self.connection_lock.lock().await;
         let current = self
             .handle
             .is_open()
@@ -2745,6 +2768,19 @@ mod tests {
         }
     }
 
+    /// Blocks until a connect is parked inside `open`, before it has published
+    /// the connected flag — the window every other request still reads as closed.
+    async fn await_open(handle: &MockCameraHandle) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !handle.is_in_open() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the connect never reached the open"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
     /// Blocks until the mock is executing the handshake's offset range read, on
     /// the same terms as [`await_close`]. It is the connect's last question to
     /// the device — exposure range, then gain, then offset — so the connect has
@@ -3046,6 +3082,69 @@ mod tests {
         assert_eq!(
             device.num_y().await.unwrap(),
             device.camera_y_size().await.unwrap()
+        );
+    }
+
+    /// C8: a burst of `Connect` requests is one connect. Parked before the open
+    /// publishes, all four read a closed handle — the state that, unserialized,
+    /// has each of them conclude a connect is needed and send its own dozen SDK
+    /// calls down the one handle the camera shares with its CFW.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_burst_of_connects_runs_one_handshake() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+
+        handle.hold_open();
+        let connects = (0..4_u8)
+            .map(|_| {
+                let device = device.clone();
+                tokio::spawn(async move { device.set_connected(true).await })
+            })
+            .collect::<Vec<_>>();
+        await_open(&handle).await;
+        handle.release_open();
+        for connect in connects {
+            connect.await.unwrap().unwrap();
+        }
+
+        assert!(device.connected().await.unwrap());
+        assert_eq!(
+            handle.init_calls.load(Ordering::SeqCst),
+            1,
+            "the three behind the first found the camera already where they wanted it"
+        );
+        assert_eq!(
+            device.bin_x().await.unwrap(),
+            1,
+            "and the one handshake that did run published"
+        );
+    }
+
+    /// C8: the same order covers the other direction — a disconnect issued
+    /// alongside a burst of connects is not overtaken by them, and the device is
+    /// left where the last request to run put it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_burst_of_disconnects_closes_once() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.set_connected(true).await.unwrap();
+        let closes = handle.close_calls.load(Ordering::SeqCst);
+
+        let disconnects = (0..4_u8)
+            .map(|_| {
+                let device = device.clone();
+                tokio::spawn(async move { device.set_connected(false).await })
+            })
+            .collect::<Vec<_>>();
+        for disconnect in disconnects {
+            disconnect.await.unwrap().unwrap();
+        }
+
+        assert!(!device.connected().await.unwrap());
+        assert_eq!(
+            handle.close_calls.load(Ordering::SeqCst),
+            closes + 1,
+            "the three behind the first found the camera already closed"
         );
     }
 

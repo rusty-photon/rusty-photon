@@ -846,6 +846,18 @@ pub(crate) mod mock {
         /// Set while `init` is executing, so a test can wait for a held
         /// handshake to be *in* the SDK instead of guessing.
         in_init: AtomicBool,
+        /// Counts `init` calls — one per connect handshake, which is how a test
+        /// tells a single handshake from several racing ones.
+        pub init_calls: AtomicU32,
+        /// Holds `open` **before** it publishes the connected flag, so every
+        /// request issued behind the held one still reads a closed handle. That
+        /// is the window C8 is about: parking a connect any later lets the ones
+        /// behind it see an open device and return without a handshake, which is
+        /// the very thing under test.
+        open_held: AtomicBool,
+        /// Set while `open` is parked, so a test can wait for the window to be
+        /// open instead of guessing.
+        in_open: AtomicBool,
         /// Holds a `set_bin_mode` **above 1x1** open until a test releases it,
         /// after the new binning has landed the way it has on a camera by the
         /// time the call returns. Above 1x1 is the discriminator on purpose: a
@@ -964,6 +976,9 @@ pub(crate) mod mock {
                 close_calls: AtomicU32::new(0),
                 init_held: AtomicBool::new(false),
                 in_init: AtomicBool::new(false),
+                init_calls: AtomicU32::new(0),
+                open_held: AtomicBool::new(false),
+                in_open: AtomicBool::new(false),
                 binned_set_held: AtomicBool::new(false),
                 in_binned_set: AtomicBool::new(false),
                 offset_range_held: AtomicBool::new(false),
@@ -1115,6 +1130,22 @@ pub(crate) mod mock {
         /// [`is_in_init`](Self::is_in_init) to keep a connect demonstrably
         /// between its open and its caches while the test drives another
         /// request past it.
+        /// Park `open` before it publishes the connected flag, until
+        /// [`release_open`](Self::release_open).
+        pub fn hold_open(&self) {
+            self.open_held.store(true, Ordering::SeqCst);
+        }
+
+        /// Let an `open` parked by [`hold_open`](Self::hold_open) publish.
+        pub fn release_open(&self) {
+            self.open_held.store(false, Ordering::SeqCst);
+        }
+
+        /// Whether an `open` is currently parked.
+        pub fn is_in_open(&self) -> bool {
+            self.in_open.load(Ordering::SeqCst)
+        }
+
         pub fn hold_init(&self) {
             self.init_held.store(true, Ordering::SeqCst);
         }
@@ -1164,6 +1195,15 @@ pub(crate) mod mock {
             self.id.clone()
         }
         fn open(&self) -> BackendResult<()> {
+            self.in_open.store(true, Ordering::SeqCst);
+            // Same shape (and same runaway backstop) as the held init below, but
+            // ahead of the store: a request parked here has not yet told anyone
+            // the device is open.
+            let deadline = std::time::Instant::now() + Duration::from_mins(1);
+            while self.open_held.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.in_open.store(false, Ordering::SeqCst);
             self.open.store(true, Ordering::SeqCst);
             Ok(())
         }
@@ -1193,6 +1233,7 @@ pub(crate) mod mock {
             Ok(self.open.load(Ordering::SeqCst))
         }
         fn init(&self) -> BackendResult<()> {
+            self.init_calls.fetch_add(1, Ordering::SeqCst);
             self.in_init.store(true, Ordering::SeqCst);
             // Same shape (and same runaway backstop) as the held close above.
             let deadline = std::time::Instant::now() + Duration::from_mins(1);
@@ -1455,6 +1496,14 @@ pub(crate) mod mock {
         /// Counts `get_position` calls, so a test can assert that a settled
         /// wheel answers `Position` without the SDK round-trip.
         pub get_position_calls: AtomicU32,
+        /// Counts post-open handshake reads — one per connect, which is how a
+        /// test tells a single connect from several racing ones.
+        pub handshake_calls: AtomicU32,
+        /// Holds `open` **before** it publishes the connected flag, on the same
+        /// terms and for the same reason as the camera mock's.
+        open_held: AtomicBool,
+        /// Set while `open` is parked.
+        in_open: AtomicBool,
         /// When set, `set_position` parks the target instead of applying it, so a
         /// move can be observed in flight; [`complete_move`](Self::complete_move)
         /// then lands it.
@@ -1471,6 +1520,9 @@ pub(crate) mod mock {
                 position: Mutex::new(0),
                 fail_handshake: AtomicBool::new(false),
                 get_position_calls: AtomicU32::new(0),
+                handshake_calls: AtomicU32::new(0),
+                open_held: AtomicBool::new(false),
+                in_open: AtomicBool::new(false),
                 defer_move: AtomicBool::new(false),
                 pending: Mutex::new(None),
             }
@@ -1481,6 +1533,22 @@ pub(crate) mod mock {
         /// decode produces for any nonstandard status byte.
         pub fn set_reported_position(&self, position: u32) {
             *self.position.lock() = position;
+        }
+
+        /// Park `open` before it publishes the connected flag, until
+        /// [`release_open`](Self::release_open).
+        pub fn hold_open(&self) {
+            self.open_held.store(true, Ordering::SeqCst);
+        }
+
+        /// Let an `open` parked by [`hold_open`](Self::hold_open) publish.
+        pub fn release_open(&self) {
+            self.open_held.store(false, Ordering::SeqCst);
+        }
+
+        /// Whether an `open` is currently parked.
+        pub fn is_in_open(&self) -> bool {
+            self.in_open.load(Ordering::SeqCst)
         }
 
         /// Land a move parked by [`defer_move`](Self::defer_move).
@@ -1496,6 +1564,12 @@ pub(crate) mod mock {
             self.id.clone()
         }
         fn open(&self) -> BackendResult<()> {
+            self.in_open.store(true, Ordering::SeqCst);
+            let deadline = std::time::Instant::now() + Duration::from_mins(1);
+            while self.open_held.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.in_open.store(false, Ordering::SeqCst);
             self.open.store(true, Ordering::SeqCst);
             Ok(())
         }
@@ -1507,6 +1581,7 @@ pub(crate) mod mock {
             Ok(self.open.load(Ordering::SeqCst))
         }
         fn get_number_of_filters(&self) -> BackendResult<u32> {
+            self.handshake_calls.fetch_add(1, Ordering::SeqCst);
             if self.fail_handshake.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated handshake failure".to_string()));
             }

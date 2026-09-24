@@ -578,6 +578,23 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   connects are still running. The workspace therefore pins an `ascom-alpaca`
   fork that counts the operations in flight instead (see the pin's comment in
   the workspace `Cargo.toml`); nothing in this service can substitute for it.
+- **C8.** `set_connected` is **serialized per device**, and the check of what the
+  device already is happens inside that order rather than ahead of it. Alpaca
+  gives a client no reason to keep its connects and disconnects apart, and
+  ConformU issues four of each as a matter of course (C7); left to overlap they
+  collide twice over. They race the **check** — each reads a closed handle, each
+  concludes a connect is needed, and each runs one. And they race each other's
+  **handshakes**: a dozen SDK calls apiece, `InitQHYCCD` among them, issued
+  concurrently down the one `OpenQHYCCD` the camera and its CFW share. The
+  session generation does not cover that second collision and was never meant
+  to — it governs what a handshake may *publish*, not what it may *send*, so the
+  losers are refused their caches while their SDK calls have already gone. Held
+  to one at a time, the first request does the work and the rest find the device
+  already where they wanted it and return `Ok` without reaching the SDK at all.
+  The lock spans the decision and the act, because splitting them is the race;
+  it is taken by `set_connected` alone, so a `Connected` read — the one every
+  health poll makes — never queues behind a close. The same rule and the same
+  reasoning apply to the FilterWheel device on that shared handle.
 
 ### Geometry, binning, ROI
 

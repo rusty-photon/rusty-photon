@@ -40,6 +40,12 @@ pub struct QhyFilterWheelDevice {
     /// Human filter names from config (overrides generated `Filter0..N`).
     filter_names: Option<Vec<String>>,
     state: Arc<FilterWheelState>,
+    /// Holds `set_connected` to one connect or disconnect at a time (C8), on the
+    /// same terms as the camera's: a burst of connects that all read a closed
+    /// handle all run a handshake, and this wheel's handshake goes down the same
+    /// physical `OpenQHYCCD` the camera's does.
+    #[debug(skip)]
+    connection_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl QhyFilterWheelDevice {
@@ -65,6 +71,7 @@ impl QhyFilterWheelDevice {
                 target_position: Mutex::new(None),
                 settled_position: Mutex::new(None),
             }),
+            connection_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -214,6 +221,10 @@ impl Device for QhyFilterWheelDevice {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
+        // Taken before the state is read (C8), for the reason the camera's is:
+        // a burst of connects that each read the handle ahead of the lock each
+        // conclude a connect is needed and each run one.
+        let _lifecycle = self.connection_lock.lock().await;
         let current = self
             .handle
             .is_open()
@@ -342,6 +353,44 @@ mod tests {
     use crate::backend::mock::MockFilterWheelHandle;
     use ascom_alpaca::ASCOMErrorCode;
     use std::sync::atomic::Ordering;
+
+    /// C8: the wheel is held to one connect at a time too — its handshake goes
+    /// down the same physical `OpenQHYCCD` the camera's does, and a burst that
+    /// each read a closed handle would each run one.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_burst_of_connects_runs_one_handshake() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        let device =
+            QhyFilterWheelDevice::new(Arc::<MockFilterWheelHandle>::clone(&handle), None, None);
+
+        handle.hold_open();
+        let connects = (0..4_u8)
+            .map(|_| {
+                let device = device.clone();
+                tokio::spawn(async move { device.set_connected(true).await })
+            })
+            .collect::<Vec<_>>();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !handle.is_in_open() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the connect never reached the open"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        handle.release_open();
+        for connect in connects {
+            connect.await.unwrap().unwrap();
+        }
+
+        assert!(device.connected().await.unwrap());
+        assert_eq!(
+            handle.handshake_calls.load(Ordering::SeqCst),
+            1,
+            "the three behind the first found the wheel already where they wanted it"
+        );
+        assert_eq!(device.names().await.unwrap().len(), 7);
+    }
 
     async fn connected(filter_names: Option<Vec<String>>) -> QhyFilterWheelDevice {
         let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
