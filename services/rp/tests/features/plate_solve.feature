@@ -123,13 +123,15 @@ Feature: Plate solve MCP tool
     And the mount tracking is set to true
     And an MCP client connected to rp
     When the MCP client calls "sync_mount" with ra "10.6848" dec "41.2690"
-    # OmniSim's reported RA settles for a few ticks after a sync; both reads
-    # below have to see the position tracking holds, or they straddle a tick.
-    And the mount reading has settled
     And the MCP client calls "capture" with camera "main-cam" for 100 ms
+    # A read either side of the call brackets rp's own read of the mount, which
+    # OmniSim does not hold still: a sync lands offset and the reported RA then
+    # moves for several ticks, and under load its tick starves and RA slips at
+    # about the sidereal rate. Bracketing holds however fast it moves.
+    And I record the mount position reported by get_mount_position
     And the MCP client calls "plate_solve" with the captured document_id and use_mount_hints true
     And I record the mount position reported by get_mount_position
-    Then the stub plate solver should have received ra_hint equal to the recorded mount ra × 15 and dec_hint equal to the recorded mount dec
+    Then the stub plate solver should have received ra_hint and dec_hint bracketed by the recorded mount positions
     And the recorded mount position should be within 0.5 degrees of ra 160.272 and dec 41.269
 
   Scenario: use_mount_hints true with no mount configured returns error

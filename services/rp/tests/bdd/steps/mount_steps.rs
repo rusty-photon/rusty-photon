@@ -4,7 +4,7 @@
 //! anywhere in this file (or in the `mount.feature` scenarios that
 //! drive these steps).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use cucumber::{given, then, when};
 use serde_json::Value;
@@ -151,74 +151,6 @@ async fn mcp_call_sync_mount(world: &mut RpWorld, ra: String, dec: String) {
         .call_tool("sync_mount", Value::Object(args))
         .await;
     world.last_tool_result = Some(result);
-}
-
-/// Agreement two consecutive mount reads must reach before the mount
-/// counts as settled, in degrees of RA.
-///
-/// `OmniSim` reports `RightAscension` frozen between its ~100 ms
-/// `MoveAxes` ticks, and derives it from a freshly read sidereal time
-/// against an axis built from a *cached* one. A sync therefore lands
-/// offset by however stale that cache was, and the reported position
-/// then settles over the next few ticks. Once settled, consecutive
-/// reads agree to ~2e-6°; one settle step is three orders of magnitude
-/// larger than that, so a bound between the two separates them without
-/// being sensitive to either.
-const MOUNT_SETTLED_AGREEMENT_DEG: f64 = 2e-5;
-
-/// Gap between the two reads that have to agree. Longer than `OmniSim`'s
-/// tick, so two samples cannot both read one frozen value and agree
-/// without the mount having actually stopped moving.
-const MOUNT_SETTLE_SAMPLE_GAP: Duration = Duration::from_millis(150);
-
-/// Bound on the wait. A mount that never settles is a real fault, so
-/// this fails the scenario rather than handing it a moving target.
-const MOUNT_SETTLE_DEADLINE: Duration = Duration::from_secs(10);
-
-/// Read the mount's RA through rp, in degrees — the same read and the
-/// same ×15 conversion `plate_solve`'s `use_mount_hints` applies, so
-/// what settles here is what a later assertion compares against.
-async fn mount_ra_deg(world: &RpWorld) -> f64 {
-    let result = world
-        .mcp()
-        .call_tool("get_mount_position", serde_json::json!({}))
-        .await
-        .expect("get_mount_position should succeed while settling the mount");
-    let ra_hours = result.get("ra").and_then(Value::as_f64).unwrap_or_else(|| {
-        panic!("expected ra field in get_mount_position result, got: {result:?}")
-    });
-    ra_hours * 15.0
-}
-
-/// Wait until the mount reports the position tracking will hold.
-///
-/// A sync leaves `OmniSim`'s reported RA settling for a few ticks (see
-/// [`MOUNT_SETTLED_AGREEMENT_DEG`]). Two reads taken inside that window
-/// fall on opposite sides of a tick and disagree by a whole correction
-/// step — 3.7 arcsec measured on a loaded macOS runner, far past any
-/// budget sized for the settled jitter. A scenario comparing one mount
-/// read against another has to run this first, so both reads see the
-/// held position and the comparison stops depending on runner speed.
-///
-/// Deliberately leaves `last_tool_result` alone: this is plumbing
-/// between a `When` and its assertions, not a result under test.
-#[when("the mount reading has settled")]
-async fn mount_reading_has_settled(world: &mut RpWorld) {
-    ensure_mcp_client(world).await;
-    let waiting_since = Instant::now();
-    let mut previous = mount_ra_deg(world).await;
-    loop {
-        tokio::time::sleep(MOUNT_SETTLE_SAMPLE_GAP).await;
-        let current = mount_ra_deg(world).await;
-        if (current - previous).abs() < MOUNT_SETTLED_AGREEMENT_DEG {
-            return;
-        }
-        assert!(
-            waiting_since.elapsed() < MOUNT_SETTLE_DEADLINE,
-            "mount RA never settled to within {MOUNT_SETTLED_AGREEMENT_DEG}° across              two reads {MOUNT_SETTLE_SAMPLE_GAP:?} apart; last pair {previous}° and {current}°"
-        );
-        previous = current;
-    }
 }
 
 #[when("the MCP client calls \"get_mount_position\"")]
