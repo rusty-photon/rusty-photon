@@ -1366,8 +1366,8 @@ fn normalize_geometry(
 /// `StartX`/`StartY` and `NumX`/`NumY`.
 ///
 /// Takes the *reported* extents rather than the raw effective area, so the
-/// default frame is one the sensor can deliver whole at every bin it will be
-/// rescaled to (R4).
+/// default frame is one the sensor can deliver whole at every bin its view
+/// will be derived at (R4).
 #[cfg(test)]
 const fn full_frame(width: u32, height: u32) -> CCDChipArea {
     CCDChipArea {
@@ -3227,7 +3227,7 @@ mod tests {
         assert_eq!(
             device.num_x().await.unwrap(),
             device.camera_x_size().await.unwrap(),
-            "the ended session's rescale reached the new session's sub-frame"
+            "the ended session's ROI reached the new session's sub-frame"
         );
     }
 
@@ -4168,7 +4168,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bin_change_rescales_roi_and_rejects_unsupported() {
+    async fn bin_change_rederives_the_roi_and_rejects_unsupported() {
         let device = connected_device(MockCameraHandle::default()).await;
         device.set_num_x(3072).await.unwrap();
         device.set_num_y(2048).await.unwrap();
@@ -4260,7 +4260,7 @@ mod tests {
     async fn binning_scales_the_effective_origin_with_the_frame() {
         let (device, mock) = connected_device_with_handle(margined_mock()).await;
         device.set_bin_x(2).await.unwrap();
-        // B3 rescaled the default frame against the sensor, not the chip.
+        // B3 derives the default frame from the sensor, not the chip.
         assert_eq!(device.num_x().await.unwrap(), 1524);
         assert_eq!(device.num_y().await.unwrap(), 1024);
         device
@@ -4355,8 +4355,9 @@ mod tests {
 
     #[tokio::test]
     async fn walking_the_bins_and_back_returns_the_whole_frame() {
-        // The reduced sensor is a multiple of every bin, so B3's rescale
-        // divides exactly at each step and nothing is truncated away for good.
+        // Every view derives from the same unbinned source (B3), so the walk
+        // returns the whole frame; R4's reduction is what keeps each binned
+        // full frame an extent the sensor will actually read out.
         let device = connected_device(qhy600m_mock()).await;
         for bin in [2, 3, 4, 1] {
             device.set_bin_x(bin).await.unwrap();

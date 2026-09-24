@@ -119,7 +119,6 @@ struct DeviceState {
     /// Current readout-mode index into [`ZwoCamera::readout_formats`], reset to
     /// 0 (the camera's highest-precision format) on every connect.
     readout_mode: AtomicU8,
-    /// Intended ROI in *binned* pixel coordinates (rescaled on bin change).
     /// Intended ROI in *unbinned* sensor pixels (B3): the region the client
     /// asked for, which a bin change does not rewrite. The binned members
     /// ASCOM exposes are a view of it at the bin in force.
@@ -2339,7 +2338,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bin_change_rescales_roi_and_rejects_unsupported() {
+    async fn bin_change_rederives_the_roi_and_rejects_unsupported() {
         let device = connected_device(MockCameraHandle::default());
         device.set_num_x(3120).await.unwrap();
         device.set_num_y(2088).await.unwrap();

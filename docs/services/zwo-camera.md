@@ -356,7 +356,8 @@ ASI C API exposes and what `zwo-rs` will wrap.
 - **`ElectronsPerADU`** is a **real native value** from `ASI_CAMERA_INFO.ElecPerADU`
   (a ZWO win — QHY ships `NOT_IMPLEMENTED`).
 - **Binning** — symmetric only (`CanAsymmetricBin = false`); `MaxBinX/Y` from the
-  SDK's `SupportedBins`; ROI rescaled on bin change.
+  SDK's `SupportedBins`; the ROI is held in unbinned pixels, so a bin change
+  only changes the divisor its binned members are read through (B3).
 - **ROI** — `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry validated at
   `StartExposure`, **including the ASI alignment rules**: width must be a multiple
   of 8 and height a multiple of 2. (The legacy ASI120 USB2 models additionally
@@ -616,8 +617,9 @@ EAF; those belong to the other zwo services.)
   the raw sensor; for the ASI2600 (6248×4176, bins 1–4) that is **6240×4176**
   (the raw 6248/2 = 3124 is not a multiple of 8, so the raw width would make the
   bin-2/3/4 full frames unachievable). The cost is a few edge columns at full
-  resolution; the bonus is that the bin-ratio ROI rescale (B3) round-trips
-  exactly. Bounds checks (R2) use the *reported* extent. Both extents are computed by
+  resolution, and the reason is reachability alone — B3 round-trips from the
+  unbinned source whatever the reported extent is. Bounds checks (R2) use the
+  *reported* extent. Both extents are computed by
   [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/)'s
   `aligned_sensor` from the *same* alignment rule R3 validates against, so the
   reported size and the ROI check cannot be aligned to different multiples.

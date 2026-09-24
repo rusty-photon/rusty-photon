@@ -168,7 +168,6 @@ struct DeviceState {
     /// Current readout-mode index into [`SensorInfo::readout_formats`],
     /// reset to 0 (the camera's highest-precision format) on every connect.
     readout_mode: AtomicU8,
-    /// Intended ROI in *binned* pixel coordinates (rescaled on bin change).
     /// Intended ROI in *unbinned* sensor pixels (B3): the region the client
     /// asked for, which a bin change does not rewrite. The binned members
     /// ASCOM exposes are a view of it at the bin in force.
@@ -2238,7 +2237,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_bin_rescales_the_cached_roi() {
+    async fn set_bin_rederives_the_cached_roi() {
         let cam = connected_device(MockCameraHandle::default());
         cam.set_start_x(100).await.unwrap();
         cam.set_num_x(800).await.unwrap();

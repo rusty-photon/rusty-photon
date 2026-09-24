@@ -251,7 +251,8 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
 - Sensor geometry — `CameraXSize`/`YSize` from the SDK's effective area (the
   region it reads out, not the chip), `PixelSizeX`/`Y` from cached CCD info.
 - **Binning** — symmetric only (`CanAsymmetricBin = false`); `MaxBinX/Y` from the
-  SDK's valid binning modes; ROI rescaled on bin change.
+  SDK's valid binning modes; the ROI is held in unbinned pixels, so a bin
+  change only changes the divisor its binned members are read through (B3).
 - **ROI** — `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry validated at
   `StartExposure` (ConformU "Reject Bad…" semantics).
 - **Exposure** — `ExposureMin/Max/Resolution` from the SDK; single-frame
