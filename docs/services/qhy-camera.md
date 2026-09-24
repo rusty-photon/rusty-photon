@@ -1096,6 +1096,18 @@ Layered per [`testing.md`](../skills/testing.md).
   mock's `init` open) — against an
   in-crate trait seam over the SDK (mockall doubles), so unit tests need **neither
   hardware nor the SDK linked** where possible.
+- **The double's close window** — `MockCameraHandle::close` clears its connected
+  flag where `SharedCameraConnection::disconnect` clears the real one: *before*
+  the SDK close, and left clear when that call fails. This matters because the
+  close is long. Measured on a QHY178M-Cool, `CloseQHYCCD` takes ~1.0 s (the
+  CFW's ~0.1 s), and a request racing it is answered `NOT_CONNECTED` for all but
+  the first few tens of milliseconds — the brief head of the window, between the
+  disconnect seizing the device and the flag clearing, is the only part where the
+  claim is the rule that refuses (`INVALID_OPERATION`). A double that clears the
+  flag last inverts those proportions and models only that head, so a test
+  written against it pins the answer hardware gives for roughly 5% of a close as
+  though it were the answer for all of it. The claim's own refusal is covered on
+  an open handle instead, by `second_exposure_while_in_flight_is_rejected`.
 - **Windows DLL resolution** — the preflight's candidate ordering/selection are
   pure functions with **injected** environment and fs-existence checkers, and
   the doctor's check assembly / prompt parsing are pure over plain data —
