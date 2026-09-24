@@ -1988,8 +1988,6 @@ impl Camera for QhyCameraDevice {
         let commit = self.commit_guard(session)?;
         // Nothing to rewrite: the ROI is held in unbinned pixels (B3), and the
         // bin stored below is only the divisor its binned view is read through.
-        // Scaling the previous binned value here is what used to truncate once
-        // per step and never give the pixels back.
         self.state.bin.store(bin_x, Ordering::Release);
         drop(commit);
         Ok(())

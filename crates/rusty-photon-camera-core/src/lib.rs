@@ -90,12 +90,12 @@ pub struct Roi {
 /// unbinned region is what makes a bin change non-destructive: it rewrites
 /// nothing, it only changes the divisor.
 ///
-/// Scaling the *previous binned value* instead — the rule this type replaces —
-/// truncated once per step and compounded, because every step started from the
-/// last step's already-truncated result. Measured on a QHY600M: a 100x100
-/// sub-frame at (200,200) walked 1 → 3 → 4 → 1 came back 96x96 at (196,196),
-/// four pixels short in both extent and origin, and stayed that way until the
-/// client wrote the ROI again or reconnected.
+/// Deriving every view from this one source is what makes a bin change
+/// lossless. Scaling the *previous binned* value cannot be: a bin ratio
+/// truncates, and each step then starts from an already-truncated value, so
+/// the error compounds and a client that walks the bins and comes back holds a
+/// smaller, displaced region it never asked for — with nothing to restore it
+/// but writing the ROI again.
 ///
 /// `u64` rather than `u32` because a setter multiplies: a client may set any
 /// `u32` at any bin, and reading it back at the bin it was set at has to give
@@ -155,7 +155,7 @@ impl UnbinnedRoi {
     /// let roi = UnbinnedRoi { start_x: 200, start_y: 200, width: 100, height: 100 };
     /// assert_eq!(roi.binned(3), Roi { start_x: 66, start_y: 66, width: 33, height: 33 });
     /// assert_eq!(roi.binned(4), Roi { start_x: 50, start_y: 50, width: 25, height: 25 });
-    /// // The walk that used to lose four pixels: the source never moved.
+    /// // Back at bin 1: the client's own frame, from that same source.
     /// assert_eq!(roi.binned(1), Roi { start_x: 200, start_y: 200, width: 100, height: 100 });
     ///
     /// // A sub-pixel extent survives as one pixel, not as a zero the client never set.
@@ -803,17 +803,13 @@ mod tests {
 
     #[test]
     fn the_binned_view_is_the_region_divided_by_the_bin() {
-        // #1194's arithmetic half. Every view derives from the same untouched
-        // source, so walking the bins and coming back returns the client's own
-        // frame. Scaling the *previous binned value* instead agreed at bin 3
-        // and then diverged — 24x24 at (49,49) at bin 4, and 96x96 at
-        // (196,196) back at bin 1, both measured on a QHY600M.
+        // Every view derives from the same source, so the bins a client passes
+        // through cannot erode the region: bin 1 answers identically before and
+        // after the walk below.
         //
-        // Each bin is asserted rather than looped over: `binned` takes `self`
-        // by value and is pure, so a loop that discarded its results would
-        // pass just as well with the chaining restored. Chaining lived in the
-        // drivers' `set_bin_x`, so the regression itself is caught by their
-        // BDD round-trip scenarios, not here.
+        // Each bin is asserted rather than looped over, because `binned` takes
+        // `self` by value and is pure — a loop that discarded its results would
+        // hold for any implementation.
         let roi = unbinned_at(200, 200, 100, 100);
         assert_eq!(roi.binned(1), roi_at(200, 200, 100, 100));
         assert_eq!(roi.binned(2), roi_at(100, 100, 50, 50));
