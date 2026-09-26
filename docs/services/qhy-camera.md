@@ -251,7 +251,8 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
 - Sensor geometry — `CameraXSize`/`YSize` from the SDK's effective area (the
   region it reads out, not the chip), `PixelSizeX`/`Y` from cached CCD info.
 - **Binning** — symmetric only (`CanAsymmetricBin = false`); `MaxBinX/Y` from the
-  SDK's valid binning modes; ROI rescaled on bin change.
+  SDK's valid binning modes; the ROI is held in unbinned pixels, so a bin
+  change only changes the divisor its binned members are read through (B3).
 - **ROI** — `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry validated at
   `StartExposure` (ConformU "Reject Bad…" semantics).
 - **Exposure** — `ExposureMin/Max/Resolution` from the SDK; single-frame
@@ -587,17 +588,32 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   and set symmetric binning; an unsupported bin returns `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from the valid
   modes (typically 1–4, up to 8).
-- **B3.** A bin change rescales the cached ROI by the bin ratio. `set_num_x`/
-  `set_num_y` store without validating (the members are set independently, so
-  only the combination is checked, at `StartExposure`), so whatever the client
-  last set is what gets rescaled — and the rescale must not change which value
-  `StartExposure` then complains about. A **sub-pixel** extent is clamped to a
-  minimum of 1, because truncating it to 0 would make R2 reject a value the
-  driver invented. A **client-set 0** is preserved, so it still earns R2 rather
+- **B3.** The cached ROI is held in **unbinned** sensor pixels: the region the
+  client asked for, independent of the bin it was asked at. `StartX`/`NumX` and
+  their Y counterparts are ASCOM *binned* members, so a setter multiplies by the
+  bin in force when it is called and a getter divides by the bin in force when it
+  is read. **A bin change therefore rewrites nothing** — it only changes the
+  divisor — and walking the bins and coming back returns the client's own frame
+  whatever route it took. 100x100 at (200,200) is 100x100 at (200,200) again
+  after 1 → 3 → 4 → 1, where scaling each step from the *previous binned value*
+  truncated twice and came back 96x96 at (196,196), four pixels short in both
+  extent and origin and no way to get them back short of a reconnect.
+  `set_num_x`/`set_num_y` store without validating (the members are set
+  independently, so only the combination is checked, at `StartExposure`), so
+  whatever the client last set is what the binned view is derived from — and the
+  derivation must not change which value `StartExposure` then complains about.
+  The unbinned store is wider than the `u32` a client can set, so a value read
+  back at the bin it was set at is that value exactly, with no ceiling where a
+  large `NumX` would fold into a smaller one the client never asked for. A
+  **sub-pixel** extent is clamped to a minimum of 1, because truncating it to 0
+  would make R2 reject a value the driver invented. A **client-set 0** is preserved, so it still earns R2 rather
   than being clamped into an R4 alignment complaint about a 1 nobody set. The
-  reported sensor is a multiple of every supported bin (R4), so the default
-  frame divides exactly at each step and walking the bins and back returns it
-  whole. **One implementation**, in
+  default frame is derived from the reported sensor at the current bin like any
+  other region, so it round-trips for the same reason a sub-frame does. R4's
+  requirement that the reported sensor be a multiple of every supported bin is
+  no longer what makes that work — it is what keeps the *binned full frame
+  reachable*, i.e. an even extent the SDK will read out at all. **One
+  implementation**, in
   [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/) — this
   rule was three copies until one drifted, and the drift went unseen because
   each driver curated its own test cases, so the missing behaviour and its
