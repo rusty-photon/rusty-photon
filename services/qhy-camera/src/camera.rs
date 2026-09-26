@@ -3160,16 +3160,22 @@ mod tests {
             "a cancelled request must not give the connection back while the handshake it guards is still running"
         );
 
-        // The detached task runs on and finishes the job it took the connection for.
+        // The detached task runs on and finishes the job it took the connection
+        // for. Wait for the *handshake*, not for `Connected`: `open()` makes the
+        // handle report open before the handshake behind it has published
+        // anything (C6), so waiting on `Connected` would race the publication the
+        // assertions below read — `init_calls` still 0, `BinX` still unset.
+        // `BinX` answering at all is the commit, so it is the honest gate.
         handle.release_open();
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while !device.connected().await.unwrap() {
+        while device.bin_x().await.is_err() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the detached connect never completed"
+                "the detached connect never published"
             );
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
+        assert!(device.connected().await.unwrap());
         assert_eq!(
             handle.init_calls.load(Ordering::SeqCst),
             1,

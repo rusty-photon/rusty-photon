@@ -396,15 +396,19 @@ mod tests {
             "a cancelled request must not give the connection back while the handshake it guards is still running"
         );
 
+        // Wait for the handshake to publish, not for `Connected`: `open()` makes
+        // the handle report open before the slot count behind it is cached, so
+        // gating on `Connected` would race the assertions below.
         handle.release_open();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while !device.connected().await.unwrap() {
+        while device.names().await.is_err() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the detached connect never completed"
+                "the detached connect never published"
             );
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
         }
+        assert!(device.connected().await.unwrap());
         assert_eq!(handle.handshake_calls.load(Ordering::SeqCst), 1);
         assert_eq!(device.names().await.unwrap().len(), 7);
     }
