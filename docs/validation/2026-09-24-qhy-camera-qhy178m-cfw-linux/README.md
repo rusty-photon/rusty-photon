@@ -30,6 +30,12 @@ record documented. Both are gone here.
 
 `UniqueID`s are unchanged from every earlier QHY record.
 
+> **Scope.** This record covers `4caf7863`, where C8's lock was per ASCOM
+> device. The lock later moved onto the shared physical connection, and that
+> commit's own re-run is owed: the camera legs were re-taken clean, but the CFW
+> did not enumerate in that session, so the FilterWheel legs and the cross-device
+> check below have not been repeated on hardware since the move.
+
 ## Verdicts
 
 Both devices, both suites, clean:
