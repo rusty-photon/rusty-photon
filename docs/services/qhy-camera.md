@@ -561,6 +561,51 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   capture claim exists to prevent. Readers take no lock, so those few stores are
   not atomic against them; what the section removes is the handshake-long
   stretch in which some caches answered and others did not.
+- **C7.** `Connect` and `Disconnect` are asynchronous and `Connecting` is what a
+  client waits on, so `Connecting` is the only thing standing between a client
+  and the C6 window: a client told the operation has finished is entitled to
+  find the caches published. The server layer owns those three endpoints — this
+  service supplies only the `set_connected` they drive, and never sees the
+  requests — so it must keep `Connecting` true until **every** operation in
+  flight against the device has finished, not merely the first. Tracked per
+  device rather than per operation, several outstanding at once collapse into
+  one fact and the first to complete answers for the rest; a client polling
+  exactly as it should is then released into the middle of the handshake, where
+  the device reports `Connected == true` and every cache-backed member answers
+  `VALUE_NOT_SET` until the surviving handshake commits. ConformU's
+  `alpacaprotocol` suite reaches that state on ordinary hardware: it fires its
+  four casing variants at `disconnect` and then, ~18 ms later, at `connect`, and
+  the ~1 s `CloseQHYCCD` completing first is what clears the flag while four
+  connects are still running. The workspace therefore pins an `ascom-alpaca`
+  fork that counts the operations in flight instead (see the pin's comment in
+  the workspace `Cargo.toml`); nothing in this service can substitute for it.
+- **C8.** `set_connected` is **serialized per physical connection** — not per
+  ASCOM device — and the check of what the device already is happens inside that
+  order rather than ahead of it. Alpaca gives a client no reason to keep its
+  connects and disconnects apart, and ConformU issues four of each as a matter of
+  course (C7); left to overlap they collide twice over. They race the **check**:
+  each reads a closed handle, each concludes a connect is needed, and each runs
+  one. And they race each other's **handshakes**: a dozen SDK calls apiece,
+  `InitQHYCCD` among them, issued concurrently down one `OpenQHYCCD`. The session
+  generation does not cover that second collision and was never meant to — it
+  governs what a handshake may *publish*, not what it may *send*, so the losers
+  are refused their caches while their SDK calls have already gone. Held to one
+  at a time, the first request does the work and the rest find the device already
+  where they wanted it and return `Ok` without reaching the SDK at all.
+
+  **Per connection is the load-bearing part.** The Camera and the CFW are two
+  ASCOM devices on one handle (C0), so a lock owned by either device orders that
+  device's own requests and leaves the *pair* free to handshake at once — the
+  camera asking `SetQHYCCDStreamMode` / `InitQHYCCD` while the wheel asks
+  `CfwSlotsNum`, two threads in the SDK on one connection. The lock therefore
+  lives on `SharedCameraConnection`, which is what the two share, and both
+  devices take it through their handle. The refcount there is no substitute: it
+  serializes the open and the close themselves, not the handshakes either side of
+  them.
+
+  The lock spans the decision and the act, because splitting them is the race,
+  and it is taken by `set_connected` alone, so a `Connected` read — the one every
+  health poll makes — never queues behind a close waiting out its drain.
 
 ### Geometry, binning, ROI
 
@@ -1488,27 +1533,6 @@ the "how" decisions made while building.
   the device itself: a check placed immediately before a write only races that
   write. It needs the claim held across the SDK write as well as the commit,
   which is the same ownership question a connect handshake raises.
-- **Lifecycle transitions are not serialized against each other, in either
-  direction.** A stale disconnect has the mirror of the problem below: two
-  clients can both find a camera connected and both run a disconnect, and the
-  second takes the device only after the first has closed it — by which time a
-  connect may have opened a new session for it to tear down. The generation check
-  keeps a superseded *connect* from closing (see below), but a check and a close
-  are still two steps, and the gap between them is a scheduling window rather
-  than an instruction on the disconnect side. Both want the same thing: a
-  lifecycle transition that owns the device from its decision through to its
-  close.
-- **Concurrent connects to one camera are not serialized.** `set_connected`
-  decides from `handle.is_open()`, so two clients can both find a camera
-  disconnected and both run the handshake. Only the first performs the physical
-  open; the second's `open()` is a no-op on the already-connected flag. Its
-  *close* is not, so a second caller whose handshake fails (C2) closes the
-  shared handle and takes the successful connect down with it — that client is
-  told `Ok` and then reads `Connected` as `false`. Fixing it means either a
-  cleanup that closes only what this call opened, or serializing connects per
-  device and re-checking `is_open()` inside the critical section. Reachable only
-  with two simultaneous connects *and* a handshake failure, and the damage is a
-  false `Ok` rather than a wrong frame.
 
 ## Packaging
 

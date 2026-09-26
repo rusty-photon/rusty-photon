@@ -791,11 +791,11 @@ impl QhyCameraDevice {
         let session = self.state.begin_session();
         // `handle.open()` refcounts the shared physical connection
         // (`backend::SharedCameraConnection`): the open + refcount transition is
-        // atomic. The handshake below is not serialized against a racing connect
-        // on the same device; its caches survive that, since either run empties
-        // and republishes the lot rather than leaving a mixture of the two. The
-        // close on a failed handshake does not survive it — see the design doc's
-        // Future Work.
+        // atomic. There is no racing connect to defend against here — every
+        // caller reaches this through `set_connected`, which holds that same
+        // connection's lifecycle lock across its decision and its act (C8), so a
+        // handshake that fails is closing a handle no other connect has since
+        // opened.
         self.handle.open().map_err(|_| ASCOMError::NOT_CONNECTED)?;
         // If any step of the post-open handshake fails, close the handle before
         // propagating so a failed connect leaves Connected == false (C2) rather
@@ -1823,18 +1823,42 @@ impl Device for QhyCameraDevice {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        let current = self
-            .handle
-            .is_open()
-            .map_err(|_| ASCOMError::NOT_CONNECTED)?;
-        if current == connected {
-            return Ok(());
-        }
-        if connected {
-            self.connect().await
-        } else {
-            self.disconnect().await
-        }
+        // The whole transition runs in a task of its own, not in this request
+        // future, and that is what makes the lock below mean anything (see
+        // [`Self::detached`]). `connect` hands its handshake to
+        // `spawn_blocking`, which a dropped `JoinHandle` detaches rather than
+        // stops: held in the request future, the guard would be released the
+        // instant a client went away while the SDK calls it was ordering carried
+        // on, and the next connect or disconnect would enter the SDK alongside
+        // them — C8 undone by a cancelled request. Spawned, the guard lives as
+        // long as the work it guards.
+        let device = self.clone();
+        Self::detached(tokio::spawn(async move {
+            // Taken before the state is read, not after (C8): read ahead of it,
+            // every request in a burst of connects sees the same closed handle
+            // and runs a handshake of its own. Read behind it, the first does
+            // the work and the rest find the device already where they wanted it.
+            //
+            // The lock comes off the *handle*, which is to say off the physical
+            // connection, not off this device. One per device would order this
+            // camera's own requests and still let the CFW on the same
+            // `OpenQHYCCD` handshake alongside it, which is the race rather than
+            // a smaller version of it.
+            let _lifecycle = device.handle.lifecycle_lock().lock().await;
+            let current = device
+                .handle
+                .is_open()
+                .map_err(|_| ASCOMError::NOT_CONNECTED)?;
+            if current == connected {
+                return Ok(());
+            }
+            if connected {
+                device.connect().await
+            } else {
+                device.disconnect().await
+            }
+        }))
+        .await
     }
 
     async fn description(&self) -> ASCOMResult<String> {
@@ -2681,7 +2705,8 @@ impl Camera for QhyCameraDevice {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::backend::mock::MockCameraHandle;
+    use crate::backend::mock::{MockCameraHandle, MockFilterWheelHandle};
+    use crate::filterwheel::QhyFilterWheelDevice;
     use std::sync::atomic::Ordering;
 
     fn area(start_x: u32, start_y: u32, width: u32, height: u32) -> CCDChipArea {
@@ -2752,6 +2777,19 @@ mod tests {
             assert!(
                 std::time::Instant::now() < deadline,
                 "the handshake never started"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    /// Blocks until a connect is parked inside `open`, before it has published
+    /// the connected flag — the window every other request still reads as closed.
+    async fn await_open(handle: &MockCameraHandle) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !handle.is_in_open() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the connect never reached the open"
             );
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -3058,6 +3096,244 @@ mod tests {
         assert_eq!(
             device.num_y().await.unwrap(),
             device.camera_y_size().await.unwrap()
+        );
+    }
+
+    /// C8: a burst of `Connect` requests is one connect. Parked before the open
+    /// publishes, all four read a closed handle — the state that, unserialized,
+    /// has each of them conclude a connect is needed and send its own dozen SDK
+    /// calls down the one handle the camera shares with its CFW.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_burst_of_connects_runs_one_handshake() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+
+        handle.hold_open();
+        let connects = (0..4_u8)
+            .map(|_| {
+                let device = device.clone();
+                tokio::spawn(async move { device.set_connected(true).await })
+            })
+            .collect::<Vec<_>>();
+        await_open(&handle).await;
+        handle.release_open();
+        for connect in connects {
+            connect.await.unwrap().unwrap();
+        }
+
+        assert!(device.connected().await.unwrap());
+        assert_eq!(
+            handle.init_calls.load(Ordering::SeqCst),
+            1,
+            "the three behind the first found the camera already where they wanted it"
+        );
+        assert_eq!(
+            device.bin_x().await.unwrap(),
+            1,
+            "and the one handshake that did run published"
+        );
+    }
+
+    /// C8 under cancellation: the transition owns the connection from a task of
+    /// its own, so a client that goes away mid-connect does not hand the
+    /// connection to the next request while the SDK calls its guard was ordering
+    /// are still running. Held in the request future instead, the guard drops the
+    /// instant the request does — and `spawn_blocking` work carries on regardless.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancelled_connect_holds_the_connection_until_its_handshake_is_done() {
+        let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+        let handle = Arc::new(MockCameraHandle::default().with_lifecycle(Arc::clone(&lifecycle)));
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+
+        // Drop the request future while the handshake is parked in the SDK —
+        // which is what an Alpaca client going away does to it.
+        handle.hold_open();
+        let cancelled =
+            tokio::time::timeout(Duration::from_millis(250), device.set_connected(true)).await;
+        assert!(
+            cancelled.is_err(),
+            "the connect should still have been parked, not finished"
+        );
+        assert!(handle.is_in_open(), "and parked inside the SDK");
+        assert!(
+            lifecycle.try_lock().is_err(),
+            "a cancelled request must not give the connection back while the handshake it guards is still running"
+        );
+
+        // The detached task runs on and finishes the job it took the connection
+        // for. Wait for the *handshake*, not for `Connected`: `open()` makes the
+        // handle report open before the handshake behind it has published
+        // anything (C6), so waiting on `Connected` would race the publication the
+        // assertions below read — `init_calls` still 0, `BinX` still unset.
+        // `BinX` answering at all is the commit, so it is the honest gate.
+        handle.release_open();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while device.bin_x().await.is_err() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the detached connect never published"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert!(device.connected().await.unwrap());
+        assert_eq!(
+            handle.init_calls.load(Ordering::SeqCst),
+            1,
+            "the cancelled request's own handshake is the one that ran"
+        );
+        assert_eq!(device.bin_x().await.unwrap(), 1, "and it published");
+    }
+
+    /// C8 across devices: the Camera and the CFW are two ASCOM devices on one
+    /// `OpenQHYCCD`, and they take the *same* lock. A lock per device would order
+    /// each device's own requests and leave exactly this pair free to collide —
+    /// the camera asking `SetQHYCCDStreamMode` / `InitQHYCCD` while the wheel
+    /// asks `CfwSlotsNum`, two threads in the SDK on one handle.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_wheel_connect_waits_for_a_camera_connect_on_the_same_handle() {
+        let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+        let camera_handle =
+            Arc::new(MockCameraHandle::default().with_lifecycle(Arc::clone(&lifecycle)));
+        let wheel_handle = Arc::new(
+            MockFilterWheelHandle::new("SIM-QHY178M", 7).with_lifecycle(Arc::clone(&lifecycle)),
+        );
+        let camera = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&camera_handle), None);
+        let wheel = QhyFilterWheelDevice::new(
+            Arc::<MockFilterWheelHandle>::clone(&wheel_handle),
+            None,
+            None,
+        );
+
+        // Park the camera's connect where it holds the connection and has
+        // published nothing.
+        camera_handle.hold_open();
+        let connecting_camera = {
+            let camera = camera.clone();
+            tokio::spawn(async move { camera.set_connected(true).await })
+        };
+        await_open(&camera_handle).await;
+        assert!(
+            lifecycle.try_lock().is_err(),
+            "the parked camera connect should be holding the connection's lock"
+        );
+
+        let connecting_wheel = {
+            let wheel = wheel.clone();
+            tokio::spawn(async move { wheel.set_connected(true).await })
+        };
+        // Freed from the lock the wheel handshakes in microseconds, so a window
+        // this wide with nothing on the counter is the wheel waiting.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(
+            wheel_handle.handshake_calls.load(Ordering::SeqCst),
+            0,
+            "the wheel handshook while the camera still held the connection"
+        );
+
+        camera_handle.release_open();
+        connecting_camera.await.unwrap().unwrap();
+        connecting_wheel.await.unwrap().unwrap();
+
+        assert!(camera.connected().await.unwrap());
+        assert!(wheel.connected().await.unwrap());
+        assert_eq!(
+            wheel_handle.handshake_calls.load(Ordering::SeqCst),
+            1,
+            "and it handshook once, after the camera was done"
+        );
+    }
+
+    /// C8 across devices, the other direction: a **disconnect** owns the shared
+    /// connection too, for the whole of its close — the longest any transition
+    /// holds it, since `CloseQHYCCD` runs a second on real hardware. A camera
+    /// connect issued into that window waits rather than opening the handle
+    /// underneath a close that is still running.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_camera_connect_waits_for_a_wheel_disconnect_on_the_same_handle() {
+        let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+        let camera_handle =
+            Arc::new(MockCameraHandle::default().with_lifecycle(Arc::clone(&lifecycle)));
+        let wheel_handle = Arc::new(
+            MockFilterWheelHandle::new("SIM-QHY178M", 7).with_lifecycle(Arc::clone(&lifecycle)),
+        );
+        let camera = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&camera_handle), None);
+        let wheel = QhyFilterWheelDevice::new(
+            Arc::<MockFilterWheelHandle>::clone(&wheel_handle),
+            None,
+            None,
+        );
+        wheel.set_connected(true).await.unwrap();
+
+        // Park the wheel inside its close, holding the connection.
+        wheel_handle.hold_close();
+        let disconnecting = {
+            let wheel = wheel.clone();
+            tokio::spawn(async move { wheel.set_connected(false).await })
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !wheel_handle.is_in_close() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the disconnect never reached the close"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+
+        let connecting = {
+            let camera = camera.clone();
+            tokio::spawn(async move { camera.set_connected(true).await })
+        };
+        // Freed from the lock the camera opens and handshakes in microseconds, so
+        // this window with nothing on the counter is the camera waiting.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(
+            camera_handle.init_calls.load(Ordering::SeqCst),
+            0,
+            "the camera handshook while the wheel's close still held the connection"
+        );
+        assert!(
+            !camera.connected().await.unwrap(),
+            "and it had not opened the handle either"
+        );
+
+        wheel_handle.release_close();
+        disconnecting.await.unwrap().unwrap();
+        connecting.await.unwrap().unwrap();
+
+        assert!(!wheel.connected().await.unwrap());
+        assert!(camera.connected().await.unwrap());
+        assert_eq!(
+            camera_handle.init_calls.load(Ordering::SeqCst),
+            1,
+            "and it handshook once, after the close was done"
+        );
+    }
+
+    /// C8: the same order covers the other direction — a disconnect issued
+    /// alongside a burst of connects is not overtaken by them, and the device is
+    /// left where the last request to run put it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_burst_of_disconnects_closes_once() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.set_connected(true).await.unwrap();
+        let closes = handle.close_calls.load(Ordering::SeqCst);
+
+        let disconnects = (0..4_u8)
+            .map(|_| {
+                let device = device.clone();
+                tokio::spawn(async move { device.set_connected(false).await })
+            })
+            .collect::<Vec<_>>();
+        for disconnect in disconnects {
+            disconnect.await.unwrap().unwrap();
+        }
+
+        assert!(!device.connected().await.unwrap());
+        assert_eq!(
+            handle.close_calls.load(Ordering::SeqCst),
+            closes + 1,
+            "the three behind the first found the camera already closed"
         );
     }
 
