@@ -1554,6 +1554,12 @@ pub(crate) mod mock {
         open_held: AtomicBool,
         /// Set while `open` is parked.
         in_open: AtomicBool,
+        /// Holds `close` open until a test releases it, standing in for the ~1 s
+        /// `CloseQHYCCD` on real hardware — the longest a lifecycle transition
+        /// ever owns the shared connection.
+        close_held: AtomicBool,
+        /// Set while `close` is parked.
+        in_close: AtomicBool,
         /// Stands in for the lock the shipped handle takes from its
         /// `SharedCameraConnection`. Its own by default; hand the same one to the
         /// partner mock with `with_lifecycle` to put both on one physical
@@ -1578,6 +1584,8 @@ pub(crate) mod mock {
                 handshake_calls: AtomicU32::new(0),
                 open_held: AtomicBool::new(false),
                 in_open: AtomicBool::new(false),
+                close_held: AtomicBool::new(false),
+                in_close: AtomicBool::new(false),
                 lifecycle: Arc::new(tokio::sync::Mutex::new(())),
                 defer_move: AtomicBool::new(false),
                 pending: Mutex::new(None),
@@ -1615,6 +1623,21 @@ pub(crate) mod mock {
             self.in_open.load(Ordering::SeqCst)
         }
 
+        /// Park `close`, until [`release_close`](Self::release_close).
+        pub fn hold_close(&self) {
+            self.close_held.store(true, Ordering::SeqCst);
+        }
+
+        /// Let a close parked by [`hold_close`](Self::hold_close) finish.
+        pub fn release_close(&self) {
+            self.close_held.store(false, Ordering::SeqCst);
+        }
+
+        /// Whether a `close` is currently parked.
+        pub fn is_in_close(&self) -> bool {
+            self.in_close.load(Ordering::SeqCst)
+        }
+
         /// Land a move parked by [`defer_move`](Self::defer_move).
         pub fn complete_move(&self) {
             if let Some(position) = self.pending.lock().take() {
@@ -1638,7 +1661,15 @@ pub(crate) mod mock {
             Ok(())
         }
         fn close(&self) -> BackendResult<()> {
+            // Cleared first, where `SharedCameraConnection::disconnect` clears it,
+            // then parked over the span the real `CloseQHYCCD` occupies.
             self.open.store(false, Ordering::SeqCst);
+            self.in_close.store(true, Ordering::SeqCst);
+            let deadline = std::time::Instant::now() + Duration::from_mins(1);
+            while self.close_held.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.in_close.store(false, Ordering::SeqCst);
             Ok(())
         }
         fn is_open(&self) -> BackendResult<bool> {

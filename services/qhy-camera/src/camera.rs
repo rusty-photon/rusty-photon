@@ -3243,6 +3243,72 @@ mod tests {
         );
     }
 
+    /// C8 across devices, the other direction: a **disconnect** owns the shared
+    /// connection too, for the whole of its close — the longest any transition
+    /// holds it, since `CloseQHYCCD` runs a second on real hardware. A camera
+    /// connect issued into that window waits rather than opening the handle
+    /// underneath a close that is still running.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_camera_connect_waits_for_a_wheel_disconnect_on_the_same_handle() {
+        let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+        let camera_handle =
+            Arc::new(MockCameraHandle::default().with_lifecycle(Arc::clone(&lifecycle)));
+        let wheel_handle = Arc::new(
+            MockFilterWheelHandle::new("SIM-QHY178M", 7).with_lifecycle(Arc::clone(&lifecycle)),
+        );
+        let camera = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&camera_handle), None);
+        let wheel = QhyFilterWheelDevice::new(
+            Arc::<MockFilterWheelHandle>::clone(&wheel_handle),
+            None,
+            None,
+        );
+        wheel.set_connected(true).await.unwrap();
+
+        // Park the wheel inside its close, holding the connection.
+        wheel_handle.hold_close();
+        let disconnecting = {
+            let wheel = wheel.clone();
+            tokio::spawn(async move { wheel.set_connected(false).await })
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !wheel_handle.is_in_close() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the disconnect never reached the close"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+
+        let connecting = {
+            let camera = camera.clone();
+            tokio::spawn(async move { camera.set_connected(true).await })
+        };
+        // Freed from the lock the camera opens and handshakes in microseconds, so
+        // this window with nothing on the counter is the camera waiting.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(
+            camera_handle.init_calls.load(Ordering::SeqCst),
+            0,
+            "the camera handshook while the wheel's close still held the connection"
+        );
+        assert!(
+            !camera.connected().await.unwrap(),
+            "and it had not opened the handle either"
+        );
+
+        wheel_handle.release_close();
+        disconnecting.await.unwrap().unwrap();
+        connecting.await.unwrap().unwrap();
+
+        assert!(!wheel.connected().await.unwrap());
+        assert!(camera.connected().await.unwrap());
+        assert_eq!(
+            camera_handle.init_calls.load(Ordering::SeqCst),
+            1,
+            "and it handshook once, after the close was done"
+        );
+    }
+
     /// C8: the same order covers the other direction — a disconnect issued
     /// alongside a burst of connects is not overtaken by them, and the device is
     /// left where the last request to run put it.
