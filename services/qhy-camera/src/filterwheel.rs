@@ -40,12 +40,6 @@ pub struct QhyFilterWheelDevice {
     /// Human filter names from config (overrides generated `Filter0..N`).
     filter_names: Option<Vec<String>>,
     state: Arc<FilterWheelState>,
-    /// Holds `set_connected` to one connect or disconnect at a time (C8), on the
-    /// same terms as the camera's: a burst of connects that all read a closed
-    /// handle all run a handshake, and this wheel's handshake goes down the same
-    /// physical `OpenQHYCCD` the camera's does.
-    #[debug(skip)]
-    connection_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl QhyFilterWheelDevice {
@@ -71,7 +65,6 @@ impl QhyFilterWheelDevice {
                 target_position: Mutex::new(None),
                 settled_position: Mutex::new(None),
             }),
-            connection_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -221,10 +214,10 @@ impl Device for QhyFilterWheelDevice {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // Taken before the state is read (C8), for the reason the camera's is:
-        // a burst of connects that each read the handle ahead of the lock each
-        // conclude a connect is needed and each run one.
-        let _lifecycle = self.connection_lock.lock().await;
+        // Taken before the state is read (C8), for the reason the camera's is —
+        // and off the handle, so it is the same lock the Camera device on this
+        // physical connection takes rather than one of the wheel's own.
+        let _lifecycle = self.handle.lifecycle_lock().lock().await;
         let current = self
             .handle
             .is_open()

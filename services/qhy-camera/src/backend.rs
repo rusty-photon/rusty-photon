@@ -82,6 +82,9 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// Never fails in either shipped handle — both answer from their own
     /// connected flag rather than asking the SDK.
     fn is_open(&self) -> BackendResult<bool>;
+    /// The connect/disconnect lock for the *physical* connection behind this
+    /// handle, shared with any other ASCOM device on it (C8).
+    fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()>;
     /// Run the SDK's post-open initialisation (`InitQHYCCD`).
     ///
     /// # Errors
@@ -385,6 +388,9 @@ pub trait FilterWheelHandle: std::fmt::Debug + Send + Sync {
     /// Never fails in either shipped handle — both answer from their own
     /// connected flag rather than asking the SDK.
     fn is_open(&self) -> BackendResult<bool>;
+    /// The connect/disconnect lock for the *physical* connection behind this
+    /// handle, shared with the Camera device driven through it (C8).
+    fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()>;
     /// Number of slots (via `ControlType::CfwSlotsNum`).
     ///
     /// # Errors
@@ -426,6 +432,21 @@ pub struct SharedCameraConnection {
     /// Count of logically-connected ASCOM devices (camera + CFW) holding the
     /// physical handle open. Opens once on 0 → 1 and closes on 1 → 0.
     refs: Mutex<u32>,
+    /// Serializes connect/disconnect across **both** ASCOM devices on this
+    /// physical connection (C8).
+    ///
+    /// It lives here rather than on either device because here is what the two
+    /// share. A lock per device orders each device's own requests and leaves the
+    /// pair free to handshake at once — a camera connect asking
+    /// `SetQHYCCDStreamMode` / `InitQHYCCD` while the wheel's asks
+    /// `CfwSlotsNum`, down one `OpenQHYCCD`. [`Self::refs`] is no substitute: it
+    /// serializes the open and the close themselves, not the handshakes either
+    /// side of them.
+    ///
+    /// `tokio`'s rather than `parking_lot`'s because a connect handshake is
+    /// awaited, and it is taken by `set_connected` alone, so a `Connected` read
+    /// never queues behind it.
+    lifecycle: tokio::sync::Mutex<()>,
 }
 
 impl SharedCameraConnection {
@@ -434,6 +455,7 @@ impl SharedCameraConnection {
         Arc::new(Self {
             camera,
             refs: Mutex::new(0),
+            lifecycle: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -442,6 +464,11 @@ impl SharedCameraConnection {
     /// single `OpenQHYCCD` serves both imaging and filter-wheel control.
     pub const fn camera(&self) -> &qhyccd_rs::Camera {
         &self.camera
+    }
+
+    /// The connect/disconnect lock both devices on this connection take (C8).
+    pub const fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
+        &self.lifecycle
     }
 
     /// Register a logical connect for `connected` (the calling device's own flag).
@@ -523,6 +550,9 @@ impl CameraHandle for QhyCameraHandle {
     }
     fn is_open(&self) -> BackendResult<bool> {
         Ok(self.connected.load(Ordering::SeqCst))
+    }
+    fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
+        self.conn.lifecycle_lock()
     }
     fn init(&self) -> BackendResult<()> {
         self.conn.camera().init().map_err(BackendError::from_err)
@@ -707,6 +737,9 @@ impl FilterWheelHandle for QhyFilterWheelHandle {
     fn is_open(&self) -> BackendResult<bool> {
         Ok(self.connected.load(Ordering::SeqCst))
     }
+    fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
+        self.conn.lifecycle_lock()
+    }
     fn get_number_of_filters(&self) -> BackendResult<u32> {
         self.wheel
             .get_number_of_filters()
@@ -858,6 +891,11 @@ pub(crate) mod mock {
         /// Set while `open` is parked, so a test can wait for the window to be
         /// open instead of guessing.
         in_open: AtomicBool,
+        /// Stands in for the lock the shipped handle takes from its
+        /// `SharedCameraConnection`. Its own by default; hand the same one to the
+        /// partner mock with `with_lifecycle` to put both on one physical
+        /// connection the way `build()` does.
+        lifecycle: Arc<tokio::sync::Mutex<()>>,
         /// Holds a `set_bin_mode` **above 1x1** open until a test releases it,
         /// after the new binning has landed the way it has on a camera by the
         /// time the call returns. Above 1x1 is the discriminator on purpose: a
@@ -979,6 +1017,7 @@ pub(crate) mod mock {
                 init_calls: AtomicU32::new(0),
                 open_held: AtomicBool::new(false),
                 in_open: AtomicBool::new(false),
+                lifecycle: Arc::new(tokio::sync::Mutex::new(())),
                 binned_set_held: AtomicBool::new(false),
                 in_binned_set: AtomicBool::new(false),
                 offset_range_held: AtomicBool::new(false),
@@ -1130,6 +1169,14 @@ pub(crate) mod mock {
         /// [`is_in_init`](Self::is_in_init) to keep a connect demonstrably
         /// between its open and its caches while the test drives another
         /// request past it.
+        /// Share one connect/disconnect lock with the partner mock, standing in
+        /// for two ASCOM devices on one physical connection.
+        #[must_use]
+        pub fn with_lifecycle(mut self, lifecycle: Arc<tokio::sync::Mutex<()>>) -> Self {
+            self.lifecycle = lifecycle;
+            self
+        }
+
         /// Park `open` before it publishes the connected flag, until
         /// [`release_open`](Self::release_open).
         pub fn hold_open(&self) {
@@ -1231,6 +1278,9 @@ pub(crate) mod mock {
         }
         fn is_open(&self) -> BackendResult<bool> {
             Ok(self.open.load(Ordering::SeqCst))
+        }
+        fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
+            &self.lifecycle
         }
         fn init(&self) -> BackendResult<()> {
             self.init_calls.fetch_add(1, Ordering::SeqCst);
@@ -1504,6 +1554,11 @@ pub(crate) mod mock {
         open_held: AtomicBool,
         /// Set while `open` is parked.
         in_open: AtomicBool,
+        /// Stands in for the lock the shipped handle takes from its
+        /// `SharedCameraConnection`. Its own by default; hand the same one to the
+        /// partner mock with `with_lifecycle` to put both on one physical
+        /// connection the way `build()` does.
+        lifecycle: Arc<tokio::sync::Mutex<()>>,
         /// When set, `set_position` parks the target instead of applying it, so a
         /// move can be observed in flight; [`complete_move`](Self::complete_move)
         /// then lands it.
@@ -1523,6 +1578,7 @@ pub(crate) mod mock {
                 handshake_calls: AtomicU32::new(0),
                 open_held: AtomicBool::new(false),
                 in_open: AtomicBool::new(false),
+                lifecycle: Arc::new(tokio::sync::Mutex::new(())),
                 defer_move: AtomicBool::new(false),
                 pending: Mutex::new(None),
             }
@@ -1533,6 +1589,14 @@ pub(crate) mod mock {
         /// decode produces for any nonstandard status byte.
         pub fn set_reported_position(&self, position: u32) {
             *self.position.lock() = position;
+        }
+
+        /// Share one connect/disconnect lock with the partner mock, standing in
+        /// for two ASCOM devices on one physical connection.
+        #[must_use]
+        pub fn with_lifecycle(mut self, lifecycle: Arc<tokio::sync::Mutex<()>>) -> Self {
+            self.lifecycle = lifecycle;
+            self
         }
 
         /// Park `open` before it publishes the connected flag, until
@@ -1579,6 +1643,9 @@ pub(crate) mod mock {
         }
         fn is_open(&self) -> BackendResult<bool> {
             Ok(self.open.load(Ordering::SeqCst))
+        }
+        fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
+            &self.lifecycle
         }
         fn get_number_of_filters(&self) -> BackendResult<u32> {
             self.handshake_calls.fetch_add(1, Ordering::SeqCst);

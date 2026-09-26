@@ -576,23 +576,6 @@ pub struct QhyCameraDevice {
     /// of it. A field so tests can shorten it and exercise the refuse-to-close
     /// branch without a 30 s wait.
     drain_timeout: Duration,
-    /// Holds `set_connected` to one connect or disconnect at a time (C8).
-    ///
-    /// Alpaca gives a client no reason to keep its connects and disconnects
-    /// apart, and `ConformU` issues four of each as a matter of course. The
-    /// collision that matters is not the two flags — it is that each request
-    /// reads a closed handle, each concludes a connect is needed, and each then
-    /// sends a dozen SDK calls, `InitQHYCCD` among them, down the one
-    /// `OpenQHYCCD` this camera shares with its CFW. The session generation is
-    /// no answer to that: it governs what a handshake may *publish*, not what it
-    /// may *send*, so the losers are refused their caches long after their SDK
-    /// calls have gone.
-    ///
-    /// It therefore spans the decision **and** the act — splitting them is the
-    /// race — and it is taken here and nowhere else, so a `Connected` read never
-    /// queues behind a close that is waiting out its drain.
-    #[debug(skip)]
-    connection_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl QhyCameraDevice {
@@ -615,7 +598,6 @@ impl QhyCameraDevice {
             state: Arc::new(DeviceState::new()),
             config_ctx: None,
             drain_timeout: CAPTURE_DRAIN_TIMEOUT,
-            connection_lock: Arc::new(tokio::sync::Mutex::new(())),
         }
     }
 
@@ -809,11 +791,11 @@ impl QhyCameraDevice {
         let session = self.state.begin_session();
         // `handle.open()` refcounts the shared physical connection
         // (`backend::SharedCameraConnection`): the open + refcount transition is
-        // atomic. The handshake below is not serialized against a racing connect
-        // on the same device; its caches survive that, since either run empties
-        // and republishes the lot rather than leaving a mixture of the two. The
-        // close on a failed handshake does not survive it — see the design doc's
-        // Future Work.
+        // atomic. There is no racing connect to defend against here — every
+        // caller reaches this through `set_connected`, which holds that same
+        // connection's lifecycle lock across its decision and its act (C8), so a
+        // handshake that fails is closing a handle no other connect has since
+        // opened.
         self.handle.open().map_err(|_| ASCOMError::NOT_CONNECTED)?;
         // If any step of the post-open handshake fails, close the handle before
         // propagating so a failed connect leaves Connected == false (C2) rather
@@ -1845,7 +1827,13 @@ impl Device for QhyCameraDevice {
         // every request in a burst of connects sees the same closed handle and
         // runs a handshake of its own. Read behind it, the first does the work
         // and the rest find the device already where they wanted it.
-        let _lifecycle = self.connection_lock.lock().await;
+        //
+        // The lock comes off the *handle*, which is to say off the physical
+        // connection, not off this device. One per device would order this
+        // camera's own requests and still let the CFW on the same `OpenQHYCCD`
+        // handshake alongside it, which is the race rather than a smaller
+        // version of it.
+        let _lifecycle = self.handle.lifecycle_lock().lock().await;
         let current = self
             .handle
             .is_open()
@@ -2704,7 +2692,8 @@ impl Camera for QhyCameraDevice {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::backend::mock::MockCameraHandle;
+    use crate::backend::mock::{MockCameraHandle, MockFilterWheelHandle};
+    use crate::filterwheel::QhyFilterWheelDevice;
     use std::sync::atomic::Ordering;
 
     fn area(start_x: u32, start_y: u32, width: u32, height: u32) -> CCDChipArea {
@@ -3129,6 +3118,65 @@ mod tests {
             device.bin_x().await.unwrap(),
             1,
             "and the one handshake that did run published"
+        );
+    }
+
+    /// C8 across devices: the Camera and the CFW are two ASCOM devices on one
+    /// `OpenQHYCCD`, and they take the *same* lock. A lock per device would order
+    /// each device's own requests and leave exactly this pair free to collide —
+    /// the camera asking `SetQHYCCDStreamMode` / `InitQHYCCD` while the wheel
+    /// asks `CfwSlotsNum`, two threads in the SDK on one handle.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_wheel_connect_waits_for_a_camera_connect_on_the_same_handle() {
+        let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+        let camera_handle =
+            Arc::new(MockCameraHandle::default().with_lifecycle(Arc::clone(&lifecycle)));
+        let wheel_handle = Arc::new(
+            MockFilterWheelHandle::new("SIM-QHY178M", 7).with_lifecycle(Arc::clone(&lifecycle)),
+        );
+        let camera = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&camera_handle), None);
+        let wheel = QhyFilterWheelDevice::new(
+            Arc::<MockFilterWheelHandle>::clone(&wheel_handle),
+            None,
+            None,
+        );
+
+        // Park the camera's connect where it holds the connection and has
+        // published nothing.
+        camera_handle.hold_open();
+        let connecting_camera = {
+            let camera = camera.clone();
+            tokio::spawn(async move { camera.set_connected(true).await })
+        };
+        await_open(&camera_handle).await;
+        assert!(
+            lifecycle.try_lock().is_err(),
+            "the parked camera connect should be holding the connection's lock"
+        );
+
+        let connecting_wheel = {
+            let wheel = wheel.clone();
+            tokio::spawn(async move { wheel.set_connected(true).await })
+        };
+        // Freed from the lock the wheel handshakes in microseconds, so a window
+        // this wide with nothing on the counter is the wheel waiting.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        assert_eq!(
+            wheel_handle.handshake_calls.load(Ordering::SeqCst),
+            0,
+            "the wheel handshook while the camera still held the connection"
+        );
+
+        camera_handle.release_open();
+        connecting_camera.await.unwrap().unwrap();
+        connecting_wheel.await.unwrap().unwrap();
+
+        assert!(camera.connected().await.unwrap());
+        assert!(wheel.connected().await.unwrap());
+        assert_eq!(
+            wheel_handle.handshake_calls.load(Ordering::SeqCst),
+            1,
+            "and it handshook once, after the camera was done"
         );
     }
 
