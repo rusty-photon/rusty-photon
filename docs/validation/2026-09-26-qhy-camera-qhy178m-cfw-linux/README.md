@@ -2,11 +2,13 @@
 
 Recorded Linux ConformU run against the same physical QHY178M and 7-slot CFW as
 the [2026-08-07 record](../2026-08-07-qhy-camera-qhy178m-cfw-linux/README.md),
-taken after the three changes that close the connect window: `Connecting` now
-stays true until **every** in-flight `Connect` / `Disconnect` has finished (C7),
-`set_connected` runs one of them at a time, and that order is held **per
-physical connection** rather than per ASCOM device, so the Camera and the CFW on
-one `OpenQHYCCD` cannot handshake at once (C8).
+taken after the changes that close the connect window: `Connecting` now stays
+true until **every** in-flight `Connect` / `Disconnect` has finished (C7);
+`set_connected` runs one of them at a time, held **per physical connection**
+rather than per ASCOM device, so the Camera and the CFW on one `OpenQHYCCD`
+cannot handshake at once; and that order is taken by a task of the transition's
+own, so a cancelled request cannot hand the connection on while the SDK calls it
+was ordering are still running (C8).
 
 It is the first QHY record since the C6 session work landed, and it exists
 because the camera's `alpacaprotocol` suite had gone red in the interval: 1
@@ -21,7 +23,7 @@ record documented. Both are gone here.
 
 | | |
 |---|---|
-| Commit | [`e1e070a2`](https://github.com/rusty-photon/rusty-photon/commit/e1e070a2) |
+| Commit | [`1dd801b8`](https://github.com/rusty-photon/rusty-photon/commit/1dd801b8) |
 | Service | `qhy-camera`, **real-SDK** build (default features, no `QHYCCD_SKIP_NATIVE_LINK`) |
 | Build | `cargo build --release -p qhy-camera`; rustc 1.98.1 (48a229cea 2026-09-01) |
 | SDK | QHYCCD SDK **26.06.04** — `/usr/local/lib/libqhyccd.so` → `libqhyccd.so.26.6.4.16`, sha256 `f51b92f9189fae7707e98ad334cf52d3c1493a6485f33394b39a18a3f4d5c738` (byte-identical to the August and July records, so the SDK is not a variable here) |
@@ -102,16 +104,16 @@ and a FilterWheel connect issued together run one after the other. Firing both
 at once on this rig, the service log has the wheel's handshake finishing —
 
 ```
-20:45:16.037  filter wheel connected filter_wheel=CFW-QHY178M-… slots=7
+21:09:31.135  filter wheel connected filter_wheel=CFW-QHY178M-… slots=7
 ```
 
 — and every one of the camera's own SDK reads landing after it, in one block:
 
 ```
-20:45:16.339  sensor geometry image_width_px=3056 image_height_px=2048 …
-20:45:16.339  control=IsControlAvailable { control: CamBin3x3mode }
-20:45:16.339  cached control range control="gain" min=0 max=51
-20:45:16.339  camera connected camera=QHY178M-…
+21:09:31.437  sensor geometry image_width_px=3056 image_height_px=2048 …
+21:09:31.437  cached control range control="gain" min=0 max=51
+21:09:31.437  cached control range control="offset" min=0 max=1023
+21:09:31.437  camera connected camera=QHY178M-…
 ```
 
 No interleaving, and zero connection errors. The waiting is visible from the
