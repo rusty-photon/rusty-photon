@@ -2248,6 +2248,47 @@ mod tests {
         assert_eq!(device.state.bin.load(Ordering::Acquire), 2);
     }
 
+    /// B3, the other half: the pairing only holds if the *capture* side takes
+    /// the lock too. Holding it the way `set_bin_x` does must stop an exposure
+    /// pinning its geometry — otherwise the setter could still land between the
+    /// bin load and the sub-frame derivation, which is the split this lock
+    /// exists to prevent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_exposure_waits_for_the_bin_change_that_would_otherwise_split_it() {
+        let device = connected_device(MockCameraHandle::default());
+
+        // Hold the lock the way a bin change does. On a thread rather than
+        // inline, so nothing here holds a guard across an await.
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let state = Arc::clone(&device.state);
+            std::thread::spawn(move || {
+                let _setup_guard = state.frame_setup_lock.lock();
+                held_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        };
+        held_rx.recv().unwrap();
+
+        let exposing = {
+            let device = device.clone();
+            tokio::spawn(
+                async move { device.start_exposure(Duration::from_millis(10), true).await },
+            )
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !exposing.is_finished(),
+            "an exposure pinned its geometry while a bin change owned the pair"
+        );
+
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        exposing.await.unwrap().unwrap();
+        wait_image_ready(&device).await;
+    }
+
     /// RM2: selecting the 8-bit mode is what the exposure downloads and
     /// what `MaxADU` describes — the two can never disagree.
     #[tokio::test]

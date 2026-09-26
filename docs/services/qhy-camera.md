@@ -657,6 +657,21 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   being taken*. A sequential client never sees it: the setter has returned
   before its next request is read. A second, concurrent client can, and *busy*
   is the honest answer to give it.
+
+  **Busy is not the same as ended, so the claim records which kind of owner it
+  is.** Every owner shares one slot, but only a geometry write has no exposure
+  behind it, and the lifecycle paths ask before they act on one. An
+  `AbortExposure` that meets a geometry write has nothing to abort: it succeeds
+  having changed nothing, rather than clearing `ImageReady` on a frame the
+  client has already been told about — busy for the microseconds the write
+  holds the device is a report, but a cleared latch is a frame destroyed — and
+  rather than issuing the SDK cancel, which would tell a camera that is not
+  exposing to stop. A disconnect drains a geometry write like any other owner
+  but does not count it as a capture it stopped, so closing a camera that was
+  only having its bin written issues no cancel either. A cancel's *own* re-claim
+  is not a geometry write: it stands in for the capture it is ending and keeps
+  that capture's reporting, so a second abort still waits for the first one's
+  SDK cancel.
 - **R1.** `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry is validated at
   `StartExposure` (R2), not at the setter.
 - **R2.** `StartExposure` with `StartX + NumX > CameraXSize / BinX` (or the Y
