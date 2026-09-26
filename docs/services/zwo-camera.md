@@ -356,7 +356,8 @@ ASI C API exposes and what `zwo-rs` will wrap.
 - **`ElectronsPerADU`** is a **real native value** from `ASI_CAMERA_INFO.ElecPerADU`
   (a ZWO win — QHY ships `NOT_IMPLEMENTED`).
 - **Binning** — symmetric only (`CanAsymmetricBin = false`); `MaxBinX/Y` from the
-  SDK's `SupportedBins`; ROI rescaled on bin change.
+  SDK's `SupportedBins`; the ROI is held in unbinned pixels, so a bin change
+  only changes the divisor its binned members are read through (B3).
 - **ROI** — `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry validated at
   `StartExposure`, **including the ASI alignment rules**: width must be a multiple
   of 8 and height a multiple of 2. (The legacy ASI120 USB2 models additionally
@@ -616,8 +617,9 @@ EAF; those belong to the other zwo services.)
   the raw sensor; for the ASI2600 (6248×4176, bins 1–4) that is **6240×4176**
   (the raw 6248/2 = 3124 is not a multiple of 8, so the raw width would make the
   bin-2/3/4 full frames unachievable). The cost is a few edge columns at full
-  resolution; the bonus is that the bin-ratio ROI rescale (B3) round-trips
-  exactly. Bounds checks (R2) use the *reported* extent. Both extents are computed by
+  resolution, and the reason is reachability alone — B3 round-trips from the
+  unbinned source whatever the reported extent is. Bounds checks (R2) use the
+  *reported* extent. Both extents are computed by
   [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/)'s
   `aligned_sensor` from the *same* alignment rule R3 validates against, so the
   reported size and the ROI check cannot be aligned to different multiples.
@@ -627,13 +629,25 @@ EAF; those belong to the other zwo services.)
   set symmetric binning; an unsupported bin returns `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from
   `SupportedBins` (typically 1–4, up to 8).
-- **B3.** A bin change rescales the cached ROI by the bin ratio. `set_num_x`/
-  `set_num_y` store without validating (the members are set independently, so
-  only the combination is checked, at `StartExposure`), so whatever the client
-  last set is what gets rescaled — and the rescale must not change which value
-  `StartExposure` then complains about. A **sub-pixel** extent is clamped to a
-  minimum of 1, because truncating it to 0 would make R2 reject a value the
-  driver invented rather than the client's own `NumX`, which here is R3's
+- **B3.** The cached ROI is held in **unbinned** sensor pixels: the region the
+  client asked for, independent of the bin it was asked at. `StartX`/`NumX` and
+  their Y counterparts are ASCOM *binned* members, so a setter multiplies by the
+  bin in force when it is called and a getter divides by the bin in force when it
+  is read. **A bin change therefore rewrites nothing** — it only changes the
+  divisor — and walking the bins and coming back returns the client's own frame
+  whatever route it took. 100x100 at (200,200) is 100x100 at (200,200) again
+  after 1 → 3 → 4 → 1, where scaling each step from the *previous binned value*
+  truncated twice and came back 96x96 at (196,196), four pixels short in both
+  extent and origin and no way to get them back short of a reconnect.
+  `set_num_x`/`set_num_y` store without validating (the members are set
+  independently, so only the combination is checked, at `StartExposure`), so
+  whatever the client last set is what the binned view is derived from — and the
+  derivation must not change which value `StartExposure` then complains about.
+  The unbinned store is wider than the `u32` a client can set, so a value read
+  back at the bin it was set at is that value exactly, with no ceiling where a
+  large `NumX` would fold into a smaller one the client never asked for. A
+  **sub-pixel** extent is clamped to a minimum of 1, because truncating it to 0
+  would make R2 reject a value the driver invented rather than the client's own `NumX`, which here is R3's
   `%8`/`%2` rule. A **client-set 0** is preserved, so it still earns R2 rather
   than being clamped into an R3 alignment complaint about a 1 nobody set.
   **One implementation**, in
@@ -642,13 +656,14 @@ EAF; those belong to the other zwo services.)
   each driver curated its own test cases, so the missing behaviour and its
   missing test hid each other.
 
-  **The bin and the sub-frame move as a pair.** The rescale and the bin store
-  happen under the same lock `StartExposure` reads them both under, because
-  `StartExposure` loads the bin and *then* bounds the sub-frame against it: a
-  rescale landing between the two arms the rescaled extent at the bin it was
-  rescaled away from — half the frame the client asked for, at a bin nobody
-  asked for, and comfortably inside the bounds R2 checks, so nothing downstream
-  reports it. Nothing in the setter reaches the SDK (the bin is pushed at arm
+  **The bin and the sub-frame move as a pair.** The ROI itself is bin-independent,
+  but the *view* of it is not, and the two are still read separately: the bin
+  store happens under the same lock `StartExposure` reads the pair under, because
+  `StartExposure` loads the bin and *then* derives the sub-frame at it. A bin
+  change landing between the two arms a view taken at a bin the client has
+  already left — the right region at the wrong binned extent, while `BinX`
+  reports the new bin, and comfortably inside the bounds R2 checks, so nothing
+  downstream reports it. Nothing in the setter reaches the SDK (the bin is pushed at arm
   time, from the capture request), so a bin change during a capture is *pinned*
   rather than refused: it describes the next frame, which a client may
   legitimately set up while this one downloads. `qhy-camera`'s B4 refuses its

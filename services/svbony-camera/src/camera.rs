@@ -39,7 +39,9 @@ use ascom_alpaca::api::camera::{CameraState, GuideDirection, ImageArray, SensorT
 use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use parking_lot::Mutex;
-use rusty_photon_camera_core::{self as camera_core, Alignment, PixelDepth, Roi};
+use rusty_photon_camera_core::{
+    self as camera_core, unbinned, Alignment, PixelDepth, Roi, UnbinnedRoi,
+};
 use svbony_rs::{BayerPattern, CameraInfo, ControlCaps, ControlType, ImageType};
 use tracing::{debug, warn};
 
@@ -166,8 +168,10 @@ struct DeviceState {
     /// Current readout-mode index into [`SensorInfo::readout_formats`],
     /// reset to 0 (the camera's highest-precision format) on every connect.
     readout_mode: AtomicU8,
-    /// Intended ROI in *binned* pixel coordinates (rescaled on bin change).
-    intended_roi: Mutex<Option<Roi>>,
+    /// Intended ROI in *unbinned* sensor pixels (B3): the region the client
+    /// asked for, which a bin change does not rewrite. The binned members
+    /// ASCOM exposes are a view of it at the bin in force.
+    intended_roi: Mutex<Option<UnbinnedRoi>>,
     /// `(min, max)` exposure microseconds from `SVBGetControlCaps(SVB_EXPOSURE)`.
     exposure_range_us: Mutex<Option<(i64, i64)>>,
     /// Gain range in ASCOM's own width, converted once at the open handshake
@@ -235,12 +239,12 @@ struct DeviceState {
     /// Two writers take it. `set_readout_mode` rejects-if-exposing and stores
     /// under it; without that, either order of the two unsynchronised halves
     /// can interleave into a frame captured in one format while `ReadoutMode`
-    /// and `MaxADU` report the other. `set_bin_x` rescales the sub-frame and
-    /// stores the bin under it, so the pair cannot be split by the read below:
-    /// `start_exposure` loads the bin and then bounds the sub-frame against it,
-    /// and a rescale landing between the two arms the rescaled extent at the bin
-    /// it was rescaled away from — half the frame the client asked for, at a bin
-    /// nobody asked for, and inside the bounds R2 checks.
+    /// and `MaxADU` report the other. `set_bin_x` stores the bin under
+    /// [`Self::intended_roi`], so the pair cannot be split by the read below:
+    /// `start_exposure` loads the bin and then derives the sub-frame at it, and
+    /// a bin change landing between the two arms a view taken at a bin the
+    /// client has already left — the wrong binned extent, at a bin nobody
+    /// asked for, and inside the bounds R2 checks.
     ///
     /// **Lock order:** this one first, then [`Self::sensor`],
     /// [`Self::intended_roi`] and [`Self::in_flight_capture`] — never the
@@ -556,12 +560,7 @@ impl SvbonyCamera {
             &supported_bins,
             ALIGNMENT,
         );
-        *self.state.intended_roi.lock() = Some(Roi {
-            start_x: 0,
-            start_y: 0,
-            width: max_width,
-            height: max_height,
-        });
+        *self.state.intended_roi.lock() = Some(UnbinnedRoi::full_frame(max_width, max_height));
         *self.state.target_temperature.lock() = None;
 
         *self.state.sensor.lock() = Some(SensorInfo {
@@ -656,11 +655,38 @@ impl SvbonyCamera {
 
     /// Validate the cached ROI against the binned sensor geometry (R2/R3),
     /// returning the [`Roi`] to push to the SDK.
-    fn validated_geometry(&self, sensor: &SensorInfo, bin: u32) -> ASCOMResult<Roi> {
+    fn validated_geometry(&self, sensor: &SensorInfo, bin: u8) -> ASCOMResult<Roi> {
         let roi = (*self.state.intended_roi.lock())
             .ok_or_else(|| ASCOMError::invalid_value("no ROI defined for camera"))?;
-        check_geometry(roi, sensor.max_width, sensor.max_height, bin)?;
-        Ok(roi)
+        // The unbinned region becomes a binned view exactly once, here, so the
+        // geometry that is checked is the geometry that is armed.
+        let view = roi.binned(bin);
+        check_geometry(
+            view,
+            sensor.max_width,
+            sensor.max_height,
+            u32::from(bin).max(1),
+        )?;
+        Ok(view)
+    }
+
+    /// The cached ROI as ASCOM's binned members see it, at the bin in force.
+    fn binned_roi(&self) -> ASCOMResult<Roi> {
+        let roi = (*self.state.intended_roi.lock()).ok_or(ASCOMError::VALUE_NOT_SET)?;
+        Ok(roi.binned(self.state.bin.load(Ordering::Acquire)))
+    }
+
+    /// Apply `edit` to the cached ROI, told the bin in force.
+    ///
+    /// The bin is read under the lock the ROI is written under: the client's
+    /// value is binned, so the factor it is stored against has to be the one
+    /// that was in force when the client set it.
+    fn edit_roi(&self, edit: impl FnOnce(UnbinnedRoi, u8) -> UnbinnedRoi) -> ASCOMResult<()> {
+        let mut roi = self.state.intended_roi.lock();
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(edit(area, self.state.bin.load(Ordering::Acquire)));
+        drop(roi);
+        Ok(())
     }
 
     /// The download format the current `ReadoutMode` selects (RM2). The
@@ -982,10 +1008,10 @@ impl Camera for SvbonyCamera {
                 "bin {bin_x} is not a supported binning mode"
             )));
         }
-        // The bin and the sub-frame it rescales are one fact (B3), and
+        // The bin and the sub-frame derived at it are one fact (B3), and
         // `start_exposure` reads them as one. Under `frame_setup_lock` they move
-        // together or not at all, so an exposure can never arm the rescaled
-        // sub-frame at the bin it was rescaled away from. Nothing here reaches
+        // together or not at all, so an exposure can never arm a view taken at a
+        // bin the client has already left. Nothing here reaches
         // the SDK — the bin is pushed at arm time, from the capture request — so
         // a bin change during a capture is *pinned*, not refused: it describes
         // the next frame, which a client may legitimately set up while this one
@@ -995,13 +1021,17 @@ impl Camera for SvbonyCamera {
         if old == bin_x {
             return Ok(());
         }
-        {
-            let mut roi = self.state.intended_roi.lock();
-            if let Some(area) = *roi {
-                *roi = Some(camera_core::rescale(area, old, bin_x));
-            }
-        }
+        // Nothing to rewrite: the ROI is held in unbinned pixels (B3), and the
+        // bin stored below is only the divisor its binned view is read through.
+        //
+        // The store still takes the ROI lock, because `edit_roi` reads the bin
+        // under it: a setter that read the old bin and had not yet written its
+        // multiplied value would otherwise land that value against a bin the
+        // client never set it at. `qhy-camera` gets the same serialization from
+        // its `commit_guard`, which both paths already hold.
+        let roi = self.state.intended_roi.lock();
         self.state.bin.store(bin_x, Ordering::Release);
+        drop(roi);
         Ok(())
     }
 
@@ -1032,72 +1062,54 @@ impl Camera for SvbonyCamera {
 
     async fn num_x(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.width)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.width)
     }
 
     async fn num_y(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.height)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.height)
     }
 
     async fn start_x(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.start_x)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.start_x)
     }
 
     async fn start_y(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.start_y)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.start_y)
     }
 
     async fn set_num_x(&self, num_x: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(Roi {
-            width: num_x,
+        self.edit_roi(|area, bin| UnbinnedRoi {
+            width: unbinned(num_x, bin),
             ..area
-        });
-        drop(roi);
-        Ok(())
+        })
     }
 
     async fn set_num_y(&self, num_y: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(Roi {
-            height: num_y,
+        self.edit_roi(|area, bin| UnbinnedRoi {
+            height: unbinned(num_y, bin),
             ..area
-        });
-        drop(roi);
-        Ok(())
+        })
     }
 
     async fn set_start_x(&self, start_x: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(Roi { start_x, ..area });
-        drop(roi);
-        Ok(())
+        self.edit_roi(|area, bin| UnbinnedRoi {
+            start_x: unbinned(start_x, bin),
+            ..area
+        })
     }
 
     async fn set_start_y(&self, start_y: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(Roi { start_y, ..area });
-        drop(roi);
-        Ok(())
+        self.edit_roi(|area, bin| UnbinnedRoi {
+            start_y: unbinned(start_y, bin),
+            ..area
+        })
     }
 
     // --- exposure range ---------------------------------------------------------
@@ -1619,8 +1631,9 @@ impl Camera for SvbonyCamera {
         // (RM1/RM2). Read outside the lock, either writer can land between two
         // halves of one frame's description: a mode change either side of the
         // claim leaves a frame in one format while `ReadoutMode`/`MaxADU`
-        // describe the other, and a rescale between the bin load and the
-        // sub-frame bound arms the new extent at the old bin. Under the lock,
+        // describe the other, and a bin change between the bin load and the
+        // sub-frame derivation arms a view taken at a bin the client has
+        // already left. Under the lock,
         // either completes wholly before the claim (and this exposure uses it)
         // or observes the claim and is rejected.
         //
@@ -1633,12 +1646,13 @@ impl Camera for SvbonyCamera {
         // with full effect.
         let (bin, roi, format, cancel, generation) = {
             let _setup_guard = self.state.frame_setup_lock.lock();
-            let bin = u32::from(self.state.bin.load(Ordering::Acquire)).max(1);
+            let bin_x = self.state.bin.load(Ordering::Acquire);
+            let bin = u32::from(bin_x).max(1);
             // Ordered before the claim so a refused geometry (R2/R3) and a
             // failed format lookup (already validated, so defensive-only)
             // simply never claim the device, rather than having to hand back a
             // claim they took.
-            let roi = self.validated_geometry(&sensor, bin)?;
+            let roi = self.validated_geometry(&sensor, bin_x)?;
             let format = self.selected_format()?;
             let mut slot = self.state.in_flight_capture.lock();
             if slot.is_some() {
@@ -1817,13 +1831,13 @@ mod tests {
     }
 
     #[test]
-    fn a_bin_change_rescales_a_client_set_zero_into_the_error_it_earned() {
-        // The rescale arithmetic and its full case list live in
+    fn a_client_set_zero_survives_the_binned_view_into_the_error_it_earned() {
+        // The derivation and its full case list live in
         // `rusty-photon-camera-core`; what this pins is that the two halves
         // are wired together — a 0 the client set survives the bin change and
         // `StartExposure` still answers about that 0, rather than about the %8
         // alignment rule a clamped 1 would trip instead.
-        let scaled = camera_core::rescale(roi(0, 0, 0, 0), 1, 2);
+        let scaled = UnbinnedRoi::default().binned(2);
         let err = check_geometry(scaled, 3008, 3008, 2).unwrap_err();
         assert!(err.message.contains("greater than 0"), "{}", err.message);
     }
@@ -2187,12 +2201,12 @@ mod tests {
         );
     }
 
-    /// B3: the bin and the sub-frame it rescales are one fact, and
+    /// B3: the bin and the sub-frame derived at it are one fact, and
     /// `start_exposure` reads them as one — so a bin change may not land between
     /// the two halves of that read. It waits for `frame_setup_lock` instead,
-    /// which is what keeps an exposure from arming the rescaled extent at the
-    /// bin it was rescaled away from: half the frame the client asked for, at a
-    /// bin nobody asked for, and inside the bounds R2 checks.
+    /// which is what keeps an exposure from arming a view taken at a bin the
+    /// client has already left: the wrong binned extent, at a bin nobody asked
+    /// for, and inside the bounds R2 checks.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_bin_change_waits_for_the_frame_setup_it_would_otherwise_split() {
         let device = connected_device(MockCameraHandle::default());
@@ -2291,7 +2305,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_bin_rescales_the_cached_roi() {
+    async fn set_bin_rederives_the_cached_roi() {
         let cam = connected_device(MockCameraHandle::default());
         cam.set_start_x(100).await.unwrap();
         cam.set_num_x(800).await.unwrap();

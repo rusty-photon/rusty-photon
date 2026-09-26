@@ -33,7 +33,9 @@ use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use parking_lot::Mutex;
 use qhyccd_rs::{BayerPattern, CCDChipArea, ControlType};
-use rusty_photon_camera_core::{self as camera_core, Alignment, PixelDepth, Roi};
+use rusty_photon_camera_core::{
+    self as camera_core, unbinned, Alignment, PixelDepth, Roi, UnbinnedRoi,
+};
 use rusty_photon_driver::ConfigActionCtx;
 use tracing::{debug, warn};
 
@@ -115,8 +117,10 @@ struct DeviceState {
     cache_commit_lock: Mutex<()>,
     valid_bins: Mutex<Vec<u8>>,
     ccd_info: Mutex<Option<CachedCcdInfo>>,
-    /// Intended ROI in *binned* pixel coordinates (rescaled on bin change).
-    intended_roi: Mutex<Option<CCDChipArea>>,
+    /// Intended ROI in *unbinned* sensor pixels (B3): the region the client
+    /// asked for, which a bin change does not rewrite. The binned members
+    /// ASCOM exposes are a view of it at the bin in force.
+    intended_roi: Mutex<Option<UnbinnedRoi>>,
     exposure_range_us: Mutex<Option<(f64, f64, f64)>>,
     /// Gain range in ASCOM's own width, converted once at connect (see
     /// [`cache_range`]). `None` until a connect has asked; see [`CachedRange`]
@@ -909,7 +913,7 @@ impl QhyCameraDevice {
             effective,
             reported: (width, height),
         });
-        *self.state.intended_roi.lock() = Some(full_frame(width, height));
+        *self.state.intended_roi.lock() = Some(UnbinnedRoi::full_frame(width, height));
         *self.state.exposure_range_us.lock() = Some(exposure);
         cache_range(&self.state.gain_min_max, "gain", gain_range);
         cache_range(&self.state.offset_min_max, "offset", offset_range);
@@ -1220,10 +1224,10 @@ impl QhyCameraDevice {
             ));
         };
         let _guard = ClaimGuard::new(&self.state, &mine);
-        // The bin the sub-frame is rescaled *from* is read here rather than in
-        // the caller: it has to be the one the camera is actually in, and
-        // another setter can have moved it between the caller's own read and
-        // this claim. Finding it already there means that setter did this
+        // The bin in force is read here rather than in the caller: it has to be
+        // the one the camera is actually in, and another setter can have moved
+        // it between the caller's own read and this claim. Finding it already
+        // there means that setter did this
         // request's work, and the answer is the same `Ok` its own no-op path
         // gives — still session-checked, because it is still an answer about the
         // session the request was made in.
@@ -1248,12 +1252,8 @@ impl QhyCameraDevice {
         // a *disconnect* out of that window; the session check is what answers
         // for a connect, which signals a claim rather than taking it.
         let commit = self.commit_guard(session)?;
-        {
-            let mut roi = self.state.intended_roi.lock();
-            if let Some(area) = *roi {
-                *roi = Some(rescale_roi(area, old, bin_x));
-            }
-        }
+        // Nothing to rewrite: the ROI is held in unbinned pixels (B3), and the
+        // bin stored below is only the divisor its binned view is read through.
         self.state.bin.store(bin_x, Ordering::Release);
         drop(commit);
         Ok(())
@@ -1342,7 +1342,7 @@ impl QhyCameraDevice {
         }
         // The camera is at bin 1 with the whole sensor armed, so the cached
         // geometry says the same.
-        *self.state.intended_roi.lock() = Some(full_frame(reported.0, reported.1));
+        *self.state.intended_roi.lock() = Some(UnbinnedRoi::full_frame(reported.0, reported.1));
         self.state.bin.store(1, Ordering::Release);
         drop(commit);
         Ok(())
@@ -1364,11 +1364,16 @@ impl QhyCameraDevice {
         let ccd = (*self.state.ccd_info.lock()).ok_or(ASCOMError::VALUE_NOT_SET)?;
         let bin = match self.state.bin.load(Ordering::Acquire) {
             BIN_UNPUBLISHED => return Err(ASCOMError::VALUE_NOT_SET),
-            bin => u32::from(bin),
+            bin => bin,
         };
+        // The bound, the alignment rule and the SDK translation all speak
+        // binned pixels, so the unbinned region becomes a view exactly once,
+        // here, and that one view is what is both checked and armed.
+        let area = from_roi(roi.binned(bin));
+        let bin = u32::from(bin);
         let (width, height) = ccd.reported;
-        check_geometry(roi, width, height, bin)?;
-        Ok(to_sdk_coordinates(roi, ccd.effective, bin))
+        check_geometry(area, width, height, bin)?;
+        Ok(to_sdk_coordinates(area, ccd.effective, bin))
     }
 
     /// Take the cache-commit lock for a request made in `session`, or refuse.
@@ -1399,15 +1404,29 @@ impl QhyCameraDevice {
     fn edit_roi(
         &self,
         session: u64,
-        edit: impl FnOnce(CCDChipArea) -> CCDChipArea,
+        edit: impl FnOnce(UnbinnedRoi, u8) -> UnbinnedRoi,
     ) -> ASCOMResult<()> {
         let commit = self.commit_guard(session)?;
+        // The bin is read here rather than by the caller: it is the factor the
+        // client's binned value is stored against, and a bin change landing
+        // between the two would store the value against a bin nobody set it at.
+        let bin = self.state.bin.load(Ordering::Acquire);
         let mut roi = self.state.intended_roi.lock();
         let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(edit(area));
+        *roi = Some(edit(area, bin));
         drop(roi);
         drop(commit);
         Ok(())
+    }
+
+    /// The cached ROI as ASCOM's binned members see it, at the bin in force.
+    ///
+    /// `BIN_UNPUBLISHED` divides by one rather than refusing: the handshake
+    /// stores the full frame and the bin together, and a client reading
+    /// `NumX` in that window is owed the frame, not an error.
+    fn binned_roi(&self) -> ASCOMResult<Roi> {
+        let roi = (*self.state.intended_roi.lock()).ok_or(ASCOMError::VALUE_NOT_SET)?;
+        Ok(roi.binned(self.state.bin.load(Ordering::Acquire)))
     }
 
     /// This camera's reported `CameraXSize`/`CameraYSize` (G1/R4).
@@ -1505,8 +1524,9 @@ fn normalize_geometry(
 /// `StartX`/`StartY` and `NumX`/`NumY`.
 ///
 /// Takes the *reported* extents rather than the raw effective area, so the
-/// default frame is one the sensor can deliver whole at every bin it will be
-/// rescaled to (R4).
+/// default frame is one the sensor can deliver whole at every bin its view
+/// will be derived at (R4).
+#[cfg(test)]
 const fn full_frame(width: u32, height: u32) -> CCDChipArea {
     CCDChipArea {
         start_x: 0,
@@ -1616,12 +1636,6 @@ fn check_geometry(roi: CCDChipArea, ccd_w: u32, ccd_h: u32, bin: u32) -> ASCOMRe
         bin,
         ALIGNMENT,
     )?)
-}
-
-/// A bin change rescales the cached ROI (B3); see `camera_core::rescale` for why a
-/// sub-pixel extent clamps to 1 while a client-set 0 does not.
-fn rescale_roi(roi: CCDChipArea, old: u8, new: u8) -> CCDChipArea {
-    from_roi(camera_core::rescale(to_roi(roi), old, new))
 }
 
 /// The ASCOM spelling of a gain or offset bound the SDK reports as `f64`.
@@ -2149,30 +2163,22 @@ impl Camera for QhyCameraDevice {
 
     async fn num_x(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.width)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.width)
     }
 
     async fn num_y(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.height)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.height)
     }
 
     async fn start_x(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.start_x)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.start_x)
     }
 
     async fn start_y(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.start_y)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.start_y)
     }
 
     async fn set_num_x(&self, num_x: u32) -> ASCOMResult<()> {
@@ -2181,8 +2187,8 @@ impl Camera for QhyCameraDevice {
         // whichever session had begun by then, and commit its own into it.
         let session = self.state.session();
         self.ensure_connected()?;
-        self.edit_roi(session, |area| CCDChipArea {
-            width: num_x,
+        self.edit_roi(session, |area, bin| UnbinnedRoi {
+            width: unbinned(num_x, bin),
             ..area
         })
     }
@@ -2190,8 +2196,8 @@ impl Camera for QhyCameraDevice {
     async fn set_num_y(&self, num_y: u32) -> ASCOMResult<()> {
         let session = self.state.session();
         self.ensure_connected()?;
-        self.edit_roi(session, |area| CCDChipArea {
-            height: num_y,
+        self.edit_roi(session, |area, bin| UnbinnedRoi {
+            height: unbinned(num_y, bin),
             ..area
         })
     }
@@ -2199,13 +2205,19 @@ impl Camera for QhyCameraDevice {
     async fn set_start_x(&self, start_x: u32) -> ASCOMResult<()> {
         let session = self.state.session();
         self.ensure_connected()?;
-        self.edit_roi(session, |area| CCDChipArea { start_x, ..area })
+        self.edit_roi(session, |area, bin| UnbinnedRoi {
+            start_x: unbinned(start_x, bin),
+            ..area
+        })
     }
 
     async fn set_start_y(&self, start_y: u32) -> ASCOMResult<()> {
         let session = self.state.session();
         self.ensure_connected()?;
-        self.edit_roi(session, |area| CCDChipArea { start_y, ..area })
+        self.edit_roi(session, |area, bin| UnbinnedRoi {
+            start_y: unbinned(start_y, bin),
+            ..area
+        })
     }
 
     // --- exposure range ---------------------------------------------------------
@@ -2923,15 +2935,15 @@ mod tests {
     }
 
     #[test]
-    fn a_bin_change_rescales_a_client_set_zero_into_the_error_it_earned() {
-        // The rescale arithmetic and its full case list live in
+    fn a_client_set_zero_survives_the_binned_view_into_the_error_it_earned() {
+        // The derivation and its full case list live in
         // `rusty-photon-camera-core`; what this pins is that the two halves
         // are wired together through the `CCDChipArea` conversion — a 0 the
         // client set survives the bin change, and `StartExposure` still answers
         // about that 0.
-        let scaled = rescale_roi(area(0, 0, 0, 0), 1, 2);
-        assert_eq!((scaled.width, scaled.height), (0, 0));
-        let err = check_geometry(scaled, 3072, 2048, 2).unwrap_err();
+        let view = from_roi(UnbinnedRoi::default().binned(2));
+        assert_eq!((view.width, view.height), (0, 0));
+        let err = check_geometry(view, 3072, 2048, 2).unwrap_err();
         assert!(err.message.contains("greater than 0"), "{}", err.message);
     }
 
@@ -3531,7 +3543,7 @@ mod tests {
 
         assert_eq!(
             device
-                .edit_roi(ended, |area| CCDChipArea { width: 64, ..area })
+                .edit_roi(ended, |area, _bin| UnbinnedRoi { width: 64, ..area })
                 .unwrap_err()
                 .code,
             ASCOMErrorCode::NOT_CONNECTED
@@ -3625,7 +3637,7 @@ mod tests {
         device.disconnect().await.unwrap_err();
         assert!(handle.is_open().unwrap());
         device
-            .edit_roi(session, |area| CCDChipArea { width: 64, ..area })
+            .edit_roi(session, |area, _bin| UnbinnedRoi { width: 64, ..area })
             .unwrap();
 
         handle.release_readout();
@@ -3635,7 +3647,7 @@ mod tests {
         device.disconnect().await.unwrap();
         assert_eq!(
             device
-                .edit_roi(session, |area| CCDChipArea { width: 32, ..area })
+                .edit_roi(session, |area, _bin| UnbinnedRoi { width: 32, ..area })
                 .unwrap_err()
                 .code,
             ASCOMErrorCode::NOT_CONNECTED
@@ -3647,10 +3659,13 @@ mod tests {
     /// before `CloseQHYCCD` and leaves it clear when that call fails, so a close
     /// that errored has still disconnected the device.
     ///
-    /// The mock keeps reporting itself open after a close it failed, where the
-    /// real handle has already cleared that flag — so what this pins is the
-    /// session ending on its own, with the connected check unable to stand in
-    /// for it.
+    /// Once the close has returned, the connected check refuses a commit just as
+    /// the session check does, and no request can tell them apart — so the
+    /// session ending is asserted directly rather than inferred from a refusal
+    /// either rule would produce. `commit_guard` needs both, and the one that
+    /// isolates the session is `a_superseded_handshake_neither_publishes_nor_closes`,
+    /// where a later connect has reopened the handle and only the session is
+    /// stale.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_close_that_errored_still_ends_the_session() {
         let handle = Arc::new(MockCameraHandle::default());
@@ -3661,9 +3676,13 @@ mod tests {
         handle.fail_close.store(true, Ordering::SeqCst);
         device.disconnect().await.unwrap_err();
 
+        assert!(
+            !device.state.is_session(session),
+            "a close that errored left its session running"
+        );
         assert_eq!(
             device
-                .edit_roi(session, |area| CCDChipArea { width: 64, ..area })
+                .edit_roi(session, |area, _bin| UnbinnedRoi { width: 64, ..area })
                 .unwrap_err()
                 .code,
             ASCOMErrorCode::NOT_CONNECTED,
@@ -4405,7 +4424,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bin_change_rescales_roi_and_rejects_unsupported() {
+    async fn bin_change_rederives_the_roi_and_rejects_unsupported() {
         let device = connected_device(MockCameraHandle::default()).await;
         device.set_num_x(3072).await.unwrap();
         device.set_num_y(2048).await.unwrap();
@@ -4497,7 +4516,7 @@ mod tests {
     async fn binning_scales_the_effective_origin_with_the_frame() {
         let (device, mock) = connected_device_with_handle(margined_mock()).await;
         device.set_bin_x(2).await.unwrap();
-        // B3 rescaled the default frame against the sensor, not the chip.
+        // B3 derives the default frame from the sensor, not the chip.
         assert_eq!(device.num_x().await.unwrap(), 1524);
         assert_eq!(device.num_y().await.unwrap(), 1024);
         device
@@ -4592,8 +4611,9 @@ mod tests {
 
     #[tokio::test]
     async fn walking_the_bins_and_back_returns_the_whole_frame() {
-        // The reduced sensor is a multiple of every bin, so B3's rescale
-        // divides exactly at each step and nothing is truncated away for good.
+        // Every view derives from the same unbinned source (B3), so the walk
+        // returns the whole frame; R4's reduction is what keeps each binned
+        // full frame an extent the sensor will actually read out.
         let device = connected_device(qhy600m_mock()).await;
         for bin in [2, 3, 4, 1] {
             device.set_bin_x(bin).await.unwrap();
@@ -5101,6 +5121,14 @@ mod tests {
     /// `StartExposure` is waiting for. A disconnect therefore keeps the device
     /// across the close, so an exposure arriving mid-close is refused instead of
     /// racing a handle being freed underneath it.
+    ///
+    /// What turns that exposure away is the connected check rather than the
+    /// claim: `SharedCameraConnection` clears the handle's flag before
+    /// `CloseQHYCCD`, so it reads false for the whole length of the close. The
+    /// claim is the backstop behind it, and its own refusal is
+    /// `second_exposure_while_in_flight_is_rejected`, which reaches it on an
+    /// open handle rather than a closing one. Either way the SDK sees nothing,
+    /// which is the part that matters here.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_disconnect_holds_the_device_across_the_close() {
         let handle = Arc::new(MockCameraHandle::default());
@@ -5116,13 +5144,14 @@ mod tests {
         };
         await_close(&handle).await;
 
-        // The handle still reports open, so this gets past the connected check
-        // and reaches the claim — which is the point: the claim is what stops it.
+        // The handle already reports closed, so this never gets as far as the
+        // claim: the connected check turns it away first, which is the answer a
+        // client racing a real disconnect gets.
         let err = device
             .start_exposure(Duration::from_millis(10), true)
             .await
             .unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
 
         handle.release_close();
         closing.await.unwrap().unwrap();
@@ -5141,8 +5170,12 @@ mod tests {
     /// The claim a disconnect holds says "this device is owned", not "a capture
     /// is running". A client polling `PercentCompleted` across the close must
     /// therefore not read the SDK: `GetQHYCCDExposureRemaining` racing
-    /// `CloseQHYCCD` is the same free-under-a-live-call this PR closes, reached
-    /// by a reader instead of a capture.
+    /// `CloseQHYCCD` is a free-under-a-live-call reached by a reader instead of
+    /// a capture.
+    ///
+    /// The refusal comes from the connected check — the handle's flag is clear
+    /// for the length of the close — so the poll is turned away before it can
+    /// reach the claim, let alone the SDK.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_progress_poll_across_the_close_does_not_reach_the_sdk() {
         let handle = Arc::new(MockCameraHandle::default());
@@ -5166,7 +5199,10 @@ mod tests {
         await_close(&handle).await;
 
         let polls_before = handle.remaining_calls.load(Ordering::SeqCst);
-        assert_eq!(device.percent_completed().await.unwrap(), 0);
+        assert_eq!(
+            device.percent_completed().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
         assert_eq!(
             handle.remaining_calls.load(Ordering::SeqCst),
             polls_before,
@@ -5272,6 +5308,13 @@ mod tests {
 
     /// A close the SDK refuses must still hand the device back: one left claimed
     /// would refuse every later exposure with nothing in flight to explain it.
+    ///
+    /// A close that errored has still disconnected the device — the flag is
+    /// cleared before `CloseQHYCCD` and stays clear when it fails — so the claim
+    /// is not observable through a device that is usable on the spot. It shows
+    /// up on the far side of a reconnect instead: a claim stranded by the failed
+    /// close outlives the session that stranded it, and the exposure below is
+    /// what would meet it.
     #[tokio::test]
     async fn a_refused_close_still_hands_the_device_back() {
         let handle = MockCameraHandle::default();
@@ -5280,11 +5323,14 @@ mod tests {
 
         let err = device.disconnect().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
-        assert!(handle.is_open().unwrap());
-        assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
+        assert!(
+            !handle.is_open().unwrap(),
+            "a close that errored has still disconnected the device"
+        );
 
-        // The device is usable again, which is the whole point of releasing the
-        // claim on the failed path.
+        handle.fail_close.store(false, Ordering::SeqCst);
+        device.connect().await.unwrap();
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
         device.set_num_x(64).await.unwrap();
         device.set_num_y(48).await.unwrap();
         device

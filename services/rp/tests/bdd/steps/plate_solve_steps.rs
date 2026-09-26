@@ -323,7 +323,7 @@ async fn record_mount_position(world: &mut RpWorld) {
         .unwrap_or_else(|| {
             panic!("expected dec field in get_mount_position result, got: {result:?}")
         });
-    world.recorded_mount_position = Some((ra_hours, dec_deg));
+    world.recorded_mount_positions.push((ra_hours, dec_deg));
 }
 
 // --- Then steps: result-shape assertions -----------------------------
@@ -433,23 +433,64 @@ async fn stub_received_pointing_hints(world: &mut RpWorld, ra_hint: f64, dec_hin
     );
 }
 
+/// Assert the forwarded hints against a *bracket* of mount reads taken
+/// either side of the `plate_solve` call, rather than against one read
+/// taken after it.
+///
+/// rp reads the mount inside the call, so its value necessarily lies
+/// between a read before and a read after — whatever the mount did in
+/// between. That is what makes this independent of runner speed, and a
+/// single sample cannot achieve it: `OmniSim` reports `RightAscension`
+/// frozen between its ~100 ms `MoveAxes` ticks and rebuilds the axis
+/// from a cached sidereal time, so a sync lands offset and the reported
+/// position then moves for several ticks; under enough load the tick
+/// starves and RA slips at roughly the sidereal rate indefinitely. Any
+/// fixed budget between two reads at different instants is therefore a
+/// wager on how fast the runner is.
+///
+/// [`MOUNT_READBACK_TOLERANCE_DEG`] still applies, now as slack on the
+/// bracket for the per-tick numerical noise, which is what it was
+/// always sized for. The bracket widens on its own as drift grows, and
+/// a missed ×15 puts RA ~150° out — five orders of magnitude outside
+/// any bracket this scenario can produce.
 #[then(
-    expr = "the stub plate solver should have received ra_hint equal to the recorded mount ra × 15 and dec_hint equal to the recorded mount dec"
+    expr = "the stub plate solver should have received ra_hint and dec_hint bracketed by the recorded mount positions"
 )]
-async fn stub_hints_match_recorded_mount(world: &mut RpWorld) {
-    let (mount_ra_hours, mount_dec_deg) = world
-        .recorded_mount_position
-        .expect("no mount position recorded — run the record step before this assertion");
+async fn stub_hints_bracketed_by_recorded_mount(world: &mut RpWorld) {
+    let recorded = world.recorded_mount_positions.clone();
+    assert!(
+        recorded.len() >= 2,
+        "need a mount read either side of the call to bracket its own read; got {}",
+        recorded.len()
+    );
     let request = last_stub_request(world).await;
     let (actual_ra, actual_dec) = request_hints(&request);
-    let expected_ra = mount_ra_hours * RA_HOURS_TO_DEGREES;
+
+    let ra_bounds: Vec<f64> = recorded
+        .iter()
+        .map(|(ra_hours, _)| ra_hours * RA_HOURS_TO_DEGREES)
+        .collect();
+    let dec_bounds: Vec<f64> = recorded.iter().map(|&(_, dec)| dec).collect();
+    let bracket = |bounds: &[f64]| {
+        bounds
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(lo, hi), &v| (lo.min(v), hi.max(v)))
+    };
+    let (ra_lo, ra_hi) = bracket(&ra_bounds);
+    let (dec_lo, dec_hi) = bracket(&dec_bounds);
+
     assert!(
-        (actual_ra - expected_ra).abs() < MOUNT_READBACK_TOLERANCE_DEG,
-        "ra_hint should be the mount's RA {mount_ra_hours} h × {RA_HOURS_TO_DEGREES} = {expected_ra}°, got {actual_ra}"
+        actual_ra >= ra_lo - MOUNT_READBACK_TOLERANCE_DEG
+            && actual_ra <= ra_hi + MOUNT_READBACK_TOLERANCE_DEG,
+        "ra_hint should be the mount's RA × {RA_HOURS_TO_DEGREES}, so within \
+         [{ra_lo}, {ra_hi}]° (± {MOUNT_READBACK_TOLERANCE_DEG}) of the reads taken \
+         either side of the call; got {actual_ra}"
     );
     assert!(
-        (actual_dec - mount_dec_deg).abs() < MOUNT_READBACK_TOLERANCE_DEG,
-        "dec_hint should be the mount's Dec {mount_dec_deg}° forwarded verbatim, got {actual_dec}"
+        actual_dec >= dec_lo - MOUNT_READBACK_TOLERANCE_DEG
+            && actual_dec <= dec_hi + MOUNT_READBACK_TOLERANCE_DEG,
+        "dec_hint should be the mount's Dec forwarded verbatim, so within \
+         [{dec_lo}, {dec_hi}]° (± {MOUNT_READBACK_TOLERANCE_DEG}); got {actual_dec}"
     );
 }
 
@@ -462,8 +503,9 @@ fn recorded_mount_position_near(
     ra_deg: f64,
     dec_deg: f64,
 ) {
-    let (mount_ra_hours, mount_dec_deg) = world
-        .recorded_mount_position
+    let &(mount_ra_hours, mount_dec_deg) = world
+        .recorded_mount_positions
+        .last()
         .expect("no mount position recorded — run the record step before this assertion");
     let mount_ra_deg = mount_ra_hours * RA_HOURS_TO_DEGREES;
     assert!(

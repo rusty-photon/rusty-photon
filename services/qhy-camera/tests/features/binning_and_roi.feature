@@ -3,10 +3,13 @@ Feature: Binning and region-of-interest
   Binning is symmetric only: CanAsymmetricBin is false (B2) and MaxBinX /
   MaxBinY come from the SDK's valid binning modes. Setting a bin validates
   against those modes and rejects an unsupported value with INVALID_VALUE
-  (B1); a bin change rescales the cached ROI by the bin ratio (B3). Setting a
-  bin writes to the camera, so it takes the same claim a capture does and is
-  rejected with INVALID_OPERATION while an exposure is in flight (B4). The ROI
-  setters (StartX / StartY / NumX / NumY) accept any u32 (R1) — geometry is
+  (B1). The cached ROI is held in unbinned sensor pixels, so a bin change
+  changes only the divisor the binned members are read through: a sub-frame
+  walked away from its bin and back is the frame the client set, not a
+  truncated remainder of it (B3). Setting a bin writes to the camera, so it
+  takes the same claim a capture does and is rejected with INVALID_OPERATION
+  while an exposure is in flight (B4). The ROI setters (StartX / StartY / NumX
+  / NumY) accept any u32 (R1) — geometry is
   not validated at the setter but at StartExposure, which rejects a zero or
   out-of-bounds sub-frame with INVALID_VALUE (R2), and likewise an odd NumX
   or NumY, because the sensor fills an odd extent one row or column short
@@ -43,9 +46,36 @@ Feature: Binning and region-of-interest
   Scenario: A fresh connection exposes the whole sensor as the default sub-frame
     Then camera device 0 reports StartX 0 NumX 3048 StartY 0 NumY 2044
 
-  Scenario: A bin change rescales the default sub-frame against the reported sensor
+  Scenario: The default sub-frame at a bin is the reported sensor divided by that bin
     When I set BinX 2 and BinY 2 on camera device 0
     Then camera device 0 reports StartX 0 NumX 1524 StartY 0 NumY 1022
+
+  Scenario: A client sub-frame comes back from a bin round trip as the frame it was
+    When I set StartX 201 NumX 101 StartY 201 NumY 101 on camera device 0
+    And I set BinX 2 and BinY 2 on camera device 0
+    And I set BinX 1 and BinY 1 on camera device 0
+    Then camera device 0 reports StartX 201 NumX 101 StartY 201 NumY 101
+
+  Scenario: A client sub-frame at a bin is the unbinned region divided by that bin
+    When I set StartX 201 NumX 101 StartY 201 NumY 101 on camera device 0
+    And I set BinX 2 and BinY 2 on camera device 0
+    Then camera device 0 reports StartX 100 NumX 50 StartY 100 NumY 50
+
+  Scenario: A sub-frame set at a bin is that many unbinned pixels once the bin is 1
+    When I set BinX 2 and BinY 2 on camera device 0
+    And I set StartX 100 NumX 50 StartY 100 NumY 50 on camera device 0
+    And I set BinX 1 and BinY 1 on camera device 0
+    Then camera device 0 reports StartX 200 NumX 100 StartY 200 NumY 100
+
+  Scenario: A sub-pixel extent is one binned pixel, not a zero the client never set
+    When I set StartX 0 NumX 1 StartY 0 NumY 1 on camera device 0
+    And I set BinX 2 and BinY 2 on camera device 0
+    Then camera device 0 reports StartX 0 NumX 1 StartY 0 NumY 1
+
+  Scenario: A client-set zero extent stays zero across a bin change
+    When I set StartX 0 NumX 0 StartY 0 NumY 0 on camera device 0
+    And I set BinX 2 and BinY 2 on camera device 0
+    Then camera device 0 reports StartX 0 NumX 0 StartY 0 NumY 0
 
   Scenario: The default sub-frame at a bin arrives with every row and column populated
     When I set BinX 2 and BinY 2 on camera device 0
