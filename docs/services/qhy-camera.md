@@ -641,7 +641,16 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   range is reported as `INVALID_OPERATION` rather than `INVALID_VALUE` when a
   capture owns the device, because the mode count comes off the camera and this
   driver may not ask it during a capture — the refusal precedes the range check
-  because the range cannot be known without the device. And a disconnect
+  because the range cannot be known without the device.
+
+  **The bin setter is the other way round, and B1 wins there.** `valid_bins` is
+  cached, so an unsupported bin is answerable without the camera: `set_bin_x`
+  checks it *before* it claims anything, and an unsupported bin is
+  `INVALID_VALUE` whoever owns the device. That is the useful answer — a client
+  told `INVALID_OPERATION` retries, and the retry fails identically — and it
+  keeps a request that can never succeed from taking the device at all. A
+  *supported* bin asked for while something else owns the device is still
+  `INVALID_OPERATION`, which is B4's half. And a disconnect
   arriving while a geometry write is inside the SDK drains on its deadline like
   any other owner, refusing to close rather than closing through the write; it
   succeeds once the write returns, which for a bin change is milliseconds.

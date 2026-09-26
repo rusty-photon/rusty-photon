@@ -1402,12 +1402,14 @@ impl QhyCameraDevice {
     /// returning the `CCDChipArea` to push to the SDK: the same region,
     /// addressed from the chip's corner rather than the sensor's.
     ///
-    /// The bound and the origin come from **one** read of the cached
-    /// geometry. `set_readout_mode` replaces that cache without taking the
-    /// device claim, so a second read here could answer from the new mode
-    /// while the translation below used the old mode's origin — a ROI checked
-    /// against one readout and armed against another. Whichever mode this
-    /// snapshot belongs to, the two halves agree with each other.
+    /// The bound and the origin come from **one** read of the cached geometry.
+    /// `set_readout_mode` is what replaces that cache, and under B4 it must own
+    /// the device to do so — which this call's own caller already does, so the
+    /// cache cannot change underneath it. The single read is kept regardless:
+    /// two reads would make the bound and the origin separately sourced, and
+    /// nothing about the claim would show in the code that a later edit is
+    /// reading. Whichever mode this snapshot belongs to, the two halves agree
+    /// with each other.
     fn validated_roi(&self) -> ASCOMResult<CCDChipArea> {
         let roi = (*self.state.intended_roi.lock())
             .ok_or_else(|| ASCOMError::invalid_value("no ROI defined for camera"))?;
@@ -3434,6 +3436,34 @@ mod tests {
         *device.state.in_flight_capture.lock() = None;
         device.set_readout_mode(0).await.unwrap();
         assert_eq!(device.camera_x_size().await.unwrap(), 3048);
+    }
+
+    /// B1 before B4: an unsupported bin is refused on its face, whoever owns
+    /// the device. `valid_bins` is cached, so the answer needs no camera — and
+    /// `INVALID_VALUE` is the useful one, because `INVALID_OPERATION` invites a
+    /// retry that would fail identically. `set_readout_mode` differs only
+    /// because its range lives on the device.
+    #[tokio::test]
+    async fn an_unsupported_bin_is_refused_on_its_face_even_while_a_capture_owns_the_device() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        *device.state.in_flight_capture.lock() = Some(Arc::new(CaptureCancel::for_capture()));
+
+        assert_eq!(
+            device.set_bin_x(99).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_VALUE,
+            "a bin the camera does not offer is an invalid value, not a busy device"
+        );
+        assert_eq!(
+            handle.bin(),
+            (1, 1),
+            "a refused bin must not have reached the camera"
+        );
+
+        // And a *supported* bin is still refused as busy, which is B4's half.
+        assert_eq!(
+            device.set_bin_x(2).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_OPERATION
+        );
     }
 
     /// B4: the slot holds two kinds of owner and only one of them has a frame.
