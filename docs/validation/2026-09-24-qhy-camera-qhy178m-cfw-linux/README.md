@@ -2,9 +2,11 @@
 
 Recorded Linux ConformU run against the same physical QHY178M and 7-slot CFW as
 the [2026-08-07 record](../2026-08-07-qhy-camera-qhy178m-cfw-linux/README.md),
-taken after the two changes that close the connect window: `Connecting` now
+taken after the three changes that close the connect window: `Connecting` now
 stays true until **every** in-flight `Connect` / `Disconnect` has finished (C7),
-and `set_connected` runs one of them at a time (C8).
+`set_connected` runs one of them at a time, and that order is held **per
+physical connection** rather than per ASCOM device, so the Camera and the CFW on
+one `OpenQHYCCD` cannot handshake at once (C8).
 
 It is the first QHY record since the C6 session work landed, and it exists
 because the camera's `alpacaprotocol` suite had gone red in the interval: 1
@@ -19,7 +21,7 @@ record documented. Both are gone here.
 
 | | |
 |---|---|
-| Commit | [`4caf7863`](https://github.com/rusty-photon/rusty-photon/commit/4caf7863) |
+| Commit | [`e1e070a2`](https://github.com/rusty-photon/rusty-photon/commit/e1e070a2) |
 | Service | `qhy-camera`, **real-SDK** build (default features, no `QHYCCD_SKIP_NATIVE_LINK`) |
 | Build | `cargo build --release -p qhy-camera`; rustc 1.98.1 (48a229cea 2026-09-01) |
 | SDK | QHYCCD SDK **26.06.04** — `/usr/local/lib/libqhyccd.so` → `libqhyccd.so.26.6.4.16`, sha256 `f51b92f9189fae7707e98ad334cf52d3c1493a6485f33394b39a18a3f4d5c738` (byte-identical to the August and July records, so the SDK is not a variable here) |
@@ -30,11 +32,6 @@ record documented. Both are gone here.
 
 `UniqueID`s are unchanged from every earlier QHY record.
 
-> **Scope.** This record covers `4caf7863`, where C8's lock was per ASCOM
-> device. The lock later moved onto the shared physical connection, and that
-> commit's own re-run is owed: the camera legs were re-taken clean, but the CFW
-> did not enumerate in that session, so the FilterWheel legs and the cross-device
-> check below have not been repeated on hardware since the move.
 
 ## Verdicts
 
@@ -97,3 +94,32 @@ handshakes that no longer run.
 Both ConformU service logs are clean of connection errors on both devices. The
 only `ERROR` lines in either are the two `INVALID_VALUE` refusals the suite
 deliberately provokes on the wheel's `Position`.
+
+## And the two devices on one handle take turns
+
+C8 is held on the shared connection, not on either device, so a Camera connect
+and a FilterWheel connect issued together run one after the other. Firing both
+at once on this rig, the service log has the wheel's handshake finishing —
+
+```
+20:45:16.037  filter wheel connected filter_wheel=CFW-QHY178M-… slots=7
+```
+
+— and every one of the camera's own SDK reads landing after it, in one block:
+
+```
+20:45:16.339  sensor geometry image_width_px=3056 image_height_px=2048 …
+20:45:16.339  control=IsControlAvailable { control: CamBin3x3mode }
+20:45:16.339  cached control range control="gain" min=0 max=51
+20:45:16.339  camera connected camera=QHY178M-…
+```
+
+No interleaving, and zero connection errors. The waiting is visible from the
+client side too: the camera answered `Connecting = true, Connected = false` for
+~1 s while the wheel held the connection, then completed.
+
+A lock per device instead lets both handshakes run at once — the camera asking
+`SetQHYCCDStreamMode` / `InitQHYCCD` while the wheel asks `CfwSlotsNum`, two
+threads in the SDK on one handle. That is what the unit test
+`a_wheel_connect_waits_for_a_camera_connect_on_the_same_handle` pins; this is the
+same thing on the hardware.
