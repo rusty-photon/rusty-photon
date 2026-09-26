@@ -2169,15 +2169,13 @@ impl Camera for QhyCameraDevice {
                 "bin {bin_x} is not a supported binning mode"
             )));
         }
-        let old = self.state.bin.load(Ordering::Acquire);
-        if old == bin_x {
-            // Nothing to write, but the answer still belongs to the session the
-            // bin was read in. A reconnect since then has normalized the camera
-            // to 1, and reporting success would name a bin it has left.
-            let commit = self.commit_guard(session)?;
-            drop(commit);
-            return Ok(());
-        }
+        // Whether this is a no-op is decided in `write_bin`, under the claim.
+        // Deciding it here would read a bin an in-flight write is about to
+        // replace: a request for the bin currently cached would answer `Ok`
+        // while the camera was already being moved off it, and the client would
+        // be told a bin it does not have. The no-op still writes nothing — it
+        // just cannot be *recognised* as one without owning the device.
+        //
         // The write below is the device's, so it goes through the device's one
         // owner (B4) — and so it runs where a dropped request cannot orphan the
         // claim it takes (see [`Self::detached`]).
@@ -3436,6 +3434,38 @@ mod tests {
         *device.state.in_flight_capture.lock() = None;
         device.set_readout_mode(0).await.unwrap();
         assert_eq!(device.camera_x_size().await.unwrap(), 3048);
+    }
+
+    /// B4: a redundant `BinX` is only redundant if nothing is moving the bin.
+    /// Deciding that outside the claim reads a value an in-flight write is
+    /// about to replace, and answers `Ok` for a bin the camera is already
+    /// leaving — the one failure mode worse than a refusal, because the client
+    /// is told it has a bin it does not have.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_redundant_bin_is_refused_while_another_write_is_moving_the_bin() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        let cached = device.bin_x().await.unwrap();
+
+        // A write to a *different* bin, parked inside the SDK: the camera is
+        // moving off `cached`, but the cache still says `cached`.
+        handle.hold_binned_set();
+        let moving = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_bin_x(2).await })
+        };
+        await_binned_set(&handle).await;
+
+        assert_eq!(
+            device.set_bin_x(cached).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_OPERATION,
+            "a bin the camera is leaving was reported as already in force"
+        );
+
+        handle.release_binned_set();
+        moving.await.unwrap().unwrap();
+        assert_eq!(device.bin_x().await.unwrap(), 2);
     }
 
     /// B1 before B4: an unsupported bin is refused on its face, whoever owns

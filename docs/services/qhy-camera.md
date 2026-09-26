@@ -655,9 +655,15 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   any other owner, refusing to close rather than closing through the write; it
   succeeds once the write returns, which for a bin change is milliseconds.
 
-  The bin no-op path (`BinX` set to the bin already in force) writes nothing and
-  so takes no claim: there is no SDK call to exclude, only the C6 session check
-  on the answer.
+  The bin no-op path (`BinX` set to the bin already in force) still writes
+  nothing, but the *decision* that it is a no-op is made under the claim, not
+  before it. Read outside, the bin it compares against is one an in-flight write
+  may already be replacing: a request naming the currently-cached bin would be
+  answered `Ok` while the camera was being moved off it, and the client would be
+  told it has a bin it does not have — worse than any refusal, because nothing
+  later contradicts it. So a redundant `BinX` is `INVALID_OPERATION` while
+  something else owns the device, and `Ok` — with no SDK call and the C6 session
+  check on the answer — when nothing does.
 
   While a geometry write holds the claim the device reports itself busy —
   `CameraState` `Exposing`, `PercentCompleted` 0, `ImageReady` false — on
