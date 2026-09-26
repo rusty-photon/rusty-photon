@@ -1137,6 +1137,21 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   rule was three copies until one drifted, and the drift went unseen because
   each driver curated its own test cases, so the missing behaviour and its
   missing test hid each other.
+
+  **The bin and the sub-frame move as a pair.** The ROI itself is bin-independent,
+  but the *view* of it is not, and the two are still read separately: the bin
+  store happens under the same lock `StartExposure` reads the pair under, because
+  `StartExposure` loads the bin and *then* derives the sub-frame at it. A bin
+  change landing between the two arms a view taken at a bin the client has
+  already left — the right region at the wrong binned extent, while `BinX`
+  reports the new bin, and comfortably inside the bounds R2 checks, so nothing
+  downstream reports it. Nothing in the setter reaches the SDK (the bin is pushed at arm
+  time, from the capture request), so a bin change during a capture is *pinned*
+  rather than refused: it describes the next frame, which a client may
+  legitimately set up while this one downloads. Identical in `zwo-camera`;
+  `qhy-camera`'s B4 refuses its own bin setter instead, because there the bin is
+  written to the camera immediately and the write cannot be allowed beside a
+  capture.
 - **R1.** ROI setters accept any `u32`; geometry validated at
   `StartExposure`.
 - **R2.** Out-of-bounds/zero sub-frame → `INVALID_VALUE`.
