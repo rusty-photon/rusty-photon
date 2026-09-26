@@ -1,4 +1,4 @@
-# qhy-camera on Linux — QHY178M + CFW, 2026-09-24 (the connect window, covered and serialized)
+# qhy-camera on Linux — QHY178M + CFW, 2026-09-26 (the connect window, covered and serialized)
 
 Recorded Linux ConformU run against the same physical QHY178M and 7-slot CFW as
 the [2026-08-07 record](../2026-08-07-qhy-camera-qhy178m-cfw-linux/README.md),

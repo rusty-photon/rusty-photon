@@ -118,6 +118,18 @@ impl QhyFilterWheelDevice {
             .map_err(|e| ASCOMError::invalid_operation(format!("connect task failed: {e}")))?
     }
 
+    /// Await a spawned section that owns the physical connection, in a way a
+    /// cancelled request cannot cut short — the wheel's copy of the camera's
+    /// [`QhyCameraDevice::detached`](crate::camera) rule.
+    ///
+    /// Dropping a `JoinHandle` detaches its task rather than stopping it, so the
+    /// section runs to completion — and gives the connection back — even when the
+    /// request that started it goes away.
+    async fn detached<T>(task: tokio::task::JoinHandle<ASCOMResult<T>>) -> ASCOMResult<T> {
+        task.await
+            .map_err(|e| ASCOMError::invalid_operation(format!("device task failed: {e}")))?
+    }
+
     fn connect_blocking(&self) -> ASCOMResult<()> {
         // `handle.open()` is refcounted across the shared physical connection
         // (`backend::SharedCameraConnection`): a QHY CFW is driven through the
@@ -214,22 +226,32 @@ impl Device for QhyFilterWheelDevice {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // Taken before the state is read (C8), for the reason the camera's is —
-        // and off the handle, so it is the same lock the Camera device on this
-        // physical connection takes rather than one of the wheel's own.
-        let _lifecycle = self.handle.lifecycle_lock().lock().await;
-        let current = self
-            .handle
-            .is_open()
-            .map_err(|_| ASCOMError::NOT_CONNECTED)?;
-        if current == connected {
-            return Ok(());
-        }
-        if connected {
-            self.connect().await
-        } else {
-            self.disconnect().await
-        }
+        // Spawned rather than run in this request future, for the reason the
+        // camera's is (see [`Self::detached`]): `connect` hands its handshake to
+        // `spawn_blocking`, which a dropped `JoinHandle` detaches rather than
+        // stops, so a guard held out here would be released by a cancelled
+        // request while the SDK calls it was ordering carried on.
+        let device = self.clone();
+        Self::detached(tokio::spawn(async move {
+            // Taken before the state is read (C8), for the reason the camera's
+            // is — and off the handle, so it is the same lock the Camera device
+            // on this physical connection takes rather than one of the wheel's
+            // own.
+            let _lifecycle = device.handle.lifecycle_lock().lock().await;
+            let current = device
+                .handle
+                .is_open()
+                .map_err(|_| ASCOMError::NOT_CONNECTED)?;
+            if current == connected {
+                return Ok(());
+            }
+            if connected {
+                device.connect().await
+            } else {
+                device.disconnect().await
+            }
+        }))
+        .await
     }
 
     async fn description(&self) -> ASCOMResult<String> {
@@ -346,6 +368,46 @@ mod tests {
     use crate::backend::mock::MockFilterWheelHandle;
     use ascom_alpaca::ASCOMErrorCode;
     use std::sync::atomic::Ordering;
+
+    /// C8 under cancellation: the wheel's transition is spawned too, so a
+    /// cancelled request does not hand the shared connection on while its own
+    /// handshake is still in the SDK.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancelled_connect_holds_the_connection_until_its_handshake_is_done() {
+        let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+        let handle = Arc::new(
+            MockFilterWheelHandle::new("SIM-QHY178M", 7).with_lifecycle(Arc::clone(&lifecycle)),
+        );
+        let device =
+            QhyFilterWheelDevice::new(Arc::<MockFilterWheelHandle>::clone(&handle), None, None);
+
+        handle.hold_open();
+        let cancelled = tokio::time::timeout(
+            std::time::Duration::from_millis(250),
+            device.set_connected(true),
+        )
+        .await;
+        assert!(
+            cancelled.is_err(),
+            "the connect should still have been parked, not finished"
+        );
+        assert!(
+            lifecycle.try_lock().is_err(),
+            "a cancelled request must not give the connection back while the handshake it guards is still running"
+        );
+
+        handle.release_open();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !device.connected().await.unwrap() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the detached connect never completed"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        assert_eq!(handle.handshake_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(device.names().await.unwrap().len(), 7);
+    }
 
     /// C8: the wheel is held to one connect at a time too — its handshake goes
     /// down the same physical `OpenQHYCCD` the camera's does, and a burst that

@@ -1823,29 +1823,42 @@ impl Device for QhyCameraDevice {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // Taken before the state is read, not after (C8): read ahead of it,
-        // every request in a burst of connects sees the same closed handle and
-        // runs a handshake of its own. Read behind it, the first does the work
-        // and the rest find the device already where they wanted it.
-        //
-        // The lock comes off the *handle*, which is to say off the physical
-        // connection, not off this device. One per device would order this
-        // camera's own requests and still let the CFW on the same `OpenQHYCCD`
-        // handshake alongside it, which is the race rather than a smaller
-        // version of it.
-        let _lifecycle = self.handle.lifecycle_lock().lock().await;
-        let current = self
-            .handle
-            .is_open()
-            .map_err(|_| ASCOMError::NOT_CONNECTED)?;
-        if current == connected {
-            return Ok(());
-        }
-        if connected {
-            self.connect().await
-        } else {
-            self.disconnect().await
-        }
+        // The whole transition runs in a task of its own, not in this request
+        // future, and that is what makes the lock below mean anything (see
+        // [`Self::detached`]). `connect` hands its handshake to
+        // `spawn_blocking`, which a dropped `JoinHandle` detaches rather than
+        // stops: held in the request future, the guard would be released the
+        // instant a client went away while the SDK calls it was ordering carried
+        // on, and the next connect or disconnect would enter the SDK alongside
+        // them — C8 undone by a cancelled request. Spawned, the guard lives as
+        // long as the work it guards.
+        let device = self.clone();
+        Self::detached(tokio::spawn(async move {
+            // Taken before the state is read, not after (C8): read ahead of it,
+            // every request in a burst of connects sees the same closed handle
+            // and runs a handshake of its own. Read behind it, the first does
+            // the work and the rest find the device already where they wanted it.
+            //
+            // The lock comes off the *handle*, which is to say off the physical
+            // connection, not off this device. One per device would order this
+            // camera's own requests and still let the CFW on the same
+            // `OpenQHYCCD` handshake alongside it, which is the race rather than
+            // a smaller version of it.
+            let _lifecycle = device.handle.lifecycle_lock().lock().await;
+            let current = device
+                .handle
+                .is_open()
+                .map_err(|_| ASCOMError::NOT_CONNECTED)?;
+            if current == connected {
+                return Ok(());
+            }
+            if connected {
+                device.connect().await
+            } else {
+                device.disconnect().await
+            }
+        }))
+        .await
     }
 
     async fn description(&self) -> ASCOMResult<String> {
@@ -3119,6 +3132,50 @@ mod tests {
             1,
             "and the one handshake that did run published"
         );
+    }
+
+    /// C8 under cancellation: the transition owns the connection from a task of
+    /// its own, so a client that goes away mid-connect does not hand the
+    /// connection to the next request while the SDK calls its guard was ordering
+    /// are still running. Held in the request future instead, the guard drops the
+    /// instant the request does — and `spawn_blocking` work carries on regardless.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cancelled_connect_holds_the_connection_until_its_handshake_is_done() {
+        let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+        let handle = Arc::new(MockCameraHandle::default().with_lifecycle(Arc::clone(&lifecycle)));
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+
+        // Drop the request future while the handshake is parked in the SDK —
+        // which is what an Alpaca client going away does to it.
+        handle.hold_open();
+        let cancelled =
+            tokio::time::timeout(Duration::from_millis(250), device.set_connected(true)).await;
+        assert!(
+            cancelled.is_err(),
+            "the connect should still have been parked, not finished"
+        );
+        assert!(handle.is_in_open(), "and parked inside the SDK");
+        assert!(
+            lifecycle.try_lock().is_err(),
+            "a cancelled request must not give the connection back while the handshake it guards is still running"
+        );
+
+        // The detached task runs on and finishes the job it took the connection for.
+        handle.release_open();
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !device.connected().await.unwrap() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the detached connect never completed"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(
+            handle.init_calls.load(Ordering::SeqCst),
+            1,
+            "the cancelled request's own handshake is the one that ran"
+        );
+        assert_eq!(device.bin_x().await.unwrap(), 1, "and it published");
     }
 
     /// C8 across devices: the Camera and the CFW are two ASCOM devices on one
