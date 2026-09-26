@@ -381,10 +381,10 @@ impl Drop for SlewReservation {
 /// for the Southern. Used everywhere the slew planner / watcher
 /// needs to compare the user-requested pier side against the
 /// pre-flip pose.
+///
+/// Thin alias for [`crate::coordinates::pre_flip_side`], which the
+/// coordinate layer needs for the same comparisons; the hemisphere
+/// rule has one definition.
 fn pre_flip_side_for_latitude(site_latitude_deg: f64) -> PierSide {
-    if site_latitude_deg >= 0.0 {
-        PierSide::West
-    } else {
-        PierSide::East
-    }
+    crate::coordinates::pre_flip_side(site_latitude_deg)
 }

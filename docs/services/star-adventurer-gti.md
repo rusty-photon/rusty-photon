@@ -937,6 +937,8 @@ PulseGuide(direction, duration)
    │     West  → (RA,  ccw=false, 1 + guide_rate_ra_fraction)
    │     North → (Dec, ccw=false, guide_rate_dec_fraction)
    │     South → (Dec, ccw=true,  guide_rate_dec_fraction)
+   │     …then on the counterweight-up side, invert ccw for Dec
+   │     (see the Dec sign convention below)
    ├─ compute shifted period from the *pulsed axis'* sidereal period:
    │     RA  pulse: period = round(sidereal_step_period(tmr_freq, cpr_ra)  / rate_factor)
    │     Dec pulse: period = round(sidereal_step_period(tmr_freq, cpr_dec) / rate_factor)
@@ -980,26 +982,71 @@ racing the watcher. Without this, `set_tracking(false)` during an East
 pulse would be silently undone when the watcher re-issued sidereal
 tracking on restore.
 
-**Dec sign convention.** `+Dec` always maps to `ccw=false`, regardless
-of side-of-pier, so a PulseGuide on the counterweight-up side moves
-Dec the wrong celestial way — past the pole a CW Dec step *decreases*
-declination. This is **issue #1300**, and it is the one place left in
-the driver still holding the pre-flip premise: slew, sync and the
-pier-side selector all resolve against the side the mount is actually
-on (see [§Sync and pier side](#sync-and-pier-side) and
-[§Pier-side decision tree](#pier-side-decision-tree)), so "the rest of
-the driver assumes a stable encoder-to-celestial-Dec mapping" is no
-longer true — PulseGuide is the straggler, not the convention.
+**Dec sign convention.** `PulseGuide(guideNorth)` moves the OTA toward
+`+Dec` on both sides of the pier. The Dec encoder is not a proxy for
+declination: the mapping is `Dec = θ` while the encoder is within ±90°
+of home and `Dec = sign(θ) · (180° − |θ|)` once it has rotated past a
+celestial pole, so `d(Dec)/dθ` is `+1` on the counterweight-down side
+and `−1` on the counterweight-up side. The direction table above is
+written for the counterweight-down mapping; on the counterweight-up
+side the driver inverts `ccw` for Dec pulses so that North still
+increases declination. RA is untouched — `mech_HA` runs the same way
+against the RA encoder on both sides (the flip shifts it by 12 h, it
+does not mirror it), so East still slows tracking and West still
+speeds it.
 
-The exposure grew with the selector fix (#1301). Before it, the
-counterweight-up side was only held for targets within
-`flip_range_hours` of the meridian and the next slew flipped back, so
-inverted guiding was a ~30-minute window few sessions met. Now that
-side reaches the whole western sky and tracks there for hours, so an
-unfixed #1300 inverts Dec guiding for a normal post-meridian imaging
-run. Autoguiders that calibrate per side (PHD2 with "reverse Dec
-output after meridian flip") absorb it; ones that don't will chase
-their own corrections.
+"Counterweight-up" is the same Dec-encoder classification
+[`side_of_pier`](#side-of-pier) reports, so the inversion follows the
+pointing state the mount is actually in rather than anything the flip
+policy did or did not plan: a mount placed past the pole by hand
+guides correctly with `flip_policy.enabled = false`. `PierSide::Unknown`
+(no CPR yet, so no classification) keeps the counterweight-down
+mapping — the driver does not invert on a side it cannot name.
+
+**At the pole the claim degenerates, and no sign convention saves
+it.** The side is sampled once, when the pulse starts. The one
+pointing state where that sample can go stale mid-pulse is the
+celestial pole itself: the classification boundary is `|θ| = 90°`,
+which *is* `Dec = ±90°`, so a pulse can only cross it by driving the
+OTA through the pole — and it has to start within its own travel of
+the pole to get there (37.6″ for a 5 s pulse at the default rate).
+A `guideNorth` that reaches the pole does not keep moving north,
+because there is no further north: declination peaks and comes back
+down as the axis keeps turning. That is the sky, not the encoder
+mapping, and re-resolving `ccw` mid-pulse would not change it.
+Guiding within an arcminute of the pole is degenerate for other
+reasons too — the RA axis has no meaningful direction there — so the
+driver does not special-case it, and `PulseGuide` neither refuses nor
+splits such a pulse.
+
+This was **issue #1300**. The convention it replaces (`+Dec` always
+maps to `ccw = false`, with the client expected to `SyncToCoordinates`
+after a flip to recalibrate) was written for a driver that could not
+flip and had no pier side to consult. The exposure grew sharply with
+the selector fix (#1301) — the counterweight-up side went from a
+~30-minute window near the meridian to the whole western sky for hours
+— which is why it was worth closing rather than documenting. Clients
+no longer need PHD2's "reverse Dec output after meridian flip" for
+this driver; a client that sets it anyway will now double-invert.
+
+**What the mock can and cannot settle.** The mock moves its encoders
+from the `:G`/`:I`/`:J` it receives and the driver reads declination
+back through the same `encoder_to_celestial` mapping, so a ConformU
+run against it proves the write path and the read path agree — which
+is precisely the ASCOM defect #1300 reported, and precisely what
+would regress. It cannot prove that `ccw = false` turns the physical
+Dec motor the way the encoder counts; that is a hardware fact. It is
+already established for the counterweight-down side — the hardware
+ConformU runs measure Dec North/South moving the right way (the
+46.9″ / 47.3″ readings that exposed the per-axis period bug are
+signed correctly), and #1295 ran with the flip policy off, so every
+pulse in it was counterweight-down. The counterweight-up side follows
+from that by the encoder geometry above with no new assumption: the
+motor's sense does not change when the OTA passes the pole, only the
+encoder's relation to declination does. A hardware run
+on the counterweight-up side is still the confirmation of record;
+until one is in [docs/validation/](../validation/), treat the
+counterweight-up direction as derived rather than measured.
 
 **The step period is per-axis.** `:I` carries the time between motor
 steps in timer-counter units, so the period that turns an axis at the
@@ -2406,13 +2453,12 @@ re-adding `[package.metadata.conformu]` to the package's
    convention (`pierWest` for HA ∈ [-6, 0), `pierEast` for
    HA ∈ (0, +6]) and records ISSUEs for every HA > 0 case in
    both `SideofPier` and `DestinationSideofPier`.
-3. **PulseGuide misses ConformU's tolerance in RA, and guides
-   Dec backwards on the flipped pier side.** ConformU expects
-   `guide_rate × duration` of motion on the pulsed axis (5 s at
-   the default 0.5 × sidereal: 37.6″ in Dec, 2.51 s in RA) and
-   ~0 on the other, at HA ±3 and ±9. Dec North/South is within
-   tolerance (37.5″) wherever the mount is on the pre-flip side.
-   Two defects remain:
+3. **PulseGuide misses ConformU's tolerance in RA.** ConformU
+   expects `guide_rate × duration` of motion on the pulsed axis
+   (5 s at the default 0.5 × sidereal: 37.6″ in Dec, 2.51 s in
+   RA) and ~0 on the other, at HA ±3 and ±9. Dec North/South is
+   within tolerance (37.5″) and in the right direction on both
+   sides. One defect remains:
    - **RA East/West carry a constant offset of ≈ +0.24 s of RA**
      (East +2.74 s, West −2.26 s against ±2.51 s; tolerance
      0.07 s). The rate itself is right — the scale solves to
@@ -2424,15 +2470,16 @@ re-adding `[package.metadata.conformu]` to the package's
      (East +2.95 s, West −2.29 s), because a real motor takes
      longer to decelerate than the mock's instant stop. INDI
      eqmod changes the tracking rate without stopping the motor.
-   - **With `flip_policy.enabled = true`, North moves south and
-     South moves north at HA +3 and +9** — the right distance
-     (37.5″), the wrong way. `+Dec` always maps to `ccw = false`
-     (see the Dec sign convention under
-     [§PulseGuide lifecycle](#pulseguide-lifecycle)), but past
-     the pole a CW Dec step *decreases* celestial declination.
-     That convention was written for a driver that could not
-     flip; with flip support the driver knows its pier side and
-     performs the flip itself, so the premise no longer holds.
+   The Dec-direction defect this list used to carry — North
+   moving south and South moving north at HA +3 and +9 with
+   `flip_policy.enabled = true`, the right distance the wrong
+   way — was issue #1300, fixed: Dec pulses now resolve `ccw`
+   against the side the mount is on (see the Dec sign
+   convention under
+   [§PulseGuide lifecycle](#pulseguide-lifecycle), including
+   what a mock run does and does not establish — the
+   counterweight-up direction is derived from the
+   counterweight-down hardware runs, not measured on that side).
 
    Earlier revisions of this section recorded a much worse
    picture (Dec at ~2× the rate, RA West moving east). That was
@@ -2451,7 +2498,7 @@ Measured against the mock with ConformU 4.5.0, per mount config
 |---|---|---|
 | default (`flip_policy.enabled = false`) | 3 | RA East/West offset at HA −9 (2); then failure (1) abandons CheckMethods |
 | `cw_exclusion_zone: null` | 13 | RA East/West offset at HA ±3, ±9 (8); failure (2) `SideofPier` / `DestinationSideofPier` (5) |
-| `flip_policy.enabled = true` | 20 → 12 (see below) | RA East/West offset (8); Dec direction on the flipped side (4); ~~slews / syncs to HA +1…+4 h rejected as inside the CW exclusion zone (8)~~ — fixed |
+| `flip_policy.enabled = true` | 20 → 8 (see below) | RA East/West offset (8); ~~Dec direction on the flipped side (4)~~ — fixed; ~~slews / syncs to HA +1…+4 h rejected as inside the CW exclusion zone (8)~~ — fixed |
 
 Enabling the flip policy clears failures (1) and (2) outright —
 `SideOfPier Write` flips, and `SideofPier` /
@@ -2465,12 +2512,16 @@ counterweight-up side could reach it. That is issue #1301, fixed —
 the selector now picks the side by reachability
 ([§Pier-side decision tree](#pier-side-decision-tree)) and sync
 resolves against the side the mount is on
-([§Sync and pier side](#sync-and-pier-side)). **The `20` above was
-measured; the `12` is arithmetic, not a re-run** — it assumes the
-other two groups are untouched, which the fix does not go near. The
-remaining twelve are issues #1299 (RA offset) and #1300 (Dec
-direction on the counterweight-up side); re-measure when either
-lands.
+([§Sync and pier side](#sync-and-pier-side)). The four Dec-direction
+issues are #1300, also fixed — Dec pulses resolve `ccw` against the
+side the mount is on. "Fixed" there means fixed against the mock and
+derived from the counterweight-down hardware runs, not separately
+measured counterweight-up; see
+[§PulseGuide lifecycle](#pulseguide-lifecycle) ("What the mock can and
+cannot settle") before treating that row as hardware evidence. **The `20` above was measured; the `8` is
+arithmetic, not a re-run** — it assumes the RA-offset group is
+untouched, which neither fix goes near. The remaining eight are
+issue #1299 (RA offset); re-measure when it lands.
 
 To reproduce locally, run the in-tree integration test — same
 binary, same config, same ConformU invocation the workflow used:
