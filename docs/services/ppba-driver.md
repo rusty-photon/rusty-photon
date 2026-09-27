@@ -415,13 +415,13 @@ file, rebinding the same port.
 
 ```bash
 # With configuration file
-cargo run -p ppba-switch -- -c config.json
+cargo run -p ppba-driver -- -c config.json
 
 # With command-line overrides
-cargo run -p ppba-switch -- --port /dev/ttyUSB1 --server-port 11113
+cargo run -p ppba-driver -- --port /dev/ttyUSB1 --server-port 11113
 
 # With debug logging
-cargo run -p ppba-switch -- -c config.json -l debug
+cargo run -p ppba-driver -- -c config.json -l debug
 ```
 
 ### CLI Options
@@ -640,7 +640,7 @@ else:
 
 ### ConformU Testing
 
-When running ASCOM ConformU compliance tests against real hardware, auto-dew must be disabled first for the dew heater tests (switches 2 and 3) to pass.
+When running ASCOM ConformU compliance tests against real hardware, auto-dew must be disabled first for the dew heater tests (switches 2 and 3) to pass. That is a defect, not a requirement: with auto-dew on, `CanWrite` correctly reads false for both heaters, but a write answers `INVALID_OPERATION` where ASCOM requires `NOT_IMPLEMENTED` from a switch that cannot be written. On hardware this is four ConformU issues ([#1347](https://github.com/rusty-photon/rusty-photon/issues/1347)).
 
 ## Testing
 
@@ -699,37 +699,50 @@ To run ConformU compliance tests against the actual PPBA hardware on `/dev/ttyUS
 
 **Step 1: Ensure auto-dew is disabled on the hardware**
 
-Auto-dew must be OFF before running ConformU, otherwise the dew heater write tests will fail (CanWrite will return false for switches 2 and 3).
+Auto-dew must be OFF before running ConformU. With it on, the dew-heater write tests report four issues: `SetSwitch` / `SetSwitchValue` on switches 2 and 3 answer `INVALID_OPERATION` although `CanWrite` is false ([#1347](https://github.com/rusty-photon/rusty-photon/issues/1347)). Turn it back on afterwards; ConformU restores the switches it wrote to the values it found, so it leaves auto-dew off.
 
-**Step 2: Start the ppba-switch service**
+**Step 2: Start the ppba-driver service**
 
 ```bash
 # Start the service with the real hardware configuration
-cargo run -p ppba-switch -- -c services/ppba-switch/config.json
+cargo run -p ppba-driver -- -c services/ppba-driver/config.json
 ```
 
 The service will connect to the PPBA on `/dev/ttyUSB0` and start the Alpaca server on port 11112.
 
 **Step 3: Run ConformU**
 
-In a separate terminal, run ConformU with default hardware timing (recommended for real hardware):
+In a separate terminal, run both suites against both devices with default hardware timing (recommended for real hardware). A run that is to be recorded follows [hardware-validation.md](../skills/hardware-validation.md), version gate first:
 
 ```bash
-# Run ConformU against the Switch device with default timing
-conformu conformance http://localhost:11112/api/v1/switch/0
+conformu alpacaprotocol http://localhost:11112/api/v1/switch/0              -n alpacaprotocol-switch.log
+conformu conformance    http://localhost:11112/api/v1/switch/0              -n conformance-switch.log -r conformance-switch-results.json
+conformu alpacaprotocol http://localhost:11112/api/v1/observingconditions/0 -n alpacaprotocol-observingconditions.log
+conformu conformance    http://localhost:11112/api/v1/observingconditions/0 -n conformance-observingconditions.log -r conformance-observingconditions-results.json
 ```
 
 **Note:** We use ConformU's default timing settings for real hardware tests (SwitchReadDelay: 500ms, SwitchWriteDelay: 3000ms). These conservative delays ensure reliable operation with actual hardware. The automated CI tests use reduced delays with mock hardware for faster execution.
 
 **Expected results:**
-- All tests should pass with 0 errors and 0 issues
-- Test duration: ~10 minutes with default timing
+- All four suites pass with 0 errors and 0 issues
+- Test duration: about 9 minutes for the Switch `conformance` suite with default timing; the others take seconds
 - ConformU will test all 16 switches including read/write operations on controllable switches
 
 **Troubleshooting:**
-- If dew heater write tests fail with "Expected P3:XXX, got: P3:0" or "Expected P4:XXX, got: P4:0", auto-dew is enabled. Disable it before running ConformU.
+- If `SetSwitch` / `SetSwitchValue` on switch 2 or 3 report an issue quoting *"cannot write to switch 2 while auto-dew is enabled"*, auto-dew is on ([#1347](https://github.com/rusty-photon/rusty-photon/issues/1347)). Disable it before running ConformU.
 - If the service fails to start, ensure no other process is using port 11112 or `/dev/ttyUSB0`
 - If connection fails, verify the PPBA is powered on and connected via USB
+
+## Real-hardware validation
+
+The evidence trail is [`docs/validation/`](../validation/README.md);
+this service's runs, newest first:
+
+- **2026-09-27 — PPBADV Gen2C on Linux x86_64**
+  ([record](../validation/2026-09-27-ppba-driver-ppba-gen2c-linux/README.md)).
+  The first hardware record: both devices, both suites, clean, with auto-dew
+  off. It puts the Total Current scaling on hardware and exercises every
+  writable switch, including both dew heaters across 0-255.
 
 ## Dependencies
 

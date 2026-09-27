@@ -1,0 +1,96 @@
+{
+  "ErrorCount": 0,
+  "IssueCount": 0,
+  "ConfigurationAlertCount": 0,
+  "TimingIssuesCount": 0,
+  "TimingCount": 21,
+  "Errors": [],
+  "Issues": [],
+  "ConfigurationAlerts": [],
+  "Timings": [
+    {
+      "Key": "Connect",
+      "Value": "At 12:16:21.930 Connect                           0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "InterfaceVersion",
+      "Value": "At 12:16:21.936 InterfaceVersion                  0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Connected",
+      "Value": "At 12:16:21.936 Connected                         0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Description",
+      "Value": "At 12:16:21.938 Description                       0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DriverInfo",
+      "Value": "At 12:16:21.939 DriverInfo                        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DriverVersion",
+      "Value": "At 12:16:21.939 DriverVersion                     0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Name",
+      "Value": "At 12:16:21.940 Name                              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SupportedActions",
+      "Value": "At 12:16:21.941 SupportedActions                  0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DeviceState",
+      "Value": "At 12:16:21.951 DeviceState                       0.005 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "AveragePeriod",
+      "Value": "At 12:16:21.969 AveragePeriod                     0.010 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DewPoint",
+      "Value": "At 12:16:21.981 DewPoint                          0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Humidity",
+      "Value": "At 12:16:21.981 Humidity                          0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Temperature",
+      "Value": "At 12:16:21.984 Temperature                       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "TimeSinceLastUpdateLatest",
+      "Value": "At 12:16:21.987 TimeSinceLastUpdateLatest         0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "TimeSinceLastUpdateDewPoint",
+      "Value": "At 12:16:21.988 TimeSinceLastUpdateDewPoint       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "TimeSinceLastUpdateHumidity",
+      "Value": "At 12:16:21.988 TimeSinceLastUpdateHumidity       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "TimeSinceLastUpdateTemperature",
+      "Value": "At 12:16:21.991 TimeSinceLastUpdateTemperature    0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SensorDescriptionDewPoint",
+      "Value": "At 12:16:22.046 SensorDescriptionDewPoint         0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SensorDescriptionHumidity",
+      "Value": "At 12:16:22.046 SensorDescriptionHumidity         0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SensorDescriptionTemperature",
+      "Value": "At 12:16:22.049 SensorDescriptionTemperature      0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Disconnect",
+      "Value": "At 12:16:22.052 Disconnect                        0.000 seconds. \u2713 (STANDARD)"
+    }
+  ]
+}

@@ -1,0 +1,149 @@
+12:16:20.333 ASCOM Universal Device Conformance Checker Version 4.5.0.53834, Build time: Thu 06 August 2026 03:41:22          
+12:16:20.333                                              
+12:16:20.333 Operating system is Fedora Linux 44 (Workstation Edition), Processor is Intel/AMD 64bit, Application is 64bit.          
+12:16:20.333                                              
+12:16:20.333 Alpaca device:  (127.0.0.1:11112 ObservingConditions/0)          
+12:16:20.333                                              
+12:16:20.334 CreateDevice                        INFO     Creating Alpaca device: IP address: 127.0.0.1, IP Port: 11112, Alpaca device number: 0
+12:16:20.342 CreateDevice                        INFO     Alpaca device created OK
+12:16:20.342 CreateDevice                        INFO     Successfully created driver
+12:16:21.403 CreateDevice                        OK       Found a valid interface version: 2
+12:16:21.403 CreateDevice                        OK       Driver instance created successfully
+12:16:21.403                                              
+12:16:21.403 Connect to device                            
+12:16:21.425 Connected                           OK       Connected to device successfully using Connected = True
+12:16:21.929 Connected                           OK       Disconnected from device successfully using Connected = False
+12:16:21.932 Connect                             OK       Connected to device successfully using Connect()
+12:16:21.932                                              
+12:16:21.936 Common Driver Methods                        
+12:16:21.936 InterfaceVersion                    OK       2
+12:16:21.936 Connected                           OK       True
+12:16:21.938 Description                         OK       Pegasus Astro PPBA Environmental Sensors
+12:16:21.939 DriverInfo                          OK       PPBA Driver - ObservingConditions interface for Pegasus Astro PPBA Gen2 environmental sensors
+12:16:21.939 DriverVersion                       OK       0.1.0
+12:16:21.940 Name                                OK       Pegasus PPBA Weather
+12:16:21.940                                              
+12:16:21.941 SupportedActions                    OK       Found action: config.get
+12:16:21.946 SupportedActions                    OK       Found action: config.apply
+12:16:21.946 SupportedActions                    OK       Found action: config.schema
+12:16:21.946                                              
+12:16:21.946 Action                              INFO     Conform cannot test the Action method
+12:16:21.946                                              
+12:16:21.951 DeviceState                         OK       Received 4 operational state properties.
+12:16:21.951 DeviceState                         OK         TimeStamp = 9/27/2026 7:16:21 PM
+12:16:21.951 DeviceState                         OK         DewPoint = 21.539037433155116
+12:16:21.951 DeviceState                         OK         Humidity = 69.92513368983957
+12:16:21.951 DeviceState                         OK         Temperature = 27.51604278074865
+12:16:21.955 DeviceState                         INFO     Operational property CloudCover was not included in the DeviceState response.
+12:16:21.955 DeviceState                         INFO     Operational property Pressure was not included in the DeviceState response.
+12:16:21.959 DeviceState                         INFO     Operational property RainRate was not included in the DeviceState response.
+12:16:21.959 DeviceState                         INFO     Operational property SkyBrightness was not included in the DeviceState response.
+12:16:21.959 DeviceState                         INFO     Operational property SkyQuality was not included in the DeviceState response.
+12:16:21.959 DeviceState                         INFO     Operational property SkyTemperature was not included in the DeviceState response.
+12:16:21.959 DeviceState                         INFO     Operational property StarFWHM was not included in the DeviceState response.
+12:16:21.959 DeviceState                         INFO     Operational property WindDirection was not included in the DeviceState response.
+12:16:21.959 DeviceState                         INFO     Operational property WindGust was not included in the DeviceState response.
+12:16:21.959 DeviceState                         INFO     Operational property WindSpeed was not included in the DeviceState response.
+12:16:21.959                                              
+12:16:21.959 Properties                                   
+12:16:21.969 AveragePeriod                       OK       0.08333333333333333
+12:16:21.976 AveragePeriod Write                 OK       Invalid Value exception generated as expected on set average period < -1.0
+12:16:21.977 AveragePeriod Write                 OK       Successfully set average period to 0.0
+12:16:21.977 AveragePeriod Write                 OK       Successfully set average period to 5.0
+12:16:21.978 AveragePeriod Write                 OK       Successfully restored original average period: 0.08333333333333333
+12:16:21.979 CloudCover                          OK       Optional member returned a NotImplementedException error.
+12:16:21.981 DewPoint                            OK       21.099999999999998
+12:16:21.981 Humidity                            OK       68
+12:16:21.981 DewPoint & Humidity                 OK       Dew point and humidity are both implemented per the interface specification
+12:16:21.982 Pressure                            OK       Optional member returned a NotImplementedException error.
+12:16:21.982 RainRate                            OK       Optional member returned a NotImplementedException error.
+12:16:21.983 SkyBrightness                       OK       Optional member returned a NotImplementedException error.
+12:16:21.983 SkyQuality                          OK       Optional member returned a NotImplementedException error.
+12:16:21.983 StarFWHM                            OK       Optional member returned a NotImplementedException error.
+12:16:21.984 SkyTemperature                      OK       Optional member returned a NotImplementedException error.
+12:16:21.984 Temperature                         OK       27.5
+12:16:21.985 WindDirection                       OK       Optional member returned a NotImplementedException error.
+12:16:21.985 WindGust                            OK       Optional member returned a NotImplementedException error.
+12:16:21.986 WindSpeed                           OK       Optional member returned a NotImplementedException error.
+12:16:21.986                                              
+12:16:21.986 Methods                                      
+12:16:21.987 TimeSinceLastUpdateLatest           OK       1.830246158
+12:16:21.987 CloudCover                          OK       Optional member returned a NotImplementedException error.
+12:16:21.988 TimeSinceLastUpdateDewPoint         OK       1.831127887
+12:16:21.988 TimeSinceLastUpdateHumidity         OK       1.831442004
+12:16:21.988 DewPoint & Humidity                 OK       Dew point and humidity are both implemented per the interface specification
+12:16:21.988 Pressure                            OK       Optional member returned a NotImplementedException error.
+12:16:21.989 RainRate                            OK       Optional member returned a NotImplementedException error.
+12:16:21.989 SkyBrightness                       OK       Optional member returned a NotImplementedException error.
+12:16:21.990 SkyQuality                          OK       Optional member returned a NotImplementedException error.
+12:16:21.990 StarFWHM                            OK       Optional member returned a NotImplementedException error.
+12:16:21.990 SkyTemperature                      OK       Optional member returned a NotImplementedException error.
+12:16:21.991 TimeSinceLastUpdateTemperature      OK       1.8339742700000001
+12:16:21.991 WindDirection                       OK       Optional member returned a NotImplementedException error.
+12:16:21.991 WindGust                            OK       Optional member returned a NotImplementedException error.
+12:16:21.992 WindSpeed                           OK       Optional member returned a NotImplementedException error.
+12:16:22.044 Refresh                             OK       Refreshed OK
+12:16:22.045 SensorDescriptionCloudCover         OK       Optional member returned a NotImplementedException error.
+12:16:22.046 SensorDescriptionDewPoint           OK       Dewpoint calculated from temperature and humidity
+12:16:22.046 SensorDescriptionHumidity           OK       PPBA internal humidity sensor
+12:16:22.046 DewPoint & Humidity                 OK       Dew point and humidity are both implemented per the interface specification
+12:16:22.047 SensorDescriptionPressure           OK       Optional member returned a NotImplementedException error.
+12:16:22.047 SensorDescriptionRainRate           OK       Optional member returned a NotImplementedException error.
+12:16:22.047 SensorDescriptionSkyBrightness      OK       Optional member returned a NotImplementedException error.
+12:16:22.048 SensorDescriptionSkyQuality         OK       Optional member returned a NotImplementedException error.
+12:16:22.048 SensorDescriptionStarFwhm           OK       Optional member returned a NotImplementedException error.
+12:16:22.049 SensorDescriptionSkyTemperature     OK       Optional member returned a NotImplementedException error.
+12:16:22.049 SensorDescriptionTemperature        OK       PPBA internal temperature sensor
+12:16:22.049 SensorDescriptionWindDirection      OK       Optional member returned a NotImplementedException error.
+12:16:22.050 SensorDescriptionWindGust           OK       Optional member returned a NotImplementedException error.
+12:16:22.050 SensorDescriptionWindSpeed          OK       Optional member returned a NotImplementedException error.
+12:16:22.050 Consistency - CloudCover            OK       Sensor value, description and time since last update are all not implemented as required by the specification
+12:16:22.050 Consistency - DewPoint              OK       Sensor value, description and time since last update are all implemented as required by the specification
+12:16:22.050 Consistency - Humidity              OK       Sensor value, description and time since last update are all implemented as required by the specification
+12:16:22.050 Consistency - Pressure              OK       Sensor value, description and time since last update are all not implemented as required by the specification
+12:16:22.050 Consistency - RainRate              OK       Sensor value, description and time since last update are all not implemented as required by the specification
+12:16:22.050 Consistency - SkyBrightness         OK       Sensor value, description and time since last update are all not implemented as required by the specification
+12:16:22.050 Consistency - SkyQuality            OK       Sensor value, description and time since last update are all not implemented as required by the specification
+12:16:22.050 Consistency - SkyTemperature        OK       Sensor value, description and time since last update are all not implemented as required by the specification
+12:16:22.050 Consistency - StarFWHM              OK       Sensor value, description and time since last update are all not implemented as required by the specification
+12:16:22.050 Consistency - Temperature           OK       Sensor value, description and time since last update are all implemented as required by the specification
+12:16:22.050 Consistency - WindDirection         OK       Sensor value, description and time since last update are all not implemented as required by the specification
+12:16:22.050 Consistency - WindGust              OK       Sensor value, description and time since last update are all not implemented as required by the specification
+12:16:22.050 Consistency - WindSpeed             OK       Sensor value, description and time since last update are all not implemented as required by the specification
+12:16:22.050                                              
+12:16:22.050 Disconnect from device                       
+12:16:22.053 Disconnect                          OK       Disconnected from device successfully using Disconnect()
+12:16:22.053                                              
+12:16:22.053 Conformance test has finished                
+12:16:22.053                                              
+12:16:22.053 Congratulations, no errors, warnings or issues found: your driver passes ASCOM validation!!          
+12:16:22.053                                     
+12:16:22.053 Timing Summary                               See Help for further information.
+12:16:22.053 Timing Summary                               FAST target response time: 0.1 seconds, (configuration and state reporting members).
+12:16:22.053 Timing Summary                               STANDARD target response time: 1.0 second, (property write and asynchronous initiators).
+12:16:22.053 Timing Summary                               EXTENDED target response time: 600.0 seconds, (synchronous methods, ImageArray and ImageArrayVariant).
+12:16:22.053 Timing Summary                               Conform is configured to report both good and bad timing outcomes.
+12:16:22.053                                              
+12:16:22.053 Connect                                      At 12:16:21.930 Connect                           0.001 seconds. ✓ (STANDARD)
+12:16:22.053 InterfaceVersion                             At 12:16:21.936 InterfaceVersion                  0.000 seconds. ✓ (FAST)
+12:16:22.053 Connected                                    At 12:16:21.936 Connected                         0.000 seconds. ✓ (FAST)
+12:16:22.053 Description                                  At 12:16:21.938 Description                       0.001 seconds. ✓ (FAST)
+12:16:22.053 DriverInfo                                   At 12:16:21.939 DriverInfo                        0.000 seconds. ✓ (FAST)
+12:16:22.053 DriverVersion                                At 12:16:21.939 DriverVersion                     0.001 seconds. ✓ (FAST)
+12:16:22.053 Name                                         At 12:16:21.940 Name                              0.000 seconds. ✓ (FAST)
+12:16:22.053 SupportedActions                             At 12:16:21.941 SupportedActions                  0.001 seconds. ✓ (FAST)
+12:16:22.053 DeviceState                                  At 12:16:21.951 DeviceState                       0.005 seconds. ✓ (FAST)
+12:16:22.053 AveragePeriod                                At 12:16:21.969 AveragePeriod                     0.010 seconds. ✓ (FAST)
+12:16:22.053 DewPoint                                     At 12:16:21.981 DewPoint                          0.000 seconds. ✓ (FAST)
+12:16:22.053 Humidity                                     At 12:16:21.981 Humidity                          0.000 seconds. ✓ (FAST)
+12:16:22.053 Temperature                                  At 12:16:21.984 Temperature                       0.000 seconds. ✓ (FAST)
+12:16:22.053 TimeSinceLastUpdateLatest                    At 12:16:21.987 TimeSinceLastUpdateLatest         0.000 seconds. ✓ (FAST)
+12:16:22.053 TimeSinceLastUpdateDewPoint                  At 12:16:21.988 TimeSinceLastUpdateDewPoint       0.000 seconds. ✓ (FAST)
+12:16:22.053 TimeSinceLastUpdateHumidity                  At 12:16:21.988 TimeSinceLastUpdateHumidity       0.000 seconds. ✓ (FAST)
+12:16:22.053 TimeSinceLastUpdateTemperature               At 12:16:21.991 TimeSinceLastUpdateTemperature    0.000 seconds. ✓ (FAST)
+12:16:22.055 SensorDescriptionDewPoint                    At 12:16:22.046 SensorDescriptionDewPoint         0.001 seconds. ✓ (FAST)
+12:16:22.055 SensorDescriptionHumidity                    At 12:16:22.046 SensorDescriptionHumidity         0.000 seconds. ✓ (FAST)
+12:16:22.055 SensorDescriptionTemperature                 At 12:16:22.049 SensorDescriptionTemperature      0.000 seconds. ✓ (FAST)
+12:16:22.055 Disconnect                                   At 12:16:22.052 Disconnect                        0.000 seconds. ✓ (STANDARD)
+12:16:22.056                                              
+12:16:22.056 Congratulations, all members returned within their target response times!!          
