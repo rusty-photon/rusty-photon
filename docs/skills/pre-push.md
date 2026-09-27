@@ -531,11 +531,20 @@ cargo metadata --format-version 1 --no-deps | \
   jq -r '.packages[] | select(.metadata.conformu.command) | "\(.name): \(.metadata.conformu.command)"'
 ```
 
-Current services and their commands:
-- **filemonitor**: `cargo test -p filemonitor --features conformu --test conformu_integration -- --ignored --nocapture`
-- **ppba-driver**: `cargo test -p ppba-driver --features conformu --test conformu_integration -- --ignored --nocapture`
-- **qhy-focuser**: `cargo test -p qhy-focuser --features conformu --test conformu_integration -- --ignored --nocapture`
-- **sky-survey-camera**: `cargo test -p sky-survey-camera --features conformu --test conformu_integration -- --ignored --nocapture`
+Current services (13), every one with the same command shape,
+`cargo test -p <service> --features conformu --test conformu_integration -- --nocapture`:
+dsd-fp2, filemonitor, pa-falcon-rotator, pa-scops-oag, planetarium-bridge,
+ppba-driver, qhy-camera, qhy-focuser, sky-survey-camera, svbony-camera,
+upbv2-driver, zwo-camera, zwo-focuser. The tests self-skip unless
+`CONFORMU_PATH` is set, which is what keeps them inert in the ordinary
+suites. star-adventurer-gti carries the test (and the Bazel `conformu`
+tag, so `bazel test --config=conformu //...` runs it — expected red until
+#1299 lands) but deliberately no `[package.metadata.conformu]`, so the
+nightly rotation never discovers it — see its design doc §"Running
+ConformU manually". The runner
+contract (full test set through `bdd_infra::run_conformu`, selection only
+through `run_conformu_from_settings`) is in
+[testing.md §1.4](testing.md#14-conformu-integration-tests).
 
 ### pi-nightly.yml (rolling, self-hosted ARM64)
 

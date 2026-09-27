@@ -44,33 +44,26 @@ chrono = { workspace = true }
 tempfile = { workspace = true }
 
 # Intentionally NOT opting in to the nightly ConformU workflow via
-# `[package.metadata.conformu]` (issue #201). When PR #206
-# re-enabled it after PulseGuide landed, the conformance phase
-# surfaced three independent failures that the alpacaprotocol-only
-# manual runs hadn't exercised:
+# `[package.metadata.conformu]`. The in-tree conformu_integration test
+# runs ConformU's full test set (bdd_infra::run_conformu drives the
+# URL-argument verbs, which call SetFullTest()), and against the mock
+# that run is not green:
 #
-# 1. `SideOfPierTests` slews to mechanical-HA ±9 h to verify
-#    pier-side reporting on both sides of the meridian. The
-#    `[-6.95, +6.95]` h safety envelope
-#    (`MountConfig::ra_{min,max}_hours`) correctly rejects those
-#    slews for real hardware, but ConformU treats the resulting
-#    `InvalidValueException` as a fatal exception and abandons
-#    `CheckMethods` entirely — so the rest of the suite never runs
-#    in CI.
-# 2. `SideOfPier` returns `pierWest` for every in-envelope target
-#    because `coordinates::side_of_pier` keys on
-#    `|dec_ticks| > cpr_dec/4` (the Dec-encoder-past-pole "physical
-#    flip" convention). ConformU asserts the ASCOM pointing-state
-#    convention (`pierWest` for HA ∈ [-6, 0), `pierEast` for
-#    HA ∈ (0, +6]) and records ISSUEs for the HA > 0 cases.
-# 3. PulseGuide tolerance checks fail in all four directions across
-#    HA ±3 and ±9 (24 ISSUEs): Dec North / South moves at ~2× the
-#    configured rate; RA East slows by only ~10 % instead of 50 %;
-#    RA West pulses move east instead of west. The implementation
-#    is the rate-shifted-tracking burst that PR #206 introduced.
+# 1. With the shipped default config (`flip_policy.enabled = false`)
+#    ConformU's extended pulse-guide leg at mechanical HA +9 h lies
+#    inside the counterweight exclusion zone, the driver refuses the
+#    slew, and ConformU abandons `CheckMethods` — the safety envelope
+#    doing its job, not a defect. Re-entry therefore needs
+#    `flip_policy.enabled = true` in the mock config (the config the
+#    2026-09-26 hardware record ran), which reaches HA +9 through the
+#    pole and turns on ConformU's seven-minute meridian-flip test.
+# 2. Every remaining issue is the RA pulse-guide stop-window offset
+#    (issue #1299): 7–8 issues measured against the mock on
+#    2026-09-27, all East/West legs at HA ±3 / ±9.
 #
-# Re-add `[package.metadata.conformu]` once those land. Until then,
-# run ConformU manually — see
+# Re-add `[package.metadata.conformu]` once #1299 lands, after one
+# clean full run against the mock on all three CI OSes with a
+# measured duration. Until then, run ConformU manually — see
 # `docs/services/star-adventurer-gti.md` §"Running ConformU manually".
 
 # Enable the Windows Service Control Manager dispatch only on Windows;

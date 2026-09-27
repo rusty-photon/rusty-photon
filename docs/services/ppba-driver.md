@@ -590,13 +590,13 @@ BDD tests use cucumber-rs with feature files in `tests/features/`. Tests spawn t
 
 The driver includes ASCOM ConformU compliance tests that verify conformance to the ASCOM Switch and ObservingConditions interface specifications. These tests run in CI via the `conformu.yml` workflow.
 
-**Performance optimization**: ConformU uses configurable delays between Switch read/write operations. The test uses a complete ConformU settings file with reduced delays:
+**Performance optimization**: ConformU uses configurable delays between Switch read/write operations. The test passes a `bdd_infra::FullRunSettings` with reduced delays:
 - `SwitchReadDelay`: 50ms (default: 500ms)
 - `SwitchWriteDelay`: 100ms (default: 3000ms)
 
 This reduces test time from ~8 minutes to ~35 seconds per platform.
 
-**Important**: ConformU requires a complete settings file with all required properties. Partial settings files (with only the Switch delays) are ignored and overwritten with defaults.
+**What the settings can and cannot do**: `FullRunSettings` carries only timeouts and delays. ConformU's URL-argument verbs (which `bdd_infra::run_conformu` drives) call `SetFullTest()` after reading the settings file, so every test-selection setting is force-enabled — `SwitchEnableSet` included, which means the mock run **does** exercise the Switch write tests. A ConformU settings file needs only `SettingsCompatibilityVersion`; every property it omits keeps ConformU's default.
 
 #### Running ConformU Against Real Hardware
 

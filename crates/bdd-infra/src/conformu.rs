@@ -14,12 +14,36 @@
 //! the normal cargo/bazel suites and fire only when `ConformU` is explicitly
 //! provided — preserving the old `#[ignore]` ergonomics without `#[ignore]`
 //! (which Bazel cannot selectively run via a tag).
+//!
+//! # Two runners, two contracts
+//!
+//! `ConformU` has two families of commands, and they treat a settings file
+//! differently:
+//!
+//! - The URL-argument commands (`conformance <url>`, `alpacaprotocol <url>`)
+//!   read `--settingsfile` and then call `SetFullTest()`, which force-enables
+//!   every test-selection setting and replaces the per-method test dictionary
+//!   with an all-enabled one. The `conformance` verb's help text says so
+//!   (*"with all tests enabled"*); `alpacaprotocol` does the same without
+//!   saying so. Everything else in the file survives: timeouts and delays, but
+//!   also tolerances. [`run_conformu`] drives these, and takes a
+//!   [`FullRunSettings`] rather than a file so that nothing a caller writes is
+//!   silently overridden (a selection) or silently honoured (a tolerance) —
+//!   see that type for why it exposes only the timeouts and delays.
+//! - The `*-settings` commands read the device **and** the test selection from
+//!   the file and honour both. [`run_conformu_from_settings`] drives these; it
+//!   is the only entry point where a deselected test takes effect, and a run
+//!   made through it carries `ConformU` configuration alerts — which is why it
+//!   can never be a `docs/validation/` record.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
+
+use crate::scratch;
 
 /// Outcome of [`run_conformu`].
 #[derive(Debug, PartialEq, Eq)]
@@ -31,12 +55,128 @@ pub enum ConformuRun {
     Passed,
 }
 
-/// Run the ASCOM `ConformU` `conformance` suite against a running Alpaca device.
+/// The settings a full `ConformU` run honours.
+///
+/// This is the settings file [`run_conformu`] hands to `ConformU`, as a type:
+/// every field is a setting that `ConformU` 4.5.0 reads on the URL-verb path
+/// and does not force in `SetFullTest()`. Three kinds of setting are
+/// deliberately **absent**:
+///
+/// - **Test selection**. The URL verbs force every `[MandatoryInFullTest]`
+///   flag (`TestSideOfPierWrite`, `TelescopeExtendedPulseGuideTests`,
+///   `SwitchEnableSet`, …) and rebuild the `TelescopeTests` dictionary, so a
+///   value written here for any of them would document a narrowing that never
+///   happens. The one selection `SetFullTest()` leaves alone is the `DomeTests`
+///   dictionary; it is kept out of this type on purpose, so a run driven here
+///   is the full set for every device class. A device that genuinely cannot
+///   run a test uses [`run_conformu_from_settings`].
+/// - **Tolerances** (`TelescopePulseGuideTolerance`, `TelescopeSlewTolerance`,
+///   …). These *are* honoured, and a loosened one softens the verdict without
+///   producing a configuration alert or any trace in the results file — a run
+///   made with one could still satisfy the all-zero record rule. Keeping them
+///   out of the type keeps every in-tree run on `ConformU`'s own tolerances.
+/// - **Application settings** the CLI never uses (`ConnectionTimeout`, which
+///   is the GUI host's browser-disconnect retention period, `UpdateCheck`,
+///   `ApplicationPort`, …). A field for one of those would promise an effect
+///   the run does not have.
+///
+/// Every default equals `ConformU`'s own, and [`run_conformu`] always writes
+/// the file — `None` means these defaults — so `ConformU`'s persisted
+/// `conform.settings` (the GUI's, under the local application-data folder,
+/// tolerances included) is never consulted by an in-tree run. Adding a field
+/// means checking, against the `ConformU` source for the version the nightly
+/// installs, that the setting is read on the `conformance` / `alpacaprotocol`
+/// path, carries no `[MandatoryInFullTest]` attribute, and cannot loosen a
+/// verdict.
+#[derive(Debug, Clone)]
+pub struct FullRunSettings {
+    /// `ConnectDisconnectTimeout`: seconds `ConformU` waits for `Connecting` to
+    /// clear after it calls `Connect()` / `Disconnect()`. `ConformU` default 5.
+    pub connect_disconnect_timeout_s: u32,
+    /// `FocuserTimeout`: seconds a focuser move may take before the test
+    /// fails. `ConformU` default 60.
+    pub focuser_timeout_s: u32,
+    /// `RotatorTimeout`: seconds a rotator move may take before the test
+    /// fails. `ConformU` default 60.
+    pub rotator_timeout_s: u32,
+    /// `SwitchReadDelay`: milliseconds `ConformU` waits after each switch
+    /// read. `ConformU` default 500.
+    pub switch_read_delay_ms: u32,
+    /// `SwitchWriteDelay`: milliseconds `ConformU` waits after each switch
+    /// write. `ConformU` default 3000.
+    pub switch_write_delay_ms: u32,
+}
+
+impl Default for FullRunSettings {
+    fn default() -> Self {
+        Self {
+            connect_disconnect_timeout_s: 5,
+            focuser_timeout_s: 60,
+            rotator_timeout_s: 60,
+            switch_read_delay_ms: 500,
+            switch_write_delay_ms: 3000,
+        }
+    }
+}
+
+impl FullRunSettings {
+    /// The settings-file schema version this struct writes. `ConformU` resets
+    /// a file without a `SettingsCompatibilityVersion` key to its defaults
+    /// (it treats it as a pre-release file); with the key present, every
+    /// property the file omits simply keeps its default.
+    const SETTINGS_COMPATIBILITY_VERSION: u32 = 1;
+
+    /// The settings file, under `ConformU`'s own property names.
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "SettingsCompatibilityVersion": Self::SETTINGS_COMPATIBILITY_VERSION,
+            "ConnectDisconnectTimeout": self.connect_disconnect_timeout_s,
+            "FocuserTimeout": self.focuser_timeout_s,
+            "RotatorTimeout": self.rotator_timeout_s,
+            "SwitchReadDelay": self.switch_read_delay_ms,
+            "SwitchWriteDelay": self.switch_write_delay_ms,
+        })
+    }
+
+    /// Write the settings file into a fresh scratch directory. The directory
+    /// guard is returned with the path: the file exists for exactly as long as
+    /// the caller holds it.
+    fn write_to_scratch(
+        &self,
+    ) -> Result<(TempDir, PathBuf), Box<dyn std::error::Error + Send + Sync>> {
+        let dir = scratch::new_dir("conformu-settings-")?;
+        let path = dir.path().join("conformu-settings.json");
+        let json = serde_json::to_string_pretty(&self.to_json())?;
+        // The test log used to show the settings literal in the test source;
+        // keep what ConformU actually received visible in the run output.
+        println!("[conformu settings] {json}");
+        std::fs::write(&path, json)?;
+        Ok((dir, path))
+    }
+}
+
+/// How [`run_mode`] treats a non-zero exit whose summary shows zero errors and
+/// zero issues — the signature of a run narrowed by deselected tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfigurationAlerts {
+    /// Fail the run. Nothing a [`FullRunSettings`] can write is a selection, so
+    /// a run driven through it cannot be narrowed: alerts are not expected and
+    /// a non-zero exit is a real verdict.
+    Reject,
+    /// Accept the run. The `*-settings` verbs honour deselection, and every
+    /// deliberately omitted test produces an alert that counts into the exit
+    /// code exactly like an error or issue.
+    Accept,
+}
+
+/// Run both ASCOM `ConformU` suites — `alpacaprotocol`, then `conformance` —
+/// against a running Alpaca device.
 ///
 /// Equivalent to:
 ///
 /// ```text
-/// conformu conformance --settingsfile <settings_file> <base_url>/api/v1/<device_type>/<device_number>
+/// conformu alpacaprotocol --settingsfile <generated> <base_url>/api/v1/<device_type>/<device_number>
+/// conformu conformance    --settingsfile <generated> <base_url>/api/v1/<device_type>/<device_number>
 /// ```
 ///
 /// `device_type` is the lowercase Alpaca device-type URL segment (`"focuser"`,
@@ -44,21 +184,28 @@ pub enum ConformuRun {
 /// `"observingconditions"`, `"safetymonitor"`). `base_url` is the device server
 /// root (e.g. `http://127.0.0.1:PORT/`), typically `ServiceHandle::base_url`.
 ///
+/// `settings` shapes the timeouts and delays of the run; `None` runs on
+/// `ConformU`'s defaults. A settings file is written either way, so the run
+/// never falls back to `ConformU`'s persisted `conform.settings`. The test set
+/// is always `ConformU`'s full one — the URL-argument commands call
+/// `SetFullTest()` before running — so there is no way to deselect a test
+/// through this function; see [`FullRunSettings`] and
+/// [`run_conformu_from_settings`].
+///
 /// Returns [`ConformuRun::Skipped`] when `CONFORMU_PATH` is unset and
-/// [`ConformuRun::Passed`] once both the `alpacaprotocol` and `conformance`
-/// suites have passed.
+/// [`ConformuRun::Passed`] once both suites have exited zero.
 ///
 /// # Errors
 ///
-/// Returns an error if `ConformU` cannot be spawned, its output cannot be
-/// read, or either suite exits non-zero — except an exit whose summary line
-/// reports zero errors and zero issues (configuration alerts only), which is
-/// accepted.
+/// Returns an error if `ConformU` cannot be spawned, the settings file cannot
+/// be written, its output cannot be read, or either suite exits non-zero. A
+/// full run has nothing to deselect, so no configuration-alert allowance
+/// applies here: any non-zero exit is a verdict.
 pub async fn run_conformu(
     device_type: &str,
     base_url: &str,
     device_number: u32,
-    settings_file: Option<&Path>,
+    settings: Option<&FullRunSettings>,
 ) -> Result<ConformuRun, Box<dyn std::error::Error + Send + Sync>> {
     let Some(conformu) = std::env::var_os("CONFORMU_PATH").filter(|v| !v.is_empty()) else {
         eprintln!("CONFORMU_PATH not set; skipping ConformU run for {device_type}/{device_number}");
@@ -70,12 +217,26 @@ pub async fn run_conformu(
         base = base_url.trim_end_matches('/'),
     );
 
+    // Always hand ConformU a file: without `--settingsfile` it reads the
+    // per-user `conform.settings` the GUI saves into, whose timeouts and
+    // tolerances the URL verbs honour. The scratch guard lives across both
+    // suites; the file goes with it.
+    let settings = settings.cloned().unwrap_or_default();
+    let (_settings_dir, settings_path) = settings.write_to_scratch()?;
+
     // Run both ConformU suites against the device, matching the upstream
     // ascom_alpaca::test runner (`ConformUTestBuilder::run`): `alpacaprotocol`
     // (Alpaca wire-protocol conformance) then `conformance` (full ASCOM
     // device-interface tests). Both must pass.
     for mode in ["alpacaprotocol", "conformance"] {
-        run_mode(&conformu, mode, settings_file, Some(&device_url)).await?;
+        run_mode(
+            &conformu,
+            mode,
+            Some(&settings_path),
+            Some(&device_url),
+            ConfigurationAlerts::Reject,
+        )
+        .await?;
     }
     Ok(ConformuRun::Passed)
 }
@@ -93,13 +254,22 @@ pub async fn run_conformu(
 /// (planetarium-bridge): the protocol suite's `PulseGuide` test polls
 /// `IsPulseGuiding` as its completion check and records the spec-mandated
 /// `NOT_IMPLEMENTED` answer as an error, so the test must be deselected —
-/// which only the `*-settings` commands honor.
+/// which only the `*-settings` commands honor. This is the only entry point
+/// where a deselection takes effect, and it is for a documented capability
+/// gap, not for a test the device implements and currently fails.
+///
+/// The file is the caller's to write in full. `ConformU` uses a
+/// `TelescopeTests` dictionary exactly as deserialised — a missing key is a
+/// `KeyNotFoundException` when the methods phase starts — so a Telescope
+/// settings file must spell out every entry (planetarium-bridge's test carries
+/// the complete list).
 ///
 /// A deliberately omitted test produces a `ConformU` "configuration alert",
 /// and alerts count into the exit code exactly like errors and issues. A
 /// run whose only marks are configuration alerts is therefore accepted as a
 /// pass here, detected via the summary line `ConformU` prints; errors and
-/// issues still fail.
+/// issues still fail. Because of those alerts a run made this way never meets
+/// the `docs/validation/` record rule.
 ///
 /// # Errors
 ///
@@ -118,7 +288,14 @@ pub async fn run_conformu_from_settings(
     };
 
     for mode in ["alpacaprotocol-settings", "conformance-settings"] {
-        run_mode(&conformu, mode, Some(settings_file), None).await?;
+        run_mode(
+            &conformu,
+            mode,
+            Some(settings_file),
+            None,
+            ConfigurationAlerts::Accept,
+        )
+        .await?;
     }
     Ok(ConformuRun::Passed)
 }
@@ -126,15 +303,16 @@ pub async fn run_conformu_from_settings(
 /// Run a single `ConformU` mode, streaming its output. `device_url` is the
 /// positional device argument for the URL-based commands and `None` for the
 /// `*-settings` commands (which read the device from the settings file).
-/// Returns `Err` on a non-zero exit, except when the output's summary line
-/// shows zero errors and zero issues — the exit code also counts
-/// configuration alerts (deliberately deselected tests), which are not
-/// device defects.
+/// Returns `Err` on a non-zero exit, except — under
+/// [`ConfigurationAlerts::Accept`] — when the output's summary line shows
+/// zero errors and zero issues: the exit code also counts configuration
+/// alerts (deliberately deselected tests), which are not device defects.
 async fn run_mode(
     conformu: &std::ffi::OsStr,
     mode: &str,
     settings_file: Option<&Path>,
     device_url: Option<&str>,
+    alerts: ConfigurationAlerts,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut command = Command::new(conformu);
     command.arg(mode);
@@ -146,9 +324,10 @@ async fn run_mode(
     if let Some(tmp) = std::env::var_os("TEST_TMPDIR") {
         command.env("HOME", tmp);
     }
-    // `--settingsfile` is optional: services that need non-default ConformU
-    // settings (timeouts, which test groups to run) pass a written file; the
-    // rest run with ConformU's defaults.
+    // For the URL-based commands the file carries the timeouts and delays of
+    // a `FullRunSettings` (test selection is not expressible there — the
+    // command calls SetFullTest()); for the `*-settings` commands it carries
+    // the device and the test selection too.
     if let Some(path) = settings_file {
         command.arg("--settingsfile").arg(path);
     }
@@ -179,14 +358,173 @@ async fn run_mode(
     let status = child.wait().await?;
     let target = device_url.unwrap_or("the settings-file device");
     if status.success() {
-        Ok(())
-    } else if clean_except_alerts {
-        println!(
-            "[conformu {mode}] non-zero exit {status} accepted: the summary reported 0 issues \
-             and 0 errors (configuration alerts only)"
-        );
-        Ok(())
-    } else {
-        Err(format!("ConformU `{mode}` exited with {status} testing {target}").into())
+        return Ok(());
+    }
+    match (alerts, clean_except_alerts) {
+        (ConfigurationAlerts::Accept, true) => {
+            println!(
+                "[conformu {mode}] non-zero exit {status} accepted: the summary reported 0 issues \
+                 and 0 errors (configuration alerts only)"
+            );
+            Ok(())
+        }
+        (ConfigurationAlerts::Reject, true) => Err(format!(
+            "ConformU `{mode}` exited with {status} testing {target} although its summary \
+             reported 0 issues and 0 errors: the run was narrowed by configuration alerts, \
+             which a full run never has — a deselected test only takes effect through \
+             run_conformu_from_settings"
+        )
+        .into()),
+        (_, false) => {
+            Err(format!("ConformU `{mode}` exited with {status} testing {target}").into())
+        }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::FullRunSettings;
+
+    /// Every `Settings` property `ConformU` 4.5.0 marks `[MandatoryInFullTest]`
+    /// — forced by `SetFullTest()` on the URL-verb path — plus the
+    /// `TelescopeTests` dictionary it rebuilds. None may ever appear in the
+    /// file [`super::run_conformu`] writes: a value there would be overridden
+    /// silently, which is exactly the drift this type exists to prevent.
+    const FORCED_BY_SET_FULL_TEST: &[&str] = &[
+        "AllowConnectedTrueAfterDisconnect",
+        "DisplayMethodCalls",
+        "Debug",
+        "TraceDiscovery",
+        "TraceAlpacaCalls",
+        "TestProperties",
+        "TestMethods",
+        "TelescopeExtendedRateOffsetTests",
+        "TelescopeFirstUseTests",
+        "TestSideOfPierRead",
+        "TestSideOfPierWrite",
+        "TelescopeExtendedPulseGuideTests",
+        "TelescopeExtendedMoveAxisTests",
+        "TelescopeExtendedSiteTests",
+        "TelescopeTests",
+        "CameraFirstUseTests",
+        "CameraTestImageArrayVariant",
+        "DomeOpenShutter",
+        "SwitchEnableSet",
+        "SwitchTestOffsets",
+    ];
+
+    /// Settings the URL verbs honour that would soften a verdict without a
+    /// configuration alert. Kept out of the type on purpose.
+    const VERDICT_SOFTENERS: &[&str] = &[
+        "TelescopePulseGuideTolerance",
+        "TelescopeSlewTolerance",
+        "TelescopeMaximumSlewTime",
+        "DomeSlewTolerance",
+        "FocuserMoveTolerance",
+    ];
+
+    /// Application settings `ConformU` reads only on its GUI paths. A field for
+    /// one would promise an effect a CLI run does not have.
+    const APPLICATION_ONLY: &[&str] = &[
+        "ConnectionTimeout",
+        "GoHomeOnDeviceSelected",
+        "RunAs32Bit",
+        "RiskAcknowledged",
+        "ApplicationPort",
+        "UpdateCheck",
+    ];
+
+    fn keys(value: &serde_json::Value) -> Vec<String> {
+        let mut keys: Vec<String> = value
+            .as_object()
+            .expect("the settings file is a JSON object")
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    #[test]
+    fn default_file_carries_the_compatibility_version_and_only_honoured_keys() {
+        let json = FullRunSettings::default().to_json();
+
+        let mut expected = vec![
+            "ConnectDisconnectTimeout",
+            "FocuserTimeout",
+            "RotatorTimeout",
+            "SettingsCompatibilityVersion",
+            "SwitchReadDelay",
+            "SwitchWriteDelay",
+        ];
+        expected.sort_unstable();
+        assert_eq!(keys(&json), expected);
+        assert_eq!(json["SettingsCompatibilityVersion"], 1);
+    }
+
+    #[test]
+    fn defaults_equal_conformu_defaults() {
+        let json = FullRunSettings::default().to_json();
+
+        assert_eq!(json["ConnectDisconnectTimeout"], 5);
+        assert_eq!(json["FocuserTimeout"], 60);
+        assert_eq!(json["RotatorTimeout"], 60);
+        assert_eq!(json["SwitchReadDelay"], 500);
+        assert_eq!(json["SwitchWriteDelay"], 3000);
+    }
+
+    #[test]
+    fn no_forced_softening_or_application_only_key_is_ever_written() {
+        let json = FullRunSettings::default().to_json();
+        let object = json
+            .as_object()
+            .expect("the settings file is a JSON object");
+
+        for key in FORCED_BY_SET_FULL_TEST
+            .iter()
+            .chain(VERDICT_SOFTENERS)
+            .chain(APPLICATION_ONLY)
+        {
+            assert!(
+                !object.contains_key(*key),
+                "{key} must not be written: the URL verbs override it, silently honour it, \
+                 or never read it"
+            );
+        }
+    }
+
+    #[test]
+    fn overrides_land_under_their_conformu_names() {
+        let json = FullRunSettings {
+            connect_disconnect_timeout_s: 10,
+            focuser_timeout_s: 30,
+            rotator_timeout_s: 31,
+            switch_read_delay_ms: 50,
+            switch_write_delay_ms: 100,
+        }
+        .to_json();
+
+        assert_eq!(json["ConnectDisconnectTimeout"], 10);
+        assert_eq!(json["FocuserTimeout"], 30);
+        assert_eq!(json["RotatorTimeout"], 31);
+        assert_eq!(json["SwitchReadDelay"], 50);
+        assert_eq!(json["SwitchWriteDelay"], 100);
+    }
+
+    #[test]
+    fn the_written_file_is_the_settings_json_under_the_returned_guard() {
+        let settings = FullRunSettings::default();
+
+        let (dir, path) = settings.write_to_scratch().unwrap();
+
+        assert_eq!(path.parent().unwrap(), dir.path());
+        assert_eq!(path.file_name().unwrap(), "conformu-settings.json");
+        let text = std::fs::read_to_string(&path).unwrap();
+        // The literal ConformU's pre-release detector looks for: without it the
+        // file is renamed aside and the run silently proceeds on defaults.
+        assert!(text.contains("\"SettingsCompatibilityVersion\":"));
+        let on_disk: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(on_disk, settings.to_json());
     }
 }

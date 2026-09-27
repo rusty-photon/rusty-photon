@@ -2,6 +2,14 @@
 //!
 //! Run the `ConformU` ASCOM Telescope test suite against the driver running
 //! in mock mode. Same shape as the qhy-focuser integration test.
+//!
+//! The run is `ConformU`'s full test set: the runner drives the URL-argument
+//! verbs, which call `SetFullTest()`, and it exposes no test selection. The
+//! mount config's `site_latitude_deg` is device configuration — that is
+//! honoured, and keeps the site above `ConformU`'s 10° gate so the
+//! side-of-pier model tests are not skipped. Against the mock the run is not
+//! green while the RA pulse-guide offset is open; the design doc's section
+//! on running `ConformU` manually carries the expected report.
 #![cfg(feature = "conformu")]
 #![allow(clippy::await_holding_lock)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::unreachable)]
@@ -47,45 +55,6 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     let test_dir = bdd_infra::scratch::new_dir("conformu-star-adventurer-gti-")?;
 
     let config_path = test_dir.path().join("config.json");
-    let conformu_settings_path = test_dir.path().join("conformu-settings.json");
-
-    let conformu_settings = serde_json::json!({
-        "SettingsCompatibilityVersion": 1,
-        "GoHomeOnDeviceSelected": true,
-        "ConnectionTimeout": 2,
-        "RunAs32Bit": false,
-        "RiskAcknowledged": false,
-        "DisplayMethodCalls": false,
-        "UpdateCheck": false,
-        "ApplicationPort": 0,
-        "ConnectDisconnectTimeout": 5,
-        "Debug": false,
-        "TraceDiscovery": false,
-        "TraceAlpacaCalls": false,
-        "TestProperties": true,
-        "TestMethods": true,
-        "TestPerformance": false,
-        "AlpacaDevice": {},
-        "AlpacaConfiguration": {},
-        "ComDevice": {},
-        "ComConfiguration": {},
-        "DeviceName": "No device selected",
-        "DeviceTechnology": "NotSelected",
-        "ReportGoodTimings": true,
-        "ReportBadTimings": true,
-        "TelescopeTests": {},
-        "TelescopeExtendedRateOffsetTests": false,
-        "TelescopeFirstUseTests": false,
-        "TestSideOfPierRead": true,
-        "TestSideOfPierWrite": false,
-        "CameraFirstUseTests": false,
-        "CameraTestImageArrayVariant": false,
-        "FocuserTimeout": 30
-    });
-    std::fs::write(
-        &conformu_settings_path,
-        serde_json::to_string_pretty(&conformu_settings)?,
-    )?;
 
     // Mock-mode config: tagged USB transport with a placeholder port
     // (the binary is built with `--features mock`, so the
@@ -131,13 +100,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         handle.port
     );
 
-    let result = run_conformu(
-        "telescope",
-        &handle.base_url,
-        0,
-        Some(&conformu_settings_path),
-    )
-    .await;
+    let result = run_conformu("telescope", &handle.base_url, 0, None).await;
 
     handle.stop().await;
 

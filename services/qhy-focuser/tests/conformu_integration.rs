@@ -28,7 +28,7 @@
 )]
 
 use bdd_infra::ServiceHandle;
-use bdd_infra::{run_conformu, ConformuRun};
+use bdd_infra::{run_conformu, ConformuRun, FullRunSettings};
 use std::sync::Mutex;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -49,45 +49,13 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     let test_dir = bdd_infra::scratch::new_dir("conformu-qhy-focuser-")?;
 
     let config_path = test_dir.path().join("config.json");
-    let conformu_settings_path = test_dir.path().join("conformu-settings.json");
-
-    let conformu_settings = serde_json::json!({
-        "SettingsCompatibilityVersion": 1,
-        "GoHomeOnDeviceSelected": true,
-        "ConnectionTimeout": 2,
-        "RunAs32Bit": false,
-        "RiskAcknowledged": false,
-        "DisplayMethodCalls": false,
-        "UpdateCheck": false,
-        "ApplicationPort": 0,
-        "ConnectDisconnectTimeout": 5,
-        "Debug": false,
-        "TraceDiscovery": false,
-        "TraceAlpacaCalls": false,
-        "TestProperties": true,
-        "TestMethods": true,
-        "TestPerformance": false,
-        "AlpacaDevice": {},
-        "AlpacaConfiguration": {},
-        "ComDevice": {},
-        "ComConfiguration": {},
-        "DeviceName": "No device selected",
-        "DeviceTechnology": "NotSelected",
-        "ReportGoodTimings": true,
-        "ReportBadTimings": true,
-        "TelescopeTests": {},
-        "TelescopeExtendedRateOffsetTests": true,
-        "TelescopeFirstUseTests": true,
-        "TestSideOfPierRead": false,
-        "TestSideOfPierWrite": false,
-        "CameraFirstUseTests": true,
-        "CameraTestImageArrayVariant": true,
-        "FocuserTimeout": 30
-    });
-    std::fs::write(
-        &conformu_settings_path,
-        serde_json::to_string_pretty(&conformu_settings)?,
-    )?;
+    // ConformU's full test set runs (its URL verbs call SetFullTest()); the
+    // settings shape only the run's timeouts. The mock focuser settles
+    // instantly, so the default 60 s focuser timeout is longer than needed.
+    let conformu_settings = FullRunSettings {
+        focuser_timeout_s: 30,
+        ..FullRunSettings::default()
+    };
 
     let config = serde_json::json!({
         "serial": {
@@ -133,14 +101,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     // below is unconditional and the service gets a graceful SIGTERM with a
     // chance to flush coverage data.
     let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
-        match run_conformu(
-            "focuser",
-            &handle.base_url,
-            0,
-            Some(&conformu_settings_path),
-        )
-        .await?
-        {
+        match run_conformu("focuser", &handle.base_url, 0, Some(&conformu_settings)).await? {
             ConformuRun::Skipped => {
                 println!("CONFORMU_PATH not set; skipped");
             }

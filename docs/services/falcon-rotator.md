@@ -401,7 +401,7 @@ services/pa-falcon-rotator/
 │   │   ├── sync_offset.feature
 │   │   └── status_switch.feature
 │   ├── property_tests.rs         # proptest round-trip on FalconStatus wire format
-│   └── conformu_integration.rs   # ASCOM Rotator + Switch conformance (#[ignore])
+│   └── conformu_integration.rs   # ASCOM Rotator + Switch conformance (self-skips without CONFORMU_PATH)
 └── examples/
     ├── config-linux.json
     ├── config-macos.json
@@ -479,7 +479,7 @@ Per [`docs/skills/testing.md`](../skills/testing.md):
 - **Unit tests** (`#[cfg(test)]` in `src/`): protocol serialisation, `FA` response parsing (happy path + every failure mode in the [error table](#error-model)), config defaults, sync-offset arithmetic, normalisation rules, and the `limit_detect` rising-edge rule (`is_limit_detect_rising_edge`, exhaustive over all six `previous × current` combinations). The `warn!` the edge drives is deliberately **not** asserted via a captured-event subscriber — see [`testing.md` §6.8](../skills/testing.md#68-do-not-assert-on-captured-tracing-events) and issue #949; the mock-backed tests assert the `last_limit_detected` tracker instead.
 - **Property tests** (`proptest`): `FalconStatus` wire-format round-trip — serialise a randomly-generated status with `format!`, parse the result back through `FalconStatus`'s `FromStr` impl, and assert field-by-field equality. Pins the parser against any future format-string drift.
 - **Server tests** (`#[cfg(feature = "mock")]`, `tests/test_lib.rs`): bind the `ServerBuilder` on `127.0.0.1:0` with the `MockFalconTransportFactory` and assert the management surface — `/management/v1/description` responds, `/management/v1/configureddevices` lists both Rotator and Switch when enabled, and disabling `switch` registers only the Rotator. Tests run sequentially behind a `SERVER_LOCK` `Mutex<()>` so re-runs against a left-over discovery binding don't race.
-- **ConformU** (`tests/conformu_integration.rs`, `#[ignore]`): run against the binary with the `mock` feature, mirroring `ppba-driver` / `qhy-focuser`. Registered under `[package.metadata.conformu]`.
+- **ConformU** (`tests/conformu_integration.rs`; self-skips unless `CONFORMU_PATH` names a ConformU binary, so it is inert in the ordinary suites and runs in the nightly `conformu.yml` rotation): runs ConformU's **full** test set against the binary with the `mock` feature through `bdd_infra::run_conformu`, mirroring `ppba-driver` / `qhy-focuser`. Each test passes a `bdd_infra::FullRunSettings` of timeouts only — the rotator run lowers `RotatorTimeout` to 30 s, the switch run lowers `SwitchReadDelay` / `SwitchWriteDelay` to 50 / 100 ms — so the Switch run includes ConformU's switch **write** tests (`SetFullTest()` forces `SwitchEnableSet` on). Registered under `[package.metadata.conformu]`.
 
 ## Follow-ups
 

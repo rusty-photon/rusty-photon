@@ -224,6 +224,36 @@ rust_test(
     ),
 )
 
+# Unit tests of the feature-gated conformu module: the FullRunSettings file
+# generator, which decides what every URL-verb ConformU run can and cannot
+# configure. Positively filtered to the module tree, mirroring
+# :bdd-infra_tls_auth_unit_test, so the requires-cargo run_once_* tests in
+# the base `tests::` module stay out. The tests are hermetic (they inspect the
+# generated JSON, spawn nothing and touch only the test action's own tmpdir),
+# so no requires-cargo tag —
+# and no `conformu` tag either: that tag marks tests that drive the external
+# ConformU tool and is excluded from the per-PR filter, while these must run
+# on every PR.
+rust_test(
+    name = "bdd-infra_conformu_unit_test",
+    size = "small",
+    aliases = aliases(
+        normal_dev = True,
+        proc_macro_dev = True,
+    ),
+    args = ["conformu::"],
+    crate = ":bdd-infra_conformu",
+    crate_features = ["conformu"],
+    proc_macro_deps = all_crate_deps(
+        proc_macro = True,
+        proc_macro_dev = True,
+    ),
+    deps = all_crate_deps(
+        normal = True,
+        normal_dev = True,
+    ),
+)
+
 # The base :bdd-infra_unit_test is tagged requires-cargo for three
 # run_once_* tests that need pre-built binaries, so per-PR `bazel test //...`
 # never runs any of `tests::`. The signal-send tests are hermetic — one

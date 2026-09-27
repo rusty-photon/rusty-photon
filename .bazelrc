@@ -687,13 +687,16 @@ build:browser --test_env=GECKODRIVER_BINARY
 #    $(bazel info output_path)/_coverage/_coverage_report.dat, split per package
 #    by tools/coverage/split_lcov.py before the per-flag Codecov upload.
 #
-# --test_tag_filters=-requires-cargo OVERRIDES the base
-# `test --test_tag_filters=-requires-cargo,-conformu`: coverage MUST include
-# the BDD suite (like the default test filter, which has run bdd since PR
-# #452), because it exercises the service-binary integration paths (main.rs,
-# startup/shutdown, cross-service wiring) that unit tests never reach — and it
-# additionally includes conformu (those self-skip without CONFORMU_PATH).
-# requires-cargo stays excluded (those tests shell out to cargo). BDD needs
+# The rc value below, `--test_tag_filters=-requires-cargo,-conformu`, governs
+# a local `bazel coverage --config=coverage`. bazel-coverage.yml pins
+# `--test_tag_filters=-requires-cargo` on its command line after
+# `--config=coverage`, and the command line wins, so in the CI job the
+# conformu-tagged targets ARE selected — they self-skip, because that job
+# never exports CONFORMU_PATH. Either way coverage MUST include the BDD suite
+# (like the default test filter, which has run bdd since PR #452), because it
+# exercises the service-binary integration paths (main.rs, startup/shutdown,
+# cross-service wiring) that unit tests never reach; requires-cargo stays
+# excluded everywhere (those tests shell out to cargo). BDD needs
 # OMNISIM_PATH (forwarded by build:ci --test_env; locally the default-scope
 # OMNISIM_PATH/OMNISIM_DIR forwards above) for rp's scenarios, so a local
 # `bazel coverage --config=coverage` needs OmniSim installed, exactly like a
@@ -736,8 +739,9 @@ coverage:coverage --combined_report=lcov
 # size-derived timeout didn't), exclude the two OmniSim spawners instead — see
 # docs/plans/archive/bazel-migration.md.
 coverage:coverage --test_timeout=900
-# conformu is excluded from coverage too: it drives the external ConformU tool
-# (not instrumented) and only runs when CONFORMU_PATH is set.
+# conformu is excluded from a local coverage run too: it drives the external
+# ConformU tool (not instrumented) and only runs when CONFORMU_PATH is set. The
+# CI job re-includes the tag on its command line (see the header above).
 coverage:coverage --test_tag_filters=-requires-cargo,-conformu
 # Coverage keeps un-overcommitted test scheduling: instrumented BDD suites run
 # much heavier than plain ones (rp:bdd ~400s warm against the 900s cap above,
