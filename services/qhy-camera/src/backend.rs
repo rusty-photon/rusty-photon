@@ -1128,9 +1128,10 @@ pub(crate) mod mock {
         }
         /// Hold a `set_bin_mode` above 1x1 open once it has applied its bin,
         /// until [`release_binned_set`](Self::release_binned_set). Pair it with
-        /// [`is_in_binned_set`](Self::is_in_binned_set) to run a disconnect and
-        /// a reconnect past a client's bin change that is demonstrably still
-        /// inside the SDK.
+        /// [`is_in_binned_set`](Self::is_in_binned_set) to drive another request
+        /// past a client's bin change that is demonstrably still inside the SDK
+        /// — which, since the change holds the device claim (B4), is how the
+        /// tests show a `StartExposure` and a disconnect both meeting it.
         pub fn hold_binned_set(&self) {
             self.binned_set_held.store(true, Ordering::SeqCst);
         }
