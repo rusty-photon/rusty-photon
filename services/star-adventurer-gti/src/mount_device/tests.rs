@@ -5027,14 +5027,33 @@ async fn azimuth_altitude_and_utc_date_return_well_defined_values_when_connected
 /// Budget for read-to-read disagreement, in seconds of RA.
 const RA_READ_SPREAD_BUDGET_S: f64 = 0.05;
 
-/// Spread (max − min) of `values`, in seconds of time.
+/// `b − a` in hours, wrapped into `[−12, 12)`. RA and LST each wrap at
+/// 24 h, so a raw difference (or an `LST − RA`) can jump by a whole day
+/// mid-window when either crosses 0 h.
+fn wrapped_hours_diff(a: f64, b: f64) -> f64 {
+    (b - a + 12.0).rem_euclid(24.0) - 12.0
+}
+
+/// Spread (max − min) of `values` (hours, on the 24 h circle) around
+/// the first one, in seconds of time.
 fn spread_seconds(values: &[f64]) -> f64 {
+    let first = values.first().copied().unwrap_or_default();
     let (lo, hi) = values
         .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
-            (lo.min(*v), hi.max(*v))
+        .map(|v| wrapped_hours_diff(first, *v))
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), d| {
+            (lo.min(d), hi.max(d))
         });
     (hi - lo) * 3600.0
+}
+
+#[test]
+fn spread_is_measured_across_the_24h_wrap() {
+    let spread = spread_seconds(&[23.999_99, 0.000_01]);
+    assert!(
+        (spread - 0.072).abs() < 1e-6,
+        "spread {spread} s across 0 h"
+    );
 }
 
 #[tokio::test]
@@ -5099,7 +5118,7 @@ async fn a_dec_pulse_leaves_a_tracking_mounts_ra_where_it_was() {
     }
     tokio::time::sleep(Duration::from_millis(70)).await;
     let after = d.right_ascension().await.unwrap();
-    let change = (after - before).abs() * 3600.0;
+    let change = wrapped_hours_diff(before, after).abs() * 3600.0;
     assert!(
         change < RA_READ_SPREAD_BUDGET_S,
         "a Dec pulse must not move the reported RA of a tracking mount; it moved {change:.3} s"

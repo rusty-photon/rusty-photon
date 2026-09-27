@@ -736,8 +736,10 @@ residual) use the sample **projected to now**:
 - **Ordering.** The poll builds its sample over four round trips and
   publishes at the end; it replaces an axis only with a sample at
   least as new as the cached one, so it never overwrites a seed or a
-  motion-command re-read that landed meanwhile — and a motion-command
-  re-read follows the same rule against a poll that landed during it.
+  motion-command re-read that landed meanwhile — and every other writer
+  (a motion-command re-read, the synchronous `poll_axes_now` read that
+  `SetPark` and the slew watchers use) follows the same rule against a
+  poll that landed during it.
 
 The residual is the `:j` round trip — the stamp is taken on receipt,
 late by at most one round trip of motion — plus half a tick of

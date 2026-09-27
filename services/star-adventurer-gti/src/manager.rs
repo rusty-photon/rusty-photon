@@ -608,6 +608,13 @@ impl MountManager {
     /// caller's session, update the cached snapshot, and return the
     /// fresh snapshot.
     ///
+    /// The cache takes each axis through the same newer-only rule as the
+    /// background poll ([`MountSnapshot::merge_newer`]): a caller that
+    /// has not paused polling (`SetPark` reads live this way) can have a
+    /// background sample of one axis land between these requests, and
+    /// that newer sample stays. The returned snapshot is this call's own
+    /// read either way.
+    ///
     /// Used by the slew/park watcher loops *instead of* reading the
     /// background polling task's cached snapshot. The caller is
     /// responsible for ensuring the background polling task is paused
@@ -625,7 +632,7 @@ impl MountManager {
         let mut snap = MountSnapshot::default();
         poll_axis_via_session(self, session, Axis::Ra, &mut snap.ra).await?;
         poll_axis_via_session(self, session, Axis::Dec, &mut snap.dec).await?;
-        *self.snapshot.write().await = snap;
+        self.snapshot.write().await.merge_newer(&snap);
         Ok(snap)
     }
 
@@ -2615,5 +2622,30 @@ mod tests {
         let snap = m.snapshot().await;
         assert_eq!(snap.ra.step_period, 0);
         assert_eq!(snap.dec.step_period, 0);
+    }
+
+    #[tokio::test]
+    async fn poll_axes_now_keeps_a_newer_cached_sample() {
+        let m = manager();
+        let session = m.transport().acquire().await.unwrap();
+        let _pause = m.pause_background_polling();
+        // A sample stamped in the future stands in for a background poll
+        // that landed after this call's `:j`.
+        let later = AxisSnapshot {
+            position_ticks: 4_242,
+            ..tracking_sample(Instant::now() + Duration::from_secs(1))
+        };
+        m.snapshot.write().await.ra = later;
+        let polled = m.poll_axes_now(&session).await.unwrap();
+        assert_ne!(
+            polled.ra.position_ticks, 4_242,
+            "the call returns its own read"
+        );
+        assert_eq!(
+            m.snapshot().await.ra.position_ticks,
+            4_242,
+            "the newer sample stays"
+        );
+        session.close().await.unwrap();
     }
 }
