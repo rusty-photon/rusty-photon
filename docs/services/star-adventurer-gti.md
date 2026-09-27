@@ -704,6 +704,9 @@ residual) use the sample **projected to now**:
   period that follows a tracking-mode `:G` counts, and a goto `:G`
   clears it: a goto's `:I` is a slew speed, and a poll whose `:f`
   caught the axis still tracking must never pair that status with it.
+  A stop (`:K` / `:L`, or the last-disconnect safety stop) clears it
+  too, so a poll that catches the axis decelerating after the stop has
+  no rate to copy.
   An axis running in **tracking** mode moves at
   `tmr_freq / step_period` steps per second (times the axis'
   high-speed ratio in the fast regime), CW counting up — the rate the

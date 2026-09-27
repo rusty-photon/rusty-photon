@@ -396,6 +396,14 @@ impl CommandedStepPeriods {
         }
     }
 
+    /// A `:K` / `:L` went out: the axis is halting, so no rate is in
+    /// force any more. A poll that catches it still decelerating must
+    /// not copy the old period into a sample the stop's rate barrier no
+    /// longer covers. Every restart re-sends `:G` + `:I`.
+    fn stop(&self, axis: Axis) {
+        self.set_mode(axis, ModeKind::Goto);
+    }
+
     fn clear(&self) {
         self.ra.store(0, Ordering::SeqCst);
         self.dec.store(0, Ordering::SeqCst);
@@ -624,6 +632,7 @@ impl MountManager {
             Command::SetStepPeriod { axis, period } => self.step_periods.record(axis, period),
             Command::StartMotion(axis) => self.refresh_axis_samples(session, axis, false).await,
             Command::StopMotion(axis) | Command::InstantStop(axis) => {
+                self.step_periods.stop(axis);
                 self.refresh_axis_samples(session, axis, true).await;
             }
             _ => {}
@@ -777,6 +786,7 @@ fn build_hooks(
     let s_stop = Arc::clone(snapshot);
     let periods_hs = Arc::clone(step_periods);
     let periods_poll = Arc::clone(step_periods);
+    let periods_stop = Arc::clone(step_periods);
     let depth_poll = Arc::clone(poll_pause_depth);
     let p_sd = Arc::clone(parameters);
     let port_hs = Arc::clone(port_label);
@@ -808,8 +818,10 @@ fn build_hooks(
         // samples' rates are marked unknown until the next poll.
         on_last_disconnect: Box::new(move |conn| {
             let snapshot = Arc::clone(&s_stop);
+            let step_periods = Arc::clone(&periods_stop);
             Box::pin(async move {
                 let verdict = safety_stop(conn).await;
+                step_periods.stop(Axis::Both);
                 snapshot.write().await.mark_rates_unknown();
                 verdict
             })
@@ -2592,6 +2604,15 @@ mod tests {
         for axis in [Axis::Ra, Axis::Dec] {
             m.send(
                 &session,
+                Command::SetMotionMode {
+                    axis,
+                    mode: MotionMode::TRACKING,
+                },
+            )
+            .await
+            .unwrap();
+            m.send(
+                &session,
                 Command::SetStepPeriod {
                     axis,
                     period: 123_456,
@@ -2600,6 +2621,16 @@ mod tests {
             .await
             .unwrap();
         }
+        assert_eq!(
+            m.step_periods.get(Axis::Ra),
+            123_456,
+            "precondition: RA period recorded"
+        );
+        assert_eq!(
+            m.step_periods.get(Axis::Dec),
+            123_456,
+            "precondition: Dec period recorded"
+        );
         session.close().await.unwrap();
         // LazyAcquire: the next acquire re-runs the handshake.
         let session = m.transport().acquire().await.unwrap();
@@ -2792,5 +2823,40 @@ mod tests {
             tracking_sample(t0 + Duration::from_millis(150)),
         );
         assert_eq!(cached.step_period, PERIOD_40_PER_SEC);
+    }
+
+    #[test]
+    fn a_stop_forgets_the_axis_tracking_period() {
+        let periods = CommandedStepPeriods::default();
+        periods.set_mode(Axis::Both, ModeKind::Tracking);
+        periods.record(Axis::Both, PERIOD_40_PER_SEC);
+        periods.stop(Axis::Ra);
+        assert_eq!(periods.get(Axis::Ra), 0);
+        assert_eq!(
+            periods.get(Axis::Dec),
+            PERIOD_40_PER_SEC,
+            "only the stopped axis"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stop_command_clears_the_recorded_period() {
+        let m = manager();
+        let session = m.transport().acquire().await.unwrap();
+        for cmd in [
+            Command::SetMotionMode {
+                axis: Axis::Ra,
+                mode: MotionMode::TRACKING,
+            },
+            Command::SetStepPeriod {
+                axis: Axis::Ra,
+                period: PERIOD_40_PER_SEC,
+            },
+            Command::StopMotion(Axis::Ra),
+        ] {
+            m.send(&session, cmd).await.unwrap();
+        }
+        assert_eq!(m.step_periods.get(Axis::Ra), 0);
+        session.close().await.unwrap();
     }
 }
