@@ -125,7 +125,11 @@ containing:
   (features, SDK provenance and version), the device identity (model +
   serial as minted into the ASCOM `UniqueID`), the ConformU version, the
   verdicts, and anything platform-specific the run taught us.
-- **The unmodified ConformU output** — the `.log` files above.
+- **The unmodified ConformU output** — the `.log` files above. The one
+  edit permitted is the privacy scrub below: a private address or
+  hostname replaced by a placeholder such as `<rig-host>`, with the
+  README naming the lines that were touched, so a reader can tell the
+  scrub from the evidence.
 - **`conformance-results.json`** — the machine-readable verdict.
 
 Then:

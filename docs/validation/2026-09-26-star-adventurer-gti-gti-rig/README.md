@@ -37,8 +37,14 @@ still leaves a nonzero run.
 | ConformU | 4.5.0 build 53834 (`49ab847`, the `v4.5.0` tag), `linux-arm64`, run **on the rig itself** as a transient systemd unit, invoked as `conformu conformance <url> -s <settings>` — the form [hardware-validation.md](../../skills/hardware-validation.md) prescribes. **Every test group ran.** The settings file carried the in-tree `tests/conformu_integration.rs` selection (`TestSideOfPierRead = true`, `TestSideOfPierWrite = false`, `TelescopeExtendedRateOffsetTests = false`, `TelescopeFirstUseTests = false`), but the URL-argument `conformance` verb calls ConformU's `SetFullTest()` before running — its own help text reads *"with all tests enabled"* — so those four flags were overridden, and the `SideOfPier Write` flip test, the side-of-pier model tests, the first-use and the extended rate-offset groups all executed. Only the `conformance-settings` / `alpacaprotocol-settings` verbs honour test selection (`crates/bdd-infra/src/conformu.rs` documents the same behaviour). The file's connection settings (`Https`, credentials) and tolerances (1″ in Dec, 0.07 s in RA) were used as written. The in-tree integration test passes the same flags to the same verb, so they are inert there too — [#1337](https://github.com/rusty-photon/rusty-photon/issues/1337) |
 | Operations | rp stopped for the duration (one orchestrator at a time), operator at the pier with a hand on the power throughout. Start state: mount idle, tracking off, at the Park 3 pose (encoders RA −907200 / Dec +725760 ticks). Because the full test set runs, a mount with `CanSetPierSide = true` **will** be put through the `SideOfPier Write` test: slews to HA −3 at Dec 0, then to two minutes east of the meridian, tracks across it for seven minutes, then flips through the pole — plan the sweep for it |
 
-Log timestamps are the rig's local time (PDT, UTC−7): the run spans
-17:32–17:53 on 2026-09-26, i.e. 00:32–00:53 UTC on 2026-09-27.
+Log timestamps are the rig's local time, Pacific Daylight Time (UTC−7):
+the run spans 17:32–17:53 on 2026-09-26, i.e. 00:32–00:53 UTC on 2026-09-27.
+ConformU's `TimeCheck` lines in `conformance.log` name the zone as
+*"(UTC-08:00) Pacific Time (Los Angeles) offset: -8 hours"* — that is the
+zone's **standard** offset, the way .NET labels a time zone, not the offset
+in force. The same lines carry the proof of the actual offset: *"PC UTCDate:
+27-Sep-2026 00:35:37"* is logged at local `17:35:37`, seven hours apart, and
+the mount's own `UTCDate` agrees to the millisecond.
 
 ## Verdicts
 
