@@ -94,17 +94,31 @@ the published range. The parser does not clamp or range-check the count,
 the same as every other `PA` field: a count above 1024 is outside the
 device's contract, and is published as read rather than hidden.
 
-The divisor was checked against the box's own energy counters, because a
-fixture built from the vendor table only confirms the table. With the unit
-at a steady load, the watt-hour counter in `PS` advanced 1.26 Wh over
-1764 s at 12.0 V, a mean draw of 0.214 A, while `PA` reported a
-steady count of 14. That is 65.3 counts per Amp (64.8-65.9 at the
-counter's 0.01 Wh resolution), which admits 65 and rules out a centi-amp
-reading: `÷ 100` would put the draw at 0.14 A.
+The divisor was checked against the box's own amp-hour counter, because a
+fixture built from the vendor table only confirms the table. Two Gen2C
+units were measured, each at a steady load, over a delta of `PS`'s
+amp-hour field (resolution 0.01 Ah):
+
+| Unit | `PA` count | Amp-hours | Counts per Amp | `÷ 100` would predict |
+|------|-----------|-----------|----------------|------------------------|
+| dev box, quad off | 14 | +0.10 over 1764 s | 62.4-76.2 | +0.069 Ah |
+| pier1, quad on | 41.1 (mean) | +0.16 over 897 s | 60.2-68.2 | +0.102 Ah |
+
+Both admit 65 and rule out a centi-amp reading, and two loads a factor of
+three apart through the same scale are what a linear, zero-offset count
+predicts. Together they bound the divisor to 62.4-68.2.
+
+**`PS`'s watt-hour field is not an energy integral, so it cannot calibrate
+anything.** It *falls* under a rising load: on pier1 it read 296.03 Wh,
+then 295.57 Wh, as the count climbed from 38 to 42 and the input sagged
+from 12.0 to 11.9 V, and it fell in 55 of 180 five-second intervals. It
+tracks cumulative amp-hours times the present input voltage (Wh / Ah went
+11.956 → 11.925 over the run), so a delta of it folds in any voltage
+drift. Use the amp-hour field.
 
 **On a Gen2C the count is the total draw, not the Quad 12V group.** The
-vendor table labels this field the Quad 12V outputs' current. Over the
-same run the quad output was off, and `PC` (*Print Power Metrics*, whose
+vendor table labels this field the Quad 12V outputs' current. Over the dev
+box's run the quad output was off, and `PC` (*Print Power Metrics*, whose
 currents are already in Amps) reported `total_current` 0.2 A and
 `current_12V_outputs` 0.0 A while `PA` sent 14 counts, 0.215 A. The field
 follows the total, which is why switch 11 is Total Current. The driver
@@ -132,7 +146,7 @@ count of the sense field is about 0.015 A.
 |----|------|------|-----|-----|------|--------|
 | 6 | Average Current | Amps | 0 | 20 | 0.01 | `PS` command |
 | 7 | Amp Hours | Ah | 0 | 9999 | 0.01 | `PS` command |
-| 8 | Watt Hours | Wh | 0 | 99999 | 0.1 | `PS` command |
+| 8 | Watt Hours | Wh | 0 | 99999 | 0.1 | `PS` command, as the device reports it: amp-hours × present voltage, not an energy integral (see [the sense count](#the-current-is-a-sense-count-not-amps)) |
 | 9 | Uptime | Hours | 0 | 99999 | 0.01 | `PS` command |
 
 ### Read-Only Switches - Sensor Data (CanWrite = false)
