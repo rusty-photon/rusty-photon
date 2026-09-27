@@ -1073,7 +1073,7 @@ needs, and "we considered it and declined" is not the same answer as
 
   | # | Rule | Holds when | Today |
   |---|------|-----------|-------|
-  | 1 | The guiding train gets a sweep of its own | it has its own motorised focuser (a separate guide scope, an OAG with a motorised helical) | — |
+  | 1 | The guiding train gets a sweep of its own | it has its own motorised focuser (a separate guide scope, an OAG with a motorised helical) | such a rig exists: **pier1** has a motorised focuser on its guide path (operator, 2026-09-27); whether it shares a focuser with the imaging train (rules 2–3) or has a wheel in the guide path (rule 5) is not yet recorded |
   | 2 | The provider orders the walk so the guide step runs after the imaging train's — that guide step being `rp`'s PHD2-metric sweep (rule 8), never the provider's facade capture sweep, which is a direct training run's alone | rule 1 holds (a guiding train whose only focuser is the shared one is rule 4, and gets no sweep) **and** the two trains **share** a focuser **and** the call is `focus_train {shared: true}` addressed to the **guiding** train: `af_sequence` builds the plan for the addressed train, so it is the guiding train's plan that holds the shared imaging capture step and then the guide step, while the imaging train's own plan never contains a guide step (`services/rp/src/equipment/trains.rs`) — provided the shared focuser is terminal in an imaging train. Two topologies break that: one terminal nowhere falls back to the addressed train in `af_sequence`, which for the guiding train makes it a second `metric: "guide"` step with no imaging capture before it; and one terminal *only* in the guiding train (imaging `[shared, own, cam]`, guiding `[shared, guide-cam]`) is run in the guiding train, so the **imaging** plan gets a `metric: "guide"` step before its own focuser and no camera ever measures the shared one through the better optics. Whether `rp` rejects those topologies at load or S10 defines their sequencing is S10's to decide, right after the refusal | the plan carries that order and the escalation walks it; the redundant step is not yet suppressed |
   | 3 | The caller orders the two trains, imaging first | every other case: the trains share **no** focuser (each plan is per train and cannot sequence the other), **or** the call is a direct training run — `focus_train` without `shared`, or `determine_filter_offsets`, on the guiding train — which reads the plan only for the guiding handshake, never for ordering, whether or not an upstream focuser is shared | session workflow's or the operator's job; S10 states it |
   | 4 | No provider training sweep and no facade capture; rule 8's in-session metric sweep is untouched | the guide path sits behind the imaging focuser **with no focuser of its own** | `af_sequence` still yields a redundant `metric: "guide"` step |
@@ -1331,8 +1331,10 @@ is that plan's, not this one's: C6's capture completion watermark.
 Note what the ordering rule does to its reach: a guide path behind the
 imaging train's focuser — the duo camera, the unmotorised OAG — needs
 none of this, because focusing the imaging train focuses it. S10 earns
-its place only on a rig with an independently focusable guider, which
-is worth confirming before it is scheduled ahead of S8, S9 or S11. S11 is a config field, the read behind it, and the record-identity
+its place only on a rig with an independently focusable guider, and
+one exists: pier1 has a motorised focuser on its guide path (O4
+rule 1, recorded 2026-09-27), so S10 has a rig and the question is
+only its order against S8, S9 and S11 and the C7 reconciliation. S11 is a config field, the read behind it, and the record-identity
 change that keeps a swapped probe from looking fresh; it does not
 extend the refocus trigger, which stays keyed to a train's own
 focuser.
