@@ -535,12 +535,15 @@ mod tests {
     /// leg of the Bazel target simply selects nothing here.
     #[cfg(unix)]
     mod stand_in_conformu {
+        use std::ffi::OsString;
         use std::os::unix::fs::PermissionsExt;
-        use std::path::PathBuf;
+        use std::path::{Path, PathBuf};
 
         use tempfile::TempDir;
 
-        use crate::conformu::{run_mode, ConfigurationAlerts};
+        use crate::conformu::{
+            run_conformu, run_conformu_from_settings, run_mode, ConfigurationAlerts, ConformuRun,
+        };
         use crate::scratch;
 
         const CLEAN_WITH_ALERTS: &str =
@@ -555,14 +558,122 @@ mod tests {
         /// sequence removes the overlap.
         static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-        /// A `conformu` that ignores its arguments, prints `summary` and exits
-        /// with `code`. The guard owns the script's directory.
+        /// A `conformu` that appends its arguments to `args.log` beside itself
+        /// (one line per invocation), prints `summary` and exits with `code`.
+        /// The guard owns the script's directory.
         fn stand_in(summary: &str, code: i32) -> (TempDir, PathBuf) {
             let dir = scratch::new_dir("stand-in-conformu-").unwrap();
             let path = dir.path().join("conformu");
-            std::fs::write(&path, format!("#!/bin/sh\necho '{summary}'\nexit {code}\n")).unwrap();
+            let log = dir.path().join("args.log");
+            let script = format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\necho '{summary}'\nexit {code}\n",
+                log = log.display()
+            );
+            std::fs::write(&path, script).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
             (dir, path)
+        }
+
+        /// The argument lines the stand-in recorded, in call order.
+        fn invocations(dir: &TempDir) -> Vec<String> {
+            std::fs::read_to_string(dir.path().join("args.log"))
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+
+        /// Points `CONFORMU_PATH` at `value` (or unsets it) for the guard's
+        /// lifetime and restores whatever was there before, panic or not. The
+        /// runners read the variable directly, and these tests already take
+        /// turns, so the swap is not observed by anyone else.
+        struct ConformuPath(Option<OsString>);
+
+        impl ConformuPath {
+            fn set(value: Option<&Path>) -> Self {
+                let previous = std::env::var_os("CONFORMU_PATH");
+                match value {
+                    Some(path) => std::env::set_var("CONFORMU_PATH", path),
+                    None => std::env::remove_var("CONFORMU_PATH"),
+                }
+                Self(previous)
+            }
+        }
+
+        impl Drop for ConformuPath {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(previous) => std::env::set_var("CONFORMU_PATH", previous),
+                    None => std::env::remove_var("CONFORMU_PATH"),
+                }
+            }
+        }
+
+        #[tokio::test]
+        async fn run_conformu_hands_a_settings_file_and_the_device_url_to_both_suites() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let (dir, conformu) = stand_in("Congratulations, no errors", 0);
+            let _env = ConformuPath::set(Some(&conformu));
+
+            let outcome = run_conformu("telescope", "http://127.0.0.1:1/", 0, None)
+                .await
+                .unwrap();
+
+            assert_eq!(outcome, ConformuRun::Passed);
+            let calls = invocations(&dir);
+            assert_eq!(calls.len(), 2, "{calls:?}");
+            for (call, mode) in calls.iter().zip(["alpacaprotocol", "conformance"]) {
+                assert!(
+                    call.starts_with(&format!("{mode} --settingsfile ")),
+                    "{call}"
+                );
+                assert!(
+                    call.ends_with("/conformu-settings.json http://127.0.0.1:1/api/v1/telescope/0"),
+                    "{call}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn run_conformu_from_settings_runs_both_settings_suites_on_the_given_file() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let (dir, conformu) = stand_in(
+                "Your device had 0 issues, 0 errors and 1 configuration alert",
+                1,
+            );
+            let _env = ConformuPath::set(Some(&conformu));
+
+            let outcome = run_conformu_from_settings(Path::new("/settings/bridge.json"))
+                .await
+                .unwrap();
+
+            assert_eq!(outcome, ConformuRun::Passed);
+            assert_eq!(
+                invocations(&dir),
+                [
+                    "alpacaprotocol-settings --settingsfile /settings/bridge.json",
+                    "conformance-settings --settingsfile /settings/bridge.json",
+                ]
+            );
+        }
+
+        #[tokio::test]
+        async fn both_runners_skip_when_conformu_path_is_unset_or_empty() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+
+            for value in [None, Some(Path::new(""))] {
+                let _env = ConformuPath::set(value);
+                let url_run = run_conformu("focuser", "http://127.0.0.1:1", 0, None)
+                    .await
+                    .unwrap();
+                let settings_run = run_conformu_from_settings(Path::new("/nowhere.json"))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    (url_run, settings_run),
+                    (ConformuRun::Skipped, ConformuRun::Skipped)
+                );
+            }
         }
 
         #[tokio::test]
