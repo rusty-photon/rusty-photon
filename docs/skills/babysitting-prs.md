@@ -252,8 +252,16 @@ wrong answer on #902:
 ### When no checks appear at all
 
 `gh pr checks` saying *"no checks reported"* is not a slow queue — it
-means no run was created. Before debugging the PR, check whether runs
-are being created **repo-wide** (`gh run list --limit 20`) and whether
+means no run was created. Check the cheap cause first: **a PR that is
+`CONFLICTING` gets no `pull_request` runs at all**, because GitHub cannot
+build the merge commit those runs check out — while Copilot's own run,
+which works on the head commit, still appears, so the PR looks reviewed
+but untested. `gh pr view <n> --json mergeable` answers it; merging
+`origin/main` into the branch (step 3 of the loop) makes the next push
+run normally. On PR #1335 two pushes in a row went un-run this way
+after `main` moved under the branch, with other PRs' runs landing
+throughout. Only then look for an Actions-side cause: whether runs are
+being created **repo-wide** (`gh run list --limit 20`) and whether
 [githubstatus.com](https://www.githubstatus.com/api/v2/summary.json)
 shows an Actions incident. During the 2026-08-06 Actions outage, pushes
 produced Copilot runs but no `bazel`/`check` runs at all, while other

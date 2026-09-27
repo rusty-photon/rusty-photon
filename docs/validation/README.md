@@ -5,8 +5,8 @@ per-service design docs (`docs/services/<service>.md`, "Real-hardware
 validation") narrate *what was learned*, this directory preserves *the
 evidence*: which commit was tested, on what platform, against which physical
 device, and the ConformU output unmodified except for the privacy scrub the
-skill doc permits (a private address replaced by a placeholder, called out
-in the record's README). A row marked **scoped record**
+skill doc permits (a private address or hostname replaced by a placeholder,
+called out in the record's README). A row marked **scoped record**
 is the one sanctioned exception to all-zero: its README names the open
 issues that carry every remaining finding, and what must land before a clean
 run can replace it — see
