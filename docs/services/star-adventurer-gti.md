@@ -2616,8 +2616,10 @@ this service's runs, newest first:
   the pointing-state reads at HA ±3 / ±9 pass. The 11 issues are all
   RA: seven #1299 offsets and four cross-axis RA readings during Dec
   pulses (issue #1334). Filed as a **scoped** record — it does not meet
-  the all-zero rule while #1299 is open, and its README says so; a
-  clean two-suite record is owed once #1299 lands.
+  the all-zero rule while those two RA defects are open, and its README
+  says so; a clean two-suite record is owed once **both** #1299 and
+  #1334 have landed, since either one alone still leaves issues on the
+  board.
 - **2026-09-21 — #1295 PulseGuide rate fix** on the rig from a branch
   build: Dec North/South 5 s at 37.5–38.4″ (was 46.9 / 47.3″) and the
   RA offset at 2 / 5 / 10 s. Results on

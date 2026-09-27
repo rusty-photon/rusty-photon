@@ -4,7 +4,11 @@ Successful **real-hardware ConformU runs**, one directory per run. Where the
 per-service design docs (`docs/services/<service>.md`, "Real-hardware
 validation") narrate *what was learned*, this directory preserves *the
 evidence*: which commit was tested, on what platform, against which physical
-device, and the unmodified ConformU output.
+device, and the unmodified ConformU output. A row marked **scoped record**
+is the one sanctioned exception to all-zero: its README names the open
+issues that carry every remaining finding, and what must land before a clean
+run can replace it — see
+[hardware-validation.md § Scoped records](../skills/hardware-validation.md#scoped-records--the-one-exception-and-what-it-must-carry).
 
 ## Runs
 
@@ -32,7 +36,7 @@ device, and the unmodified ConformU output.
 ## Adding a run
 
 The procedure — the version gate, the ConformU invocations, what the
-record must contain, and the success-only rule — is
+record must contain, the success-only rule and its one scoped exception — is
 [docs/skills/hardware-validation.md](../skills/hardware-validation.md).
 Read it before running; a record made against a stale ConformU is not
 evidence.

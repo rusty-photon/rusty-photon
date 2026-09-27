@@ -82,6 +82,36 @@ Both suites must be clean. In `conformance-results.json`, `ErrorCount`,
 `IssueCount`, `ConfigurationAlertCount` and `TimingIssuesCount` must
 **all** be 0 for the run to be recorded.
 
+### Scoped records — the one exception, and what it must carry
+
+A run that is not all-zero may still be recorded as a **scoped record**
+when the evidence it carries is worth having before the remaining
+defects are fixed — the case is a run made to prove one specific fix on
+hardware while unrelated, already-filed defects keep the counts nonzero.
+It is an exception by decision, not a softer default, and it holds only
+when every one of these is true:
+
+- **Every remaining error or issue is attributable to an open issue that
+  already exists**, named in the record's README. A finding with no issue
+  is a failed run, and gets one filed instead of a record.
+- **None of the remaining findings is in the behaviour the run set out to
+  validate.** A scoped record proves one thing and says which; it does
+  not quietly narrow what "pass" means.
+- **The decision to file is recorded outside the record** — on the issue
+  that asked for the run — so the README reports a decision rather than
+  making one.
+- **The README's first paragraphs and the index row both say "scoped
+  record"** and name the open issues, so a reader can never mistake it
+  for an all-zero proof.
+- **A clean run is still owed**, and the README says what has to land
+  before it can be made. Filing the scoped record does not discharge
+  that.
+
+The first such record is
+[2026-09-26-star-adventurer-gti-gti-rig](../validation/2026-09-26-star-adventurer-gti-gti-rig/README.md):
+the counterweight-up PulseGuide direction, with the RA-axis findings all
+carried by two open issues.
+
 Working against the field rig rather than a local device:
 [rig-development.md](rig-development.md).
 
@@ -112,7 +142,9 @@ appear (public repository).
 ## What does not belong here
 
 - **Failed runs.** They are issues, not records. This directory is a
-  proof trail, not a debugging journal.
+  proof trail, not a debugging journal. The only nonzero run that belongs
+  here is a *scoped record* meeting every condition in § "Scoped records"
+  above — anything short of that is a failed run.
 - **CI conformance behaviour** — when `conformu.yml` runs, the nightly
   cron, the tracking issue it opens: [pre-push.md](pre-push.md)
   § "conformu.yml (rolling)".
