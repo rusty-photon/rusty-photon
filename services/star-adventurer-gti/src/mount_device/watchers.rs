@@ -154,13 +154,13 @@ pub(super) async fn watcher_poll_with_retry(
                 debug!(
                     context = context,
                     ra_ticks = snap.ra.position_ticks,
-                    ra_running = snap.ra.running,
-                    ra_blocked = snap.ra.blocked,
-                    ra_goto = snap.ra.goto,
+                    ra_running = snap.ra.running(),
+                    ra_blocked = snap.ra.blocked(),
+                    ra_goto = snap.ra.goto(),
                     dec_ticks = snap.dec.position_ticks,
-                    dec_running = snap.dec.running,
-                    dec_blocked = snap.dec.blocked,
-                    dec_goto = snap.dec.goto,
+                    dec_running = snap.dec.running(),
+                    dec_blocked = snap.dec.blocked(),
+                    dec_goto = snap.dec.goto(),
                     "watcher snapshot"
                 );
                 return Ok(snap);
@@ -325,10 +325,10 @@ async fn run_completion_watcher<C, F>(
         // OTA isn't at the encoder-0 home pose, so subsequent
         // `Unpark + slew` would compute a wrong delta) — which is
         // enforced here by returning before the finalizer runs.
-        if snap.ra.blocked || snap.dec.blocked {
+        if snap.ra.blocked() || snap.dec.blocked() {
             tracing::warn!(
-                ra_blocked = snap.ra.blocked,
-                dec_blocked = snap.dec.blocked,
+                ra_blocked = snap.ra.blocked(),
+                dec_blocked = snap.dec.blocked(),
                 context = context,
                 "axis reports Blocked — aborting via :L"
             );
@@ -339,7 +339,7 @@ async fn run_completion_watcher<C, F>(
             slew_in_progress.store(false, Ordering::SeqCst);
             break;
         }
-        if snap.ra.running || snap.dec.running {
+        if snap.ra.running() || snap.dec.running() {
             continue;
         }
         match on_axes_stopped(snap, &session).await {
@@ -530,6 +530,9 @@ impl SlewWatchCtx {
         else {
             return None;
         };
+        // The sample is a wire round trip or two old; bring it to the
+        // instant the LST below is taken (issue #1334).
+        let snap = &self.manager.project_to_now(snap, &params);
         // ERFA refuses the host UTC if `eraCal2jd` rejects the year
         // (below `IYMIN = -4799`). A leap-second-table-out-of-range
         // clock returns `Ok` with a warning, not an error — see the

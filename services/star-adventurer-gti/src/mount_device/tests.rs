@@ -2378,13 +2378,13 @@ async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
     // Wait for the background poll to ingest the new wire state.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
-        if d.manager.snapshot().await.ra.running {
+        if d.manager.snapshot().await.ra.running() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(
-        d.manager.snapshot().await.ra.running,
+        d.manager.snapshot().await.ra.running(),
         "precondition: snapshot must reflect RA running=true"
     );
     // slew_in_progress flag is still false — only the wire
@@ -5010,5 +5010,117 @@ async fn azimuth_altitude_and_utc_date_return_well_defined_values_when_connected
     assert!(
         utc > std::time::SystemTime::UNIX_EPOCH,
         "utc_date must be after the epoch"
+    );
+}
+
+// ---------- RA reads pair the encoder and LST at one instant (issue #1334) ----------
+//
+// These run on the real clock: the mock's motors and the LST both read
+// wall time, so a paused tokio clock would move one and not the other.
+// Each asserts across a window of reads (testing.md §6.9) rather than
+// sampling once; the window spans several poll intervals at a step that
+// does not divide the 200 ms default, so it visits every poll phase. The
+// 0.05 s budget sits above the mock's tick rounding (one RA tick is
+// 0.024 s) and well below the one-poll artefact it guards against
+// (0.2 s of RA).
+
+/// Budget for read-to-read disagreement, in seconds of RA.
+const RA_READ_SPREAD_BUDGET_S: f64 = 0.05;
+
+/// `b − a` in hours, wrapped into `[−12, 12)`. RA and LST each wrap at
+/// 24 h, so a raw difference (or an `LST − RA`) can jump by a whole day
+/// mid-window when either crosses 0 h.
+fn wrapped_hours_diff(a: f64, b: f64) -> f64 {
+    (b - a + 12.0).rem_euclid(24.0) - 12.0
+}
+
+/// Spread (max − min) of `values` (hours, on the 24 h circle) around
+/// the first one, in seconds of time.
+fn spread_seconds(values: &[f64]) -> f64 {
+    let first = values.first().copied().unwrap_or_default();
+    let (lo, hi) = values
+        .iter()
+        .map(|v| wrapped_hours_diff(first, *v))
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), d| {
+            (lo.min(d), hi.max(d))
+        });
+    (hi - lo) * 3600.0
+}
+
+#[test]
+fn spread_is_measured_across_the_24h_wrap() {
+    let spread = spread_seconds(&[23.999_99, 0.000_01]);
+    assert!(
+        (spread - 0.072).abs() < 1e-6,
+        "spread {spread} s across 0 h"
+    );
+}
+
+#[tokio::test]
+async fn ra_reads_of_a_tracking_mount_agree_across_the_poll_cycle() {
+    let d = connected_device().await;
+    d.set_tracking(true).await.unwrap();
+    let mut reads = Vec::new();
+    for _ in 0..30 {
+        reads.push(d.right_ascension().await.unwrap());
+        tokio::time::sleep(Duration::from_millis(37)).await;
+    }
+    let spread = spread_seconds(&reads);
+    assert!(
+        spread < RA_READ_SPREAD_BUDGET_S,
+        "a tracking mount's RA must not depend on where the read falls in the \
+         poll cycle; reads spread {spread:.3} s"
+    );
+}
+
+#[tokio::test]
+async fn ra_of_a_stopped_mount_advances_with_sidereal_time() {
+    // The other half of the contract: a stopped encoder is *not*
+    // carried forward, so hour angle (LST − RA) holds still while RA
+    // advances with the sky. Pairing every sample with the LST of its
+    // capture instant instead would break this one.
+    let d = connected_device().await;
+    let mut hour_angles = Vec::new();
+    for _ in 0..30 {
+        let ra = d.right_ascension().await.unwrap();
+        let lst = d.sidereal_time().await.unwrap();
+        hour_angles.push(lst - ra);
+        tokio::time::sleep(Duration::from_millis(37)).await;
+    }
+    let spread = spread_seconds(&hour_angles);
+    assert!(
+        spread < RA_READ_SPREAD_BUDGET_S,
+        "a stopped mount's hour angle must hold still; it spread {spread:.3} s"
+    );
+}
+
+#[tokio::test]
+async fn a_dec_pulse_leaves_a_tracking_mounts_ra_where_it_was() {
+    // ConformU's cross-axis check: RA read before a Dec pulse and after
+    // it completes must agree. The pulse length and the wait after it
+    // are deliberately not whole poll intervals — with instant mock
+    // stops and a 5 s pulse (25 × 200 ms) both reads used to land on
+    // the same poll phase, which is how the mock hid the hardware's
+    // ±0.2 s readings.
+    let d = connected_device().await;
+    d.set_tracking(true).await.unwrap();
+    let before = d.right_ascension().await.unwrap();
+    d.pulse_guide(GuideDirection::North, Duration::from_millis(730))
+        .await
+        .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while d.is_pulse_guiding().await.unwrap() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the pulse never completed"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(70)).await;
+    let after = d.right_ascension().await.unwrap();
+    let change = wrapped_hours_diff(before, after).abs() * 3600.0;
+    assert!(
+        change < RA_READ_SPREAD_BUDGET_S,
+        "a Dec pulse must not move the reported RA of a tracking mount; it moved {change:.3} s"
     );
 }

@@ -208,7 +208,11 @@ impl Telescope for MountDevice {
 
     async fn right_ascension(&self) -> ASCOMResult<f64> {
         self.ensure_connected().await?;
-        let snap = self.manager.snapshot().await;
+        // Encoder carried forward to *now*, to pair with the LST taken
+        // now: the raw poll sample is up to a poll old, and while
+        // tracking that reads the sky off by the sample's age
+        // (issue #1334).
+        let snap = self.manager.snapshot_now().await;
         let params = self
             .manager
             .parameters()
@@ -233,7 +237,7 @@ impl Telescope for MountDevice {
 
     async fn declination(&self) -> ASCOMResult<f64> {
         self.ensure_connected().await?;
-        let snap = self.manager.snapshot().await;
+        let snap = self.manager.snapshot_now().await;
         let params = self
             .manager
             .parameters()
@@ -302,8 +306,8 @@ impl Telescope for MountDevice {
             return Ok(true);
         }
         let snap = self.manager.snapshot().await;
-        let ra_slewing = snap.ra.running && snap.ra.goto;
-        let dec_slewing = snap.dec.running && snap.dec.goto;
+        let ra_slewing = snap.ra.running() && snap.ra.goto();
+        let dec_slewing = snap.dec.running() && snap.dec.goto();
         Ok(ra_slewing || dec_slewing)
     }
 
@@ -430,7 +434,7 @@ impl Telescope for MountDevice {
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(ASCOMError::from)?;
-        let snap = self.manager.snapshot().await;
+        let snap = self.manager.snapshot_now().await;
         let current_side = side_of_pier_calc(
             DecTicks::new(snap.dec.position_ticks),
             Cpr::new(params.cpr_dec),
@@ -499,7 +503,7 @@ impl Telescope for MountDevice {
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(ASCOMError::from)?;
-        let snap = self.manager.snapshot().await;
+        let snap = self.manager.snapshot_now().await;
         let current_side = side_of_pier_calc(
             DecTicks::new(snap.dec.position_ticks),
             Cpr::new(params.cpr_dec),
@@ -648,7 +652,7 @@ impl Telescope for MountDevice {
         // Rejecting a sync that would put the encoder outside the safe
         // mechanical envelope stays: a bad sync lets the *next*
         // tracking step push the OTA into a hard stop.
-        let snap = self.manager.snapshot().await;
+        let snap = self.manager.snapshot_now().await;
         let current_side = side_of_pier_calc(
             DecTicks::new(snap.dec.position_ticks),
             Cpr::new(params.cpr_dec),
@@ -758,7 +762,7 @@ impl Telescope for MountDevice {
         // reduces to the pre-Phase-6 pipeline. With it enabled, a
         // flip slew may be chosen — see the design doc's
         // [§"Meridian flip"](../../../../docs/services/star-adventurer-gti.md#meridian-flip).
-        let snap = self.manager.snapshot().await;
+        let snap = self.manager.snapshot_now().await;
         let current_side = side_of_pier_calc(
             DecTicks::new(snap.dec.position_ticks),
             Cpr::new(params.cpr_dec),
@@ -1005,7 +1009,7 @@ impl Telescope for MountDevice {
                     .map_err(ASCOMError::from)
             })
             .await?;
-        if snap.ra.running || snap.dec.running {
+        if snap.ra.running() || snap.dec.running() {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "SetPark refused while an axis is running per the wire snapshot",
