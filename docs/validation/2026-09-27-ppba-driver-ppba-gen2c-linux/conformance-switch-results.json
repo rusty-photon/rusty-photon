@@ -1,0 +1,680 @@
+{
+  "ErrorCount": 0,
+  "IssueCount": 0,
+  "ConfigurationAlertCount": 0,
+  "TimingIssuesCount": 0,
+  "TimingCount": 167,
+  "Errors": [],
+  "Issues": [],
+  "ConfigurationAlerts": [],
+  "Timings": [
+    {
+      "Key": "Connect",
+      "Value": "At 12:07:35.200 Connect                   0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "InterfaceVersion",
+      "Value": "At 12:07:35.205 InterfaceVersion          0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Connected",
+      "Value": "At 12:07:35.206 Connected                 0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Description",
+      "Value": "At 12:07:35.208 Description               0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DriverInfo",
+      "Value": "At 12:07:35.208 DriverInfo                0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DriverVersion",
+      "Value": "At 12:07:35.209 DriverVersion             0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Name",
+      "Value": "At 12:07:35.210 Name                      0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SupportedActions",
+      "Value": "At 12:07:35.211 SupportedActions          0.002 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DeviceState",
+      "Value": "At 12:07:35.227 DeviceState               0.010 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MaxSwitch",
+      "Value": "At 12:07:35.231 MaxSwitch                 0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchName (0)",
+      "Value": "At 12:07:35.328 SwitchName (0)            0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (0)",
+      "Value": "At 12:07:35.329 GetSwitchDescription (0)  0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (0)",
+      "Value": "At 12:07:35.330 MinSwitchValue (0)        0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (0)",
+      "Value": "At 12:07:35.330 MinSwitchValue (0)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (0)",
+      "Value": "At 12:07:35.332 SwitchStep (0)            0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (0)",
+      "Value": "At 12:07:35.334 CanWrite (0)              0.002 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (0)",
+      "Value": "At 12:07:35.334 CanAsync (0)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (0)",
+      "Value": "At 12:07:35.335 GetSwitch (0)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (0)",
+      "Value": "At 12:07:35.837 MinSwitchValue (0)        0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SetSwitch (0)",
+      "Value": "At 12:07:36.427 SetSwitch (0)             0.086 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SetSwitchValue (0)",
+      "Value": "At 12:07:47.700 SetSwitchValue (0)        0.085 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SwitchName (1)",
+      "Value": "At 12:08:16.848 SwitchName (1)            0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (1)",
+      "Value": "At 12:08:16.848 GetSwitchDescription (1)  0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (1)",
+      "Value": "At 12:08:16.848 MinSwitchValue (1)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (1)",
+      "Value": "At 12:08:16.849 MinSwitchValue (1)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (1)",
+      "Value": "At 12:08:16.849 SwitchStep (1)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (1)",
+      "Value": "At 12:08:16.849 CanWrite (1)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (1)",
+      "Value": "At 12:08:16.850 CanAsync (1)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (1)",
+      "Value": "At 12:08:16.850 GetSwitch (1)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (1)",
+      "Value": "At 12:08:17.351 MinSwitchValue (1)        0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SetSwitch (1)",
+      "Value": "At 12:08:17.939 SetSwitch (1)             0.086 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SetSwitchValue (1)",
+      "Value": "At 12:08:29.213 SetSwitchValue (1)        0.085 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SwitchName (2)",
+      "Value": "At 12:08:58.377 SwitchName (2)            0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (2)",
+      "Value": "At 12:08:58.377 GetSwitchDescription (2)  0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (2)",
+      "Value": "At 12:08:58.378 MinSwitchValue (2)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (2)",
+      "Value": "At 12:08:58.378 MinSwitchValue (2)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (2)",
+      "Value": "At 12:08:58.378 SwitchStep (2)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (2)",
+      "Value": "At 12:08:58.378 CanWrite (2)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (2)",
+      "Value": "At 12:08:58.378 CanAsync (2)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (2)",
+      "Value": "At 12:08:58.379 GetSwitch (2)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (2)",
+      "Value": "At 12:08:58.881 MinSwitchValue (2)        0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SetSwitch (2)",
+      "Value": "At 12:08:59.533 SetSwitch (2)             0.150 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SetSwitchValue (2)",
+      "Value": "At 12:09:11.014 SetSwitchValue (2)        0.165 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SwitchName (3)",
+      "Value": "At 12:11:52.698 SwitchName (3)            0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (3)",
+      "Value": "At 12:11:52.698 GetSwitchDescription (3)  0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (3)",
+      "Value": "At 12:11:52.698 MinSwitchValue (3)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (3)",
+      "Value": "At 12:11:52.699 MinSwitchValue (3)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (3)",
+      "Value": "At 12:11:52.699 SwitchStep (3)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (3)",
+      "Value": "At 12:11:52.699 CanWrite (3)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (3)",
+      "Value": "At 12:11:52.699 CanAsync (3)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (3)",
+      "Value": "At 12:11:52.700 GetSwitch (3)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (3)",
+      "Value": "At 12:11:53.202 MinSwitchValue (3)        0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SetSwitch (3)",
+      "Value": "At 12:11:53.854 SetSwitch (3)             0.150 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SetSwitchValue (3)",
+      "Value": "At 12:12:05.303 SetSwitchValue (3)        0.133 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SwitchName (4)",
+      "Value": "At 12:14:46.987 SwitchName (4)            0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (4)",
+      "Value": "At 12:14:46.988 GetSwitchDescription (4)  0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (4)",
+      "Value": "At 12:14:46.988 MinSwitchValue (4)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (4)",
+      "Value": "At 12:14:46.989 MinSwitchValue (4)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (4)",
+      "Value": "At 12:14:46.989 SwitchStep (4)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (4)",
+      "Value": "At 12:14:46.989 CanWrite (4)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (4)",
+      "Value": "At 12:14:46.990 CanAsync (4)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (4)",
+      "Value": "At 12:14:46.990 GetSwitch (4)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (4)",
+      "Value": "At 12:14:47.493 MinSwitchValue (4)        0.002 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SetSwitch (4)",
+      "Value": "At 12:14:48.031 SetSwitch (4)             0.036 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SetSwitchValue (4)",
+      "Value": "At 12:14:59.130 SetSwitchValue (4)        0.021 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SwitchName (5)",
+      "Value": "At 12:15:27.877 SwitchName (5)            0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (5)",
+      "Value": "At 12:15:27.878 GetSwitchDescription (5)  0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (5)",
+      "Value": "At 12:15:27.878 MinSwitchValue (5)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (5)",
+      "Value": "At 12:15:27.879 MinSwitchValue (5)        0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (5)",
+      "Value": "At 12:15:27.879 SwitchStep (5)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (5)",
+      "Value": "At 12:15:27.880 CanWrite (5)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (5)",
+      "Value": "At 12:15:27.880 CanAsync (5)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (5)",
+      "Value": "At 12:15:27.880 GetSwitch (5)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (5)",
+      "Value": "At 12:15:28.382 MinSwitchValue (5)        0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SetSwitch (5)",
+      "Value": "At 12:15:28.969 SetSwitch (5)             0.084 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SetSwitchValue (5)",
+      "Value": "At 12:15:40.243 SetSwitchValue (5)        0.085 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SwitchName (6)",
+      "Value": "At 12:16:09.423 SwitchName (6)            0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (6)",
+      "Value": "At 12:16:09.423 GetSwitchDescription (6)  0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (6)",
+      "Value": "At 12:16:09.424 MinSwitchValue (6)        0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (6)",
+      "Value": "At 12:16:09.424 MinSwitchValue (6)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (6)",
+      "Value": "At 12:16:09.424 SwitchStep (6)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (6)",
+      "Value": "At 12:16:09.425 CanWrite (6)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (6)",
+      "Value": "At 12:16:09.425 CanAsync (6)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (6)",
+      "Value": "At 12:16:09.425 GetSwitch (6)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (6)",
+      "Value": "At 12:16:09.927 MinSwitchValue (6)        0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchName (7)",
+      "Value": "At 12:16:10.431 SwitchName (7)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (7)",
+      "Value": "At 12:16:10.432 GetSwitchDescription (7)  0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (7)",
+      "Value": "At 12:16:10.432 MinSwitchValue (7)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (7)",
+      "Value": "At 12:16:10.432 MinSwitchValue (7)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (7)",
+      "Value": "At 12:16:10.433 SwitchStep (7)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (7)",
+      "Value": "At 12:16:10.433 CanWrite (7)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (7)",
+      "Value": "At 12:16:10.433 CanAsync (7)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (7)",
+      "Value": "At 12:16:10.433 GetSwitch (7)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (7)",
+      "Value": "At 12:16:10.935 MinSwitchValue (7)        0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchName (8)",
+      "Value": "At 12:16:11.438 SwitchName (8)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (8)",
+      "Value": "At 12:16:11.438 GetSwitchDescription (8)  0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (8)",
+      "Value": "At 12:16:11.439 MinSwitchValue (8)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (8)",
+      "Value": "At 12:16:11.439 MinSwitchValue (8)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (8)",
+      "Value": "At 12:16:11.439 SwitchStep (8)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (8)",
+      "Value": "At 12:16:11.439 CanWrite (8)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (8)",
+      "Value": "At 12:16:11.439 CanAsync (8)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (8)",
+      "Value": "At 12:16:11.440 GetSwitch (8)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (8)",
+      "Value": "At 12:16:11.942 MinSwitchValue (8)        0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchName (9)",
+      "Value": "At 12:16:12.445 SwitchName (9)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (9)",
+      "Value": "At 12:16:12.445 GetSwitchDescription (9)  0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (9)",
+      "Value": "At 12:16:12.445 MinSwitchValue (9)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (9)",
+      "Value": "At 12:16:12.446 MinSwitchValue (9)        0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (9)",
+      "Value": "At 12:16:12.446 SwitchStep (9)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (9)",
+      "Value": "At 12:16:12.446 CanWrite (9)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (9)",
+      "Value": "At 12:16:12.447 CanAsync (9)              0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (9)",
+      "Value": "At 12:16:12.447 GetSwitch (9)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (9)",
+      "Value": "At 12:16:12.949 MinSwitchValue (9)        0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchName (10)",
+      "Value": "At 12:16:13.451 SwitchName (10)           0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (10)",
+      "Value": "At 12:16:13.452 GetSwitchDescription (10) 0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (10)",
+      "Value": "At 12:16:13.452 MinSwitchValue (10)       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (10)",
+      "Value": "At 12:16:13.452 MinSwitchValue (10)       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (10)",
+      "Value": "At 12:16:13.453 SwitchStep (10)           0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (10)",
+      "Value": "At 12:16:13.453 CanWrite (10)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (10)",
+      "Value": "At 12:16:13.453 CanAsync (10)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (10)",
+      "Value": "At 12:16:13.453 GetSwitch (10)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (10)",
+      "Value": "At 12:16:13.955 MinSwitchValue (10)       0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchName (11)",
+      "Value": "At 12:16:14.458 SwitchName (11)           0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (11)",
+      "Value": "At 12:16:14.458 GetSwitchDescription (11) 0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (11)",
+      "Value": "At 12:16:14.458 MinSwitchValue (11)       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (11)",
+      "Value": "At 12:16:14.459 MinSwitchValue (11)       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (11)",
+      "Value": "At 12:16:14.459 SwitchStep (11)           0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (11)",
+      "Value": "At 12:16:14.459 CanWrite (11)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (11)",
+      "Value": "At 12:16:14.460 CanAsync (11)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (11)",
+      "Value": "At 12:16:14.460 GetSwitch (11)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (11)",
+      "Value": "At 12:16:14.962 MinSwitchValue (11)       0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchName (12)",
+      "Value": "At 12:16:15.465 SwitchName (12)           0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (12)",
+      "Value": "At 12:16:15.465 GetSwitchDescription (12) 0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (12)",
+      "Value": "At 12:16:15.465 MinSwitchValue (12)       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (12)",
+      "Value": "At 12:16:15.466 MinSwitchValue (12)       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (12)",
+      "Value": "At 12:16:15.466 SwitchStep (12)           0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (12)",
+      "Value": "At 12:16:15.466 CanWrite (12)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (12)",
+      "Value": "At 12:16:15.466 CanAsync (12)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (12)",
+      "Value": "At 12:16:15.467 GetSwitch (12)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (12)",
+      "Value": "At 12:16:15.968 MinSwitchValue (12)       0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchName (13)",
+      "Value": "At 12:16:16.471 SwitchName (13)           0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (13)",
+      "Value": "At 12:16:16.472 GetSwitchDescription (13) 0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (13)",
+      "Value": "At 12:16:16.472 MinSwitchValue (13)       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (13)",
+      "Value": "At 12:16:16.472 MinSwitchValue (13)       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (13)",
+      "Value": "At 12:16:16.472 SwitchStep (13)           0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (13)",
+      "Value": "At 12:16:16.473 CanWrite (13)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (13)",
+      "Value": "At 12:16:16.473 CanAsync (13)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (13)",
+      "Value": "At 12:16:16.473 GetSwitch (13)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (13)",
+      "Value": "At 12:16:16.975 MinSwitchValue (13)       0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchName (14)",
+      "Value": "At 12:16:17.478 SwitchName (14)           0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (14)",
+      "Value": "At 12:16:17.478 GetSwitchDescription (14) 0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (14)",
+      "Value": "At 12:16:17.478 MinSwitchValue (14)       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (14)",
+      "Value": "At 12:16:17.478 MinSwitchValue (14)       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (14)",
+      "Value": "At 12:16:17.479 SwitchStep (14)           0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (14)",
+      "Value": "At 12:16:17.479 CanWrite (14)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (14)",
+      "Value": "At 12:16:17.479 CanAsync (14)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (14)",
+      "Value": "At 12:16:17.479 GetSwitch (14)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (14)",
+      "Value": "At 12:16:17.981 MinSwitchValue (14)       0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchName (15)",
+      "Value": "At 12:16:18.485 SwitchName (15)           0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitchDescription (15)",
+      "Value": "At 12:16:18.485 GetSwitchDescription (15) 0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (15)",
+      "Value": "At 12:16:18.485 MinSwitchValue (15)       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (15)",
+      "Value": "At 12:16:18.485 MinSwitchValue (15)       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SwitchStep (15)",
+      "Value": "At 12:16:18.486 SwitchStep (15)           0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanWrite (15)",
+      "Value": "At 12:16:18.486 CanWrite (15)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanAsync (15)",
+      "Value": "At 12:16:18.486 CanAsync (15)             0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GetSwitch (15)",
+      "Value": "At 12:16:18.486 GetSwitch (15)            0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MinSwitchValue (15)",
+      "Value": "At 12:16:18.988 MinSwitchValue (15)       0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Disconnect",
+      "Value": "At 12:16:19.518 Disconnect                0.000 seconds. \u2713 (STANDARD)"
+    }
+  ]
+}

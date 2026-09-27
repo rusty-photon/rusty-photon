@@ -94,17 +94,31 @@ the published range. The parser does not clamp or range-check the count,
 the same as every other `PA` field: a count above 1024 is outside the
 device's contract, and is published as read rather than hidden.
 
-The divisor was checked against the box's own energy counters, because a
-fixture built from the vendor table only confirms the table. With the unit
-at a steady load, the watt-hour counter in `PS` advanced 1.26 Wh over
-1764 s at 12.0 V, a mean draw of 0.214 A, while `PA` reported a
-steady count of 14. That is 65.3 counts per Amp (64.8-65.9 at the
-counter's 0.01 Wh resolution), which admits 65 and rules out a centi-amp
-reading: `÷ 100` would put the draw at 0.14 A.
+The divisor was checked against the box's own amp-hour counter, because a
+fixture built from the vendor table only confirms the table. Two Gen2C
+units were measured, each at a steady load, over a delta of `PS`'s
+amp-hour field (resolution 0.01 Ah):
+
+| Unit | `PA` count | Amp-hours | Counts per Amp | `÷ 100` would predict |
+|------|-----------|-----------|----------------|------------------------|
+| dev box, quad off | 14 | +0.10 over 1764 s | 62.4-76.2 | +0.069 Ah |
+| pier1, quad on | 41.1 (mean) | +0.16 over 897 s | 60.2-68.2 | +0.102 Ah |
+
+Both admit 65 and rule out a centi-amp reading, and two loads a factor of
+three apart through the same scale are what a linear, zero-offset count
+predicts. Together they bound the divisor to 62.4-68.2.
+
+**`PS`'s watt-hour field is not an energy integral, so it cannot calibrate
+anything.** It *falls* under a rising load: on pier1 it read 296.03 Wh,
+then 295.57 Wh, as the count climbed from 38 to 42 and the input sagged
+from 12.0 to 11.9 V, and it fell in 55 of 180 five-second intervals. It
+tracks cumulative amp-hours times the present input voltage (Wh / Ah went
+11.956 → 11.925 over the run), so a delta of it folds in any voltage
+drift. Use the amp-hour field.
 
 **On a Gen2C the count is the total draw, not the Quad 12V group.** The
-vendor table labels this field the Quad 12V outputs' current. Over the
-same run the quad output was off, and `PC` (*Print Power Metrics*, whose
+vendor table labels this field the Quad 12V outputs' current. Over the dev
+box's run the quad output was off, and `PC` (*Print Power Metrics*, whose
 currents are already in Amps) reported `total_current` 0.2 A and
 `current_12V_outputs` 0.0 A while `PA` sent 14 counts, 0.215 A. The field
 follows the total, which is why switch 11 is Total Current. The driver
@@ -132,7 +146,7 @@ count of the sense field is about 0.015 A.
 |----|------|------|-----|-----|------|--------|
 | 6 | Average Current | Amps | 0 | 20 | 0.01 | `PS` command |
 | 7 | Amp Hours | Ah | 0 | 9999 | 0.01 | `PS` command |
-| 8 | Watt Hours | Wh | 0 | 99999 | 0.1 | `PS` command |
+| 8 | Watt Hours | Wh | 0 | 99999 | 0.1 | `PS` command, as the device reports it: amp-hours × present voltage, not an energy integral (see [the sense count](#the-current-is-a-sense-count-not-amps)) |
 | 9 | Uptime | Hours | 0 | 99999 | 0.01 | `PS` command |
 
 ### Read-Only Switches - Sensor Data (CanWrite = false)
@@ -401,13 +415,13 @@ file, rebinding the same port.
 
 ```bash
 # With configuration file
-cargo run -p ppba-switch -- -c config.json
+cargo run -p ppba-driver -- -c config.json
 
 # With command-line overrides
-cargo run -p ppba-switch -- --port /dev/ttyUSB1 --server-port 11113
+cargo run -p ppba-driver -- --port /dev/ttyUSB1 --server-port 11113
 
 # With debug logging
-cargo run -p ppba-switch -- -c config.json -l debug
+cargo run -p ppba-driver -- -c config.json -l debug
 ```
 
 ### CLI Options
@@ -626,7 +640,7 @@ else:
 
 ### ConformU Testing
 
-When running ASCOM ConformU compliance tests against real hardware, auto-dew must be disabled first for the dew heater tests (switches 2 and 3) to pass.
+When running ASCOM ConformU compliance tests against real hardware, auto-dew must be disabled first for the dew heater tests (switches 2 and 3) to pass. That is a defect, not a requirement: with auto-dew on, `CanWrite` correctly reads false for both heaters, but a write answers `INVALID_OPERATION` where ASCOM requires `NOT_IMPLEMENTED` from a switch that cannot be written. On hardware this is four ConformU issues ([#1347](https://github.com/rusty-photon/rusty-photon/issues/1347)).
 
 ## Testing
 
@@ -685,37 +699,50 @@ To run ConformU compliance tests against the actual PPBA hardware on `/dev/ttyUS
 
 **Step 1: Ensure auto-dew is disabled on the hardware**
 
-Auto-dew must be OFF before running ConformU, otherwise the dew heater write tests will fail (CanWrite will return false for switches 2 and 3).
+Auto-dew must be OFF before running ConformU. With it on, the dew-heater write tests report four issues: `SetSwitch` / `SetSwitchValue` on switches 2 and 3 answer `INVALID_OPERATION` although `CanWrite` is false ([#1347](https://github.com/rusty-photon/rusty-photon/issues/1347)). Turn it back on afterwards; ConformU restores the switches it wrote to the values it found, so it leaves auto-dew off.
 
-**Step 2: Start the ppba-switch service**
+**Step 2: Start the ppba-driver service**
 
 ```bash
 # Start the service with the real hardware configuration
-cargo run -p ppba-switch -- -c services/ppba-switch/config.json
+cargo run -p ppba-driver -- -c services/ppba-driver/config.json
 ```
 
 The service will connect to the PPBA on `/dev/ttyUSB0` and start the Alpaca server on port 11112.
 
 **Step 3: Run ConformU**
 
-In a separate terminal, run ConformU with default hardware timing (recommended for real hardware):
+In a separate terminal, run both suites against both devices with default hardware timing (recommended for real hardware). A run that is to be recorded follows [hardware-validation.md](../skills/hardware-validation.md), version gate first:
 
 ```bash
-# Run ConformU against the Switch device with default timing
-conformu conformance http://localhost:11112/api/v1/switch/0
+conformu alpacaprotocol http://localhost:11112/api/v1/switch/0              -n alpacaprotocol-switch.log
+conformu conformance    http://localhost:11112/api/v1/switch/0              -n conformance-switch.log -r conformance-switch-results.json
+conformu alpacaprotocol http://localhost:11112/api/v1/observingconditions/0 -n alpacaprotocol-observingconditions.log
+conformu conformance    http://localhost:11112/api/v1/observingconditions/0 -n conformance-observingconditions.log -r conformance-observingconditions-results.json
 ```
 
 **Note:** We use ConformU's default timing settings for real hardware tests (SwitchReadDelay: 500ms, SwitchWriteDelay: 3000ms). These conservative delays ensure reliable operation with actual hardware. The automated CI tests use reduced delays with mock hardware for faster execution.
 
 **Expected results:**
-- All tests should pass with 0 errors and 0 issues
-- Test duration: ~10 minutes with default timing
+- All four suites pass with 0 errors and 0 issues
+- Test duration: about 9 minutes for the Switch `conformance` suite with default timing; the others take seconds
 - ConformU will test all 16 switches including read/write operations on controllable switches
 
 **Troubleshooting:**
-- If dew heater write tests fail with "Expected P3:XXX, got: P3:0" or "Expected P4:XXX, got: P4:0", auto-dew is enabled. Disable it before running ConformU.
+- If `SetSwitch` / `SetSwitchValue` on switch 2 or 3 report an issue quoting *"cannot write to switch 2 while auto-dew is enabled"*, auto-dew is on ([#1347](https://github.com/rusty-photon/rusty-photon/issues/1347)). Disable it before running ConformU.
 - If the service fails to start, ensure no other process is using port 11112 or `/dev/ttyUSB0`
 - If connection fails, verify the PPBA is powered on and connected via USB
+
+## Real-hardware validation
+
+The evidence trail is [`docs/validation/`](../validation/README.md);
+this service's runs, newest first:
+
+- **2026-09-27 — PPBADV Gen2C on Linux x86_64**
+  ([record](../validation/2026-09-27-ppba-driver-ppba-gen2c-linux/README.md)).
+  The first hardware record: both devices, both suites, clean, with auto-dew
+  off. It puts the Total Current scaling on hardware and exercises every
+  writable switch, including both dew heaters across 0-255.
 
 ## Dependencies
 
