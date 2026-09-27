@@ -417,6 +417,21 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   serial-derived UniqueID. Zero discovered cameras is **not** a hard failure — the
   service starts with no Camera devices, logged at `warn!`; a later reload
   re-enumerates.
+
+  **A CFW is only found if it has power when this runs.** The wheel is fed from
+  the camera's 12V, while the camera's own logic runs off USB — so a camera whose
+  12V is off still enumerates, answers every Camera member and passes its
+  ConformU suites, while the service logs `filter_wheels=0` and every FilterWheel
+  endpoint answers *"Device FilterWheel\[0\] not found"*. Restoring 12V is not
+  enough on its own, because the device list is fixed at build: something has to
+  make this run again. A **reload** is sufficient — `main.rs` rebuilds the
+  `ServerBuilder` on each one, which is the re-enumeration promised above — so an
+  operator does not need to restart the process, though a restart works too.
+
+  An operator seeing `filter_wheels=0` on a camera that otherwise works should
+  check the 12V rail and reload before suspecting the driver or the SDK. The
+  symptom looks nothing like a power problem, and is easily misread as the
+  wedged-handle state that does need a physical power cycle.
 - **C1.** `set_connected(true)` on a device opens *that* camera, sets single-frame
   mode, readout mode 0, `init()`, 16-bit transfer, and caches CCD info, effective
   area, valid binning modes, and exposure/gain/offset/speed min-max-step. On
@@ -681,6 +696,22 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   frames). A *check* placed immediately before the writes would only race them;
   the claim is what makes the exclusion hold in both directions, since a
   `StartExposure` arriving meanwhile is refused by the ordinary E2 path.
+
+  **The refusal is this driver's choice, not the spec's requirement.** ASCOM and
+  Alpaca say what `BinX`, `BinY` and `ReadoutMode` mean and when a value is
+  invalid, but they do not say what a *setter* must do while an exposure is in
+  flight: there is no documented error for it, and nothing obliges a driver to
+  refuse rather than accept-and-defer, or to accept rather than refuse. So
+  `INVALID_OPERATION` here is a decision about this SDK, taken because the writes
+  reach the camera immediately and the alternative is a frame armed against
+  geometry it no longer has. A different driver answering differently is not
+  thereby non-conforming, and ConformU does not test the case. `zwo-camera` and
+  `svbony-camera` refuse a mid-exposure `ReadoutMode` too (their RM1), but for
+  their own reason — keeping the frame and the `MaxADU` describing it in
+  agreement — so those are parallel choices rather than this one applied thrice. Worth knowing
+  before treating the refusal as fixed: it is exactly the behaviour #1336 would
+  replace, by having the setters cache and `StartExposure` validate the way the
+  ROI setters already do (R1).
 
   Two consequences follow, both deliberate. A readout mode whose index is out of
   range is reported as `INVALID_OPERATION` rather than `INVALID_VALUE` when a
