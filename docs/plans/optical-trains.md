@@ -138,24 +138,23 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
    Guide-train AF never captures through the guide camera (PHD2 may own it
    at the SDK level); it moves the focuser and reads PHD2's metric stream.
 
-   **Amended 2026-09-13 by [focus-model.md](focus-model.md) O4** — for a
-   *training* run only, on a guiding train meeting that plan's O4 rules 1
-   and 7, and not yet implemented. Its S10 would capture through the guide
-   camera over Alpaca with PHD2 standing aside for the run — stopping
-   its exposures, not releasing a device: `rp` connects every
-   configured camera at startup and keeps the session, so on a rig
-   that plan supports — one where PHD2 reaches the guide camera
-   through the Alpaca driver `rp` holds a session on, which is not yet
-   established for any deployed rig and is the rig night's first
-   question — both are clients of one driver and `rp` holds its
-   session throughout, while a camera absent from `rp`'s config is in
-   no train and has no `rp` path at all. S10 has to add the
-   `rp`-side lease and the stop/restart protocol before any of this is
-   a transport. A guide path behind the imaging train's focuser **with no
-   focuser of its own** — an unmotorised OAG, a duo camera — will get
-   no training sweep and no camera lease at all: focusing the
-   imaging train focuses it. An OAG behind a shared focuser that keeps
-   its own motorised helical is that plan's O4 rule 1, and does.
+   **Amended 2026-09-13 by [focus-model.md](focus-model.md) O4, and
+   again 2026-09-27 to defer to
+   [device-claims-and-phd2-camera.md](device-claims-and-phd2-camera.md)**
+   — for a *training* run only, on a guiding train meeting the
+   focus-model plan's O4 rules 1 and 7, and not yet implemented. The
+   guide camera is captured through the PHD2 camera facade that plan's
+   Part B adds: PHD2 keeps the camera at the SDK level, `phd2-guider`
+   serves it as an Alpaca Camera, `rp` lists it like any other camera,
+   and the sweep runs with PHD2 `Stopped` under that plan's sweep,
+   train and mount-motion leases (its D11–D12). Nothing releases a
+   device and nothing time-slices one — that plan's D13 rules both out.
+   The focus-model plan's S10 is that plan's C7. A guide path behind
+   the imaging train's focuser **with no focuser of its own** — an
+   unmotorised OAG, a duo camera — will get no training sweep and no
+   facade capture at all: focusing the imaging train focuses it. An
+   OAG behind a shared focuser that keeps its own motorised helical is
+   that plan's O4 rule 1, and does.
 
    Today, though, it still gets a redundant step: `af_sequence` appends
    the terminal focuser unconditionally, so `get_refocus_plan` returns a

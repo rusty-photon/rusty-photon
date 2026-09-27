@@ -1128,7 +1128,10 @@ credential — and that `tools/list` answers with no `rp` running.
   order, whether it has offsets of its own, and which transport a
   training run uses are the eight rules of that plan's O4 table, which
   is the single normative statement of them — this doc deliberately
-  does not restate the conditions. In summary: an independently
+  does not restate the conditions. The transport itself is the PHD2
+  camera facade of
+  [device-claims-and-phd2-camera.md](../plans/device-claims-and-phd2-camera.md),
+  to which that O4 defers. In summary: an independently
   focused guide path is swept in its own right and can carry its own
   offsets, a guide path with no focuser of its own gets no sweep and
   carries none — behind a focuser shared with the imaging train it is
