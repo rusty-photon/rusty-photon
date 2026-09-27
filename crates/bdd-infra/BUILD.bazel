@@ -229,8 +229,10 @@ rust_test(
 # configure. Positively filtered to the module tree, mirroring
 # :bdd-infra_tls_auth_unit_test, so the requires-cargo run_once_* tests in
 # the base `tests::` module stay out. The tests are hermetic (they inspect the
-# generated JSON, spawn nothing and touch only the test action's own tmpdir),
-# so no requires-cargo tag —
+# generated JSON, touch only the test action's own tmpdir, and the only thing
+# they spawn is a throwaway `#!/bin/sh` stand-in for conformu written there —
+# unix-only, so the Windows leg selects those tests out), so no requires-cargo
+# tag —
 # and no `conformu` tag either: that tag marks tests that drive the external
 # ConformU tool and is excluded from the per-PR filter, while these must run
 # on every PR.

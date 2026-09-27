@@ -22,12 +22,20 @@ CONFORMU_PATH=/path/to/conformu bazel test --config=conformu //services/filemoni
 ## Test Structure
 
 - `conformu_integration.rs`: Main ConformU compliance test
-- Uses `ascom_alpaca::test::run_conformu_tests` for programmatic ConformU execution
+- Drives the `conformu` binary through `bdd_infra::run_conformu` — ConformU's
+  URL-argument verbs, so the run is always ConformU's full test set; the
+  runner writes its own settings file (ConformU's defaults, since this test
+  passes `None`) and no test selection is expressible from the test
 - Creates temporary test environment with config and status files
-- Starts filemonitor service and runs both conformance and protocol tests
+- Starts filemonitor service and runs both the `alpacaprotocol` and
+  `conformance` suites
 
 ## Requirements
 
-- ConformU must be installed and available on PATH or in default location
-- Tests are marked with `#[ignore]` to prevent running in CI without ConformU setup
-- Requires `test` feature enabled in ascom-alpaca dependency
+- ConformU must be installed, and `CONFORMU_PATH` must name the binary; the
+  test self-skips (and passes) when the variable is unset, which is what keeps
+  it inert in the ordinary `cargo` / `bazel` suites
+- Runs nightly in the `conformu.yml` rotation via `[package.metadata.conformu]`
+- Built with the `conformu` cargo feature (gates the test file); no
+  `ascom-alpaca` test feature is involved — the runner lives in `bdd-infra`
+  (see [docs/skills/testing.md §1.4](../../../docs/skills/testing.md#14-conformu-integration-tests))

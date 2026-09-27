@@ -527,4 +527,108 @@ mod tests {
         let on_disk: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(on_disk, settings.to_json());
     }
+
+    /// The strictness boundary itself, exercised against a stand-in
+    /// `conformu`: a shell script that prints a chosen summary line and exits
+    /// with a chosen status. Unix-only because the stand-in is a `#!/bin/sh`
+    /// script; `run_mode`'s policy logic has no platform arm, so the Windows
+    /// leg of the Bazel target simply selects nothing here.
+    #[cfg(unix)]
+    mod stand_in_conformu {
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::PathBuf;
+
+        use tempfile::TempDir;
+
+        use crate::conformu::{run_mode, ConfigurationAlerts};
+        use crate::scratch;
+
+        const CLEAN_WITH_ALERTS: &str =
+            "Your device had 0 issues, 0 errors and 2 configuration alerts";
+        const REAL_ISSUES: &str = "Your device had 3 issues, 0 errors and 0 configuration alerts";
+        const URL: &str = "http://127.0.0.1:1/api/v1/telescope/0";
+
+        /// These tests fork. A child forked by one test in the window between
+        /// another test writing its script and closing it inherits that
+        /// still-open descriptor, and the second test's exec then fails with
+        /// `ETXTBSY` ("Text file busy"). Serialising each write-then-spawn
+        /// sequence removes the overlap.
+        static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+        /// A `conformu` that ignores its arguments, prints `summary` and exits
+        /// with `code`. The guard owns the script's directory.
+        fn stand_in(summary: &str, code: i32) -> (TempDir, PathBuf) {
+            let dir = scratch::new_dir("stand-in-conformu-").unwrap();
+            let path = dir.path().join("conformu");
+            std::fs::write(&path, format!("#!/bin/sh\necho '{summary}'\nexit {code}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            (dir, path)
+        }
+
+        #[tokio::test]
+        async fn a_full_run_rejects_a_clean_summary_with_a_non_zero_exit() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let (_dir, conformu) = stand_in(CLEAN_WITH_ALERTS, 2);
+
+            let err = run_mode(
+                conformu.as_os_str(),
+                "conformance",
+                None,
+                Some(URL),
+                ConfigurationAlerts::Reject,
+            )
+            .await
+            .unwrap_err();
+
+            assert!(
+                err.to_string().contains("narrowed by configuration alerts"),
+                "unexpected error text: {err}"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_settings_run_accepts_a_clean_summary_with_a_non_zero_exit() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let (_dir, conformu) = stand_in(CLEAN_WITH_ALERTS, 2);
+
+            run_mode(
+                conformu.as_os_str(),
+                "conformance-settings",
+                None,
+                None,
+                ConfigurationAlerts::Accept,
+            )
+            .await
+            .unwrap();
+        }
+
+        #[tokio::test]
+        async fn a_non_zero_exit_with_real_issues_fails_under_both_policies() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            for policy in [ConfigurationAlerts::Reject, ConfigurationAlerts::Accept] {
+                let (_dir, conformu) = stand_in(REAL_ISSUES, 3);
+
+                let err = run_mode(conformu.as_os_str(), "conformance", None, Some(URL), policy)
+                    .await
+                    .unwrap_err();
+
+                assert!(
+                    err.to_string().contains("exited with exit status: 3"),
+                    "{policy:?}: unexpected error text: {err}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn a_zero_exit_passes_under_both_policies() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            for policy in [ConfigurationAlerts::Reject, ConfigurationAlerts::Accept] {
+                let (_dir, conformu) = stand_in("Congratulations, no errors", 0);
+
+                run_mode(conformu.as_os_str(), "conformance", None, Some(URL), policy)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
 }
