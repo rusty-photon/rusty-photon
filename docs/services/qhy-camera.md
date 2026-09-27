@@ -2,7 +2,7 @@
 
 > **Status:** Implemented (v0). The driver lives in
 > [`services/qhy-camera`](../../services/qhy-camera). All 10 BDD feature suites
-> (65 scenarios) and the unit tests are green against the `qhyccd-rs`
+> (69 scenarios) and the unit tests are green against the `qhyccd-rs`
 > `simulation` backend; ConformU runs in CI. This document remains the
 > behavioural specification — the handful of implementation deviations from the
 > original design are called out inline (search "*Implementation note*"). The
@@ -166,7 +166,8 @@ graph TD;
   registering each as an ASCOM device (index 0, 1, 2, …) with its serial-derived
   UniqueID. The eager per-device connect handshake (normalize the readout
   geometry, then cache CCD info, effective area, valid binning modes,
-  exposure/gain/offset min-max-step) happens on `set_connected(true)`.
+  exposure/gain/offset min-max-step and the readout-mode list) happens on
+  `set_connected(true)`.
   Returns a `BoundServer`.
 
   **The handshake sets bin 1x1 and a full-frame resolution before reading the
@@ -180,7 +181,9 @@ graph TD;
   fails. An empty area is refused rather than cached, since caching one makes
   `NumX`/`NumY` report 0 — outside the range ASCOM allows — for the life of the
   process. The area read here is the sensor the driver advertises (G1), and it
-  is re-read the same way after a readout-mode change (RM1).
+  is re-read the same way after a readout-mode change (RM1), which re-runs the
+  handshake's mode sequence — `InitQHYCCD` included — and its reads for the new
+  mode, then restores what the init may have reset (RM4).
 - **`camera.rs`** — `QhyCameraDevice` (one instance per discovered camera)
   implementing `Device` + `Camera` against `qhyccd-rs`. **Every blocking SDK call
   runs inside `tokio::task::spawn_blocking`** (the same blocking-bridge discipline
@@ -209,7 +212,14 @@ limits, target temperature and last frame each sit in their own
 atomics. Nothing takes a reader/writer lock, so there is no shared-read fast
 path to reason about — every one of these is short and uncontended, and the
 ordering that actually matters is `result_lock`, described under *SDK call
-serialization* in **Implementation notes** below.
+serialization* in **Implementation notes** below. The one exception is
+`control_lock` (RM4), which is held across SDK calls. The `Gain` and `Offset`
+reads and writes and the `CoolerOn` and `SetCCDTemperature` writes each hold it
+for their own SDK round trip, so they run one at a time; a readout-mode change
+holds it for its whole switch, so while one runs each of those calls waits for
+as long as an `InitQHYCCD` takes. A mode change takes it after the connection's
+lifecycle lock and the device claim, and takes `cache_commit_lock` inside it,
+never the other way round.
 
 Two rules with different scopes sit above that, and it is worth keeping them
 apart. *Captures* have a single logical owner per device — the in-flight claim
@@ -246,8 +256,8 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
   a device on the one port), 16-bit monochrome **and** one-shot-colour (Bayer)
   sensors.
 - Startup enumeration registers all discovered cameras (+ CFWs when enabled);
-  per-device connect/disconnect lifecycle: open → single-frame mode → init →
-  16-bit transfer → cache geometry/limits.
+  per-device connect/disconnect lifecycle: open → single-frame mode → readout
+  mode 0 → init → 16-bit transfer → cache the mode list and geometry/limits.
 - Sensor geometry — `CameraXSize`/`YSize` from the SDK's effective area (the
   region it reads out, not the chip), `PixelSizeX`/`Y` from cached CCD info.
 - **Binning** — symmetric only (`CanAsymmetricBin = false`); `MaxBinX/Y` from the
@@ -262,15 +272,17 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
   E11).
 - **Gain / Offset** — current value + `Min`/`Max` from the SDK; `NOT_IMPLEMENTED`
   when the control is unavailable on the model.
-- **Readout modes** — `ReadoutMode(s)` named from the SDK; switching updates
-  cached resolution.
+- **Readout modes** — `ReadoutMode(s)` named from the SDK and cached at
+  connect; switching re-initializes the camera in the new mode and re-reads
+  every mode-dependent cache (RM1).
 - **Cooling** — `CoolerOn`, `CCDTemperature`, `SetCCDTemperature`, `CoolerPower`,
   `CanSetCCDTemperature`, `CanGetCoolerPower` — all gated on the `Cooler` control.
 - **Sensor type** — `Monochrome` vs `RGGB`/colour + `BayerOffsetX/Y`.
 - **`MaxADU`** = `(2^transfer_bits) - 1` (65535 for the 16-bit container set at
   connect), from `GetQHYCCDChipInfo`'s reported bit depth — **not**
   `OutputDataActualBits` (see the MaxADU note under "Deliberate divergences");
-  `VALUE_NOT_SET` until a connect has read that depth (C6). `SensorName` comes
+  `VALUE_NOT_SET` until a connect has read that depth (C6), and again after a
+  readout-mode change that failed part-way (RM3). `SensorName` comes
   from the device id.
 - **FilterWheel** as a second ASCOM device on the same port (when present):
   `Names`, `Position` (with moving state), `set_position`, `FocusOffsets`.
@@ -434,8 +446,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   wedged-handle state that does need a physical power cycle.
 - **C1.** `set_connected(true)` on a device opens *that* camera, sets single-frame
   mode, readout mode 0, `init()`, 16-bit transfer, and caches CCD info, effective
-  area, valid binning modes, and exposure/gain/offset/speed min-max-step. On
-  success `Connected = true`.
+  area, valid binning modes, exposure/gain/offset/speed min-max-step, and the
+  named readout-mode list. On success `Connected = true`, in readout mode 0: a
+  mode a client chose is not carried across a reconnect.
 - **C2.** `set_connected(true)` with the device's camera unreachable / SDK open
   failure returns the mapped driver error and `Connected` stays `false`.
 - **C3.** `set_connected(false)` closes that device and returns `NOT_CONNECTED`
@@ -473,14 +486,24 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **C5.** No code path in this service pushes cooler state, wheel position, or
   any other actuation on startup, connect, or `config.apply` (workspace tenet
   [*no actuation on connect*](../workspace.md#project-tenets)); cooler and CFW
-  commands are issued only by explicit ASCOM setters. **Known vendor-SDK side
+  commands are issued only by explicit ASCOM setters — the one cooler command
+  not sent by a cooler setter being a `ReadoutMode` write re-asserting the
+  target a client engaged in the same session, once that write's switch
+  sequence (`SetQHYCCDReadMode`, `InitQHYCCD`) has run, whether it succeeded or
+  failed at any step (RM4). **Known vendor-SDK side
   effect outside our control:** `OpenQHYCCD`/`InitQHYCCD` run on connect (C1),
   and QHY filter wheels auto-home at the firmware level on init — a physical
   wheel rotation the SDK performs on its own. Operators with a CFW should
-  expect the wheel to home when a client first connects the camera.
+  expect the wheel to home when a client first connects the camera. No
+  validation record has observed that homing yet, and the SDK library's init
+  code for the QHY600 and QHY5III classes sends no filter-wheel command, so the
+  statement stands as the vendor's rather than a measured one. A readout-mode
+  change runs `InitQHYCCD` too (RM1), so whatever init does on connect it also
+  does there — on a path a client started, not on connect.
 - **C6.** A connect **clears every cache its handshake republishes** — the CCD
   info and effective area, the size reported from it, the valid binning modes,
-  the cached ROI and bin, and the exposure/gain/offset limits — before it opens
+  the cached ROI and bin, the exposure/gain/offset limits, and the readout-mode
+  list and the mode in force (RM1) — before it opens
   the handle, so a reconnect starts from nothing rather than from the previous
   session. `open()` is what makes `Connected` true (C1), and the handshake
   behind it is a dozen SDK calls of which `InitQHYCCD` alone can take seconds,
@@ -491,8 +514,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   while the camera is at 2, the next exposure arming bin-1 extents against it,
   and the client that asked for bin 2 told it succeeded. Cleared, the window
   answers as a first connect does: `INVALID_VALUE` from `set_bin_x` for a bin
-  no list supports, `VALUE_NOT_SET` for the geometry, for `BinX`/`BinY` and for
-  the gain and offset bounds, and a refused `StartExposure` — *not ready yet*
+  no list supports, `VALUE_NOT_SET` for the geometry, for `BinX`/`BinY`, for
+  the gain and offset bounds and for `ReadoutMode`, `ReadoutModes` and a
+  `ReadoutMode` write, and a refused `StartExposure` — *not ready yet*
   rather than the previous session's numbers. `BinX` is `VALUE_NOT_SET` rather than the 1 the handshake
   settles on because the camera is not at 1 until `normalize_geometry` has put
   it there; the SDK still holds whatever the last session left. A **gain or
@@ -511,14 +535,14 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   that surface takes (E10).
 
   The same rule runs the other way: **a request made in one session does not
-  commit into the next.** `set_bin_x` and `set_readout_mode` write their caches
-  *after* their SDK call returns, and a disconnect and a reconnect can both land
-  in that interval — a call that succeeded just before the close answers for
-  itself, so the connected test taken before the hop cannot speak for the commit
-  after it. Each therefore checks that the session it was made in is still the
-  running one and answers `NOT_CONNECTED` if it is not, leaving the caches as
-  the new connect published them rather than naming a bin or a geometry the
-  camera has since left. A commit asks two things, and needs both: *is the
+  commit into the next.** `set_bin_x` and `set_readout_mode` read their session
+  and test the connection at the top of the request, and a disconnect and a
+  reconnect can both land between that and the device claim — so the connected
+  test taken there cannot speak for the writes and the commit that follow it.
+  Each therefore checks that the session it was made in is still the running
+  one and answers `NOT_CONNECTED` if it is not, leaving the camera and the
+  caches as the new connect left them rather than naming a bin or a geometry
+  the camera has since left. A commit asks two things, and needs both: *is the
   session I read still the running one*, and *is this device still here*. The
   session alone cannot answer the second — a close takes no part in that lock,
   and a disconnect clears the handle's flag before `CloseQHYCCD` runs while the
@@ -545,15 +569,31 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
   The check keeps the **caches** honest about which session they belong to, and
   it is the second of two things holding `set_bin_x` and `set_readout_mode`
-  together. The first is the device claim (B4): both hold it from before their
-  SDK writes until after their commit, so a *disconnect* cannot land in that
-  window at all — it drains on its deadline and refuses to close instead. What
+  together. The first is ownership: both hold the device claim (B4) from before
+  their SDK writes until after their commit, so a *disconnect* cannot land in
+  that window at all. Behind a bin write it drains on its deadline and refuses
+  to close instead; behind a mode change it does not even reach the claim, but
+  waits on the connection's lifecycle lock, which the mode change took first
+  (RM1, C8). What
   the claim does not cover is the stretch before it is taken, between reading the
   session at the top of the request and claiming the device: a disconnect and a
-  reconnect fit there, and the write then lands on the new session's handle. The
-  session check is what refuses that commit. A *connect* is the other reason it
-  stays: `reset_exposure_state` signals a claim rather than taking it, so a
-  connect is not excluded by ownership the way a disconnect is.
+  reconnect fit there, and unchecked the write would then land on the new
+  session's handle. The session check taken under the claim, before the first
+  SDK write, is what refuses it.
+
+  `set_bin_x` and `set_readout_mode` both ask the session question **twice**:
+  once under the claim, before the first SDK write, and again at the commit.
+  Refusing only the commit would not be enough for either: the reconnect that
+  ended the request's session has already run its handshake, so a bin or a mode
+  written to the reconnected handle would leave the camera binned, or
+  re-initialized, in a configuration its freshly published caches do not
+  describe, and nothing would put it back before the next connect. Once the
+  claim is held, no new session can begin until it is released — a reconnect
+  needs the disconnect in front of it, and a disconnect cannot close the device
+  without taking the claim (behind a mode change it waits on the lifecycle lock
+  before it gets that far) — so the check taken there covers every write that
+  follows it. The check at the commit is the rule every cache writer follows,
+  kept though the claim already rules out a new session by then.
 
   A connect's own handshake answers to the same rule: it publishes **in the
   session it established, or not at all.** A disconnect or a later connect
@@ -622,8 +662,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   them.
 
   The lock spans the decision and the act, because splitting them is the race,
-  and it is taken by `set_connected` alone, so a `Connected` read — the one every
-  health poll makes — never queues behind a close waiting out its drain.
+  and it is taken by `set_connected` and by a readout-mode change (RM1, which
+  re-runs `InitQHYCCD`) alone, so a `Connected` read — the one every health poll
+  makes — never queues behind a close waiting out its drain.
 
 ### Geometry, binning, ROI
 
@@ -683,8 +724,10 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   missing test hid each other.
 - **B4 (geometry writes take the device claim).** `set_bin_x` and
   `set_readout_mode` write to the *camera* — `SetQHYCCDBinMode` for the first,
-  and for the second the mode plus `normalize_geometry`'s
-  `SetQHYCCDBinMode(1, 1)` and `SetQHYCCDResolution(whole chip)`. Both therefore
+  and for the second a whole re-initialization in the new mode (RM1):
+  `SetQHYCCDStreamMode`, `SetQHYCCDReadMode`, `InitQHYCCD`, the transfer depth,
+  and `normalize_geometry`'s `SetQHYCCDBinMode(1, 1)` and
+  `SetQHYCCDResolution(whole chip)`. Both therefore
   take the same in-flight claim a capture does, hold it across the SDK writes
   *and* the cache commit that describes them, and return `INVALID_OPERATION`
   while anything else owns the device. Without it either can reach a camera that
@@ -709,37 +752,48 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   `svbony-camera` refuse a mid-exposure `ReadoutMode` too (their RM1), but for
   their own reason — keeping the frame and the `MaxADU` describing it in
   agreement — so those are parallel choices rather than this one applied thrice. Worth knowing
-  before treating the refusal as fixed: it is exactly the behaviour #1336 would
-  replace, by having the setters cache and `StartExposure` validate the way the
-  ROI setters already do (R1).
+  before treating the refusal as fixed: for the bin it is exactly the behaviour
+  #1336 would replace, by having the setter cache and `StartExposure` apply it
+  the way the ROI setters already do (R1). For the readout mode it is not: the
+  mode is applied at the setter on purpose (RM1), so its refusal stays.
 
-  Two consequences follow, both deliberate. A readout mode whose index is out of
-  range is reported as `INVALID_OPERATION` rather than `INVALID_VALUE` when a
-  capture owns the device, because the mode count comes off the camera and this
-  driver may not ask it during a capture — the refusal precedes the range check
-  because the range cannot be known without the device.
+  **An invalid value is refused before the claim, whoever owns the device.**
+  Both lists a request is checked against are cached — `valid_bins` (B1) and the
+  readout-mode list (RM1) — so an unsupported bin or an out-of-range mode index
+  is answerable without the camera: each setter checks it *before* it claims
+  anything, and the answer is `INVALID_VALUE` whether or not a capture owns the
+  device. That is the useful answer — a client told `INVALID_OPERATION` retries,
+  and the retry fails identically — and it keeps a request that can never
+  succeed from taking the device at all. A bin is checked a second time once
+  its write owns the device, because a mode change can have replaced the list
+  in between (RM1) or withdrawn it (RM3); a bin the mode in force does not
+  offer is `INVALID_VALUE` there too, and never reaches the camera. A *valid*
+  bin asked for while something else owns the device is still
+  `INVALID_OPERATION`, which is B4's half; so is a valid mode while a capture,
+  an abort's cancel or a bin write owns it. A mode asked for behind another
+  mode change or a disconnect waits for it on the lifecycle lock instead, and
+  is then decided under its own claim (RM1, C8). And a disconnect arriving while a geometry write is inside the SDK
+  never closes through it. Behind a bin write it drains on its deadline like
+  any other owner, refusing to close if the write does not return, and
+  succeeding in the milliseconds the write normally takes. Behind a mode change
+  it waits on the connection's lifecycle lock (C8) for the switch to finish —
+  with no deadline, as it would behind a connect's handshake, so an
+  `InitQHYCCD` that never returns holds the disconnect, and every other
+  transition on that connection, the filter wheel's included, for as long as
+  it does.
 
-  **The bin setter is the other way round, and B1 wins there.** `valid_bins` is
-  cached, so an unsupported bin is answerable without the camera: `set_bin_x`
-  checks it *before* it claims anything, and an unsupported bin is
-  `INVALID_VALUE` whoever owns the device. That is the useful answer — a client
-  told `INVALID_OPERATION` retries, and the retry fails identically — and it
-  keeps a request that can never succeed from taking the device at all. A
-  *supported* bin asked for while something else owns the device is still
-  `INVALID_OPERATION`, which is B4's half. And a disconnect
-  arriving while a geometry write is inside the SDK drains on its deadline like
-  any other owner, refusing to close rather than closing through the write; it
-  succeeds once the write returns, which for a bin change is milliseconds.
-
-  The bin no-op path (`BinX` set to the bin already in force) still writes
-  nothing, but the *decision* that it is a no-op is made under the claim, not
-  before it. Read outside, the bin it compares against is one an in-flight write
-  may already be replacing: a request naming the currently-cached bin would be
-  answered `Ok` while the camera was being moved off it, and the client would be
-  told it has a bin it does not have — worse than any refusal, because nothing
-  later contradicts it. So a redundant `BinX` is `INVALID_OPERATION` while
-  something else owns the device, and `Ok` — with no SDK call and the C6 session
-  check on the answer — when nothing does.
+  The no-op paths (`BinX` set to the bin already in force, `ReadoutMode` to the
+  mode already in force) write nothing, but the *decision* that a request is a
+  no-op is made under the claim, not before it. Read outside, the value it
+  compares against is one an in-flight write may already be replacing: a
+  request naming the currently-cached value would be answered `Ok` while the
+  camera was being moved off it, and the client would be told it has a bin or a
+  mode it does not have — worse than any refusal, because nothing later
+  contradicts it. So a redundant `BinX` is `INVALID_OPERATION` while something
+  else owns the device, and a redundant `ReadoutMode` while a capture, an
+  abort's cancel or a bin write does (behind a mode change or a disconnect it
+  waits, as above); either is `Ok` — with no SDK call and the C6 session check
+  on the answer — when nothing does.
 
   While a geometry write holds the claim the device reports itself busy —
   `CameraState` `Exposing`, `PercentCompleted` 0, `ImageReady` false — on
@@ -747,15 +801,17 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   because the claim means *something is inside the SDK* rather than *a frame is
   being taken*. A sequential client never sees it: the setter has returned
   before its next request is read. A second, concurrent client can, and *busy*
-  is the honest answer to give it.
+  is the honest answer to give it. For a bin change that is milliseconds; for a
+  mode change it is the length of an `InitQHYCCD` (RM1), during which a frame
+  already taken cannot be downloaded either.
 
   **Busy is not the same as ended, so the claim records which kind of owner it
   is.** Every owner shares one slot, but only a geometry write has no exposure
   behind it, and the lifecycle paths ask before they act on one. An
   `AbortExposure` that meets a geometry write has nothing to abort: it succeeds
   having changed nothing, rather than clearing `ImageReady` on a frame the
-  client has already been told about — busy for the microseconds the write
-  holds the device is a report, but a cleared latch is a frame destroyed — and
+  client has already been told about — busy for as long as the write holds
+  the device is a report, but a cleared latch is a frame destroyed — and
   rather than issuing the SDK cancel, which would tell a camera that is not
   exposing to stop. A disconnect drains a geometry write like any other owner
   but does not count it as a capture it stopped, so closing a camera that was
@@ -848,7 +904,10 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **E1.** `StartExposure` while disconnected returns `NOT_CONNECTED`.
 - **E2.** `StartExposure` while exposing returns `INVALID_OPERATION`.
 - **E3.** `StartExposure` `Duration` outside `[ExposureMin, ExposureMax]` returns
-  `INVALID_VALUE`.
+  `INVALID_VALUE`. The range is read in the section that claims the device,
+  under the lock a readout-mode change publishes under, so it is the range of
+  the mode the exposure arms — not one a mode change finished replacing
+  between the check and the claim (RM1).
 - **E4.** `StartExposure` with `Light = false` (dark/bias) returns
   `NOT_IMPLEMENTED`. *Implementation note:* `qhyccd-rs` 0.1.9 exposes shutter
   *presence* (`CamMechanicalShutter`) but no shutter open/close *actuation* call,
@@ -934,27 +993,93 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **GO2.** `set_gain`/`set_offset` validate against cached `[min, max]` and apply
   via the SDK; out-of-range returns `INVALID_VALUE`.
 - **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max,
-  converted **once at connect** to ASCOM's `i32` by rounding to nearest — the
+  converted **once per mode** — at connect, and again at every readout-mode
+  change (RM1) — to ASCOM's `i32` by rounding to nearest — the
   SDK carries an integer bound in a float, so truncation would advertise a
   maximum one below the one the camera accepts. A bound with no `i32` spelling
   leaves the control **unadvertised** (`NOT_IMPLEMENTED` from all four members)
   with a `warn!`, rather than advertising a clamped bound the camera would then
   reject.
-- **GO4.** The cache is the sole gate on all six members, so each connect
-  **overwrites** it — including with "unavailable", which is a different cached
-  answer from the empty cell a connect starts from (C6). A control missing on this
+- **GO4.** The cache is the sole gate on all six members, so each connect —
+  and each readout-mode change — **overwrites** it, including with
+  "unavailable", which is a different cached answer from the empty cell a
+  connect starts from (C6). A control missing on this
   connect, or whose bounds this connect cannot name, clears the cached range
   instead of leaving the previous session's bounds standing to be advertised
   (the reconnect hygiene of C3, applied to the control caches).
-- **RM1.** `ReadoutModes` is the SDK's named mode list; `set_readout_mode`
-  validates the index, switches the mode, and **re-establishes the geometry
-  the way connect does** — bin 1x1, the mode's full resolution armed, the
-  effective area read back (G1) — because the readable region belongs to the
-  mode. After a mode change the camera therefore reports `BinX`/`BinY` 1 and
-  the whole new sensor as its sub-frame; a client sets its bin and ROI after
-  choosing the mode, which is the order ASCOM clients use anyway. An invalid
-  index returns `INVALID_VALUE`; a mode the SDK accepts but whose geometry
-  cannot be read back returns `INVALID_OPERATION`.
+- **RM1 (a mode change is a re-initialization, applied at the setter).**
+  `ReadoutModes` is the SDK's named mode list, read once per connect and
+  answered from that cache; `ReadoutMode` is the mode the camera was last
+  switched into, answered from the same place — 0 after every connect, because
+  the handshake selects it (C1). The SDK answers the list from static tables,
+  without switching modes, so reading it costs the handshake a few calls and
+  nothing on the camera. `set_readout_mode` checks the index against the cached
+  list before it asks for the device: an index past the end is `INVALID_VALUE`
+  whoever owns the device (B4), and in a connect's window, before the list is
+  published (C6), the setter and both getters answer `VALUE_NOT_SET`.
+
+  A valid index is applied **at the setter**, under the device claim (B4), by
+  the vendor's own switch procedure (SDK manual §15): the stream mode (single
+  frame) and `SetQHYCCDReadMode`, then `InitQHYCCD`, then the 16-bit transfer
+  the init resets — the sequence connect runs (C1), in connect's order, with
+  the new mode in place of 0 (the SDK reads neither of the first two until the
+  init, so their order does not matter to it) — followed by every read the
+  connect handshake makes: chip info (image size,
+  pixel size, bit depth), the geometry normalization and effective area (G1),
+  the valid binning modes, and the exposure, gain and offset ranges. All of it
+  is committed in one section, as a connect publishes (C6). After a mode change
+  `CameraXSize`/`CameraYSize`, `PixelSizeX`/`PixelSizeY`, `MaxADU`,
+  `MaxBinX`/`MaxBinY` and B1's bin list, `ExposureMin`/`ExposureMax` and the
+  gain and offset bounds all describe the new mode, and the camera reports
+  `BinX`/`BinY` 1 and the new mode's full frame as its sub-frame. A client sets
+  its bin and ROI after choosing the mode, which is the order ASCOM clients use
+  anyway.
+
+  **Why at the setter, when a bin and a ROI are applied at `StartExposure`.**
+  `SetQHYCCDReadMode` sends nothing to the camera. In the SDK it records the
+  mode number and returns; the camera is told the mode — and the SDK builds its
+  own geometry for it — only inside `InitQHYCCD` (see *Implementation notes*,
+  *What a readout-mode change is to the SDK*). A mode's effective area is
+  therefore unknowable until the camera has been switched into it and
+  re-initialized. Deferred to the next exposure, the switch would leave
+  `CameraXSize` describing the old mode until then, and a client reading it
+  after choosing a mode — the ordinary sequence — would size its frame for a
+  sensor it is no longer using: the disagreement between the reported size and
+  the next frame that R4 exists to rule out. A per-mode table built at connect
+  would cost an `InitQHYCCD` per mode (eleven on a QHY600M) inside the window
+  C6 and C7 make safe to sit in. So the readout mode is the one image setting
+  applied where it is set: it reconfigures the sensor rather than describing
+  the next frame.
+
+  **A redundant set changes nothing.** Setting the mode already in force is
+  `Ok` with no SDK call, and leaves the bin and the sub-frame as the client set
+  them; only a change of mode resets them. Whether a request *is* redundant is
+  decided under the claim, like a redundant bin (B4).
+
+  **A mode change is ordered against the physical connection's other
+  transitions.** It takes the same lifecycle lock a connect and a disconnect
+  take (C8), before it claims the device: `InitQHYCCD` is exactly the call C8
+  keeps from overlapping the CFW's handshake on the same `OpenQHYCCD`, and a
+  mode change is one more place that makes it. The lock comes first and the
+  claim second, the order a disconnect takes them in (the lock, then its
+  seize), so the two cannot wait on each other: a mode change arriving behind a
+  disconnect waits for the disconnect and then finds its session ended (C6),
+  and a disconnect arriving behind a mode change waits for the switch to
+  finish. Two mode changes are ordered the same way: the second waits for the
+  first rather than being refused, and then either finds its mode already in
+  force or switches from the one the first left. What *refuses* a mode change
+  is the claim — a capture, an abort's cancel or a bin write owning the device
+  (B4); none of those takes the lifecycle lock.
+
+  The setter takes as long as `InitQHYCCD` does. The QHY600 SDK sleeps 0.4 s
+  inside it before its USB round trips, and a whole QHY178M connect, init
+  included, measures 0.32 s — inside ConformU's 1 s target for a property
+  write. ConformU never writes `ReadoutMode`. The SDK also starts a
+  sensor-status thread of its own inside every `InitQHYCCD`, which lives until
+  the handle closes, so a client that switches modes between frames — a
+  separate mode for snapshots and for sequences, say — leaves one more of them
+  per switch for the rest of the session. How many that is over a night, and
+  whether it matters, is part of the multi-mode hardware run (*Future Work*).
 - **RM2.** The `ImageArray` unpack is total in both directions, and reports the
   **format before the length**: a bit depth the driver cannot unpack is rejected
   as such even when the buffer is also short, because the length it would be
@@ -966,6 +1091,72 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/) — this
   driver's share is only which of its own formats maps onto which pixel depth,
   and the format name the message carries.
+- **RM3 (a mode change that fails part-way leaves the geometry unpublished).**
+  Once the switch has begun — from its first write, the stream mode — the
+  camera's configuration is no longer known to be the one the caches describe,
+  whatever happens next; a refused `SetQHYCCDReadMode` is no proof that
+  nothing moved. After the init the driver checks that the SDK recorded the
+  requested mode and that the effective area is non-empty (the latter as
+  connect does, G1). Those catch an SDK that did not take the mode and a camera
+  that reports nothing readable; they do **not** catch an `InitQHYCCD` that
+  failed inside, which the SDK reports as success and which leaves nothing the
+  driver can read to tell — the mode read back is the one recorded before the
+  init, and the geometry reads return whatever the init left. That shows only
+  in a frame, and is part of the multi-mode hardware run (*Future Work*). If any
+  step of the switch fails, the change
+  returns `INVALID_OPERATION` naming the step, and the mode-dependent caches —
+  the geometry and reported size, the bin, the sub-frame, the bin list, the
+  exposure/gain/offset ranges and the mode in force — are **cleared** rather
+  than left describing a mode the camera may have left. The members that read
+  them answer exactly as they do in a connect's window (C6) — among them
+  `VALUE_NOT_SET` for `CameraXSize`/`CameraYSize`, `PixelSizeX`/`PixelSizeY`,
+  `MaxADU`, `BinX`/`BinY`, the sub-frame, the gain and offset bounds and
+  `ReadoutMode` — and `StartExposure` is refused rather than arming the previous
+  mode's geometry on a camera in an unknown state. A later mode change that
+  succeeds, or a reconnect, republishes them. The mode list is kept, since it
+  does not depend on the mode, so recovering needs no reconnect: selecting any
+  mode runs the whole switch again, because with no mode in force no request
+  is redundant.
+
+  A failure *before* the switch begins — the claim refused, the session ended,
+  the pre-switch gain or offset read — changes nothing on the camera, and
+  leaves every cache as it was.
+- **RM4 (what the re-initialization disturbs, and what the driver restores).**
+  `InitQHYCCD` rebuilds the SDK's geometry for the mode and, on the QHY600,
+  resets the exposure time to 5 s and the transfer depth to 16 bits (read from
+  the SDK library; see *Implementation notes*). The exposure time is pushed by
+  every `StartExposure`, and the transfer depth is set as part of the switch.
+  **Gain and offset** are re-applied, after the init, to the values the SDK
+  held before the switch: the vendor's procedure says to, the QHY600 and QHY5III
+  SDK classes re-send their own stored values inside the init anyway, and on at
+  least one other model (a QHYminiCam8M, reported by N.I.N.A. and AlpacaBridge)
+  the init resets them. A value the new mode's range no longer admits is left as
+  the SDK set it, and logged. **The cooler**, if a client engaged it in this
+  session (`CoolerOn = true`), has its target re-asserted as soon as the
+  sequence that runs the init returns — before anything later in the switch can
+  fail, and whether that sequence succeeded, failed at the init, or failed
+  before reaching it (re-sending a target the TEC never lost changes nothing):
+  with `disable_auto_cooler=true` in `qhyccd.ini` the SDK switches the TEC off
+  inside every `InitQHYCCD`, and without it a change that failed would leave the
+  sensor warming while `CoolerOn` read true. That
+  restores what a client commanded, on a path a client started; it is not an
+  actuation on connect (C5). A cooler nobody engaged is not touched, and nor is
+  one engaged before a reconnect: `CoolerOn` outlives a reconnect as the last
+  command given (K4), but the command was given to a session that has ended,
+  and a mode change in the next one does not act on it. The filter wheel is not
+  commanded: the SDK's init sends it nothing on the QHY600 and QHY5III classes
+  (C5 has what is claimed beyond that).
+
+  **Gain, offset and the cooler hold still for the length of a change.**
+  `Gain`, `Offset`, their setters, `CoolerOn` and `SetCCDTemperature` writes
+  wait behind a mode change in progress rather than landing inside it — where
+  the init would reset a gain written mid-switch, the restore would overwrite
+  it with the value read before, and a cooler switched off mid-switch would be
+  switched back on by the re-assertion of the one it replaced. A gain or offset
+  setter that waited is then checked against the bounds of the mode the change
+  left the camera in, not those of the mode it was leaving. A client
+  therefore sees one of these calls take up to the length of an `InitQHYCCD`
+  while a mode change runs.
 
 ### Cooling
 
@@ -984,7 +1175,13 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   independently of the PWM readback, since neither real hardware nor the
   simulation backend updates `CurPWM` synchronously when the cooler target is
   asserted). `CoolerPower` remains the normalized `CurPWM` percent (read via
-  `handle.cooler_power_raw()`).
+  `handle.cooler_power_raw()`). A readout-mode change re-asserts a cooler
+  engaged in the same session after its `InitQHYCCD`, so `CoolerOn` stays true
+  of the camera across one (RM4). A reconnect is not like that: `CoolerOn` and
+  the target survive it as the last command given, and nothing re-asserts them,
+  so on a rig whose `qhyccd.ini` sets `disable_auto_cooler` the connect's own
+  init leaves the TEC off beside a `CoolerOn` that still reads true, until a
+  client sends `CoolerOn` again.
 
 ### Sensor type
 
@@ -1049,7 +1246,7 @@ device is there at all.
 | `ExposureMin` / `Max` / `Resolution` | From SDK `get_parameter_min_max_step(Exposure)` |
 | `Gain` / `GainMin` / `GainMax` | SDK `Gain` control; `NOT_IMPLEMENTED` if absent |
 | `Offset` / `OffsetMin` / `OffsetMax` | SDK `Offset` control; `NOT_IMPLEMENTED` if absent |
-| `ReadoutMode` / `ReadoutModes` | SDK named modes |
+| `ReadoutMode` / `ReadoutModes` | SDK named modes, cached at connect; a change re-initializes the camera in the new mode at the setter and re-reads every mode-dependent cache (RM1, RM3, RM4) |
 | `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from colour control; `SensorType` is one of the `is_control_available` probes, so its "no colour control" branch takes the check on both sides of the SDK hop rather than reporting `Monochrome` off a closed handle (E11) |
 | `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `Cooler` control |
 | `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `Cooler` control present; `NOT_CONNECTED` while disconnected (E11) |
@@ -1278,6 +1475,20 @@ Layered per [`testing.md`](../skills/testing.md).
   written against it pins the answer hardware gives for roughly 5% of a close as
   though it were the answer for all of it. The claim's own refusal is covered on
   an open handle instead, by `second_exposure_while_in_flight_is_rejected`.
+- **The double's readout modes** — `MockCameraHandle` keeps the SDK's split
+  between recording a mode and applying it: `set_readout_mode` only records the
+  index (which `get_readout_mode` then reports), and `init` switches the mock's
+  chip and effective area to that mode's and resets the exposure time and the
+  transfer depth, as the SDK library does (*Implementation notes*). A test
+  builds a second mode with `with_readout_mode`, so a driver that skipped the
+  init would go on reading mode 0's sensor and fail RM1's tests. Knobs model the
+  models the SDK reading does not cover — an init that resets gain and offset,
+  one that switches the cooler off (`disable_auto_cooler`), an SDK that does not
+  hold the mode it was given — and a call log lets a test assert the sequence a
+  change sends, and that a refused one sent nothing. It is written from the
+  same reading of the SDK as the driver, so a green run shows the driver does
+  what that reading says, not that the reading is right: that is the QHY600M
+  run in *Future Work*.
 - **Windows DLL resolution** — the preflight's candidate ordering/selection are
   pure functions with **injected** environment and fs-existence checkers, and
   the doctor's check assembly / prompt parsing are pure over plain data —
@@ -1289,8 +1500,13 @@ Layered per [`testing.md`](../skills/testing.md).
   enumeration contract, not the DLL layer.
 - **BDD** (`bdd-infra::ServiceHandle`) — connection lifecycle (C1–C4), ROI/bin
   validation (R1–R2, R4, B1–B3), exposure happy-path + error paths (E1–E11),
-  gain/offset/readout (GO1–RM1), cooling (K1–K4), and FilterWheel (FW1–FW3 when
-  enabled), driven against the `qhyccd-rs` `simulation` backend.
+  gain/offset/readout (GO1–GO3, and RM1 and B4's readout-mode refusals as far
+  as a single-mode camera reaches them), cooling (K1–K4), and FilterWheel
+  (FW1–FW3 when enabled), driven against the `qhyccd-rs` `simulation` backend.
+  The simulated camera has one readout mode, so every valid mode it can be
+  given is the one in force: a switch between two modes (RM1), a failed one
+  (RM3) and what a switch restores (RM4) are covered by unit tests against
+  `MockCameraHandle` only.
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)
   — launches the production binary (built `--features conformu`, which pulls in
   `simulation`) via `bdd_infra::ServiceHandle::try_start` and drives the official
@@ -1615,6 +1831,56 @@ the "how" decisions made while building.
   re-asserts the cooler target (`ControlType::Cooler`, via
   `set_target_temperature_celsius`) with the stored target instead; see
   [Cooling contract K4](#cooling).
+- **What a readout-mode change is to the SDK.** Read from the shipped
+  `libqhyccd` (26.06.04 and 25.09.29, Linux x86_64) by static disassembly —
+  nothing was run against a camera — and backing RM1, RM3 and RM4:
+  - `SetQHYCCDReadMode` dispatches to the camera class's `SetReadMode`, which on
+    the QHY600 class records the index in the SDK object and returns: no USB
+    transfer at all. The mode reaches the camera only in the class's
+    `InitChipRegs`, which `InitQHYCCD` calls, as an argument to the FPGA init
+    command; the same routine writes the SDK's per-mode chip size, effective
+    area and overscan. Every multi-mode class in the library reads the mode in
+    `InitChipRegs` and none sends it from `SetReadMode`.
+  - A mode change **without** `InitQHYCCD` is therefore half-applied: the SDK's
+    resolution, bin and gain logic switch to the new index at once while the
+    camera stays in the old mode, and the chip info and effective area keep the
+    old mode's values. The driver's previous `set_readout_mode` did exactly that;
+    it never ran on hardware, because every validated QHY camera (the QHY178M)
+    has one mode, whose base-class `SetReadMode` accepts 0 and nothing else.
+  - The bin is different, which is why the vendor manual's §15 — one procedure
+    for readout mode, bin and data format — over-generalizes: `SetChipBinMode`
+    rebuilds the effective area and overscan itself, with no init, and a bare
+    `SetQHYCCDBinMode` is hardware-validated (R4).
+  - `SetQHYCCDStreamMode` does not read the recorded mode either (no class's
+    stream-mode code refers to it), so the order of the stream mode and the
+    read mode ahead of an init does not matter to the SDK; the driver sends
+    them in connect's order.
+  - `InitQHYCCD` returns success whatever `InitChipRegs` returns, and nothing
+    the SDK reports afterwards distinguishes the two: `GetQHYCCDReadMode`
+    returns the index `SetReadMode` recorded, which only the constructors and
+    `SetReadMode` write, and the chip info and effective area are whatever
+    `InitChipRegs` got as far as writing. RM3's checks therefore catch an
+    unrecorded mode and an empty readable area, not a failed init. The init
+    resets the QHY600's exposure to 5 s and transfer depth to 16
+    (8 in live mode), re-sends the SDK's stored gain, offset and USB traffic,
+    and forces DDR on; it starts one more sensor-status thread per call (the
+    SDK's own, until the handle closes). When `qhyccd.ini` sets
+    `disable_auto_cooler=true` it sets the cooler PWM to 0 on every call. Its
+    single-frame path on the QHY600 sleeps 0.4 s.
+  - The QHY600 class reports **11** modes, all 9600x6422 except mode 5
+    (`Bin3*3Mode (hardware)`, 3200x2144), and four of them named
+    `(Fiber Only)`; the SDK does not filter those out over USB. Mode count,
+    names and per-mode resolution are static tables, readable without switching.
+    `GetQHYCCDReadModeResolution` is not safe to call per index on every model —
+    on the QHY294PRO it rewrites the SDK's margin state as a side effect — so the
+    driver sizes a mode from chip info read after the switch, as connect does,
+    and never from that call.
+
+  Other drivers split the same way: INDI and AlpacaBridge re-initialize at the
+  setter, N.I.N.A. switches inside `StartExposure` with a re-init, and INDIGO
+  and several smaller drivers call `SetQHYCCDReadMode` alone. None of this has
+  yet been confirmed on a multi-mode camera, and the Windows `qhyccd.dll` has
+  not been read — see *Future Work*.
 
 ## Future Work
 
@@ -1623,6 +1889,22 @@ the "how" decisions made while building.
   (plus a cap-on / explicit-override workflow for shutterless models, e.g. the
   5III series) so `calibrator-flats` darks/bias work.
 - **`StopExposure`** (graceful stop with readout) — currently `NOT_IMPLEMENTED`.
+- **A readout-mode change on a multi-mode camera.** RM1's re-initialization is
+  specified from the vendor manual and the SDK library and exercised against
+  the unit-test double; no QHY camera with more than one mode has run it. The
+  QHY600M on rig2 is the one in reach, and runs the Windows `qhyccd.dll`,
+  which has not been read. The run to make there, with `debugOutPut=true` in
+  `qhyccd.ini`: the mode list it reports over USB (whether the four
+  `(Fiber Only)` modes appear, and whether they should then be withheld from
+  `ReadoutModes`), one switch into mode 5 and back with the geometry each
+  reports and a frame taken in each, the time the setter takes, whether that
+  rig's `qhyccd.ini` sets `disable_auto_cooler`, the process's thread count
+  before and after a series of switches (each init starts an SDK thread that
+  lives until close, RM1), and what a switch looks like when its init fails
+  inside — which RM3's checks cannot see, so a frame has to. The same run is what the
+  `qhyccd-rs` simulation — one geometry for every mode today — should be
+  seeded from if it is to model modes, rather than from the reading of the SDK
+  this driver was written against.
 - **FastReadout** validation on real hardware.
 - **PulseGuide** / `CanPulseGuide`.
 - **Focuser consolidation.** `qhyccd-rs` also covers QHY focusers; a future
