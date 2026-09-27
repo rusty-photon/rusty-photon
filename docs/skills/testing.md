@@ -76,7 +76,24 @@ the feature file rather than buried in step code).
 
 **Use ConformU tests for:**
 - Verifying a service conforms to the ASCOM Alpaca standard
-- These are always `#[ignore]` and run manually or in dedicated CI
+- They self-skip unless `CONFORMU_PATH` names a ConformU binary, so they
+  are inert in the ordinary `cargo` / `bazel` suites and run in the nightly
+  `conformu.yml` rotation (locally: `bazel test --config=conformu`)
+
+**Two runners, one rule.** `bdd_infra::run_conformu` drives ConformU's
+URL-argument verbs, which call `SetFullTest()` after reading any settings
+file: the run is always ConformU's full test set. The runner therefore
+takes a typed `bdd_infra::FullRunSettings` of timeouts and delays — no
+selection flag, no tolerance — so nothing a test writes can be silently
+overridden, and no test can quietly soften a verdict (tolerances *are*
+honoured by those verbs and raise no alert). Use it unless the device has a
+documented capability gap the full set cannot accommodate; then, and only
+then, use `run_conformu_from_settings`, which honours the selection in a
+hand-written file, logs a configuration alert per omitted test, and can
+never produce a `docs/validation/` record (planetarium-bridge is the worked
+example). Adding a field to `FullRunSettings` means checking, in the
+ConformU source, that the setting is read on the URL-verb path, carries no
+`[MandatoryInFullTest]` attribute, and cannot loosen a verdict.
 
 ---
 
@@ -1538,7 +1555,7 @@ async fn test_focuser_position_not_connected() {
 
 - `src/<module>.rs` `#[cfg(test)] mod tests` -- Unit and mock-based component tests (inline with source)
 - `test_integration.rs` / `test_lib.rs` -- Server, run-loop, and CLI integration tests. Aim to keep these in one binary per service when practical so cargo links fewer integration targets; some services (phd2-guider, plate-solver) still split by concern where the categories don't share helpers.
-- `conformu_integration.rs` -- ASCOM conformance (always `#[ignore]`)
+- `conformu_integration.rs` -- ASCOM conformance (self-skips without `CONFORMU_PATH`; see §1.4)
 
 #### 6.5 Mock Infrastructure Lives in Test Files
 

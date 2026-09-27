@@ -725,9 +725,14 @@ rejection) are covered by the in-process unit test
 
 ### ConformU
 
-The service exposes a `conformu = ["mock", "ascom-alpaca/test"]` feature.
-`tests/conformu_integration.rs` launches the binary against a mock port
-and points ConformU at it. The same approach `qhy-focuser` uses.
+The service exposes a `conformu = ["mock"]` feature: it gates
+`tests/conformu_integration.rs`, and the binary it launches gets the mock
+serial port. The test drives ConformU through `bdd_infra::run_conformu` —
+the URL-argument verbs, so the run is always ConformU's **full** test set —
+with a `bdd_infra::FullRunSettings` that widens only the `Connect()` /
+`Disconnect()` budget to 10 s; it self-skips unless `CONFORMU_PATH` names a
+ConformU binary and runs nightly in the `conformu.yml` rotation. The same
+approach `qhy-focuser` uses.
 
 #### Mock move-settling model
 

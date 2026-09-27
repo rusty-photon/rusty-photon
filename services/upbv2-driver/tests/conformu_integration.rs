@@ -27,7 +27,7 @@
     clippy::struct_excessive_bools
 )]
 
-use bdd_infra::{run_conformu, ConformuRun, ServiceHandle};
+use bdd_infra::{run_conformu, ConformuRun, FullRunSettings, ServiceHandle};
 use tracing_subscriber::{fmt, EnvFilter};
 use upbv2_driver::mock::ENV_AUTO_DEW;
 
@@ -61,57 +61,16 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     let test_dir = bdd_infra::scratch::new_dir("conformu-upbv2-driver-")?;
 
     let config_path = test_dir.path().join("config.json");
-    let conformu_settings_path = test_dir.path().join("conformu-settings.json");
 
-    // Create ConformU settings with reduced delays for faster CI
-    // Note: ConformU requires a complete settings file - partial files are ignored
-    let conformu_settings = serde_json::json!({
-        "SettingsCompatibilityVersion": 1,
-        "GoHomeOnDeviceSelected": true,
-        "ConnectionTimeout": 2,
-        "RunAs32Bit": false,
-        "RiskAcknowledged": false,
-        "DisplayMethodCalls": false,
-        "UpdateCheck": false,
-        "ApplicationPort": 0,
-        "ConnectDisconnectTimeout": 5,
-        "Debug": false,
-        "TraceDiscovery": false,
-        "TraceAlpacaCalls": false,
-        "TestProperties": true,
-        "TestMethods": true,
-        "TestPerformance": false,
-        "AlpacaDevice": {},
-        "AlpacaConfiguration": {},
-        "ComDevice": {},
-        "ComConfiguration": {},
-        "DeviceName": "No device selected",
-        "DeviceTechnology": "NotSelected",
-        "ReportGoodTimings": true,
-        "ReportBadTimings": true,
-        "TelescopeTests": {},
-        "TelescopeExtendedRateOffsetTests": true,
-        "TelescopeFirstUseTests": true,
-        "TestSideOfPierRead": false,
-        "TestSideOfPierWrite": false,
-        "CameraFirstUseTests": true,
-        "CameraTestImageArrayVariant": true,
-        // Switch-specific settings with reduced delays for faster CI
-        // Default: SwitchReadDelay=500, SwitchWriteDelay=3000
-        "SwitchEnableSet": false,
-        "SwitchReadDelay": 50,
-        "SwitchWriteDelay": 100,
-        "SwitchExtendedNumberTestRange": 100,
-        "SwitchAsyncTimeout": 10,
-        "SwitchTestOffsets": true,
-        // ObservingConditions-specific settings
-        "ObservingConditionsNumReadings": 5,
-        "ObservingConditionsReadInterval": 50
-    });
-    std::fs::write(
-        &conformu_settings_path,
-        serde_json::to_string_pretty(&conformu_settings)?,
-    )?;
+    // Reduced switch delays so the run finishes in seconds rather than
+    // minutes (ConformU's defaults are 500 ms per read and 3000 ms per
+    // write). The test set is always the full one: ConformU's URL verbs
+    // call SetFullTest(), which also force-enables the switch write tests.
+    let conformu_settings = FullRunSettings {
+        switch_read_delay_ms: 50,
+        switch_write_delay_ms: 100,
+        ..FullRunSettings::default()
+    };
 
     let config = serde_json::json!({
         "serial": {
@@ -159,7 +118,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
             handle.port
         );
 
-        match run_conformu("switch", &handle.base_url, 0, Some(&conformu_settings_path)).await? {
+        match run_conformu("switch", &handle.base_url, 0, Some(&conformu_settings)).await? {
             ConformuRun::Skipped => {
                 println!("ConformU Switch: CONFORMU_PATH not set, skipping.");
             }
@@ -179,7 +138,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
             "observingconditions",
             &handle.base_url,
             0,
-            Some(&conformu_settings_path),
+            Some(&conformu_settings),
         )
         .await?
         {
@@ -230,7 +189,7 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
             gated.port
         );
 
-        match run_conformu("switch", &gated.base_url, 0, Some(&conformu_settings_path)).await? {
+        match run_conformu("switch", &gated.base_url, 0, Some(&conformu_settings)).await? {
             ConformuRun::Skipped => {
                 println!("ConformU Switch (auto-dew): CONFORMU_PATH not set, skipping.");
             }

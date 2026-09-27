@@ -2473,7 +2473,7 @@ ConformU verifies ASCOM compliance.
 | Service unit tests (`#[cfg(test)]` per module) | `coordinates`: encoder ↔ RA/Dec across edge cases (poles, meridian, hemisphere flip); `config`: defaults, JSON round-trips, CLI overrides; `error`: ASCOM mapping |
 | Service BDD (cucumber) | every behaviour table-row above as a scenario, with the mock transport |
 | Service `test_lib.rs` (gated on `mock`) | server starts, binds the configured port, exposes the configured device |
-| `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance via `ConformUTestBuilder::run()` — runs both `alpacaprotocol` and `conformance` phases. **Currently NOT wired into the nightly `conformu` workflow** (issue #201): three independent conformance-phase failures need driver work first. See [§"Running ConformU manually"](#running-conformu-manually) and [§"Expected ConformU report"](#expected-conformu-report). |
+| `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance via `bdd_infra::run_conformu` — ConformU's URL-argument verbs, so both the `alpacaprotocol` and `conformance` suites run with ConformU's **full** test set; the runner exposes no test selection. **Currently NOT wired into the nightly `conformu` workflow**: the mock run is not green while [#1299](https://github.com/rusty-photon/rusty-photon/issues/1299) (the RA pulse-guide stop-window offset) is open, and re-entry also needs `flip_policy.enabled = true` in the mock config. See [§"Running ConformU manually"](#running-conformu-manually) and [§"Expected ConformU report"](#expected-conformu-report). |
 
 **The BDD baseline runs the shipped safety config.** Its
 `cw_exclusion_zone` is the default `(0.95, 11.05)`, not `null`, so
@@ -2522,26 +2522,33 @@ feature-gated mock so the binary itself runs against a fake mount.
 ### Running ConformU manually
 
 This service is deliberately **not** in the nightly `conformu`
-workflow rotation (issue #201). `ConformUTestBuilder::run()` (which
-the in-tree integration test uses) runs `alpacaprotocol` then
-`conformance`. With PulseGuide landed (PR #206), the
-`alpacaprotocol` phase now completes — but the `conformance` phase
-surfaces three independent failures that need driver work before
-re-adding `[package.metadata.conformu]` to the package's
-`Cargo.toml`:
+workflow rotation. The in-tree integration test runs ConformU through
+`bdd_infra::run_conformu` — the URL-argument verbs, which call
+ConformU's `SetFullTest()` — so it is always the **full** test set:
+`alpacaprotocol` then `conformance`, every test group enabled, the same
+shape a hardware record uses. The settings that runner can write carry
+only timeouts and delays (`bdd_infra::FullRunSettings`); this test
+passes none, so the run is on ConformU's defaults. The `alpacaprotocol`
+phase completes; the `conformance` phase records three findings, of
+which one still needs driver work before re-adding
+`[package.metadata.conformu]` to the package's `Cargo.toml`:
 
-1. **`SideOfPierTests` aborts CheckMethods.** ConformU
-   (`TelescopeTester.cs::SopPierTest`) slews to mechanical-HA
-   ±9 h to verify pier-side reporting on both sides of the
-   meridian. The `[-6.95, +6.95]` h safety envelope correctly
-   rejects those slews on real hardware, but the
-   `InvalidValueException` is caught by ConformU's
-   "Exception when testing device" handler at CheckMethods scope
-   and the rest of the suite is abandoned — so the CI test exits
-   with one ISSUE and no further diagnostics. Widening the
-   envelope just for the mock test config (e.g.
-   `ra_min_hours = -12`, `ra_max_hours = 12`) lets CheckMethods
-   complete and exposes the other two failures below.
+1. **The HA +9 pulse-guide leg aborts CheckMethods.** With
+   `TelescopeExtendedPulseGuideTests` forced on, ConformU's
+   `CheckMethods` runs `TestPulseGuide` at mechanical HA −9, +9,
+   −3 and +3 — before it reaches the side-of-pier model tests.
+   Under the shipped default (`flip_policy.enabled = false`) the
+   only reachable solution for HA +9 sits inside the counterweight
+   exclusion zone `(0.95, 11.05)` h, so the driver refuses the slew
+   (`target mech_HA 9.000 h is inside the CW exclusion zone`); the
+   `InvalidValueException` is caught by ConformU's "Exception when
+   testing device" handler at CheckMethods scope and the rest of the
+   suite is abandoned, so the run ends 0 errors / 3 issues: the two
+   #1299 offsets at HA −9 plus the abandon. That is the safety
+   envelope doing its job. Disabling the zone for the mock config
+   (`"cw_exclusion_zone": null`) or enabling the flip policy (which
+   reaches HA +9 through the pole) lets CheckMethods complete and
+   exposes the other two findings below.
 2. **`SideOfPier` returns `pierWest` for every in-envelope
    target.** `coordinates::side_of_pier` keys on
    `|dec_ticks| > cpr_dec/4` (the Dec-encoder-past-pole
@@ -2599,7 +2606,7 @@ Measured against the mock with ConformU 4.5.0, per mount config
 |---|---|---|
 | default (`flip_policy.enabled = false`) | 3 | RA East/West offset at HA −9 (2); then failure (1) abandons CheckMethods |
 | `cw_exclusion_zone: null` | 13 | RA East/West offset at HA ±3, ±9 (8); failure (2) `SideofPier` / `DestinationSideofPier` (5) |
-| `flip_policy.enabled = true` | 20 → 8 (see below) | RA East/West offset (8); ~~Dec direction on the flipped side (4)~~ — fixed; ~~slews / syncs to HA +1…+4 h rejected as inside the CW exclusion zone (8)~~ — fixed |
+| `flip_policy.enabled = true` | 20 → 7–8 (see below) | RA East/West offset (7–8); ~~Dec direction on the flipped side (4)~~ — fixed; ~~slews / syncs to HA +1…+4 h rejected as inside the CW exclusion zone (8)~~ — fixed |
 
 Enabling the flip policy clears failures (1) and (2) outright —
 `SideOfPier Write` flips, and `SideofPier` /
@@ -2618,10 +2625,15 @@ issues are #1300, also fixed — Dec pulses resolve `ccw` against the
 side the mount is on, and that fix is measured on hardware on the
 counterweight-up side, not only against the mock (see
 [§Real-hardware validation](#real-hardware-validation)). **The `20`
-above was measured against the mock; the `8` is arithmetic, not a
-mock re-run** — it assumes the RA-offset group is untouched, which
-neither fix goes near. The remaining eight are issue #1299 (RA
-offset); re-measure when it lands. On hardware the same config
+above was measured against the mock before those fixes; the `7–8` is
+a mock re-run on 2026-09-27** (ConformU 4.5.0): every remaining issue
+is a #1299 RA East/West offset at HA ±3 / ±9. The full URL-verb run
+counted 7 and a settings-verb run of the same eight legs counted 8:
+the HA +9 East leg read +2.53 s in the first (0.01 s from the
+expected +2.51 s, a pass) and +2.74 s in the second, while the other
+seven legs sat at +2.71…+2.76 s East / −2.24…−2.26 s West in both —
+scatter on one leg, not a value near the 0.07 s tolerance.
+Re-measure when #1299 lands. On hardware the same config
 measured **11** on 2026-09-26: seven of the eight RA offsets (East at
 HA −3 passed, at +2.52 s) plus four cross-axis RA readings of
 0.07–0.17 s during Dec pulses that the mock never shows — issue
@@ -2635,23 +2647,40 @@ the reads before and after a pulse fell on the same poll phase and the
 artefact cancelled. The integration test's mock config therefore polls
 at 300 ms, which does not divide 5 s.
 
-To reproduce locally, run the in-tree integration test — same
-binary, same config, same ConformU invocation the workflow used:
+To reproduce locally, run the in-tree integration test with
+`CONFORMU_PATH` pointing at a ConformU install — the same binary and
+config as above, through the same runner the nightly rotation uses:
 
 ```bash
-bazel test //services/star-adventurer-gti:conformu_integration
+CONFORMU_PATH=$HOME/tools/conformu/conformu \
+  bazel test --config=conformu //services/star-adventurer-gti:conformu_integration
 ```
 
-The test config (`tests/conformu_integration.rs`) sets
+The run is ConformU's full test set. The URL-argument verbs the runner
+drives call `SetFullTest()`, which force-enables every test-selection
+setting (`TestSideOfPierWrite`, `TelescopeExtendedPulseGuideTests`,
+`TelescopeFirstUseTests`, …) whatever a settings file says, and
+`bdd_infra::run_conformu` accepts only a `FullRunSettings` of timeouts
+and delays, so no narrowing is expressible from the test. What the test
+does shape is the **device**: its mount config sets
 `site_latitude_deg = 47.6062` so ConformU's
 `SIDE_OF_PIER_INVALID_LATITUDE = 10°` gate does not skip the
-side-of-pier model tests.
+side-of-pier model tests, and it leaves `flip_policy` at the shipped
+default (`enabled = false`), which is why the default-config row above
+abandons `CheckMethods` at HA +9. Measured on 2026-09-27 against the
+mock with ConformU 4.5.0: the default config gives 0 errors / 3 issues
+in 48 s; with `flip_policy.enabled = true` the full run gives 0 errors /
+7–8 issues (all #1299; see the note under the table above) in about
+11 minutes, seven of them ConformU's fixed wait while the mount tracks
+through the meridian for the `SideOfPier Write` test.
 
 ### Expected ConformU report
 
 These are the conformance-phase findings against the current
-driver. They are *not* a green run — fixing (2) and (3) above is
-on the roadmap before the package is re-added to the nightly
+driver with the shipped default config. They are *not* a green run —
+(1) and (2) are the non-flipping default's own behaviour and clear
+with `flip_policy.enabled = true`; (3), issue #1299, is what still
+needs driver work before the package is re-added to the nightly
 workflow. The per-config issue counts are in the table under
 [§Running ConformU manually](#running-conformu-manually).
 

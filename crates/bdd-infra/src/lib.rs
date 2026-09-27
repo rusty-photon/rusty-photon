@@ -249,7 +249,7 @@ pub mod sky_survey_camera_harness;
 pub mod conformu;
 
 #[cfg(feature = "conformu")]
-pub use conformu::{run_conformu, run_conformu_from_settings, ConformuRun};
+pub use conformu::{run_conformu, run_conformu_from_settings, ConformuRun, FullRunSettings};
 
 #[cfg(feature = "tls-auth")]
 pub mod tls_auth;

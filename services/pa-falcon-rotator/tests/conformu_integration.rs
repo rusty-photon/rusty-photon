@@ -32,7 +32,7 @@
     clippy::struct_excessive_bools
 )]
 
-use bdd_infra::ServiceHandle;
+use bdd_infra::{FullRunSettings, ServiceHandle};
 use std::sync::Mutex;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -40,46 +40,6 @@ use tracing_subscriber::{fmt, EnvFilter};
 // the ASCOM Alpaca discovery service to its default port, so running them
 // concurrently would race for that UDP socket regardless of the HTTP port.
 static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
-
-/// Settings block shared by both tests. `ConformU` silently overwrites
-/// partial settings files with defaults, so this carries the full template
-/// produced by `echo '{}' > settings.json && conformu conformance
-/// --settingsfile settings.json …` (see [`ConformUTestBuilder::settings_file`]
-/// docs).
-fn base_conformu_settings() -> serde_json::Value {
-    serde_json::json!({
-        "SettingsCompatibilityVersion": 1,
-        "GoHomeOnDeviceSelected": true,
-        "ConnectionTimeout": 2,
-        "RunAs32Bit": false,
-        "RiskAcknowledged": false,
-        "DisplayMethodCalls": false,
-        "UpdateCheck": false,
-        "ApplicationPort": 0,
-        "ConnectDisconnectTimeout": 5,
-        "Debug": false,
-        "TraceDiscovery": false,
-        "TraceAlpacaCalls": false,
-        "TestProperties": true,
-        "TestMethods": true,
-        "TestPerformance": false,
-        "AlpacaDevice": {},
-        "AlpacaConfiguration": {},
-        "ComDevice": {},
-        "ComConfiguration": {},
-        "DeviceName": "No device selected",
-        "DeviceTechnology": "NotSelected",
-        "ReportGoodTimings": true,
-        "ReportBadTimings": true,
-        "TelescopeTests": {},
-        "TelescopeExtendedRateOffsetTests": true,
-        "TelescopeFirstUseTests": true,
-        "TestSideOfPierRead": false,
-        "TestSideOfPierWrite": false,
-        "CameraFirstUseTests": true,
-        "CameraTestImageArrayVariant": true,
-    })
-}
 
 #[tokio::test]
 async fn conformu_compliance_tests_rotator() -> Result<(), Box<dyn std::error::Error>> {
@@ -95,19 +55,13 @@ async fn conformu_compliance_tests_rotator() -> Result<(), Box<dyn std::error::E
     let test_dir = bdd_infra::scratch::new_dir("conformu-pa-falcon-rotator-")?;
 
     let config_path = test_dir.path().join("config.json");
-    let conformu_settings_path = test_dir.path().join("conformu-settings.json");
-
-    let mut conformu_settings = base_conformu_settings();
-    // Mirror qhy-focuser's `FocuserTimeout: 30` precedent — the default
-    // `RotatorTimeout: 60` is unnecessarily long for the mock backend.
-    conformu_settings
-        .as_object_mut()
-        .expect("base settings must be a JSON object")
-        .insert("RotatorTimeout".into(), serde_json::json!(30));
-    std::fs::write(
-        &conformu_settings_path,
-        serde_json::to_string_pretty(&conformu_settings)?,
-    )?;
+    // ConformU's full test set runs (its URL verbs call SetFullTest()); the
+    // settings shape only the run's timeouts. The mock rotator settles
+    // instantly, so the default 60 s rotator timeout is longer than needed.
+    let conformu_settings = FullRunSettings {
+        rotator_timeout_s: 30,
+        ..FullRunSettings::default()
+    };
 
     let config = serde_json::json!({
         "serial": {
@@ -152,14 +106,9 @@ async fn conformu_compliance_tests_rotator() -> Result<(), Box<dyn std::error::E
         handle.port
     );
 
-    let result = bdd_infra::run_conformu(
-        "rotator",
-        &handle.base_url,
-        0,
-        Some(&conformu_settings_path),
-    )
-    .await
-    .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()));
+    let result = bdd_infra::run_conformu("rotator", &handle.base_url, 0, Some(&conformu_settings))
+        .await
+        .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()));
 
     handle.stop().await;
 
@@ -192,30 +141,15 @@ async fn conformu_compliance_tests_switch() -> Result<(), Box<dyn std::error::Er
     let test_dir = bdd_infra::scratch::new_dir("conformu-pa-falcon-rotator-switch-")?;
 
     let config_path = test_dir.path().join("config.json");
-    let conformu_settings_path = test_dir.path().join("conformu-settings.json");
-
-    let mut conformu_settings = base_conformu_settings();
-    // Switch-specific overrides mirror ppba-driver: drop the SwitchReadDelay
-    // / SwitchWriteDelay defaults (500ms / 3000ms) so the run finishes in
-    // ~35s instead of ~8min for CI.
-    {
-        let obj = conformu_settings
-            .as_object_mut()
-            .expect("base settings must be a JSON object");
-        obj.insert("SwitchEnableSet".into(), serde_json::json!(false));
-        obj.insert("SwitchReadDelay".into(), serde_json::json!(50));
-        obj.insert("SwitchWriteDelay".into(), serde_json::json!(100));
-        obj.insert(
-            "SwitchExtendedNumberTestRange".into(),
-            serde_json::json!(100),
-        );
-        obj.insert("SwitchAsyncTimeout".into(), serde_json::json!(10));
-        obj.insert("SwitchTestOffsets".into(), serde_json::json!(true));
-    }
-    std::fs::write(
-        &conformu_settings_path,
-        serde_json::to_string_pretty(&conformu_settings)?,
-    )?;
+    // Reduced switch delays so the run finishes in ~35 s instead of ~8 min
+    // (ConformU's defaults are 500 ms per read and 3000 ms per write). The
+    // test set is always the full one: ConformU's URL verbs call
+    // SetFullTest(), which also force-enables the switch write tests.
+    let conformu_settings = FullRunSettings {
+        switch_read_delay_ms: 50,
+        switch_write_delay_ms: 100,
+        ..FullRunSettings::default()
+    };
 
     let config = serde_json::json!({
         "serial": {
@@ -257,10 +191,9 @@ async fn conformu_compliance_tests_switch() -> Result<(), Box<dyn std::error::Er
         handle.port
     );
 
-    let result =
-        bdd_infra::run_conformu("switch", &handle.base_url, 0, Some(&conformu_settings_path))
-            .await
-            .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()));
+    let result = bdd_infra::run_conformu("switch", &handle.base_url, 0, Some(&conformu_settings))
+        .await
+        .map_err(|e| Box::<dyn std::error::Error>::from(e.to_string()));
 
     handle.stop().await;
 

@@ -142,8 +142,11 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
         "ComConfiguration": {},
         "ReportGoodTimings": true,
         "ReportBadTimings": true,
-        // The full test dictionary (ConformU replaces a partial one with
-        // all-enabled defaults). PulseGuide is deselected: with
+        // The full test dictionary: ConformU indexes it exactly as
+        // deserialised, so a missing key aborts the methods phase with a
+        // KeyNotFoundException (the all-enabled rebuild happens only inside
+        // SetFullTest, which the *-settings verbs never call). PulseGuide is
+        // deselected: with
         // CanPulseGuide = false the conformance suite requires
         // IsPulseGuiding to raise NOT_IMPLEMENTED, while the protocol
         // suite's PulseGuide test polls IsPulseGuiding as its completion

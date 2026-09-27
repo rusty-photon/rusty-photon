@@ -78,6 +78,38 @@ conformu alpacaprotocol <device-url> -n alpacaprotocol.log
 conformu conformance    <device-url> -n conformance.log -r conformance-results.json
 ```
 
+Both verbs call ConformU's `SetFullTest()` after reading any `-s` settings
+file, so a record is always the **full** test set. A settings file on
+these verbs is for connection settings (the `AlpacaConfiguration` block
+for HTTPS and credentials), timeouts and delays: every key ConformU marks
+`[MandatoryInFullTest]` is overridden, whatever it says, and the
+`TelescopeTests` dictionary is rebuilt all-true. (The `DomeTests`
+dictionary is the one selection `SetFullTest()` leaves alone; there is no
+dome driver here, and a deselected dome test still raises a configuration
+alert, which the all-zero rule below rejects.) The forced-on keys that
+ConformU ships *off* are the ones that move hardware, so plan for them:
+on a Switch, `SwitchEnableSet` is forced on and ConformU **will write**
+the switches (a powerbox's outputs included); on a German-equatorial
+mount at a site latitude beyond ±10°, `TestSideOfPierRead` is forced on
+and ConformU slews to hour angles −3, −9, +3 and +9 to check
+`SideOfPier`, whatever `CanSetPierSide` says; and on one that reports
+`CanSetPierSide = true`, `TestSideOfPierWrite` is forced on too and
+ConformU slews to HA −3 at Dec 0, then to HA −0.03 h (two minutes east
+of the meridian), lets the mount track across it for seven minutes and
+sets `SideOfPier` to the opposite pointing state — a meridian flip.
+Tolerances (`TelescopePulseGuideTolerance`, `TelescopeSlewTolerance`,
+`FocuserMoveTolerance`, …) *are* honoured, and a loosened one raises no
+configuration alert and appears nowhere in the results file; the only
+evidence is the value ConformU prints inline on each measurement line
+(`Test tolerance: …`), which nothing in the all-zero rule reads. A
+record's settings file must never loosen a tolerance beyond ConformU's
+defaults. The smallest valid file is
+`{"SettingsCompatibilityVersion": 1}` plus whatever `AlpacaConfiguration`
+the endpoint needs; every property it omits keeps ConformU's default. (The
+in-tree tests build theirs from `bdd_infra::FullRunSettings`, which cannot
+express a selection or a tolerance at all — see
+[testing.md §1.4](testing.md#14-conformu-integration-tests).)
+
 Both suites must be clean. In `conformance-results.json`, `ErrorCount`,
 `IssueCount`, `ConfigurationAlertCount` and `TimingIssuesCount` must
 **all** be 0 for the run to be recorded.
