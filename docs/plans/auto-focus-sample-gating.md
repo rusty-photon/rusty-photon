@@ -45,14 +45,75 @@ tell a clean V from a guess.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | G1 | Sample gating on star count, weighted R² in the result, confirmation frame with fallback to the lowest accepted sample, starting-position restore on fit failure, `final_hfr` for consumers | Merged | [#1193](https://github.com/rusty-photon/rusty-photon/pull/1193) |
-| G2 | Hyperbolic V-curve model (`a·√(1 + ((x − c)/b)²)`); the capture sweep's lands in the `focus-model` provider ([plan](focus-model.md), D13), the guide-metric variant's in `rp`; R² becomes a gate with a threshold knob | Not started | |
-| G3 | Measurement-side: aperture HFR around the centroid, two-star minimum per point, hot-pixel and edge rejection — tracked under #1179, needs a real-frame corpus from the rig | Not started | |
+| G2 | Hyperbolic V-curve model (`a·√(1 + ((x − x₀)/b)²)`, the centre written `x₀` so it does not collide with the obstruction-derived blur constant `c` of the focus-model plan's D9); the capture sweep's lands in the `focus-model` provider ([plan](focus-model.md), D13 and S9), the guide-metric variant's in `rp`; R² gets a threshold knob in the provider, unset by default | Next — see the decision below | |
+| G3 | Measurement-side: aperture HFR around the centroid, two-star minimum per point, hot-pixel and edge rejection — tracked under #1179, needs a real-frame corpus from the rig | After G2 | |
 
 G1 first; G2 after G1 because an R² threshold against a parabola rejects
 clean fine sweeps (a parabola scores 0.70 on the rig's clean fine sweep,
-below the 0.7 NINA uses as its default gate). G3 is independent and must
-be validated on real frames, never on synthetic ones — the sweep frames
-from the night this was found are still on the rig.
+below the 0.7 NINA uses as its default gate). G3 has no technical
+dependency on either, but is sequenced after G2 (see the decision
+below), and must be validated on real frames, never on synthetic ones —
+the sweep frames from the night this was found are still on the rig.
+
+**Decided 2026-09-13.** G2 lands next, in the `focus-model` provider
+([plan](focus-model.md) S9), and does **not** wait for another rig
+night. The hyperbola is the analytic defocus curve — a geometric cone
+with a seeing floor — so what makes it the right model is physics that
+holds across optical trains, not one rig's numbers; fitting it to a
+single night's sweeps is precisely what would make it train-specific.
+It is validated against curves generated over a spread of focal
+ratios, `microns_per_step` values and seeing floors, with the rig's
+two recorded sweeps kept as regression cases.
+
+The R² threshold is the opposite kind of claim. How clean a real sweep
+looks is a property of a rig — its seeing, its sampling, its star
+field — so a single default cannot be right everywhere, and a
+too-tight one turns usable sweeps into failed runs on a live night.
+It therefore ships as `min_fit_r_squared`, defaulting to unset: fit
+quality is reported, never enforced, until a train's own numbers
+justify a number for that train. The knob is the provider's alone, on
+its per-train `trains.<id>` block: `rp`'s guide-metric sweep takes the hyperbola
+(focus-model plan S9) and keeps reporting `fit_r_squared` with no
+threshold and no `poor_fit`, because the guiding train's `auto_focus`
+block is the one `rp` keeps after that plan's S7 and this plan adds no
+knob to it. Null is the opt-out; a value that is
+present is validated at load like the other per-train knobs — finite
+and within `[0, 1]`, the range a coefficient of determination can
+take. The endpoints are legal and mean what they say: `0` accepts
+every fit, the same as unset but written down, and `1` accepts only an
+exact fit, so the check catches a value outside the range, not a poor
+choice inside it. That reading of `0` rests on the reported R² being
+clamped to `[0, 1]`, which the parabola does today
+(`services/focus-model/src/sweep.rs`, a raw coefficient of
+determination can go negative on a fit worse than the mean); G2's
+hyperbola keeps the clamp, as a requirement and not an accident of
+the port. The #1187 failure is already caught
+without it: the 0.1 gate leaves three accepted samples, below the
+default `min_fit_points` of 5, so a run **at the defaults** ends in
+`not_enough_stars` and G1's decision 5 restores the starting position.
+Decision 1 above quotes a vertex 21 steps from focus for the same
+sweep; that is an offline replay fitting those three samples, which
+needs a `min_fit_points` below the shipped default of 5. Both are
+true — the replay shows the gate picks the right samples, the default
+refuses to fit so few of them — and neither describes a sweep that
+reaches a confirmation frame. Note what that
+is *not* — `retry_centre` holds the same centre for
+`not_enough_stars` and shifts only after `monotonic_curve`
+(`services/focus-model/src/sweep.rs`), and the confirmation frame is
+never reached because no fit is produced. Refusal and restore are the
+safety here, and an R² gate would add nothing: at the defaults no fit
+exists for it to judge, and at `min_fit_points` 3 three samples meet
+three parameters — today's parabola exactly, R² 1, and G2's
+hyperbola either exactly or not at all, since three observations need
+not admit a valid hyperbola. What the solver does at the minimum
+point count — an exact solution, or a fit failure on the ordinary
+path — is S9's to define; neither outcome is a poor fit for a gate to
+catch.
+
+G3 follows G2: sample gating and the confirmation frame currently
+paper over a measurement bug, and the hyperbola's wings are fitted to
+exactly the samples #1179 would make honest. Its frame corpus is the
+one hardware dependency left in this plan.
 
 Each phase follows
 [development-workflow.md](../skills/development-workflow.md): design-doc
@@ -148,6 +209,14 @@ update (rp.md, session-runner.md) first, BDD second, code third.
 ## Validation
 
 G1 is validated on the Starfront rig with the same ±1200/300 coarse
-sweep that failed: the run must end within one step of focus with
+sweep that failed. At the shipped defaults that sweep leaves three
+accepted samples against `min_fit_points` 5, so the pass condition is
+that it **refuses** — `not_enough_stars`, the focuser restored to
+where it started — rather than converging anywhere, which is itself
+the fix for a run that previously reported a confident wrong vertex.
+Re-run with `min_fit_points` 3 to exercise the fit: there the run must
+end within one grid step of focus — 300 focuser steps on this sweep,
+which the 21-step replay of decision 1 sits well inside — with
 `confirmed: true`, or fall back to the lowest accepted sample and say
-so. A fine ±400/100 sweep must still confirm.
+so. A fine ±400/100 sweep must
+still confirm at the defaults.

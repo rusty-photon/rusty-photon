@@ -67,7 +67,15 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
   exists.
 - Upstreaming an Alpaca rotator connection to PHD2 itself.
 - Multi-mount (`mount_id` on trains), passive path elements (reducers with
-  derived focal length), per-filter focus offsets.
+  derived focal length).
+- ~~Per-filter focus offsets~~ — delivered outside this plan by the
+  `focus-model` provider, which owns them per train
+  ([focus-model.md](focus-model.md), S5). An independently focused
+  *guiding* train's own offset table is not covered by S5; it waits on
+  that plan's S10 (its O4, rules 1 and 5 for the table itself, which
+  `set_focus_offsets` can fill by hand today; rule 7 for measuring it,
+  since `determine_filter_offsets` needs the training-run transport as
+  much as the sweep does).
 - Doctor cross-check for driver-internal auto-flip: warn when rp
   orchestrates a star-adventurer-gti mount whose driver config enables
   `flip_policy.auto_flip_during_tracking` (incompatible with the T3 motion
@@ -129,6 +137,33 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
    focuser drifted but the main train's own trigger had not yet fired.
    Guide-train AF never captures through the guide camera (PHD2 may own it
    at the SDK level); it moves the focuser and reads PHD2's metric stream.
+
+   **Amended 2026-09-13 by [focus-model.md](focus-model.md) O4, and
+   again 2026-09-27 to defer to
+   [device-claims-and-phd2-camera.md](device-claims-and-phd2-camera.md)**
+   — for a *training* run only, on a guiding train meeting the
+   focus-model plan's O4 rules 1 and 7, and not yet implemented. The
+   guide camera is captured through the PHD2 camera facade that plan's
+   Part B adds: PHD2 keeps the camera at the SDK level, `phd2-guider`
+   serves it as an Alpaca Camera, `rp` lists it like any other camera,
+   and the sweep runs with PHD2 `Stopped` under that plan's sweep,
+   train and mount-motion leases (its D11–D12). Nothing releases a
+   device and nothing time-slices one — that plan's D13 rules both out.
+   The focus-model plan's S10 is that plan's C7. A guide path behind
+   the imaging train's focuser **with no focuser of its own** — an
+   unmotorised OAG, a duo camera — will get no training sweep and no
+   facade capture at all: focusing the imaging train focuses it. An
+   OAG behind a shared focuser that keeps its own motorised helical is
+   that plan's O4 rule 1, and does.
+
+   Today, though, it still gets a redundant step: `af_sequence` appends
+   the terminal focuser unconditionally, so `get_refocus_plan` returns a
+   `metric: "guide"` step for such a train
+   (`services/rp/src/equipment/trains.rs`), and suppressing it is part of
+   S10. The metric stream stays exactly as described above for the
+   in-session case, which is what the escalation still uses. Until S10
+   lands, this decision plus that redundant step is the shipped
+   behaviour.
 
 7. **Autofocus derivations.** A camera's focuser is the *last* focuser in
    its own list. Focusers shared across trains run before train-local ones,
@@ -220,7 +255,7 @@ which cannot live in a single field's type:
 | AF sequence after trigger on train T | Shared focusers of T upstream-first (each run in the train where it is terminal), then T's terminal focuser |
 | What does moving focuser F invalidate? | Focus of every train containing F |
 | What does rotator R rotate? | Every train containing R (angle-invalid; if one is the guiding train, apply Decision 4's ladder) |
-| What does a filter change on wheel W invalidate? | Focus offset of trains containing W (per-filter offsets: backlog) |
+| What does a filter change on wheel W invalidate? | Focus offset of trains containing W (the per-filter offsets themselves are the `focus-model` provider's: imaging trains delivered in its S5, an independently focused guiding train's own table still in its S10) |
 | Who is perturbed by dither/slew/flip? | Every train on the mount (motion gate, Decision 5) |
 | Pixel-scale conversions | Per-train `focal_length_mm` + the camera's reported pixel size; enables main-pixel and arcsec dither amounts alongside today's guide-cam pixels |
 
@@ -249,7 +284,9 @@ which cannot live in a single field's type:
   Decision 6 — that sweep is T4's deliverable (it needs the rig
   verification below), so until T4 lands, guide-train addressing is
   refused with an error naming the deferral rather than ever
-  capturing through the guide camera.
+  capturing through the guide camera. *(Historical: T4 has landed,
+  the refusal is gone, and the metric sweep is the shipped behaviour
+  — rp.md § Guide-train sweep.)*
 - New `refocus_train {train_id, reason}`: expands one trigger into the
   dependency-ordered AF runs of Decision 7, including the pause/resume
   handshake when the guiding train is involved. Emits the existing
@@ -258,7 +295,7 @@ which cannot live in a single field's type:
   `optical_trains[].auto_focus` config block (steps span trains, so
   per-call parameters cannot serve them). Expansions that include an
   AF step run *in* the guiding train error until T4, like
-  `auto_focus`.
+  `auto_focus` *(historical, as above)*.
 - First rotator verbs (`move_rotator`, position readback), accepting
   `rotator_id` or `train_id`; rotators graduate from roster-membership-only.
 - `dither` gains optional `unit: "guide_px" | "main_px" | "arcsec"` backed
@@ -427,7 +464,7 @@ tools, motion gate, guiding ladder + guide-AF escalation, DSL params, UI
 grouping.
 
 **Deferred:** the Linux PHD2 rotator bridge, PHD2 upstream patch,
-multi-mount, passive path elements, per-filter focus offsets,
+multi-mount, passive path elements,
 driver-initiated flip coordination (T3's design pass settled it as
 prevention — keep driver auto-flip disabled on rp-orchestrated rigs — with
 a doctor cross-check as backlog).
