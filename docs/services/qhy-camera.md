@@ -528,14 +528,17 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   and a setter left outside that rule is a way for a session that has ended to
   reach into the one that replaced it.
 
-  The check keeps the **caches** honest about which session they belong to. It
-  does not unwind the **SDK write** that preceded it: `set_bin_x` and
-  `set_readout_mode` reach the device through a plain hop off the executor that
-  takes no claim, so a write landing after a reconnect leaves the camera in a bin
-  or a readout mode the new session's caches do not name — refusing the commit
-  keeps the cache from repeating the lie, and nothing here puts the camera back.
-  Closing that needs device ownership rather than cache discipline; it is in
-  Future Work.
+  The check keeps the **caches** honest about which session they belong to, and
+  it is the second of two things holding `set_bin_x` and `set_readout_mode`
+  together. The first is the device claim (B4): both hold it from before their
+  SDK writes until after their commit, so a *disconnect* cannot land in that
+  window at all — it drains on its deadline and refuses to close instead. What
+  the claim does not cover is the stretch before it is taken, between reading the
+  session at the top of the request and claiming the device: a disconnect and a
+  reconnect fit there, and the write then lands on the new session's handle. The
+  session check is what refuses that commit. A *connect* is the other reason it
+  stays: `reset_exposure_state` signals a claim rather than taking it, so a
+  connect is not excluded by ownership the way a disconnect is.
 
   A connect's own handshake answers to the same rule: it publishes **in the
   session it established, or not at all.** A disconnect or a later connect
@@ -561,6 +564,51 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   capture claim exists to prevent. Readers take no lock, so those few stores are
   not atomic against them; what the section removes is the handshake-long
   stretch in which some caches answered and others did not.
+- **C7.** `Connect` and `Disconnect` are asynchronous and `Connecting` is what a
+  client waits on, so `Connecting` is the only thing standing between a client
+  and the C6 window: a client told the operation has finished is entitled to
+  find the caches published. The server layer owns those three endpoints — this
+  service supplies only the `set_connected` they drive, and never sees the
+  requests — so it must keep `Connecting` true until **every** operation in
+  flight against the device has finished, not merely the first. Tracked per
+  device rather than per operation, several outstanding at once collapse into
+  one fact and the first to complete answers for the rest; a client polling
+  exactly as it should is then released into the middle of the handshake, where
+  the device reports `Connected == true` and every cache-backed member answers
+  `VALUE_NOT_SET` until the surviving handshake commits. ConformU's
+  `alpacaprotocol` suite reaches that state on ordinary hardware: it fires its
+  four casing variants at `disconnect` and then, ~18 ms later, at `connect`, and
+  the ~1 s `CloseQHYCCD` completing first is what clears the flag while four
+  connects are still running. The workspace therefore pins an `ascom-alpaca`
+  fork that counts the operations in flight instead (see the pin's comment in
+  the workspace `Cargo.toml`); nothing in this service can substitute for it.
+- **C8.** `set_connected` is **serialized per physical connection** — not per
+  ASCOM device — and the check of what the device already is happens inside that
+  order rather than ahead of it. Alpaca gives a client no reason to keep its
+  connects and disconnects apart, and ConformU issues four of each as a matter of
+  course (C7); left to overlap they collide twice over. They race the **check**:
+  each reads a closed handle, each concludes a connect is needed, and each runs
+  one. And they race each other's **handshakes**: a dozen SDK calls apiece,
+  `InitQHYCCD` among them, issued concurrently down one `OpenQHYCCD`. The session
+  generation does not cover that second collision and was never meant to — it
+  governs what a handshake may *publish*, not what it may *send*, so the losers
+  are refused their caches while their SDK calls have already gone. Held to one
+  at a time, the first request does the work and the rest find the device already
+  where they wanted it and return `Ok` without reaching the SDK at all.
+
+  **Per connection is the load-bearing part.** The Camera and the CFW are two
+  ASCOM devices on one handle (C0), so a lock owned by either device orders that
+  device's own requests and leaves the *pair* free to handshake at once — the
+  camera asking `SetQHYCCDStreamMode` / `InitQHYCCD` while the wheel asks
+  `CfwSlotsNum`, two threads in the SDK on one connection. The lock therefore
+  lives on `SharedCameraConnection`, which is what the two share, and both
+  devices take it through their handle. The refcount there is no substitute: it
+  serializes the open and the close themselves, not the handshakes either side of
+  them.
+
+  The lock spans the decision and the act, because splitting them is the race,
+  and it is taken by `set_connected` alone, so a `Connected` read — the one every
+  health poll makes — never queues behind a close waiting out its drain.
 
 ### Geometry, binning, ROI
 
@@ -618,11 +666,82 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   rule was three copies until one drifted, and the drift went unseen because
   each driver curated its own test cases, so the missing behaviour and its
   missing test hid each other.
+- **B4 (geometry writes take the device claim).** `set_bin_x` and
+  `set_readout_mode` write to the *camera* — `SetQHYCCDBinMode` for the first,
+  and for the second the mode plus `normalize_geometry`'s
+  `SetQHYCCDBinMode(1, 1)` and `SetQHYCCDResolution(whole chip)`. Both therefore
+  take the same in-flight claim a capture does, hold it across the SDK writes
+  *and* the cache commit that describes them, and return `INVALID_OPERATION`
+  while anything else owns the device. Without it either can reach a camera that
+  is integrating or is inside the uninterruptible `GetQHYCCDSingleFrame` readout
+  the abort path exists to keep clear, and a mode change can replace the
+  geometry cache under an exposure that has already measured its ROI against it
+  — a frame armed for the readout mode the camera has just left, which the SDK
+  reports no differently from a correct one (the same silence as R4's short
+  frames). A *check* placed immediately before the writes would only race them;
+  the claim is what makes the exclusion hold in both directions, since a
+  `StartExposure` arriving meanwhile is refused by the ordinary E2 path.
+
+  Two consequences follow, both deliberate. A readout mode whose index is out of
+  range is reported as `INVALID_OPERATION` rather than `INVALID_VALUE` when a
+  capture owns the device, because the mode count comes off the camera and this
+  driver may not ask it during a capture — the refusal precedes the range check
+  because the range cannot be known without the device.
+
+  **The bin setter is the other way round, and B1 wins there.** `valid_bins` is
+  cached, so an unsupported bin is answerable without the camera: `set_bin_x`
+  checks it *before* it claims anything, and an unsupported bin is
+  `INVALID_VALUE` whoever owns the device. That is the useful answer — a client
+  told `INVALID_OPERATION` retries, and the retry fails identically — and it
+  keeps a request that can never succeed from taking the device at all. A
+  *supported* bin asked for while something else owns the device is still
+  `INVALID_OPERATION`, which is B4's half. And a disconnect
+  arriving while a geometry write is inside the SDK drains on its deadline like
+  any other owner, refusing to close rather than closing through the write; it
+  succeeds once the write returns, which for a bin change is milliseconds.
+
+  The bin no-op path (`BinX` set to the bin already in force) still writes
+  nothing, but the *decision* that it is a no-op is made under the claim, not
+  before it. Read outside, the bin it compares against is one an in-flight write
+  may already be replacing: a request naming the currently-cached bin would be
+  answered `Ok` while the camera was being moved off it, and the client would be
+  told it has a bin it does not have — worse than any refusal, because nothing
+  later contradicts it. So a redundant `BinX` is `INVALID_OPERATION` while
+  something else owns the device, and `Ok` — with no SDK call and the C6 session
+  check on the answer — when nothing does.
+
+  While a geometry write holds the claim the device reports itself busy —
+  `CameraState` `Exposing`, `PercentCompleted` 0, `ImageReady` false — on
+  exactly the terms an abort's SDK cancel and a disconnect's close already do,
+  because the claim means *something is inside the SDK* rather than *a frame is
+  being taken*. A sequential client never sees it: the setter has returned
+  before its next request is read. A second, concurrent client can, and *busy*
+  is the honest answer to give it.
+
+  **Busy is not the same as ended, so the claim records which kind of owner it
+  is.** Every owner shares one slot, but only a geometry write has no exposure
+  behind it, and the lifecycle paths ask before they act on one. An
+  `AbortExposure` that meets a geometry write has nothing to abort: it succeeds
+  having changed nothing, rather than clearing `ImageReady` on a frame the
+  client has already been told about — busy for the microseconds the write
+  holds the device is a report, but a cleared latch is a frame destroyed — and
+  rather than issuing the SDK cancel, which would tell a camera that is not
+  exposing to stop. A disconnect drains a geometry write like any other owner
+  but does not count it as a capture it stopped, so closing a camera that was
+  only having its bin written issues no cancel either. A cancel's *own* re-claim
+  is not a geometry write: it stands in for the capture it is ending and keeps
+  that capture's reporting, so a second abort still waits for the first one's
+  SDK cancel.
 - **R1.** `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry is validated at
   `StartExposure` (R2), not at the setter.
 - **R2.** `StartExposure` with `StartX + NumX > CameraXSize / BinX` (or the Y
   analogue), or `NumX/NumY = 0`, returns `INVALID_VALUE` — the bound is the
   reported sensor (G1/R4), so it is the region the SDK can actually deliver.
+  The geometry is read **after** the device is claimed, not before it: the cache
+  it reads is the one B4's writers rewrite, and they cannot run while this
+  exposure owns the camera, so the region validated here is the region armed
+  below. A refusal hands the device straight back, so a rejected geometry never
+  leaves a camera claimed with nothing in flight to explain it.
   Otherwise the ROI is applied to the SDK before exposing, **translated into
   the SDK's coordinates**: the SDK addresses every ROI from the chip's top-left
   corner, overscan included, and at bin *n* scales the whole layout — the
@@ -1294,7 +1413,11 @@ the "how" decisions made while building.
   in-flight capture is the one logical owner of the device's blocking SDK calls.
   `start_exposure` claims the device by installing that capture's own cancel
   channel in `in_flight_capture`: `Some` **is** the claim, so a device that
-  reports itself exposing always has something an abort can signal. Holding the
+  reports itself exposing always has something an abort can signal. A capture is
+  the usual holder but not the only one — a disconnect's close, an abort's SDK
+  cancel and a geometry write (B4) each take a claim of their own, on the same
+  terms: while it is installed, that holder and nothing else may be inside the
+  SDK. Holding the
   two apart — an `AtomicBool` claim taken first, a handle-wide cancel flag
   cleared a statement later — leaves a window in which an abort is *erased* by
   the exposure that admitted it, and the client then waits out the drain deadline
@@ -1476,39 +1599,25 @@ the "how" decisions made while building.
 - **TLS / Basic Auth** via `rusty-photon-tls` / `rp-auth`.
 - **`ElectronsPerADU` / `FullWellCapacity`** real values if a signal model is
   added.
-- **Geometry writes take no device claim.** `set_bin_x` and
-  `set_readout_mode` reach the SDK through a plain hop off the executor, and a
-  connect's own handshake writes the stream mode, the readout mode, the transfer
-  bit and `normalize_geometry`'s bin and resolution with no more ownership than
-  they have. Any of those writes can land on a handle a reconnect has just
-  opened — leaving the camera in a bin or readout mode the new session's caches
-  do not name — or beside an exposure that is being armed or is in flight.
-  C6's session check keeps the caches honest about which session they belong to,
-  and a superseded handshake publishes nothing, but neither can do anything about
-  the device itself: a check placed immediately before a write only races that
-  write. It needs the claim held across the SDK write as well as the commit,
-  which is the same ownership question a connect handshake raises.
-- **Lifecycle transitions are not serialized against each other, in either
-  direction.** A stale disconnect has the mirror of the problem below: two
-  clients can both find a camera connected and both run a disconnect, and the
-  second takes the device only after the first has closed it — by which time a
-  connect may have opened a new session for it to tear down. The generation check
-  keeps a superseded *connect* from closing (see below), but a check and a close
-  are still two steps, and the gap between them is a scheduling window rather
-  than an instruction on the disconnect side. Both want the same thing: a
-  lifecycle transition that owns the device from its decision through to its
-  close.
-- **Concurrent connects to one camera are not serialized.** `set_connected`
-  decides from `handle.is_open()`, so two clients can both find a camera
-  disconnected and both run the handshake. Only the first performs the physical
-  open; the second's `open()` is a no-op on the already-connected flag. Its
-  *close* is not, so a second caller whose handshake fails (C2) closes the
-  shared handle and takes the successful connect down with it — that client is
-  told `Ok` and then reads `Connected` as `false`. Fixing it means either a
-  cleanup that closes only what this call opened, or serializing connects per
-  device and re-checking `is_open()` inside the critical section. Reachable only
-  with two simultaneous connects *and* a handshake failure, and the damage is a
-  false `Ok` rather than a wrong frame.
+- **A connect's own handshake takes no device claim.** `set_bin_x` and
+  `set_readout_mode` now hold the device across their SDK writes (B4), but a
+  connect's handshake still writes the stream mode, the readout mode, the
+  transfer bit and `normalize_geometry`'s bin and resolution with no ownership
+  at all. A superseded handshake publishes nothing, so the caches stay honest,
+  but nothing puts the *camera* back — and a check placed immediately before a
+  write only races that write. It needs the same claim the geometry setters
+  take (B4), held from the open through to the caches going live.
+
+  The racing *connect* this was originally written against is gone: C8
+  serializes every transition on one physical connection, so no second connect
+  can be opening the handle while a handshake runs, and the two bullets that
+  used to sit here — lifecycle transitions unserialized in either direction, and
+  concurrent connects to one camera — are closed with it. What remains is the
+  narrower question the lifecycle lock does not answer, because it is not the
+  lock's to answer: the handshake's SDK writes are not serialized against the
+  paths that hold the *capture* claim, an abort's SDK cancel among them. The
+  cache-publication order (see C6) is what keeps a `StartExposure` out of the
+  handshake window today, rather than ownership.
 
 ## Packaging
 

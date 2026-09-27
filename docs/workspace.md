@@ -759,12 +759,21 @@ closes that green-PR/red-nightly gap at no cost: `display` adds only
 
 ## Build Notes
 
-- The `ascom-alpaca` crate is a git dependency on upstream
-  `RReverser/ascom-alpaca-rs.git` (branch `main`, `default-features = false`).
-  All of our PRs against upstream have merged, so the `ivonnyssen` fork (and its
-  `integration` / `pr/integer-parameter-handling` branches) is retired. Once
-  upstream publishes a crates.io release containing these changes, switch to a
-  versioned dependency.
+- The `ascom-alpaca` crate is a git dependency on
+  `rusty-photon/ascom-alpaca-rs.git` (branch
+  `fix/connecting-counts-in-flight-operations`, `default-features = false`) — an
+  org fork of `RReverser/ascom-alpaca-rs` carrying **one** server-side fix:
+  upstream tracks in-flight Platform 7 `Connect` / `Disconnect` operations in a
+  set keyed by device, so several outstanding at once collapse to one entry and
+  the first to finish reports `Connecting == false` on behalf of the rest. The
+  fork counts them instead. It is offered upstream as
+  [RReverser/ascom-alpaca-rs#23](https://github.com/RReverser/ascom-alpaca-rs/pull/23);
+  **when that merges, point the pin back at upstream `main`.** The older
+  `ivonnyssen` fork (and its `integration` /
+  `pr/integer-parameter-handling` branches) stays retired — those PRs all merged
+  upstream. Once upstream publishes a crates.io release containing both, switch
+  to a versioned dependency. The pin's own comment in the workspace `Cargo.toml`
+  says the same; keep the two in step.
 - `.cargo/config.toml` sets `AWS_LC_SYS_USE_SYSTEM=0` for every Cargo build.
   Left unset, `aws-lc-sys`'s build script probes `OPENSSL_DIR` and then
   pkg-config for a system AWS-LC and links it dynamically when it finds one —
