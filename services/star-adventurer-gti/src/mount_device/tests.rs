@@ -21,8 +21,7 @@ use skywatcher_motor_protocol::Axis;
 use tokio::sync::RwLock;
 
 use crate::config::{
-    ActiveZone, Config, CwExclusionZone, FlipPolicy, FlipRangeHours, MinAltitudeDegrees,
-    TrackingGuardMarginHours,
+    ActiveZone, Config, CwExclusionZone, FlipPolicy, MinAltitudeDegrees, TrackingGuardMarginHours,
 };
 use crate::coordinates::{ra_dec_to_alt_az, SIDEREAL_DEG_PER_SEC};
 use crate::error::StarAdvError;
@@ -396,7 +395,6 @@ async fn auto_flip_device(
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.flip_policy = FlipPolicy {
         enabled: true,
-        flip_range_hours: FlipRangeHours::new(0.5),
         auto_flip_during_tracking: true,
         auto_flip_at_meridian_offset_hours: offset_hours,
     };
@@ -575,7 +573,6 @@ async fn guard_loop_tick_prefers_the_guard_inside_the_band() {
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.flip_policy = FlipPolicy {
         enabled: true,
-        flip_range_hours: FlipRangeHours::new(0.5),
         auto_flip_during_tracking: true,
         auto_flip_at_meridian_offset_hours: 0.0,
     };
@@ -1637,6 +1634,119 @@ async fn abort_slew_refuses_while_parked() {
     }
     let err = d.abort_slew().await.unwrap_err();
     assert_eq!(err.code, ASCOMErrorCode::INVALID_WHILE_PARKED);
+}
+
+#[tokio::test]
+async fn sync_refuses_while_a_slew_is_in_progress() {
+    // The encoder pair a sync writes is chosen from the cached pier
+    // side, so a sync during an in-flight flip would resolve the
+    // pre-flip solution and write it to a mount already on its way to
+    // the other side — re-labelling it for every later slew. An async
+    // slew returns as soon as its watcher is spawned, so that window is
+    // reachable from an ordinary client; the sync has to refuse in it.
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let mut cfg = base_config();
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    let manager = MountManager::new(&cfg, Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    d.slew_in_progress.store(true, Ordering::SeqCst);
+
+    let lst = d.sidereal_time().await.unwrap();
+    let err = d.sync_to_coordinates(lst, 0.0).await.unwrap_err();
+
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    // No `:E` on the wire: the refusal lands before anything is
+    // written — and before the pulse-guide cancel — so it has no side
+    // effects either.
+    let log = mock.lock().await.command_log.clone();
+    assert!(
+        !log.iter().any(|c| c.starts_with(b":E")),
+        "a refused sync must not write an encoder position, saw {log:?}"
+    );
+
+    // Sync holds the reservation rather than sampling the flag, so the
+    // release path matters as much as the refusal: once the slew is
+    // done, a sync must work and must not leak the flag — a leaked one
+    // would wedge every later slew, park and sync behind a mount that
+    // looks permanently busy.
+    d.slew_in_progress.store(false, Ordering::SeqCst);
+    d.sync_to_coordinates(lst, 0.0).await.unwrap();
+    assert!(
+        !d.slew_in_progress.load(Ordering::SeqCst),
+        "a sync must not leave the slew flag set"
+    );
+    assert!(
+        !d.slewing().await.unwrap(),
+        "Slewing must be clear after a sync"
+    );
+}
+
+#[tokio::test]
+async fn abort_waits_for_an_in_flight_sync_before_clearing_the_flag() {
+    // `AbortSlew` clears `slew_in_progress` before awaiting its `:L`
+    // sends, so the flag goes false while the motion is still running.
+    // A sync that took the axis lock in that gap would read false and
+    // write `:E` mid-slew — the flag check inside sync is only sound
+    // because nothing can falsify it while the lock is held, which
+    // means abort has to hold it too.
+    let d = connected_device().await;
+    d.slew_in_progress.store(true, Ordering::SeqCst); // a slew is running
+    let held = d.axis_ownership.lock().await; // ...and a sync owns the axes
+
+    let blocked = tokio::time::timeout(Duration::from_millis(100), d.abort_slew()).await;
+    assert!(
+        blocked.is_err(),
+        "abort must wait for the in-flight sync rather than interleave"
+    );
+    assert!(
+        d.slew_in_progress.load(Ordering::SeqCst),
+        "and must not have cleared the flag while waiting — a sync \
+         reading it would conclude no motion is in flight"
+    );
+
+    drop(held);
+    d.abort_slew()
+        .await
+        .expect("abort proceeds once the axes are free");
+    assert!(!d.slew_in_progress.load(Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn sync_exclusion_survives_a_concurrent_abort() {
+    // `AbortSlew` clears `slew_in_progress` unconditionally — right for
+    // the motion it cancels, but it must not hand the axes to a new
+    // slew while a sync sits between its snapshot read and its `:E`
+    // writes. Sync therefore holds `axis_ownership`, which abort does
+    // not touch, and a slew has to take that lock to reach its own
+    // reservation. Holding the lock here stands in for the sync;
+    // clearing the flag stands in for the abort that raced it.
+    let d = connected_device().await;
+    let held = d.axis_ownership.lock().await;
+    d.slew_in_progress.store(false, Ordering::SeqCst);
+
+    let blocked = tokio::time::timeout(
+        Duration::from_millis(100),
+        d.slew_to_coordinates_async(6.0, 30.0),
+    )
+    .await;
+    assert!(
+        blocked.is_err(),
+        "a slew must wait on the axis lock even with the flag cleared"
+    );
+    assert!(
+        !d.slew_in_progress.load(Ordering::SeqCst),
+        "and must not have claimed the reservation behind the lock"
+    );
+
+    // Released, the same slew proceeds — the lock serializes, it does
+    // not refuse.
+    drop(held);
+    d.slew_to_coordinates_async(6.0, 30.0)
+        .await
+        .expect("the slew proceeds once the axes are free");
 }
 
 #[tokio::test]
@@ -3385,6 +3495,387 @@ async fn pulse_guide_east_uses_rate_factor_one_minus_fraction() {
     assert_eq!(
         actual_period, expected,
         "East at default 0.5 fraction → period must be 2× sidereal ({p_sid} → {expected}), got {actual_period}"
+    );
+}
+
+fn gti_mount_parameters() -> crate::manager::MountParameters {
+    crate::manager::MountParameters {
+        cpr_ra: 0x0037_5F00,
+        cpr_dec: 0x002C_4C00,
+        tmr_freq: 0x00F4_2400,
+        ..Default::default()
+    }
+}
+
+/// Northern-hemisphere latitude for the guide-pulse tests. Any
+/// non-negative value picks the same hemisphere convention; 45° is
+/// unremarkable.
+const NORTHERN_LAT: f64 = 45.0;
+
+/// Resolve a guide pulse with the mount counterweight-down in the
+/// northern hemisphere — the side the direction table is written for.
+/// The counterweight-up inversion is covered by its own tests below,
+/// which call `resolve` with the other side.
+fn cw_down_pulse(
+    direction: GuideDirection,
+    ra_fraction: f64,
+    dec_fraction: f64,
+) -> super::telescope::GuidePulse {
+    super::telescope::GuidePulse::resolve(
+        direction,
+        ra_fraction,
+        dec_fraction,
+        &gti_mount_parameters(),
+        PierSide::West,
+        NORTHERN_LAT,
+    )
+}
+
+#[test]
+fn guide_pulse_east_slows_ra_by_the_ra_fraction() {
+    use super::telescope::GuidePulse;
+    assert_eq!(
+        cw_down_pulse(GuideDirection::East, 0.25, 0.75),
+        GuidePulse {
+            axis: Axis::Ra,
+            ccw: false,
+            rate_factor: 0.75,
+            sidereal_period: 379_912,
+        }
+    );
+}
+
+#[test]
+fn guide_pulse_west_speeds_ra_by_the_ra_fraction() {
+    use super::telescope::GuidePulse;
+    assert_eq!(
+        cw_down_pulse(GuideDirection::West, 0.25, 0.75),
+        GuidePulse {
+            axis: Axis::Ra,
+            ccw: false,
+            rate_factor: 1.25,
+            sidereal_period: 379_912,
+        }
+    );
+}
+
+#[test]
+fn guide_pulse_north_runs_dec_cw_on_the_dec_sidereal_period() {
+    use super::telescope::GuidePulse;
+    assert_eq!(
+        cw_down_pulse(GuideDirection::North, 0.25, 0.75),
+        GuidePulse {
+            axis: Axis::Dec,
+            ccw: false,
+            rate_factor: 0.75,
+            sidereal_period: 474_890,
+        }
+    );
+}
+
+#[test]
+fn guide_pulse_south_runs_dec_ccw_on_the_dec_sidereal_period() {
+    use super::telescope::GuidePulse;
+    assert_eq!(
+        cw_down_pulse(GuideDirection::South, 0.25, 0.75),
+        GuidePulse {
+            axis: Axis::Dec,
+            ccw: true,
+            rate_factor: 0.75,
+            sidereal_period: 474_890,
+        }
+    );
+}
+
+// Issue #1300: past a celestial pole the Dec encoder counts against
+// declination, so `guideNorth` has to turn the Dec axis the other way
+// to keep moving the OTA north. RA is unaffected — a flip shifts
+// `mech_HA` by 12 h rather than mirroring it.
+
+#[test]
+fn guide_pulse_north_inverts_dec_on_the_counterweight_up_side() {
+    use super::telescope::GuidePulse;
+    let pulse = GuidePulse::resolve(
+        GuideDirection::North,
+        0.25,
+        0.75,
+        &gti_mount_parameters(),
+        PierSide::East,
+        NORTHERN_LAT,
+    );
+    assert_eq!(
+        pulse,
+        GuidePulse {
+            axis: Axis::Dec,
+            ccw: true,
+            rate_factor: 0.75,
+            sidereal_period: 474_890,
+        }
+    );
+}
+
+#[test]
+fn guide_pulse_south_inverts_dec_on_the_counterweight_up_side() {
+    use super::telescope::GuidePulse;
+    let pulse = GuidePulse::resolve(
+        GuideDirection::South,
+        0.25,
+        0.75,
+        &gti_mount_parameters(),
+        PierSide::East,
+        NORTHERN_LAT,
+    );
+    assert_eq!(
+        pulse,
+        GuidePulse {
+            axis: Axis::Dec,
+            ccw: false,
+            rate_factor: 0.75,
+            sidereal_period: 474_890,
+        }
+    );
+}
+
+/// In the southern hemisphere the counterweight-up label is `West`,
+/// so the same encoder geometry inverts on the opposite `PierSide`
+/// value. Asserted on both sides so a helper that ignored latitude
+/// could not pass.
+#[test]
+fn guide_pulse_dec_inversion_follows_the_hemisphere_not_the_label() {
+    use super::telescope::GuidePulse;
+    const SOUTHERN_LAT: f64 = -33.9;
+    let resolve = |side| {
+        GuidePulse::resolve(
+            GuideDirection::North,
+            0.25,
+            0.75,
+            &gti_mount_parameters(),
+            side,
+            SOUTHERN_LAT,
+        )
+        .ccw
+    };
+    assert!(
+        !resolve(PierSide::East),
+        "pierEast is counterweight-down in the southern hemisphere — North stays ccw=false"
+    );
+    assert!(
+        resolve(PierSide::West),
+        "pierWest is counterweight-up in the southern hemisphere — North must invert"
+    );
+}
+
+/// No Dec-axis CPR means no classification, and the driver does not
+/// invert on a side it cannot name: `Unknown` keeps the
+/// counterweight-down mapping rather than guessing.
+#[test]
+fn guide_pulse_unknown_side_keeps_the_counterweight_down_mapping() {
+    use super::telescope::GuidePulse;
+    let pulse = GuidePulse::resolve(
+        GuideDirection::North,
+        0.25,
+        0.75,
+        &gti_mount_parameters(),
+        PierSide::Unknown,
+        NORTHERN_LAT,
+    );
+    assert!(!pulse.ccw);
+}
+
+/// RA guide pulses are rate shifts on a tracking axis whose relation
+/// to `mech_HA` the flip does not mirror, so the counterweight-up side
+/// must not touch them.
+#[test]
+fn guide_pulse_ra_directions_are_unchanged_by_the_pier_side() {
+    use super::telescope::GuidePulse;
+    for direction in [GuideDirection::East, GuideDirection::West] {
+        let flipped = GuidePulse::resolve(
+            direction,
+            0.25,
+            0.75,
+            &gti_mount_parameters(),
+            PierSide::East,
+            NORTHERN_LAT,
+        );
+        assert_eq!(
+            flipped,
+            cw_down_pulse(direction, 0.25, 0.75),
+            "{direction:?} must resolve identically on both sides"
+        );
+    }
+}
+
+// The slowest guide rate the 24-bit `:I` payload can express is
+// per-axis, because the sidereal period is: 379,912 / 0xFFFFFF ≈ 0.0226
+// on RA, 474,890 / 0xFFFFFF ≈ 0.0283 on Dec. A Dec fraction of 0.025
+// sits between the two floors.
+#[test]
+fn guide_pulse_step_period_divides_the_sidereal_period_by_the_rate() {
+    let pulse = cw_down_pulse(GuideDirection::North, 0.5, 0.5);
+    assert_eq!(pulse.step_period().unwrap(), 949_780);
+}
+
+#[test]
+fn guide_pulse_step_period_rejects_a_dec_rate_below_the_dec_floor() {
+    let pulse = cw_down_pulse(GuideDirection::North, 0.5, 0.025);
+    assert_eq!(
+        pulse.step_period().unwrap_err().code,
+        ASCOMErrorCode::INVALID_VALUE
+    );
+}
+
+#[test]
+fn guide_pulse_step_period_accepts_on_ra_a_rate_the_dec_floor_rejects() {
+    // East at an RA fraction of 0.975 runs RA at 0.025 × sidereal.
+    let pulse = cw_down_pulse(GuideDirection::East, 0.975, 0.5);
+    assert_eq!(pulse.step_period().unwrap(), 15_196_480);
+}
+
+/// Start a pulse in `direction` at the default 0.5 × sidereal guide rate
+/// and return the step period carried by the first `:I<axis>` frame the
+/// pulse emits. The 30 s duration keeps the watcher's restore frames
+/// out of the log.
+async fn pulse_start_step_period(direction: GuideDirection, axis_byte: u8) -> u32 {
+    use skywatcher_motor_protocol::codec::decode_u24;
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let cfg = base_config();
+    let manager = MountManager::new(&cfg, Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+
+    let baseline_len = mock.lock().await.command_log.len();
+    d.pulse_guide(direction, Duration::from_secs(30))
+        .await
+        .unwrap();
+    let log = mock.lock().await.command_log.clone();
+    let frame = log[baseline_len..]
+        .iter()
+        .find(|f| f.len() == 10 && f[1] == b'I' && f[2] == axis_byte)
+        .unwrap();
+    let payload: &[u8; 6] = (&frame[3..9]).try_into().unwrap();
+    decode_u24(payload).unwrap()
+}
+
+// The Dec step period must come from the Dec axis' CPR. `:I` sets the
+// time between motor steps; the Dec axis has 2,903,040 counts per
+// revolution against RA's 3,628,800, so its sidereal period is
+// 16,000,000 × 86164.0905 / 2,903,040 = 474,890 — not RA's 379,912.
+// At the default 0.5 × sidereal guide rate the pulse period is twice
+// that. A period derived from the RA CPR (759,824) steps the Dec axis
+// 1.25× too fast, which is what ConformU measured on hardware.
+const DEC_PULSE_PERIOD_AT_HALF_SIDEREAL: u32 = 949_780;
+
+#[tokio::test]
+async fn pulse_guide_north_step_period_is_derived_from_the_dec_cpr() {
+    assert_eq!(
+        pulse_start_step_period(GuideDirection::North, b'2').await,
+        DEC_PULSE_PERIOD_AT_HALF_SIDEREAL
+    );
+}
+
+#[tokio::test]
+async fn pulse_guide_south_step_period_is_derived_from_the_dec_cpr() {
+    assert_eq!(
+        pulse_start_step_period(GuideDirection::South, b'2').await,
+        DEC_PULSE_PERIOD_AT_HALF_SIDEREAL
+    );
+}
+
+#[tokio::test]
+async fn pulse_guide_west_step_period_is_derived_from_the_ra_cpr() {
+    // West at 0.5 × sidereal runs RA at 1.5 × sidereal:
+    // round(379,912 / 1.5) = 253,275.
+    assert_eq!(
+        pulse_start_step_period(GuideDirection::West, b'1').await,
+        253_275
+    );
+}
+
+/// Run a complete 5 s pulse in `direction` on a mount with tracking off
+/// and return how far the pulsed axis turned, in arcseconds (signed,
+/// positive = CW). Tracking is off so the pulse is the only motion on
+/// the axis; the mock runs its tracking-mode motion on the tokio clock
+/// at the rate `:I` set, so under paused time the pulse lasts exactly
+/// 5 s and the angle is a pure function of the step period the driver
+/// sent — the same before/after measurement `ConformU` makes on
+/// hardware.
+async fn arcsec_moved_by_five_second_pulse(direction: GuideDirection) -> f64 {
+    const ARCSEC_PER_REV: f64 = 1_296_000.0;
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let cfg = base_config();
+    let manager = MountManager::new(&cfg, Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+
+    let position = |s: &MockMountState| match direction {
+        GuideDirection::East | GuideDirection::West => (s.ra.position_ticks, s.cpr_ra),
+        GuideDirection::North | GuideDirection::South => (s.dec.position_ticks, s.cpr_dec),
+    };
+    let (before, cpr) = position(&*mock.lock().await);
+    d.pulse_guide(direction, Duration::from_secs(5))
+        .await
+        .unwrap();
+    for _ in 0..1_000 {
+        if !d.is_pulse_guiding().await.unwrap() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        !d.is_pulse_guiding().await.unwrap(),
+        "the pulse never completed"
+    );
+    let (after, _) = position(&*mock.lock().await);
+    f64::from(after - before) * ARCSEC_PER_REV / f64::from(cpr)
+}
+
+/// `GuideRate × 5 s` in arcseconds at the default 0.5 × sidereal guide
+/// rate: 0.5 × 15.041″/s × 5 s = 37.6″.
+const HALF_SIDEREAL_FIVE_SECONDS_ARCSEC: f64 = 0.5 * SIDEREAL_DEG_PER_SEC * 3600.0 * 5.0;
+
+/// `ConformU`'s pulse-guide tolerance.
+const PULSE_TOLERANCE_ARCSEC: f64 = 1.0;
+
+#[tokio::test(start_paused = true)]
+async fn pulse_guide_north_moves_dec_by_guide_rate_times_duration() {
+    // A Dec period derived from the RA CPR moves 47.0″ here — the 1.25×
+    // overshoot ConformU measured on hardware.
+    let moved = arcsec_moved_by_five_second_pulse(GuideDirection::North).await;
+    assert!(
+        (moved - HALF_SIDEREAL_FIVE_SECONDS_ARCSEC).abs() < PULSE_TOLERANCE_ARCSEC,
+        "North 5 s at 0.5 × sidereal must move Dec +{HALF_SIDEREAL_FIVE_SECONDS_ARCSEC:.1}″, moved {moved:.1}″"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn pulse_guide_south_moves_dec_by_guide_rate_times_duration() {
+    let moved = arcsec_moved_by_five_second_pulse(GuideDirection::South).await;
+    assert!(
+        (moved + HALF_SIDEREAL_FIVE_SECONDS_ARCSEC).abs() < PULSE_TOLERANCE_ARCSEC,
+        "South 5 s at 0.5 × sidereal must move Dec -{HALF_SIDEREAL_FIVE_SECONDS_ARCSEC:.1}″, moved {moved:.1}″"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn pulse_guide_east_runs_ra_at_sidereal_minus_the_guide_rate() {
+    // East runs RA at (1 - 0.5) × sidereal for the pulse.
+    let moved = arcsec_moved_by_five_second_pulse(GuideDirection::East).await;
+    assert!(
+        (moved - HALF_SIDEREAL_FIVE_SECONDS_ARCSEC).abs() < PULSE_TOLERANCE_ARCSEC,
+        "East 5 s must turn RA +{HALF_SIDEREAL_FIVE_SECONDS_ARCSEC:.1}″, moved {moved:.1}″"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn pulse_guide_west_runs_ra_at_sidereal_plus_the_guide_rate() {
+    // West runs RA at (1 + 0.5) × sidereal for the pulse.
+    let expected = 3.0 * HALF_SIDEREAL_FIVE_SECONDS_ARCSEC;
+    let moved = arcsec_moved_by_five_second_pulse(GuideDirection::West).await;
+    assert!(
+        (moved - expected).abs() < PULSE_TOLERANCE_ARCSEC,
+        "West 5 s must turn RA +{expected:.1}″, moved {moved:.1}″"
     );
 }
 

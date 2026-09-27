@@ -40,3 +40,8 @@ crates/rp-catalog/scripts/build/
 # Python bytecode from the tools/ scripts
 __pycache__/
 *.pyc
+
+# OmniSim's own ASCOM logs: the simulator writes an `ascom/logs<date>/`
+# tree into its working directory, which for a local `cargo test -p rp
+# --test bdd` run is services/rp/. Test artifact, never committed.
+**/ascom/logs*/

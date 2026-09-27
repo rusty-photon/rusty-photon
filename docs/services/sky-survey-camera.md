@@ -485,6 +485,71 @@ scenarios in `tests/features/`. ASCOM error codes use the names from
 - **C4.** `set_connected(false)` cancels any in-flight exposure and
   resets `LastExposureStartTime` / `LastExposureDuration` to the
   unset state; subsequent ASCOM operations return `NOT_CONNECTED`.
+- **C5.** That includes every member reporting exposure state —
+  `CameraState`, `ImageReady`, `PercentCompleted`,
+  `LastExposureStartTime`, `LastExposureDuration` and `ImageArray`.
+  Each answers `NOT_CONNECTED` while the device is disconnected
+  rather than describing a session that is not running: `Idle` and
+  `ImageReady = false` are answers about a camera that is there, and
+  "no exposure has started yet" (`INVALID_OPERATION`) says the
+  running session has not exposed, which is not the same thing as
+  having no session. C4's reset means nothing stale is on offer here
+  — unlike the SDK-backed siblings, which clear at connect — so this
+  is the ASCOM shape alone, shared with `qhy-camera`'s E10,
+  `zwo-camera`'s E11 and `svbony-camera`'s state-machine step 9.
+  `Connected` itself still never throws (it is how a client asks).
+  `AbortExposure` / `StopExposure` answer `NOT_CONNECTED` here too
+  (A4). They cannot lean on A2 to cover the disconnected case the
+  way the rest of this contract leans on C4: ASCOM makes an idle
+  cancel a *success*, so a refusal no longer says "nothing is in
+  flight" — the only thing it can still say is that there is no
+  session to be idle in.
+- **C6.** Session **settings** answer the same way as session state:
+  `BinX` / `BinY`, `NumX` / `NumY`, `StartX` / `StartY` and every one
+  of their setters, plus `SetReadoutMode` and `SetGain`, return
+  `NOT_CONNECTED` while the device is disconnected, as C4 already
+  promises of "subsequent ASCOM operations". A geometry a client
+  cannot expose with is not a geometry — the SDK siblings all refuse
+  these (`qhy-camera`, `zwo-camera`, `svbony-camera`).
+
+  The **start of a connect** puts `BinX`/`BinY`, `NumX`/`NumY` and
+  `StartX`/`StartY` back to the configured full frame at bin 1, the
+  way the SDK siblings' connect handshakes clear what they
+  republish (`qhy-camera`'s C6). On the **false → true transition
+  only**: `Connected = true` against an already-connected device is
+  a no-op, not a new session, so it leaves the running session's
+  geometry alone.
+
+  `set_connected` **serialises its transitions** (one lock held
+  across the whole call) to make that test and the commit one step.
+  A connect validates the cache directory and probes the survey
+  endpoint before committing, and both `await` — so without the
+  lock a redundant `Connected = true` could sit in that probe while
+  a `Connected = false` ended the session underneath it, then
+  commit `true` over the top: a session resumed on the previous
+  one's geometry, with the reset skipped because the transition
+  test ran before the await. The probe is capped (C3), so the wait
+  a contending call can see is bounded. A session's geometry is that
+  session's, so the next one does not inherit it. That is also what
+  settles the one case the setters' check cannot: the check runs
+  before the write and is not atomic with a concurrent disconnect,
+  so a write can still land just after one — the reset makes such a
+  write unreachable rather than a setting the next session silently
+  inherits.
+  What keeps answering is the **fixed** surface: `CameraXSize` /
+  `CameraYSize`, `PixelSizeX/Y`, `MaxBinX/Y`, `CanAsymmetricBin`,
+  `ExposureMin` / `Max` / `Resolution`, `MaxADU`, `ElectronsPerADU`,
+  `FullWellCapacity`, `SensorName` / `SensorType`, the `Gain` and
+  `ReadoutMode(s)` getters (single fixed values), the
+  `PROPERTY_NOT_IMPLEMENTED` family, and `CanAbortExposure` /
+  `CanStopExposure`. Here — and only here among the four camera
+  services — those really are the driver's own knowledge: there is no
+  hardware whose capabilities a disconnect puts out of reach, only a
+  virtual sensor this service defines from its own config and a fetch
+  it cancels itself. The SDK drivers must refuse the equivalent
+  members, because theirs describe a camera on the other end of a
+  cable nobody is holding open (`qhy-camera`'s E11, `zwo-camera`'s
+  E12, `svbony-camera`'s state-machine step 10) (#1281).
 
 ### Pointing API
 
@@ -527,6 +592,19 @@ setter because the spec defines a hard `[1, MaxBin]` range.
   or the analogous Y-axis condition, returns `INVALID_VALUE`.
 - **E6.** `StartExposure` with `Duration` outside
   `[ExposureMin, ExposureMax]` returns `INVALID_VALUE`.
+- **E7.** An exposure is bounded by the geometry `StartExposure`
+  validated, captured at that moment and carried into the task.
+  A `BinX` / `NumX` / `StartX` (or Y) write that lands while an
+  exposure is in flight therefore belongs to the **next** exposure,
+  not the running one — the same one-exposure-late rule F7/P7 gives
+  a pointing override, and for the same reason. Without it the
+  guarantee E4/E5 offer would be empty: the setters take no lock and
+  refuse nothing mid-exposure (per ASCOM convention they accept any
+  value — E3 aside — and `StartExposure` is where geometry is
+  judged), so a write arriving after the check would reach the
+  exposure unvalidated. The `NumX` / `NumY` **getters** report the
+  new value immediately, as ASCOM requires; it is the frame in
+  flight that keeps the old one.
 
 ### `StartExposure` survey path
 
@@ -553,7 +631,38 @@ setter because the spec defines a hard `[1, MaxBin]` range.
 - **A1.** `AbortExposure` and `StopExposure` during an in-flight
   SkyView fetch cancel the request and leave `ImageReady = false`.
 - **A2.** `AbortExposure` or `StopExposure` with no exposure in
-  progress returns `INVALID_OPERATION`.
+  progress **succeeds and changes nothing**. ASCOM requires this of
+  both members — each "must not throw an exception if the camera is
+  already idle" — and reserves their error for the opposite case: a
+  camera that is *busy* and cannot be stopped (e.g. mid-download).
+  An idle refusal is therefore not an error this service is free to
+  raise, and since `CanAbortExposure` / `CanStopExposure` are `true`
+  a client may call either at any time. ConformU checks exactly this.
+- **A3.** A frame a completed exposure left ready is not in flight,
+  so an idle cancel leaves it readable — only a fetch still running
+  has anything to discard. `ImageReady` survives A2. This needs the
+  commit and the cancel to be **serialised against each other**: a
+  finishing exposure publishes its frame before it drops the
+  in-flight claim, so a cancel landing between the two would take a
+  claim the exposure had already honoured and discard a completed
+  frame. A cancel therefore sees either a claim it can take — and
+  the exposure's generation check then discards that outcome — or a
+  finished exposure with nothing claimed, never the state between.
+- **A4.** `AbortExposure` or `StopExposure` while **disconnected**
+  returns `NOT_CONNECTED` (C5), not the success A2 gives an idle
+  connected camera. A2 cannot stand in for the disconnected case:
+  once an idle cancel is a success, a refusal has only one thing
+  left to mean, which is that there is no session to cancel in.
+
+  The check is taken **inside** A3's serialisation, not before it.
+  A disconnect marks the session dead before it queues for that
+  serialisation, so a check taken outside can be stale by the time
+  the cancel acts on it. `StartExposure`'s E1 check is re-taken the
+  same way and for the same reason — and there it matters more than
+  a return code: a start that claimed on a stale check would run an
+  exposure the disconnect's reset had already swept past, publishing
+  into a dead session and leaving that frame readable in the next
+  one, since a reconnect restores geometry only (C6).
 
 ### Telescope follow mode
 
@@ -656,27 +765,36 @@ graph TD;
 
 ## ASCOM Camera Surface — v0 Behaviour
 
+Unlike the SDK-backed siblings, the **default here is the other way round**:
+with no hardware behind it, this service's fixed optics, sensor description
+and self-performed abort are its own knowledge and answer whether or not a
+client is connected. What refuses while disconnected is the session — its
+exposure state (C5) and its settings (C6) — and those rows say so.
+
 | Property / Method | Behaviour |
 |---|---|
 | `CameraXSize` / `CameraYSize` | From `optics.sensor_width_px` / `sensor_height_px` |
 | `PixelSizeX` / `PixelSizeY` | From `optics.pixel_size_*_um` |
-| `BinX` / `BinY` | Settable, integer, capped by `MaxBinX` / `MaxBinY` at the setter |
+| `BinX` / `BinY` | Settable, integer, capped by `MaxBinX` / `MaxBinY` at the setter; getters and setters `NOT_CONNECTED` while disconnected, and back to `1` at the start of a connect (C6) |
 | `MaxBinX` / `MaxBinY` | `4` (configurable later) |
 | `CanAsymmetricBin` | `false` |
-| `NumX` / `NumY` / `StartX` / `StartY` | Setters accept any `u32`; geometry checked at `StartExposure` (E4/E5) |
+| `NumX` / `NumY` / `StartX` / `StartY` | Setters accept any `u32`; geometry checked at `StartExposure` (E4/E5); getters and setters `NOT_CONNECTED` while disconnected, and back to the configured full frame at the start of a connect (C6) |
 | `MaxADU` | `65535` (16-bit equivalent) |
 | `ElectronsPerADU` | `1.0` placeholder (no signal model in v0) |
 | `FullWellCapacity` | `65535.0` (= `MaxADU * ElectronsPerADU`) |
 | `ExposureMin` / `ExposureMax` / `ExposureResolution` | `1µs` / `3600s` / `1µs`; the spawned exposure task sleeps for `min(Duration, 5s)` so clients can observe `CameraState = Exposing` |
-| `Gain` / `GainMin` / `GainMax` | Single fixed value `0`; setter rejects non-zero with `INVALID_VALUE` |
+| `Gain` / `GainMin` / `GainMax` | Single fixed value `0`; the getters answer whether or not a client is connected, since the value is fixed (C6) |
+| `SetGain` | Rejects non-zero with `INVALID_VALUE`; `NOT_CONNECTED` while disconnected — a write belongs to a session (C6) |
 | `Offset` family | Reports `PROPERTY_NOT_IMPLEMENTED` (no signal model) |
-| `ReadoutMode` / `ReadoutModes` | Single mode `"Default"` at index `0`; setter rejects non-zero |
+| `ReadoutMode` / `ReadoutModes` | Single mode `"Default"` at index `0`; the getters answer whether or not a client is connected, since the mode is fixed (C6) |
+| `SetReadoutMode` | Rejects non-zero with `INVALID_VALUE`; `NOT_CONNECTED` while disconnected — a write belongs to a session (C6) |
 | `SensorName` / `SensorType` | `"SkyView Virtual Sensor"` / `Monochrome` |
-| `CameraState` | `Idle` / `Exposing` / `Error` based on internal state |
-| `PercentCompleted` | Binary: `0` while in flight, `100` once `ImageReady` |
-| `CanAbortExposure` / `CanStopExposure` | `true`, both cancel the in-flight survey fetch |
+| `CameraState` | `Idle` / `Exposing` / `Error` based on internal state; `NOT_CONNECTED` while disconnected (C5) |
+| `PercentCompleted` | Binary: `0` while in flight, `100` once `ImageReady`; `NOT_CONNECTED` while disconnected (C5) |
+| `CanAbortExposure` / `CanStopExposure` | `true`, both cancel the in-flight survey fetch; answered at any time, as driver-owned facts (C6) |
 | `CoolerOn`, `CCDTemperature`, `CanGetCoolerPower`, `CanSetCCDTemperature`, `CanPulseGuide`, `CanFastReadout`, `HasShutter`, `BayerOffsetX/Y` | All `false` / `PROPERTY_NOT_IMPLEMENTED` |
-| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Implemented per pipeline above; `ImageArray` returns the cropped subframe with axes `[X, Y]` |
+| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Implemented per pipeline above; `ImageArray` returns the cropped subframe with axes `[X, Y]`. `StartExposure` (E1), `ImageReady`, `ImageArray` and `ImageArrayVariant` answer `NOT_CONNECTED` while disconnected (C5); `AbortExposure` / `StopExposure` answer `NOT_CONNECTED` there too, per A4. Connected with nothing in flight, both **succeed** and leave a ready frame alone (A2/A3) — ASCOM forbids an idle cancel from throwing |
+| `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session. While disconnected: `NOT_CONNECTED` (C5) — the connected check runs first, so the disconnected interval never shows the reset. Once connected: `INVALID_OPERATION` until this session has exposed, which a reconnect restores by way of C4's reset at the preceding disconnect |
 
 ConformU is the canonical ASCOM correctness check. The
 `tests/conformu_integration.rs` target (gated by the `conformu`
@@ -772,9 +890,10 @@ Layered per `docs/skills/testing.md`:
   geometry checks).
 - **BDD** (`bdd-infra::ServiceHandle`) — `/sky-survey/position` round
   trips, `StartExposure` returns a non-empty array of the configured
-  dimensions when the survey backend is stubbed, the C1–C4 connection
+  dimensions when the survey backend is stubbed, the C1–C6 connection
   contracts including the warn-only behaviour for an unreachable
-  endpoint, the S1–S6 survey-error paths against a stub HTTP server,
+  endpoint and the session settings a disconnected camera neither
+  reports nor accepts, the S1–S6 survey-error paths against a stub HTTP server,
   and the F1/F2/F5/F6/F8 follow-mode contracts against tiny in-test
   axum stubs serving the two ASCOM Telescope reads (`right_ascension`,
   `declination`) and the one ASCOM Rotator read (`position`). The

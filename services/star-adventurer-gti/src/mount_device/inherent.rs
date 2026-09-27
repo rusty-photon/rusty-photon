@@ -39,8 +39,9 @@ use tracing::{debug, info};
 use crate::codec::SkywatcherCodec;
 use crate::config::ApPark;
 use crate::coordinates::{
-    local_sidereal_time_hours, ra_dec_to_alt_az, side_of_pier as side_of_pier_calc,
-    target_encoder_flipped, target_encoder_normal, SIDEREAL_DEG_PER_SEC,
+    local_sidereal_time_hours, mech_ha_in_binding_zone, ra_dec_to_alt_az,
+    side_of_pier as side_of_pier_calc, target_encoder_flipped, target_encoder_normal,
+    SIDEREAL_DEG_PER_SEC,
 };
 use crate::error::StarAdvError;
 use crate::manager::{MountParameters, MountSnapshot};
@@ -197,9 +198,9 @@ impl MountDevice {
     /// there, not here. The combination — destination check plus path
     /// check — is the safety floor.
     ///
-    /// `flip_policy.flip_range_hours` is **not** consulted here — that
-    /// rule lives in `select_pier_side_for_target` for pier-side
-    /// preference only. Park 1 / Park 5 (anti-meridian poses with
+    /// The CW exclusion zone is the whole of the mechanical rule: no
+    /// second window narrows it here or in
+    /// `select_pier_side_for_target`. Park 1 / Park 5 (anti-meridian poses with
     /// `mech_HA = ±12` on the chosen pier) are reachable via slew
     /// because their `mech_HA` is outside the CW exclusion zone.
     ///
@@ -234,12 +235,14 @@ impl MountDevice {
                 normal
             }
         };
-        let (zone_min, zone_max) = self.config.cw_exclusion_zone.bounds();
+        let zone = self.config.cw_exclusion_zone.bounds();
+        let (zone_min, zone_max) = zone;
         // Open interval: target landing exactly on a boundary is OK.
-        // Disable on `min >= max` (empty zone), matching the path
-        // check's convention so destination and path checks agree on
-        // which configurations are "disabled."
-        if zone_min < zone_max && target_mech_ha > zone_min && target_mech_ha < zone_max {
+        // Disable on `min >= max` (empty zone). The predicate is shared
+        // with the path checks and the pier-side selector so every gate
+        // agrees on which configurations are "disabled" and on which
+        // side of a boundary a target sits.
+        if mech_ha_in_binding_zone(target_mech_ha, zone) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
                 format!(
@@ -724,7 +727,15 @@ impl MountDevice {
         // The returned guard clears `slew_in_progress` on drop, so every
         // `?` below — a failed wire command or a failed watcher hand-off
         // — rolls the flag back without an explicit clear.
-        let Some(reservation) = SlewReservation::try_acquire(&self.slew_in_progress) else {
+        // Serialize with an in-flight sync's encoder writes before
+        // claiming the axes; see `axis_ownership`. Held only across the
+        // acquisition — the slew's own ownership is the reservation,
+        // which it hands to the completion watcher.
+        let reservation = {
+            let _axes = self.axis_ownership.lock().await;
+            SlewReservation::try_acquire(&self.slew_in_progress)
+        };
+        let Some(reservation) = reservation else {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "slew refused: slew already in progress",

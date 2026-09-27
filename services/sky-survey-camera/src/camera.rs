@@ -4,7 +4,7 @@ use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use ndarray::Array2;
 use parking_lot::Mutex;
 use std::num::{NonZeroU32, NonZeroU8};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tracing::{debug, warn};
@@ -81,6 +81,40 @@ pub struct ExposureOutcome {
 /// commits its result if the captured value still matches when it
 /// finishes, so a late-completing task can never resurrect an image
 /// after Abort/Stop/disconnect.
+/// A `Mutex<()>` that also counts how many callers are queued on it.
+///
+/// The count exists for the regression tests that guard the serialisation
+/// below. Those tests hold the lock to stand in for one writer and assert
+/// another cannot proceed — a claim that needs the other writer to have
+/// actually reached the lock. A task that is merely slow to get there is
+/// indistinguishable from one that is blocked, so without this the tests rest
+/// on a timeout being generous enough, and a loaded machine could turn a
+/// regression into a pass. Waiting for the count to rise is the same
+/// statement without the assumption.
+///
+/// Two atomic RMWs per acquisition, on a path taken once per exposure
+/// transition in a simulator — the cost is not measurable here, and the
+/// alternative is tests that assume what they claim to prove.
+#[derive(Debug, Default)]
+pub struct ResultLock {
+    inner: Mutex<()>,
+    waiting: AtomicUsize,
+}
+
+impl ResultLock {
+    pub fn lock(&self) -> parking_lot::MutexGuard<'_, ()> {
+        self.waiting.fetch_add(1, Ordering::AcqRel);
+        let guard = self.inner.lock();
+        self.waiting.fetch_sub(1, Ordering::AcqRel);
+        guard
+    }
+
+    /// How many callers are currently queued, not counting whoever holds it.
+    pub fn waiting(&self) -> usize {
+        self.waiting.load(Ordering::Acquire)
+    }
+}
+
 #[derive(Debug)]
 pub struct DeviceState {
     pub config: Config,
@@ -118,7 +152,41 @@ pub struct DeviceState {
     pub last_exposure_start: Mutex<Option<SystemTime>>,
     pub last_exposure_duration: Mutex<Option<Duration>>,
     pub exposure_generation: AtomicU64,
+    /// Makes a cancel's claim and a finishing exposure's commit mutually
+    /// exclusive. The commit is three separate stores — the frame, the error
+    /// slot, then `image_ready` — and only afterwards does it drop
+    /// `exposure_in_flight`. That leaves a window where the fetch is done and
+    /// the frame published while the in-flight flag still reads `true`, so a
+    /// cancel arriving inside it would win the claim and discard a frame the
+    /// exposure had already completed — the one thing A3 promises cannot
+    /// happen. Holding this across both sides collapses the window: a cancel
+    /// either arrives before the commit (and the commit's generation check
+    /// then discards the outcome) or after it (and finds nothing claimed).
+    /// `zwo-camera` carries the same lock for the same reason.
+    ///
+    /// `start_exposure` takes it too, for the mirror hazard: its claim and the
+    /// generation it spawns against are likewise two atomics that must move
+    /// together, and a cancel landing between them would be silently lost.
+    /// So does C4's disconnect reset, which is the same write under another
+    /// name and would otherwise be undone by a commit already past its
+    /// generation check.
+    ///
+    /// The rule is therefore the whole of it: **every writer of the exposure
+    /// result state takes this lock** — start, commit, cancel, disconnect.
+    /// The state is a bare flag beside a counter beside three mutexes, and
+    /// nothing but this lock makes them move as one.
+    pub result_lock: ResultLock,
     pub survey_client: Arc<dyn SurveyClient>,
+    /// Serialises `set_connected`, so a connect and a disconnect cannot
+    /// interleave. The transition is not a single store: a connect validates
+    /// the cache directory and probes the survey endpoint first, and both
+    /// `await`. Without this, a redundant `Connected = true` could sit in that
+    /// probe while a `Connected = false` ended the session underneath it, and
+    /// then commit `true` over the top — a session resumed with the previous
+    /// one's geometry and none of C6's reset, because the false → true test ran
+    /// before the await. Held across the whole call so the test and the commit
+    /// belong to one transition (C6).
+    pub lifecycle: tokio::sync::Mutex<()>,
 }
 
 #[derive(Clone, derive_more::Debug)]
@@ -186,7 +254,9 @@ impl SkySurveyCamera {
             last_exposure_start: Mutex::new(None),
             last_exposure_duration: Mutex::new(None),
             exposure_generation: AtomicU64::new(0),
+            result_lock: ResultLock::default(),
             survey_client,
+            lifecycle: tokio::sync::Mutex::new(()),
             next_pointing_override: Mutex::new(None),
         };
         Self {
@@ -212,6 +282,101 @@ impl SkySurveyCamera {
     pub fn is_connected(&self) -> bool {
         self.state.connected.load(Ordering::Acquire)
     }
+
+    /// `NOT_CONNECTED` unless this device is connected — C4's "subsequent
+    /// ASCOM operations return `NOT_CONNECTED`", spelled once so every member
+    /// that reports device state gives the same answer (C5). The sibling
+    /// camera drivers spell theirs `ensure_connected` over an SDK handle; here
+    /// there is no handle, and the connected flag is the whole session.
+    fn ensure_connected(&self) -> ASCOMResult<()> {
+        if self.is_connected() {
+            return Ok(());
+        }
+        Err(ASCOMError::new(
+            ASCOMErrorCode::NOT_CONNECTED,
+            "camera is not connected",
+        ))
+    }
+
+    /// Discard an in-flight survey fetch, if there is one, and report nothing
+    /// — the caller decides what an idle camera means. Shared by
+    /// `AbortExposure` and `StopExposure`, which differ only in the ASCOM
+    /// member a client reached for: neither can preserve a partial frame,
+    /// because a cutout is one HTTP body that either arrives whole or not at
+    /// all, so there is no readout to let run to completion.
+    ///
+    /// Bumping the generation is what makes the cancel stick. The fetch task
+    /// can't always be cancelled at the OS level (a stub that holds the
+    /// connection open keeps it parked until process exit) but it compares
+    /// generations before publishing, so it can no longer install a result.
+    /// A1 ("`ImageReady` is false") holds.
+    fn cancel_in_flight(&self) -> ASCOMResult<()> {
+        // Held across the claim and everything it clears, so a finishing
+        // exposure cannot commit underneath a cancel that has already decided
+        // there was something to cancel (A3).
+        let _guard = self.state.result_lock.lock();
+        // A4's check lives here rather than in the two callers, for the same
+        // reason `start_exposure` re-checks: a disconnect stores
+        // `connected = false` before it queues for this lock, so a check taken
+        // outside can be stale by the time the claim is examined. Under the
+        // lock it cannot be.
+        self.ensure_connected()?;
+        if !self
+            .state
+            .exposure_in_flight
+            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok_and(|prev| prev)
+        {
+            // Idle: nothing was claimed, so nothing is discarded. Leaving the
+            // stored frame alone is what lets a cancel arriving after a
+            // completed exposure keep it readable (A3).
+            return Ok(());
+        }
+        self.state
+            .exposure_generation
+            .fetch_add(1, Ordering::AcqRel);
+        self.state.image_ready.store(false, Ordering::Release);
+        *self.state.last_error.lock() = None;
+        *self.state.last_image.lock() = None;
+        Ok(())
+    }
+
+    /// Put the session's settings back to the configured full frame at bin 1,
+    /// the values [`Self::from_parts`] starts from (C6). Called at the start of
+    /// a connect.
+    fn reset_session_settings(&self) {
+        self.state.bin_x.store(1, Ordering::Release);
+        self.state.bin_y.store(1, Ordering::Release);
+        self.state
+            .num_x
+            .store(self.state.config.optics.sensor_width_px, Ordering::Release);
+        self.state
+            .num_y
+            .store(self.state.config.optics.sensor_height_px, Ordering::Release);
+        self.state.start_x.store(0, Ordering::Release);
+        self.state.start_y.store(0, Ordering::Release);
+    }
+}
+
+/// The geometry an exposure was validated against, captured at
+/// `StartExposure` and carried into the task.
+///
+/// The task cannot re-read these from the device: the setters take no lock and
+/// refuse nothing while an exposure is in flight (ASCOM convention — they
+/// accept any value, and `StartExposure` is where geometry is judged, E4/E5),
+/// so a `NumX` written a moment after `StartExposure` returned would otherwise
+/// reach the task and be used unchecked. Passing the validated values is what
+/// makes E4/E5 a property of the exposure rather than of an instant that has
+/// already passed — the same reason `pointing_override` is consumed before the
+/// spawn rather than inside the task (F7/P7).
+#[derive(Debug, Clone, Copy)]
+struct ExposureGeometry {
+    bin_x: u8,
+    bin_y: u8,
+    num_x: u32,
+    num_y: u32,
+    start_x: u32,
+    start_y: u32,
 }
 
 /// The body of the spawned exposure task. Performs the cache hit /
@@ -228,9 +393,18 @@ async fn run_exposure(
     state: Arc<DeviceState>,
     light: bool,
     gen: u64,
+    geometry: ExposureGeometry,
     pointing_override: Option<PointingState>,
 ) {
-    let result = run_exposure_inner(&state, light, pointing_override).await;
+    let result = run_exposure_inner(&state, light, geometry, pointing_override).await;
+    // The commit is one critical section: the generation test, the publish and
+    // the release of the in-flight claim. A cancel racing it therefore sees
+    // either a claim it can take (and this task's generation check then
+    // discards the outcome) or a finished exposure with nothing claimed — never
+    // the half-committed state in between, where it would discard a frame this
+    // task had already published (A3). No `await` inside, so the synchronous
+    // lock is safe to hold here.
+    let _guard = state.result_lock.lock();
     if state.exposure_generation.load(Ordering::Acquire) != gen {
         debug!(
             ?gen,
@@ -256,14 +430,20 @@ async fn run_exposure(
 async fn run_exposure_inner(
     state: &Arc<DeviceState>,
     light: bool,
+    geometry: ExposureGeometry,
     pointing_override: Option<PointingState>,
 ) -> Result<ExposureOutcome, String> {
-    let bx = state.bin_x.load(Ordering::Acquire);
-    let by = state.bin_y.load(Ordering::Acquire);
-    let nx = state.num_x.load(Ordering::Acquire);
-    let ny = state.num_y.load(Ordering::Acquire);
-    let sx = state.start_x.load(Ordering::Acquire);
-    let sy = state.start_y.load(Ordering::Acquire);
+    // Destructured from what `StartExposure` validated, not re-read from the
+    // device — see [`ExposureGeometry`]. A setter that lands while this task
+    // is running belongs to the next exposure.
+    let ExposureGeometry {
+        bin_x: bx,
+        bin_y: by,
+        num_x: nx,
+        num_y: ny,
+        start_x: sx,
+        start_y: sy,
+    } = geometry;
     // `nx`/`ny` stay fixed-width for `crop_subframe`, which takes the
     // subframe as the ASCOM device state it is. The outcome carries the
     // same numbers as the geometry of the buffer it holds, so convert
@@ -433,7 +613,28 @@ impl Device for SkySurveyCamera {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
+        // One transition at a time: the checks below and the commit at the end
+        // are one step, not two (C6).
+        let _transition = self.state.lifecycle.lock().await;
         if connected {
+            // C6: the settings belong to the session, so a connect starts from
+            // the configured full frame at bin 1 rather than inheriting the
+            // last session's geometry — the shape the SDK siblings' connect
+            // handshakes already have (`qhy-camera`'s C6). It also settles the
+            // one thing the setters' connected check cannot: a write that won
+            // the race against a concurrent disconnect lands in state that no
+            // session can reach, because the next connect clears it. Cleared
+            // *first*, so a connect that then fails its cache-dir check leaves
+            // nothing of the old session behind either.
+            //
+            // Only on a **false → true** transition. `Connected = true` against
+            // an already-connected device is a no-op, not a new session (the
+            // SDK siblings return early on it, and ConformU writes it), so
+            // resetting there would throw away the running session's geometry
+            // between a client's `NumX` and its `StartExposure`.
+            if !self.is_connected() {
+                self.reset_session_settings();
+            }
             // C2: cache_dir must be creatable AND writable. `create_
             // dir_all` succeeds on an existing read-only directory,
             // so we follow it with a probe write/delete.
@@ -477,6 +678,15 @@ impl Device for SkySurveyCamera {
             // exposures since the *current* connect, so a Connect →
             // Disconnect → Connect cycle should make them error
             // again until a fresh exposure runs.
+            //
+            // This is the fourth writer of the result state, so it takes
+            // `result_lock` like the other three. Without it a commit that had
+            // already passed its generation check could republish
+            // `image_ready` and the frame *after* this reset ran, and since a
+            // reconnect restores geometry only (C6), the next session would
+            // open on the previous one's frame — C4 undone by a late task.
+            // Scoped to this block: it contains no `await`.
+            let _guard = self.state.result_lock.lock();
             self.state
                 .exposure_generation
                 .fetch_add(1, Ordering::AcqRel);
@@ -560,11 +770,18 @@ impl Camera for SkySurveyCamera {
         Ok(MAX_BIN)
     }
 
+    /// C6: binning, ROI and readout are the *session's* settings. A geometry a
+    /// client cannot expose with is not a geometry, and a write taken while
+    /// disconnected leaves a setting behind whose owner is a session that has
+    /// not started — so the getters and the setters alike take the check, as
+    /// the SDK-backed siblings' do.
     async fn bin_x(&self) -> ASCOMResult<u8> {
+        self.ensure_connected()?;
         Ok(self.state.bin_x.load(Ordering::Acquire))
     }
 
     async fn set_bin_x(&self, bin_x: u8) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         if !(1..=MAX_BIN).contains(&bin_x) {
             return Err(ASCOMError::invalid_value(format!(
                 "BinX {bin_x} outside [1, {MAX_BIN}]"
@@ -575,10 +792,12 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn bin_y(&self) -> ASCOMResult<u8> {
+        self.ensure_connected()?;
         Ok(self.state.bin_y.load(Ordering::Acquire))
     }
 
     async fn set_bin_y(&self, bin_y: u8) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         if !(1..=MAX_BIN).contains(&bin_y) {
             return Err(ASCOMError::invalid_value(format!(
                 "BinY {bin_y} outside [1, {MAX_BIN}]"
@@ -589,10 +808,12 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn num_x(&self) -> ASCOMResult<u32> {
+        self.ensure_connected()?;
         Ok(self.state.num_x.load(Ordering::Acquire))
     }
 
     async fn set_num_x(&self, num_x: u32) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         // ASCOM convention: sub-frame property setters accept any
         // value; geometry validation runs at StartExposure (E4/E5).
         // ConformU exercises this by setting one-past-the-edge then
@@ -602,28 +823,34 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn num_y(&self) -> ASCOMResult<u32> {
+        self.ensure_connected()?;
         Ok(self.state.num_y.load(Ordering::Acquire))
     }
 
     async fn set_num_y(&self, num_y: u32) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         self.state.num_y.store(num_y, Ordering::Release);
         Ok(())
     }
 
     async fn start_x(&self) -> ASCOMResult<u32> {
+        self.ensure_connected()?;
         Ok(self.state.start_x.load(Ordering::Acquire))
     }
 
     async fn set_start_x(&self, start_x: u32) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         self.state.start_x.store(start_x, Ordering::Release);
         Ok(())
     }
 
     async fn start_y(&self) -> ASCOMResult<u32> {
+        self.ensure_connected()?;
         Ok(self.state.start_y.load(Ordering::Acquire))
     }
 
     async fn set_start_y(&self, start_y: u32) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         self.state.start_y.store(start_y, Ordering::Release);
         Ok(())
     }
@@ -640,8 +867,13 @@ impl Camera for SkySurveyCamera {
                 "Duration {duration:?} outside [{EXPOSURE_MIN:?}, {EXPOSURE_MAX:?}]"
             )));
         }
-        let bx = u32::from(self.state.bin_x.load(Ordering::Acquire));
-        let by = u32::from(self.state.bin_y.load(Ordering::Acquire));
+        // Kept in both widths: `u8` is what the device stores and what the
+        // survey request takes, `u32` is what the sensor arithmetic below
+        // needs. Loaded once either way, so the two cannot disagree.
+        let bin_x = self.state.bin_x.load(Ordering::Acquire);
+        let bin_y = self.state.bin_y.load(Ordering::Acquire);
+        let bx = u32::from(bin_x);
+        let by = u32::from(bin_y);
         let nx = self.state.num_x.load(Ordering::Acquire);
         let ny = self.state.num_y.load(Ordering::Acquire);
         let sx = self.state.start_x.load(Ordering::Acquire);
@@ -666,6 +898,29 @@ impl Camera for SkySurveyCamera {
                 "subframe ({sx}+{nx},{sy}+{ny}) exceeds binned sensor ({binned_sensor_width},{binned_sensor_height})"
             )));
         }
+        // The claim and the generation it is spawned against are two separate
+        // atomics, so they have to be moved as one. A cancel landing between
+        // them would release this claim and bump the generation, and the
+        // `fetch_add` below would then hand the task a generation matching the
+        // one it publishes under — the cancel silently lost, its frame
+        // published anyway, and the in-flight flag left false with a task
+        // still running. Held to the spawn so the claim, the reset and the
+        // generation are one transition. `zwo-camera` needs no such lock here
+        // because its claim *is* a mutex-guarded cell; this driver's is a bare
+        // flag beside a counter. No `await` from here to the end of the
+        // function, so the synchronous lock is safe to hold across it.
+        let _guard = self.state.result_lock.lock();
+        // E1 again, and not redundantly: the check at the top of this method
+        // ran outside this lock, and a disconnect stores `connected = false`
+        // *before* it takes the lock. So a start can pass that check, park
+        // here for the whole of C4's reset, and wake to claim a device that is
+        // no longer connected — spawning an exposure the disconnect's
+        // generation bump already went past, which would then publish a frame
+        // into a dead session and leave it readable in the next one. Checking
+        // again under the lock is what linearises the two transitions; the
+        // claim below is only reached by a start that is still connected at
+        // the moment it claims.
+        self.ensure_connected()?;
         // E2: reject if another exposure is already in flight.
         if self
             .state
@@ -704,60 +959,69 @@ impl Camera for SkySurveyCamera {
         };
         debug!(?duration, light, gen, "exposure started");
         let state = Arc::clone(&self.state);
-        tokio::spawn(run_exposure(state, light, gen, override_for_exposure));
+        // The values E3/E4/E5 were judged against, not a fresh read: between
+        // here and the task's first use, a setter can change any of them.
+        let geometry = ExposureGeometry {
+            bin_x,
+            bin_y,
+            num_x: nx,
+            num_y: ny,
+            start_x: sx,
+            start_y: sy,
+        };
+        tokio::spawn(run_exposure(
+            state,
+            light,
+            gen,
+            geometry,
+            override_for_exposure,
+        ));
         Ok(())
     }
 
+    /// Both are implemented below (each cancels the in-flight survey fetch via
+    /// the generation counter), so both advertise `true` — the trait's `false`
+    /// default would have a client believe a capture it can see running cannot
+    /// be stopped. Answered while disconnected: with no hardware behind it,
+    /// what this service can do to a capture is its own knowledge (C6).
+    async fn can_abort_exposure(&self) -> ASCOMResult<bool> {
+        Ok(true)
+    }
+
+    async fn can_stop_exposure(&self) -> ASCOMResult<bool> {
+        Ok(true)
+    }
+
+    /// ASCOM holds both members to the promise the `Can*` pair above makes:
+    /// each "must not throw an exception if the camera is already idle". The
+    /// error they *do* carry is for the opposite case — busy and unstoppable,
+    /// e.g. mid-download — which cannot arise here, since detaching the fetch
+    /// is a generation bump that always succeeds. So an idle cancel reports
+    /// success (A2) rather than the refusal that once stood here; a refusal
+    /// would now say only that there is no session at all, which is what the
+    /// connected check is for (A4).
     async fn abort_exposure(&self) -> ASCOMResult<()> {
-        if !self
-            .state
-            .exposure_in_flight
-            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok_and(|prev| prev)
-        {
-            return Err(ASCOMError::invalid_operation(
-                "no exposure in progress to abort",
-            ));
-        }
-        // Bump the generation so the in-flight task discards its
-        // outcome. The actual fetch task can't always be cancelled at
-        // the OS level (e.g. a Hold stub keeps the connection open
-        // until process exit) but it can no longer publish results.
-        // A1 ("ImageReady is false") holds.
-        self.state
-            .exposure_generation
-            .fetch_add(1, Ordering::AcqRel);
-        self.state.image_ready.store(false, Ordering::Release);
-        *self.state.last_error.lock() = None;
-        *self.state.last_image.lock() = None;
-        Ok(())
+        self.cancel_in_flight()
     }
 
     async fn stop_exposure(&self) -> ASCOMResult<()> {
-        if !self
-            .state
-            .exposure_in_flight
-            .compare_exchange(true, false, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok_and(|prev| prev)
-        {
-            return Err(ASCOMError::invalid_operation(
-                "no exposure in progress to stop",
-            ));
-        }
-        self.state
-            .exposure_generation
-            .fetch_add(1, Ordering::AcqRel);
-        self.state.image_ready.store(false, Ordering::Release);
-        *self.state.last_error.lock() = None;
-        *self.state.last_image.lock() = None;
-        Ok(())
+        self.cancel_in_flight()
     }
 
+    /// C5: `ImageArray` is read straight after this one and takes the same
+    /// check, so without it here the pair could contradict each other — ready
+    /// beside a frame that refuses.
     async fn image_ready(&self) -> ASCOMResult<bool> {
+        self.ensure_connected()?;
         Ok(self.state.image_ready.load(Ordering::Acquire))
     }
 
+    /// "No exposure has started yet" is an answer about the **running**
+    /// session, so the connected check comes first (C5). The stored values are
+    /// cleared on disconnect (C4), so what this prevents is not a stale
+    /// timestamp but a device with no session answering as though it had one.
     async fn last_exposure_start_time(&self) -> ASCOMResult<SystemTime> {
+        self.ensure_connected()?;
         self.state
             .last_exposure_start
             .lock()
@@ -765,6 +1029,7 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn last_exposure_duration(&self) -> ASCOMResult<Duration> {
+        self.ensure_connected()?;
         self.state
             .last_exposure_duration
             .lock()
@@ -772,6 +1037,7 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn image_array(&self) -> ASCOMResult<ImageArray> {
+        self.ensure_connected()?;
         // S4-S6: a stored fetch error becomes ASCOM UNSPECIFIED_ERROR.
         let last_error = self.state.last_error.lock().clone();
         if let Some(msg) = last_error {
@@ -799,7 +1065,11 @@ impl Camera for SkySurveyCamera {
         Ok(ImageArray::from(array))
     }
 
+    /// C5: `Idle` is an answer about a device that is there. A supervisor
+    /// polling this across a disconnect must be told the session has gone, not
+    /// handed the idle state of a camera it is no longer connected to.
     async fn camera_state(&self) -> ASCOMResult<CameraState> {
+        self.ensure_connected()?;
         if self.state.last_error.lock().is_some() {
             return Ok(CameraState::Error);
         }
@@ -810,6 +1080,7 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn percent_completed(&self) -> ASCOMResult<u8> {
+        self.ensure_connected()?;
         // The fetch-or-cache pipeline is atomic from the client's
         // perspective — there's no meaningful intermediate progress
         // to report — so percent is binary.
@@ -836,7 +1107,10 @@ impl Camera for SkySurveyCamera {
         Ok(0)
     }
 
+    /// The getter answers a fixed value, so it needs no session; the setter
+    /// writes to one, and so takes the check (C6).
     async fn set_readout_mode(&self, readout_mode: usize) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         if readout_mode != 0 {
             return Err(ASCOMError::invalid_value(format!(
                 "ReadoutMode {readout_mode} not supported (only index 0)"
@@ -858,6 +1132,7 @@ impl Camera for SkySurveyCamera {
     }
 
     async fn set_gain(&self, gain: i32) -> ASCOMResult<()> {
+        self.ensure_connected()?;
         if gain != 0 {
             return Err(ASCOMError::invalid_value(format!(
                 "Gain {gain} not supported (single fixed value 0)"
@@ -883,6 +1158,47 @@ mod tests {
         AlpacaServerConfig, DeviceConfig, OpticsConfig, PointingConfig, SurveyConfig,
     };
 
+    /// A scratch cache directory, owned by the caller.
+    ///
+    /// Connect creates `cache_dir` and probes it with a write (C2), so the
+    /// tests that drive it need a real directory — one that is unique by
+    /// construction and takes itself away afterwards, on the failing paths
+    /// too (testing.md §4.3 and its scratch rule). The guard has to outlive
+    /// the camera, so it comes back alongside it. Rooted at Bazel's
+    /// per-action `TEST_TMPDIR` when set, which Bazel wipes between runs,
+    /// rather than at the machine-wide temp directory it leaves alone.
+    ///
+    /// `tempfile` directly rather than `bdd_infra::scratch::new_dir`: these
+    /// are in-process unit tests with no child process reading the path, and
+    /// the lib's unit-test target does not otherwise depend on the BDD
+    /// harness crate.
+    fn scratch_cache_dir() -> tempfile::TempDir {
+        let root = std::env::var_os("TEST_TMPDIR")
+            .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+        tempfile::Builder::new()
+            .prefix("sky-survey-camera-unit-")
+            .tempdir_in(root)
+            .expect("creating a scratch cache directory")
+    }
+
+    /// A camera whose `cache_dir` is a scratch directory — the only shape in
+    /// which a test may call `set_connected(true)`. Keep the guard alive for
+    /// the whole test.
+    fn connecting_camera(client: Arc<dyn SurveyClient>) -> (SkySurveyCamera, tempfile::TempDir) {
+        let scratch = scratch_cache_dir();
+        let mut config = fake_config();
+        config.survey.cache_dir = scratch.path().to_path_buf();
+        (SkySurveyCamera::new_static(config, client), scratch)
+    }
+
+    /// [`connecting_camera`] already in a session, for tests that drive a
+    /// *re*-connect.
+    fn connected_camera_with_scratch() -> (SkySurveyCamera, tempfile::TempDir) {
+        let (cam, scratch) = connecting_camera(Arc::new(StubSurveyClient));
+        cam.state.connected.store(true, Ordering::Release);
+        (cam, scratch)
+    }
+
     fn fake_config() -> Config {
         Config {
             device: DeviceConfig {
@@ -907,7 +1223,12 @@ mod tests {
             survey: SurveyConfig {
                 name: "DSS2 Red".into(),
                 request_timeout: Duration::from_secs(5),
-                cache_dir: std::env::temp_dir().join("sky-survey-camera-tests"),
+                // Never created: the only tests that touch the filesystem are
+                // the ones that connect, and those go through
+                // `connecting_camera`, which replaces this with a scratch
+                // directory. A fixed shared path *that something creates* is
+                // the shape testing.md's scratch rule exists to stop.
+                cache_dir: std::path::PathBuf::from("sky-survey-camera-unit-tests-unused"),
                 endpoint: "http://placeholder/".into(),
             },
             server: AlpacaServerConfig::new(0),
@@ -1002,10 +1323,53 @@ mod tests {
         }
     }
 
+    /// A client whose `health_check` parks until a test releases it, so a
+    /// connect can be caught *inside* the awaited part of the transition —
+    /// the window the false → true test used to be read outside of.
+    #[derive(Debug)]
+    struct GatedSurveyClient {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl SurveyClient for GatedSurveyClient {
+        async fn health_check(&self) -> Result<(), SurveyError> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(())
+        }
+        async fn fetch(&self, _request: &SurveyRequest) -> Result<Vec<u8>, SurveyError> {
+            Err(SurveyError::Http("gated: fetch not implemented".into()))
+        }
+    }
+
+    /// The full frame of `fake_config`'s 640x480 sensor at bin 1 — what a
+    /// `StartExposure` with untouched geometry would have validated and handed
+    /// to the task.
+    const FULL_FRAME: ExposureGeometry = ExposureGeometry {
+        bin_x: 1,
+        bin_y: 1,
+        num_x: 640,
+        num_y: 480,
+        start_x: 0,
+        start_y: 0,
+    };
+
     fn fake_camera() -> SkySurveyCamera {
         let cfg = fake_config();
         let client: Arc<dyn SurveyClient> = Arc::new(StubSurveyClient);
         SkySurveyCamera::new_static(cfg, client)
+    }
+
+    /// A camera in a running session. Every member that reports exposure
+    /// state answers `NOT_CONNECTED` outside one (C5), so a test about what
+    /// those members *say* has to be connected first; `fake_camera` is for
+    /// tests about the disconnected answer itself.
+    fn connected_camera() -> SkySurveyCamera {
+        let cam = fake_camera();
+        cam.state.connected.store(true, Ordering::Release);
+        cam
     }
 
     #[test]
@@ -1051,7 +1415,7 @@ mod tests {
 
     #[tokio::test]
     async fn bin_num_start_round_trip() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         assert_eq!(cam.bin_x().await.unwrap(), 1);
         assert_eq!(cam.bin_y().await.unwrap(), 1);
         cam.set_bin_x(2).await.unwrap();
@@ -1070,7 +1434,7 @@ mod tests {
 
     #[tokio::test]
     async fn last_exposure_methods_pre_first_exposure() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         let err = cam.last_exposure_start_time().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
         let err = cam.last_exposure_duration().await.unwrap_err();
@@ -1079,7 +1443,7 @@ mod tests {
 
     #[tokio::test]
     async fn last_exposure_methods_after_set() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         let when = SystemTime::now();
         let duration = Duration::from_millis(500);
         *cam.state.last_exposure_start.lock() = Some(when);
@@ -1092,20 +1456,20 @@ mod tests {
 
     #[tokio::test]
     async fn image_ready_initially_false() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         assert!(!cam.image_ready().await.unwrap());
     }
 
     #[tokio::test]
     async fn image_array_returns_invalid_operation_when_empty() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         let err = cam.image_array().await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
     }
 
     #[tokio::test]
     async fn image_array_surfaces_stored_error_as_unspecified() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         *cam.state.last_error.lock() = Some("survey returned status 500".into());
         let err = cam.image_array().await.unwrap_err();
         assert_eq!(err.code, UNSPECIFIED_ERROR);
@@ -1113,7 +1477,7 @@ mod tests {
 
     #[tokio::test]
     async fn image_array_returns_stored_image_when_ready() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         *cam.state.last_image.lock() = Some(ExposureOutcome {
             width: 4,
             height: 3,
@@ -1127,13 +1491,293 @@ mod tests {
         assert_eq!(total, (0..12i32).sum::<i32>());
     }
 
+    /// A2. ASCOM forbids an idle cancel from throwing, and `CanAbortExposure`
+    /// / `CanStopExposure` are `true`, so a client may issue either at any
+    /// point in a session.
     #[tokio::test]
-    async fn abort_stop_when_idle_return_invalid_operation() {
+    async fn abort_stop_when_idle_and_connected_succeed() {
+        let cam = connected_camera();
+        cam.abort_exposure().await.unwrap();
+        cam.stop_exposure().await.unwrap();
+    }
+
+    /// A3. Only an in-flight fetch has anything to discard, so a cancel that
+    /// arrives after one has completed leaves the frame readable.
+    #[tokio::test]
+    async fn abort_stop_when_idle_leave_a_ready_frame_readable() {
+        for cancel in ["abort", "stop"] {
+            let cam = connected_camera();
+            *cam.state.last_image.lock() = Some(ExposureOutcome {
+                width: 2,
+                height: 2,
+                data: vec![1, 2, 3, 4],
+            });
+            cam.state.image_ready.store(true, Ordering::Release);
+            match cancel {
+                "abort" => cam.abort_exposure().await.unwrap(),
+                _ => cam.stop_exposure().await.unwrap(),
+            }
+            assert!(
+                cam.image_ready().await.unwrap(),
+                "{cancel} on an idle camera discarded a completed frame"
+            );
+            cam.image_array().await.unwrap();
+        }
+    }
+
+    /// The seam tests below each hold `result_lock` to stand in for one writer
+    /// and assert another cannot proceed. That claim needs the other writer to
+    /// have actually reached the lock, and neither elapsed time nor a
+    /// rendezvous before the call can establish it: a task still walking the
+    /// validation ahead of the lock looks exactly like one blocked on it, so
+    /// the assertion would hold whether or not the lock was there, and a
+    /// loaded machine could turn a regression into a pass.
+    ///
+    /// So this waits for the lock's own queue to grow instead. Once
+    /// `waiting()` is non-zero the worker is *at* the lock and, since this
+    /// caller holds it, cannot be past it — which is the thing the tests
+    /// claim, established rather than assumed. The deadline only bounds a
+    /// worker that never arrives, and says so when it fires.
+    ///
+    /// Each test is also checked the other way round, by deleting the lock
+    /// from the writer it covers and confirming this is what fails.
+    ///
+    /// Synchronous, and polls rather than awaits, because every caller holds a
+    /// `result_lock` guard across this call and awaiting under a synchronous
+    /// guard is what `clippy::await_holding_lock` exists to catch.
+    fn assert_parked<T: Send + 'static>(
+        lock: &ResultLock,
+        handle: &tokio::task::JoinHandle<T>,
+        what: &str,
+    ) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while lock.waiting() == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} never reached result_lock — it is not contending for \
+                 the lock this test claims to hold against it"
+            );
+            std::thread::yield_now();
+        }
+        assert!(
+            !handle.is_finished(),
+            "{what} ran to completion while result_lock was held"
+        );
+    }
+
+    /// A3, at the seam the contract actually turns on. A finishing exposure
+    /// publishes the frame before it drops the in-flight claim, so without
+    /// serialisation a cancel landing between the two would win the claim and
+    /// clear a frame that was already complete. Holding `result_lock` here
+    /// stands in for that cancel: the commit must not land while it is held.
+    /// Releasing it and seeing the frame appear proves the task was alive and
+    /// parked on the lock, not merely slow.
+    ///
+    /// Two workers guaranteed: the commit task has to make progress on one
+    /// while this thread blocks on the other, or the test would pass by
+    /// starving it rather than by the lock doing its job.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_commit_cannot_land_while_a_cancel_holds_the_result_lock() {
+        let cam = connected_camera();
+        cam.state.exposure_in_flight.store(true, Ordering::Release);
+        let gen = cam.state.exposure_generation.load(Ordering::Acquire);
+        let guard = cam.state.result_lock.lock();
+        // Light=false synthesises a zero frame with no network I/O, so the
+        // commit is the only thing this races.
+        let commit = {
+            let state = Arc::clone(&cam.state);
+            tokio::spawn(async move {
+                let task = run_exposure(state, false, gen, FULL_FRAME, None);
+                task.await;
+            })
+        };
+        assert_parked(&cam.state.result_lock, &commit, "commit");
+        assert!(
+            !cam.state.image_ready.load(Ordering::Acquire),
+            "commit published while a cancel held result_lock"
+        );
+        assert!(
+            cam.state.exposure_in_flight.load(Ordering::Acquire),
+            "commit released the in-flight claim while a cancel held result_lock"
+        );
+        drop(guard);
+        commit.await.unwrap();
+        assert!(cam.state.image_ready.load(Ordering::Acquire));
+        assert!(!cam.state.exposure_in_flight.load(Ordering::Acquire));
+    }
+
+    /// The other half of A3's mutual exclusion, driven through the public
+    /// `AbortExposure` rather than the helper: holding `result_lock` stands in
+    /// for a commit mid-transition, and the cancel must park rather than claim
+    /// an exposure the commit is in the middle of finishing. Without this the
+    /// suite pins only the commit side — dropping the lock from
+    /// `cancel_in_flight` reopens the race with every other test still green.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancel_cannot_claim_while_a_commit_holds_the_result_lock() {
+        let cam = connected_camera();
+        cam.state.exposure_in_flight.store(true, Ordering::Release);
+        let guard = cam.state.result_lock.lock();
+        let canceller = {
+            let cam = cam.clone();
+            tokio::spawn(async move { cam.abort_exposure().await })
+        };
+        assert_parked(&cam.state.result_lock, &canceller, "cancel");
+        assert!(
+            cam.state.exposure_in_flight.load(Ordering::Acquire),
+            "cancel took the in-flight claim while a commit held result_lock"
+        );
+        drop(guard);
+        // Releasing lets it through, which also proves it was parked on the
+        // lock rather than never scheduled.
+        canceller.await.unwrap().unwrap();
+        assert!(!cam.state.exposure_in_flight.load(Ordering::Acquire));
+    }
+
+    /// The third seam: a start must not take the claim while a cancel holds
+    /// the lock either. `start_exposure` sets the in-flight flag and bumps the
+    /// generation as two separate atomics, so a cancel landing between them
+    /// would release the claim and bump the generation, and the start's own
+    /// bump would then hand its task a generation matching the one it
+    /// publishes under — a cancel that reported success while the exposure it
+    /// cancelled went on to publish a frame.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_start_cannot_claim_while_a_cancel_holds_the_result_lock() {
+        let cam = connected_camera();
+        let guard = cam.state.result_lock.lock();
+        let starter = {
+            let cam = cam.clone();
+            // Light=false: no network I/O, so the claim is the only contended
+            // step.
+            tokio::spawn(async move { cam.start_exposure(Duration::from_millis(1), false).await })
+        };
+        assert_parked(&cam.state.result_lock, &starter, "start");
+        assert!(
+            !cam.state.exposure_in_flight.load(Ordering::Acquire),
+            "start took the in-flight claim while a cancel held result_lock"
+        );
+        drop(guard);
+        starter.await.unwrap().unwrap();
+        // Not `exposure_in_flight`: the exposure this started sleeps 1ms and
+        // then clears that flag itself, so asserting on it here would race the
+        // task. `last_exposure_start` is written by the claim and touched by
+        // nothing afterwards, so it is the stable witness that the start got
+        // through.
+        assert!(cam.state.last_exposure_start.lock().is_some());
+    }
+
+    /// The fourth seam: C4's disconnect reset is the same write as a cancel's,
+    /// so it serialises too. Otherwise a commit already past its generation
+    /// check could republish the frame after the reset cleared it, and since a
+    /// reconnect restores geometry only, the next session would open on the
+    /// previous one's frame.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_disconnect_reset_cannot_run_while_a_commit_holds_the_result_lock() {
+        let cam = connected_camera();
+        *cam.state.last_image.lock() = Some(ExposureOutcome {
+            width: 2,
+            height: 2,
+            data: vec![1, 2, 3, 4],
+        });
+        cam.state.image_ready.store(true, Ordering::Release);
+        let guard = cam.state.result_lock.lock();
+        let disconnect = {
+            let cam = cam.clone();
+            tokio::spawn(async move { cam.set_connected(false).await })
+        };
+        assert_parked(&cam.state.result_lock, &disconnect, "disconnect reset");
+        assert!(
+            cam.state.image_ready.load(Ordering::Acquire),
+            "disconnect cleared the result state while a commit held result_lock"
+        );
+        drop(guard);
+        disconnect.await.unwrap().unwrap();
+        assert!(!cam.state.image_ready.load(Ordering::Acquire));
+        assert!(cam.state.last_image.lock().is_none());
+    }
+
+    /// The seam between the two transitions rather than within one: a start's
+    /// connected check runs before it takes `result_lock`, and a disconnect
+    /// stores `connected = false` before it takes the lock. So a start can
+    /// pass the check, park for the whole of C4's reset, and wake to claim a
+    /// disconnected device — spawning an exposure the reset's generation bump
+    /// already went past, which publishes into a dead session and is still
+    /// readable in the next one, since a reconnect restores geometry only.
+    ///
+    /// Holding the lock and flipping `connected` underneath the parked start
+    /// reproduces that ordering exactly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_start_parked_on_the_lock_rechecks_connected_before_claiming() {
+        let cam = connected_camera();
+        let guard = cam.state.result_lock.lock();
+        let starter = {
+            let cam = cam.clone();
+            tokio::spawn(async move { cam.start_exposure(Duration::from_millis(1), false).await })
+        };
+        assert_parked(&cam.state.result_lock, &starter, "start");
+        // What the disconnect does before it queues behind this lock.
+        cam.state.connected.store(false, Ordering::Release);
+        drop(guard);
+        let err = starter
+            .await
+            .unwrap()
+            .expect_err("start claimed a disconnected device");
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(
+            !cam.state.exposure_in_flight.load(Ordering::Acquire),
+            "start took the claim after the disconnect"
+        );
+    }
+
+    /// The cancel's half of the same seam, for symmetry with the start's: a
+    /// cancel parked on the lock must also re-read `connected` rather than
+    /// trust the check it took on the way in. Lower stakes than the start
+    /// case — a stale check here yields a wrong return code, not an exposure
+    /// running on a dead session — but it is the same class, and A4 is either
+    /// exact or it is not.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancel_parked_on_the_lock_rechecks_connected() {
+        let cam = connected_camera();
+        let guard = cam.state.result_lock.lock();
+        let canceller = {
+            let cam = cam.clone();
+            tokio::spawn(async move { cam.abort_exposure().await })
+        };
+        assert_parked(&cam.state.result_lock, &canceller, "cancel");
+        cam.state.connected.store(false, Ordering::Release);
+        drop(guard);
+        let err = canceller
+            .await
+            .unwrap()
+            .expect_err("cancel reported success on a disconnected camera");
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    /// A4. The one thing a refusal can still mean once A2 makes an idle
+    /// cancel succeed: there is no session to cancel in.
+    #[tokio::test]
+    async fn abort_stop_when_disconnected_return_not_connected() {
         let cam = fake_camera();
         let err = cam.abort_exposure().await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
         let err = cam.stop_exposure().await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    /// A1 is unchanged by A2: a cancel that finds a fetch in flight still
+    /// detaches it and clears the ready flag.
+    #[tokio::test]
+    async fn abort_when_in_flight_clears_ready_and_bumps_generation() {
+        let cam = connected_camera();
+        cam.state.exposure_in_flight.store(true, Ordering::Release);
+        cam.state.image_ready.store(true, Ordering::Release);
+        let before = cam.state.exposure_generation.load(Ordering::Acquire);
+        cam.abort_exposure().await.unwrap();
+        assert!(!cam.state.exposure_in_flight.load(Ordering::Acquire));
+        assert!(!cam.state.image_ready.load(Ordering::Acquire));
+        assert_eq!(
+            cam.state.exposure_generation.load(Ordering::Acquire),
+            before + 1
+        );
     }
 
     #[tokio::test]
@@ -1143,7 +1787,7 @@ mod tests {
         cam.state.exposure_generation.fetch_add(1, Ordering::AcqRel);
         cam.state.exposure_in_flight.store(true, Ordering::Release);
         // Light=false synthesises a zero frame without network I/O.
-        run_exposure(Arc::clone(&cam.state), false, 0, None).await;
+        run_exposure(Arc::clone(&cam.state), false, 0, FULL_FRAME, None).await;
         // image_ready stays false because the generation check
         // triggered an early return.
         assert!(!cam.state.image_ready.load(Ordering::Acquire));
@@ -1155,7 +1799,7 @@ mod tests {
 
     #[tokio::test]
     async fn camera_state_reflects_in_flight_and_error() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         assert_eq!(cam.camera_state().await.unwrap(), CameraState::Idle);
         cam.state.exposure_in_flight.store(true, Ordering::Release);
         assert_eq!(cam.camera_state().await.unwrap(), CameraState::Exposing);
@@ -1164,9 +1808,181 @@ mod tests {
         assert_eq!(cam.camera_state().await.unwrap(), CameraState::Error);
     }
 
+    /// C5: outside a session these members have nothing to report. `Idle`,
+    /// `ImageReady = false` and `PercentCompleted = 0` are answers about a
+    /// camera that is there, and `INVALID_OPERATION` ("no exposure has started
+    /// yet") speaks for a running session that has not exposed — neither is
+    /// true of a device nobody is connected to. C4 has already cleared the
+    /// stored values, so what this pins is the ASCOM shape, not a stale read.
+    #[tokio::test]
+    async fn the_exposure_state_surface_refuses_while_disconnected() {
+        let cam = fake_camera();
+        // State a previous session could have left behind; none of it is
+        // reachable while the device is disconnected.
+        cam.state.image_ready.store(true, Ordering::Release);
+        *cam.state.last_exposure_start.lock() = Some(SystemTime::now());
+        *cam.state.last_exposure_duration.lock() = Some(Duration::from_millis(500));
+        assert_eq!(
+            cam.camera_state().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.image_ready().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.percent_completed().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.last_exposure_start_time().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.last_exposure_duration().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.image_array().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// C6. A write taken while disconnected is the worse half: it leaves a
+    /// geometry behind whose owner is a session that has not started.
+    #[tokio::test]
+    async fn the_session_settings_surface_refuses_while_disconnected() {
+        let cam = fake_camera();
+        for code in [
+            cam.bin_x().await.unwrap_err().code,
+            cam.bin_y().await.unwrap_err().code,
+            cam.num_x().await.unwrap_err().code,
+            cam.num_y().await.unwrap_err().code,
+            cam.start_x().await.unwrap_err().code,
+            cam.start_y().await.unwrap_err().code,
+            cam.set_bin_x(2).await.unwrap_err().code,
+            cam.set_bin_y(2).await.unwrap_err().code,
+            cam.set_num_x(320).await.unwrap_err().code,
+            cam.set_num_y(240).await.unwrap_err().code,
+            cam.set_start_x(8).await.unwrap_err().code,
+            cam.set_start_y(8).await.unwrap_err().code,
+            cam.set_gain(0).await.unwrap_err().code,
+            cam.set_readout_mode(0).await.unwrap_err().code,
+        ] {
+            assert_eq!(code, ASCOMErrorCode::NOT_CONNECTED);
+        }
+        // The refusal is the connection's, not the value's: a setter that
+        // rejected `INVALID_VALUE` first would pass the loop above for the
+        // wrong reason.
+        assert_eq!(
+            cam.set_bin_x(99).await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// C6's other end: the settings a session did set do not outlive it. The
+    /// connected check on the setters cannot be atomic with the disconnect, so
+    /// a write can still win that race by a hair; the reset at the *start* of a
+    /// connect is what makes such a write unreachable, rather than a setting
+    /// the next session silently inherits.
+    #[tokio::test]
+    async fn a_connect_starts_from_the_configured_geometry() {
+        let (cam, _scratch) = connected_camera_with_scratch();
+        cam.set_bin_x(2).await.unwrap();
+        cam.set_num_x(320).await.unwrap();
+        cam.set_start_y(8).await.unwrap();
+        cam.set_connected(false).await.unwrap();
+        // Stands in for a setter that won the race against this disconnect.
+        cam.state.start_x.store(64, Ordering::Release);
+        cam.set_connected(true).await.unwrap();
+        assert_eq!(cam.bin_x().await.unwrap(), 1);
+        assert_eq!(cam.bin_y().await.unwrap(), 1);
+        assert_eq!(cam.num_x().await.unwrap(), 640);
+        assert_eq!(cam.num_y().await.unwrap(), 480);
+        assert_eq!(cam.start_x().await.unwrap(), 0);
+        assert_eq!(cam.start_y().await.unwrap(), 0);
+    }
+
+    /// A connect and a disconnect are one transition each, not two halves that
+    /// can interleave. The connect below is redundant, so it skips C6's reset,
+    /// and then parks in the endpoint probe — seconds of window on a slow link.
+    /// Unserialised, the disconnect lands inside it and the parked connect
+    /// commits `true` over the top: a session resumed on the previous one's
+    /// geometry, which is the bug the reset exists to prevent. Serialised, the
+    /// disconnect waits and wins, and the session that follows is a fresh one.
+    #[tokio::test]
+    async fn a_disconnect_cannot_land_inside_a_connect() {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let client: Arc<dyn SurveyClient> = Arc::new(GatedSurveyClient {
+            entered: Arc::clone(&entered),
+            release: Arc::clone(&release),
+        });
+        let (cam, _scratch) = connecting_camera(client);
+        cam.state.connected.store(true, Ordering::Release);
+        cam.set_num_x(320).await.unwrap();
+
+        let connecting = {
+            let cam = cam.clone();
+            tokio::spawn(async move { cam.set_connected(true).await })
+        };
+        entered.notified().await;
+        let disconnecting = {
+            let cam = cam.clone();
+            tokio::spawn(async move { cam.set_connected(false).await })
+        };
+        release.notify_one();
+        connecting.await.unwrap().unwrap();
+        disconnecting.await.unwrap().unwrap();
+
+        assert!(
+            !cam.is_connected(),
+            "the disconnect was overwritten by a connect that started before it"
+        );
+        // The gate is per-call, so the session that follows needs its own
+        // permit (`notify_one` stores one, so arming it first is enough).
+        release.notify_one();
+        cam.set_connected(true).await.unwrap();
+        assert_eq!(cam.num_x().await.unwrap(), 640);
+    }
+
+    /// The reset belongs to the false → true transition, not to every write of
+    /// `Connected = true`: a client re-asserting the flag on a device it is
+    /// already using (`ConformU` does) is a no-op, and resetting there would
+    /// discard its geometry between the `NumX` it set and the `StartExposure`
+    /// it was about to issue.
+    #[tokio::test]
+    async fn re_asserting_connected_leaves_the_running_sessions_geometry_alone() {
+        let (cam, _scratch) = connected_camera_with_scratch();
+        cam.set_bin_x(2).await.unwrap();
+        cam.set_num_x(320).await.unwrap();
+        cam.set_connected(true).await.unwrap();
+        assert_eq!(cam.bin_x().await.unwrap(), 2);
+        assert_eq!(cam.num_x().await.unwrap(), 320);
+    }
+
+    /// The other half of C6: with no hardware behind it, this service's fixed
+    /// optics, sensor description and self-performed abort are its own
+    /// knowledge and keep answering — the contract would otherwise be met by a
+    /// driver that refused everything.
+    #[tokio::test]
+    async fn the_fixed_surface_still_answers_while_disconnected() {
+        let cam = fake_camera();
+        assert_eq!(cam.camera_x_size().await.unwrap(), 640);
+        assert_eq!(cam.camera_y_size().await.unwrap(), 480);
+        assert_eq!(cam.max_bin_x().await.unwrap(), MAX_BIN);
+        assert_eq!(cam.max_adu().await.unwrap(), 65535);
+        assert_eq!(cam.sensor_type().await.unwrap(), SensorType::Monochrome);
+        assert_eq!(cam.gain().await.unwrap(), 0);
+        assert_eq!(cam.readout_mode().await.unwrap(), 0);
+        assert!(!cam.has_shutter().await.unwrap());
+        assert!(cam.can_abort_exposure().await.unwrap());
+        assert!(cam.can_stop_exposure().await.unwrap());
+    }
+
     #[tokio::test]
     async fn percent_completed_is_binary() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         assert_eq!(cam.percent_completed().await.unwrap(), 0);
         cam.state.image_ready.store(true, Ordering::Release);
         assert_eq!(cam.percent_completed().await.unwrap(), 100);
@@ -1174,7 +1990,7 @@ mod tests {
 
     #[tokio::test]
     async fn readout_mode_only_accepts_zero() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         assert_eq!(cam.readout_mode().await.unwrap(), 0);
         assert_eq!(cam.readout_modes().await.unwrap(), vec!["Default"]);
         cam.set_readout_mode(0).await.unwrap();
@@ -1191,7 +2007,7 @@ mod tests {
 
     #[tokio::test]
     async fn gain_reports_single_fixed_value() {
-        let cam = fake_camera();
+        let cam = connected_camera();
         assert_eq!(cam.gain().await.unwrap(), 0);
         assert_eq!(cam.gain_min().await.unwrap(), 0);
         assert_eq!(cam.gain_max().await.unwrap(), 0);
@@ -1211,7 +2027,7 @@ mod tests {
     async fn setters_accept_out_of_range_values() {
         // ASCOM convention: NumX/NumY/StartX/StartY setters always
         // accept; geometry validation happens at StartExposure.
-        let cam = fake_camera();
+        let cam = connected_camera();
         cam.set_num_x(99_999).await.unwrap();
         cam.set_num_y(99_999).await.unwrap();
         cam.set_start_x(99_999).await.unwrap();
@@ -1246,12 +2062,42 @@ mod tests {
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
     }
 
+    /// The exposure is bounded by what `StartExposure` validated, not by what
+    /// the device happens to say when the task gets around to reading it. The
+    /// setters take no lock and refuse nothing mid-exposure, so a `NumX`
+    /// written a moment after `StartExposure` returned would otherwise reach
+    /// the task and be used without ever passing E4/E5.
+    ///
+    /// Driven at the task rather than through `StartExposure` on purpose: the
+    /// task reads its geometry before the simulated exposure sleep, so a
+    /// setter racing it from a test would land on either side by luck and the
+    /// test would prove nothing. Handing the task one geometry while the
+    /// device holds another is the same question asked deterministically.
+    #[tokio::test]
+    async fn the_task_exposes_the_geometry_it_was_given_not_the_devices() {
+        let cam = connected_camera();
+        cam.state.exposure_in_flight.store(true, Ordering::Release);
+        let gen = cam.state.exposure_generation.load(Ordering::Acquire);
+        // A setter that landed after this exposure was validated.
+        cam.state.num_x.store(100, Ordering::Release);
+        cam.state.num_y.store(120, Ordering::Release);
+        run_exposure(Arc::clone(&cam.state), false, gen, FULL_FRAME, None).await;
+        let img = cam.state.last_image.lock();
+        let outcome = img.as_ref().unwrap();
+        assert_eq!(
+            (outcome.width, outcome.height),
+            (640, 480),
+            "the exposure used the device's current geometry instead of the \
+             geometry it was validated against"
+        );
+    }
+
     #[tokio::test]
     async fn run_exposure_publishes_zero_frame_on_light_false_when_uncancelled() {
         let cam = fake_camera();
         cam.state.exposure_in_flight.store(true, Ordering::Release);
         let gen = cam.state.exposure_generation.load(Ordering::Acquire);
-        run_exposure(Arc::clone(&cam.state), false, gen, None).await;
+        run_exposure(Arc::clone(&cam.state), false, gen, FULL_FRAME, None).await;
         assert!(cam.state.image_ready.load(Ordering::Acquire));
         let img = cam.state.last_image.lock();
         let outcome = img.as_ref().unwrap();

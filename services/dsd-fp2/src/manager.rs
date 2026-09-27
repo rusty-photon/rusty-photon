@@ -13,7 +13,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use rusty_photon_shared_transport::{Hooks, SharedTransport, TransportFactory};
+use rusty_photon_shared_transport::{Hooks, SharedTransport, StateAssertion, TransportFactory};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
@@ -122,7 +122,11 @@ impl FlatPanelManager {
                     Ok(())
                 })
             }),
-            on_last_disconnect: Box::new(|_conn| Box::pin(async {})),
+            on_last_disconnect: Box::new(|_conn| {
+                // Nothing to assert: this service holds no state that must
+                // survive a no-client gap, so the answer is trivially yes.
+                Box::pin(async { StateAssertion::Asserted })
+            }),
             shutdown: Box::new(|_conn| Box::pin(async {})),
             while_open: Some(Box::new(move |ctx| {
                 let cs = cs_for_poll.clone();

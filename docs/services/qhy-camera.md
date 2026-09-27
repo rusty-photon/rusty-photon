@@ -251,13 +251,15 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
 - Sensor geometry — `CameraXSize`/`YSize` from the SDK's effective area (the
   region it reads out, not the chip), `PixelSizeX`/`Y` from cached CCD info.
 - **Binning** — symmetric only (`CanAsymmetricBin = false`); `MaxBinX/Y` from the
-  SDK's valid binning modes; ROI rescaled on bin change.
+  SDK's valid binning modes; the ROI is held in unbinned pixels, so a bin
+  change only changes the divisor its binned members are read through (B3).
 - **ROI** — `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry validated at
   `StartExposure` (ConformU "Reject Bad…" semantics).
 - **Exposure** — `ExposureMin/Max/Resolution` from the SDK; single-frame
   `StartExposure`; `ImageReady`/`ImageArray`/`ImageArrayVariant`; `CameraState`
   (`Idle`/`Exposing`/`Error`); `PercentCompleted` from remaining-exposure µs.
-- **Abort** — `CanAbortExposure = true` via the SDK abort path.
+- **Abort** — `CanAbortExposure = true` via the SDK abort path (while connected;
+  E11).
 - **Gain / Offset** — current value + `Min`/`Max` from the SDK; `NOT_IMPLEMENTED`
   when the control is unavailable on the model.
 - **Readout modes** — `ReadoutMode(s)` named from the SDK; switching updates
@@ -274,7 +276,8 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
   `Names`, `Position` (with moving state), `set_position`, `FocusOffsets`.
 - **Dark frames** — `Light = false` returns `NOT_IMPLEMENTED` on all models in
   v0 (qhyccd-rs 0.1.9 has no shutter actuation; see E4). `HasShutter` still
-  reports `CamMechanicalShutter` presence.
+  reports `CamMechanicalShutter` presence, for a device the driver is holding
+  open (E11).
 - `config.get`/`config.apply`/`config.schema` actions; hardware-derived
   `UniqueID` (camera/CFW SDK serial); in-process reload.
 - ConformU integration test driven against the `qhyccd-rs` `simulation` backend
@@ -423,12 +426,16 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **C3.** `set_connected(false)` closes that device and returns `NOT_CONNECTED`
   for subsequent operations; an in-flight exposure on it is aborted first.
   Disconnect **owns the device from the moment it is quiescent until the handle
-  is closed**, so a `StartExposure` arriving in that window is refused with
-  `INVALID_OPERATION` instead of racing the close. One that gets in earlier,
-  while the drain is still running, is aborted as well — a disconnect wins over
-  an exposure that starts during it — within the same deadline. If the device
-  cannot be got out of the SDK before that deadline, the handle is left open and
-  the call errors rather than close under a live USB transfer.
+  is closed**, so a `StartExposure` arriving in that window is refused instead of
+  racing the close — with `NOT_CONNECTED` once the handle's connected flag is
+  clear, which `SharedCameraConnection` does before `CloseQHYCCD` and so covers
+  all but the brief head of that window, and with the claim's
+  `INVALID_OPERATION` in the head itself, between the seize and the clear. One
+  that gets in earlier, while the drain is still running, is aborted as well — a
+  disconnect wins over an exposure that starts during it — within the same
+  deadline. If the device cannot be got out of the SDK before that deadline, the
+  handle is left open and the call errors rather than close under a live USB
+  transfer.
 
   A request already in flight when the close lands also answers `NOT_CONNECTED`,
   not whatever that call site would otherwise spell a dead handle as. The
@@ -436,8 +443,16 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   cannot exclude a disconnect arriving in between; rather than let the error a
   client sees depend on where in that race the request fell, an SDK failure on a
   handle that is no longer open is reported as the disconnect it is. A call that
-  *succeeded* answers for itself, and the capability properties that deliberately
-  answer while disconnected are unaffected.
+  *succeeded* answers for itself — with one exception, because
+  `is_control_available` spells "this model lacks the control" and "this handle
+  is closed" the same way, as `None`, and so never reaches that rewrite. The
+  members built on it (`HasShutter`, `CanSetCCDTemperature`, `SensorType`) take
+  the connected check on **both** sides of the SDK hop, so a probe that came
+  back after the close reports the disconnect rather than a fabricated
+  "no cooler" (E11). Serializing the probe against the close instead would mean
+  holding the handle across a blocking USB call, which is what dispatching off
+  the executor exists to avoid. The members that never touch a device
+  (`CanStopExposure`, `CanPulseGuide`, `CanAsymmetricBin`) answer throughout.
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
   camera does not affect the others enumerated on the same service.
 - **C5.** No code path in this service pushes cooler state, wheel position, or
@@ -476,7 +491,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   The clear is at the **start of a connect only**, not on disconnect: a
   disconnect that cannot take the device leaves it logically connected (C3),
   and blanking a live session's geometry is the failure this rule exists to
-  prevent.
+  prevent. What keeps the ended session's exposure state from being read back in
+  the meantime is not a second clear but the connected check every member of
+  that surface takes (E10).
 
   The same rule runs the other way: **a request made in one session does not
   commit into the next.** `set_bin_x` and `set_readout_mode` write their caches
@@ -511,14 +528,17 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   and a setter left outside that rule is a way for a session that has ended to
   reach into the one that replaced it.
 
-  The check keeps the **caches** honest about which session they belong to. It
-  does not unwind the **SDK write** that preceded it: `set_bin_x` and
-  `set_readout_mode` reach the device through a plain hop off the executor that
-  takes no claim, so a write landing after a reconnect leaves the camera in a bin
-  or a readout mode the new session's caches do not name — refusing the commit
-  keeps the cache from repeating the lie, and nothing here puts the camera back.
-  Closing that needs device ownership rather than cache discipline; it is in
-  Future Work.
+  The check keeps the **caches** honest about which session they belong to, and
+  it is the second of two things holding `set_bin_x` and `set_readout_mode`
+  together. The first is the device claim (B4): both hold it from before their
+  SDK writes until after their commit, so a *disconnect* cannot land in that
+  window at all — it drains on its deadline and refuses to close instead. What
+  the claim does not cover is the stretch before it is taken, between reading the
+  session at the top of the request and claiming the device: a disconnect and a
+  reconnect fit there, and the write then lands on the new session's handle. The
+  session check is what refuses that commit. A *connect* is the other reason it
+  stays: `reset_exposure_state` signals a claim rather than taking it, so a
+  connect is not excluded by ownership the way a disconnect is.
 
   A connect's own handshake answers to the same rule: it publishes **in the
   session it established, or not at all.** A disconnect or a later connect
@@ -571,26 +591,112 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   and set symmetric binning; an unsupported bin returns `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from the valid
   modes (typically 1–4, up to 8).
-- **B3.** A bin change rescales the cached ROI by the bin ratio. `set_num_x`/
-  `set_num_y` store without validating (the members are set independently, so
-  only the combination is checked, at `StartExposure`), so whatever the client
-  last set is what gets rescaled — and the rescale must not change which value
-  `StartExposure` then complains about. A **sub-pixel** extent is clamped to a
-  minimum of 1, because truncating it to 0 would make R2 reject a value the
-  driver invented. A **client-set 0** is preserved, so it still earns R2 rather
+- **B3.** The cached ROI is held in **unbinned** sensor pixels: the region the
+  client asked for, independent of the bin it was asked at. `StartX`/`NumX` and
+  their Y counterparts are ASCOM *binned* members, so a setter multiplies by the
+  bin in force when it is called and a getter divides by the bin in force when it
+  is read. **A bin change therefore rewrites nothing** — it only changes the
+  divisor — and walking the bins and coming back returns the client's own frame
+  whatever route it took. 100x100 at (200,200) is 100x100 at (200,200) again
+  after 1 → 3 → 4 → 1, where scaling each step from the *previous binned value*
+  truncated twice and came back 96x96 at (196,196), four pixels short in both
+  extent and origin and no way to get them back short of a reconnect.
+  `set_num_x`/`set_num_y` store without validating (the members are set
+  independently, so only the combination is checked, at `StartExposure`), so
+  whatever the client last set is what the binned view is derived from — and the
+  derivation must not change which value `StartExposure` then complains about.
+  The unbinned store is wider than the `u32` a client can set, so a value read
+  back at the bin it was set at is that value exactly, with no ceiling where a
+  large `NumX` would fold into a smaller one the client never asked for. A
+  **sub-pixel** extent is clamped to a minimum of 1, because truncating it to 0
+  would make R2 reject a value the driver invented. A **client-set 0** is preserved, so it still earns R2 rather
   than being clamped into an R4 alignment complaint about a 1 nobody set. The
-  reported sensor is a multiple of every supported bin (R4), so the default
-  frame divides exactly at each step and walking the bins and back returns it
-  whole. **One implementation**, in
+  default frame is derived from the reported sensor at the current bin like any
+  other region, so it round-trips for the same reason a sub-frame does. R4's
+  requirement that the reported sensor be a multiple of every supported bin is
+  no longer what makes that work — it is what keeps the *binned full frame
+  reachable*, i.e. an even extent the SDK will read out at all. **One
+  implementation**, in
   [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/) — this
   rule was three copies until one drifted, and the drift went unseen because
   each driver curated its own test cases, so the missing behaviour and its
   missing test hid each other.
+- **B4 (geometry writes take the device claim).** `set_bin_x` and
+  `set_readout_mode` write to the *camera* — `SetQHYCCDBinMode` for the first,
+  and for the second the mode plus `normalize_geometry`'s
+  `SetQHYCCDBinMode(1, 1)` and `SetQHYCCDResolution(whole chip)`. Both therefore
+  take the same in-flight claim a capture does, hold it across the SDK writes
+  *and* the cache commit that describes them, and return `INVALID_OPERATION`
+  while anything else owns the device. Without it either can reach a camera that
+  is integrating or is inside the uninterruptible `GetQHYCCDSingleFrame` readout
+  the abort path exists to keep clear, and a mode change can replace the
+  geometry cache under an exposure that has already measured its ROI against it
+  — a frame armed for the readout mode the camera has just left, which the SDK
+  reports no differently from a correct one (the same silence as R4's short
+  frames). A *check* placed immediately before the writes would only race them;
+  the claim is what makes the exclusion hold in both directions, since a
+  `StartExposure` arriving meanwhile is refused by the ordinary E2 path.
+
+  Two consequences follow, both deliberate. A readout mode whose index is out of
+  range is reported as `INVALID_OPERATION` rather than `INVALID_VALUE` when a
+  capture owns the device, because the mode count comes off the camera and this
+  driver may not ask it during a capture — the refusal precedes the range check
+  because the range cannot be known without the device.
+
+  **The bin setter is the other way round, and B1 wins there.** `valid_bins` is
+  cached, so an unsupported bin is answerable without the camera: `set_bin_x`
+  checks it *before* it claims anything, and an unsupported bin is
+  `INVALID_VALUE` whoever owns the device. That is the useful answer — a client
+  told `INVALID_OPERATION` retries, and the retry fails identically — and it
+  keeps a request that can never succeed from taking the device at all. A
+  *supported* bin asked for while something else owns the device is still
+  `INVALID_OPERATION`, which is B4's half. And a disconnect
+  arriving while a geometry write is inside the SDK drains on its deadline like
+  any other owner, refusing to close rather than closing through the write; it
+  succeeds once the write returns, which for a bin change is milliseconds.
+
+  The bin no-op path (`BinX` set to the bin already in force) still writes
+  nothing, but the *decision* that it is a no-op is made under the claim, not
+  before it. Read outside, the bin it compares against is one an in-flight write
+  may already be replacing: a request naming the currently-cached bin would be
+  answered `Ok` while the camera was being moved off it, and the client would be
+  told it has a bin it does not have — worse than any refusal, because nothing
+  later contradicts it. So a redundant `BinX` is `INVALID_OPERATION` while
+  something else owns the device, and `Ok` — with no SDK call and the C6 session
+  check on the answer — when nothing does.
+
+  While a geometry write holds the claim the device reports itself busy —
+  `CameraState` `Exposing`, `PercentCompleted` 0, `ImageReady` false — on
+  exactly the terms an abort's SDK cancel and a disconnect's close already do,
+  because the claim means *something is inside the SDK* rather than *a frame is
+  being taken*. A sequential client never sees it: the setter has returned
+  before its next request is read. A second, concurrent client can, and *busy*
+  is the honest answer to give it.
+
+  **Busy is not the same as ended, so the claim records which kind of owner it
+  is.** Every owner shares one slot, but only a geometry write has no exposure
+  behind it, and the lifecycle paths ask before they act on one. An
+  `AbortExposure` that meets a geometry write has nothing to abort: it succeeds
+  having changed nothing, rather than clearing `ImageReady` on a frame the
+  client has already been told about — busy for the microseconds the write
+  holds the device is a report, but a cleared latch is a frame destroyed — and
+  rather than issuing the SDK cancel, which would tell a camera that is not
+  exposing to stop. A disconnect drains a geometry write like any other owner
+  but does not count it as a capture it stopped, so closing a camera that was
+  only having its bin written issues no cancel either. A cancel's *own* re-claim
+  is not a geometry write: it stands in for the capture it is ending and keeps
+  that capture's reporting, so a second abort still waits for the first one's
+  SDK cancel.
 - **R1.** `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry is validated at
   `StartExposure` (R2), not at the setter.
 - **R2.** `StartExposure` with `StartX + NumX > CameraXSize / BinX` (or the Y
   analogue), or `NumX/NumY = 0`, returns `INVALID_VALUE` — the bound is the
   reported sensor (G1/R4), so it is the region the SDK can actually deliver.
+  The geometry is read **after** the device is claimed, not before it: the cache
+  it reads is the one B4's writers rewrite, and they cannot run while this
+  exposure owns the camera, so the region validated here is the region armed
+  below. A refusal hands the device straight back, so a rejected geometry never
+  leaves a camera claimed with nothing in flight to explain it.
   Otherwise the ROI is applied to the SDK before exposing, **translated into
   the SDK's coordinates**: the SDK addresses every ROI from the chip's top-left
   corner, overscan included, and at bin *n* scales the whole layout — the
@@ -692,6 +798,55 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **E8.** `StopExposure` returns `NOT_IMPLEMENTED`; `CanStopExposure = false`.
 - **E9.** A mid-exposure SDK error transitions `CameraState = Error`, sets
   `last_error`, leaves `ImageReady = false`, logged at `warn!`.
+- **E10.** The exposure state is a **session's** state, so the members that
+  report it — `CameraState`, `ImageReady`, `PercentCompleted`,
+  `LastExposureStartTime`, `LastExposureDuration` — answer `NOT_CONNECTED` while
+  the device is disconnected, as `StartExposure` (E1), `AbortExposure`,
+  `ImageArray` and `ImageArrayVariant` do. That state is cleared at the *start of
+  a connect* (C6) and nowhere else, so without the check each of them answers
+  from the session that has ended: a camera that took a frame and was then
+  disconnected reports `ImageReady = true` and `PercentCompleted = 100` beside an
+  `ImageArray` that refuses, one that hit E9 reports `CameraState = Error` until
+  someone reconnects it, and `LastExposureStartTime`/`Duration` name a frame from
+  a camera the client is no longer talking to. Nothing stale can be *served* —
+  `ImageArray` checks — so what is at stake is a wrong answer to a readiness
+  question, and the two members a client is told to poll together (`ImageReady`,
+  then `ImageArray`) contradicting each other.
+
+  Two decisions behind that shape:
+
+  - `CameraState` **throws** rather than answering safely the way `Connected`
+    does. `Connected` deliberately never throws because it is how a client asks
+    whether the device is there at all; `CameraState` reports device state, which
+    ASCOM answers with `NOT_CONNECTED` when there is no device, and which
+    ConformU exercises directly. A supervisor polling "is this camera exposing"
+    across a reconnect reads `Connected` first, as it already must for every
+    other member of this surface.
+  - The exposure state is still reset **only at the start of a connect** (C6),
+    not on disconnect. A disconnect that cannot take the device leaves it
+    logically connected (C3), and blanking a live session's state is the failure
+    that rule exists to prevent; and once these members refuse, there is nothing
+    left to observe between a disconnect that did close and the connect that
+    clears it. The capability probes beside them take the same check for a
+    related reason (E11).
+- **E11.** A capability member answers while disconnected **only if the driver
+  never implements it**. `CanAsymmetricBin` (`false`), `CanStopExposure`
+  (`false`, E8), `CanPulseGuide` (`false`) and `StopExposure`
+  (`NOT_IMPLEMENTED`) are the driver's own knowledge — no device can change
+  them, so they answer at any time. The rest of the capability surface —
+  `HasShutter`, `CanSetCCDTemperature`, `CanGetCoolerPower` (which delegates to
+  it) and `CanAbortExposure` — answers `NOT_CONNECTED` while the device is
+  disconnected. A driver holding no handle cannot describe the camera on the
+  other end of one. The first three probe SDK controls, and `on_handle` rewrites
+  to `NOT_CONNECTED` only when the SDK call *errors*, while
+  `is_control_available` reports absence as an `Option` rather than an error —
+  so a closed handle yields a clean `Ok(false)`, "this camera has no cooler",
+  about a camera nobody is talking to. `CanAbortExposure = true` is the opposite
+  failure: a promise to abort, made with no handle to abort with, beside an
+  `AbortExposure` that refuses — E10's `ImageReady`/`ImageArray` contradiction
+  in a second pair. This supersedes the earlier position that these four
+  "describe the driver rather than a session"; shared with `zwo-camera`'s E12
+  and `svbony-camera`'s state-machine step 10 (#1281).
 
 ### Gain / offset / readout
 
@@ -797,12 +952,21 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
 ## ASCOM Camera surface — v0 behaviour
 
+**Every member below that describes the camera or its session answers
+`NOT_CONNECTED` while the device is disconnected** unless its row says
+otherwise: a driver holding no handle cannot describe one (E10, E11). Outside
+that rule: the members this driver never implements, which are its own
+knowledge and are named in their rows, and the ASCOM identity and health
+members (`Name`, `Description`, `DriverInfo`, `DriverVersion`, `Connected`,
+`UniqueID`), which describe the driver and are how a client asks whether a
+device is there at all.
+
 | Property / Method | v0 behaviour (backed by `qhyccd-rs`) |
 |---|---|
 | `CameraXSize` / `CameraYSize` | The SDK's effective area at bin 1 (G1) — the region it reads out, not the chip — reduced so the full frame at every bin has even extents (R4) |
 | `PixelSizeX` / `PixelSizeY` | Cached `get_ccd_info()` pixel width/height |
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from valid binning modes |
-| `CanAsymmetricBin` | `false` |
+| `CanAsymmetricBin` | `false`; never implemented, so answered at any time (E11) |
 | `NumX` / `NumY` / `StartX` / `StartY` | Origin at the effective area's corner; default `CameraXSize`/`CameraYSize` and `0`; setters relaxed, validated (bounds R2, even extents R4) and translated at `StartExposure` |
 | `MaxADU` | `(2^transfer_bits) - 1` (65535) from `GetQHYCCDChipInfo` bpp, not `OutputDataActualBits` |
 | `ElectronsPerADU` / `FullWellCapacity` | `NOT_IMPLEMENTED` (placeholder only if ConformU demands) |
@@ -810,18 +974,19 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 | `Gain` / `GainMin` / `GainMax` | SDK `Gain` control; `NOT_IMPLEMENTED` if absent |
 | `Offset` / `OffsetMin` / `OffsetMax` | SDK `Offset` control; `NOT_IMPLEMENTED` if absent |
 | `ReadoutMode` / `ReadoutModes` | SDK named modes |
-| `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from colour control |
+| `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from colour control; `SensorType` is one of the `is_control_available` probes, so its "no colour control" branch takes the check on both sides of the SDK hop rather than reporting `Monochrome` off a closed handle (E11) |
 | `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `Cooler` control |
-| `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `Cooler` control present |
+| `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `Cooler` control present; `NOT_CONNECTED` while disconnected (E11) |
 | `CanFastReadout` / `FastReadout` | Reflects `Speed` control (untested — see *Future Work*) |
-| `HasShutter` | `true` iff `CamMechanicalShutter` control present |
-| `CameraState` | `Idle` / `Exposing` / `Error` |
-| `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100 |
-| `CanAbortExposure` / `CanStopExposure` | `true` / `false` |
-| `CanPulseGuide` | `false` |
+| `HasShutter` | `true` iff `CamMechanicalShutter` control present; `NOT_CONNECTED` while disconnected (E11) |
+| `CameraState` | `Idle` / `Exposing` / `Error`; `NOT_CONNECTED` while disconnected (E10) |
+| `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100; `NOT_CONNECTED` while disconnected (E10) |
+| `CanAbortExposure` / `CanStopExposure` | `true` (`NOT_CONNECTED` while disconnected, E11) / `false` (never implemented, so answered at any time) |
+| `CanPulseGuide` | `false`; never implemented, so answered at any time (E11) |
 | `StartExposure` (`Light=false`) | `NOT_IMPLEMENTED` (no shutter actuation in qhyccd-rs 0.1.9; see E4) |
-| `StartExposure` / `AbortExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Per *Exposure* contracts; `ImageArray` axes `[X, Y]` |
-| `StopExposure` | `NOT_IMPLEMENTED` |
+| `StartExposure` / `AbortExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Per *Exposure* contracts; `ImageArray` axes `[X, Y]`; all `NOT_CONNECTED` while disconnected (E1, E10) |
+| `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session; `VALUE_NOT_SET` before its first exposure, `NOT_CONNECTED` while disconnected (E10) |
+| `StopExposure` | `NOT_IMPLEMENTED`; never implemented, so answered at any time — the truth about a member no reconnect makes work (E11) |
 
 ---
 
@@ -1017,12 +1182,26 @@ first.
 Layered per [`testing.md`](../skills/testing.md).
 
 - **Unit** — config parse/newtype validation, ROI/binning geometry math, the
-  `Camera` state machine (Idle/Exposing/Error, `ImageReady`, percent-completed),
+  `Camera` state machine (Idle/Exposing/Error, `ImageReady`, percent-completed,
+  and that whole surface refusing outside a session — E9's `Error` across a
+  disconnect, and a device that has never been connected),
   gain/offset range checks, cooling gating, Bayer-offset mapping, and the
   window between a connect's `open()` and its caches (C6, reached by holding the
   mock's `init` open) — against an
   in-crate trait seam over the SDK (mockall doubles), so unit tests need **neither
   hardware nor the SDK linked** where possible.
+- **The double's close window** — `MockCameraHandle::close` clears its connected
+  flag where `SharedCameraConnection::disconnect` clears the real one: *before*
+  the SDK close, and left clear when that call fails. This matters because the
+  close is long. Measured on a QHY178M-Cool, `CloseQHYCCD` takes ~1.0 s (the
+  CFW's ~0.1 s), and a request racing it is answered `NOT_CONNECTED` for all but
+  the first few tens of milliseconds — the brief head of the window, between the
+  disconnect seizing the device and the flag clearing, is the only part where the
+  claim is the rule that refuses (`INVALID_OPERATION`). A double that clears the
+  flag last inverts those proportions and models only that head, so a test
+  written against it pins the answer hardware gives for roughly 5% of a close as
+  though it were the answer for all of it. The claim's own refusal is covered on
+  an open handle instead, by `second_exposure_while_in_flight_is_rejected`.
 - **Windows DLL resolution** — the preflight's candidate ordering/selection are
   pure functions with **injected** environment and fs-existence checkers, and
   the doctor's check assembly / prompt parsing are pure over plain data —
@@ -1033,7 +1212,7 @@ Layered per [`testing.md`](../skills/testing.md).
   deliberately skips this whole layer (PF5/DR5) — it proves the config and
   enumeration contract, not the DLL layer.
 - **BDD** (`bdd-infra::ServiceHandle`) — connection lifecycle (C1–C4), ROI/bin
-  validation (R1–R2, R4, B1–B3), exposure happy-path + error paths (E1–E9),
+  validation (R1–R2, R4, B1–B3), exposure happy-path + error paths (E1–E11),
   gain/offset/readout (GO1–RM1), cooling (K1–K4), and FilterWheel (FW1–FW3 when
   enabled), driven against the `qhyccd-rs` `simulation` backend.
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)
@@ -1189,7 +1368,11 @@ the "how" decisions made while building.
   in-flight capture is the one logical owner of the device's blocking SDK calls.
   `start_exposure` claims the device by installing that capture's own cancel
   channel in `in_flight_capture`: `Some` **is** the claim, so a device that
-  reports itself exposing always has something an abort can signal. Holding the
+  reports itself exposing always has something an abort can signal. A capture is
+  the usual holder but not the only one — a disconnect's close, an abort's SDK
+  cancel and a geometry write (B4) each take a claim of their own, on the same
+  terms: while it is installed, that holder and nothing else may be inside the
+  SDK. Holding the
   two apart — an `AtomicBool` claim taken first, a handle-wide cancel flag
   cleared a statement later — leaves a window in which an abort is *erased* by
   the exposure that admitted it, and the client then waits out the drain deadline
@@ -1244,8 +1427,10 @@ the "how" decisions made while building.
   `disconnect` holds a claim of its own across both, releasing it only after
   `close()` has returned (also when `close()` *fails*, so a refused close cannot
   wedge the device claimed forever). While that claim is installed a racing
-  `StartExposure` is refused by the ordinary E2 path, which is what makes the
-  close safe rather than merely likely to be safe.
+  `StartExposure` is refused — by the connected check once
+  `SharedCameraConnection` has cleared the flag, and by the ordinary E2 path in
+  the window before that. The claim is what makes the close safe rather than
+  merely likely to be safe: it owns the device even where the flag is still set.
 
   **A section that owns the device runs where cancellation cannot reach it.**
   Every SDK call runs off the executor, so each path that owns the device —
@@ -1307,13 +1492,16 @@ the "how" decisions made while building.
   keeps the opposite rule — E7: it cancels the capture it was issued against and
   no other, so finding the device re-claimed means its target is already gone
   and it returns `OK`.) The alternative considered and rejected was clearing the
-  device's logical `connected` flag *first*, so racing `StartExposure`s bounce
-  on `NOT_CONNECTED` and there is no contest at all: cleaner in the device
-  layer, but `SharedCameraConnection::connect` reads that flag and takes its
-  refcount in one critical section, so clearing it without dropping the ref lets
-  a concurrent connect take a second ref and leak the physical handle open. That
-  is a change to the one invariant in this service with a dedicated concurrency
-  test, for a race the claim already closes.
+  device's logical `connected` flag *in the device layer*, ahead of the seize, so
+  racing `StartExposure`s bounce on `NOT_CONNECTED` and there is no contest at
+  all: cleaner there, but `SharedCameraConnection::connect` reads that flag and
+  takes its refcount in one critical section, so clearing it outside that
+  section without dropping the ref lets a concurrent connect take a second ref
+  and leak the physical handle open. That is a change to the one invariant in
+  this service with a dedicated concurrency test, for a race the claim already
+  closes. `disconnect` does clear the flag before `CloseQHYCCD`, but *inside*
+  that critical section — which is what makes it safe there, and why a racing
+  request sees `NOT_CONNECTED` for most of the close regardless.
 - **Camera + CFW share one physical handle — refcounted shared connection.**
   `qhyccd-rs` derives the CFW from the *same* camera id as the enumerated camera
   (a QHY CFW is driven over the camera's USB, not a separate device). The SDK
@@ -1366,18 +1554,18 @@ the "how" decisions made while building.
 - **TLS / Basic Auth** via `rusty-photon-tls` / `rp-auth`.
 - **`ElectronsPerADU` / `FullWellCapacity`** real values if a signal model is
   added.
-- **Geometry writes take no device claim.** `set_bin_x` and
-  `set_readout_mode` reach the SDK through a plain hop off the executor, and a
-  connect's own handshake writes the stream mode, the readout mode, the transfer
-  bit and `normalize_geometry`'s bin and resolution with no more ownership than
-  they have. Any of those writes can land on a handle a reconnect has just
-  opened — leaving the camera in a bin or readout mode the new session's caches
-  do not name — or beside an exposure that is being armed or is in flight.
-  C6's session check keeps the caches honest about which session they belong to,
-  and a superseded handshake publishes nothing, but neither can do anything about
-  the device itself: a check placed immediately before a write only races that
-  write. It needs the claim held across the SDK write as well as the commit,
-  which is the same ownership question a connect handshake raises.
+- **A connect's own handshake takes no device claim.** `set_bin_x` and
+  `set_readout_mode` now hold the device across their SDK writes (B4), but a
+  connect's handshake still writes the stream mode, the readout mode, the
+  transfer bit and `normalize_geometry`'s bin and resolution with no ownership
+  at all. Those writes can land on a handle a racing connect has just opened.
+  A superseded handshake publishes nothing, so the caches stay honest, but
+  nothing puts the *camera* back — and a check placed immediately before a
+  write only races that write. It needs the same claim the geometry setters
+  take (B4), held from the open through to the caches going live. Worth
+  deciding with "concurrent connects are not serialized" below: both are the
+  question of who owns a device that is still being opened, and a handshake
+  that claimed the device would answer a good deal of the second one too.
 - **Lifecycle transitions are not serialized against each other, in either
   direction.** A stale disconnect has the mirror of the problem below: two
   clients can both find a camera connected and both run a disconnect, and the

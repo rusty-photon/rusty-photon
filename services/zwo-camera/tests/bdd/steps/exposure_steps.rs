@@ -90,9 +90,8 @@ async fn stop_exposure(world: &mut CameraWorld, _device: u32) {
     world.wait_image_ready().await;
 }
 
-#[when(regex = r"^I try to PulseGuide on camera device (\d+) in direction (\w+) for (\d+) ms$")]
-async fn try_pulse_guide(world: &mut CameraWorld, _device: u32, direction: String, millis: u64) {
-    let dir = match direction.as_str() {
+async fn issue_pulse_guide(world: &mut CameraWorld, direction: &str, millis: u64) {
+    let dir = match direction {
         "North" => GuideDirection::North,
         "South" => GuideDirection::South,
         "East" => GuideDirection::East,
@@ -100,4 +99,41 @@ async fn try_pulse_guide(world: &mut CameraWorld, _device: u32, direction: Strin
         other => panic!("unknown guide direction: {other}"),
     };
     world.try_pulse_guide(dir, millis).await;
+}
+
+#[when(regex = r"^I try to PulseGuide on camera device (\d+) in direction (\w+) for (\d+) ms$")]
+async fn try_pulse_guide(world: &mut CameraWorld, _device: u32, direction: String, millis: u64) {
+    issue_pulse_guide(world, &direction, millis).await;
+}
+
+/// The same call, but the pulse is a *precondition* rather than the thing under
+/// test, so a failure fails the scenario here instead of surfacing as a
+/// confusing assertion two steps later.
+#[when(regex = r"^I PulseGuide on camera device (\d+) in direction (\w+) for (\d+) ms$")]
+async fn pulse_guide(world: &mut CameraWorld, _device: u32, direction: String, millis: u64) {
+    issue_pulse_guide(world, &direction, millis).await;
+    assert_eq!(
+        world.last_error_code, None,
+        "expected PulseGuide to be accepted"
+    );
+}
+
+/// Read one member of the exposure-state surface and keep whatever it answered
+/// with, so a scenario can pin the error rather than the value. Every member is
+/// read through the same step because the contract is about the surface as a
+/// whole: one of them answering while its neighbours refuse is the
+/// contradiction the check exists to remove.
+#[when(regex = r"^I try to read (\w+) from camera device (\d+)$")]
+async fn try_read_exposure_member(world: &mut CameraWorld, member: String, _device: u32) {
+    let camera = world.camera();
+    let error = match member.as_str() {
+        "CameraState" => camera.camera_state().await.err(),
+        "ImageReady" => camera.image_ready().await.err(),
+        "PercentCompleted" => camera.percent_completed().await.err(),
+        "LastExposureStartTime" => camera.last_exposure_start_time().await.err(),
+        "LastExposureDuration" => camera.last_exposure_duration().await.err(),
+        "ImageArray" => camera.image_array().await.err(),
+        other => panic!("unknown exposure-state member: {other}"),
+    };
+    world.last_error_code = error.map(|e| e.code.raw());
 }

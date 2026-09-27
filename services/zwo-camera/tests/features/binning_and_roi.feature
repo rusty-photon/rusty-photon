@@ -2,8 +2,11 @@
 Feature: Binning and region-of-interest
   Binning is symmetric only: CanAsymmetricBin is false (B2) and MaxBinX /
   MaxBinY come from the SDK's SupportedBins. Setting a bin validates against
-  those modes and rejects an unsupported value with INVALID_VALUE (B1); a bin
-  change rescales the cached ROI by the bin ratio (B3). The ROI setters
+  those modes and rejects an unsupported value with INVALID_VALUE (B1). The
+  cached ROI is held in unbinned sensor pixels, so a bin change changes only
+  the divisor the binned members are read through: a sub-frame walked away
+  from its bin and back is the frame the client set, not a truncated
+  remainder of it (B3). The ROI setters
   (StartX / StartY / NumX / NumY) accept any u32 (R1) -- geometry is not
   validated at the setter but at StartExposure, which rejects a zero or
   out-of-bounds sub-frame with INVALID_VALUE (R2) and a sub-frame violating
@@ -31,6 +34,23 @@ Feature: Binning and region-of-interest
       | bin_x | bin_y |
       | 0     | 0     |
       | 99    | 99    |
+
+  Scenario: A client sub-frame comes back from a bin walk as the frame it was
+    When I set StartX 200 NumX 100 StartY 200 NumY 100 on camera device 0
+    And I set BinX 3 and BinY 3 on camera device 0
+    And I set BinX 4 and BinY 4 on camera device 0
+    And I set BinX 1 and BinY 1 on camera device 0
+    Then camera device 0 reports StartX 200 NumX 100 StartY 200 NumY 100
+
+  Scenario: A client sub-frame at a bin is the unbinned region divided by that bin
+    When I set StartX 200 NumX 100 StartY 200 NumY 100 on camera device 0
+    And I set BinX 3 and BinY 3 on camera device 0
+    Then camera device 0 reports StartX 66 NumX 33 StartY 66 NumY 33
+
+  Scenario: A sub-pixel extent is one binned pixel, not a zero the client never set
+    When I set StartX 0 NumX 1 StartY 0 NumY 1 on camera device 0
+    And I set BinX 4 and BinY 4 on camera device 0
+    Then camera device 0 reports StartX 0 NumX 1 StartY 0 NumY 1
 
   Scenario: The ROI setters accept any value
     When I set StartX 9000 NumX 9000 StartY 9000 NumY 9000 on camera device 0

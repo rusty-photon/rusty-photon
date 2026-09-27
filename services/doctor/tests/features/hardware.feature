@@ -115,6 +115,25 @@ Feature: Hardware checks (no SDK)
     Then the report contains a "warn" check named "hardware.usb-device" for service "star-adventurer-gti"
     And that check's detail mentions "0483:5740"
 
+  Scenario: A USB inventory that could not be read is not reported as an absent device
+    Given a config file "star-adventurer-gti.json" containing:
+      """
+      {}
+      """
+    And hardware facts where the USB inventory is unavailable because "sysfs walk failed"
+    When I run doctor with --json
+    Then the report contains a "fail" check named "hardware.usb-device" for service "star-adventurer-gti"
+    And that check's detail mentions "sysfs walk failed"
+
+  Scenario: A genuinely empty bus still reports the device as absent
+    Given a config file "star-adventurer-gti.json" containing:
+      """
+      {}
+      """
+    And hardware facts with an empty but readable USB inventory
+    When I run doctor with --json
+    Then the report contains a "warn" check named "hardware.usb-device" for service "star-adventurer-gti"
+
   Scenario: The product string discriminates devices behind a shared bridge chip
     Given a config file "ppba-driver.json" containing:
       """

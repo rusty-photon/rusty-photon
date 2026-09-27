@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use rmcp::handler::server::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ServerCapabilities,
-    ServerInfo,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, InitializeResult,
+    ServerCapabilities,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
@@ -64,8 +64,10 @@ impl ServerHandler for StubHandler {
         }
     }
 
-    fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::default();
+    // `InitializeResult`, not rmcp's deprecated `ServerInfo` alias for it —
+    // docs/workspace.md § "Name rmcp's initialize types, not its aliases".
+    fn get_info(&self) -> InitializeResult {
+        let mut info = InitializeResult::default();
         info.capabilities = ServerCapabilities::builder().enable_tools().build();
         info
     }

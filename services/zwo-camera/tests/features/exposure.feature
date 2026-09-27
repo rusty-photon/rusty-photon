@@ -16,7 +16,11 @@ Feature: Exposure lifecycle
   (PG2); the no-ST4 NOT_IMPLEMENTED branch of PG2 is covered by unit tests,
   since the simulation backend always reports ST4 present. A mid-exposure SDK
   error transitions to the Error state (E9, covered by unit tests against the
-  mock SDK seam).
+  mock SDK seam). The exposure state belongs to the session that produced it,
+  so every member reporting it -- CameraState, ImageReady, PercentCompleted,
+  LastExposureStartTime, LastExposureDuration and ImageArray -- answers
+  NOT_CONNECTED once the device is disconnected, rather than from the session
+  that has ended (E11).
 
   Background:
     Given the zwo-camera service running with the simulation backend
@@ -87,3 +91,20 @@ Feature: Exposure lifecycle
     Given camera device 0 is not connected
     When I try to PulseGuide on camera device 0 in direction North for 100 ms
     Then the PulseGuide is rejected with ASCOM NOT_CONNECTED
+
+  Scenario Outline: A disconnected camera reports no exposure state from the session that ended
+    Given camera device 0 is connected
+    When I StartExposure on camera device 0 with BinX 1 BinY 1 NumX 64 NumY 48 StartX 0 StartY 0 Duration 0.01 Light true
+    And the exposure on camera device 0 completes
+    And I disconnect camera device 0
+    And I try to read <member> from camera device 0
+    Then the call is rejected with ASCOM NOT_CONNECTED
+
+    Examples:
+      | member                |
+      | CameraState           |
+      | ImageReady            |
+      | PercentCompleted      |
+      | LastExposureStartTime |
+      | LastExposureDuration  |
+      | ImageArray            |

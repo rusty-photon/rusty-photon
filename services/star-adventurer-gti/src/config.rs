@@ -10,6 +10,8 @@ use std::time::Duration;
 pub use rusty_photon_server_config::AlpacaServerConfig;
 use serde::{Deserialize, Serialize};
 
+use crate::coordinates::path_crosses_binding_zone;
+
 /// Top-level configuration deserialised from the JSON config file.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -278,6 +280,89 @@ pub struct MountConfig {
     pub preferred_ap_park: ApPark,
 }
 
+impl MountConfig {
+    /// Why this config's auto-flip offset can never fire, or `None`
+    /// when it can.
+    ///
+    /// The one rule that spans two config blocks, so no single newtype
+    /// can own it. An auto-flip has to clear two hurdles, each read off
+    /// the zone bound it actually depends on:
+    ///
+    /// 1. **Tracking must reach the trigger.** The guard stops the
+    ///    mount at `min_hours − tracking_guard_margin_hours`, and a
+    ///    tracked target arrives at the trigger from below, so an
+    ///    offset at or above that point is never reached.
+    /// 2. **The flip must land clear from anywhere it can fire.** The
+    ///    watcher attempts a flip on the first tick where `mech_HA >=
+    ///    offset`, which — when tracking is enabled with the mount
+    ///    already past the offset — is wherever the mount happens to
+    ///    be, not the offset itself. So every position in
+    ///    `[offset, guard_entry)` has to flip to a destination outside
+    ///    the zone, not just the offset. That is a swept interval of
+    ///    flipped destinations, which is exactly what
+    ///    [`path_crosses_binding_zone`] answers.
+    ///
+    /// Fail either and the flip is not deferred, it simply never
+    /// happens, leaving `auto_flip_during_tracking = true` as a setting
+    /// that does nothing — discoverable only by an unattended session
+    /// failing to flip, one attempt per crossing, with the guard
+    /// stopping the mount afterwards. So the config is refused at load
+    /// instead.
+    ///
+    /// Both hurdles are derived rather than assumed. An earlier version
+    /// took the accepted band to be `[−min_hours, min_hours − margin)`,
+    /// which is only the overlap for a zone of the symmetric shape
+    /// `(x, 12 − x)`; [`ActiveZone`] permits any
+    /// `-12 ≤ min < max ≤ 12`, and off that shape it both rejected
+    /// reachable offsets (zone `(2, 5)`, offset `−5`, flipping to `+7`)
+    /// and admitted unreachable ones (zone `(10, 11)`, offset `−1.5`,
+    /// flipping to `+10.5`, inside it). A later one checked the flipped
+    /// destination only at the offset, which let through
+    /// anti-meridian values like `−11.5`: legal at the offset, but
+    /// tracking enabled from `mech_HA = −10` fires the trigger
+    /// immediately and tries to flip to `+2`, inside the shipped zone.
+    ///
+    /// Inert configurations are not errors: with `enabled = false`, or
+    /// `auto_flip_during_tracking = false`, the offset is not consulted
+    /// and any value passes. With the zone disabled there is no guard
+    /// and no unreachable side, so again anything goes.
+    #[must_use]
+    pub fn auto_flip_offset_error(&self) -> Option<String> {
+        if !(self.flip_policy.enabled && self.flip_policy.auto_flip_during_tracking) {
+            return None;
+        }
+        let zone = self.cw_exclusion_zone.bounds();
+        let (zone_min, zone_max) = zone;
+        if zone_min >= zone_max {
+            return None;
+        }
+        let offset = self.flip_policy.auto_flip_at_meridian_offset_hours;
+        let margin = self.tracking_guard_margin_hours.value();
+        let guard_entry = zone_min - margin;
+        if offset >= guard_entry {
+            return Some(format!(
+                "flip_policy.auto_flip_at_meridian_offset_hours {offset} names a point no \
+                 flip can happen at: the tracking guard stops the mount at {guard_entry} h \
+                 (cw_exclusion_zone.min_hours {zone_min} − \
+                 tracking_guard_margin_hours {margin}), so tracking never reaches it"
+            ));
+        }
+        // The flipped images of every `mech_HA` in `[offset,
+        // guard_entry)` — the positions the trigger can fire from —
+        // form the sweep from `offset + 12`. None may land in the zone.
+        if path_crosses_binding_zone(offset + 12.0, guard_entry - offset, zone) {
+            return Some(format!(
+                "flip_policy.auto_flip_at_meridian_offset_hours {offset} names a point no \
+                 flip can happen at: between it and the guard entry at {guard_entry} h the \
+                 mount would flip into the CW exclusion zone ({zone_min}, {zone_max}), and \
+                 the watcher fires wherever tracking already is, not at the offset — so \
+                 the slew would be refused"
+            ));
+        }
+        None
+    }
+}
+
 /// Master switch + parameters for driver-planned meridian flips.
 ///
 /// `enabled = false` (the shipped default) disables every flip code
@@ -285,31 +370,28 @@ pub struct MountConfig {
 /// `NOT_IMPLEMENTED`, `DestinationSideOfPier` always returns the
 /// current side, and slews use the pre-flip coordinate pipeline only.
 ///
-/// With `enabled = true`, the driver may pick the flipped pier side
-/// for a slew (or honour an explicit `SetSideOfPier` call) when the
-/// target's hour angle falls inside the meridian window of width
-/// `2 × flip_range_hours`. See the design doc for the full decision
-/// tree and the per-side safety envelopes.
+/// With `enabled = true`, the driver picks the pier side whose
+/// destination `mech_HA` and RA sweep both clear the CW exclusion
+/// zone, preferring the side the mount is already on, and honours an
+/// explicit `SetSideOfPier`. Which targets a side can reach is decided
+/// by [`MountConfig::cw_exclusion_zone`] alone — this block holds no
+/// second opinion about it. (A `flip_range_hours` field did until
+/// 2026-09; it expressed the counterweight-up side's reach as a band
+/// around the meridian, which is the wrong shape and cost the driver
+/// the whole western sky from that side — issue #1301. It is gone
+/// rather than kept as a no-op, so a config still carrying it fails
+/// to load with the field named.)
 ///
-/// Deserialised via [`FlipPolicyWire`] so the cross-field invariant —
-/// `auto_flip_at_meridian_offset_hours` finite and within
-/// `±flip_range_hours` — is checked at config load, with the field
-/// named, like the single-field newtype validations.
+/// Deserialised via [`FlipPolicyWire`] so the offset's own domain
+/// check is reported with the field named. The rule tying that offset
+/// to the zone spans two config blocks, so it lives in
+/// [`MountConfig::auto_flip_offset_error`].
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(into = "FlipPolicyWire", try_from = "FlipPolicyWire")]
 pub struct FlipPolicy {
     /// Master switch. Defaults `false` until the first real-hardware
     /// meridian flip on a `GTi` has been verified.
     pub enabled: bool,
-
-    /// Half-width of the target-HA window around the meridian where
-    /// the flipped state is mechanically reachable. Targets with
-    /// `|target_HA| > flip_range_hours` are unflippable: the slew
-    /// planner uses normal pointing only and `DestinationSideOfPier`
-    /// returns the current side. Valid range `(0, 0.95]`; the upper
-    /// bound matches the Phase 1.1 hardware-verified headroom past
-    /// counterweight-horizontal on the pre-flip side.
-    pub flip_range_hours: FlipRangeHours,
 
     /// Opt-in driver-initiated meridian flip while tracking. When
     /// `true` (and `enabled` is `true`), the tracking watcher issues
@@ -326,9 +408,10 @@ pub struct FlipPolicy {
     /// (the default) flips exactly at meridian crossing; positive
     /// values delay the flip past the meridian (the common
     /// astrophotography preference). Only consulted when
-    /// `auto_flip_during_tracking = true`. Must be finite and within
-    /// `[−flip_range_hours, +flip_range_hours]` — validated at
-    /// deserialize by the [`FlipPolicyWire`] `try_from`.
+    /// `auto_flip_during_tracking = true`. Must be a finite hour
+    /// angle (`|offset| ≤ 12`, checked by the [`FlipPolicyWire`]
+    /// `try_from`) that also lies in the band where a flip is possible
+    /// at all — see [`MountConfig::auto_flip_offset_error`].
     pub auto_flip_at_meridian_offset_hours: f64,
 }
 
@@ -336,7 +419,6 @@ impl Default for FlipPolicy {
     fn default() -> Self {
         Self {
             enabled: default_flip_policy_enabled(),
-            flip_range_hours: FlipRangeHours::default(),
             auto_flip_during_tracking: false,
             auto_flip_at_meridian_offset_hours: 0.0,
         }
@@ -344,15 +426,13 @@ impl Default for FlipPolicy {
 }
 
 /// Wire shape for [`FlipPolicy`]: same fields, each with its serde
-/// default, plus the cross-field validation in `TryFrom`. Mirrors the
+/// default, plus the offset's domain check in `TryFrom`. Mirrors the
 /// [`ActiveZoneWire`] pattern.
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct FlipPolicyWire {
     #[serde(default = "default_flip_policy_enabled")]
     enabled: bool,
-    #[serde(default)]
-    flip_range_hours: FlipRangeHours,
     #[serde(default)]
     auto_flip_during_tracking: bool,
     #[serde(default)]
@@ -362,18 +442,20 @@ struct FlipPolicyWire {
 impl TryFrom<FlipPolicyWire> for FlipPolicy {
     type Error = String;
     fn try_from(w: FlipPolicyWire) -> std::result::Result<Self, String> {
-        let range = w.flip_range_hours.value();
+        // An hour angle, so `[−12, +12]` is all this block can say
+        // about it alone. Whether it names a point a flip can actually
+        // happen at depends on the CW exclusion zone and the
+        // tracking-guard margin, which live one level up — see
+        // `MountConfig::auto_flip_offset_error`.
         let offset = w.auto_flip_at_meridian_offset_hours;
-        if !offset.is_finite() || offset.abs() > range {
+        if !offset.is_finite() || offset.abs() > 12.0 {
             return Err(format!(
-                "flip_policy.auto_flip_at_meridian_offset_hours must be finite and within \
-                 [-flip_range_hours, +flip_range_hours] = [{}, {range}] hours, got {offset}",
-                -range
+                "flip_policy.auto_flip_at_meridian_offset_hours must be a finite hour angle \
+                 within [-12, 12] hours, got {offset}"
             ));
         }
         Ok(Self {
             enabled: w.enabled,
-            flip_range_hours: w.flip_range_hours,
             auto_flip_during_tracking: w.auto_flip_during_tracking,
             auto_flip_at_meridian_offset_hours: w.auto_flip_at_meridian_offset_hours,
         })
@@ -384,19 +466,11 @@ impl From<FlipPolicy> for FlipPolicyWire {
     fn from(p: FlipPolicy) -> Self {
         Self {
             enabled: p.enabled,
-            flip_range_hours: p.flip_range_hours,
             auto_flip_during_tracking: p.auto_flip_during_tracking,
             auto_flip_at_meridian_offset_hours: p.auto_flip_at_meridian_offset_hours,
         }
     }
 }
-
-/// Outer bound on `FlipPolicy::flip_range_hours`.
-///
-/// Larger values would push the post-flip mechanical hour angle into the
-/// unverified mirror of the Phase 4 counterweight-up CW exclusion zone.
-/// See the plan `docs/plans/archive/star-adventurer-gti-meridian-flip.md` §2.6.
-pub const MAX_FLIP_RANGE_HOURS: f64 = 0.95;
 
 /// Outer bound on [`MountConfig::tracking_guard_margin_hours`].
 ///
@@ -413,13 +487,13 @@ pub const MAX_TRACKING_GUARD_MARGIN_HOURS: f64 = 1.0;
 // rejected at *load* rather than at slew/track time. This is what retired
 // the hand-rolled `MountConfig::validate` / `FlipPolicy::validate`.
 
-/// Half-width of the meridian-flip window, hours. Valid `(0, MAX_FLIP_RANGE_HOURS]`.
-/// JSON form is a bare number.
+/// Tracking-guard slack before the CW exclusion zone, hours. Valid
+/// `[0, MAX_TRACKING_GUARD_MARGIN_HOURS]`. JSON form is a bare number.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(into = "f64", try_from = "f64")]
-pub struct FlipRangeHours(f64);
+pub struct TrackingGuardMarginHours(f64);
 
-impl FlipRangeHours {
+impl TrackingGuardMarginHours {
     /// Unchecked `const` constructor, `pub(crate)` so the public API
     /// cannot bypass validation — it exists only for `Default` and
     /// in-crate callers with compile-time-known-good values (and tests
@@ -431,51 +505,6 @@ impl FlipRangeHours {
     /// Validating constructor: the single source of truth for the
     /// invariant, which serde's `try_from` and any programmatic caller
     /// funnel through.
-    ///
-    /// # Errors
-    ///
-    /// Returns a message naming the field unless `hours` is finite and in
-    /// `(0, MAX_FLIP_RANGE_HOURS]`.
-    pub fn try_new(hours: f64) -> std::result::Result<Self, String> {
-        if !hours.is_finite() || hours <= 0.0 || hours > MAX_FLIP_RANGE_HOURS {
-            return Err(format!(
-                "flip_policy.flip_range_hours must be in (0, {MAX_FLIP_RANGE_HOURS}] hours, got {hours}"
-            ));
-        }
-        Ok(Self(hours))
-    }
-    /// The underlying value in hours.
-    #[must_use]
-    pub const fn value(self) -> f64 {
-        self.0
-    }
-}
-
-impl TryFrom<f64> for FlipRangeHours {
-    type Error = String;
-    fn try_from(v: f64) -> std::result::Result<Self, String> {
-        Self::try_new(v)
-    }
-}
-
-impl From<FlipRangeHours> for f64 {
-    fn from(v: FlipRangeHours) -> Self {
-        v.0
-    }
-}
-
-/// Tracking-guard slack before the CW exclusion zone, hours. Valid
-/// `[0, MAX_TRACKING_GUARD_MARGIN_HOURS]`. JSON form is a bare number.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(into = "f64", try_from = "f64")]
-pub struct TrackingGuardMarginHours(f64);
-
-impl TrackingGuardMarginHours {
-    /// Unchecked `const` constructor — see [`FlipRangeHours::new`].
-    pub(crate) const fn new(hours: f64) -> Self {
-        Self(hours)
-    }
-    /// Validating constructor — see [`FlipRangeHours::try_new`].
     ///
     /// # Errors
     ///
@@ -527,14 +556,14 @@ struct ActiveZoneWire {
 }
 
 impl ActiveZone {
-    /// Unchecked `const` constructor — see [`FlipRangeHours::new`].
+    /// Unchecked `const` constructor — see [`TrackingGuardMarginHours::new`].
     pub(crate) const fn new(min_hours: f64, max_hours: f64) -> Self {
         Self {
             min_hours,
             max_hours,
         }
     }
-    /// Validating constructor — see [`FlipRangeHours::try_new`].
+    /// Validating constructor — see [`TrackingGuardMarginHours::try_new`].
     ///
     /// # Errors
     ///
@@ -608,8 +637,10 @@ impl CwExclusionZone {
     /// `(min, max)` bounds for the path/guard/flip checks, which take a
     /// bare `(f64, f64)`. `Disabled` yields the empty interval
     /// `(+∞, −∞)` — `min > max` strictly, which every consumer
-    /// (`canonical_path_crosses_binding_zone`, `tracking_guard_breached`,
-    /// `select_pier_side_for_target`) treats as "no zone".
+    /// ([`mech_ha_in_binding_zone`](crate::coordinates::mech_ha_in_binding_zone),
+    /// [`path_crosses_binding_zone`](crate::coordinates::path_crosses_binding_zone),
+    /// `tracking_guard_breached`, `select_pier_side_for_target`) treats
+    /// as "no zone".
     #[must_use]
     pub const fn bounds(self) -> (f64, f64) {
         match self {
@@ -642,11 +673,11 @@ impl From<CwExclusionZone> for Option<ActiveZone> {
 pub struct MinAltitudeDegrees(f64);
 
 impl MinAltitudeDegrees {
-    /// Unchecked `const` constructor — see [`FlipRangeHours::new`].
+    /// Unchecked `const` constructor — see [`TrackingGuardMarginHours::new`].
     pub(crate) const fn new(degrees: f64) -> Self {
         Self(degrees)
     }
-    /// Validating constructor — see [`FlipRangeHours::try_new`].
+    /// Validating constructor — see [`TrackingGuardMarginHours::try_new`].
     ///
     /// # Errors
     ///
@@ -682,13 +713,6 @@ impl From<MinAltitudeDegrees> for f64 {
 
 // Defaults live with the types, so the config fields can use bare
 // `#[serde(default)]` and no `default_*` free functions are needed.
-
-impl Default for FlipRangeHours {
-    /// `0.5` h — a half-hour meridian window.
-    fn default() -> Self {
-        Self::new(0.5)
-    }
-}
 
 impl Default for TrackingGuardMarginHours {
     /// `0.05` h (≈ 45 s of sidereal drift).
@@ -1162,11 +1186,21 @@ pub fn load_config(
 ) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
     let content = std::fs::read_to_string(path)?;
     // Validation is construct-time: the config newtypes
-    // (`FlipRangeHours`, `CwExclusionZone`, `MinAltitudeDegrees`,
+    // (`CwExclusionZone`, `MinAltitudeDegrees`,
     // `TrackingGuardMarginHours`) reject out-of-range values during
     // deserialize, with the offending field named in the error — so a
     // bad config fails here at load rather than at slew/track time.
     let config: Config = serde_json::from_str(&content)?;
+    // One rule spans two config blocks and so cannot live in a
+    // newtype: an auto-flip offset has to name a point where a flip is
+    // actually possible, which the CW exclusion zone and the
+    // tracking-guard margin decide. Checked here so it fails at load
+    // like everything else, and again in `config_actions::validate` so
+    // a runtime `config.apply` cannot install what startup would have
+    // refused.
+    if let Some(msg) = config.mount.auto_flip_offset_error() {
+        return Err(msg.into());
+    }
     Ok(config)
 }
 
@@ -1689,17 +1723,12 @@ mod tests {
     }
 
     #[test]
-    fn flip_policy_default_is_disabled_with_half_hour_range() {
+    fn flip_policy_default_is_disabled() {
         // The shipped default disables every flip code path — a fresh
         // install must behave identically to pre-Phase-6 builds until
         // the operator explicitly opts in on a hardware-validated mount.
         let p = FlipPolicy::default();
         assert!(!p.enabled);
-        assert!(
-            (p.flip_range_hours.value() - 0.5).abs() < f64::EPSILON,
-            "got {}",
-            p.flip_range_hours.value()
-        );
         assert!(!p.auto_flip_during_tracking);
         assert_eq!(p.auto_flip_at_meridian_offset_hours, 0.0);
     }
@@ -1724,7 +1753,7 @@ mod tests {
         }"#;
         let m: MountConfig = serde_json::from_str(json).expect("deserialise");
         assert!(!m.flip_policy.enabled);
-        assert!((m.flip_policy.flip_range_hours.value() - 0.5).abs() < f64::EPSILON);
+        assert!(!m.flip_policy.auto_flip_during_tracking);
     }
 
     #[test]
@@ -1780,24 +1809,14 @@ mod tests {
     }
 
     #[test]
-    fn flip_range_hours_validates_at_construction() {
-        for bad in [
-            5.0,
-            0.0,
-            -0.1,
-            MAX_FLIP_RANGE_HOURS + 1e-6,
-            f64::INFINITY,
-            f64::NAN,
-        ] {
-            assert!(
-                FlipRangeHours::try_new(bad).is_err(),
-                "{bad} should be rejected"
-            );
-        }
-        assert!(FlipRangeHours::try_new(0.5).is_ok());
-        assert!(FlipRangeHours::try_new(MAX_FLIP_RANGE_HOURS).is_ok());
-        // The same rejection surfaces through serde with the field named.
-        let err = serde_json::from_str::<FlipPolicy>(r#"{"flip_range_hours": 5.0}"#)
+    fn flip_range_hours_is_rejected_as_an_unknown_field() {
+        // Removed 2026-09 (issue #1301): it expressed the
+        // counterweight-up side's reach as a band around the meridian,
+        // which is the wrong shape — reach comes from the CW exclusion
+        // zone alone. `deny_unknown_fields` means a config still
+        // carrying it fails to load naming the field, rather than the
+        // operator tuning a value nothing reads.
+        let err = serde_json::from_str::<FlipPolicy>(r#"{"flip_range_hours": 0.5}"#)
             .unwrap_err()
             .to_string();
         assert!(err.contains("flip_range_hours"), "got {err}");
@@ -1865,16 +1884,13 @@ mod tests {
     fn load_config_rejects_an_out_of_range_value() {
         // End-to-end: validation is wired into `load_config`, so a bad
         // value in the file fails the load rather than being silently
-        // accepted. flip_range_hours = 5.0 is out of (0, 0.95].
+        // accepted. tracking_guard_margin_hours = 5.0 is out of [0, 1].
         use std::io::Write;
         let cfg = Config {
             mount: MountConfig {
-                flip_policy: FlipPolicy {
-                    // Unchecked ctor builds a bad value that serialises to
-                    // 5.0; load_config's deserialize is what rejects it.
-                    flip_range_hours: FlipRangeHours::new(5.0),
-                    ..Default::default()
-                },
+                // Unchecked ctor builds a bad value that serialises to
+                // 5.0; load_config's deserialize is what rejects it.
+                tracking_guard_margin_hours: TrackingGuardMarginHours::new(5.0),
                 ..Default::default()
             },
             ..Config::default()
@@ -1884,8 +1900,8 @@ mod tests {
         f.write_all(json.as_bytes()).expect("write temp config");
         let err = load_config(f.path()).unwrap_err();
         assert!(
-            err.to_string().contains("flip_range_hours"),
-            "expected a flip_range_hours validation error, got: {err}"
+            err.to_string().contains("tracking_guard_margin_hours"),
+            "expected a tracking_guard_margin_hours validation error, got: {err}"
         );
     }
 
@@ -1894,7 +1910,6 @@ mod tests {
         let cfg = MountConfig {
             flip_policy: FlipPolicy {
                 enabled: true,
-                flip_range_hours: FlipRangeHours::new(0.7),
                 auto_flip_during_tracking: true,
                 auto_flip_at_meridian_offset_hours: 0.3,
             },
@@ -1903,7 +1918,6 @@ mod tests {
         let json = serde_json::to_string(&cfg).expect("serialise");
         let back: MountConfig = serde_json::from_str(&json).expect("deserialise");
         assert!(back.flip_policy.enabled);
-        assert!((back.flip_policy.flip_range_hours.value() - 0.7).abs() < f64::EPSILON);
         assert!(back.flip_policy.auto_flip_during_tracking);
         assert!((back.flip_policy.auto_flip_at_meridian_offset_hours - 0.3).abs() < f64::EPSILON);
     }
@@ -1915,29 +1929,26 @@ mod tests {
         let json = r#"{"enabled": true}"#;
         let p: FlipPolicy = serde_json::from_str(json).expect("deserialise");
         assert!(p.enabled);
-        assert!((p.flip_range_hours.value() - 0.5).abs() < f64::EPSILON);
+        assert!(!p.auto_flip_during_tracking);
 
-        let json = r#"{"flip_range_hours": 0.25}"#;
+        let json = r#"{"auto_flip_during_tracking": true}"#;
         let p: FlipPolicy = serde_json::from_str(json).expect("deserialise");
         assert!(!p.enabled);
-        assert!((p.flip_range_hours.value() - 0.25).abs() < f64::EPSILON);
+        assert!(p.auto_flip_during_tracking);
         // Pre-auto-flip config blocks fill the auto-flip fields from
         // their defaults rather than failing.
-        assert!(!p.auto_flip_during_tracking);
         assert_eq!(p.auto_flip_at_meridian_offset_hours, 0.0);
     }
 
     #[test]
-    fn auto_flip_offset_validates_against_flip_range_at_deserialize() {
-        // Cross-field rule: the offset must be finite and within
-        // ±flip_range_hours, checked on the flip_policy block so a bad
-        // pair fails at load with the field named.
+    fn auto_flip_offset_domain_is_checked_on_the_block() {
+        // All the block can judge alone: the offset is an hour angle.
         // (Non-finite offsets aren't expressible in JSON — serde_json
         // rejects them before try_from runs; the is_finite arm in
         // TryFrom is defense-in-depth for non-JSON construction paths.)
         for bad in [
-            r#"{"flip_range_hours": 0.5, "auto_flip_at_meridian_offset_hours": 0.7}"#,
-            r#"{"flip_range_hours": 0.5, "auto_flip_at_meridian_offset_hours": -0.7}"#,
+            r#"{"auto_flip_at_meridian_offset_hours": 12.5}"#,
+            r#"{"auto_flip_at_meridian_offset_hours": -12.5}"#,
         ] {
             let err = serde_json::from_str::<FlipPolicy>(bad)
                 .unwrap_err()
@@ -1947,15 +1958,161 @@ mod tests {
                 "{bad} should be rejected naming the field, got: {err}"
             );
         }
-        // Both window edges and a negative in-window offset are valid.
         for good in [
-            r#"{"flip_range_hours": 0.5, "auto_flip_at_meridian_offset_hours": 0.5}"#,
-            r#"{"flip_range_hours": 0.5, "auto_flip_at_meridian_offset_hours": -0.5}"#,
+            r#"{"auto_flip_at_meridian_offset_hours": 0.5}"#,
             r#"{"auto_flip_at_meridian_offset_hours": -0.25}"#,
         ] {
             serde_json::from_str::<FlipPolicy>(good)
                 .unwrap_or_else(|e| panic!("{good} should parse: {e}"));
         }
+    }
+
+    /// A `MountConfig` with auto-flip armed at `offset`, the shipped
+    /// zone `(0.95, 11.05)` and the shipped `0.05 h` guard margin — so
+    /// the band a flip is possible in is `[-0.95, 0.90)`.
+    fn auto_flip_at(offset: f64) -> MountConfig {
+        MountConfig {
+            flip_policy: FlipPolicy {
+                enabled: true,
+                auto_flip_during_tracking: true,
+                auto_flip_at_meridian_offset_hours: offset,
+            },
+            ..MountConfig::default()
+        }
+    }
+
+    #[test]
+    fn auto_flip_offset_must_name_a_point_a_flip_can_happen_at() {
+        // Past `zone.min − margin` the tracking guard stops the mount
+        // first; below `−zone.min` the flipped destination is inside
+        // the zone and the slew would be refused. Either way the
+        // auto-flip never fires, so the config is refused instead of
+        // silently doing nothing.
+        for bad in [0.90, 0.95, 1.5, -0.96, -6.0] {
+            let err = auto_flip_at(bad)
+                .auto_flip_offset_error()
+                .unwrap_or_else(|| panic!("offset {bad} should be rejected"));
+            assert!(
+                err.contains("auto_flip_at_meridian_offset_hours"),
+                "error should name the field, got: {err}"
+            );
+        }
+        // `-11.5` and `-12.0` were accepted while the rule checked
+        // the flipped destination only at the offset: legal there
+        // (`-11.5` flips to `+0.5`), but the watcher fires wherever
+        // tracking already is, so enabling tracking at `mech_HA = -10`
+        // would try to flip to `+2`, inside the zone. The sweep check
+        // rejects them — see the dedicated test below.
+        for good in [0.0, 0.5, 0.899, -0.95] {
+            assert!(
+                auto_flip_at(good).auto_flip_offset_error().is_none(),
+                "offset {good} should be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_flip_offset_rule_reads_both_zone_bounds_not_a_presumed_shape() {
+        // `ActiveZone` permits any `-12 <= min < max <= 12`, so the
+        // accepted set cannot be derived from `min_hours` alone. Both
+        // cases below are off the shipped `(x, 12 - x)` shape and were
+        // wrong when the rule assumed it.
+        let armed = |zone: (f64, f64), offset: f64| MountConfig {
+            cw_exclusion_zone: CwExclusionZone::Active(
+                ActiveZone::try_new(zone.0, zone.1).expect("valid zone"),
+            ),
+            flip_policy: FlipPolicy {
+                enabled: true,
+                auto_flip_during_tracking: true,
+                auto_flip_at_meridian_offset_hours: offset,
+            },
+            ..MountConfig::default()
+        };
+        // Zone (2, 5), offset -5: tracking reaches -5 long before the
+        // guard at 1.95, and the flip lands at +7 — outside the zone.
+        // Reachable, so accepting it is the only correct answer.
+        assert!(
+            armed((2.0, 5.0), -5.0).auto_flip_offset_error().is_none(),
+            "offset -5 is reachable under zone (2, 5)"
+        );
+        // Zone (10, 11), offset -1.5: the guard is far away at 9.95,
+        // but the flip lands at +10.5, inside the zone — the slew would
+        // be refused, so the offset is dead config.
+        let err = armed((10.0, 11.0), -1.5)
+            .auto_flip_offset_error()
+            .expect("offset -1.5 is unreachable under zone (10, 11)");
+        assert!(
+            err.contains("CW exclusion zone") && err.contains("(10, 11)"),
+            "error should name the zone the flip would land in, got: {err}"
+        );
+    }
+
+    #[test]
+    fn auto_flip_offset_must_flip_clear_from_anywhere_the_trigger_fires() {
+        // `auto_flip_tick` attempts on the first tick where `mech_HA >=
+        // offset`, so enabling tracking with the mount already past the
+        // offset fires it from wherever the mount is — not from the
+        // offset. An offset is only usable if *every* position between
+        // it and the guard entry flips clear.
+        //
+        // `-11.5` is the case that exposed the difference: its own
+        // flipped destination is `+0.5`, outside the zone, so a
+        // point-check accepts it. But tracking enabled at `mech_HA =
+        // -10` fires immediately and tries to flip to `+2`, inside the
+        // shipped zone — the slew is refused, the one attempt per
+        // crossing is spent, and the guard stops the mount later.
+        for bad in [-11.5, -12.0, -11.05] {
+            let err = auto_flip_at(bad)
+                .auto_flip_offset_error()
+                .unwrap_or_else(|| panic!("offset {bad} should be rejected"));
+            assert!(
+                err.contains("CW exclusion zone"),
+                "error should name where the flip would land, got: {err}"
+            );
+        }
+        // The band around the meridian survives precisely because the
+        // whole sweep from it to the guard entry flips clear: from
+        // `-0.95` the destinations run `+11.05` up through the wrap to
+        // `-11.1`, never entering `(0.95, 11.05)`.
+        assert!(auto_flip_at(-0.95).auto_flip_offset_error().is_none());
+    }
+
+    #[test]
+    fn auto_flip_offset_rule_is_inert_when_no_flip_can_be_planned() {
+        // Nothing reads the offset unless auto-flip is armed under the
+        // master switch, and with the zone disabled there is no guard
+        // and no unreachable side — so no value is wrong.
+        let mut cfg = auto_flip_at(6.0);
+        cfg.flip_policy.enabled = false;
+        assert!(cfg.auto_flip_offset_error().is_none(), "master switch off");
+
+        let mut cfg = auto_flip_at(6.0);
+        cfg.flip_policy.auto_flip_during_tracking = false;
+        assert!(cfg.auto_flip_offset_error().is_none(), "auto-flip off");
+
+        let mut cfg = auto_flip_at(6.0);
+        cfg.cw_exclusion_zone = CwExclusionZone::Disabled;
+        assert!(cfg.auto_flip_offset_error().is_none(), "zone disabled");
+    }
+
+    #[test]
+    fn load_config_rejects_an_auto_flip_offset_the_guard_would_pre_empt() {
+        // The cross-block rule is wired into `load_config` too, so it
+        // fails at startup like every newtype invariant.
+        use std::io::Write;
+        let cfg = Config {
+            mount: auto_flip_at(0.95),
+            ..Config::default()
+        };
+        let json = serde_json::to_string(&cfg).expect("serialise config");
+        let mut f = tempfile::NamedTempFile::new().expect("temp file");
+        f.write_all(json.as_bytes()).expect("write temp config");
+        let err = load_config(f.path()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("auto_flip_at_meridian_offset_hours"),
+            "expected the offset rule to fail the load, got: {err}"
+        );
     }
 
     #[test]

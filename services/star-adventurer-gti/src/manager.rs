@@ -21,16 +21,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rusty_photon_shared_transport::{
-    Connection, Hooks, Session, SharedTransport, TransportFactory, WhileOpen,
+    Connection, Hooks, Session, SharedTransport, StateAssertion, TransportFactory, WhileOpen,
 };
 use skywatcher_motor_protocol::{Axis, AxisStatus, Command, ModeKind, MountType, Response};
 use tokio::sync::RwLock;
 use tokio::time::interval;
-use tracing::{debug, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::codec::{decode_frame_for, SkywatcherCodec, SkywatcherCodecError};
 use crate::config::{Config, TransportConfig};
+use crate::coordinates::sidereal_step_period;
 use crate::error::{Result, StarAdvError};
+use crate::units::Cpr;
 
 /// Snapshot of the values the mount reports during the init handshake.
 /// Meaningful units are in the design doc.
@@ -44,6 +46,27 @@ pub struct MountParameters {
     pub motor_board_version: u32,
     pub ra_at_handshake_ticks: i32,
     pub dec_at_handshake_ticks: i32,
+}
+
+impl MountParameters {
+    /// Step period that turns the RA axis at the sidereal rate.
+    ///
+    /// Per-axis methods (instead of taking a CPR, or an `Axis`) keep a
+    /// caller from pairing one axis with the other's CPR: `:I` sets the
+    /// time between motor steps, the axes' CPRs differ, so a period
+    /// derived from the wrong CPR turns the axis at the wrong angular
+    /// rate by exactly the CPR ratio.
+    #[must_use]
+    pub fn sidereal_step_period_ra(&self) -> u32 {
+        sidereal_step_period(self.tmr_freq, Cpr::new(self.cpr_ra))
+    }
+
+    /// Step period that turns the Dec axis at the sidereal rate. See
+    /// [`Self::sidereal_step_period_ra`] for why this is per-axis.
+    #[must_use]
+    pub fn sidereal_step_period_dec(&self) -> u32 {
+        sidereal_step_period(self.tmr_freq, Cpr::new(self.cpr_dec))
+    }
 }
 
 /// Latest poll-loop snapshot. Updated by the background task at
@@ -449,12 +472,40 @@ async fn handshake(
     Ok(())
 }
 
-/// Best-effort halt on both axes (`:L1`, `:L2`, `:K1`). Used by both
-/// the `on_last_disconnect` hook (every `1→0` transition) and by
-/// `shutdown_teardown` (final teardown). All errors are log-and-continue
-/// per the `Hooks::on_last_disconnect` / `Hooks::shutdown` infallible
-/// contract.
-async fn safety_stop(conn: &Connection<SkywatcherCodec>) {
+/// Halt on both axes (`:L1`, `:L2`, `:K1`), and say whether it took.
+/// Used by both the `on_last_disconnect` hook (every `1→0` transition,
+/// and every fresh conduit) and by `shutdown_teardown`.
+///
+/// Still log-and-continue per the hooks' infallible contract — a failed
+/// command never propagates and never stops the rest of the sequence —
+/// but the outcome is no longer thrown away. The shared crate watches
+/// [`Connection::request`] for commands that never reached the wire,
+/// which is blind to the case this function is the only witness to: the
+/// mount answered `!XX` and refused. `SkywatcherCodec` returns raw
+/// frames, so an error reply decodes as a perfectly good `Ok` response
+/// one layer down, and only the typed decode in [`request_typed`] sees
+/// it. Returning the verdict is what carries that out to the caller —
+/// see [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
+///
+/// Any failure means [`StateAssertion::NotAsserted`]: a stop that the
+/// mount refused, or that never reached it, leaves axes that may still
+/// be turning, and there is no partial credit for stopping one of two.
+/// A [`StateAssertion::NotAsserted`] says only that the state could
+/// not be asserted, never why. Every failure mode folds into it: an
+/// `!XX` refusal, a reply that would not decode, a frame from some
+/// other device. The specific error is logged at the point it is seen,
+/// one `warn!` per command, and callers upstream read the verdict
+/// alone — so nothing above this has to guess at a cause, and nothing
+/// below it has to invent a taxonomy.
+///
+/// It also does not try to read the mount's error code and decide
+/// which failures are benign. By the time this runs the handshake has
+/// just had ten commands answered, so a mount that now cannot be
+/// halted is a mount that is broken or is not the device we think it
+/// is — the two cases where guessing "that one's probably fine" is
+/// exactly wrong.
+async fn safety_stop(conn: &Connection<SkywatcherCodec>) -> StateAssertion {
+    let mut verdict = StateAssertion::Asserted;
     // Order matters: `:L` is the hammer (instant stop), `:K` is
     // graceful — issue the hammer first to guarantee motion stops
     // even if the graceful stop fails.
@@ -469,8 +520,28 @@ async fn safety_stop(conn: &Connection<SkywatcherCodec>) {
                 error = %e,
                 "safety stop wire command failed (continuing)"
             );
+            verdict = verdict.and(StateAssertion::NotAsserted);
         }
     }
+    // Report the verdict on the way out, including when nothing went
+    // wrong. The per-command `warn!` above only fires on failure, so
+    // without this line a halt that worked is invisible: on healthy
+    // hardware the whole sequence leaves no trace at any default log
+    // level, and confirming it ran at all means enabling wire tracing
+    // on the transport crate and reading raw frames. An operator asking
+    // "was the mount actually stopped?" should not have to do that.
+    //
+    // `info!` rather than `debug!`, against the usual preference for
+    // `debug!`: the packaged units ship `RUST_LOG=info`, so `debug!`
+    // would leave this invisible on every stock installation and the
+    // operator no better off than before. This is the record that a
+    // safety action affecting a moving telescope either did or did not
+    // reach the hardware — the one class of event where "you had to
+    // know to turn it on" is the wrong default. It fires once per start
+    // and once per last-client disconnect, so it is bounded by session
+    // count rather than by traffic.
+    info!(verdict = ?verdict, "safety stop complete");
+    verdict
 }
 
 /// Final shutdown teardown: safety-stop both axes, then clear the
@@ -481,7 +552,19 @@ async fn shutdown_teardown(
     conn: &Connection<SkywatcherCodec>,
     parameters: Arc<RwLock<Option<MountParameters>>>,
 ) {
-    safety_stop(conn).await;
+    if !safety_stop(conn).await.is_asserted() {
+        // Nothing downstream can act on this — the lifecycle is ending
+        // and `Hooks::shutdown` has no verdict to return — so the log
+        // is the whole of the report, and it is worth an `error!`. The
+        // mount may be left moving with no driver attached; the next
+        // cold start asserts the state again and refuses to serve if
+        // it cannot (see #1251), but nothing happens in between.
+        error!(
+            "the shutdown safety stop was not asserted \
+             (see the warning above for the failing command); \
+             the mount may still be moving"
+        );
+    }
     *parameters.write().await = None;
 }
 
@@ -892,6 +975,25 @@ mod tests {
         assert_eq!(params.tmr_freq, 0x00F4_2400);
         assert_eq!(params.motor_board_version, 0x000C_3003);
         session.close().await.unwrap();
+    }
+
+    fn gti_parameters() -> MountParameters {
+        MountParameters {
+            cpr_ra: 0x0037_5F00,
+            cpr_dec: 0x002C_4C00,
+            tmr_freq: 0x00F4_2400,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn sidereal_step_period_ra_uses_the_ra_cpr() {
+        assert_eq!(gti_parameters().sidereal_step_period_ra(), 379_912);
+    }
+
+    #[test]
+    fn sidereal_step_period_dec_uses_the_dec_cpr() {
+        assert_eq!(gti_parameters().sidereal_step_period_dec(), 474_890);
     }
 
     #[tokio::test]
@@ -1665,6 +1767,109 @@ mod tests {
         assert!(
             msg.contains("transport endpoint"),
             "verify-the-port hint missing: {msg}"
+        );
+    }
+
+    /// A mount that answers the startup halt with `!XX` must stop the
+    /// driver coming up — the case behind
+    /// [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
+    ///
+    /// The refusal is invisible below this layer: `SkywatcherCodec`
+    /// hands back the `!0\r` frame as a perfectly good response, so
+    /// `Connection::request` returns `Ok` and the shared crate's
+    /// wire-failure counter never moves. Only `safety_stop`'s typed
+    /// decode sees it, and only its verdict carries it out.
+    #[tokio::test]
+    async fn a_mount_that_refuses_the_startup_halt_fails_the_start() {
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        // `:L` only: the handshake uses none of it, so the mount
+        // answers every init command and then refuses the halt.
+        state.lock().await.fail_command = Some(b'L');
+        let manager = MountManager::new(&Config::default(), Arc::new(factory));
+
+        let err = manager.transport().start().await.unwrap_err();
+
+        // The premise: this is a refusal *after* a clean handshake, not
+        // a wrong device that never got that far.
+        let log = state.lock().await.command_log.clone();
+        assert!(
+            log.iter().any(|f| f.starts_with(b":e1")),
+            "the identity probe must have run: {log:?}"
+        );
+        assert!(
+            log.iter().any(|f| f.starts_with(b":j2")),
+            "and the whole handshake with it: {log:?}"
+        );
+        assert!(
+            log.iter().any(|f| f.starts_with(b":L1")),
+            "and the halt must have been attempted: {log:?}"
+        );
+
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("not asserted"),
+            "the start must fail saying the state was not asserted, got: {msg}"
+        );
+        // The refusal is *this* test's cause, but it is not the only
+        // one that folds to `NotAsserted` — a garbled reply does too —
+        // so the message must not name it. `safety_stop`'s own
+        // per-command `warn!` is where the specific error is reported.
+        assert!(
+            !msg.contains("refus"),
+            "and must not claim to know which failure it was, got: {msg}"
+        );
+        assert!(
+            !manager.transport().is_available(),
+            "and must not advertise a mount whose halt it could not assert"
+        );
+    }
+
+    /// A mount that refuses the *shutdown* halt gets the loud log and
+    /// nothing else: the lifecycle is ending, `Hooks::shutdown` has no
+    /// verdict to return, and the teardown still has to finish. The
+    /// next cold start is what re-asserts the state (#1251).
+    ///
+    /// Clearing the parameter cache is the observable proof the
+    /// teardown ran past the refusal rather than bailing at it.
+    #[tokio::test]
+    async fn a_mount_that_refuses_the_shutdown_halt_still_finishes_teardown() {
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        let manager = MountManager::new(&Config::default(), Arc::new(factory));
+
+        // Start healthy — the refusal has to come after the handshake
+        // has cached parameters, or there is nothing to clear.
+        manager.transport().start().await.unwrap();
+        assert!(
+            manager.parameters().await.is_some(),
+            "the handshake must have cached parameters before the shutdown"
+        );
+
+        // Now the mount refuses `:L`. `:K` still answers, so this is a
+        // partial refusal — which folds to not-asserted all the same.
+        state.lock().await.fail_command = Some(b'L');
+
+        manager.transport().shutdown().await.unwrap();
+
+        assert!(
+            manager.parameters().await.is_none(),
+            "the teardown must clear the cache even when the halt was refused"
+        );
+        // The premise, not an aside: `fail_command = Some(b'L')` makes
+        // the mock answer `:L1` with `!0`, so seeing `:L1` on the wire
+        // is seeing the refusal happen. Without it this test would pass
+        // just as well on a halt the mount accepted, and would be
+        // asserting nothing about the refusal path at all. The `error!`
+        // itself is a log side-effect and deliberately not asserted.
+        let log = state.lock().await.command_log.clone();
+        assert!(
+            log.iter().any(|f| f.starts_with(b":L1")),
+            "the refused halt must have gone out: {log:?}"
+        );
+        assert!(
+            log.iter().any(|f| f.starts_with(b":K1")),
+            "and the sequence must continue past it, not stop at the first refusal: {log:?}"
         );
     }
 }

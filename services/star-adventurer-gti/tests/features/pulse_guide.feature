@@ -7,22 +7,49 @@ Feature: PulseGuide as rate-shifted tracking
   `:J<axis>`, sets `IsPulseGuiding`, and spawns a watcher task that
   restores prior state after the requested duration.
 
-  Direction → (axis, ccw, rate factor of sidereal):
+  Direction → (axis, ccw, rate factor of sidereal), counterweight-down:
   | Direction | Axis | ccw   | rate factor      |
   | East      | RA   | false | 1 - ra_fraction  |
   | West      | RA   | false | 1 + ra_fraction  |
   | North     | Dec  | false | dec_fraction     |
   | South     | Dec  | true  | dec_fraction     |
 
+  `guideNorth` moves the OTA toward +Dec on both sides of the pier.
+  The Dec encoder is not a proxy for declination: past a celestial
+  pole the mapping becomes `Dec = sign(θ) · (180° − |θ|)`, so the
+  encoder counts against declination. On the counterweight-up side
+  the Dec `ccw` bit is therefore inverted — North sends `:G211` and
+  South `:G210`. RA is untouched: the flip shifts `mech_HA` by 12 h,
+  it does not mirror it, so East still slows tracking and West still
+  speeds it whichever side the mount is on. The side is the
+  Dec-encoder classification `SideOfPier` reports, not something the
+  flip policy planned, so a mount placed past the pole by hand guides
+  correctly with the policy disabled.
+
   Wire mode bytes (Tracking-Slow):
-  | Direction | :G frame |
-  | East/West | :G110    |
-  | North     | :G210    |
-  | South     | :G211    |
+  | Direction | :G frame, counterweight-down | :G frame, counterweight-up |
+  | East/West | :G110                        | :G110                      |
+  | North     | :G210                        | :G211                      |
+  | South     | :G211                        | :G210                      |
 
   Default `GuideRateRightAscension` / `GuideRateDeclination` is
   0.5 × sidereal (`SIDEREAL_DEG_PER_SEC ≈ 0.00417807`, so the default
   rate is approximately `0.00208904 deg/sec`).
+
+  The shifted period is per-axis. `:I` carries the time between motor
+  steps, and the axes have different counts per revolution, so each
+  axis has its own sidereal period
+  `round(TMR_Freq × 86164.0905 / CPR<axis>)` and the pulse sends
+  `round(sidereal period / rate factor)`. A Dec pulse sent an RA-derived
+  period guides too fast by CPR_RA / CPR_Dec = 1.25. With TMR_Freq
+  16000000 and the default 0.5 × sidereal guide rates:
+  | Axis | CPR     | sidereal period | pulse            | period | :I frame  |
+  | RA   | 3628800 | 379912          | East  (0.5 ×)    | 759824 | :I110980B |
+  | RA   | 3628800 | 379912          | West  (1.5 ×)    | 253275 | :I15BDD03 |
+  | RA   | 3628800 | 379912          | restore sidereal | 379912 | :I108CC05 |
+  | Dec  | 2903040 | 474890          | North (0.5 ×)    | 949780 | :I2147E0E |
+  | Dec  | 2903040 | 474890          | South (0.5 ×)    | 949780 | :I2147E0E |
+  (`:I` payloads are 24-bit, low byte first.)
 
   Scenario: CanPulseGuide is true when connected
     Given a running star-adventurer service
@@ -101,11 +128,11 @@ Feature: PulseGuide as rate-shifted tracking
     And I enable tracking
     And I pulse guide North for 2000 ms
     Then the mount should have received commands matching:
-      | pattern |
-      | :K2     |
-      | :G210   |
-      | :I2.*   |
-      | :J2     |
+      | pattern   |
+      | :K2       |
+      | :G210     |
+      | :I2147E0E |
+      | :J2       |
     And IsPulseGuiding should become false within 20000 ms
     And the mount should have received command :K2
 
@@ -115,11 +142,46 @@ Feature: PulseGuide as rate-shifted tracking
     And I enable tracking
     And I pulse guide South for 2000 ms
     Then the mount should have received commands matching:
-      | pattern |
-      | :K2     |
-      | :G211   |
-      | :I2.*   |
-      | :J2     |
+      | pattern   |
+      | :K2       |
+      | :G211     |
+      | :I2147E0E |
+      | :J2       |
+    And IsPulseGuiding should become false within 20000 ms
+
+  Scenario: PulseGuide North on the counterweight-up side still moves the OTA north
+    # Issue #1300. Seeding the Dec encoder past the pole (135°, beyond
+    # the ±90° classification boundary) is the same state a completed
+    # meridian flip leaves behind, and is how side_of_pier.feature
+    # places the mount counterweight-up. No flip policy is configured:
+    # the inversion follows the encoder, not a planned flip.
+    Given a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
+    And the Dec-axis encoder reports angle 135.0 degrees
+    And a running star-adventurer service
+    When I connect the device
+    And the mount has settled on pier side East
+    And I pulse guide North for 2000 ms
+    Then the mount should have received commands matching:
+      | pattern   |
+      | :K2       |
+      | :G211     |
+      | :I2147E0E |
+      | :J2       |
+    And IsPulseGuiding should become false within 20000 ms
+
+  Scenario: PulseGuide South on the counterweight-up side still moves the OTA south
+    Given a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
+    And the Dec-axis encoder reports angle 135.0 degrees
+    And a running star-adventurer service
+    When I connect the device
+    And the mount has settled on pier side East
+    And I pulse guide South for 2000 ms
+    Then the mount should have received commands matching:
+      | pattern   |
+      | :K2       |
+      | :G210     |
+      | :I2147E0E |
+      | :J2       |
     And IsPulseGuiding should become false within 20000 ms
 
   Scenario: PulseGuide East while tracking shifts the rate and restores sidereal
@@ -132,15 +194,15 @@ Feature: PulseGuide as rate-shifted tracking
     And I pulse guide East for 2000 ms
     Then IsPulseGuiding should become false within 20000 ms
     And the mount should have received commands matching:
-      | pattern |
-      | :K1     |
-      | :G110   |
-      | :I1.*   |
-      | :J1     |
-      | :K1     |
-      | :G110   |
-      | :I1.*   |
-      | :J1     |
+      | pattern   |
+      | :K1       |
+      | :G110     |
+      | :I110980B |
+      | :J1       |
+      | :K1       |
+      | :G110     |
+      | :I108CC05 |
+      | :J1       |
 
   Scenario: PulseGuide West while tracking shifts the rate and restores sidereal
     # West speeds tracking (period shrinks); same restore shape as East.
@@ -150,15 +212,15 @@ Feature: PulseGuide as rate-shifted tracking
     And I pulse guide West for 2000 ms
     Then IsPulseGuiding should become false within 20000 ms
     And the mount should have received commands matching:
-      | pattern |
-      | :K1     |
-      | :G110   |
-      | :I1.*   |
-      | :J1     |
-      | :K1     |
-      | :G110   |
-      | :I1.*   |
-      | :J1     |
+      | pattern   |
+      | :K1       |
+      | :G110     |
+      | :I15BDD03 |
+      | :J1       |
+      | :K1       |
+      | :G110     |
+      | :I108CC05 |
+      | :J1       |
 
   Scenario: PulseGuide East while not tracking does not restore tracking
     # Without prior tracking, the watcher's RA restore branch is skipped

@@ -17,7 +17,11 @@ Feature: Exposure lifecycle
   AbortExposure cancels an in-flight exposure and CanAbortExposure is true
   (E7); StopExposure is not implemented and CanStopExposure is false (E8).
   Mid-exposure SDK error transitions to the Error state (E9, covered by unit
-  tests against the mock SDK seam).
+  tests against the mock SDK seam). The exposure state belongs to the session
+  that produced it, so every member reporting it — CameraState, ImageReady,
+  PercentCompleted, LastExposureStartTime, LastExposureDuration and ImageArray —
+  answers NOT_CONNECTED once the device is disconnected, rather than from the
+  session that has ended (E10).
 
   Background:
     Given the qhy-camera service running with the simulation backend
@@ -88,6 +92,23 @@ Feature: Exposure lifecycle
     And the exposure on camera device 0 completes
     Then camera device 0 reports ImageReady as true
     And camera device 0 reports CameraState as Idle
+
+  Scenario Outline: A disconnected camera reports no exposure state from the session that ended
+    Given camera device 0 is connected
+    When I StartExposure on camera device 0 with BinX 1 BinY 1 NumX 64 NumY 48 StartX 0 StartY 0 Duration 0.01 Light true
+    And the exposure on camera device 0 completes
+    And I disconnect camera device 0
+    And I try to read <member> from camera device 0
+    Then the call is rejected with ASCOM NOT_CONNECTED
+
+    Examples:
+      | member                |
+      | CameraState           |
+      | ImageReady            |
+      | PercentCompleted      |
+      | LastExposureStartTime |
+      | LastExposureDuration  |
+      | ImageArray            |
 
   Scenario: Disconnecting during an exposure closes the device cleanly
     Given camera device 0 is connected

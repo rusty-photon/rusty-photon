@@ -159,6 +159,25 @@ fn main() -> ServiceResult {
         .with_reload()
         .scm_mode(args.service)
         .run_with_reload(move |shutdown, reload| async move {
+            // One mock mount for the life of the process, built outside
+            // the loop on purpose. A reload rebuilds the *driver's*
+            // transport; the device on the other end of it does not go
+            // anywhere, and neither does what it was told. Rebuilding
+            // the factory per iteration gave each reload a mount with no
+            // memory of the previous lifecycle — and reset
+            // `/debug/v1/mock-commands` underneath any BDD scenario that
+            // reloads and then asserts on the wire.
+            //
+            // CapturingMockFactory shares its `MockMountState` Arc with
+            // every transport it opens; the same Arc backs the debug
+            // endpoint.
+            #[cfg(feature = "mock")]
+            let mock = {
+                let factory = CapturingMockFactory::new();
+                let state = Arc::clone(&factory.state);
+                let factory: Arc<dyn TransportFactory> = Arc::new(factory);
+                (factory, state)
+            };
             loop {
                 // The file always exists (materialize wrote the scaffold on
                 // first run). Re-read + re-apply overrides each cycle.
@@ -182,16 +201,9 @@ fn main() -> ServiceResult {
                     .with_reload_signal(reload.clone());
 
                 #[cfg(feature = "mock")]
-                let builder = {
-                    // CapturingMockFactory shares its `MockMountState` Arc with
-                    // every transport; reuse it for /debug/v1/mock-commands.
-                    let factory = CapturingMockFactory::new();
-                    let state = Arc::clone(&factory.state);
-                    let factory: Arc<dyn TransportFactory> = Arc::new(factory);
-                    builder
-                        .with_transport_factory(factory)
-                        .with_debug_mock_state(state)
-                };
+                let builder = builder
+                    .with_transport_factory(Arc::clone(&mock.0))
+                    .with_debug_mock_state(Arc::clone(&mock.1));
                 #[cfg(not(feature = "mock"))]
                 {
                     // Production picks Serial vs UDP from `config.transport`.

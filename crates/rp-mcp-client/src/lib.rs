@@ -58,8 +58,8 @@ use std::sync::{Arc, Mutex};
 use base64::Engine as _;
 use reqwest::header::{HeaderName, HeaderValue, AUTHORIZATION};
 use rmcp::model::{
-    CallToolRequest, CallToolRequestParams, CallToolResult, ClientCapabilities, ClientInfo,
-    ClientRequest, ErrorData, Implementation, ProgressNotificationParam, ProgressToken,
+    CallToolRequest, CallToolRequestParams, CallToolResult, ClientCapabilities, ClientRequest,
+    ErrorData, Implementation, InitializeRequestParams, ProgressNotificationParam, ProgressToken,
     ProtocolVersion, ServerResult,
 };
 use rmcp::service::ServiceError;
@@ -259,8 +259,11 @@ struct RpClientHandler {
 }
 
 impl ClientHandler for RpClientHandler {
-    fn get_info(&self) -> ClientInfo {
-        let mut info = ClientInfo::new(
+    // `InitializeRequestParams`, not rmcp's deprecated `ClientInfo` alias for
+    // it — docs/workspace.md § "Name rmcp's initialize types, not its
+    // aliases".
+    fn get_info(&self) -> InitializeRequestParams {
+        let mut info = InitializeRequestParams::new(
             ClientCapabilities::default(),
             Implementation::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")),
         );

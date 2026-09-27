@@ -232,6 +232,13 @@ impl TryFrom<f64> for FlipRangeHours {
 }
 ```
 
+> **Note (2026-09):** `FlipRangeHours` and its `flip_range_hours` config
+> field were removed — the quantity they described turned out to be the
+> wrong shape for the mechanism (see the star-adventurer-gti design doc,
+> §Flip policy, and issue #1301). The pattern this ADR records is
+> unaffected; `TrackingGuardMarginHours` and `MinAltitudeDegrees` are
+> live examples of it. The decision text below is left as it was written.
+
 The scalar fields (`FlipRangeHours`, `TrackingGuardMarginHours`) keep a
 bare-number JSON form. The CW zone becomes one `CwExclusionZone`
 (`Active(ActiveZone) | Disabled`), modelled as `Option<ActiveZone>` on

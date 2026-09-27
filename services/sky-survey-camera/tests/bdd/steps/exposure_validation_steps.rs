@@ -18,12 +18,32 @@ async fn connected_stubbed(world: &mut SkySurveyCameraWorld) {
 #[given("an exposure is already in flight")]
 async fn exposure_in_flight(world: &mut SkySurveyCameraWorld) {
     // Set the stub to Hold so the spawned fetch hangs indefinitely;
-    // that keeps `exposure_in_flight` true for E2 / A1 / A2.
+    // that keeps `exposure_in_flight` true for E2 / A1.
     world.set_stub_behavior(crate::world::StubBehavior::Hold);
     world.drive_start_exposure(1, 1, 100, 100, 0, 0, 1.0).await;
     if let Some(code) = world.last_ascom_error {
         panic!("expected initial StartExposure to succeed, got ASCOM {code:#X}");
     }
+}
+
+#[given("an exposure has completed")]
+async fn exposure_completed(world: &mut SkySurveyCameraWorld) {
+    // The opposite setup to the Given above: let the fetch finish, so the
+    // camera is idle with a frame still readable. A3 asserts a cancel
+    // issued here leaves that frame alone.
+    world.set_stub_behavior(crate::world::StubBehavior::ServingFits(
+        crate::world::make_zero_fits(640, 480),
+    ));
+    world.drive_start_exposure_default().await;
+    if let Some(code) = world.last_ascom_error {
+        panic!("expected StartExposure to succeed, got ASCOM {code:#X}");
+    }
+    assert!(
+        world
+            .wait_for_image_ready(std::time::Duration::from_secs(10))
+            .await,
+        "image never became ready within 10s"
+    );
 }
 
 #[when(

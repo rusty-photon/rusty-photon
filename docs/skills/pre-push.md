@@ -131,6 +131,18 @@ cargo test        --locked --workspace --all-features --test bdd
 cargo test        --locked --workspace --all-features --doc
 ```
 
+The BDD line is the one place this differs from the job. CI runs that suite
+through [`bdd-sharded`](../../.github/actions/bdd-sharded), which builds every
+`bdd` target once and then runs the binaries as parallel streams, sharding the
+suites that route their cucumber filter through
+`bdd_infra::sharding::scenario_in_current_shard`. The plain `cargo test` above
+covers the same scenarios, one package's `bdd` binary after another — the same
+coverage, and what you want when you are reading a failure rather than racing a
+clock. Note that is sequential *processes*, not one: `@serial` and the shared
+OmniSim are per-process state, so each package's suite gets its own. To
+reproduce a single CI stream instead, set the shard env on one package's
+binary; see [testing.md § 5.5](testing.md).
+
 **The BDD step needs the harness binaries the workflow installs for you.** The
 job runs [`install-omnisim`](../../.github/actions/install-omnisim) and
 [`install-pebble`](../../.github/actions/install-pebble) first, which export
@@ -230,6 +242,39 @@ no clippy, and its `-Dwarnings` is rustc's set, which never evaluates
 that hole off-PR (#984): a violation lands on main and surfaces within minutes
 of the merge (push) or overnight (schedule, via the `check-nightly` tracking
 issue) rather than failing only a Windows/macOS contributor's pre-commit hook.
+
+**Run it locally when your change adds OS-gated code — you do not need those
+hosts.** clippy only *checks*: it neither links nor runs tests, so a crate
+without C dependencies lints for another target from the Linux dev box, and
+reproduces a `clippy-os` failure exactly.
+
+**Run both passes per target** — `clippy-os` runs both, for the reasons under
+*Every clippy job runs two passes* below, and the default-features one is what
+compiles code behind `not(feature = ...)`. An all-features-only run can
+therefore miss the very violation this is here to catch.
+
+```sh
+rustup target add x86_64-pc-windows-msvc aarch64-apple-darwin
+crate=rusty-photon-doctor-checks   # whichever crate your change touched
+for target in x86_64-pc-windows-msvc aarch64-apple-darwin; do
+    cargo clippy --target "$target" -p "$crate" \
+        --all-targets --all-features -- -D warnings
+    cargo clippy --target "$target" -p "$crate" \
+        --lib --bins -- -D warnings
+done
+```
+
+Scope it to the crates you touched — `--workspace` fails locally at the first
+build script that compiles C for the host it cannot target (`ring`,
+`aws-lc-sys`, `erfars`). Since `clippy-os` is off-PR, skipping this means the
+violation is found by the push to main — after the merge, on everyone's tree.
+
+An alternative that needs no cross-target setup, for a module whose logic is
+platform-independent: gate it `#[cfg(any(windows, test))]` (or the macOS
+equivalent) so the ubuntu `--all-targets` pass compiles and lints it on every
+PR. `rusty-photon-doctor-checks`'s USB collectors do this for their parsers
+and their bounded-subprocess helper.
+
 **Every clippy job runs two passes** (#988): `--all-features` turns `mock` /
 `simulation` ON and thereby cfgs OUT the real-hardware production slices behind
 `not(feature = "mock")` / `not(feature = "simulation")`. The second pass —
@@ -297,9 +342,9 @@ runs `--workspace` (no narrowing job).
 
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|
-| **required (stable)** | `cargo nextest run --locked --workspace --all-features --all-targets` + `cargo test --locked --workspace --all-features --test bdd` | stable, cargo-nextest | Off-PR |
+| **required (stable)** | `cargo nextest run --locked --workspace --all-features --all-targets` + `cargo test --locked --workspace --all-features --test bdd` (CI shards the BDD half — see above) | stable, cargo-nextest | Off-PR |
 | **required (stable, doc)** | `cargo test --locked --workspace --all-features --doc` | stable | Off-PR |
-| **macos / windows** | same, per host OS (Windows runs BDD in one job) | -- | Off-PR |
+| **macos / windows** | same, per host OS (all three jobs shard the BDD step) | -- | Off-PR |
 
 The `macos` job runs with `RUSTFLAGS=-Dwarnings`. Nothing on a PR denies rustc
 warnings for macOS — `bazel / macos-latest` is off the PR gate and clippy runs
@@ -575,7 +620,7 @@ Current services and their commands:
 ### ConformU Quick Start
 
 ```bash
-# Install ConformU (first time only)
+# Install ConformU (resolves the latest release, same as CI; Linux x64 only)
 ./scripts/test-conformance.sh --install-conformu
 
 # Run conformance tests
@@ -584,6 +629,10 @@ Current services and their commands:
 # Run with custom options
 ./scripts/test-conformance.sh --port 12345 --verbose --keep-reports
 ```
+
+Running against **real hardware** to produce a `docs/validation/` record
+is a different task with a version gate of its own — see
+[hardware-validation.md](hardware-validation.md).
 
 ---
 
@@ -710,6 +759,24 @@ skip is not a green light for ACME-path changes). To narrow a run:
 bazel test //services/filemonitor:bdd    # a single service's suite
 bazel test --test_tag_filters=bdd //...  # only the BDD suites
 ```
+
+The default filter **excludes exactly two tags**: `conformu` and
+`requires-cargo`. Neither runs in a plain `bazel test //...`, so a green
+local run says nothing about either. Run the conformance suites
+explicitly when a change touches an Alpaca driver's device surface:
+
+```bash
+CONFORMU_PATH=/path/to/conformu bazel test --config=conformu //...
+```
+
+**`CONFORMU_PATH` is not optional here.** `--config=conformu` only
+selects the conformu-tagged tests; `bdd_infra::run_conformu` **self-skips
+when `CONFORMU_PATH` is unset** (`.bazelrc`, "Conformu config"), so
+omitting it gives you a green run in which no conformance test executed —
+the same false reassurance this paragraph is warning about, one line
+later. Install ConformU via
+[hardware-validation.md](hardware-validation.md) and point the variable
+at the binary.
 
 Coverage runs as a separate required workflow
 (`.github/workflows/bazel-coverage.yml`) on every PR. Locally it needs the

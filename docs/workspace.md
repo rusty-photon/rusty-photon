@@ -79,6 +79,7 @@ these away, the decision is wrong.
 | [docs/skills/coverage.md](skills/coverage.md) | Skill: checking code coverage in CI and locally (Coveralls, the coverage artifact, in-diff annotations) |
 | [docs/skills/service-lifecycle.md](skills/service-lifecycle.md) | Skill: scaffolding a long-running service binary (`main.rs`, runtime + shutdown handling) |
 | [docs/skills/archiving-plans.md](skills/archiving-plans.md) | Skill: archiving a completed plan into `docs/plans/archive/` |
+| [docs/skills/hardware-validation.md](skills/hardware-validation.md) | Skill: validating a driver against real hardware — the ConformU version gate, the run, and the `docs/validation/` record |
 | [docs/skills/bazel-remote-cache.md](skills/bazel-remote-cache.md) | Skill: using the self-hosted Bazel remote cache |
 | [docs/skills/raspberry-pi-runner.md](skills/raspberry-pi-runner.md) | Skill: the Pi 5 self-hosted ARM64 nightly runner |
 | **Crate design docs** (substantial workspace libraries — see [docs/crates/](crates/)) | |
@@ -115,6 +116,7 @@ these away, the decision is wrong.
 | [ADR-016](decisions/016-service-config-ownership-and-doctor.md) | Service config ownership — installers place bytes, a standalone `rusty-photon-doctor` wires the configs; service facts only (device usage stays in `rp`); hardware checks split at the SDK line per ADR-014 |
 | [ADR-018](decisions/018-svbony-sdk-no-license-payload-policy.md) | SVBony SDK payload policy — a third ADR-013 bucket for SDKs with no license grant at all: never redistribute, download-on-target like QHY |
 | **Plans** (in-flight initiatives — see [docs/plans/](plans/)) | |
+| [device-claims-and-phd2-camera.md](plans/device-claims-and-phd2-camera.md) | Device ownership across SDK-backed **camera** drivers and PHD2: a `claims` config block letting each camera driver register only the devices it owns, keyed on the **USB port path as the only key** and resolved from the passive cross-platform USB inventory `rusty-photon-doctor-checks` already gathers, applied *before* any open/init probe — which also restores the enumeration-only contract `qhy-camera doctor` breaks today. Each camera service's own `doctor --devices` (e.g. `qhy-camera doctor --devices`, not the central `rusty-photon-doctor`) prints the paste-ready claim per device, and the port gives serial-less **ZWO/SVBony** cameras a `UniqueID` fallback intended to be stable **while the camera stays in its port** (contingent: D4.6 leaves the per-device persistence needed for that to C5) (and only where the port↔SDK join resolves — two identical serial-less cameras keep today's index-based identity, which can swap on a bus reorder) — moving the cable changes both that identity and the `devices` override key, so a move is a documented migration, not a transparent event (QHY's equivalent is decided in C5). Plus an opt-in ASCOM Alpaca **Camera** facade in `phd2-guider` that serves PHD2-captured frames so the guide camera joins rp's roster and the ordinary capture autofocus sweep works on the guiding train. **Not started** — the six operator-facing decisions are settled (see the plan's Decisions table), but seven items await evidence or an implementation choice, three of which block a phase: the Windows port spelling (C1, blocking hardware spike), the capture completion watermark (C6), the device-number strategy (C5 — the pinned `ascom-alpaca-rs` numbers devices by `Vec` position, so sparse slots are not implementable), how `config.apply` reports a restart-only field (C5 — `ConfigurableDriver` has one disposition per driver), and C7's reconciliation with [focus-model](plans/focus-model.md) S7/D17, which retires rp's capture-based `auto_focus` |
 | [focus-model.md](plans/focus-model.md) | A tool provider that is the expert at focusing a train ([`focus-model`](services/focus-model.md), port 11173): `rp` keeps the physics — backlash-compensated moves, star measurement, the train's optical facts, the focus events — and the provider sizes the sweep from the optics, predicts the start from what it remembers of the train, retries without widening, puts the focuser back on failure, and records every run. S1–S6 merged — the `rp` layer, the provider itself, filter offsets and temperature calibration. **Remaining: S7** (`session-runner` switches to `focus_train`; the capture-based `auto_focus` / `refocus_train` retire), and **S8–S11** from the 2026-09-13 open-items review (obstruction as a train fact, the hyperbolic fit, the guiding train, a stand-in temperature probe) |
 | [i18n.md](plans/i18n.md) | Workspace internationalization: per-surface scope, four Rust i18n stacks (recommendation: Fluent) and an i18n recipe per candidate UX stack. **Options only** — §§6–7's rollout phasing is deliberately uncommitted. The CLI spike already shipped [`rusty-photon-i18n`](../crates/rusty-photon-i18n/) with `ppba-driver` as first consumer ([`i18n-cli-spike.md`](plans/archive/i18n-cli-spike.md)) |
 | [optical-trains.md](plans/optical-trains.md) | Group devices by light path and derive the coupling: the `optical_trains` config and derived model, train-addressed `auto_focus` / rotator tools, the mount motion gate, the rotate×guide ladder, and DSL train addressing. T0–T5 merged (#579, #586, #591, #594, #601, #617). **Remaining: T6** — `ui-htmx` `/equipment` grouped by train, with membership editing |
@@ -141,7 +143,7 @@ listed here.
 | [rusty-photon-i18n](../crates/rusty-photon-i18n/) | `crates/rusty-photon-i18n` | Fluent loader + locale resolver shared across services. Reads `RP_LOCALE` / `LC_ALL` / `LC_MESSAGES` / `LANG` / OS, negotiates against the locales each consumer embeds, falls back to `en`. Owns `LocalizedParser` trait, `init` lifecycle, and an `ACTIVE_LOADER` thread-local for `value_parser` callbacks. First consumer: `ppba-driver` (CLI help + errors). See [`i18n.md`](plans/i18n.md) and [`i18n-cli-spike.md`](plans/archive/i18n-cli-spike.md). |
 | [rusty-photon-i18n-derive](../crates/rusty-photon-i18n-derive/) | `crates/rusty-photon-i18n-derive` | Companion proc-macro crate. `#[derive(LocalizedParser)]` reads `#[localized(about = "key")]` / `#[localized(help = "key")]` attributes alongside `#[derive(Parser)]` and emits a `parse_localized(loader)` impl that mutates the clap `Command` before parse. Re-exported via `rusty_photon_i18n::LocalizedParser`. |
 | [rusty-photon-shared-transport](../crates/rusty-photon-shared-transport/) | `crates/rusty-photon-shared-transport` | Refcounted multi-client lifecycle scaffolding for duplex transports (serial + UDP): `SharedTransport<Codec>`, the `TransportFactory` trait, and background polling. Also owns `open_serial_port`, the one place a serial port is opened: every driver's factory goes through it for the builder settings, the error mapping, and the bounded retry that rides out a Windows handle still closing. Basis of the shared-transport driver pattern (first adopter: `dsd-fp2`). |
-| [rusty-photon-camera-core](../crates/rusty-photon-camera-core/) | `crates/rusty-photon-camera-core` | The vendor-neutral half of the three ASCOM camera drivers: ROI validation and its rule order (R2/R3), the bin-ratio ROI rescale (B3), binned-full-frame sensor alignment (R4), `BayerOffsetX/Y` from a canonical mosaic (ST1), the single-plane `ImageArray` unpack, and `PercentCompleted`'s cap. Two tests decide what belongs here, both about the *driver* half rather than about dependencies: nothing there implements ASCOM's `Camera`/`Device` traits or holds device state, and no vendor SDK type appears in a signature. ASCOM Alpaca is the workspace's lingua franca, so the crate speaks it (`ImageArray`, `ASCOMError`) rather than handing each driver a private dialect to translate — which is why each driver still maps its own SDK's Bayer spelling and readout formats onto the shared vocabulary. Used by `qhy-camera`, `zwo-camera`, `svbony-camera`. |
+| [rusty-photon-camera-core](../crates/rusty-photon-camera-core/) | `crates/rusty-photon-camera-core` | The vendor-neutral half of the three ASCOM camera drivers: ROI validation and its rule order (R2/R3), the unbinned ROI and the binned views ASCOM's members are read through (B3), binned-full-frame sensor alignment (R4), `BayerOffsetX/Y` from a canonical mosaic (ST1), the single-plane `ImageArray` unpack, and `PercentCompleted`'s cap. Two tests decide what belongs here, both about the *driver* half rather than about dependencies: nothing there implements ASCOM's `Camera`/`Device` traits or holds device state, and no vendor SDK type appears in a signature. ASCOM Alpaca is the workspace's lingua franca, so the crate speaks it (`ImageArray`, `ASCOMError`) rather than handing each driver a private dialect to translate — which is why each driver still maps its own SDK's Bayer spelling and readout formats onto the shared vocabulary. Used by `qhy-camera`, `zwo-camera`, `svbony-camera`. |
 | [rusty-photon-driver](../crates/rusty-photon-driver/) | `crates/rusty-photon-driver` | Shared ASCOM-driver runtime layer: the common `DriverError` model, its ASCOM error-code mapping, and the generic `config.get`/`apply`/`schema` action dispatch. See [ADR-007](decisions/007-rusty-photon-driver-shared-crate.md). |
 | [rusty-photon-rolling-stats](../crates/rusty-photon-rolling-stats/) | `crates/rusty-photon-rolling-stats` | Time-windowed rolling statistics over timestamped samples: `SensorMean`, the sliding-window mean an `ObservingConditions` device serves its readings from. Dependency-free `std`-only by design — a rolling mean is wanted anywhere something is sampled on a cadence, so no consumer should inherit `ascom-alpaca` to get one. The window is applied on *read*, so a sampler that stops reads as "no value" rather than as an aged-out average. Used by `ppba-driver` and `upbv2-driver`. See [`docs/crates/rusty-photon-rolling-stats.md`](crates/rusty-photon-rolling-stats.md). |
 | [rusty-photon-config](../crates/rusty-photon-config/) | `crates/rusty-photon-config` | Shared config-path resolution, first-run `UniqueID` materialization, and the `config.get`/`apply`/`schema` action protocol for rusty-photon drivers. See [config-actions.md](services/config-actions.md). |
@@ -182,7 +184,7 @@ SDK from the modelcontextprotocol org). Key reasons for choosing `rmcp`:
 
 Workspace dependency (in root `Cargo.toml`):
 ```toml
-rmcp = { version = "1.7", default-features = false }
+rmcp = { version = "3.0", default-features = false }
 ```
 
 Service feature selections:
@@ -194,6 +196,26 @@ Service feature selections:
 
 `schemars` 1.0 is also a workspace dependency — rmcp's `#[tool]` macro
 generates JSON Schema from parameter structs via `schemars::JsonSchema`.
+
+### Name rmcp's initialize types, not its aliases
+
+`get_info` — the one method every `ServerHandler` and `ClientHandler` in
+the workspace implements — returns the value exchanged at initialize.
+Spell that value `InitializeResult` (server) and
+`InitializeRequestParams` (client), never rmcp's `ServerInfo` /
+`ClientInfo` aliases for the same structs, and never their 3.4
+replacements `ServerConfig` / `ClientConfig`.
+
+The aliases move; the structs do not. rmcp 3.4 deprecated `ServerInfo`
+and `ClientInfo` (the names collide with the protocol's own `serverInfo`
+/ `clientInfo` fields, which carry only the `Implementation` identity)
+and introduced `ServerConfig` / `ClientConfig` in their place — so a
+crate that names the old pair fails the nightly rolling job's
+`RUSTFLAGS: -D deprecated` leg the day the new rmcp lands, while one
+that names the new pair fails to build against every rmcp before 3.4,
+which the workspace's `rmcp = "3.0"` requirement still allows. The
+struct names are the one spelling valid across the whole range
+(issue #1266).
 
 ## Shared Architecture Patterns
 

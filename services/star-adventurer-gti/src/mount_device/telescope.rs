@@ -22,10 +22,11 @@ use skywatcher_motor_protocol::{Axis, Command};
 use tracing::debug;
 
 use crate::coordinates::{
-    encoder_to_celestial, local_sidereal_time_hours, pulse_guide_step_period, ra_dec_to_alt_az,
-    select_pier_side_for_target, side_of_pier as side_of_pier_calc, sidereal_step_period,
-    SIDEREAL_DEG_PER_SEC,
+    encoder_to_celestial, is_flipped_side, local_sidereal_time_hours, pulse_guide_step_period,
+    ra_dec_to_alt_az, select_pier_side_for_target, side_of_pier as side_of_pier_calc,
+    target_encoder_flipped, target_encoder_normal, SIDEREAL_DEG_PER_SEC,
 };
+use crate::manager::MountParameters;
 use crate::units::{Cpr, Dec, DecTicks, Ra, RaTicks};
 
 use super::inherent::validate_guide_rate;
@@ -33,6 +34,104 @@ use super::park_persistence::write_park_to_config;
 use super::slew::enable_sidereal_tracking_ra;
 use super::watchers::{clear_pulse_flag, spawn_park_completion_watcher, spawn_pulse_guide_watcher};
 use super::{pre_flip_side_for_latitude, MountDevice, SlewReservation};
+
+/// What a guide pulse in one direction does on the wire: which axis it
+/// drives, which way, at what multiple of sidereal, and that axis'
+/// sidereal step period.
+///
+/// The sidereal period is derived from the resolved axis rather than
+/// picked alongside it, because the period is per-axis: the `GTi`'s Dec
+/// axis has fewer counts per revolution than RA, so a Dec pulse sent an
+/// RA-derived period guides 1.25× too fast.
+///
+/// The Dec direction is derived from the pier side for the same reason
+/// it cannot be a constant: past a celestial pole the Dec encoder
+/// counts against declination, so `guideNorth` is `ccw = false` on the
+/// counterweight-down side and `ccw = true` on the counterweight-up one
+/// (issue #1300).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct GuidePulse {
+    pub(super) axis: Axis,
+    pub(super) ccw: bool,
+    /// Target rate as a multiple of sidereal: East/West shift RA
+    /// tracking down/up by the RA guide fraction; North/South spin Dec
+    /// from rest at the Dec guide fraction.
+    pub(super) rate_factor: f64,
+    pub(super) sidereal_period: u32,
+}
+
+impl GuidePulse {
+    /// `current_side` is the side [`side_of_pier`] reports for the
+    /// mount's present Dec encoder, and `site_latitude_deg` says which
+    /// label that hemisphere calls counterweight-up. `PierSide::Unknown`
+    /// resolves as counterweight-down.
+    ///
+    /// [`side_of_pier`]: crate::coordinates::side_of_pier
+    pub(super) fn resolve(
+        direction: GuideDirection,
+        ra_fraction: f64,
+        dec_fraction: f64,
+        params: &MountParameters,
+        current_side: PierSide,
+        site_latitude_deg: f64,
+    ) -> Self {
+        let (axis, ccw, rate_factor) = match direction {
+            GuideDirection::East => (Axis::Ra, false, 1.0 - ra_fraction),
+            GuideDirection::West => (Axis::Ra, false, 1.0 + ra_fraction),
+            GuideDirection::North => (Axis::Dec, false, dec_fraction),
+            GuideDirection::South => (Axis::Dec, true, dec_fraction),
+        };
+        // The table above is the counterweight-down mapping, where the
+        // Dec encoder and celestial declination run together. Past a
+        // celestial pole `Dec = sign(θ) · (180° − |θ|)`, so the encoder
+        // counts the other way and North/South must swap direction for
+        // `guideNorth` to keep moving the OTA north (issue #1300). RA
+        // needs no such correction: a flip shifts `mech_HA` by 12 h
+        // rather than mirroring it, so the East/West rate shifts mean
+        // the same thing on both sides.
+        let ccw = ccw ^ (axis == Axis::Dec && is_flipped_side(current_side, site_latitude_deg));
+        let sidereal_period = if axis == Axis::Ra {
+            params.sidereal_step_period_ra()
+        } else {
+            params.sidereal_step_period_dec()
+        };
+        Self {
+            axis,
+            ccw,
+            rate_factor,
+            sidereal_period,
+        }
+    }
+
+    /// The `:I` step period that runs the pulsed axis at `rate_factor`
+    /// × sidereal, validated against the protocol's 24-bit payload
+    /// range — `encode_u24` silently truncates above `0x00FF_FFFF`, so
+    /// an un-validated period would wrap to an unintended speed. The
+    /// floor is `rate_factor ≥ sidereal_period / 0xFFFFFF`: ≈ 0.023 on
+    /// RA (period ≈ 380K) and ≈ 0.028 on Dec (≈ 475K). Tiny guide-rate
+    /// fractions trip this; clients see `INVALID_VALUE`.
+    pub(super) fn step_period(&self) -> ASCOMResult<u32> {
+        const MAX_STEP_PERIOD: u32 = 0x00FF_FFFF;
+
+        let Self {
+            rate_factor,
+            sidereal_period,
+            ..
+        } = *self;
+        let shifted_period = pulse_guide_step_period(sidereal_period, rate_factor);
+        if shifted_period == 0 || shifted_period > MAX_STEP_PERIOD {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_VALUE,
+                format!(
+                    "PulseGuide step period {shifted_period} (rate_factor {rate_factor:.4} × \
+                     sidereal_period {sidereal_period}) is outside the protocol's 24-bit \
+                     range; pick a guide rate closer to sidereal"
+                ),
+            ));
+        }
+        Ok(shifted_period)
+    }
+}
 
 #[async_trait]
 impl Telescope for MountDevice {
@@ -337,10 +436,16 @@ impl Telescope for MountDevice {
             Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );
+        // The selector needs where the mount stands, not just which
+        // side it is on: a side is only usable when an RA sweep to it
+        // clears the CW exclusion zone.
+        let current_mech_ha =
+            RaTicks::new(snap.ra.position_ticks).to_mech_ha(Cpr::new(params.cpr_ra));
         let chosen_side = select_pier_side_for_target(
             Ra::new(ra),
             lst,
             current_side,
+            current_mech_ha,
             &self.config.flip_policy,
             self.config.cw_exclusion_zone.bounds(),
             self.config.site_latitude_deg,
@@ -475,6 +580,43 @@ impl Telescope for MountDevice {
         self.ensure_connected().await?;
         Self::validate_coordinates(ra, dec)?;
         self.ensure_unparked().await?;
+        // Take the axes for the duration, the way `Park` does. The
+        // encoder pair written below is chosen from the *cached* pier
+        // side, and an async slew (a flip most of all) returns as soon
+        // as its completion watcher is spawned. A sync overlapping that
+        // window reads the pre-flip Dec encoder, resolves the
+        // counterweight-down solution, and writes it to a mount already
+        // on its way to the other side — re-labelling it, so every
+        // later slew plans from a false position. That is the
+        // corruption this method's side-awareness exists to prevent,
+        // arriving through the back door.
+        //
+        // `axis_ownership` is what makes it exclusive, not the flag.
+        // A bare `load` would not do: the reads below are `.await`
+        // points, so a slew could start after the load and be moving
+        // by the time the `:E` writes land. Taking the slew's own
+        // `SlewReservation` would not do either — `AbortSlew` clears
+        // that flag unconditionally, correctly for the motion it
+        // cancels, but that would strip a sync of the exclusivity it
+        // is relying on and let the next slew in mid-write.
+        //
+        // So sync holds the one lock no third party can release on its
+        // behalf, and a slew or park must take it to reach its own
+        // reservation. The flag check below is then sound: while this
+        // lock is held no *new* slew can acquire, so a `true` reading
+        // means one is already under way and a `false` one cannot go
+        // stale. A sync is not motion, so it deliberately does not set
+        // the flag — `Slewing` stays honest.
+        //
+        // Both are taken before the pulse-guide cancel, so a refused
+        // sync has no side effects at all.
+        let _axes = self.axis_ownership.lock().await;
+        if self.slew_in_progress.load(Ordering::SeqCst) {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "sync refused: slew already in progress",
+            ));
+        }
         // Cancel any in-flight pulse-guide on either axis — sync is
         // an axis-position mutation and we don't want the watcher
         // restoring tracking against the freshly-set encoder position.
@@ -490,20 +632,52 @@ impl Telescope for MountDevice {
             .ok_or(ASCOMError::NOT_CONNECTED)?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(ASCOMError::from)?;
-        // Reject syncs that would set the encoder outside the
-        // mount's safe mechanical envelope — a bad sync would let
-        // the *next* tracking step push the OTA into a hard stop.
-        // Sync uses the pre-flip envelope (`target_is_flipped =
-        // false`); operators must `AbortSlew` and re-sync the pre-
-        // flip pointing first if a manual flip left the mount in a
-        // post-flip state.
-        self.check_within_safe_envelope(ra, dec, lst.value(), false)?;
-        let mech_ha = lst.hour_angle_of(Ra::new(ra)).to_mech();
-        let ra_ticks = mech_ha.to_ticks(Cpr::new(params.cpr_ra)).value();
-        let dec_ticks = Dec::new(dec)
-            .to_mech()
-            .to_ticks(Cpr::new(params.cpr_dec))
-            .value();
+        // Sync writes the encoder pair for the side the mount is
+        // *physically* on — classified from the Dec encoder, exactly as
+        // `SideOfPier` classifies it — and validates the target against
+        // that side's `mech_HA`. Assuming the pre-flip side
+        // unconditionally (as this did until 2026-09) refuses every
+        // western target while the mount is counterweight-up, because
+        // their pre-flip `mech_HA` sits in a CW exclusion zone the
+        // mount is nowhere near; worse, it accepts the eastern ones and
+        // writes a pre-flip encoder pair, silently re-labelling a
+        // flipped mount as unflipped so every later slew plans from a
+        // false position. See the design doc's
+        // [§"Sync and pier side"](../../../../docs/services/star-adventurer-gti.md#sync-and-pier-side).
+        //
+        // Rejecting a sync that would put the encoder outside the safe
+        // mechanical envelope stays: a bad sync lets the *next*
+        // tracking step push the OTA into a hard stop.
+        let snap = self.manager.snapshot().await;
+        let current_side = side_of_pier_calc(
+            DecTicks::new(snap.dec.position_ticks),
+            Cpr::new(params.cpr_dec),
+            self.config.site_latitude_deg,
+        );
+        let pre_flip_side = pre_flip_side_for_latitude(self.config.site_latitude_deg);
+        // An `Unknown` side (no Dec CPR) is treated as pre-flip — the
+        // same fallback the rest of the driver takes when the encoder
+        // classification is unavailable.
+        let sync_is_flipped = current_side != pre_flip_side && current_side != PierSide::Unknown;
+        self.check_within_safe_envelope(ra, dec, lst.value(), sync_is_flipped)?;
+        let (ra_ticks, dec_ticks) = if sync_is_flipped {
+            target_encoder_flipped(
+                Ra::new(ra),
+                Dec::new(dec),
+                lst,
+                Cpr::new(params.cpr_ra),
+                Cpr::new(params.cpr_dec),
+            )
+        } else {
+            target_encoder_normal(
+                Ra::new(ra),
+                Dec::new(dec),
+                lst,
+                Cpr::new(params.cpr_ra),
+                Cpr::new(params.cpr_dec),
+            )
+        };
+        let (ra_ticks, dec_ticks) = (ra_ticks.value(), dec_ticks.value());
         self.send(Command::SetPosition {
             axis: Axis::Ra,
             ticks: ra_ticks,
@@ -590,10 +764,16 @@ impl Telescope for MountDevice {
             Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );
+        // The selector needs where the mount stands, not just which
+        // side it is on: a side is only usable when an RA sweep to it
+        // clears the CW exclusion zone.
+        let current_mech_ha =
+            RaTicks::new(snap.ra.position_ticks).to_mech_ha(Cpr::new(params.cpr_ra));
         let chosen_side = select_pier_side_for_target(
             Ra::new(ra),
             lst,
             current_side,
+            current_mech_ha,
             &self.config.flip_policy,
             self.config.cw_exclusion_zone.bounds(),
             self.config.site_latitude_deg,
@@ -640,7 +820,15 @@ impl Telescope for MountDevice {
         // positions. The guard clears `slew_in_progress` on drop, so any
         // `?` failure below (or a failed watcher hand-off) rolls it back
         // without an explicit clear.
-        let Some(reservation) = SlewReservation::try_acquire(&self.slew_in_progress) else {
+        // Serialize with an in-flight sync's encoder writes before
+        // claiming the axes; see `axis_ownership`. Held only across the
+        // acquisition — park's own ownership is the reservation, which
+        // it hands to the park watcher.
+        let reservation = {
+            let _axes = self.axis_ownership.lock().await;
+            SlewReservation::try_acquire(&self.slew_in_progress)
+        };
+        let Some(reservation) = reservation else {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "park refused: slew already in progress",
@@ -861,6 +1049,18 @@ impl Telescope for MountDevice {
         // calls AbortSlew on a parked mount gets a clean error without
         // side-effects on tracking_requested or slew_in_progress.
         self.ensure_unparked().await?;
+        // Take the axes before touching the flag, and hold them through
+        // the stops. Without this, abort's own ordering — clear the
+        // flag, *then* `await` the `:L` sends — hands a waiting sync a
+        // `false` reading while the original motion is still running,
+        // and its `:E` writes land mid-slew. `axis_ownership` is what
+        // makes the flag check inside sync sound, so the operation that
+        // falsifies the flag has to hold it too.
+        //
+        // Blocking here is bounded by a sync's two encoder writes, and
+        // is the right order anyway: an abort arriving mid-sync should
+        // let the position write finish rather than interleave with it.
+        let _axes = self.axis_ownership.lock().await;
         // Clear slew_in_progress first so the slew/park watchers see the
         // abort and bail before clobbering the snapshot or at_park flag.
         // Also clear tracking_requested — `:L` halts any motion the
@@ -943,8 +1143,6 @@ impl Telescope for MountDevice {
     }
 
     async fn pulse_guide(&self, direction: GuideDirection, duration: Duration) -> ASCOMResult<()> {
-        const MAX_STEP_PERIOD: u32 = 0x00FF_FFFF;
-
         self.ensure_connected().await?;
         self.ensure_unparked().await?;
         if self.slewing().await? {
@@ -959,50 +1157,61 @@ impl Telescope for MountDevice {
         if duration.is_zero() {
             return Ok(());
         }
-        // Resolve direction → (axis, ccw, rate_factor) under a read
-        // lock. The in-flight check + flag-set happens later under a
-        // write lock so it's atomic against concurrent same-axis
-        // calls (the rate_factor / tracking_was_on snapshots taken
-        // here are stable: rates can be updated concurrently, but
-        // the worst case is a one-tick-late read which ASCOM
-        // tolerates).
-        let (axis, ccw, rate_factor, tracking_was_on) = {
-            let s = self.state.read().await;
-            let (axis, ccw, rate_factor) = match direction {
-                GuideDirection::East => (Axis::Ra, false, 1.0 - s.guide_rate_ra_fraction),
-                GuideDirection::West => (Axis::Ra, false, 1.0 + s.guide_rate_ra_fraction),
-                GuideDirection::North => (Axis::Dec, false, s.guide_rate_dec_fraction),
-                GuideDirection::South => (Axis::Dec, true, s.guide_rate_dec_fraction),
-            };
-            let tracking_was_on = axis == Axis::Ra && s.tracking_requested;
-            drop(s);
-            (axis, ccw, rate_factor, tracking_was_on)
-        };
-        // Compute the shifted step period from the cached
-        // sidereal-period helper and the rate factor. Validate against
-        // the protocol's 24-bit `:I` payload range before sending —
-        // `encode_u24` silently truncates above `0x00FF_FFFF`, so an
-        // un-validated period would wrap to an unintended speed.
-        // For sidereal_period ≈ 380K on the GTi, the floor is
-        // `rate_factor ≥ sidereal_period / 0xFFFFFF ≈ 0.023`. Tiny
-        // guide-rate fractions trip this; clients see `INVALID_VALUE`.
         let params = self
             .manager
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
-        let sidereal_period = sidereal_step_period(params.tmr_freq, Cpr::new(params.cpr_ra));
-        let shifted_period = pulse_guide_step_period(sidereal_period, rate_factor);
-        if shifted_period == 0 || shifted_period > MAX_STEP_PERIOD {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::INVALID_VALUE,
-                format!(
-                    "PulseGuide step period {shifted_period} (rate_factor {rate_factor:.4} × \
-                     sidereal_period {sidereal_period}) is outside the protocol's 24-bit \
-                     range; pick a guide rate closer to sidereal"
-                ),
-            ));
-        }
+        // Which way a Dec pulse has to turn depends on whether the Dec
+        // axis sits past a celestial pole, so the pulse resolves
+        // against the side the mount is on — the same Dec-encoder
+        // classification `SideOfPier` reports, read from the same
+        // background-poll snapshot.
+        //
+        // Sampled once, at pulse start, and not pinned: the `slewing()`
+        // gate above is a plain read, and `PulseGuide` claims no
+        // `axis_ownership`, so a slew or auto-flip starting in the
+        // window between that check and the `:G2` below can move the
+        // Dec axis under this pulse — and its own wire commands would
+        // interleave with ours regardless of which side we sampled.
+        // That window is issue #1311 (the lock serializes the commit,
+        // not the operation); `PulseGuide` is one of the operations it
+        // covers. It is not specific to the side read, which only
+        // inherits it.
+        //
+        // The sample also cannot straddle a pole crossing *within* one
+        // pulse. That needs the OTA to start within the pulse's own
+        // travel of the celestial pole — 37.6″ for a 5 s pulse at the
+        // default rate — where declination genuinely peaks and comes
+        // back down whichever way the encoder turns. See the design
+        // doc's Dec sign convention.
+        let current_side = side_of_pier_calc(
+            DecTicks::new(self.manager.snapshot().await.dec.position_ticks),
+            Cpr::new(params.cpr_dec),
+            self.config.site_latitude_deg,
+        );
+        // Resolve the pulse under a read lock. The in-flight check +
+        // flag-set happens later under a write lock so it's atomic
+        // against concurrent same-axis calls (the rate /
+        // tracking_was_on snapshots taken here are stable: rates can
+        // be updated concurrently, but the worst case is a
+        // one-tick-late read which ASCOM tolerates).
+        let (pulse, tracking_was_on) = {
+            let s = self.state.read().await;
+            let pulse = GuidePulse::resolve(
+                direction,
+                s.guide_rate_ra_fraction,
+                s.guide_rate_dec_fraction,
+                &params,
+                current_side,
+                self.config.site_latitude_deg,
+            );
+            let tracking_was_on = pulse.axis == Axis::Ra && s.tracking_requested;
+            drop(s);
+            (pulse, tracking_was_on)
+        };
+        let GuidePulse { axis, ccw, .. } = pulse;
+        let shifted_period = pulse.step_period()?;
         // Atomically check `pulse_guiding_<axis>` and set it to true
         // under a single write lock. This closes the TOCTOU window: a
         // concurrent same-axis `pulse_guide` either acquires the

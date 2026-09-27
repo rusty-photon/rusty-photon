@@ -356,7 +356,8 @@ ASI C API exposes and what `zwo-rs` will wrap.
 - **`ElectronsPerADU`** is a **real native value** from `ASI_CAMERA_INFO.ElecPerADU`
   (a ZWO win — QHY ships `NOT_IMPLEMENTED`).
 - **Binning** — symmetric only (`CanAsymmetricBin = false`); `MaxBinX/Y` from the
-  SDK's `SupportedBins`; ROI rescaled on bin change.
+  SDK's `SupportedBins`; the ROI is held in unbinned pixels, so a bin change
+  only changes the divisor its binned members are read through (B3).
 - **ROI** — `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry validated at
   `StartExposure`, **including the ASI alignment rules**: width must be a multiple
   of 8 and height a multiple of 2. (The legacy ASI120 USB2 models additionally
@@ -372,7 +373,8 @@ ASI C API exposes and what `zwo-rs` will wrap.
 - **Graceful stop AND abort** — `ASIStopExposure` is a single graceful,
   **data-preserving** stop ("image can still be read out"), so `CanStopExposure =
   true`; the same call backs `AbortExposure` (discarding data), so
-  `CanAbortExposure = true`. *(A ZWO win — QHY ships `CanStopExposure = false`.)*
+  `CanAbortExposure = true` (both while connected; E12). *(A ZWO win — QHY ships
+  `CanStopExposure = false`.)*
 - **PulseGuide** — native `ASIPulseGuideOn/Off` (ST4), gated on the `ST4Port`
   capability → `CanPulseGuide = true` when present. *(A ZWO win — QHY defers it.)*
 - **Gain / Offset** — current value + `Min`/`Max` from `ASIGetControlCaps`
@@ -615,8 +617,9 @@ EAF; those belong to the other zwo services.)
   the raw sensor; for the ASI2600 (6248×4176, bins 1–4) that is **6240×4176**
   (the raw 6248/2 = 3124 is not a multiple of 8, so the raw width would make the
   bin-2/3/4 full frames unachievable). The cost is a few edge columns at full
-  resolution; the bonus is that the bin-ratio ROI rescale (B3) round-trips
-  exactly. Bounds checks (R2) use the *reported* extent. Both extents are computed by
+  resolution, and the reason is reachability alone — B3 round-trips from the
+  unbinned source whatever the reported extent is. Bounds checks (R2) use the
+  *reported* extent. Both extents are computed by
   [`rusty-photon-camera-core`](../../crates/rusty-photon-camera-core/)'s
   `aligned_sensor` from the *same* alignment rule R3 validates against, so the
   reported size and the ROI check cannot be aligned to different multiples.
@@ -626,13 +629,25 @@ EAF; those belong to the other zwo services.)
   set symmetric binning; an unsupported bin returns `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from
   `SupportedBins` (typically 1–4, up to 8).
-- **B3.** A bin change rescales the cached ROI by the bin ratio. `set_num_x`/
-  `set_num_y` store without validating (the members are set independently, so
-  only the combination is checked, at `StartExposure`), so whatever the client
-  last set is what gets rescaled — and the rescale must not change which value
-  `StartExposure` then complains about. A **sub-pixel** extent is clamped to a
-  minimum of 1, because truncating it to 0 would make R2 reject a value the
-  driver invented rather than the client's own `NumX`, which here is R3's
+- **B3.** The cached ROI is held in **unbinned** sensor pixels: the region the
+  client asked for, independent of the bin it was asked at. `StartX`/`NumX` and
+  their Y counterparts are ASCOM *binned* members, so a setter multiplies by the
+  bin in force when it is called and a getter divides by the bin in force when it
+  is read. **A bin change therefore rewrites nothing** — it only changes the
+  divisor — and walking the bins and coming back returns the client's own frame
+  whatever route it took. 100x100 at (200,200) is 100x100 at (200,200) again
+  after 1 → 3 → 4 → 1, where scaling each step from the *previous binned value*
+  truncated twice and came back 96x96 at (196,196), four pixels short in both
+  extent and origin and no way to get them back short of a reconnect.
+  `set_num_x`/`set_num_y` store without validating (the members are set
+  independently, so only the combination is checked, at `StartExposure`), so
+  whatever the client last set is what the binned view is derived from — and the
+  derivation must not change which value `StartExposure` then complains about.
+  The unbinned store is wider than the `u32` a client can set, so a value read
+  back at the bin it was set at is that value exactly, with no ceiling where a
+  large `NumX` would fold into a smaller one the client never asked for. A
+  **sub-pixel** extent is clamped to a minimum of 1, because truncating it to 0
+  would make R2 reject a value the driver invented rather than the client's own `NumX`, which here is R3's
   `%8`/`%2` rule. A **client-set 0** is preserved, so it still earns R2 rather
   than being clamped into an R3 alignment complaint about a 1 nobody set.
   **One implementation**, in
@@ -640,6 +655,20 @@ EAF; those belong to the other zwo services.)
   rule was three copies until one drifted, and the drift went unseen because
   each driver curated its own test cases, so the missing behaviour and its
   missing test hid each other.
+
+  **The bin and the sub-frame move as a pair.** The ROI itself is bin-independent,
+  but the *view* of it is not, and the two are still read separately: the bin
+  store happens under the same lock `StartExposure` reads the pair under, because
+  `StartExposure` loads the bin and *then* derives the sub-frame at it. A bin
+  change landing between the two arms a view taken at a bin the client has
+  already left — the right region at the wrong binned extent, while `BinX`
+  reports the new bin, and comfortably inside the bounds R2 checks, so nothing
+  downstream reports it. Nothing in the setter reaches the SDK (the bin is pushed at arm
+  time, from the capture request), so a bin change during a capture is *pinned*
+  rather than refused: it describes the next frame, which a client may
+  legitimately set up while this one downloads. `qhy-camera`'s B4 refuses its
+  own bin setter instead, because there the bin is written to the camera
+  immediately and the write cannot be allowed beside a capture.
 - **R1.** `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry is validated at
   `StartExposure` (R2/R3), not at the setter.
 - **R2.** `StartExposure` with `StartX + NumX > CameraXSize / BinX` (or the Y
@@ -696,6 +725,47 @@ EAF; those belong to the other zwo services.)
   and every SDK call it makes is gated on the camera instance it started
   (*Concurrency*, "One stop signal per capture"). Its own result is discarded by
   the generation guard.
+- **E11.** The exposure state is a **session's** state, so the members that
+  report it — `CameraState`, `ImageReady`, `PercentCompleted`,
+  `LastExposureStartTime`, `LastExposureDuration` — answer `NOT_CONNECTED`
+  while the device is disconnected, as `StartExposure` (E1), `AbortExposure`,
+  `StopExposure`, `ImageArray` and `ImageArrayVariant` do. That state is cleared
+  at the *start of a connect* (C3) and, on the disconnect side, only when the
+  disconnect found a capture to cancel — so without the check a camera that took
+  a frame and was then disconnected reports `ImageReady = true` and
+  `PercentCompleted = 100` beside an `ImageArray` that refuses, and one that hit
+  E9 reports `CameraState = Error` until someone reconnects it. Nothing stale can
+  be *served* — `ImageArray` checks — so what is at stake is a wrong answer to a
+  readiness question, and the two members a client is told to poll together
+  contradicting each other.
+
+  `CameraState` **throws** rather than answering safely the way `Connected`
+  does: `Connected` never throws because it is how a client asks whether the
+  device is there at all, while `CameraState` reports device state, which ASCOM
+  answers with `NOT_CONNECTED` when there is none. The state is still reset only
+  at the start of a connect, not on disconnect: with these members refusing,
+  there is nothing observable in between, and a disconnect that leaves the device
+  logically connected must not blank a live session. The capability probes beside
+  them take the same check for a related reason (E12). Shared with
+  `qhy-camera` (its E10) and `svbony-camera` (its state-machine step 9).
+- **E12.** A capability member answers while disconnected **only if the driver
+  never implements it**. `CanAsymmetricBin` (`false`) is the one such member
+  here: no device can change it, so it answers at any time. Every other
+  capability member — `HasShutter`, `CanSetCCDTemperature`, `CanGetCoolerPower`,
+  `CanPulseGuide`, `CanAbortExposure` and `CanStopExposure` — answers
+  `NOT_CONNECTED` while the device is disconnected. A driver holding no device
+  cannot describe one. The first four read `ASI_CAMERA_INFO` cached at
+  enumeration, which not only survives a disconnect but survives the camera
+  being unplugged and a different model plugged into the same port, so the
+  answer can describe hardware that is no longer there — indistinguishable, to
+  the client, from a live one. `CanAbortExposure`/`CanStopExposure` are the
+  opposite failure: a hard-coded promise to abort or stop, made with no device
+  to abort on, beside an `AbortExposure`/`StopExposure` that refuse — E11's
+  `ImageReady`/`ImageArray` contradiction in a second pair. `IsPulseGuiding`
+  takes the check as session state, for E11's own reason (PG2). This supersedes
+  the earlier position that these members "describe the driver rather than a
+  session"; shared with `qhy-camera`'s E11 and `svbony-camera`'s state-machine
+  step 10 (#1281).
 
 ### Gain / offset / readout
 
@@ -957,7 +1027,11 @@ EAF; those belong to the other zwo services.)
   ends it (`ASIPulseGuideOff`) when the deadline passes. Blocking for the whole
   pulse would exceed ConformU's 1 s response target and stall an autoguider's
   cadence. While disconnected it returns `NOT_CONNECTED`; a model without ST4
-  returns `NOT_IMPLEMENTED`. *(The disconnected branch is a BDD scenario; the
+  returns `NOT_IMPLEMENTED`. `IsPulseGuiding` refuses while disconnected for the
+  same reason the exposure state does (E11, E12): the deadline it reads is
+  cleared only at the start of a connect, so a pulse issued shortly before a
+  disconnect would otherwise report `IsPulseGuiding = true` on a camera nobody
+  is connected to, until someone reconnects it. *(The disconnected branch is a BDD scenario; the
   no-ST4 `NOT_IMPLEMENTED` branch and the async `IsPulseGuiding` timing are
   covered by unit tests, since the `simulation` backend always reports ST4
   present.)*
@@ -975,12 +1049,20 @@ scenarios.
 
 ## ASCOM Camera surface — v0 behaviour
 
+**Every member below that describes the camera or its session answers
+`NOT_CONNECTED` while the device is disconnected** unless its row says
+otherwise: a driver holding no device cannot describe one (E11, E12). Outside
+that rule: `CanAsymmetricBin`, which this driver never implements, and the
+ASCOM identity and health members (`Name`, `Description`, `DriverInfo`,
+`DriverVersion`, `Connected`, `UniqueID`), which describe the driver and are
+how a client asks whether a device is there at all.
+
 | Property / Method | v0 behaviour (backed by `zwo-rs`) |
 |---|---|
 | `CameraXSize` / `CameraYSize` | Cached `ASI_CAMERA_INFO` MaxWidth/MaxHeight, aligned down so the full frame at every bin is a valid ASI ROI (R4; e.g. 6248→6240) |
 | `PixelSizeX` / `PixelSizeY` | Cached `ASI_CAMERA_INFO.PixelSize` (X == Y) |
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` |
-| `CanAsymmetricBin` | `false` |
+| `CanAsymmetricBin` | `false`; never implemented, so answered at any time (E12) |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) |
 | `MaxADU` | A saturation threshold chosen to be reachable, not an exact upper bound (ST3): 255 in Raw8; in Raw16 the ADC scale shifted into the container, one quantization step below full scale — 65528 for 14-bit, 65504 for 12-bit, 65535 for 16-bit/unknown. Where the margin applies, a sensor reaching its top code delivers one step above this; the 65535 cases are the container maximum and cannot be exceeded |
 | `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU`, read live per call — the SDK scales it by the gain register, so it tracks `Gain` (ST2) |
@@ -991,15 +1073,16 @@ scenarios.
 | `ReadoutMode` / `ReadoutModes` | The camera's download formats from `SupportedVideoFormat`, `Raw16` before `Raw8` (RM1); drives the download format and `MaxADU` |
 | `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from `IsColorCam` / `BayerPattern` |
 | `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `IsCoolerCam` |
-| `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `IsCoolerCam` |
-| `HasShutter` | `false` (ASI sensors are shutterless) |
-| `CameraState` | `Idle` / `Exposing` / `Error` |
-| `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100 |
-| `CanAbortExposure` / `CanStopExposure` | `true` / `true` (both via `ASIStopExposure`) |
-| `CanPulseGuide` | `true` iff ST4 port present |
-| `PulseGuide` / `IsPulseGuiding` | Asynchronous `ASIPulseGuideOn/Off` (ST4): returns immediately, `IsPulseGuiding` true until `now + duration` (PG2) |
+| `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `IsCoolerCam`; `NOT_CONNECTED` while disconnected (E12) |
+| `HasShutter` | `false` (ASI sensors are shutterless), read from the cached `ASI_CAMERA_INFO`; `NOT_CONNECTED` while disconnected (E12) |
+| `CameraState` | `Idle` / `Exposing` / `Error`; `NOT_CONNECTED` while disconnected (E11) |
+| `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100; `NOT_CONNECTED` while disconnected (E11) |
+| `CanAbortExposure` / `CanStopExposure` | `true` / `true` (both via `ASIStopExposure`); `NOT_CONNECTED` while disconnected (E12) |
+| `CanPulseGuide` | `true` iff ST4 port present; `NOT_CONNECTED` while disconnected (E12) |
+| `PulseGuide` / `IsPulseGuiding` | Asynchronous `ASIPulseGuideOn/Off` (ST4): returns immediately, `IsPulseGuiding` true until `now + duration` (PG2); both `NOT_CONNECTED` while disconnected (E12) |
 | `StartExposure` (`Light=false`) | Accepted; captured normally (no shutter) |
-| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Per *Exposure* contracts; `ImageArray` axes `[X, Y]` |
+| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` / `ImageArrayVariant` | Per *Exposure* contracts; `ImageArray` axes `[X, Y]`; all `NOT_CONNECTED` while disconnected (E1, E11) |
+| `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session; `VALUE_NOT_SET` before its first exposure, `NOT_CONNECTED` while disconnected (E11) |
 
 ---
 
@@ -1074,7 +1157,8 @@ now stands at **87 unit tests** and **65 BDD scenarios**.
   connection lifecycle (C0–C4), ROI/bin validation (R1–R3, B1–B3), exposure
   happy-path + error paths (E1–E8, incl. the graceful-stop / abort split; E9's
   mid-exposure Error transition is unit-tested), gain/offset/readout (GO1–RM1),
-  cooling (K1–K4), sensor type & signal (ST1–ST3), pulse-guiding (PG1–PG2), and
+  cooling (K1–K4), sensor type & signal (ST1–ST3), pulse-guiding (PG1–PG2), the
+  capability surface a disconnected driver may not describe (E12), and
   config actions, driven against the `zwo-rs` `simulation` backend.
   (FilterWheel FW1–FW3 moved to the future `zwo-filterwheel` service — ADR-014.)
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)

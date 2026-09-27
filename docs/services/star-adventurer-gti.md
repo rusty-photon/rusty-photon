@@ -135,7 +135,91 @@ The service plugs into it via:
   last Alpaca client disconnects — in service-lifetime mode the transport
   stays open, so the parameter cache is retained — and `shutdown` runs the
   same sequence once at service shutdown before the transport drops,
-  additionally clearing the parameter cache.
+  additionally clearing the parameter cache. The shared crate runs
+  `on_last_disconnect` once more, at the far end of the same cycle: on
+  the cold `start()`, before the conduit is published — see
+  [§Safety stop at startup](#safety-stop-at-startup).
+
+#### Safety stop at startup
+
+The driver halts the mount as part of starting, after the handshake and
+before the HTTP listener binds. `:L1`, `:L2`, `:K1` — the same sequence
+a last-client disconnect issues, run by the same `on_last_disconnect`
+hook, because a start is a no-client state too.
+
+It is unconditional rather than a replay of something this process
+recorded, because a start is precisely where nothing was recorded. A
+`config.apply` that needs a reload tears the old transport down and
+builds a new one; if the link was already dead when the shutdown hook
+ran — the supervisor mid-reconnect, the USB link dropped — its halt went
+nowhere, and the flag that would have remembered it belonged to the
+`SharedTransport` the reload discarded. A process restart is worse:
+nothing at all survives it. The mount, meanwhile, remembers exactly what
+it was doing. A driver that assumes the device it has just opened is
+idle is a driver that can hand the first client a mount already in
+motion. See [#1251](https://github.com/rusty-photon/rusty-photon/issues/1251).
+
+What it means for the hardware:
+
+* **Mount idle or parked** — nothing observable. All three commands are
+  idempotent against stopped axes. This is every ordinary start.
+* **Mount tracking** — tracking stops, and a client has to ask for it
+  again. A reload already did this from the shutdown hook whenever the
+  link was alive; what is new is the case where it was not, and the cold
+  process start.
+* **Mount slewing** — the slew is abandoned where it is. Position is not
+  lost: the firmware's tick counter keeps counting while no driver is
+  attached, and it keeps counting through the halt as well, so the axes
+  can be located again afterwards.
+
+  Note what the handshake's `:j1` / `:j2` do *not* tell you. They are
+  read **before** the stop goes out, and the axis does not come to rest
+  the instant it arrives. `:L` is the *instant stop* this document names
+  everywhere else — but that name distinguishes it from `:K`'s
+  controlled deceleration, it does not promise zero settling time: a
+  moving axis still coasts through a mechanical ramp-down that the
+  firmware counts. Measured on the rig from a 5.1°/s goto, the mount covered a
+  further 30,367 Dec ticks — 3.77° — between the handshake sample and
+  coming to rest. The handshake value is therefore a pre-stop sample,
+  stale the moment the halt executes; the resting position is what the
+  200 ms poll loop reads back once the axes have stopped. Anything that
+  treated the handshake pair as the final position would be wrong by
+  degrees, and by more on a faster mount or a longer ramp.
+
+  The counter is the *commanded* one — the GTi has no closed-loop
+  feedback, so it records the steps the firmware issued rather than
+  where the axis physically is, and a lost step would look exactly like
+  success. On this mount the two agree across an abandoned slew: the
+  mount parked afterwards onto the exact `ApPark3` tick pair and was
+  confirmed by eye to be sitting on its physical park-3 index mark, so
+  the abrupt `:L` cost no steps. Measured against the physical mount on
+  [#1288](https://github.com/rusty-photon/rusty-photon/issues/1288).
+
+A halt that does not reach the device fails the start, so `build()`
+errors and the process exits non-zero, the same way a wrong-device
+handshake does. So does a halt the mount *answers* without the state
+ending up asserted — it refused, or replied with something that would
+not decode, or is not a Sky-Watcher controller at all. The handshake has
+just had ten commands answered at that point, so a mount that then
+cannot be stopped is broken or is not the device the driver thinks it
+is, and neither is something to serve clients against.
+
+The two are distinguished in the error — "did not land on" versus "was
+not asserted … though the device answered" — because they mean different
+things to whoever reads the log at 3am: one says the link is gone, the
+other says the device is there and answering. That second message says
+no more than that. It does not name a cause, because the verdict does
+not carry one: `safety_stop` logs the specific error per command as it
+sees it (`warn!` with the command and the error), and the summary line
+would only be guessing which of them it was. Advertising a mount whose
+safety state is unknown is the outcome to avoid; failing to start is
+visible, and the log above it says why.
+
+Stop-class and nothing more, which is what
+[tenet 3](../workspace.md#project-tenets) permits on a connect path: no
+park, no slew, nothing touching power, covers or dew. The `start()` that
+promotes a transport a client already opened lazily does *not* do it —
+there something is attached and may be driving it.
 
 #### Safety stop across a reconnect
 
@@ -165,32 +249,52 @@ arrived after the failed halt has not been able to command anything,
 because the transport refuses requests until the stop lands. The window
 is between the failed attempt and the next successful open.
 
-One case reaches past that open, and it is worth stating rather than
-implying. A disconnect landing very late in a reconnect — after the
-attempt has read the debt and before the recovery is advertised — has
-its stop recorded but its out-of-service flags overwritten by the
-advertisement, and the supervisor only retries while those flags say
-to. What brings it back is then the signal a failed command raises on
-its own: a stop that failed on the wire fires it, the permit outlives
-the advertisement, and the supervisor's next turn round its loop
-attempts again and replays. A halt that never reached the wire at all
-— a hook that panicked — raises nothing, so that one waits for the
-next link failure or the next service start. The mount is not left
-moving for that long either way: the hook runs on every last-client
+That refusal is not a consequence of the out-of-service flags, and this
+is the part worth stating rather than implying. `Session::request`
+reads the outstanding debt itself, on every request, in addition to
+`reconnecting` and `available`. The flags are a *publication* of the
+fact; the debt is the fact, and the two can disagree for a moment.
+
+They disagree in one specific case: a disconnect landing very late in a
+reconnect — after the attempt has read the debt, while the recovery is
+being advertised — records its stop and then has its out-of-service
+flags written over by the advertisement. Because requests consult the
+debt, that overwrite cannot open a window onto the mount; it is a
+bookkeeping lag, not an opening. The advertisement also re-reads the
+debt immediately after writing the flags and withdraws itself if it
+moved, so the lag is short as well as harmless. The ordering that makes
+that check sound is the cleanup's: it records the debt *before* it
+touches either flag, so any overwrite the publish could have caused is
+one the publish then sees.
+
+The supervisor still has to come back round and replay, and it only
+retries while the flags say to. The signal a failed command raises is
+what brings it back: a stop that failed on the wire fires it, the
+permit outlives the advertisement, and the supervisor's next turn round
+its loop attempts again and replays. A halt that never reached the wire
+at all — a hook that panicked — raises nothing, so that one waits for
+the next link failure or the next service start. Throughout, no client
+can command the mount, because the debt still stands. The mount is not
+left moving for that long either way: the hook runs on every last-client
 disconnect, whatever the bookkeeping still says is owed.
 
 Either way the hook must stay stop-class: it runs on a reconnect path,
 where [tenet 3](../workspace.md#project-tenets) permits halting and
 nothing else.
 
-A halt that does not land fails the reconnect. The hook reports nothing
-— it is best-effort for the callers that only need it attempted — so the
-shared crate reads the connection instead: a command that failed on the
-wire is counted there. An attempt whose replay did not reach the mount
-is not a recovery, and reporting it as one would clear the reconnecting
-state and let the next client drive a mount that is still moving. The
-transport stays reconnecting until an attempt whose stop lands, retried
-at the configured cadence.
+A halt that does not land fails the reconnect, and there are two ways
+not to land. A command that failed on the *wire* is counted on the
+connection, which the shared crate reads across the attempt. A command
+the mount *answered* completes, so that counter stays clean even when
+the answer leaves the state unasserted — the hook is the only witness,
+and it says so by returning `StateAssertion::NotAsserted`. The hook remains best-effort about its
+own errors, logging and continuing rather than propagating; what it no
+longer does is throw the conclusion away.
+
+Either answer fails the attempt. Reporting such an attempt as a recovery
+would clear the reconnecting state and let the next client drive a mount
+that is still moving, so the transport stays reconnecting until an
+attempt whose stop lands, retried at the configured cadence.
 
 That verdict covers more than the attempt's own traffic. A last client
 can disconnect while the attempt is still running, and its halt then
@@ -203,11 +307,36 @@ the point of reading the debt there rather than trusting the flags: the
 disconnect takes the transport out of service, and a success reported
 over the top of it would put it straight back in.
 
-What that catches is a command that never reached the mount. It does not
-catch one the mount answered and refused: `request_typed` decodes above
-the connection, so a protocol-level rejection of `:L1` is invisible to
-the shared crate, and `safety_stop` logs it and continues. Only the hook
-knows, and saying so needs a return value it does not have — see
+That catches a command that never reached the mount. A command the mount
+*answered* is a separate failure, and the shared crate cannot see it at
+all: `SkywatcherCodec` hands back the `!XX` frame as a valid response,
+so the request completes and the wire counter stays clean. The same goes
+for a frame that decodes at the codec layer and then fails the typed
+decode above it. `request_typed` is the first thing that knows, and
+`safety_stop` is the only thing that sees the result.
+
+So `safety_stop` answers the question rather than swallowing it. It
+returns a verdict — asserted, or not — and any failed command makes it
+*not*. The verdict carries the outcome, never the cause: an `!XX`
+refusal, a malformed or short payload, a reply from some other device
+and a command that never went out all fold to the same
+`StateAssertion::NotAsserted`, because they leave the same axes possibly
+turning and call for the same response. The distinction that would
+matter to a reader is already recorded where it is known — one `warn!`
+per failed command, with the command and the concrete error — so no
+caller upstream has to reconstruct it, and none of them pretends to.
+
+Every caller treats the verdict identically: the reconnect replay fails
+the attempt, the last-client disconnect records the debt and takes the
+transport out of service, and a cold start refuses to serve (see
+[§Safety stop at startup](#safety-stop-at-startup)).
+
+It deliberately does not try to sort benign failures from real ones by
+reading the mount's error code. By the time any of this runs the
+handshake has just had ten commands answered, so a mount that now cannot
+be halted is broken or is not a Sky-Watcher controller at all —
+precisely the two cases where deciding "that error code is probably
+fine" would be the wrong call. Resolves
 [#1250](https://github.com/rusty-photon/rusty-photon/issues/1250).
 
 A halt that could not be attempted at all is owed, not forgotten. A
@@ -427,7 +556,7 @@ shape).
 | `:H<axis><inc24>` | Set goto-target by increment (magnitude; sign from `:G` CCW) | every slew (INDI-style sequence) |
 | `:M<axis><breaks24>` | Set goto break-point increment | every slew (INDI-style sequence) |
 | `:S<axis><pos24>` | Set goto absolute target | `Park` only (target is encoder 0) |
-| `:I<axis><period24>` | Set step period (T1 preset) | tracking (computed sidereal period from CPR / TMR_Freq); slew (fixed period 6, INDI `minperiods` default) |
+| `:I<axis><period24>` | Set step period (T1 preset) | tracking and guide pulses (sidereal period computed from TMR_Freq and the **addressed axis'** CPR — see [§PulseGuide lifecycle](#pulseguide-lifecycle)); slew (fixed period 6, INDI `minperiods` default) |
 | `:J<axis>` | Start motion | every slew, every track start |
 | `:K<axis>` | Stop motion (decelerate) | `Tracking = false` (sidereal RA tracking gracefully decelerates) |
 | `:L<axis>` | Instant stop | `AbortSlew`; preflight stop-and-wait before every `:G` (slew, park, `Tracking = true`); slew watcher's blocked-axis abort path |
@@ -506,7 +635,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `SlewToCoordinates(ra, dec)` | wraps the async variant and waits for `Slewing` to clear (bounded by a generous timeout) before returning. Mandatory per ASCOM when `CanSlew=true` |
 | `SlewToTargetAsync()` | uses last-set `TargetRightAscension`/`Declination` |
 | `SlewToTarget()` | synchronous variant of the above; same wait semantics as `SlewToCoordinates` |
-| `SyncToCoordinates(ra, dec)` | issue `:E<axis><pos>` for each axis (set encoder position), update the cached snapshot so an immediate `RightAscension` / `Declination` read reflects the sync without waiting for the next background poll, and **update `TargetRightAscension` / `TargetDeclination`** to the synced coordinates (per ASCOM ITelescopeV3 — a successful Sync writes Target) |
+| `SyncToCoordinates(ra, dec)` | issue `:E<axis><pos>` for each axis (set encoder position **for the side the mount is physically on** — see [§Sync and pier side](#sync-and-pier-side)), update the cached snapshot so an immediate `RightAscension` / `Declination` read reflects the sync without waiting for the next background poll, and **update `TargetRightAscension` / `TargetDeclination`** to the synced coordinates (per ASCOM ITelescopeV3 — a successful Sync writes Target) |
 | `SyncToTarget()` | uses last-set target |
 | `AbortSlew()` | refuse with `INVALID_WHILE_PARKED` when parked; otherwise issue `:L1` `:L2` (instant stop), clear `Slewing`, do NOT auto-restore tracking |
 | `Park()` | stop tracking, then — **only when the coordinate frame is anchored** (see [§Park lifecycle](#park-lifecycle)) — slew both axes to the in-memory park-target encoder pair; with an unanchored frame (`ap_park_0`, no sync yet, no raw tick override) Park stops both axes **in place** and issues no goto. When both axes report stopped set `AtPark=true`. **Tracking remains off after park** (per ASCOM) |
@@ -548,8 +677,10 @@ SlewToCoordinatesAsync(ra, dec)
    │
    ├─ validate: !AtPark, ra ∈ [0,24), dec ∈ [-90,90]
    ├─ remember: TargetRightAscension/Declination = (ra, dec)
-   ├─ pick pier side: flip policy (current side + target HA +
-   │           `flip_policy.enabled`) — see [§Meridian flip](#meridian-flip).
+   ├─ pick pier side: the side whose destination mech_HA and RA
+   │           path both clear the CW exclusion zone, preferring the
+   │           current side — see
+   │           [§Pier-side decision tree](#pier-side-decision-tree).
    │           With `enabled = false` always chooses the current side.
    ├─ compute: (ra_target_ticks, dec_target_ticks) from
    │           ra/dec + LST(now) + sync offset + chosen pier side.
@@ -806,8 +937,11 @@ PulseGuide(direction, duration)
    │     West  → (RA,  ccw=false, 1 + guide_rate_ra_fraction)
    │     North → (Dec, ccw=false, guide_rate_dec_fraction)
    │     South → (Dec, ccw=true,  guide_rate_dec_fraction)
-   ├─ compute shifted period:
-   │     period = round(sidereal_step_period(tmr_freq, cpr_ra) / rate_factor)
+   │     …then on the counterweight-up side, invert ccw for Dec
+   │     (see the Dec sign convention below)
+   ├─ compute shifted period from the *pulsed axis'* sidereal period:
+   │     RA  pulse: period = round(sidereal_step_period(tmr_freq, cpr_ra)  / rate_factor)
+   │     Dec pulse: period = round(sidereal_step_period(tmr_freq, cpr_dec) / rate_factor)
    ├─ capture tracking_was_on = state.tracking_requested (RA pulses only)
    ├─ set pulse_guiding.<axis> = true                ; synchronous, pre-spawn
    │
@@ -848,21 +982,96 @@ racing the watcher. Without this, `set_tracking(false)` during an East
 pulse would be silently undone when the watcher re-issued sidereal
 tracking on restore.
 
-**Dec sign convention.** `+Dec` always maps to `ccw=false`, regardless
-of side-of-pier. The driver does not invert Dec direction after a
-meridian flip — the existing slew/sync pipeline doesn't either; it
-assumes a stable encoder-to-celestial-Dec mapping and requires the
-user to `SyncToCoordinates` after a manual flip to recalibrate. A
-PulseGuide call after a flip with no re-sync will guide in the wrong
-celestial direction; this is consistent with the rest of the driver
-and is the autoguider's responsibility to detect (via guide
-calibration).
+**Dec sign convention.** `PulseGuide(guideNorth)` moves the OTA toward
+`+Dec` on both sides of the pier. The Dec encoder is not a proxy for
+declination: the mapping is `Dec = θ` while the encoder is within ±90°
+of home and `Dec = sign(θ) · (180° − |θ|)` once it has rotated past a
+celestial pole, so `d(Dec)/dθ` is `+1` on the counterweight-down side
+and `−1` on the counterweight-up side. The direction table above is
+written for the counterweight-down mapping; on the counterweight-up
+side the driver inverts `ccw` for Dec pulses so that North still
+increases declination. RA is untouched — `mech_HA` runs the same way
+against the RA encoder on both sides (the flip shifts it by 12 h, it
+does not mirror it), so East still slows tracking and West still
+speeds it.
 
-**Step-period unit reuse.** `sidereal_step_period(tmr_freq, cpr_ra)`
-is also used for the Dec rate computation. The protocol's step-period
-units are timer-counter ticks per motor step on both axes, and
-`cpr_ra` ≈ `cpr_dec` on the GTi, so reusing the helper avoids a near-
-duplicate `sidereal_step_period_dec`. INDI takes the same shortcut.
+"Counterweight-up" is the same Dec-encoder classification
+[`side_of_pier`](#side-of-pier) reports, so the inversion follows the
+pointing state the mount is actually in rather than anything the flip
+policy did or did not plan: a mount placed past the pole by hand
+guides correctly with `flip_policy.enabled = false`. `PierSide::Unknown`
+(no CPR yet, so no classification) keeps the counterweight-down
+mapping — the driver does not invert on a side it cannot name.
+
+**At the pole the claim degenerates, and no sign convention saves
+it.** The side is sampled once, when the pulse starts. The one
+pointing state where that sample can go stale mid-pulse is the
+celestial pole itself: the classification boundary is `|θ| = 90°`,
+which *is* `Dec = ±90°`, so a pulse can only cross it by driving the
+OTA through the pole — and it has to start within its own travel of
+the pole to get there (37.6″ for a 5 s pulse at the default rate).
+A `guideNorth` that reaches the pole does not keep moving north,
+because there is no further north: declination peaks and comes back
+down as the axis keeps turning. That is the sky, not the encoder
+mapping, and re-resolving `ccw` mid-pulse would not change it.
+Guiding within an arcminute of the pole is degenerate for other
+reasons too — the RA axis has no meaningful direction there — so the
+driver does not special-case it, and `PulseGuide` neither refuses nor
+splits such a pulse.
+
+This was **issue #1300**. The convention it replaces (`+Dec` always
+maps to `ccw = false`, with the client expected to `SyncToCoordinates`
+after a flip to recalibrate) was written for a driver that could not
+flip and had no pier side to consult. The exposure grew sharply with
+the selector fix (#1301) — the counterweight-up side went from a
+~30-minute window near the meridian to the whole western sky for hours
+— which is why it was worth closing rather than documenting. Clients
+no longer need PHD2's "reverse Dec output after meridian flip" for
+this driver; a client that sets it anyway will now double-invert.
+
+**What the mock can and cannot settle.** The mock moves its encoders
+from the `:G`/`:I`/`:J` it receives and the driver reads declination
+back through the same `encoder_to_celestial` mapping, so a ConformU
+run against it proves the write path and the read path agree — which
+is precisely the ASCOM defect #1300 reported, and precisely what
+would regress. It cannot prove that `ccw = false` turns the physical
+Dec motor the way the encoder counts; that is a hardware fact. It is
+already established for the counterweight-down side — the hardware
+ConformU runs measure Dec North/South moving the right way (the
+46.9″ / 47.3″ readings that exposed the per-axis period bug are
+signed correctly), and #1295 ran with the flip policy off, so every
+pulse in it was counterweight-down. The counterweight-up side follows
+from that by the encoder geometry above with no new assumption: the
+motor's sense does not change when the OTA passes the pole, only the
+encoder's relation to declination does. A hardware run
+on the counterweight-up side is still the confirmation of record;
+until one is in [docs/validation/](../validation/), treat the
+counterweight-up direction as derived rather than measured.
+
+**The step period is per-axis.** `:I` carries the time between motor
+steps in timer-counter units, so the period that turns an axis at the
+sidereal rate depends on that axis' counts per revolution:
+`sidereal_step_period(tmr_freq, cpr) = round(tmr_freq × 86164.0905 / cpr)`.
+The GTi's axes differ — RA `3,628,800`, Dec `2,903,040`, a ratio of
+exactly 1.25 — so with `TMR_Freq = 16,000,000` the sidereal period is
+`379,912` on RA and `474,890` on Dec. A Dec pulse sent an RA-derived
+period steps the Dec motor at the RA-appropriate step rate, but each Dec
+step is a larger angle, so the axis guides 1.25× too fast (a 5 s pulse
+at 0.5 × sidereal moves 47.0″ instead of 37.6″ — measured on hardware
+with ConformU as 46.9″ / 47.3″).
+
+Callers never pick a CPR for a step period:
+`MountParameters::sidereal_step_period_ra()` /
+`sidereal_step_period_dec()` pair each axis with its own CPR, and
+`PulseGuide`'s direction table resolves the axis and its sidereal
+period in the same arm. INDI eqmod is per-axis too (`SetRARate` uses
+`RASteps360` / `RAStepsWorm`, `SetDERate` uses `DESteps360` /
+`DEStepsWorm`).
+
+The 24-bit `:I` payload bounds the slowest expressible rate at
+`rate_factor ≥ sidereal_period / 0xFFFFFF` — ≈ 0.023 on RA and ≈ 0.028
+on Dec. A guide rate below the pulsed axis' floor is rejected with
+`INVALID_VALUE`.
 
 **Guide-rate fraction validation.** Internal storage is two fractions
 in `(0.0, 1.0)` open interval (RA and Dec independently). The
@@ -946,16 +1155,25 @@ a flip. Four fields:
   to Phase 5. With `enabled = true`: the capability flag flips on
   and the slew planner picks the target pier side per the policy
   below.
-- **`flip_range_hours: f64`** (default `0.5`) — half-width of the
-  target-HA window around the meridian where the flipped state is
-  mechanically reachable. Targets with `|target_HA| > flip_range_hours`
-  are unflippable (the post-flip `mech_HA` would land outside the
-  symmetric mirror band); the slew planner uses normal pointing only
-  and `DestinationSideOfPier` returns the current side. Valid range
-  `(0, 0.95]`. The upper bound matches the headroom past
-  counterweight-horizontal on the pre-flip side (Phase 1.1 hardware
-  verification); a larger value would push the post-flip `mech_HA`
-  into the unverified mirror of the CW exclusion zone.
+- **`flip_range_hours` — removed 2026-09 (issue #1301).** It
+  expressed the counterweight-up side's reach as a half-width window
+  around the meridian (`|target_HA| ≤ flip_range_hours`), which is the
+  wrong shape: that side's reach is one-sided (`target_HA ≥ −x`, then
+  the whole western sky). Applied as a band it made most of the
+  western sky unreachable whenever the mount was already
+  counterweight-up. Reachability now comes from `cw_exclusion_zone`
+  alone — see
+  [§Pier-side decision tree](#pier-side-decision-tree) — and nothing
+  else in this block has an opinion about it. The field was deleted
+  rather than accepted-and-ignored, so `deny_unknown_fields` fails a
+  config that still carries it, naming the field. **Migration:** delete
+  the `flip_range_hours` line from `flip_policy` — `doctor --fix` does
+  this for you (`config.retired-keys`), and matters because the
+  pre-#1301 service wrote the field into every config it self-created;
+  if it was tuned to
+  widen the flip window, the setting to reach for instead is
+  `cw_exclusion_zone.min_hours` (the counterweight-up allowance `x`),
+  and changing it is a hardware claim, not a preference.
 - **`auto_flip_during_tracking: bool`** (default `false`) — when
   `true` (and `enabled` is `true`), the driver initiates a meridian
   flip on its own once continuous tracking carries the target past
@@ -964,10 +1182,30 @@ a flip. Four fields:
   [§Auto-flip during tracking](#auto-flip-during-tracking).
 - **`auto_flip_at_meridian_offset_hours: f64`** (default `0.0`) —
   target HA at which the auto-flip fires. Only consulted when
-  `auto_flip_during_tracking = true`. Must be finite and within
-  `[−flip_range_hours, +flip_range_hours]` (validated at config
-  load — a cross-field rule on the `flip_policy` block). See
-  [§Auto-flip during tracking](#auto-flip-during-tracking).
+  `auto_flip_during_tracking = true`. Must be a finite hour angle
+  (`|offset| ≤ 12`) that also names a point a flip can actually happen
+  at, which is two conditions rather than a band:
+  **tracking must reach the trigger** (`offset <
+  min_hours − tracking_guard_margin_hours`, since the guard stops the
+  mount there and a tracked target arrives from below), and **the flip
+  must land clear from anywhere the trigger can fire**. The second is
+  a swept interval, not a point: the watcher attempts a flip on the
+  first tick where `mech_HA ≥ offset`, so enabling tracking with the
+  mount already past the offset fires it from wherever the mount is.
+  Every position in `[offset, guard_entry)` therefore has to flip to a
+  destination outside the zone. With the shipped zone that works out
+  to `[−0.95, +0.90)`, but the conditions are evaluated against both
+  zone bounds rather than presuming the `(x, 12 − x)` shape —
+  `cw_exclusion_zone` accepts any `-12 ≤ min < max ≤ 12`, and off that
+  shape a presumed band both rejects reachable offsets and admits
+  unreachable ones. Fail either condition and the auto-flip does not
+  fire late, it never fires at all, so the config is refused at load
+  (and on a runtime `config.apply`) rather than leaving
+  `auto_flip_during_tracking = true` as a setting that does nothing. The rule spans two config blocks, so unlike the other
+  invariants it is not a newtype — it lives in
+  `MountConfig::auto_flip_offset_error`. With the zone disabled there
+  is no guard and no unreachable side, so any finite offset passes.
+  See [§Auto-flip during tracking](#auto-flip-during-tracking).
 
 #### Safety envelope (CW exclusion zone)
 
@@ -987,10 +1225,26 @@ The driver enforces this as a single interval on the **chosen-side
 encoder mech_HA**, in `MountConfig::cw_exclusion_zone` — an active
 `{ min_hours, max_hours }` interval (defaults `0.95` and `11.05` — the
 wide zone derived from the 0.95 h rule and hardware-verified at lat
-32.7°N), or `null` to disable:
+32.7°N), or `null` to disable.
+
+The zone has the shape `(x, 12 − x)`, where `x = min_hours` is the
+**CW-up allowance** — the rotation past counterweight-down the mount
+tolerates, `0.95 h = 57 min` by default. `x` is the driver's single
+mechanical constant: it sets how far tracking may run past the
+meridian, how far east of the meridian a CW-up target may be
+acquired, and how wide the band is in which both pier sides work.
+[§Pier-side decision tree](#pier-side-decision-tree) derives all
+three from it; no other setting may be used to decide what the mount
+can reach.
+
+The rules:
 
 - A slew or sync's *target* mech_HA inside the interval is rejected
   with `INVALID_VALUE` before any motion (the destination check).
+  Both resolve the target against the side the mount is on (or, for a
+  slew, the side the selector picked) — a sync while the mount is
+  CW-up validates and writes the CW-up encoder solution. See
+  [§Sync and pier side](#sync-and-pier-side).
 - A slew's *path* — the linear mech_HA sweep from current encoder to
   target encoder — is also checked. Crossings happen even when both
   endpoints sit outside the zone (e.g. cur `+0.5 h` → tgt `+11.5 h`
@@ -1004,9 +1258,13 @@ wide zone derived from the 0.95 h rule and hardware-verified at lat
 - For flipped-side targets, `target_mech_HA = celestial_HA + 12 h`
   (folded).
 - Setting `cw_exclusion_zone` to `null` (disabled) turns off both the
-  destination and path checks — used by BDD scenarios that pass
-  hardcoded celestial coords whose computed mech_HA depends on
-  wallclock LST.
+  destination and path checks — and, with them, the tracking guard and
+  every pier-side choice the driver would otherwise make. The BDD
+  suite runs the **shipped** zone rather than a disabled one; it pins
+  the site longitude so LST is a fixed reference at startup, which
+  puts its canonical target on the meridian instead of wherever the
+  wallclock would have left it (see
+  [§Testing](#testing)).
 
 Historical note: a narrower `(+6.95, +11.05)` zone was used before
 2026-05-17. That captured only the *outer* portion of the exclusion
@@ -1064,8 +1322,11 @@ The floor accepts values in `[-90, +90]`:
   closed-roof flats). The driver logs `info!` at startup when the floor
   is negative so the relaxed state is discoverable in support
   transcripts. `-90` never rejects anything (the check is
-  effectively disabled — the BDD suite ships this in its default test
-  config because scenario targets are wallclock-LST-dependent).
+  effectively disabled — the BDD baseline ships this, since its
+  scenario targets are chosen to exercise wire behaviour rather than
+  to clear any particular horizon; the floor has its own feature file,
+  whose scenarios address targets by hour angle and set the floor
+  explicitly).
 
 Like the CW exclusion zone, the floor gates `SlewToCoordinatesAsync` /
 `SlewToTargetAsync`, `SyncToCoordinates` / `SyncToTarget`, and the
@@ -1175,46 +1436,200 @@ Semantics and interactions:
   crossing. A small positive value (e.g. `+0.3`) waits until the
   target is that far past the meridian — the common astrophotography
   preference, letting the in-progress sub finish (matches NINA's
-  "delay meridian flip by N minutes" semantics). Must be finite and
-  within `[−flip_range_hours, +flip_range_hours]`, validated at
-  config load; outside that window the flipped state isn't reachable
-  and the flip slew would be refused anyway.
+  "delay meridian flip by N minutes" semantics). With the shipped
+  defaults the usable values are `[−0.95, +0.90)`; the general rule is
+  the two conditions in [§Flip policy](#flip-policy), validated at
+  config load. Outside them the flip is either refused (somewhere
+  between the offset and the guard entry the mount would flip into the
+  zone) or pre-empted by the guard, so it would never fire — and
+  because the watcher gets one attempt per meridian crossing, a
+  refused one is not retried.
 - **Hosts observe the flip normally.** The flip is visible as
   `Slewing = true` plus the subsequent `SideOfPier` change, exactly
   like an explicit `SetSideOfPier` — guiding / imaging restart
   coordination stays with the host.
 
+#### Sync and pier side
+
+`SyncToCoordinates` / `SyncToTarget` write the encoder position for
+the side the mount is **physically on**, classified from the Dec
+encoder exactly as [`SideOfPier`](#side-of-pier) classifies it:
+
+- CW-down (pre-flip): `(mech_HA = LST − ra, dec_encoder = dec)`.
+- CW-up (post-flip): `(mech_HA = LST − ra + 12` folded`,
+  dec_encoder = sign(dec) · (180° − |dec|))` — the same pair
+  [§Slew lifecycle](#slew-lifecycle) computes for a flipped target.
+
+The CW-exclusion-zone and altitude gates then run against that side's
+`mech_HA`. Sync issues no motion, so the RA path check does not apply.
+A mount whose side reads `Unknown` (no Dec CPR) is treated as CW-down.
+
+Because the side comes from the cached snapshot, it carries the same
+one-`polling_interval` lag every other side-dependent read does
+(`SideOfPier`, `DestinationSideOfPier`, the slew planner, the tracking
+guard). That matters in one place operators actually reach: a mount
+stopped partway through a flip by `AbortSlew` has no well-defined side
+at all, and for up to one poll the snapshot still shows the side it
+started from. The recovery sequence the driver's own procedures point
+at — plate-solve, then `SyncToCoordinates` to ground-truth the frame —
+should let the poll catch up first (200 ms on the shipped
+`polling_interval`). The driver does not refuse the sync: after an
+aborted flip a sync is the tool the operator needs, and refusing it
+would leave the documented recovery with no way to run.
+
+**Sync takes the axes for its duration** and refuses with
+`INVALID_OPERATION` when a slew or park already owns them. The side is read from the cached snapshot, and an
+asynchronous slew returns as soon as its completion watcher is
+spawned: a sync landing in that window — after a flip is issued,
+before it lands — would resolve the *old* side and write its encoder
+pair to a mount already on its way to the other one, the mislabelling
+this section exists to prevent, arriving by another route.
+
+Testing a flag alone would only narrow that window, not close it — the
+reads between the test and the `:E` writes are `await` points, so a
+slew could start in between. Nor would taking the slew's own
+`slew_in_progress` reservation be enough: `AbortSlew` clears that flag
+unconditionally, which is right for the motion it cancels but would
+strip a sync of the exclusivity it depends on and let the next slew in
+mid-write.
+
+What makes it exclusive is `MountDevice::axis_ownership`, a lock no
+third party can release on an owner's behalf. Sync holds it across its
+reads and writes; a slew or park takes it to reach its own
+reservation, and `AbortSlew` takes it before clearing the flag and
+holds it through its `:L` stops — so anything arriving mid-sync waits
+rather than interleaving. Abort belongs in that list precisely because
+it *falsifies* the flag: it clears `slew_in_progress` before awaiting
+the stops, so for a moment the flag says idle while the mount is still
+moving. Inside the lock the flag check is then sound — nothing can
+acquire or falsify it while the lock is held, so a `false` reading
+cannot go stale. A sync is not
+motion and so does not set `slew_in_progress`: `Slewing` stays `false`
+throughout, as ASCOM expects.
+
+The reservation covers slews and `Park` — the operations that own an
+axis for a stretch. **PulseGuide is deliberately outside it**: a pulse
+must not make `Slewing` read `true`, which is why `IsPulseGuiding`
+exists as a separate flag, so putting guiding under the same
+reservation would trade one wrong answer for another. Sync therefore
+cancels in-flight pulses (clearing `pulse_guiding.{ra,dec}`, which the
+pulse watcher observes and bails on) rather than excluding them, and
+the cancel leaves a window: the axis can still be turning at the
+shifted guide rate when the `:E` lands, until the watcher notices and
+restores. Syncing on top of an active guide pulse is therefore not a
+supported sequence — an autoguider that is pulsing is not a client
+that should also be re-anchoring the frame. The
+lock is taken before the in-flight pulse-guide cancel, so a refused
+sync has no side effects, and released when the call returns — unlike
+a slew, a sync has no watcher to hand ownership to.
+
+Until 2026-09 sync assumed CW-down unconditionally. On a CW-up mount
+that had two consequences: every target in the western sky was
+refused with a CW-exclusion-zone error (its CW-down `mech_HA` is
+inside the zone even though the mount was nowhere near it), and —
+worse — an *eastern* target was accepted and written as a CW-down
+encoder pair, silently re-labelling a flipped mount as unflipped.
+`SideOfPier` then reported the wrong side and every subsequent slew
+planned from a false position. Resolving the side from the encoder
+closes both.
+
 #### Pier-side decision tree
 
+Pier side is not a policy the driver holds an opinion about. It is an
+*output*: of the two encoder solutions for a given RA/Dec, which ones
+the mount can actually be pointed at without putting the polar axis
+in — or sweeping it through — the CW exclusion zone. The zone is the
+only input; everything below is a consequence of it.
+
+Write the zone as `(x, 12 − x)` in `mech_HA` (defaults `(0.95,
+11.05)`, so `x = 0.95 h = 57 min`). `x` is the **CW-up allowance**:
+how far the polar axis may rotate past the counterweight-down
+position before the counterweight is too high. That single number
+fixes all three of the behaviours operators care about:
+
+- **Tracking past the meridian on the CW-down side** runs until
+  `mech_HA = x` (the tracking guard stops at `x −
+  tracking_guard_margin_hours`) — 57 min, 54 after the default
+  margin.
+- **Acquiring east of the meridian on the CW-up side** is legal down
+  to `target_HA = −x` (the flipped `mech_HA = target_HA + 12` stays
+  at or above `12 − x`) — 57 min east. A host that pre-positions
+  CW-up within that window tracks straight through the meridian
+  without a flip.
+- **The overlap band** where both sides reach is therefore
+  `target_HA ∈ [−x, +x]`, plus the mirror sliver at the anti-meridian.
+
+And, because the CW-up side's `mech_HA = target_HA − 12` is negative
+for every `target_HA ∈ [0, 12)`, the CW-up side reaches the **entire
+western sky**: once flipped, the mount tracks from `−x` east of the
+meridian all the way round to the anti-meridian without needing to
+flip back.
+
 `DestinationSideOfPier(ra, dec)` and `SlewToCoordinatesAsync(ra,
-dec)` share the same selector:
+dec)` share one selector:
 
 1. If `flip_policy.enabled = false`, return the current `SideOfPier`.
-2. Compute `target_HA = LST − ra` (signed, folded to `[−12, +12)`).
-3. If the *current* side can reach the target without entering the
-   CW exclusion zone, stay on the current side (no unnecessary flip):
-   - **Pre-flip side** (`pierWest` in the Northern Hemisphere,
-     `pierEast` in the Southern): "covers" means `target_HA ∉
-     binding_zone`. This is wider than the legacy
-     `[ra_min_hours, ra_max_hours]` window — the whole sky except
-     the CW exclusion zone.
-   - **Post-flip side**: "covers" means `|target_HA| ≤
-     flip_range_hours`. This is an *operational* preference (after
-     a flip, the driver expects to flip back to natural side soon),
-     not a hard mechanical constraint. The post-flip side could
-     mechanically be tracked far past `±flip_range_hours`, but the
-     decision tree treats anything outside as "should flip back".
-4. Otherwise return the *opposite* side.
+   (`Unknown` current side also returns `Unknown` — with no encoder
+   classification there is nothing to anchor a decision on.)
+2. Compute `target_HA = LST − ra` (signed, folded to `[−12, +12)`),
+   and from it each side's destination `mech_HA`: `target_HA` on the
+   CW-down (pre-flip) side, `target_HA + 12` folded on the CW-up
+   (post-flip) side.
+3. A side is **usable** when both of these hold:
+   - its destination `mech_HA` is outside the CW exclusion zone (the
+     open interval, so a target exactly on a boundary is fine); and
+   - an RA path to it exists from the current encoder `mech_HA` — the
+     canonical short sweep does not cross the zone, or (for a flip,
+     where the planner may route the long way round) the long way
+     does not. This is the same test
+     [§Through-wrap slew routing](#through-wrap-slew-routing) applies
+     when it plans the sweep.
+4. **Stay if the current side is usable**; otherwise take the
+   opposite side if it is usable. If neither is, return the current
+   side — the selector owes the caller a side, and inventing a flip
+   that also cannot be reached helps nobody.
 
-The driver does not pre-emptively flip; it only flips when the
-target can't be reached from the current side (per rule 3) or when
-`SetSideOfPier` forces it. The post-flip operational window
-(`flip_range_hours`) is small — `0.5 h` by default — so the
-practical pattern is: pre-flip side covers most of the sky; an
-explicit or implicit flip rotates the mount through the meridian to
-the post-flip side for tracking a target past meridian crossing;
-the next slew that targets HA outside the flip window auto-flips
-back to the pre-flip side.
+   What happens next differs between the two callers, and that is the
+   one place where a prediction and the slew it predicts can come
+   apart. A slew goes on to plan its sweep, so it refuses with the
+   envelope or path error naming the obstruction.
+   `DestinationSideOfPier` runs the destination check only — it plans
+   no sweep — so when *both* destinations are legal and only the paths
+   are blocked, it returns a side the mount could not currently slew
+   to. Reaching that requires the encoder to already sit somewhere
+   every sweep out of it crosses the zone, which the slew gates and
+   the tracking guard exist to prevent and only a `Park` target inside
+   the zone can really produce (park writes ticks without the zone
+   check). The prediction is still the right *side* for the target; it
+   is the reachability from the mount's present position it does not
+   speak to.
+
+Consequences worth stating explicitly, because they are the
+behaviours hosts observe:
+
+- **The driver never pre-emptively flips.** Staying is preferred
+  whenever staying works, so a flip happens only when the current
+  side genuinely cannot reach the target (or `SetSideOfPier` forces
+  one).
+- **No gratuitous flip-back.** Inside the overlap band the mount
+  stays where it is. A plate-solve re-centre 35 min after a flip is a
+  small correction on the CW-up side, not a full through-wrap slew
+  back followed by the tracking guard stopping the mount minutes
+  later.
+- **The path is part of the choice, not a veto after it.** When
+  staying has no safe sweep but flipping does, the selector flips
+  instead of picking a side that is about to be refused.
+- **Refusal is rare and honest.** With a zone of the shape
+  `(x, 12 − x)` every `target_HA` is reachable from at least one side
+  on destination grounds; step 4's fall-through is reached only when
+  the *paths* are blocked from where the mount currently stands.
+- **A disabled zone means the selector never changes sides.** With
+  `cw_exclusion_zone: null` there is no mechanical reason to prefer
+  either solution, so every target is usable from the current side and
+  only `SetSideOfPier` moves the mount across. (Before 2026-09 a
+  disabled zone still flipped back whenever `|target_HA|` left the
+  since-removed `flip_range_hours` window — a flip with no safety
+  argument behind it.)
 
 Park 1 / Park 5 anti-meridian poses are reachable via
 `SlewToCoordinatesAsync` because they live at `target_HA = ±12 h`
@@ -1286,10 +1701,7 @@ nudge that physically just crosses the `−12 ↔ +12` wrap; the old
 path-aware check preserves the safe canonical step.
 
 Empty zone (`zone_min ≥ zone_max`) disables the routing — the
-canonical short delta is always used. BDD tests rely on this to keep
-small-distance scenarios from accidentally triggering the long way
-when the wall-clock LST puts a synthetic target inside the default
-zone.
+canonical short delta is always used.
 
 **Dec axis:** routed through the visible celestial pole, NOT the
 below-horizon pole. For a polar-aligned mount, only one of the two
@@ -1366,15 +1778,22 @@ fields. The transport block is a tagged enum: `usb` or `udp`.
 The mount block is **validated at deserialize** (parse-don't-validate):
 the range-carrying fields are newtypes whose `serde` `try_from` rejects an
 out-of-range value during `load_config`, with the offending field named,
-so a bad config fails at startup rather than mid-session. `flip_range_hours`
-must be `(0, 0.95]`; `tracking_guard_margin_hours` `[0, 1.0]`; an active
+so a bad config fails at startup rather than mid-session.
+`tracking_guard_margin_hours` must be `[0, 1.0]`; an active
 `cw_exclusion_zone` must satisfy `-12 ≤ min_hours < max_hours ≤ 12`;
 `min_altitude_degrees` must be finite in `[-90, 90]`;
-`auto_flip_at_meridian_offset_hours` must be finite and within
-`±flip_range_hours` (a cross-field rule, checked on the `flip_policy`
-block). (This
+`auto_flip_at_meridian_offset_hours` must be a finite hour angle
+(`|offset| ≤ 12`). (This
 replaced the former runtime `MountConfig::validate` / `FlipPolicy::validate`
 — see [ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md).)
+
+One rule resists that shape: the auto-flip offset must also name a
+point a flip can happen at, which the CW exclusion zone and the
+tracking-guard margin decide — two blocks a newtype on a third cannot
+see. It lives in `MountConfig::auto_flip_offset_error`, called from
+`load_config` at startup and from the config-actions `validate` hook
+so a runtime `config.apply` cannot install what startup would have
+refused.
 Every genuinely-operator-config struct (`Config`, `UsbConfig`, `UdpConfig`,
 `ServerConfig`, `MountConfig`, `FlipPolicy`, and the `cw_exclusion_zone` wire
 shape) additionally rejects unknown keys at deserialize
@@ -1413,7 +1832,6 @@ loudly at load instead of being silently ignored.
     "park_dec_ticks": null,
     "flip_policy": {
       "enabled": false,
-      "flip_range_hours": 0.5,
       "auto_flip_during_tracking": false,
       "auto_flip_at_meridian_offset_hours": 0.0
     },
@@ -1507,11 +1925,6 @@ Notes:
   specific mount (see [§Hardware validation](#hardware-validation)).
   While `false`, `CanSetPierSide` reports `false` and the driver
   ignores flip routing entirely.
-- `flip_policy.flip_range_hours` defaults `0.5`. Half-width of the
-  target-HA window around the meridian where the flipped state is
-  reachable. Valid range `(0, 0.95]`; the upper bound is the verified
-  safe headroom past counterweight-horizontal on the pre-flip side.
-  See [§Meridian flip](#meridian-flip).
 - `flip_policy.auto_flip_during_tracking` defaults `false`. When
   `true` (and `flip_policy.enabled` is `true`), the tracking watcher
   initiates a meridian flip on its own once tracking carries the
@@ -1521,8 +1934,13 @@ Notes:
   [§Auto-flip during tracking](#auto-flip-during-tracking).
 - `flip_policy.auto_flip_at_meridian_offset_hours` defaults `0.0`
   (flip exactly at meridian crossing; positive values delay the flip
-  past the meridian). Must be finite and within `±flip_range_hours` —
-  validated at load as a cross-field rule on the `flip_policy` block.
+  past the meridian). Must be a finite hour angle naming a point a
+  flip can happen at — `[−0.95, +0.90)` with the shipped defaults,
+  derived from both zone bounds in the general case. Validated at load
+  and on `config.apply`; see [§Flip policy](#flip-policy).
+- `flip_policy.flip_range_hours` was **removed** 2026-09 (issue
+  #1301). A config still carrying it fails to load with the field
+  named — see [§Flip policy](#flip-policy) for the migration.
 - `unpark_from_ap_position` is **required** (no default in the schema
   sense, but the ship default is `"ap_park_0"` — the field is the
   operator's declared physical position assumption, and "current
@@ -1958,16 +2376,48 @@ ConformU verifies ASCOM compliance.
 | Service `test_lib.rs` (gated on `mock`) | server starts, binds the configured port, exposes the configured device |
 | `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance via `ConformUTestBuilder::run()` — runs both `alpacaprotocol` and `conformance` phases. **Currently NOT wired into the nightly `conformu` workflow** (issue #201): three independent conformance-phase failures need driver work first. See [§"Running ConformU manually"](#running-conformu-manually) and [§"Expected ConformU report"](#expected-conformu-report). |
 
+**The BDD baseline runs the shipped safety config.** Its
+`cw_exclusion_zone` is the default `(0.95, 11.05)`, not `null`, so
+every scenario's slew and sync target passes the same gate an
+operator's would. Scenario targets used to be at the mercy of
+wallclock LST — `RA 6.0 h` lands inside the zone for ~42% of the
+sidereal day — so `world.rs` pins the site longitude at service start
+such that LST is `6.0 h`, putting that canonical target at
+`mech_HA = 0`. A scenario that needs a *specific* `mech_HA` addresses
+its target by hour angle and lets the step compute
+`RA = LST − HA` (`altitude_floor.feature`,
+`pier_side_selection.feature`, and the CW-exclusion-zone scenarios in
+`slew.feature`); a scenario whose subject is the longitude itself
+pins its own and opts out of the reference LST.
+
 The mock transport is a feature-gated in-memory state machine that
 simulates the motor controller — it accepts the same `:cmd<axis>...\r`
 frames and emits well-formed `=...\r` / `!XX\r` responses, with internal
-state for axis position, motion mode, running/stopped, and tracking. In
-**tracking mode** the mock advances the axis encoder forward by a small
-sidereal-equivalent chunk per `:j` poll (ignoring `goto_target_ticks`),
-so post-slew `RA` reads stay constant — matching what real Sky-Watcher
-firmware does once tracking is re-enabled. In **goto mode** the mock
-walks toward `goto_target_ticks` and clears `running` on arrival. BDD
-tests use the mock by default; ConformU and `test_lib.rs` use the
+state for axis position, motion mode, running/stopped, and tracking.
+
+The two motion modes are simulated differently, on purpose:
+
+- **Tracking mode is rate-faithful and runs on the clock.** A tracking
+  axis free-runs in the commanded direction at the rate the wire set:
+  `tmr_freq / step_period` steps per second (times the high-speed ratio
+  in Tracking-Fast), ignoring `goto_target_ticks`. Motion is integrated
+  up to the present at every frame the mock receives, with fractional
+  ticks carried between updates, so a `:K` stops the axis where it has
+  got to and an on-the-fly `:I` changes the rate from that instant. A
+  `step_period` of `0` (no `:I` yet) is no motion. Honouring the period
+  is what makes a *rate* error observable as an *angle* error: sidereal
+  tracking holds post-slew `RA` constant as real firmware does, a guide
+  pulse moves the axis by `guide rate × duration`, and a step period
+  derived from the wrong axis' CPR moves it the wrong distance. The
+  clock is tokio's, so unit tests run whole pulses under paused time
+  (`start_paused`) and measure the angle exactly; ConformU against the
+  mock measures it in wall time, as it does on hardware.
+- **Goto mode is poll-driven.** Each `:j` poll walks the axis a fixed
+  chunk toward `goto_target_ticks` and clears `running` on arrival, so
+  a slew completes in a handful of polls however fast the test runs.
+  Goto speed is not simulated.
+
+BDD tests use the mock by default; ConformU and `test_lib.rs` use the
 feature-gated mock so the binary itself runs against a fake mount.
 
 ### Running ConformU manually
@@ -2003,19 +2453,75 @@ re-adding `[package.metadata.conformu]` to the package's
    convention (`pierWest` for HA ∈ [-6, 0), `pierEast` for
    HA ∈ (0, +6]) and records ISSUEs for every HA > 0 case in
    both `SideofPier` and `DestinationSideofPier`.
-3. **PulseGuide rate-shifted tracking produces the wrong
-   motion on every axis.** ConformU's PulseGuide tolerance
-   check expects `guide_rate × sidereal × duration` of motion
-   on the pulsed axis and ~0 on the other. The driver fails
-   the check in all four directions across HA ±3 and ±9
-   (24 ISSUEs total): Dec North/South moves at ~2× the
-   configured rate (71.4″ vs 37.6″ expected for a 5 s pulse at
-   the default 0.5× sidereal rate); RA East slows by only ~10 %
-   instead of the configured 50 % (Δ RA 0.48 s vs 2.51 s
-   expected); and RA West pulses move east (Δ RA +0.48 s where
-   ConformU expects −2.51 s). The implementation is the
-   rate-shifted tracking burst PR #206 introduced, not a
-   Dec-vs-encoder coordinate issue.
+3. **PulseGuide misses ConformU's tolerance in RA.** ConformU
+   expects `guide_rate × duration` of motion on the pulsed axis
+   (5 s at the default 0.5 × sidereal: 37.6″ in Dec, 2.51 s in
+   RA) and ~0 on the other, at HA ±3 and ±9. Dec North/South is
+   within tolerance (37.5″) and in the right direction on both
+   sides. One defect remains:
+   - **RA East/West carry a constant offset of ≈ +0.24 s of RA**
+     (East +2.74 s, West −2.26 s against ±2.51 s; tolerance
+     0.07 s). The rate itself is right — the scale solves to
+     0.996. The offset is the pulse's own `:K1` + stop-and-wait
+     (≥ 100 ms), which runs once before the shifted rate is
+     applied and once before sidereal is restored: the RA motor
+     sits stopped for those windows and the sky drifts past at
+     sidereal rate. Hardware shows the same signature, larger
+     (East +2.95 s, West −2.29 s), because a real motor takes
+     longer to decelerate than the mock's instant stop. INDI
+     eqmod changes the tracking rate without stopping the motor.
+   The Dec-direction defect this list used to carry — North
+   moving south and South moving north at HA +3 and +9 with
+   `flip_policy.enabled = true`, the right distance the wrong
+   way — was issue #1300, fixed: Dec pulses now resolve `ccw`
+   against the side the mount is on (see the Dec sign
+   convention under
+   [§PulseGuide lifecycle](#pulseguide-lifecycle), including
+   what a mock run does and does not establish — the
+   counterweight-up direction is derived from the
+   counterweight-down hardware runs, not measured on that side).
+
+   Earlier revisions of this section recorded a much worse
+   picture (Dec at ~2× the rate, RA West moving east). That was
+   the mock, not the driver: its tracking-mode motion advanced a
+   fixed number of ticks per `:j` poll and ignored the step
+   period, so no pulse rate could be measured against it. The
+   mock now honours `:I` (see [§Testing Strategy](#testing-strategy)).
+   The one real rate defect it had been hiding — a Dec step
+   period derived from the RA axis' CPR, a 1.25× overshoot
+   ConformU measured on hardware — is fixed.
+
+Measured against the mock with ConformU 4.5.0, per mount config
+(0 errors in every run):
+
+| Config | Issues | What they are |
+|---|---|---|
+| default (`flip_policy.enabled = false`) | 3 | RA East/West offset at HA −9 (2); then failure (1) abandons CheckMethods |
+| `cw_exclusion_zone: null` | 13 | RA East/West offset at HA ±3, ±9 (8); failure (2) `SideofPier` / `DestinationSideofPier` (5) |
+| `flip_policy.enabled = true` | 20 → 8 (see below) | RA East/West offset (8); ~~Dec direction on the flipped side (4)~~ — fixed; ~~slews / syncs to HA +1…+4 h rejected as inside the CW exclusion zone (8)~~ — fixed |
+
+Enabling the flip policy clears failures (1) and (2) outright —
+`SideOfPier Write` flips, and `SideofPier` /
+`DestinationSideofPier` report the pointing state at HA ±3 and ±9.
+
+The eight rejections that row recorded came from the pier-side
+selector: from the counterweight-up side, a target outside the
+`flip_range_hours` window was sent to the counterweight-down side,
+where HA +1…+4 h lies inside the exclusion zone, although the
+counterweight-up side could reach it. That is issue #1301, fixed —
+the selector now picks the side by reachability
+([§Pier-side decision tree](#pier-side-decision-tree)) and sync
+resolves against the side the mount is on
+([§Sync and pier side](#sync-and-pier-side)). The four Dec-direction
+issues are #1300, also fixed — Dec pulses resolve `ccw` against the
+side the mount is on. "Fixed" there means fixed against the mock and
+derived from the counterweight-down hardware runs, not separately
+measured counterweight-up; see
+[§PulseGuide lifecycle](#pulseguide-lifecycle) ("What the mock can and
+cannot settle") before treating that row as hardware evidence. **The `20` above was measured; the `8` is
+arithmetic, not a re-run** — it assumes the RA-offset group is
+untouched, which neither fix goes near. The remaining eight are
+issue #1299 (RA offset); re-measure when it lands.
 
 To reproduce locally, run the in-tree integration test — same
 binary, same config, same ConformU invocation the workflow used:
@@ -2032,24 +2538,24 @@ side-of-pier model tests.
 ### Expected ConformU report
 
 These are the conformance-phase findings against the current
-driver (PR #206). They are *not* a green run — fixing (2) and (3)
-above is on the roadmap before the package is re-added to the
-nightly workflow.
+driver. They are *not* a green run — fixing (2) and (3) above is
+on the roadmap before the package is re-added to the nightly
+workflow. The per-config issue counts are in the table under
+[§Running ConformU manually](#running-conformu-manually).
 
-After (1) is worked around by widening the mock test envelope:
+After (1) is worked around by disabling the CW exclusion zone
+for the mock test config (`"cw_exclusion_zone": null`):
 
 - **0 errors** — anything here is a real driver regression.
-- **~58 issues**, dominated by:
-  - PulseGuide tolerance failures at HA ±3 and ±9 in all four
-    directions (24 entries) — driver bug (3). Each pulsed-axis
-    "Moved {N,S,E,W} but outside test tolerance" row counts
-    once, and each accompanying "{East-West,North-South}
-    movement was outside test tolerance" row (the axis the
-    pulse is *not* supposed to move) counts once.
+- **13 issues**:
+  - PulseGuide East / West "Moved {east,west} but outside test
+    tolerance" at HA ±3 and ±9 (8 entries) — driver bug (3),
+    the RA stop-window offset. North / South pass, and no pulse
+    moves the axis it is not supposed to.
   - `SideofPier` and `DestinationSideofPier`
     "`pierWest` is returned when the mount is observing at an
-    hour angle between 0.0 and +6.0" (8 entries) — driver
-    bug (2). ConformU's `SideofPier` test assumes a
+    hour angle between 0.0 and +6.0" (2 entries) — driver
+    bug (2), with the flip policy disabled. ConformU's `SideofPier` test assumes a
     flip-at-meridian GEM (EQMOD / Sky-Watcher Synscan /
     ASCOM-driver-pattern behaviour) and expects `pierEast`
     for any target west of the meridian; the driver returns
@@ -2060,7 +2566,7 @@ After (1) is worked around by widening the mock test envelope:
   - `SideofPier` / `DestinationSideofPier`
     "reports physical pier side rather than pointing state"
     and "Same value … on both sides of the meridian"
-    (4 entries) — same root cause as bug (2): a non-flipping
+    (3 entries) — same root cause as bug (2): a non-flipping
     mount lands every in-envelope target in the same
     pointing state.
 
@@ -2113,6 +2619,16 @@ init handshake:
   :g1, :g2          (high-speed ratio)     → cache
   :j1, :j2          (initial positions)    → cache + snapshot
    ↓
+safety stop:
+  :L1, :L2, :K1     (halt both axes, stop tracking) — the same
+                    no-client sequence a last-client disconnect
+                    issues, asserted here before the transport is
+                    published. A failure on the wire — or an answer
+                    that leaves the state unasserted, a refusal or a
+                    bad frame alike — fails the start: build() errors
+                    and the process exits non-zero rather than
+                    advertise a mount whose state is unknown.
+   ↓
 start background polling task (interval = config.polling_interval)
 ```
 
@@ -2136,10 +2652,18 @@ Connected = false  → release the session. On the last client disconnect the
                      the same hook again on the fresh link.
 ```
 
+A reload (`config.apply` on a field that needs one) is a shutdown
+followed by a start, so the sequence runs twice: once on the way down,
+where it may land on nothing, and once on the way back up on the fresh
+conduit, where it is asserted whatever the way down managed.
+
 ```
 Service shutdown (HTTP server stops → `SharedTransport::shutdown()`)
    ↓
 shutdown hook runs :L1, :L2, :K1 one last time
+   (a stop that does not assert here is logged at error!: nothing
+    downstream can act on it, and the next cold start is what
+    re-asserts the state)
    ↓
 cancel the reconnect supervisor + the polling task
    ↓
@@ -2170,7 +2694,7 @@ survive via the connection-cell swap. (Same service-lifetime pattern as
 | **Phase A7 — PulseGuide** | landed (issue #206) — implements `PulseGuide` as a rate-shifted tracking burst on the targeted axis (no `:P`; that's the ST4-jack rate setter, not a pulse trigger), flips `CanPulseGuide` and `CanSetGuideRates` to `true`. Re-enabled `[package.metadata.conformu]` so the full two-phase ConformU integration ran again — but the `conformance` phase, which `alpacaprotocol`-only manual runs hadn't exercised, surfaced three failures that PR #206's review hadn't caught; see Phase A8. |
 | **Phase A8 — Nightly ConformU opt-out (#201)** | landed (issue #201) — removed `[package.metadata.conformu]` again. ConformU's `conformance` phase fails for three independent reasons that need driver work first: (a) `SideOfPierTests` slews to mech-HA ±9 h, which the safety envelope correctly rejects on hardware but which ConformU treats as a fatal CheckMethods-level exception that abandons the rest of the suite; (b) `SideOfPier` always returns `pierWest` for in-envelope targets (Dec-encoder convention) where ConformU asserts the ASCOM pointing-state convention; (c) PulseGuide Dec moves at full sidereal rate instead of `guide_rate_dec_fraction × sidereal`. See [§Running ConformU manually](#running-conformu-manually) and [§Expected ConformU report](#expected-conformu-report) for the failure details and reproduction steps. |
 | **Phase 5 — user-defined `SetPark` + persistence** | landed (issue #203) — park target now sourced from `mount.park_ra_ticks` / `mount.park_dec_ticks` in the config (fallback: encoder positions captured at handshake), `SetPark` writes the current encoder pair back into the running config file via atomic rename, `CanSetPark` flips on when `--config` is provided. See [§Park lifecycle](#park-lifecycle) and [§Park persistence](#park-persistence). |
-| **Phase 6 — meridian-flip support** | hardware-validated 2026-05-16 (lat 32.7°N) — adds `MountConfig::flip_policy` (`enabled` + `flip_range_hours`), the asymmetric CW exclusion zone safety envelope, CW-exclusion zone-path-aware through-wrap RA routing, visible-pole Dec routing, `SetSideOfPier`, and flip-aware `DestinationSideOfPier`. End-to-end AP Park 1–5 traversal (including the through-wrap saddle-east flip and its flip-back) ran clean; the flip-back from the saddle-east wrap caught a sign-blind heuristic in `flip_slew_ra_delta` that the path-aware check now handles. `flip_policy.enabled` still defaults `false` (operators opt in once they've replayed the validation locally). The tracking-time CW-exclusion-zone safety guard (Part 1 of issue #259) has since landed — a background watcher stops tracking before the encoder `mech_HA` drifts into the zone (see [§Tracking-time safety guard](#tracking-time-safety-guard)). Driver-planned auto-flip-during-tracking (Phase 2.5 / Part 2 of #259) has since landed as well — the same watcher can start a standard flip on the operator's behalf once tracking carries `mech_HA` past a configured offset, opt-in via `flip_policy.auto_flip_during_tracking` and pending its own real-hardware validation (see [§Auto-flip during tracking](#auto-flip-during-tracking)). Plan: [`docs/plans/archive/star-adventurer-gti-meridian-flip.md`](../plans/archive/star-adventurer-gti-meridian-flip.md). See [§Meridian flip](#meridian-flip). |
+| **Phase 6 — meridian-flip support** | hardware-validated 2026-05-16 (lat 32.7°N) — adds `MountConfig::flip_policy` (`enabled`, plus a `flip_range_hours` window removed again in 2026-09 — see [§Flip policy](#flip-policy)), the asymmetric CW exclusion zone safety envelope, CW-exclusion zone-path-aware through-wrap RA routing, visible-pole Dec routing, `SetSideOfPier`, and flip-aware `DestinationSideOfPier`. End-to-end AP Park 1–5 traversal (including the through-wrap saddle-east flip and its flip-back) ran clean; the flip-back from the saddle-east wrap caught a sign-blind heuristic in `flip_slew_ra_delta` that the path-aware check now handles. `flip_policy.enabled` still defaults `false` (operators opt in once they've replayed the validation locally). The tracking-time CW-exclusion-zone safety guard (Part 1 of issue #259) has since landed — a background watcher stops tracking before the encoder `mech_HA` drifts into the zone (see [§Tracking-time safety guard](#tracking-time-safety-guard)). Driver-planned auto-flip-during-tracking (Phase 2.5 / Part 2 of #259) has since landed as well — the same watcher can start a standard flip on the operator's behalf once tracking carries `mech_HA` past a configured offset, opt-in via `flip_policy.auto_flip_during_tracking` and pending its own real-hardware validation (see [§Auto-flip during tracking](#auto-flip-during-tracking)). Plan: [`docs/plans/archive/star-adventurer-gti-meridian-flip.md`](../plans/archive/star-adventurer-gti-meridian-flip.md). See [§Meridian flip](#meridian-flip). |
 | **Phase 7 — altitude-based safety floor (#223)** | landed 2026-07-01 ("Phase 3" in the plan's local numbering) — replaces the rectangular celestial-Dec envelope (`dec_limits`) with `MountConfig::min_altitude_degrees`: slew / sync targets whose computed apparent altitude (`sin alt = sin lat · sin dec + cos lat · cos dec · cos HA`) is below the floor are rejected with `INVALID_VALUE`. Default `0.0` (geometric horizon); negative floors permit below-horizon pointing and log `info!` at startup. `Park` stays exempt (privileged-park pattern). See [§Altitude floor](#altitude-floor). |
 
 #### Phase 4 findings (hardware bringup)

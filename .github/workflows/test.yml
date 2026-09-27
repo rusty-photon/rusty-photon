@@ -75,11 +75,14 @@ jobs:
         run: cargo build --locked --workspace --all-features --all-targets
       - name: cargo nextest run
         run: cargo nextest run --locked --workspace --all-features --all-targets
-      # BDD tests use a custom harness (bdd_main!) incompatible with nextest.
-      # `--workspace --test bdd` runs the bdd target wherever it exists; members
-      # without one are skipped.
-      - name: cargo test --test bdd
-        run: cargo test --locked --workspace --all-features --test bdd
+      # BDD tests use a custom harness (bdd_main!) incompatible with nextest, so
+      # they run separately. The action builds every bdd target once and runs the
+      # binaries as parallel streams, sharding the suites that support it: cargo
+      # runs test binaries one after another and cucumber serializes every
+      # `@serial` feature, so a single process spends most of the suite's wall
+      # clock with one scenario in flight.
+      - name: cargo test --test bdd (sharded)
+        uses: ./.github/actions/bdd-sharded
       - name: Upload OmniSim logs (on failure)
         if: failure()
         uses: actions/upload-artifact@v7
@@ -128,8 +131,8 @@ jobs:
         run: cargo build --locked --workspace --all-features --all-targets
       - name: cargo nextest run
         run: cargo nextest run --locked --workspace --all-features --all-targets
-      - name: cargo test --test bdd
-        run: cargo test --locked --workspace --all-features --test bdd
+      - name: cargo test --test bdd (sharded)
+        uses: ./.github/actions/bdd-sharded
       - name: Upload OmniSim logs (on failure)
         if: failure()
         uses: actions/upload-artifact@v7
@@ -139,9 +142,11 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
   windows:
-    # Windows nextest + BDD in one job. On a nightly safety net the ~10m
-    # sequential BDD wall-clock (Windows spawns a process per scenario) is
-    # irrelevant, so BDD runs as a single full-workspace `cargo test --test bdd`.
+    # Windows nextest + BDD in one job. Windows spawns a process per scenario, so
+    # its BDD wall clock is the highest of the three. The suites still share one
+    # job here rather than splitting per service the way conformu.yml's Windows
+    # leg does: that split exists to dodge cargo's build-directory lock, and the
+    # action runs already-built binaries, so no cargo process contends for it.
     runs-on: windows-latest
     timeout-minutes: 60
     name: windows / nextest
@@ -165,8 +170,8 @@ jobs:
         run: cargo build --locked --workspace --all-features --all-targets
       - name: cargo nextest run
         run: cargo nextest run --locked --workspace --all-features --all-targets
-      - name: cargo test --test bdd
-        run: cargo test --locked --workspace --all-features --test bdd
+      - name: cargo test --test bdd (sharded)
+        uses: ./.github/actions/bdd-sharded
       - name: Upload OmniSim logs (on failure)
         if: failure()
         uses: actions/upload-artifact@v7

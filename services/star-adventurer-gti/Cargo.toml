@@ -143,6 +143,10 @@ require-sh = true
 tracing-subscriber = { workspace = true }
 bdd-infra = { workspace = true, features = ["conformu", "tls-auth"] }
 tokio-test = { workspace = true }
+# `test-util` unlocks paused tokio time (`start_paused`): the mock mount's
+# tracking motion runs on the tokio clock, so a pulse-guide test can measure
+# the angle a pulse moved over an exact, scheduler-independent duration.
+tokio = { workspace = true, features = ["test-util"] }
 mockall = { workspace = true }
 proptest = { workspace = true }
 reqwest = { workspace = true }

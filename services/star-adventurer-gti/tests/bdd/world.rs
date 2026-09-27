@@ -10,7 +10,7 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use ascom_alpaca::api::telescope::{PierSide, Telescope};
 use ascom_alpaca::api::TypedDevice;
@@ -20,6 +20,7 @@ use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
 use serde_json::Value;
+use star_adventurer_gti::coordinates::local_sidereal_time_hours;
 use star_adventurer_gti::{
     AlpacaServerConfig, ApPark, Config, CwExclusionZone, MinAltitudeDegrees, MountConfig,
     TransportConfig, UsbConfig,
@@ -78,6 +79,33 @@ pub enum CommandLogTimeout {
     FetchFailed(String),
 }
 
+/// Index of the first frame after the most recent startup block.
+///
+/// A startup block is the identity-gated handshake — which always opens
+/// with `:e1`, a frame nothing else on this wire sends — followed by the
+/// cold start's `:L1`, `:L2`, `:K1` safety assertion. Scanning for the
+/// *last* `:e1` and stepping past the halt behind it yields the point
+/// after which every frame belongs to the scenario rather than to the
+/// driver coming up, however many times it has come up.
+///
+/// Returns 0 when no startup is present (nothing has booted yet), and
+/// the position after the last `:e1` when the halt behind it has not
+/// been logged yet — mid-boot, where dropping the handshake is still
+/// right and the halt is about to follow.
+fn end_of_last_startup(log: &[String]) -> usize {
+    let Some(boot) = log.iter().rposition(|c| c.as_str() == ":e1\r") else {
+        return 0;
+    };
+    let mut idx = boot + 1;
+    for want in [":L1\r", ":L2\r", ":K1\r"] {
+        match log[idx..].iter().position(|c| c.as_str() == want) {
+            Some(hit) => idx += hit + 1,
+            None => return boot + 1,
+        }
+    }
+    idx
+}
+
 #[derive(Debug, Default, World)]
 pub struct StarAdventurerWorld {
     pub service_handle: Option<ServiceHandle>,
@@ -108,6 +136,11 @@ pub struct StarAdventurerWorld {
     pub last_response: Option<Value>,
     /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
+
+    /// Set when a scenario pins `site_longitude_deg` itself, which
+    /// suppresses the reference-LST pin [`StarAdventurerWorld::start_service`]
+    /// otherwise applies. See [`REFERENCE_LST_HOURS`].
+    pub site_longitude_pinned: bool,
 
     /// State for the shared TLS + auth smoke steps (`auth.feature`).
     pub tls_auth: TlsAuthState,
@@ -171,8 +204,21 @@ impl StarAdventurerWorld {
     /// file, spawn the service binary via [`ServiceHandle`], poll the
     /// Alpaca client until the Telescope device is exposed, and apply
     /// any deferred state seeds that earlier `Given` steps queued up.
+    /// Set `site_longitude_deg` and suppress the reference-LST pin —
+    /// for the scenarios whose subject *is* the longitude (`SiteLongitude`
+    /// reads, LST-from-longitude reads). They assert relative
+    /// properties, so a wallclock LST is fine for them.
+    pub fn pin_site_longitude(&mut self, deg: f64) {
+        self.config_mut().mount.site_longitude_deg = deg;
+        self.site_longitude_pinned = true;
+    }
+
     pub async fn start_service(&mut self) {
-        let cfg = self.config.clone().unwrap_or_else(default_test_config);
+        let mut cfg = self.config.clone().unwrap_or_else(default_test_config);
+        if !self.site_longitude_pinned {
+            cfg.mount.site_longitude_deg = longitude_for_reference_lst();
+        }
+        let cfg = cfg;
         let dir = self
             .temp_dir
             .get_or_insert_with(|| TempDir::new().expect("failed to create temp dir"));
@@ -345,6 +391,33 @@ impl StarAdventurerWorld {
         timeout: Duration,
         pred: impl Fn(&[String]) -> bool,
     ) -> Result<Vec<String>, CommandLogTimeout> {
+        // Recomputed on every poll, not captured once: a reload can
+        // land mid-wait, and the boundary has to move with it.
+        self.wait_for_command_log_including_startup(timeout, move |log| {
+            pred(log.get(end_of_last_startup(log)..).unwrap_or(&[]))
+        })
+        .await
+        .map(|log| {
+            let from = end_of_last_startup(&log);
+            log.into_iter().skip(from).collect()
+        })
+        .map_err(|e| match e {
+            CommandLogTimeout::NoMatch(log) => {
+                let from = end_of_last_startup(&log);
+                CommandLogTimeout::NoMatch(log.into_iter().skip(from).collect())
+            }
+            other @ CommandLogTimeout::FetchFailed(_) => other,
+        })
+    }
+
+    /// As [`Self::wait_for_command_log`], but `pred` sees the startup
+    /// frames too. Only the steps whose subject is the startup want
+    /// this.
+    pub async fn wait_for_command_log_including_startup(
+        &self,
+        timeout: Duration,
+        pred: impl Fn(&[String]) -> bool,
+    ) -> Result<Vec<String>, CommandLogTimeout> {
         let deadline = Instant::now() + timeout;
         let mut last_log: Option<Vec<String>> = None;
         let mut last_err = "no request completed".to_string();
@@ -376,11 +449,43 @@ impl StarAdventurerWorld {
         })
     }
 
-    /// Fetch the mock-mode wire-command log, retrying transient fetch
-    /// failures. Fails the scenario only if no read ever succeeds.
+    /// Fetch the mock-mode wire-command log from the end of the most
+    /// recent startup, retrying transient fetch failures. Fails the
+    /// scenario only if no read ever succeeds.
+    ///
+    /// The startup frames are dropped on purpose. A cold
+    /// `SharedTransport::start` asserts the no-client safety state, so
+    /// `:L1`, `:L2` and `:K1` are on the wire before any scenario does
+    /// anything — and an assertion that a disconnect, an abort or a
+    /// tracking-off issued one of them would be satisfied by the boot
+    /// alone.
+    ///
+    /// *Most recent*, not first, and that is the whole point of finding
+    /// the boundary in the log rather than counting frames at
+    /// `start_service`. A `config.apply` reload is a second startup on
+    /// the same mock mount: it runs the shutdown halt, then another
+    /// handshake, then another `:L1`/`:L2`/`:K1`. A fixed offset leaves
+    /// all of that sitting in what a scenario reads as its own traffic,
+    /// so a scenario that reloads and then asserts `:K1` would pass
+    /// without doing anything — the exact masking this helper exists to
+    /// prevent, moved rather than removed. Cutting at the last startup
+    /// drops the reload's handshake and halt, and the shutdown halt
+    /// ahead of them, because all of it precedes that boundary.
+    ///
+    /// A scenario whose subject *is* a startup reads
+    /// [`Self::command_log_including_startup`] instead.
     pub async fn command_log(&self) -> Vec<String> {
+        let log = self.command_log_including_startup().await;
+        let from = end_of_last_startup(&log);
+        log.into_iter().skip(from).collect()
+    }
+
+    /// The whole log, startup included. For the steps whose subject
+    /// *is* the startup — the handshake order, the parameter cache it
+    /// seeds, the single `:F1` that proves one open.
+    pub async fn command_log_including_startup(&self) -> Vec<String> {
         match self
-            .wait_for_command_log(DEBUG_RETRY_WINDOW, |_| true)
+            .wait_for_command_log_including_startup(DEBUG_RETRY_WINDOW, |_| true)
             .await
         {
             Ok(log) => log,
@@ -420,6 +525,30 @@ impl StarAdventurerWorld {
     }
 }
 
+/// The LST every scenario that hasn't pinned its own longitude runs
+/// at. `6.0 h` puts the suite's canonical `RA 6.0 h` target at
+/// `mech_HA = 0` — on the meridian, maximally clear of the CW
+/// exclusion zone at `(0.95, 11.05)` and of any altitude floor.
+const REFERENCE_LST_HOURS: f64 = 6.0;
+
+/// The site longitude that makes LST equal [`REFERENCE_LST_HOURS`]
+/// *now*, folded into ASCOM's `[-180, 180)`.
+///
+/// `LST = GAST + longitude / 15`, and `local_sidereal_time_hours(now,
+/// 0.0)` is GAST by definition, so the longitude that lands LST on the
+/// reference is `(reference − GAST) · 15`. A scenario runs for seconds,
+/// over which LST drifts ~1e-3 h — four orders of magnitude below the
+/// margins any scenario depends on. This is the test suite pinning its
+/// own frame, not the driver's: the driver still reads
+/// `SystemTime::now()` and computes LST from the configured longitude
+/// exactly as it does in the field.
+fn longitude_for_reference_lst() -> f64 {
+    let gast = local_sidereal_time_hours(SystemTime::now(), 0.0)
+        .expect("ERFA accepts the host wallclock")
+        .value();
+    ((REFERENCE_LST_HOURS - gast) * 15.0 + 180.0).rem_euclid(360.0) - 180.0
+}
+
 /// Reasonable defaults for BDD scenarios: USB transport with a mock
 /// path (the `mock` feature replaces the factory anyway), discovery
 /// disabled, server bound to port 0 so each test gets an ephemeral
@@ -436,23 +565,32 @@ fn default_test_config() -> Config {
         server: AlpacaServerConfig::new(0),
         mount: MountConfig {
             settle_after_slew: Duration::from_millis(0),
-            // BDD scenarios pass hardcoded RA / Dec targets (the
-            // canonical example is `RA = 6.0 h, Dec = 30°`) whose
-            // computed mech-HA depends on wallclock LST. Disable the
-            // binding-zone safety gate (`CwExclusionZone::Disabled`,
-            // JSON `null`) so those scenarios don't intermittently trip
-            // `INVALID_VALUE` when the test happens to run at an
-            // LST that puts the target inside the default
-            // `(0.95, 11.05)` zone. The gate itself is exercised by
-            // the unit tests in
-            // `mount_device::tests::slew_async_refuses_ra_target_in_binding_zone`.
-            cw_exclusion_zone: CwExclusionZone::Disabled,
-            // Same wallclock-LST reasoning for the altitude floor: a
-            // hardcoded RA/Dec target's apparent altitude depends on
-            // when the test runs. `-90°` never rejects. The floor
-            // itself is exercised by altitude_floor.feature, whose
-            // steps address targets by hour angle and configure the
-            // floor explicitly.
+            // The shipped CW exclusion zone — the baseline runs the
+            // safety gate operators actually run, not a disabled one.
+            //
+            // What made that awkward before is that BDD scenarios pass
+            // hardcoded RA / Dec targets (the canonical example is
+            // `RA = 6.0 h, Dec = 30°`) whose computed mech_HA depends
+            // on wallclock LST, so ~42% of runs would have put the
+            // target inside `(0.95, 11.05)` and tripped
+            // `INVALID_VALUE`. `start_service` removes the wallclock
+            // from the equation instead of removing the gate: it pins
+            // the site longitude so LST is `REFERENCE_LST_HOURS` at
+            // startup, which puts `RA 6.0` at `mech_HA = 0` — the
+            // meridian, the furthest a target gets from the zone.
+            // Scenarios that need a specific mech_HA address their
+            // targets by hour angle (see `altitude_floor.feature`,
+            // `pier_side_selection.feature`); scenarios about the zone
+            // itself configure their own.
+            cw_exclusion_zone: CwExclusionZone::default(),
+            // The altitude floor stays relaxed: scenario targets are
+            // chosen to exercise wire behaviour, not to clear any
+            // particular horizon, and their altitude depends on the
+            // declination and latitude a scenario happens to set as
+            // much as on LST. `-90°` never rejects. The floor itself
+            // is exercised by altitude_floor.feature, whose steps
+            // address targets by hour angle and configure the floor
+            // explicitly.
             min_altitude_degrees: MinAltitudeDegrees::try_new(-90.0).expect("-90 is a valid floor"),
             // Frame-neutral test baseline, pinned explicitly so the
             // scenarios' hardcoded RA/Dec/tick expectations never

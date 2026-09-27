@@ -268,11 +268,147 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
 
 - **Paths** — `stat` results (exists, file kind, mode, owner) for every
   probed path. Never an `open`.
-- **USB inventory** — vendor:product plus the product string per device:
-  sysfs (`/sys/bus/usb/devices/*/idVendor` …) on Linux, the
-  `SYSTEM\CurrentControlSet\Enum\USB` registry tree plus the bus-reported
-  device description on Windows, `system_profiler -json SPUSBDataType` on
-  macOS.
+- **USB inventory** — per device: vendor:product, the product string, the
+  **port path**, and the **serial** when the bus publishes one. Sources:
+  sysfs on Linux (`/sys/bus/usb/devices/*/idVendor` …, where the entry's
+  own directory name *is* the port path — `1-4.2` reads as bus 1, root
+  port 4, hub port 2 — and `serial` sits beside it); `Get-PnpDevice` plus
+  `DEVPKEY_Device_LocationPaths` and `DEVPKEY_Device_BusReportedDeviceDesc`
+  on Windows; `system_profiler -json SPUSBDataType` with `location_id` on
+  macOS. All of it is cached by the kernel at enumeration, so nothing is
+  opened, claimed or reset.
+
+  The port path is the platform's **native spelling**, not a normalised
+  invention: a config that names it names one specific host's hardware and
+  is not portable across an OS boundary anyway, and a canonical form would
+  only be a second thing that can disagree with what the OS says.
+
+  On Windows `DEVPKEY_Device_LocationPaths` is **multi-valued** — a device
+  typically publishes both a `PCIROOT(…)`-rooted chain and an `ACPI(…)`
+  one, and a device whose descriptor request failed may publish only the
+  ACPI form. The collector selects the `PCIROOT(`-rooted element; a device
+  with none is a candidate with no usable port, which the rule below makes
+  an inventory failure rather than a silently port-less record.
+
+  **A failed scan is not an empty bus, and the two must not be confused.**
+  Every collector used to fold its own failure into an empty `Vec`, which
+  reads as "no devices" — indistinguishable from a genuinely idle bus, and
+  the wrong answer for any consumer deciding what hardware it may touch.
+  So the inventory reports unavailability explicitly, and
+  `HardwareFacts::usb_present` answers `None` rather than `false` when it
+  cannot know. What counts as a failure is scoped to **candidate device
+  records** — an entry presenting as a USB device (it has a vendor id, or
+  its platform equivalent). The collectors legitimately skip a great deal
+  that is not a device: the Linux walk passes over interface and root-hub
+  entries with no `idVendor`, and the macOS tree carries non-device nodes.
+  Those are skipped silently, as before. A *candidate* that cannot be read
+  or parsed fails the scan. `Ok(empty)` still means a genuinely empty bus.
+
+  **The shell-outs are bounded.** The macOS and Windows collectors invoke
+  `system_profiler` and `powershell.exe`, and an invocation that never
+  returns is a third state that no failed-vs-empty distinction helps with —
+  a wedged child would hang startup rather than produce a result at all.
+  Both are run under a deadline, the child killed on expiry, and expiry
+  maps to the same unavailable-inventory state as a non-zero exit.
+
+  **A simulation build stages the inventory instead of scanning.** A camera
+  driver built with its `simulation` feature fabricates cameras that no host
+  scan can see, so anything selecting devices by USB port would match none of
+  them — and bypassing that selection for simulation builds would leave the
+  very join the tests exist to cover untested. The crate's `mock` feature
+  therefore enables a **staged inventory**: a JSON document that replaces the
+  collector's result wholesale. It is the same affordance as doctor's own
+  `--platform-facts` below, at the level a single driver needs, and like that
+  flag it does not exist in release builds.
+
+  The document is the two inventory fields of `HardwareFacts` under their own
+  names, so the `hardware` object of a facts file captured from a real rig can
+  be staged unchanged rather than hand-written:
+
+  ```json
+  {
+    "usb": [
+      {
+        "vendor": "1618",
+        "product": "c601",
+        "model": "QHY5IIISeries_IO",
+        "port": "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)"
+      }
+    ]
+  }
+  ```
+
+  **A staged document cannot express a state a real collector could not
+  produce**, which is what keeps the affordance from proving things that
+  cannot happen:
+
+  - `usb_unavailable` set *and* devices listed is rejected. A scan that
+    failed has no opinion about what is on the bus, so the gatherer pairs
+    the marker with an empty list; a document claiming both would let a test
+    assert on devices from a failed scan.
+  - A listed device with no `port` is rejected. A gathered candidate without
+    one is itself an inventory failure, so a scenario wanting that outcome
+    stages `usb_unavailable` with the reason and gets the same result the
+    collector would have produced.
+  - A listed device with no `vendor` or no `product` is rejected. A candidate
+    is a candidate *because* it has a vendor id, and an unreadable product
+    fails the scan, so a collector reports both or reports nothing.
+  - A failure with no reason is rejected, because doctor prints the reason to
+    send an operator at the host fault rather than at a cable.
+  - `"usb": null` is rejected. It is neither an empty bus nor an omitted
+    key, and no capture produces it — `HardwareFacts` holds `usb` as a
+    `Vec`, so a serialized one always carries a list. `"usb_unavailable":
+    null` is *not* rejected, and the asymmetry has a reason rather than
+    being an oversight: that field is an `Option`, so null there is how a
+    **successful** scan serializes, and refusing it would make a healthy
+    rig's own facts file unstageable.
+  - A document naming **neither** key is rejected. An empty bus stays
+    stageable — `"usb": []` is a state every collector can report, and it is
+    how a claimed port with nothing in it gets exercised — but it has to be
+    said out loud, so that a staging file which failed to be written cannot
+    read as an idle bus and let a scenario pass for the wrong reason.
+
+  **Blank counts as absent throughout**, and is the more dangerous of the
+  two: an empty `port` or `product` matches nothing while reading like a
+  device that simply did not match, where a missing key at least looks
+  missing. `product`, `port` and `serial` all carry `serde(default)`, so an
+  omitted key is silent rather than a parse error — the rejection is what
+  makes it loud.
+
+  **`model` and `serial` follow the same rule**: a blank one is rejected and
+  `null` is not. All three collectors return `None` for a descriptor they
+  could not read, so `""` describes no state any of them reaches — while
+  `null` describes one they reach constantly (on `rig2`, not one of the
+  three cameras publishes a USB serial), which is what keeps a captured
+  facts file stageable as it stands.
+
+  **`vendor` and `product` must be four lowercase hex digits**, the form
+  every collector reports: sysfs prints it, the Windows instance id is
+  lowercased as it is parsed, and the macOS reader accepts nothing else. The
+  mistake this catches is quiet and likely — `Get-PnpDevice` prints
+  `USB\VID_1618&PID_C601`, and an id copied from it compares unequal to
+  `c601` forever.
+
+  **A padded value is rejected too**, on every device field. Each collector
+  stores what the platform reported with nothing around it — the sysfs read
+  is trimmed, each `LocationPaths` element is trimmed before the `PCIROOT(`
+  one is selected, and a macOS location id is a single whitespace-split
+  token — so `" 1-4.2"` is a state none of them can reach, and it compares
+  unequal to `"1-4.2"`: the same silent no-match, just quieter than a blank.
+  Rejected rather than trimmed on the way in, because silently rewriting a
+  staged document hides the mistake instead of reporting it.
+
+  Staging **replaces** the USB scan rather than merging with it: a staged
+  run makes no USB platform query at all, so the inventory does not depend
+  on what is plugged into the machine running it. It bypasses nothing else —
+  the same gather still stats the requested paths and reads groups, udev
+  rules and COM ports from the host, so only the inventory is staged. (A
+  scenario that needs the rest staged too is describing doctor's
+  `--platform-facts`, which stages the whole facts document.) The crate owns
+  the document and its
+  rules; a driver exposes it as a hidden `--usb-inventory <file>` flag under
+  its own `simulation` feature as it gains device claims. No driver reads the
+  USB inventory today — doctor is its only consumer.
 - **Serial ports** (Windows) — `[System.IO.Ports.SerialPort]::GetPortNames()`.
 - **Identity** — the `rusty-photon` user's uid/gid, its account-level
   supplementary groups (the `/etc/group` member lists that name it), and
@@ -329,7 +465,7 @@ report groups naturally.
 | `config.server-shape` | fail | The top-level `server` block does not parse under the catalog-declared shape (`ServerConfig` for core, `AlpacaServerConfig` for Alpaca, `AdvertisingServerConfig` for advertising): unknown keys (`deny_unknown_fields`), missing `port` when the block is present, `discovery_port` on a non-Alpaca service, `advertised_url` on a service that advertises nothing, malformed `bind_address`. An absent `server` block is `ok` — the service applies its defaults. |
 | `config.checks-skipped` | warn | Companion to a `config.server-shape` failure, naming what that failure cost: with no parsed `server` block, `tls.absent`, `auth.absent`, `tls.paths`, `tls.expiry`, `tls.auth-without-tls`, `auth.mismatch`, every client-target join resolving to this service, and — on an ACME install — `tls.stale-selfsigned-pointer` and `rp.advertised-url` all self-limit. Without this row their silence reads as a clean bill of health, which is how an untested TLS configuration hides behind an unrelated parse complaint. |
 | `config.known-blocks` | fail | One of the cross-reference blocks doctor joins across fails to parse: sentinel's `operation_watchdog`, rp's `equipment` array / `session` block. Everything else in every file is opaque `serde_json::Value` doctor steps around (ui-htmx's whole file included — its view reads only the retired `drivers` key). |
-| `config.retired-keys` | fail | A config still carries a key its service retired and now refuses to start over (`deny_unknown_fields`): sentinel's `services` map (D3s — supervision is discovered, not configured) or ui-htmx's whole `drivers` override map (#569 — rp's equipment roster is the only device source). The remedy is deletion — no replacement config exists. |
+| `config.retired-keys` | fail | A config still carries a key its service retired and now refuses to start over (`deny_unknown_fields`): sentinel's `services` map (D3s — supervision is discovered, not configured) ui-htmx's whole `drivers` override map (#569 — rp's equipment roster is the only device source), or star-adventurer-gti's `mount.flip_policy.flip_range_hours` (#1301 — pier side is derived from the CW exclusion zone alone; configs the pre-#1301 service self-created carry it, so every upgraded install needs this fix). The remedy is deletion — no replacement config exists. |
 | `rp.orchestrator-registration-removed` | fail | rp's config still carries a `plugins[]` entry with `"type": "orchestrator"` or a `session.session_state_file` key — the surface rp retired when orchestrators started their own runs ([mcp-sessionless](../plans/archive/mcp-sessionless.md) D6 / D11); rp refuses to start over either, naming the same migration. The detail names each offending entry and where runs start now (`session-runner`'s `POST /runs`). Like `config.retired-keys`, the remedy is deletion: the fix removes the entry or key. |
 
 Full-config typo detection (a misspelled key in, say, qhy-camera's
@@ -588,7 +724,7 @@ metadata.
 |---|---|---|
 | `hardware.serial-node` | Linux, macOS, Windows | The effective serial device — the config value at the catalog's `serial_pointer`, else the platform's declared default — does not exist, or exists but is not a character device (Unix). On Windows: the configured name is not among the host's present COM ports. A service with a `serial_gate_pointer` participates only while its config holds the gate value (star-adventurer-gti on `kind: "udp"` has no serial device to check — the same pointer is a UDP port number there). |
 | `hardware.serial-access` | Linux (packaged) | The node exists but the `rusty-photon` user cannot open it, judged from the node's owner/group/mode and the identity the kernel actually grants the process: the user's uid/gid, the unit's `SupplementaryGroups=`, **and** the account's own supplementary memberships from the group database — systemd initializes the process group list from the union, so a node openable only via an account-level membership passes, with the granting mechanism named in the detail (the packaged intent is the unit file; account-level grants are host-local state worth seeing). The fail suggestion distinguishes a membership neither source confers (add `SupplementaryGroups=` to the unit) from a mode/ownership problem (udev-rule surgery). |
-| `hardware.usb-device` | Linux, macOS, Windows | No device on the bus matches the service's declared USB identity: `usb_vendor`, plus `usb_product` when declared, plus `usb_model` as a substring of the product descriptor the device publishes on the bus, when declared. The substring is what makes the check honest for devices behind generic bridge chips — the four Pegasus devices all report FTDI's `0403:6015` and the FP2 reports the RP2040's `2e8a:000a`, so VID:PID alone would confuse "the Falcon is plugged in" with "the PPBA is plugged in". The declared value must come from an observed descriptor: a device's serial protocol may name it differently (the UPBv2 answers `P#` with `UPB2_OK` and publishes `UPBv2 revA`), and a model taken from the protocol side matches nothing, which this check can only report as an absent device. |
+| `hardware.usb-device` | Linux, macOS, Windows | No device on the bus matches the service's declared USB identity: `usb_vendor`, plus `usb_product` when declared, plus `usb_model` as a substring of the product descriptor the device publishes on the bus, when declared. The substring is what makes the check honest for devices behind generic bridge chips — the four Pegasus devices all report FTDI's `0403:6015` and the FP2 reports the RP2040's `2e8a:000a`, so VID:PID alone would confuse "the Falcon is plugged in" with "the PPBA is plugged in". The declared value must come from an observed descriptor: a device's serial protocol may name it differently (the UPBv2 answers `P#` with `UPB2_OK` and publishes `UPBv2 revA`), and a model taken from the protocol side matches nothing, which this check can only report as an absent device. **When the USB inventory is unavailable the check reports that instead of an absence**, naming the collector failure: a scan that could not run says nothing about whether the device is plugged in, and reporting "not on the bus" from a failed scan sends the operator to look at a cable when the fault is on the host. |
 | `hardware.udev-rule` | Linux (packaged) | For each service shipping a udev rule, against the effective installed copy: the file is missing (`fail`/`warn` per the severity rule); a `GROUP=` it names does not resolve in the host's group database — udev **silently drops the entire rule line** on an unresolvable `GROUP=`, so file presence alone proves nothing (`fail`/`warn`); or the content differs from the packaged copy doctor embeds (`warn` always — an operator override in `/etc/udev/rules.d` is legitimate, but worth surfacing). |
 | `hardware.firmware-helper` | Linux (packaged) | qhy-camera's unit is installed but the firmware helper's three artifacts are not all present: `/lib/firmware/qhy/` (directory), `/usr/local/sbin/fxload` (executable), `/etc/udev/rules.d/85-qhyccd.rules` (file). The conjunction is the helper's own idempotency gate — any subset is a partial install that must re-converge — and the suggestion points at `/usr/sbin/rusty-photon-qhy-firmware-install` (ADR-013: proprietary firmware is never packaged, so nothing but this check verifies the operator ran it). |
 
@@ -717,7 +853,7 @@ call:
 | Check | Fix `--fix` applies |
 |---|---|
 | `ports.collision` | Move each colliding service whose configured port differs from its catalog default back to that default — but only when the default itself is free among the effective ports. A collision between judgment-call ports (two services deliberately moved to the same custom port) gets a suggestion, not a fix. |
-| `config.retired-keys` | Delete the retired key (sentinel's `services` map; ui-htmx's `drivers` map). |
+| `config.retired-keys` | Delete the retired key (sentinel's `services` map; ui-htmx's `drivers` map; star-adventurer-gti's `mount.flip_policy.flip_range_hours`). |
 
 Everything else stays suggestion-only: a `ConditionPathExists` gate needs a
 hand-written config, a `discovery_port` collision is operator intent (which

@@ -39,7 +39,9 @@ use ascom_alpaca::api::camera::{CameraState, GuideDirection, ImageArray, SensorT
 use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use parking_lot::Mutex;
-use rusty_photon_camera_core::{self as camera_core, Alignment, PixelDepth, Roi};
+use rusty_photon_camera_core::{
+    self as camera_core, unbinned, Alignment, PixelDepth, Roi, UnbinnedRoi,
+};
 use svbony_rs::{BayerPattern, CameraInfo, ControlCaps, ControlType, ImageType};
 use tracing::{debug, warn};
 
@@ -166,8 +168,10 @@ struct DeviceState {
     /// Current readout-mode index into [`SensorInfo::readout_formats`],
     /// reset to 0 (the camera's highest-precision format) on every connect.
     readout_mode: AtomicU8,
-    /// Intended ROI in *binned* pixel coordinates (rescaled on bin change).
-    intended_roi: Mutex<Option<Roi>>,
+    /// Intended ROI in *unbinned* sensor pixels (B3): the region the client
+    /// asked for, which a bin change does not rewrite. The binned members
+    /// ASCOM exposes are a view of it at the bin in force.
+    intended_roi: Mutex<Option<UnbinnedRoi>>,
     /// `(min, max)` exposure microseconds from `SVBGetControlCaps(SVB_EXPOSURE)`.
     exposure_range_us: Mutex<Option<(i64, i64)>>,
     /// Gain range in ASCOM's own width, converted once at the open handshake
@@ -197,7 +201,8 @@ struct DeviceState {
     /// itself exposing and nothing to cancel.
     ///
     /// **Lock order:** innermost. It is taken under
-    /// [`Self::readout_mode_lock`] (`start_exposure`, `set_readout_mode`) and
+    /// [`Self::frame_setup_lock`] (`start_exposure`, `set_readout_mode`,
+    /// `set_bin_x`) and
     /// under [`Self::result_lock`] (`cancel_exposure`, `reset_exposure_state`),
     /// never in the other direction — and no lock at all is acquired while it
     /// is held, which is what makes those two pairs the whole of the order.
@@ -227,21 +232,29 @@ struct DeviceState {
     /// **Lock order:** this one first, then [`Self::in_flight_capture`]
     /// (`cancel_exposure`, `reset_exposure_state`) — never the reverse.
     result_lock: Mutex<()>,
-    /// Serializes `set_readout_mode`'s "reject if exposing, else store" against
-    /// `start_exposure`'s "pin the download format, then claim the device".
-    /// Without it either order of the two unsynchronised halves can interleave
-    /// into a frame captured in one format while `ReadoutMode` and `MaxADU`
-    /// report the other (RM1).
+    /// Holds everything that describes the next frame still while
+    /// `start_exposure` reads it and claims the device: the download format
+    /// (RM1), and the bin and the sub-frame that are one fact between them (B3).
     ///
-    /// **Lock order:** this one first, then [`Self::sensor`] and
-    /// [`Self::in_flight_capture`] — never the reverse of either.
-    /// `start_exposure` holds it across `selected_format`'s `sensor` read and
-    /// then across the claim; `set_readout_mode` matches, reading the claim
-    /// under it. `in_flight_capture` is a leaf. Most `sensor` reads need no
-    /// lock at all and take none, and nothing ever holds `sensor` while waiting
-    /// (its accessor clones and releases), so that half of the order is
+    /// Two writers take it. `set_readout_mode` rejects-if-exposing and stores
+    /// under it; without that, either order of the two unsynchronised halves
+    /// can interleave into a frame captured in one format while `ReadoutMode`
+    /// and `MaxADU` report the other. `set_bin_x` stores the bin under
+    /// [`Self::intended_roi`], so the pair cannot be split by the read below:
+    /// `start_exposure` loads the bin and then derives the sub-frame at it, and
+    /// a bin change landing between the two arms a view taken at a bin the
+    /// client has already left — the wrong binned extent, at a bin nobody
+    /// asked for, and inside the bounds R2 checks.
+    ///
+    /// **Lock order:** this one first, then [`Self::sensor`],
+    /// [`Self::intended_roi`] and [`Self::in_flight_capture`] — never the
+    /// reverse of any. `start_exposure` holds it across `validated_geometry`'s
+    /// `intended_roi` read, `selected_format`'s `sensor` read and the claim;
+    /// both setters match. `in_flight_capture` is a leaf. Most `sensor` reads
+    /// need no lock at all and take none, and nothing ever holds `sensor` while
+    /// waiting (its accessor clones and releases), so that part of the order is
     /// discipline for future edits rather than a live hazard.
-    readout_mode_lock: Mutex<()>,
+    frame_setup_lock: Mutex<()>,
 
     /// True only for the duration of a blocking `PulseGuide` SDK call (v0
     /// keeps `PulseGuide` synchronous — see `pulse_guide`'s doc comment).
@@ -268,7 +281,7 @@ impl DeviceState {
             last_image: Mutex::new(None),
             last_error: Mutex::new(None),
             result_lock: Mutex::new(()),
-            readout_mode_lock: Mutex::new(()),
+            frame_setup_lock: Mutex::new(()),
             pulse_guiding: AtomicBool::new(false),
         }
     }
@@ -547,12 +560,7 @@ impl SvbonyCamera {
             &supported_bins,
             ALIGNMENT,
         );
-        *self.state.intended_roi.lock() = Some(Roi {
-            start_x: 0,
-            start_y: 0,
-            width: max_width,
-            height: max_height,
-        });
+        *self.state.intended_roi.lock() = Some(UnbinnedRoi::full_frame(max_width, max_height));
         *self.state.target_temperature.lock() = None;
 
         *self.state.sensor.lock() = Some(SensorInfo {
@@ -647,11 +655,38 @@ impl SvbonyCamera {
 
     /// Validate the cached ROI against the binned sensor geometry (R2/R3),
     /// returning the [`Roi`] to push to the SDK.
-    fn validated_geometry(&self, sensor: &SensorInfo, bin: u32) -> ASCOMResult<Roi> {
+    fn validated_geometry(&self, sensor: &SensorInfo, bin: u8) -> ASCOMResult<Roi> {
         let roi = (*self.state.intended_roi.lock())
             .ok_or_else(|| ASCOMError::invalid_value("no ROI defined for camera"))?;
-        check_geometry(roi, sensor.max_width, sensor.max_height, bin)?;
-        Ok(roi)
+        // The unbinned region becomes a binned view exactly once, here, so the
+        // geometry that is checked is the geometry that is armed.
+        let view = roi.binned(bin);
+        check_geometry(
+            view,
+            sensor.max_width,
+            sensor.max_height,
+            u32::from(bin).max(1),
+        )?;
+        Ok(view)
+    }
+
+    /// The cached ROI as ASCOM's binned members see it, at the bin in force.
+    fn binned_roi(&self) -> ASCOMResult<Roi> {
+        let roi = (*self.state.intended_roi.lock()).ok_or(ASCOMError::VALUE_NOT_SET)?;
+        Ok(roi.binned(self.state.bin.load(Ordering::Acquire)))
+    }
+
+    /// Apply `edit` to the cached ROI, told the bin in force.
+    ///
+    /// The bin is read under the lock the ROI is written under: the client's
+    /// value is binned, so the factor it is stored against has to be the one
+    /// that was in force when the client set it.
+    fn edit_roi(&self, edit: impl FnOnce(UnbinnedRoi, u8) -> UnbinnedRoi) -> ASCOMResult<()> {
+        let mut roi = self.state.intended_roi.lock();
+        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
+        *roi = Some(edit(area, self.state.bin.load(Ordering::Acquire)));
+        drop(roi);
+        Ok(())
     }
 
     /// The download format the current `ReadoutMode` selects (RM2). The
@@ -973,17 +1008,30 @@ impl Camera for SvbonyCamera {
                 "bin {bin_x} is not a supported binning mode"
             )));
         }
+        // The bin and the sub-frame derived at it are one fact (B3), and
+        // `start_exposure` reads them as one. Under `frame_setup_lock` they move
+        // together or not at all, so an exposure can never arm a view taken at a
+        // bin the client has already left. Nothing here reaches
+        // the SDK — the bin is pushed at arm time, from the capture request — so
+        // a bin change during a capture is *pinned*, not refused: it describes
+        // the next frame, which a client may legitimately set up while this one
+        // downloads.
+        let _setup_guard = self.state.frame_setup_lock.lock();
         let old = self.state.bin.load(Ordering::Acquire);
         if old == bin_x {
             return Ok(());
         }
-        {
-            let mut roi = self.state.intended_roi.lock();
-            if let Some(area) = *roi {
-                *roi = Some(camera_core::rescale(area, old, bin_x));
-            }
-        }
+        // Nothing to rewrite: the ROI is held in unbinned pixels (B3), and the
+        // bin stored below is only the divisor its binned view is read through.
+        //
+        // The store still takes the ROI lock, because `edit_roi` reads the bin
+        // under it: a setter that read the old bin and had not yet written its
+        // multiplied value would otherwise land that value against a bin the
+        // client never set it at. `qhy-camera` gets the same serialization from
+        // its `commit_guard`, which both paths already hold.
+        let roi = self.state.intended_roi.lock();
         self.state.bin.store(bin_x, Ordering::Release);
+        drop(roi);
         Ok(())
     }
 
@@ -1014,72 +1062,54 @@ impl Camera for SvbonyCamera {
 
     async fn num_x(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.width)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.width)
     }
 
     async fn num_y(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.height)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.height)
     }
 
     async fn start_x(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.start_x)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.start_x)
     }
 
     async fn start_y(&self) -> ASCOMResult<u32> {
         self.ensure_connected()?;
-        (*self.state.intended_roi.lock())
-            .map(|r| r.start_y)
-            .ok_or(ASCOMError::VALUE_NOT_SET)
+        Ok(self.binned_roi()?.start_y)
     }
 
     async fn set_num_x(&self, num_x: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(Roi {
-            width: num_x,
+        self.edit_roi(|area, bin| UnbinnedRoi {
+            width: unbinned(num_x, bin),
             ..area
-        });
-        drop(roi);
-        Ok(())
+        })
     }
 
     async fn set_num_y(&self, num_y: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(Roi {
-            height: num_y,
+        self.edit_roi(|area, bin| UnbinnedRoi {
+            height: unbinned(num_y, bin),
             ..area
-        });
-        drop(roi);
-        Ok(())
+        })
     }
 
     async fn set_start_x(&self, start_x: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(Roi { start_x, ..area });
-        drop(roi);
-        Ok(())
+        self.edit_roi(|area, bin| UnbinnedRoi {
+            start_x: unbinned(start_x, bin),
+            ..area
+        })
     }
 
     async fn set_start_y(&self, start_y: u32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let mut roi = self.state.intended_roi.lock();
-        let area = (*roi).ok_or(ASCOMError::INVALID_VALUE)?;
-        *roi = Some(Roi { start_y, ..area });
-        drop(roi);
-        Ok(())
+        self.edit_roi(|area, bin| UnbinnedRoi {
+            start_y: unbinned(start_y, bin),
+            ..area
+        })
     }
 
     // --- exposure range ---------------------------------------------------------
@@ -1215,17 +1245,17 @@ impl Camera for SvbonyCamera {
         // it (RM2), and the in-flight capture already carries the format it
         // was started with — so switching mid-exposure could only produce a
         // frame and a MaxADU that disagree. Validating and storing under
-        // `readout_mode_lock` makes that exclusion hold against a
+        // `frame_setup_lock` makes that exclusion hold against a
         // concurrently-starting exposure too, not just an already-running
         // one — see `start_exposure`'s matching critical section.
         //
-        // `readout_mode_lock` is the OUTER lock wherever it and `sensor` are
+        // `frame_setup_lock` is the OUTER lock wherever it and `sensor` are
         // both needed (`start_exposure` holds it across `selected_format`'s
         // `sensor` read), so it is taken before `sensor()` here even though
         // the bounds check alone would not need it. `sensor()` clones and
         // releases, so no path holds `sensor` while waiting on anything —
         // the fixed order is to keep that true as this code changes.
-        let _guard = self.state.readout_mode_lock.lock();
+        let _guard = self.state.frame_setup_lock.lock();
         let available = self.sensor()?.readout_formats.len();
         if readout_mode >= available {
             return Err(ASCOMError::invalid_value(format!(
@@ -1237,10 +1267,9 @@ impl Camera for SvbonyCamera {
                 "cannot change the readout mode while an exposure is in flight",
             ));
         }
-        // Lock order: `readout_mode_lock` (held) then `in_flight_capture` (taken
+        // Lock order: `frame_setup_lock` (held) then `in_flight_capture` (taken
         // and released by the claim read above) — the same direction
-        // `start_exposure` takes them, and the only pair `in_flight_capture` is
-        // in.
+        // `start_exposure` takes them.
         //
         // Bounded by the range check above, which is itself a `usize` length, so
         // this narrowing has an answer for every index that got here.
@@ -1435,12 +1464,18 @@ impl Camera for SvbonyCamera {
         Ok(false)
     }
 
+    /// Step 10: `true` is a promise to abort, and while disconnected there is
+    /// no device to abort on — `AbortExposure` itself refuses, so answering
+    /// would contradict it.
     async fn can_abort_exposure(&self) -> ASCOMResult<bool> {
+        self.ensure_connected()?;
         Ok(true)
     }
 
     async fn can_stop_exposure(&self) -> ASCOMResult<bool> {
-        // E8: no data-preserving stop exists at the SDK level.
+        // E8: no data-preserving stop exists at the SDK level. Never
+        // implemented on any model, so it answers for the driver rather than
+        // for a device and takes no connected check (step 10).
         Ok(false)
     }
 
@@ -1449,13 +1484,28 @@ impl Camera for SvbonyCamera {
         Ok(self.sensor()?.caps.supports_pulse_guide)
     }
 
+    /// The flag this reads is cleared in `reset_exposure_state`, which runs at
+    /// the *start of a connect*, so answering it while disconnected answers for
+    /// the session that ended — session state, like step 9's members.
     async fn is_pulse_guiding(&self) -> ASCOMResult<bool> {
+        self.ensure_connected()?;
         Ok(self.state.pulse_guiding.load(Ordering::Acquire))
     }
 
     // --- exposure state ---------------------------------------------------------------
 
+    /// The exposure state is a *session's* state, and this is the first of the
+    /// five members that report it (step 9 of the state machine). Each takes the
+    /// connected check for the same reason: the state is cleared at the start of
+    /// a connect (C3) and nowhere else — a disconnect clears it only when it
+    /// found a capture to cancel — so answering it while disconnected answers
+    /// from the session that has ended. The capability members beside them take
+    /// the check for a related reason (step 10): `CanAbortExposure` and the ones
+    /// reading `SVB_CAMERA_PROPERTY_EX` describe a device, and a driver holding
+    /// none cannot describe one. What this driver never implements —
+    /// `CanStopExposure`, `HasShutter`, `CanAsymmetricBin` — answers throughout.
     async fn camera_state(&self) -> ASCOMResult<CameraState> {
+        self.ensure_connected()?;
         if self.state.last_error.lock().is_some() {
             return Ok(CameraState::Error);
         }
@@ -1473,11 +1523,18 @@ impl Camera for SvbonyCamera {
         Ok(CameraState::Idle)
     }
 
+    /// `ImageArray` is read straight after this one and takes the same check, so
+    /// without it here the pair contradict each other across a disconnect: ready
+    /// beside a frame that refuses.
     async fn image_ready(&self) -> ASCOMResult<bool> {
+        self.ensure_connected()?;
         Ok(self.state.image_ready.load(Ordering::Acquire) && !self.state.exposure_in_flight())
     }
 
     async fn percent_completed(&self) -> ASCOMResult<u8> {
+        // The branches below all answer from cached state, so the connected
+        // check belongs here rather than beside an SDK read.
+        self.ensure_connected()?;
         // Mirror `camera_state`: an abort means no image is ready, so 0 (not
         // the idle-ready branch's 100) is the honest answer while the
         // still-running capture task drains in the background.
@@ -1503,11 +1560,17 @@ impl Camera for SvbonyCamera {
         Ok(camera_core::progress_percent(elapsed, duration))
     }
 
+    /// `VALUE_NOT_SET` means *this session has not exposed yet*, so the
+    /// connected check comes first: without it the answer between a disconnect
+    /// and the next connect is the ended session's frame rather than either of
+    /// the two things a client can act on.
     async fn last_exposure_start_time(&self) -> ASCOMResult<SystemTime> {
+        self.ensure_connected()?;
         (*self.state.last_exposure_start_time.lock()).ok_or(ASCOMError::VALUE_NOT_SET)
     }
 
     async fn last_exposure_duration(&self) -> ASCOMResult<Duration> {
+        self.ensure_connected()?;
         (*self.state.last_exposure_duration.lock()).ok_or(ASCOMError::VALUE_NOT_SET)
     }
 
@@ -1562,16 +1625,17 @@ impl Camera for SvbonyCamera {
             )));
         }
 
-        let bin = u32::from(self.state.bin.load(Ordering::Acquire)).max(1);
-        let roi = self.validated_geometry(&sensor, bin)?;
-
-        // Pin this frame's download format and claim the device in ONE
-        // critical section against `set_readout_mode` (RM1/RM2): reading the
-        // format outside the lock lets a mode change land either side of the
-        // claim, leaving a frame in one format while `ReadoutMode`/`MaxADU`
-        // describe the other. Under the lock, a mode change either completes
-        // wholly before the claim (and this exposure uses it) or observes the
-        // claim and is rejected.
+        // Pin everything that describes this frame — the bin, the sub-frame
+        // bounded against it, and the download format — and claim the device in
+        // ONE critical section, against `set_bin_x` (B3) and `set_readout_mode`
+        // (RM1/RM2). Read outside the lock, either writer can land between two
+        // halves of one frame's description: a mode change either side of the
+        // claim leaves a frame in one format while `ReadoutMode`/`MaxADU`
+        // describe the other, and a bin change between the bin load and the
+        // sub-frame derivation arms a view taken at a bin the client has
+        // already left. Under the lock,
+        // either completes wholly before the claim (and this exposure uses it)
+        // or observes the claim and is rejected.
         //
         // Installing the cancel cell *is* the claim (lose the race → already
         // exposing, E2), so there is no interval in which the device counts as
@@ -1580,11 +1644,15 @@ impl Camera for SvbonyCamera {
         // section, so a concurrent `cancel_exposure` lands wholly before this
         // exposure exists — and is the no-op it should be — or wholly after it,
         // with full effect.
-        let (format, cancel, generation) = {
-            let _readout_guard = self.state.readout_mode_lock.lock();
-            // Ordered before the claim so a failed lookup (already validated,
-            // so defensive-only) simply never claims the device, rather than
-            // having to hand back a claim it took.
+        let (bin, roi, format, cancel, generation) = {
+            let _setup_guard = self.state.frame_setup_lock.lock();
+            let bin_x = self.state.bin.load(Ordering::Acquire);
+            let bin = u32::from(bin_x).max(1);
+            // Ordered before the claim so a refused geometry (R2/R3) and a
+            // failed format lookup (already validated, so defensive-only)
+            // simply never claim the device, rather than having to hand back a
+            // claim they took.
+            let roi = self.validated_geometry(&sensor, bin_x)?;
             let format = self.selected_format()?;
             let mut slot = self.state.in_flight_capture.lock();
             if slot.is_some() {
@@ -1604,7 +1672,7 @@ impl Camera for SvbonyCamera {
             // The claim is taken and the cell is installed: everything an
             // abort needs is in place, so the critical section ends here.
             drop(slot);
-            (format, cancel, generation)
+            (bin, roi, format, cancel, generation)
         };
 
         *self.state.last_error.lock() = None;
@@ -1639,8 +1707,11 @@ impl Camera for SvbonyCamera {
         // E8: no data-preserving stop exists at the SDK level, so this is
         // unconditionally NOT_IMPLEMENTED rather than pretending to
         // gracefully preserve data it cannot preserve — the opposite of
-        // zwo-camera's graceful ASIStopExposure-backed stop.
-        self.ensure_connected()?;
+        // zwo-camera's graceful ASIStopExposure-backed stop. Unconditional
+        // includes the disconnected case (step 10): NOT_IMPLEMENTED is the
+        // truth about a member no reconnect will make work, where
+        // NOT_CONNECTED would invite the client to try again. Matches
+        // `qhy-camera`, whose `StopExposure` is the same dead end.
         Err(ASCOMError::NOT_IMPLEMENTED)
     }
 
@@ -1760,13 +1831,13 @@ mod tests {
     }
 
     #[test]
-    fn a_bin_change_rescales_a_client_set_zero_into_the_error_it_earned() {
-        // The rescale arithmetic and its full case list live in
+    fn a_client_set_zero_survives_the_binned_view_into_the_error_it_earned() {
+        // The derivation and its full case list live in
         // `rusty-photon-camera-core`; what this pins is that the two halves
         // are wired together — a 0 the client set survives the bin change and
         // `StartExposure` still answers about that 0, rather than about the %8
         // alignment rule a clamped 1 would trip instead.
-        let scaled = camera_core::rescale(roi(0, 0, 0, 0), 1, 2);
+        let scaled = UnbinnedRoi::default().binned(2);
         let err = check_geometry(scaled, 3008, 3008, 2).unwrap_err();
         assert!(err.message.contains("greater than 0"), "{}", err.message);
     }
@@ -2130,6 +2201,94 @@ mod tests {
         );
     }
 
+    /// B3: the bin and the sub-frame derived at it are one fact, and
+    /// `start_exposure` reads them as one — so a bin change may not land between
+    /// the two halves of that read. It waits for `frame_setup_lock` instead,
+    /// which is what keeps an exposure from arming a view taken at a bin the
+    /// client has already left: the wrong binned extent, at a bin nobody asked
+    /// for, and inside the bounds R2 checks.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bin_change_waits_for_the_frame_setup_it_would_otherwise_split() {
+        let device = connected_device(MockCameraHandle::default());
+        let before = device.state.bin.load(Ordering::Acquire);
+
+        // Hold the lock the way an exposure pinning its geometry does. On a
+        // thread rather than inline, so nothing here holds a guard across an
+        // await.
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let state = Arc::clone(&device.state);
+            std::thread::spawn(move || {
+                let _setup_guard = state.frame_setup_lock.lock();
+                held_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        };
+        held_rx.recv().unwrap();
+
+        let setting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_bin_x(2).await })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !setting.is_finished(),
+            "a bin change must not rewrite the pair an exposure is reading"
+        );
+        assert_eq!(
+            device.state.bin.load(Ordering::Acquire),
+            before,
+            "and nothing of it may have landed either"
+        );
+
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        setting.await.unwrap().unwrap();
+        assert_eq!(device.state.bin.load(Ordering::Acquire), 2);
+    }
+
+    /// B3, the other half: the pairing only holds if the *capture* side takes
+    /// the lock too. Holding it the way `set_bin_x` does must stop an exposure
+    /// pinning its geometry — otherwise the setter could still land between the
+    /// bin load and the sub-frame derivation, which is the split this lock
+    /// exists to prevent.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_exposure_waits_for_the_bin_change_that_would_otherwise_split_it() {
+        let device = connected_device(MockCameraHandle::default());
+
+        // Hold the lock the way a bin change does. On a thread rather than
+        // inline, so nothing here holds a guard across an await.
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = {
+            let state = Arc::clone(&device.state);
+            std::thread::spawn(move || {
+                let _setup_guard = state.frame_setup_lock.lock();
+                held_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        };
+        held_rx.recv().unwrap();
+
+        let exposing = {
+            let device = device.clone();
+            tokio::spawn(
+                async move { device.start_exposure(Duration::from_millis(10), true).await },
+            )
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !exposing.is_finished(),
+            "an exposure pinned its geometry while a bin change owned the pair"
+        );
+
+        release_tx.send(()).unwrap();
+        holder.join().unwrap();
+        exposing.await.unwrap().unwrap();
+        wait_image_ready(&device).await;
+    }
+
     /// RM2: selecting the 8-bit mode is what the exposure downloads and
     /// what `MaxADU` describes — the two can never disagree.
     #[tokio::test]
@@ -2187,7 +2346,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_bin_rescales_the_cached_roi() {
+    async fn set_bin_rederives_the_cached_roi() {
         let cam = connected_device(MockCameraHandle::default());
         cam.set_start_x(100).await.unwrap();
         cam.set_num_x(800).await.unwrap();
@@ -2844,9 +3003,10 @@ mod tests {
 
     #[tokio::test]
     async fn disconnecting_cancels_an_in_flight_exposure() {
-        let handle = MockCameraHandle::default();
+        let handle = Arc::new(MockCameraHandle::default());
         handle.set_capture_delay(Duration::from_millis(300));
-        let cam = connected_device(handle);
+        let cam = SvbonyCamera::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        cam.connect().unwrap();
         cam.set_num_x(64).await.unwrap();
         cam.set_num_y(64).await.unwrap();
         cam.start_exposure(Duration::from_secs(30), true)
@@ -2854,8 +3014,27 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
         cam.set_connected(false).await.unwrap();
-        assert!(!cam.image_ready().await.unwrap());
+        // The cancellation itself, asserted where it is actually visible: the
+        // capture saw its cancel and returned no frame. `ImageReady` cannot
+        // show this — it is false while a capture is merely still running, and
+        // the reconnect below would clear it either way.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while handle.capture_outcomes().first() != Some(&Some(CaptureOutcome::Aborted)) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the disconnect did not reach the in-flight capture");
+        // Its state is the ended session's, so it is not readable here at all
+        // (state-machine step 9); what it must not do is survive into the next
+        // session as a frame nobody took.
+        assert_eq!(
+            cam.image_ready().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
         assert!(!cam.connected().await.unwrap());
+        cam.set_connected(true).await.unwrap();
+        assert!(!cam.image_ready().await.unwrap());
     }
 
     /// State-machine step 5: aborting a **non**-trigger camera's exposure stops
@@ -3037,5 +3216,111 @@ mod tests {
         };
         let cam = SvbonyCamera::new(Arc::new(MockCameraHandle::default()), Some(&overrides));
         assert_eq!(cam.static_name(), "Main Imaging");
+    }
+
+    /// State-machine step 9: the `Error` an E9 left behind belongs to the
+    /// session that hit it. Reported across the disconnect it would tell a
+    /// supervisor polling `CameraState` that a camera it cannot reach is
+    /// faulted, and go on saying so until somebody reconnects the device — the
+    /// state is cleared at the start of a connect (C3) and nowhere else.
+    #[tokio::test]
+    async fn an_errored_camera_answers_not_connected_once_disconnected() {
+        let handle = MockCameraHandle::default();
+        handle.fail_capture.store(true, AtomicOrdering::SeqCst);
+        let cam = connected_device(handle);
+        cam.set_num_x(64).await.unwrap();
+        cam.set_num_y(64).await.unwrap();
+        cam.start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        wait_camera_state(&cam, CameraState::Error).await;
+
+        cam.set_connected(false).await.unwrap();
+        assert_eq!(
+            cam.camera_state().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        // The Error state's own PercentCompleted answer (0) is just as much the
+        // ended session's.
+        assert_eq!(
+            cam.percent_completed().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// Step 9 before there is any session at all: a device nobody has connected
+    /// has no exposure state to report, and `VALUE_NOT_SET` (which says *this
+    /// session has not exposed yet*) would be the wrong half of the answer.
+    #[tokio::test]
+    async fn the_exposure_state_surface_refuses_before_a_first_connect() {
+        let cam = SvbonyCamera::new(Arc::new(MockCameraHandle::default()), None);
+        assert_eq!(
+            cam.camera_state().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.image_ready().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.percent_completed().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.last_exposure_start_time().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.last_exposure_duration().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// Step 10. `CanAbortExposure` promises an abort the driver has no device
+    /// to perform, and the `pulse_guiding` flag is session state cleared at the
+    /// start of a connect — set here to stand for a pulse that was in flight
+    /// when the session ended, which is what the check exists to stop being
+    /// reported. The members reading `SVB_CAMERA_PROPERTY_EX` already refused;
+    /// they are asserted alongside so the whole surface is pinned in one place.
+    #[tokio::test]
+    async fn the_capability_surface_refuses_for_a_device_the_driver_does_not_hold() {
+        let cam = SvbonyCamera::new(Arc::new(MockCameraHandle::default()), None);
+        cam.state.pulse_guiding.store(true, Ordering::Release);
+        assert_eq!(
+            cam.can_abort_exposure().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.is_pulse_guiding().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.can_set_ccd_temperature().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.can_get_cooler_power().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            cam.can_pulse_guide().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// The other half of step 10: what this driver never implements is its own
+    /// knowledge, so it answers with no device at all — and `StopExposure`
+    /// says `NOT_IMPLEMENTED` rather than inviting a reconnect that would not
+    /// help, matching `qhy-camera`.
+    #[tokio::test]
+    async fn what_the_driver_never_implements_answers_while_disconnected() {
+        let cam = SvbonyCamera::new(Arc::new(MockCameraHandle::default()), None);
+        assert!(!cam.can_stop_exposure().await.unwrap());
+        assert!(!cam.has_shutter().await.unwrap());
+        assert!(!cam.can_asymmetric_bin().await.unwrap());
+        assert_eq!(
+            cam.stop_exposure().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_IMPLEMENTED
+        );
     }
 }

@@ -358,7 +358,24 @@ fn usb_device(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks: &mu
         }
     }
     let identity = describe_identity(usb);
-    if hw.usb_present(&usb.vendor, usb.product.as_deref(), usb.model.as_deref()) {
+    let Some(present) = hw.usb_present(&usb.vendor, usb.product.as_deref(), usb.model.as_deref())
+    else {
+        // A scan that could not run says nothing about whether the device
+        // is plugged in. Reporting an absence here would send an operator
+        // to check a cable over what is a fault on the host.
+        let reason = hw.usb_unavailable.as_deref().unwrap_or("reason unrecorded");
+        checks.push(Check::fail(
+            "hardware.usb-device",
+            Some(svc(scan)),
+            format!(
+                "the USB inventory could not be read, so the presence of {identity} \
+                 is unknown: {reason}"
+            ),
+            Some("fix the host's USB enumeration, then re-run doctor".to_string()),
+        ));
+        return;
+    };
+    if present {
         checks.push(Check::ok(
             "hardware.usb-device",
             Some(svc(scan)),

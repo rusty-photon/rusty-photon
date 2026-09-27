@@ -275,6 +275,27 @@ inferred from the resulting window. Inferring it cannot represent zero (the
 window is never zero) and makes a genuine average whose length happens to
 equal the instantaneous window indistinguishable from "not averaging".
 
+`SetAveragePeriod` accepts a finite value in `[0, 24]` hours and rejects
+everything else with `INVALID_VALUE` — including `NaN`, which an Alpaca client
+can send because `f64::from_str` parses `"NaN"`. The check is one range test
+rather than a pair of ordered comparisons on purpose: every ordered comparison
+against `NaN` is false, so `NaN` would otherwise pass validation and reach the
+seconds-to-`Duration` conversion, which panics on a non-finite value
+([#1247](https://github.com/rusty-photon/rusty-photon/issues/1247)).
+
+The manager holds the same line for callers that do not come through the
+device: `set_averaging_period` leaves every sensor window *and* the recorded
+period untouched when handed a period outside `[0, 24]` hours. Half-applying
+such a period would be worse than rejecting it — the windows would fall back
+while `AveragePeriod` read back the value they never used. The
+seconds-to-`Duration` conversion underneath is fallible too, so no path
+through this code can panic.
+
+All three checks — the device, the manager, and the `config.apply` bound
+below — read the ceiling from one `MAX_AVERAGING_PERIOD` constant in
+`manager.rs`, so the runtime range and the persisted range cannot drift
+apart.
+
 `config.apply` validates `averaging_period` against the same bounds the device
 enforces on `SetAveragePeriod`: no lower bound (zero is meaningful), and a 24
 hour ceiling, which is ASCOM's. The two must agree — a period a client can

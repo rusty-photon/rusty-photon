@@ -1064,19 +1064,72 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
    `camera::tests::a_superseded_capture_does_not_release_the_new_exposures_slot`
    against the mock's capture gate for the slot half); mirrors
    `zwo-camera`'s E10.
+9. **The exposure state belongs to the running session.** `CameraState`,
+   `ImageReady`, `PercentCompleted`, `LastExposureStartTime` and
+   `LastExposureDuration` answer `NOT_CONNECTED` while the device is
+   disconnected, as `StartExposure`, `AbortExposure`, `ImageArray` and
+   `ImageArrayVariant` do. The state is cleared at the *start of a connect* (C3)
+   and, on the disconnect side, only when the disconnect found a capture to
+   cancel — so without the check a camera that took a frame and was then
+   disconnected reports `ImageReady = true` and `PercentCompleted = 100` beside
+   an `ImageArray` that refuses, and one that hit step 7's error reports
+   `CameraState = Error` until someone reconnects it. Nothing stale can be
+   *served* (`ImageArray` checks); what is at stake is a wrong answer to a
+   readiness question, and the two members a client is told to poll together
+   contradicting each other.
+
+   `CameraState` throws rather than answering safely the way `Connected` does:
+   `Connected` never throws because it is how a client asks whether the device
+   is there at all, while `CameraState` reports device state, which ASCOM
+   answers with `NOT_CONNECTED` when there is none. The state is still reset
+   only at the start of a connect, not on disconnect — with these members
+   refusing there is nothing observable in between. The capability probes beside
+   them take the same check for a related reason (step 10). Shared with
+   `qhy-camera`'s E10 and `zwo-camera`'s E11.
+10. **A capability member answers while disconnected only if the driver never
+    implements it.** `CanAsymmetricBin` (`false`, B2), `CanStopExposure`
+    (`false`, confirmed permanent) with its `StopExposure`
+    (`NOT_IMPLEMENTED`), and `HasShutter` (`false` — the video-mode capture
+    path has no mechanical shutter to actuate on any model) are the driver's
+    own knowledge: no device can change them, so they answer at any time, and
+    `NOT_IMPLEMENTED` is the more useful answer than `NOT_CONNECTED` for a
+    member that will never work however the client reconnects.
+    `CanAbortExposure` is not in that set — `Ok(true)` while disconnected is a
+    promise to abort made with no device to abort on, beside an
+    `AbortExposure` that refuses — and neither is `IsPulseGuiding`, whose flag
+    is session state cleared at the start of a connect (step 9's reason, PG2).
+    Both answer `NOT_CONNECTED` while the device is disconnected. The
+    capability members that read `SVB_CAMERA_PROPERTY_EX`
+    (`CanSetCCDTemperature`, `CanGetCoolerPower`, `CanPulseGuide`,
+    `SensorType`, `BayerOffsetX/Y`) already take the check and keep it: a
+    driver holding no device cannot describe one. This supersedes the earlier
+    position that the capability probes "describe the driver rather than a
+    session"; shared with `qhy-camera`'s E11 and `zwo-camera`'s E12 (#1281).
 
 ### ROI / binning
 
 - **B1.** `set_bin_x`/`set_bin_y` validate against `SupportedBins`;
   unsupported → `INVALID_VALUE`.
 - **B2.** `CanAsymmetricBin = false`.
-- **B3.** A bin change rescales the cached ROI by the bin ratio. `set_num_x`/
-  `set_num_y` store without validating (the members are set independently, so
-  only the combination is checked, at `StartExposure`), so whatever the client
-  last set is what gets rescaled — and the rescale must not change which value
-  `StartExposure` then complains about. A **sub-pixel** extent is clamped to a
-  minimum of 1, because truncating it to 0 would make R2 reject a value the
-  driver invented rather than the client's own `NumX`, which here is R3's
+- **B3.** The cached ROI is held in **unbinned** sensor pixels: the region the
+  client asked for, independent of the bin it was asked at. `StartX`/`NumX` and
+  their Y counterparts are ASCOM *binned* members, so a setter multiplies by the
+  bin in force when it is called and a getter divides by the bin in force when it
+  is read. **A bin change therefore rewrites nothing** — it only changes the
+  divisor — and walking the bins and coming back returns the client's own frame
+  whatever route it took. 100x100 at (200,200) is 100x100 at (200,200) again
+  after 1 → 3 → 4 → 1, where scaling each step from the *previous binned value*
+  truncated twice and came back 96x96 at (196,196), four pixels short in both
+  extent and origin and no way to get them back short of a reconnect.
+  `set_num_x`/`set_num_y` store without validating (the members are set
+  independently, so only the combination is checked, at `StartExposure`), so
+  whatever the client last set is what the binned view is derived from — and the
+  derivation must not change which value `StartExposure` then complains about.
+  The unbinned store is wider than the `u32` a client can set, so a value read
+  back at the bin it was set at is that value exactly, with no ceiling where a
+  large `NumX` would fold into a smaller one the client never asked for. A
+  **sub-pixel** extent is clamped to a minimum of 1, because truncating it to 0
+  would make R2 reject a value the driver invented rather than the client's own `NumX`, which here is R3's
   `%8`/`%2` rule. A **client-set 0** is preserved, so it still earns R2 rather
   than being clamped into an R3 alignment complaint about a 1 nobody set.
   **One implementation**, in
@@ -1084,6 +1137,21 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   rule was three copies until one drifted, and the drift went unseen because
   each driver curated its own test cases, so the missing behaviour and its
   missing test hid each other.
+
+  **The bin and the sub-frame move as a pair.** The ROI itself is bin-independent,
+  but the *view* of it is not, and the two are still read separately: the bin
+  store happens under the same lock `StartExposure` reads the pair under, because
+  `StartExposure` loads the bin and *then* derives the sub-frame at it. A bin
+  change landing between the two arms a view taken at a bin the client has
+  already left — the right region at the wrong binned extent, while `BinX`
+  reports the new bin, and comfortably inside the bounds R2 checks, so nothing
+  downstream reports it. Nothing in the setter reaches the SDK (the bin is pushed at arm
+  time, from the capture request), so a bin change during a capture is *pinned*
+  rather than refused: it describes the next frame, which a client may
+  legitimately set up while this one downloads. Identical in `zwo-camera`;
+  `qhy-camera`'s B4 refuses its own bin setter instead, because there the bin is
+  written to the camera immediately and the write cannot be allowed beside a
+  capture.
 - **R1.** ROI setters accept any `u32`; geometry validated at
   `StartExposure`.
 - **R2.** Out-of-bounds/zero sub-frame → `INVALID_VALUE`.
@@ -1248,12 +1316,21 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 
 ## ASCOM Camera surface — v0 behaviour
 
+**Every member below that describes the camera or its session answers
+`NOT_CONNECTED` while the device is disconnected** unless its row says
+otherwise: a driver holding no device cannot describe one (state-machine
+steps 9 and 10). Two groups are outside that rule: what this driver never
+implements, named in its rows; and the identity and health members in the
+last row (`Name`, `Description`, `DriverInfo`, `DriverVersion`, `Connected`,
+`UniqueID`), which describe the *driver* and are how a client asks whether a
+device is there at all, so they answer throughout.
+
 | Property / Method | v0 behaviour (backed by `svbony-rs`) | Status |
 |---|---|---|
 | `CameraXSize` / `CameraYSize` | `SVB_CAMERA_PROPERTY` `MaxWidth`/`MaxHeight` aligned down so every binned full frame is a valid ROI (R4; SV605CC 3008×3008 → 2976×3000) | **Real** |
 | `PixelSizeX` / `PixelSizeY` | `SVBGetSensorPixelSize` (X == Y) | **Real** |
 | `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from `SupportedBins` | **Real** |
-| `CanAsymmetricBin` | `false` | **Real** |
+| `CanAsymmetricBin` | `false`; never implemented, so answered at any time (step 10) | **Real** |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) | **Real** |
 | `MaxADU` | The selected readout format's full scale — 65535 (Raw16, hardware-verified) / 255 (Raw8); NOT `2^MaxBitDepth - 1` | **Real** |
 | `ElectronsPerADU` | `NOT_IMPLEMENTED` (no SDK surface, hardware-confirmed) | **Permanent stub (ST2)** |
@@ -1264,14 +1341,16 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 | `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from `IsColorCam` / `BayerPattern` | **Real** |
 | `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `bSupportControlTemp` | **Real** |
 | `CanSetCCDTemperature` / `CanGetCoolerPower` | `true` iff `bSupportControlTemp` | **Real** |
-| `HasShutter` | `false` (no mechanical shutter in video mode) | **Real** |
-| `CameraState` | `Idle` / `Exposing` / `Error` | **Real** |
-| `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100 | **Real** |
-| `CanAbortExposure` / `CanStopExposure` | `true` / **`false`** (no data-preserving stop) | **Real** |
+| `HasShutter` | `false` (no mechanical shutter in video mode); never implemented, so answered at any time (step 10) | **Real** |
+| `CameraState` | `Idle` / `Exposing` / `Error`; `NOT_CONNECTED` while disconnected (state machine step 9) | **Real** |
+| `PercentCompleted` | From remaining-exposure µs, clamped ≤ 100; `NOT_CONNECTED` while disconnected (step 9) | **Real** |
+| `CanAbortExposure` / `CanStopExposure` | `true` (`NOT_CONNECTED` while disconnected, step 10) / **`false`** (no data-preserving stop; never implemented, so answered at any time) | **Real** |
 | `CanPulseGuide` | `true` iff ST4 port present (SV605CC: `false`) | **Real** |
-| `PulseGuide` / `IsPulseGuiding` | `SVBPulseGuide`, gated on ST4 capability; kept a literal blocking call (PG2) | **Real** |
+| `PulseGuide` / `IsPulseGuiding` | `SVBPulseGuide`, gated on ST4 capability; kept a literal blocking call (PG2); both `NOT_CONNECTED` while disconnected (step 10) | **Real** |
 | `StartExposure` (`Light=false`) | Accepted; captured normally (no shutter) | **Real** |
-| `StartExposure` / `AbortExposure` / `StopExposure` / `ImageReady` / `ImageArray` | Per the soft-trigger video-capture state machine above | **Real** |
+| `StartExposure` / `AbortExposure` / `ImageReady` / `ImageArray` | Per the soft-trigger video-capture state machine above; all `NOT_CONNECTED` while disconnected (step 9) | **Real** |
+| `StopExposure` | `NOT_IMPLEMENTED`; never implemented, so answered at any time — the truth about a member no reconnect makes work (step 10) | **Real** |
+| `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session; `VALUE_NOT_SET` before its first exposure, `NOT_CONNECTED` while disconnected (step 9) | **Real** |
 | `Name` / `Description` / `DriverInfo` / `DriverVersion` / `Connected` / `UniqueID` | — | **Real** |
 
 ---
@@ -1361,8 +1440,8 @@ Layered per [`testing.md`](../skills/testing.md).
   `Camera::video_capture_starts`, a read-only count that tells the test the
   capture's own capture restart has run, so "the cancel landed in the poll
   loop" is a fact rather than a nap.
-- **BDD** (`bdd-infra::ServiceHandle`, nine feature files, 68 scenarios /
-  286 steps) — all genuinely green, including `enumeration_connection`'s
+- **BDD** (`bdd-infra::ServiceHandle`, nine feature files, 69 scenarios /
+  295 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
   behavioural feature (`exposure`, `binning_and_roi`, `cooling`,
   `gain_offset_readout`, `sensor_properties`) — see each file's header

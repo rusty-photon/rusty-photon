@@ -669,6 +669,7 @@ fn name_joins(ctx: &Context) -> Vec<Check> {
     let ui_view: Option<UiHtmxView> = ctx.scan("ui-htmx").and_then(|s| scan::view(s)?.ok());
 
     checks.extend(retired_keys(sentinel_view.as_ref(), ui_view.as_ref()));
+    checks.extend(gti_retired_keys(ctx));
     if let Some(sentinel) = &sentinel_view {
         checks.extend(watchdog_joins(ctx, sentinel));
     }
@@ -724,6 +725,39 @@ fn retired_keys(sentinel: Option<&SentinelView>, ui: Option<&UiHtmxView>) -> Vec
         );
     }
     checks
+}
+
+/// star-adventurer-gti's `mount.flip_policy.flip_range_hours`, retired by
+/// #1301 (pier side is derived from the CW exclusion zone alone). The
+/// service's own self-created default config carried it, so every install
+/// upgraded from before the removal has it — and the strict load refuses
+/// to start over it. The remedy is deletion; nothing replaces it.
+fn gti_retired_keys(ctx: &Context) -> Vec<Check> {
+    const POINTER: &str = "/mount/flip_policy/flip_range_hours";
+    let carries_it = ctx
+        .scan("star-adventurer-gti")
+        .and_then(ServiceScan::value)
+        .is_some_and(|v| v.pointer(POINTER).is_some());
+    if !carries_it {
+        return Vec::new();
+    }
+    vec![Check::fail(
+        "config.retired-keys",
+        Some("star-adventurer-gti".to_string()),
+        "star-adventurer-gti.json carries the retired mount.flip_policy.flip_range_hours \
+         — pier side is derived from the CW exclusion zone alone now, and \
+         star-adventurer-gti refuses to start while the key is present"
+            .to_string(),
+        Some(
+            "delete mount.flip_policy.flip_range_hours; the CW exclusion zone already \
+             decides which targets each side can reach"
+                .to_string(),
+        ),
+    )
+    .with_fixes(vec![crate::report::FixOp::RemoveKey {
+        service: "star-adventurer-gti".to_string(),
+        pointer: POINTER.to_string(),
+    }])]
 }
 
 /// The installed rusty-photon units' service names (unit minus the prefix) —
@@ -4766,6 +4800,52 @@ mod tests {
             }
             other => unreachable!("{other:?}"),
         }
+    }
+
+    // #1301 retired star-adventurer-gti's flip_range_hours; configs the
+    // pre-#1301 service self-created still carry it and refuse to load.
+    #[test]
+    fn test_gti_flip_range_hours_is_flagged_for_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "star-adventurer-gti.json",
+            serde_json::json!({ "mount": { "flip_policy": {
+                "enabled": false, "flip_range_hours": 0.5,
+                "auto_flip_during_tracking": false,
+                "auto_flip_at_meridian_offset_hours": 0.0 } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        let checks = gti_retired_keys(&ctx);
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        let check = &checks[0];
+        assert_eq!(check.name, "config.retired-keys");
+        assert_eq!(check.status, Status::Fail);
+        assert_eq!(check.service.as_deref(), Some("star-adventurer-gti"));
+        assert!(
+            check.detail.contains("flip_range_hours"),
+            "{}",
+            check.detail
+        );
+        match &check.fixes[..] {
+            [crate::report::FixOp::RemoveKey { service, pointer }] => {
+                assert_eq!(service, "star-adventurer-gti");
+                assert_eq!(pointer, "/mount/flip_policy/flip_range_hours");
+            }
+            other => unreachable!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_gti_config_without_flip_range_hours_is_silent() {
+        let dir = tempfile::tempdir().unwrap();
+        write_json(
+            dir.path(),
+            "star-adventurer-gti.json",
+            serde_json::json!({ "mount": { "flip_policy": { "enabled": false } } }),
+        );
+        let ctx = config_only_ctx(dir.path());
+        assert!(gti_retired_keys(&ctx).is_empty());
     }
 
     // A config with neither retired key is silent.

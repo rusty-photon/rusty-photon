@@ -29,7 +29,12 @@ async fn configured_with_latitude_and_floor(
 
 /// RA (hours, folded to `[0, 24)`) that places a target at
 /// `ha_hours` for the configured site right now.
-fn ra_for_hour_angle(world: &StarAdventurerWorld, ha_hours: f64) -> f64 {
+///
+/// Shared with `pier_side_selection_steps`, whose scenarios address
+/// targets by hour angle for the same reason: the quantity under test
+/// (`mech_HA`) is an hour angle, and a hardcoded RA would tie it to
+/// the wallclock.
+pub fn ra_for_hour_angle(world: &StarAdventurerWorld, ha_hours: f64) -> f64 {
     let lon = world
         .config
         .as_ref()

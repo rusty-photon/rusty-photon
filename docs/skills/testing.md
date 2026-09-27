@@ -931,7 +931,26 @@ Bazel `shard_count`. To shard a suite: (1) set `shard_count` on its
 `bdd_infra::sharding::scenario_in_current_shard(feat.path.as_deref(),
 &feat.name, sc.position.line)` — `bdd_main!` already advertises
 sharding support to Bazel. Skipping step 2 silently makes every shard
-run the whole suite. Scenarios are partitioned by a stable hash of
+run the whole suite.
+
+Step 2 is what does the work, and it is **not Bazel-specific**:
+`bdd_infra::sharding` reads plain `TEST_SHARD_INDEX` /
+`TEST_TOTAL_SHARDS` env vars and degrades to "run everything" when they
+are absent or malformed, so any runner can drive the same partition.
+`test.yml`'s Cargo safety net does exactly that via
+[`bdd-sharded`](../../.github/actions/bdd-sharded): one
+`cargo test --locked --workspace --all-features --test bdd --no-run
+--message-format=json` build, then the resulting binaries run directly
+as parallel streams
+(`BDD_PACKAGE_DIR` supplies the chdir cargo would otherwise do), with
+the shard env set only on the streams whose suite honours it. That
+shape avoids two traps. Setting the shard env for a *workspace*
+`cargo test` makes the suites that ignore it run in full in every shard.
+And re-invoking `cargo test -p <pkg>` per stream resolves a different
+feature unification than the workspace build, so each stream rebuilds
+dozens of crates while holding cargo's exclusive build-directory lock —
+the streams then serialize on each other instead of running in
+parallel. Scenarios are partitioned by a stable hash of
 (feature file name, scenario line), and `@serial` still applies within
 each shard, which is exactly the scope it protects — one process's
 shared instance. This holds on every OS: profile-store isolation uses
@@ -1395,6 +1414,72 @@ that wants the detector's real behaviour wants a fixture, not the
 simulator: `measure_basic` / `detect_stars` / `compute_snr` assert only
 "a non-negative count" against a simulator frame for this same reason,
 and the star-level assertions live in unit tests over synthetic frames.
+
+#### 5.14 Never assert a mount read-back against the RA you synced
+
+`SyncToCoordinates` does **not** land OmniSim's telescope exactly on the
+RA you asked for, and the size of the miss is a wall-clock artefact of
+the runner. A scenario that syncs to an RA and then asserts the mount
+reports that same RA back is asserting on how fast the machine is.
+
+The mechanism, measured against the pinned OmniSim release
+(`v0.5.0-467.2`):
+
+- `MountFunctions.ConvertRaDecToAxes` builds the mount axis from the
+  **cached** `TelescopeHardware.SiderealTime`, which is refreshed only
+  by `UpdatePositions()` at the tail of each `MoveAxes()` tick
+  (`TIMER_INTERVAL` = 100 ms).
+- `SyncToTarget()` writes the axis from that cached value and then calls
+  `UpdatePositions()`, which refreshes the sidereal time and re-derives
+  the reported RA from the axis it just wrote. The reported RA is
+  therefore `requested RA + (however stale the cache was)`.
+- Normally the next tick cancels it: the tick's `dt` runs from
+  `lastUpdateTime`, which is the same tick that took the stale snapshot,
+  so the tracking back-fill absorbs the difference exactly.
+- But `TelescopeHardware.Start()` — run on every
+  `PUT /simulator/v1/telescope/0/restart`, i.e. on **every scenario**
+  via the §5.5 reset hook — sets `lastUpdateTime` without refreshing the
+  sidereal-time cache. The back-fill window is truncated and the offset
+  becomes permanent. Tracking then *holds* the mount at the offset
+  position, so this is a fixed error, not a drift.
+
+Two different numbers matter here, and they are easy to conflate.
+
+*How far the sync lands from the RA you asked for* is the wall-clock
+quantity, and it is not small: measured with bare Alpaca calls, a sync
+issued right after a restart keeps +0.0002…+0.0003° for the rest of the
+scenario; a real `rp:bdd` run on an idle container landed +0.0012° out;
+and with the simulator process stalled for 3 s across the restart, one
+trial in six kept **+0.0128°** — 46 arcsec, which is how
+`//services/rp:bdd` went red on `bazel / windows-latest`
+(issue [#1252](https://github.com/rusty-photon/rusty-photon/issues/1252),
+run
+[34675918330](https://github.com/rusty-photon/rusty-photon/actions/runs/34675918330)).
+There is no bound to quote: the offset is however long the simulator's
+timer was stalled. The same effect at its ordinary magnitude — one timer
+interval — is what `mount.feature`'s `SLEW_ECHO_TOLERANCE` absorbs; it
+is a stale clock, not float drift in a coordinate transform.
+
+*How far two reads of the same tracking mount disagree* is the other
+number, and it is tiny: ~2e-6°, the simulator's per-tick numerical
+noise. Tracking holds the mount at whatever position the sync landed on,
+so the offset above is a constant the reads share and cancel.
+
+**The rule.** Assert a forwarded pointing value against what the mount
+*reported*, not against the literal the scenario synced to. Read the
+position back (`get_mount_position`) next to the call under test and
+compare the two reads: they share the sync offset, so the budget is only
+the ~2e-6° noise above and nothing is charged for how long the runner
+took. Keep a separate, coarse bound against the synced literal when the
+scenario wants to know the mount is still pointing where it was put. `plate_solve.feature`'s
+`use_mount_hints` scenario is the worked example: a 0.001° read-to-read
+bound carries the ×15 hours-to-degrees guard, and a 0.5° sanity bound
+carries "still on target".
+
+Widening the tolerance instead is the wrong fix twice over: it is
+unbounded (the offset is however long the runner stalled), and the tight
+bound is what catches the unit-conversion defect the assertion exists
+for.
 
 ---
 

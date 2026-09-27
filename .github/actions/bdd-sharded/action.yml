@@ -1,0 +1,301 @@
+name: Run the BDD suites as parallel shards
+description: >
+  Run the workspace BDD suites as concurrent processes rather than as one
+  sequential `cargo test --workspace --test bdd`.
+
+  cargo runs test binaries one after another, and cucumber serializes every
+  scenario in a `@serial`-tagged feature — 41 of rp's 53 features carry the tag
+  at feature level, so rp's suite spends ~97% of its wall clock with a single
+  scenario in flight. The lever is processes: every BDD process spawns its own
+  OmniSim (`--multi-instance`, a dynamic port, a per-instance settings dir), so
+  they run independently, and `bdd_infra::sharding` partitions scenarios off plain
+  `TEST_SHARD_INDEX` / `TEST_TOTAL_SHARDS`. Those are Bazel's variable names,
+  but nothing about the mechanism is Bazel-specific. `@serial` still holds
+  within a shard, which is the scope it protects — one process's simulator.
+
+  Only suites that route their cucumber filter through `scenario_in_current_shard`
+  can be sharded (today: rp, session-runner, polar-align). Every other suite
+  ignores the vars and would run IN FULL in every shard, so the shard env is
+  never set process-wide — only on the streams that can honour it.
+
+inputs:
+  rp-shards:
+    description: >
+      Shard processes for rp's suite, which is half the BDD wall clock by itself.
+    required: false
+    default: "4"
+  session-runner-shards:
+    description: Shard processes for session-runner's suite.
+    required: false
+    default: "2"
+  rustflags:
+    description: >
+      RUSTFLAGS for the build and the suite processes. Passed as an input
+      rather than inherited: a composite action's steps do not reliably see
+      `env:` set on the `uses:` step that calls them.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: cargo test --test bdd (sharded)
+      shell: bash
+      env:
+        RP_SHARDS: ${{ inputs.rp-shards }}
+        SESSION_RUNNER_SHARDS: ${{ inputs.session-runner-shards }}
+        BDD_RUSTFLAGS: ${{ inputs.rustflags }}
+      run: |
+        set -uo pipefail
+
+        if [ -n "${BDD_RUSTFLAGS:-}" ]; then
+          export RUSTFLAGS="$BDD_RUSTFLAGS"
+        fi
+
+        # Drop any shard assignment already in the environment before starting
+        # anything. Each stream below sets these deliberately or not at all, but
+        # "not at all" means "inherits" unless they are cleared here: an ambient
+        # pair would silently narrow every stream that does not set its own —
+        # the unsharded groups, and any suite whose count is 1 — to one slice of
+        # its scenarios. The split check counts suites, not scenarios, so it
+        # would not notice. Cleared once here rather than per child so no future
+        # stream can be added that forgets to.
+        unset TEST_SHARD_INDEX TEST_TOTAL_SHARDS
+
+        # A shard count that is not a positive integer would otherwise reach
+        # the loops below and fail somewhere less legible.
+        positive_int() {  # positive_int <label> <value>
+          case "$2" in
+            '' | *[!0-9]*)
+              echo "::error::$1 must be a positive integer, got '$2'"
+              exit 1
+              ;;
+          esac
+          if [ "$2" -lt 1 ]; then
+            echo "::error::$1 must be at least 1, got '$2'"
+            exit 1
+          fi
+        }
+        positive_int rp-shards "$RP_SHARDS"
+        positive_int session-runner-shards "$SESSION_RUNNER_SHARDS"
+
+        # `wc -l` pads its count on some platforms; strip it so the value is
+        # usable in a numeric comparison.
+        count_lines() { wc -l < "$1" | tr -d '[:space:]'; }
+
+        # Guarded rather than assumed: without it the artifact filter below
+        # yields an empty manifest, which would surface as "no bdd test
+        # binaries found" and send the reader looking at the build instead.
+        command -v jq >/dev/null 2>&1 || {
+          echo "::error::jq is required to read cargo's artifact messages"
+          exit 1
+        }
+
+        # RUNNER_TEMP is a native path, so on Windows it arrives with
+        # backslashes; normalise here as for the cargo paths below.
+        tmp="${RUNNER_TEMP:-/tmp}"
+        tmp="${tmp//\\//}"
+        manifest="$tmp/bdd-binaries.tsv"
+        build_log="$tmp/bdd-build.json"
+        logs="$tmp/bdd-shard-logs"
+        mkdir -p "$logs"
+
+        # Build every bdd target once, then run the binaries directly.
+        #
+        # Re-invoking `cargo test -p <pkg>` per stream would be the obvious
+        # shape and is a trap twice over: a single package's `--all-features`
+        # resolves to a different feature unification than the workspace's, so
+        # every stream rebuilds dozens of crates into separate artifacts; and
+        # cargo holds an exclusive lock on the build directory while it does,
+        # so the streams serialize on each other ("Blocking waiting for file
+        # lock on build directory") — serializing the very thing this
+        # parallelizes. Running the built binaries needs no cargo process at
+        # all. `bdd_main!` honours BDD_PACKAGE_DIR for the chdir that cargo
+        # would otherwise do, which is what makes direct invocation work.
+        #
+        # `--message-format=json` puts compiler diagnostics on stdout too, so a
+        # failed build must be rendered explicitly or it surfaces as raw JSON.
+        if ! cargo test --locked --workspace --all-features --test bdd \
+             --no-run --message-format=json > "$build_log"; then
+          echo "::error::bdd build failed"
+          jq -r 'select(.reason == "compiler-message") | .message.rendered // empty' \
+            "$build_log" || cat "$build_log"
+          exit 1
+        fi
+
+        # Windows paths are normalised to forward slashes: bash can exec them,
+        # and Rust's set_current_dir accepts them.
+        jq -r 'select(.reason == "compiler-artifact"
+                      and .executable != null
+                      and .target.name == "bdd")
+               | [(.manifest_path | sub("[\\\\/]Cargo\\.toml$"; "") | gsub("\\\\"; "/")),
+                  (.executable | gsub("\\\\"; "/"))]
+               | @tsv' "$build_log" > "$manifest"
+
+        test -s "$manifest" || { echo "::error::no bdd test binaries found"; exit 1; }
+        echo "built $(wc -l < "$manifest") bdd binaries"
+
+        pids=()
+        names=()
+
+        # Each stream buffers to its own file so the eight do not interleave,
+        # which means nothing is on the job log until they are replayed. A
+        # stream that hangs would otherwise reach the job's timeout having
+        # printed nothing at all — the one failure this action exists to make
+        # legible. Replaying from a trap covers the cancelled path too, where
+        # the runner signals the step rather than letting it return.
+        replayed=0
+        replay_logs() {
+          if [ "$replayed" -eq 1 ] || [ "${#names[@]}" -eq 0 ]; then
+            return
+          fi
+          replayed=1
+          local name
+          for name in "${names[@]}"; do
+            echo "::group::bdd ${name}"
+            cat "$logs/${name}.log" 2>/dev/null || true
+            echo "::endgroup::"
+          done
+        }
+        # Reap before replaying. Validation all happens before the first
+        # launch, so no ordinary refusal can strand a stream — but an
+        # unexpected exit or a cancelled step still can, and a stream left
+        # running would keep a simulator and a service alive for the rest of
+        # the job. Already-reaped pids simply fail to signal.
+        cleanup() {
+          if [ "${#pids[@]}" -gt 0 ]; then
+            local pid
+            for pid in "${pids[@]}"; do
+              kill "$pid" 2>/dev/null || true
+            done
+            for pid in "${pids[@]}"; do
+              wait "$pid" 2>/dev/null || true
+            done
+          fi
+          replay_logs
+        }
+        trap cleanup EXIT
+        trap 'cleanup; exit 143' TERM
+        trap 'cleanup; exit 130' INT
+
+        # lookup <package-name> -> "<package-dir>\t<executable>"
+        lookup() {
+          awk -F'\t' -v want="$1" \
+            '{ n = $1; sub(/.*\//, "", n); if (n == want) { print; exit } }' "$manifest"
+        }
+
+        # start <log-name> <package-dir> <executable> [shard-index shard-total]
+        start() {
+          local name=$1 dir=$2 exe=$3 idx=${4:-} total=${5:-}
+          (
+            export BDD_PACKAGE_DIR="$dir"
+            if [ -n "$total" ]; then
+              export TEST_SHARD_INDEX="$idx" TEST_TOTAL_SHARDS="$total"
+            fi
+            # </dev/null: a suite that reads stdin must not drain the caller's.
+            "$exe" </dev/null
+          ) >"$logs/$name.log" 2>&1 &
+          pids+=("$!")
+          names+=("$name")
+        }
+
+        # require_suite <package> — "<dir>\t<executable>", or fail naming it.
+        require_suite() {
+          local line
+          line=$(lookup "$1")
+          if [ -z "$line" ]; then
+            echo "::error::no bdd binary for $1"
+            exit 1
+          fi
+          printf '%s\n' "$line"
+        }
+
+        # run_manifest <log-name> <tsv> — every suite it lists, in sequence.
+        #
+        # The list is read on fd 3 and each suite gets </dev/null, so a suite
+        # that reads stdin cannot swallow the entries queued behind it. Sharing
+        # stdin with the loop silently truncated this list, and because the
+        # dropped suites never ran, nothing failed and the stream stayed green —
+        # so the count is checked too: a short run is an error, not a pass.
+        run_manifest() {
+          local name=$1 file=$2
+          (
+            rc=0
+            ran=0
+            expected=$(count_lines "$file")
+            while IFS=$'\t' read -r dir exe <&3; do
+              BDD_PACKAGE_DIR="$dir" "$exe" </dev/null || rc=1
+              ran=$((ran + 1))
+            done 3< "$file"
+            if [ "$ran" -ne "$expected" ]; then
+              echo "::error::stream $name ran $ran of $expected suites"
+              rc=1
+            fi
+            exit "$rc"
+          ) >"$logs/$name.log" 2>&1 &
+          pids+=("$!")
+          names+=("$name")
+        }
+
+        # --- resolve and check every stream BEFORE launching any of them ------
+        #
+        # Order matters, not just correctness of each step: a check that runs
+        # after the first children are started cannot fail cleanly, because
+        # exiting then leaves those children running on the runner for the rest
+        # of the job. So everything that can refuse the run happens here, while
+        # nothing has been spawned yet.
+        IFS=$'\t' read -r rp_dir rp_exe < <(require_suite rp)
+        IFS=$'\t' read -r sr_dir sr_exe < <(require_suite session-runner)
+
+        # polar-align is shard-aware but small; filemonitor is the largest suite
+        # that is not shard-aware. Together they are about one rp shard's work.
+        # Everything else is 21 suites totalling ~5 min, run in one stream.
+        #
+        # Split into manifest files rather than bash arrays-by-reference: the
+        # macOS runner's /bin/bash is 3.2, which has no namerefs.
+        awk -F'\t' '{ n = $1; sub(/.*\//, "", n);
+                      if (n == "polar-align" || n == "filemonitor") print }' \
+          "$manifest" > "$tmp/bdd-heavy.tsv"
+        awk -F'\t' '{ n = $1; sub(/.*\//, "", n);
+                      if (n != "rp" && n != "session-runner" &&
+                          n != "polar-align" && n != "filemonitor") print }' \
+          "$manifest" > "$tmp/bdd-rest.tsv"
+
+        # Every binary must land in exactly one stream. Without this an awk
+        # that matched nothing — a renamed package, a lost redirection — leaves
+        # an empty list, and an empty list runs zero suites and agrees with its
+        # own count, so the stream passes having tested nothing.
+        accounted=$(( 2 + $(count_lines "$tmp/bdd-heavy.tsv") + $(count_lines "$tmp/bdd-rest.tsv") ))
+        total=$(count_lines "$manifest")
+        if [ "$accounted" -ne "$total" ]; then
+          echo "::error::stream split covers $accounted of $total bdd binaries"
+          exit 1
+        fi
+
+        # --- launch ----------------------------------------------------------
+        launch_shards() {  # launch_shards <name> <dir> <exe> <count>
+          local name=$1 dir=$2 exe=$3 count=$4 i
+          if [ "$count" -le 1 ]; then
+            start "$name" "$dir" "$exe"
+            return
+          fi
+          for ((i = 0; i < count; i++)); do
+            start "$name-$i" "$dir" "$exe" "$i" "$count"
+          done
+        }
+
+        launch_shards rp "$rp_dir" "$rp_exe" "$RP_SHARDS"
+        launch_shards session-runner "$sr_dir" "$sr_exe" "$SESSION_RUNNER_SHARDS"
+        run_manifest heavy "$tmp/bdd-heavy.tsv"
+        run_manifest rest "$tmp/bdd-rest.tsv"
+
+        status=0
+        for i in "${!pids[@]}"; do
+          if ! wait "${pids[$i]}"; then
+            echo "::error::BDD stream ${names[$i]} failed"
+            status=1
+          fi
+        done
+
+        cleanup
+        exit "$status"

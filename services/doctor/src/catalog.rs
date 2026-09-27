@@ -398,6 +398,10 @@ mod tests {
                     vendor: d.vendor.to_string(),
                     product: d.product.to_string(),
                     model: Some(d.descriptor.to_string()),
+                    // This fixture asks only about identity matching; the
+                    // port plays no part in it.
+                    port: None,
+                    serial: None,
                 })
                 .collect(),
             ..HardwareFacts::default()
@@ -435,8 +439,9 @@ mod tests {
                 .usb
                 .as_ref()
                 .unwrap_or_else(|| panic!("{} declares no USB identity", device.service));
-            assert!(
+            assert_eq!(
                 bus.usb_present(&usb.vendor, usb.product.as_deref(), usb.model.as_deref()),
+                Some(true),
                 "{}: declared {}:{} usb_model {:?} is not in the descriptor its \
                  device reports, {:?}",
                 device.service,
@@ -456,8 +461,9 @@ mod tests {
         for device in OBSERVED {
             let usb = entry(device.service).unwrap().usb.as_ref().unwrap();
             let siblings = observed_bus_without(device.service);
-            assert!(
-                !siblings.usb_present(&usb.vendor, usb.product.as_deref(), usb.model.as_deref()),
+            assert_eq!(
+                siblings.usb_present(&usb.vendor, usb.product.as_deref(), usb.model.as_deref()),
+                Some(false),
                 "{}: usb_model {:?} also matches another device on the fleet's bus",
                 device.service,
                 usb.model.as_deref().unwrap_or("")
