@@ -1043,10 +1043,16 @@ signed correctly), and #1295 ran with the flip policy off, so every
 pulse in it was counterweight-down. The counterweight-up side follows
 from that by the encoder geometry above with no new assumption: the
 motor's sense does not change when the OTA passes the pole, only the
-encoder's relation to declination does. A hardware run
-on the counterweight-up side is still the confirmation of record;
-until one is in [docs/validation/](../validation/), treat the
-counterweight-up direction as derived rather than measured.
+encoder's relation to declination does. The counterweight-up direction
+has since been **measured**, not only derived: on 2026-09-26 ConformU
+ran against the packaged nightly on the field rig with
+`flip_policy.enabled = true`, and at HA +3 and +9 — both reached
+through the pole, Dec encoder at +135° and +95° — North read +37.9″
+and South −37.9″ against ±37.6″ expected, the same as the
+counterweight-down legs and the opposite of what #1300 reported. The
+record is
+[docs/validation/2026-09-26-star-adventurer-gti-gti-rig/](../validation/2026-09-26-star-adventurer-gti-gti-rig/README.md);
+see [§Real-hardware validation](#real-hardware-validation).
 
 **The step period is per-axis.** `:I` carries the time between motor
 steps in timer-counter units, so the period that turns an axis at the
@@ -2477,9 +2483,11 @@ re-adding `[package.metadata.conformu]` to the package's
    against the side the mount is on (see the Dec sign
    convention under
    [§PulseGuide lifecycle](#pulseguide-lifecycle), including
-   what a mock run does and does not establish — the
-   counterweight-up direction is derived from the
-   counterweight-down hardware runs, not measured on that side).
+   what a mock run does and does not establish). The
+   counterweight-up direction is measured, not derived: the
+   2026-09-26 field-rig run guided Dec the right way at HA +3
+   and +9 with the mount through the pole — see
+   [§Real-hardware validation](#real-hardware-validation).
 
    Earlier revisions of this section recorded a much worse
    picture (Dec at ~2× the rate, RA West moving east). That was
@@ -2514,14 +2522,18 @@ the selector now picks the side by reachability
 resolves against the side the mount is on
 ([§Sync and pier side](#sync-and-pier-side)). The four Dec-direction
 issues are #1300, also fixed — Dec pulses resolve `ccw` against the
-side the mount is on. "Fixed" there means fixed against the mock and
-derived from the counterweight-down hardware runs, not separately
-measured counterweight-up; see
-[§PulseGuide lifecycle](#pulseguide-lifecycle) ("What the mock can and
-cannot settle") before treating that row as hardware evidence. **The `20` above was measured; the `8` is
-arithmetic, not a re-run** — it assumes the RA-offset group is
-untouched, which neither fix goes near. The remaining eight are
-issue #1299 (RA offset); re-measure when it lands.
+side the mount is on, and that fix is measured on hardware on the
+counterweight-up side, not only against the mock (see
+[§Real-hardware validation](#real-hardware-validation)). **The `20`
+above was measured against the mock; the `8` is arithmetic, not a
+mock re-run** — it assumes the RA-offset group is untouched, which
+neither fix goes near. The remaining eight are issue #1299 (RA
+offset); re-measure when it lands. On hardware the same config
+measured **11** on 2026-09-26: seven of the eight RA offsets (East at
+HA −3 passed, at +2.52 s) plus four cross-axis RA readings of
+0.07–0.17 s during Dec pulses that the mock never shows — issue
+#1334, a poll-snapshot-versus-live-LST read artefact, neither #1299
+nor #1300.
 
 To reproduce locally, run the in-tree integration test — same
 binary, same config, same ConformU invocation the workflow used:
@@ -2584,6 +2596,38 @@ Historical baselines (`alpacaprotocol`-only or partial
   implemented, PulseGuide not yet landed, conformance never
   reached SideOfPierTests because alpacaprotocol failed on
   `IsPulseGuiding`): 7 issues as previously documented.
+
+## Real-hardware validation
+
+The evidence trail is [`docs/validation/`](../validation/README.md);
+this service's runs, newest first:
+
+- **2026-09-26 — counterweight-up PulseGuide on the field rig**
+  ([record](../validation/2026-09-26-star-adventurer-gti-gti-rig/README.md)).
+  Packaged arm64 nightly of `6eaa9b70` on the Raspberry Pi 5 rig,
+  ConformU 4.5.0 with `flip_policy.enabled = true` at latitude 32.7°,
+  over the production TLS+auth endpoint. `alpacaprotocol` 0 errors /
+  0 issues; `conformance` 0 errors / 11 issues / 0 alerts / 0 timing
+  issues. What it settled: Dec guide pulses move the right way in
+  **both** pointing states — at HA +3 and +9, reached through the pole
+  (Dec encoder +135° / +95°), North +37.9″ and South −37.9″ against
+  ±37.6″, the same as counterweight-down — so #1300's fix is measured,
+  not derived. The through-wrap meridian flip (`SideOfPier Write`) and
+  the pointing-state reads at HA ±3 / ±9 pass. The 11 issues are all
+  RA: seven #1299 offsets and four cross-axis RA readings during Dec
+  pulses (issue #1334). Filed as a **scoped** record — it does not meet
+  the all-zero rule while those two RA defects are open, and its README
+  says so; a clean two-suite record is owed once **both** #1299 and
+  #1334 have landed, since either one alone still leaves issues on the
+  board.
+- **2026-09-21 — #1295 PulseGuide rate fix** on the rig from a branch
+  build: Dec North/South 5 s at 37.5–38.4″ (was 46.9 / 47.3″) and the
+  RA offset at 2 / 5 / 10 s. Results on
+  [PR #1298](https://github.com/rusty-photon/rusty-photon/pull/1298);
+  no record, because it was not a two-suite ConformU pass.
+- **2026-05-16 — meridian flip, AP Park 1–5 traversal** (predates the
+  record trail, no ConformU artefacts): see
+  [§Hardware validation](#hardware-validation) under Meridian flip.
 
 ## Connection Lifecycle
 

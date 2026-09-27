@@ -4,13 +4,20 @@ Successful **real-hardware ConformU runs**, one directory per run. Where the
 per-service design docs (`docs/services/<service>.md`, "Real-hardware
 validation") narrate *what was learned*, this directory preserves *the
 evidence*: which commit was tested, on what platform, against which physical
-device, and the unmodified ConformU output.
+device, and the ConformU output unmodified except for the privacy scrub the
+skill doc permits (a private address or hostname replaced by a placeholder,
+called out in the record's README). A row marked **scoped record**
+is the one sanctioned exception to all-zero: its README names the open
+issues that carry every remaining finding, and what must land before a clean
+run can replace it — see
+[hardware-validation.md § Scoped records](../skills/hardware-validation.md#scoped-records--the-one-exception-and-what-it-must-carry).
 
 ## Runs
 
 | Date | Service | Device | Platform | Commit | ConformU | Result | Record |
 |------|---------|--------|----------|--------|----------|--------|--------|
 | 2026-09-27 | qhy-camera | QHY178M + CFW | Fedora Linux 44 x86_64 | [`bfce1d46`](https://github.com/rusty-photon/rusty-photon/commit/bfce1d46) (branch `fix/connecting_reports_every_in_flight_connect`) | 4.5.0 | `alpacaprotocol` + `conformance` clean, **both** Camera and FilterWheel; the first QHY record since the C6 session work, taken after `Connecting` was made to cover every in-flight connect and `set_connected` was serialized per physical connection (Camera and CFW take turns on the one `OpenQHYCCD`) — it also retires the FilterWheel service-log artefact the August record documented | [record](2026-09-27-qhy-camera-qhy178m-cfw-linux/README.md) |
+| 2026-09-26 | star-adventurer-gti | Sky-Watcher Star Adventurer GTi | Raspberry Pi OS (Debian 13) aarch64 — field rig | [`6eaa9b70`](https://github.com/rusty-photon/rusty-photon/commit/6eaa9b70) (`main`; the #1300 Dec-direction fix, PR #1312) | 4.5.0 | **Scoped record, not all-zero**: `alpacaprotocol` 0 errors / 0 issues (3 information); `conformance` 0 errors / **11 issues** / 0 alerts / 0 timing issues, against the packaged nightly deb over the **production TLS+auth endpoint** with `flip_policy.enabled = true`. Settles #1300 on hardware: Dec guide pulses on the **counterweight-up** side (HA +3 / +9, reached through the pole) read North +37.9″ / South −37.9″ — the right way, as on the counterweight-down side. The 11 issues are all RA: 7 × the #1299 East/West offset, 4 × cross-axis RA read jitter (#1334). The meridian flip (`SideOfPier Write`) and the pointing-state reads at HA ±3 / ±9 pass | [record](2026-09-26-star-adventurer-gti-gti-rig/README.md) |
 | 2026-08-23 | svbony-camera | SVBONY SV605CC | Raspberry Pi OS (Debian 13) aarch64 — field rig | [`74aa87e6`](https://github.com/rusty-photon/rusty-photon/commit/74aa87e6) (branch `fix/svbony-camera-capture-instance-gate`, PR #1062) | 4.5.0 | `alpacaprotocol` (0 information alerts) + `conformance` clean, against a **source build of the PR branch** on the rig; plus the exposure paths PR #1062 rewired (abort E7, disconnect C3, reconnect E10) at 13/13 with a 12-point E10 sweep and a 30-iteration soak, A/B'd against the pre-PR packaged nightly both idle and CPU-starved | [record](2026-08-23-svbony-camera-sv605cc-rig-reconnect/README.md) |
 | 2026-08-23 | zwo-camera | ZWO ASI1600MM-Cool + ASI178MM + ASI120MC-S | Fedora Linux 44 x86_64 | [`2bc56edc`](https://github.com/rusty-photon/rusty-photon/commit/2bc56edc) (branch `fix/zwo-camera-per-capture-stop-889`, PR #1056) | 4.5.0 | `alpacaprotocol` + `conformance` clean on **all three** bodies from one service instance; plus the exposure paths PR #1056 rewired (abort E7, graceful stop E8, disconnect C3, reconnect E10) driven on each body, and an A/B soak against pre-fix `main` | [record](2026-08-23-zwo-camera-three-cameras-reconnect/README.md) |
 | 2026-08-16 | svbony-camera | SVBONY SV605CC | Raspberry Pi OS (Debian 13) aarch64 — field rig | [`97854524`](https://github.com/rusty-photon/rusty-photon/commit/97854524) | 4.5.0 | `alpacaprotocol` (0 information alerts) + `conformance` clean, against the packaged nightly deb started from a **pristine working directory** — the issue #891 connect-handshake fix (`Gain` settable before the first exposure) confirmed on the physical camera, with a before/after probe of the previously deployed binary | [record](2026-08-16-svbony-camera-sv605cc-rig-connect-handshake/README.md) |
@@ -32,7 +39,7 @@ device, and the unmodified ConformU output.
 ## Adding a run
 
 The procedure — the version gate, the ConformU invocations, what the
-record must contain, and the success-only rule — is
+record must contain, the success-only rule and its one scoped exception — is
 [docs/skills/hardware-validation.md](../skills/hardware-validation.md).
 Read it before running; a record made against a stale ConformU is not
 evidence.
