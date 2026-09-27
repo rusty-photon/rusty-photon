@@ -1332,9 +1332,12 @@ Note what the ordering rule does to its reach: a guide path behind the
 imaging train's focuser — the duo camera, the unmotorised OAG — needs
 none of this, because focusing the imaging train focuses it. S10 earns
 its place only on a rig with an independently focusable guider, and
-one exists: pier1 has a motorised focuser on its guide path (O4
-rule 1, recorded 2026-09-27), so S10 has a rig and the question is
-only its order against S8, S9 and S11 and the C7 reconciliation. S11 is a config field, the read behind it, and the record-identity
+one candidate exists: pier1 has a motorised focuser on its guide
+path (O4 rule 1, recorded 2026-09-27). Rule 7 is still open there —
+the PHD2 camera facade is not yet configured on any rig, and cannot be
+before device-claims-and-phd2-camera.md's C6 — so pier1 is the rig S10
+will be built for, not one it can run on today; the question is its
+order against S8, S9 and S11 and the C7 reconciliation. S11 is a config field, the read behind it, and the record-identity
 change that keeps a swapped probe from looking fresh; it does not
 extend the refocus trigger, which stays keyed to a train's own
 focuser.
