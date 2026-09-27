@@ -85,40 +85,86 @@ impl MountParameters {
 /// [`MountManager::snapshot_now`]); pairing a stale encoder with a live
 /// LST reads a tracking mount off by the sample's age (issue #1334).
 #[derive(Debug, Clone, Copy, Default)]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "each flag mirrors one independent bit of the `:f` status reply"
-)]
 pub struct AxisSnapshot {
     pub position_ticks: i32,
     /// When the `:j` position reply that produced `position_ticks`
     /// arrived (or when a `seed_*_position` published a just-written
     /// `:E` value). `None` until the first sample.
     pub sampled_at: Option<Instant>,
-    pub running: bool,
-    pub goto: bool,
-    /// `:f` direction bit: `true` = CCW, i.e. decreasing encoder counts
-    /// on the `GTi`.
-    pub ccw: bool,
-    /// `:f` speed bit: `true` = the high-speed regime, whose step rate is
-    /// the `:I` rate times the axis' high-speed ratio.
-    pub fast: bool,
+    /// The axis' last `:f` status reply, as decoded. `None` until the
+    /// first status poll (the handshake reads positions only), which
+    /// the accessors below read as a stopped, unblocked axis.
+    pub status: Option<AxisStatus>,
     /// The `:I` step period the driver last sent this axis, as of the
     /// sample (`0` = none since the handshake, so the rate is unknown).
-    /// Together with `running`, `goto`, `ccw` and `fast` this gives the
-    /// rate the axis was turning at — whatever rate the driver
-    /// commanded (sidereal, a guide-shifted pulse rate, or any future
-    /// tracking rate), not an assumed sidereal.
+    /// Together with the status this gives the rate the axis was
+    /// turning at — whatever rate the driver commanded (sidereal, a
+    /// guide-shifted pulse rate, or any future tracking rate), not an
+    /// assumed sidereal.
     pub step_period: u32,
+}
+
+impl AxisSnapshot {
+    /// `:f` motion bit: the motor is producing step pulses.
+    #[must_use]
+    pub const fn running(&self) -> bool {
+        match self.status {
+            Some(s) => s.motion.running,
+            None => false,
+        }
+    }
+
+    /// `:f` mode bit reads goto (as opposed to tracking).
+    #[must_use]
+    pub const fn goto(&self) -> bool {
+        matches!(
+            self.status,
+            Some(AxisStatus {
+                mode: ModeKind::Goto,
+                ..
+            })
+        )
+    }
+
     /// Sky-Watcher spec §5 (Response E nibble-1 bit-1): the firmware
     /// reports `Blocked` when the motor is stepping but the encoder
     /// isn't advancing — typically because the axis is against a
     /// mechanical stop or stalled. The slew watcher uses this to
     /// abort a runaway goto before the gearbox is damaged.
-    pub blocked: bool,
-}
+    #[must_use]
+    pub const fn blocked(&self) -> bool {
+        match self.status {
+            Some(s) => s.motion.blocked,
+            None => false,
+        }
+    }
 
-impl AxisSnapshot {
+    /// `:f` direction bit reads CCW — decreasing encoder counts on the
+    /// `GTi`.
+    #[must_use]
+    pub const fn ccw(&self) -> bool {
+        matches!(
+            self.status,
+            Some(AxisStatus {
+                direction: Direction::Ccw,
+                ..
+            })
+        )
+    }
+
+    /// `:f` speed bit reads the high-speed regime, whose step rate is
+    /// the `:I` rate times the axis' high-speed ratio.
+    #[must_use]
+    pub const fn fast(&self) -> bool {
+        matches!(
+            self.status,
+            Some(AxisStatus {
+                speed: Speed::Fast,
+                ..
+            })
+        )
+    }
+
     /// Signed encoder rate at the sample, in ticks per second.
     ///
     /// Non-zero only while the axis was running in **tracking** mode
@@ -128,18 +174,20 @@ impl AxisSnapshot {
     /// `0`, which is exact. A goto is also `0` — its accelerating
     /// profile has no single rate, and nothing precision-critical reads
     /// the encoder mid-goto (the pickup loop reads after both axes stop).
+    /// A blocked axis is `0` too: the firmware is stepping, but the
+    /// encoder is not advancing.
     #[must_use]
     pub fn rate_ticks_per_sec(&self, tmr_freq: u32, high_speed_ratio: u32) -> f64 {
-        if !self.running || self.goto || self.step_period == 0 {
+        if !self.running() || self.goto() || self.blocked() || self.step_period == 0 {
             return 0.0;
         }
-        let gearing = if self.fast {
+        let gearing = if self.fast() {
             f64::from(high_speed_ratio)
         } else {
             1.0
         };
         let rate = f64::from(tmr_freq) / f64::from(self.step_period) * gearing;
-        if self.ccw {
+        if self.ccw() {
             -rate
         } else {
             rate
@@ -194,12 +242,16 @@ impl MountSnapshot {
     /// seed can land in between with a newer sample of one axis, which
     /// the older poll value must not overwrite.
     pub fn merge_newer(&mut self, other: &Self) {
-        if other.ra.sampled_at >= self.ra.sampled_at {
-            self.ra = other.ra;
-        }
-        if other.dec.sampled_at >= self.dec.sampled_at {
-            self.dec = other.dec;
-        }
+        merge_axis_if_newer(&mut self.ra, other.ra);
+        merge_axis_if_newer(&mut self.dec, other.dec);
+    }
+
+    /// Stop projecting either axis until a fresh sample says how it is
+    /// moving. For when the driver has just halted the mount outside
+    /// [`MountManager::send`] (the last-disconnect safety stop).
+    pub const fn mark_rates_unknown(&mut self) {
+        self.ra.step_period = 0;
+        self.dec.step_period = 0;
     }
 
     /// Both axes carried forward to `now`; see
@@ -214,6 +266,13 @@ impl MountSnapshot {
                 .dec
                 .projected_to(now, params.tmr_freq, params.high_speed_ratio_dec, max_age),
         }
+    }
+}
+
+/// Replace `cached` with `fresh` unless `cached` was sampled later.
+fn merge_axis_if_newer(cached: &mut AxisSnapshot, fresh: AxisSnapshot) {
+    if fresh.sampled_at >= cached.sampled_at {
+        *cached = fresh;
     }
 }
 
@@ -430,8 +489,9 @@ impl MountManager {
     }
 
     /// Send one command on the caller's session, return one typed
-    /// response. Does *not* update the snapshot — the background
-    /// poller (and `poll_axes_now`) own that responsibility.
+    /// response. Refreshing positions is the background poller's (and
+    /// `poll_axes_now`'s) job, but motion commands do touch the cached
+    /// snapshot — see the bookkeeping list below.
     ///
     /// Pre-validates command variants whose
     /// [`skywatcher_motor_protocol::Command::encode`] is fallible
@@ -516,18 +576,31 @@ impl MountManager {
         };
         for &axis in to_refresh {
             let mut sample = AxisSnapshot::default();
-            if let Err(e) = poll_axis_via_session(self, session, axis, &mut sample).await {
+            let read = poll_axis_via_session(self, session, axis, &mut sample).await;
+            if let Err(e) = &read {
                 debug!("re-reading {axis:?} after a motion command failed: {e}");
+            }
+            if read.is_err() && !stopping {
                 continue;
             }
-            if stopping {
-                sample.step_period = 0;
-            }
             let mut snap = self.snapshot.write().await;
-            match axis {
-                Axis::Dec => snap.dec = sample,
-                _ => snap.ra = sample,
+            let cached = match axis {
+                Axis::Dec => &mut snap.dec,
+                _ => &mut snap.ra,
+            };
+            if read.is_ok() {
+                if stopping {
+                    sample.step_period = 0;
+                }
+                // A background poll can land a newer sample of this
+                // axis while the re-read is in flight: keep it.
+                merge_axis_if_newer(cached, sample);
+            } else {
+                // A halting axis must not go on being projected at the
+                // rate it had, even without a fresh position.
+                cached.step_period = 0;
             }
+            drop(snap);
         }
     }
 
@@ -607,6 +680,7 @@ fn build_hooks(
     let p_hs = Arc::clone(parameters);
     let s_hs = Arc::clone(snapshot);
     let s_poll = Arc::clone(snapshot);
+    let s_stop = Arc::clone(snapshot);
     let periods_hs = Arc::clone(step_periods);
     let periods_poll = Arc::clone(step_periods);
     let depth_poll = Arc::clone(poll_pause_depth);
@@ -636,7 +710,16 @@ fn build_hooks(
         // facts about the connected device and remain valid until the
         // device itself changes, which is handled by the reconnect
         // supervisor's handshake against the new connection.
-        on_last_disconnect: Box::new(move |conn| Box::pin(safety_stop(conn))),
+        // The stop halts both axes behind `send`'s back, so the cached
+        // samples' rates are marked unknown until the next poll.
+        on_last_disconnect: Box::new(move |conn| {
+            let snapshot = Arc::clone(&s_stop);
+            Box::pin(async move {
+                let verdict = safety_stop(conn).await;
+                snapshot.write().await.mark_rates_unknown();
+                verdict
+            })
+        }),
         // Phase 1: run the same `:L1, :L2, :K1` safety sequence at
         // service shutdown that runs at every last-client-disconnect.
         // The mount may be in any state (e.g. the supervisor was
@@ -772,12 +855,21 @@ async fn handshake(
     // driver sent the old one says nothing about this firmware's period,
     // so forget it until the driver commands a rate again.
     step_periods.clear();
-    let mut snap = snapshot.write().await;
-    snap.ra.position_ticks = pos_ra;
-    snap.ra.sampled_at = Some(ra_sampled_at);
-    snap.dec.position_ticks = pos_dec;
-    snap.dec.sampled_at = Some(dec_sampled_at);
-    drop(snap);
+    // Whole-axis reset: running / rate state cached from the previous
+    // conduit says nothing about this one either, and the first poll
+    // fills it in.
+    *snapshot.write().await = MountSnapshot {
+        ra: AxisSnapshot {
+            position_ticks: pos_ra,
+            sampled_at: Some(ra_sampled_at),
+            ..AxisSnapshot::default()
+        },
+        dec: AxisSnapshot {
+            position_ticks: pos_dec,
+            sampled_at: Some(dec_sampled_at),
+            ..AxisSnapshot::default()
+        },
+    };
     Ok(())
 }
 
@@ -1001,13 +1093,9 @@ const fn record_position(out: &mut AxisSnapshot, ticks: i32, sampled_at: Instant
 
 /// Store a `:f` reply, with the `:I` period in force, as the rate state
 /// of the sample.
-fn record_status(out: &mut AxisSnapshot, status: AxisStatus, step_period: u32) {
-    out.running = status.motion.running;
-    out.goto = status.mode == ModeKind::Goto;
-    out.ccw = status.direction == Direction::Ccw;
-    out.fast = status.speed == Speed::Fast;
+const fn record_status(out: &mut AxisSnapshot, status: AxisStatus, step_period: u32) {
+    out.status = Some(status);
     out.step_period = step_period;
-    out.blocked = status.motion.blocked;
 }
 
 /// Convert any [`SkywatcherCodecError::Protocol`] arising from the
@@ -1123,6 +1211,7 @@ mod tests {
     //! they don't get re-tested here per the migration plan.
 
     use super::*;
+    use skywatcher_motor_protocol::{InitFlags, MotionFlags};
     use tokio::sync::Mutex;
     use tokio::time::Instant;
 
@@ -1293,8 +1382,8 @@ mod tests {
         let snap = m.snapshot().await;
         assert_eq!(snap.ra.position_ticks, 0);
         assert_eq!(snap.dec.position_ticks, 0);
-        assert!(!snap.ra.running);
-        assert!(!snap.dec.running);
+        assert!(!snap.ra.running());
+        assert!(!snap.dec.running());
     }
 
     #[tokio::test]
@@ -1375,8 +1464,8 @@ mod tests {
         let cached = m.snapshot().await;
         assert_eq!(polled.ra.position_ticks, cached.ra.position_ticks);
         assert_eq!(polled.dec.position_ticks, cached.dec.position_ticks);
-        assert_eq!(polled.ra.running, cached.ra.running);
-        assert_eq!(polled.dec.running, cached.dec.running);
+        assert_eq!(polled.ra.status, cached.ra.status);
+        assert_eq!(polled.dec.status, cached.dec.status);
         session.close().await.unwrap();
     }
 
@@ -2215,13 +2304,40 @@ mod tests {
     const HSR: u32 = 32;
     const NO_CAP: Duration = Duration::from_secs(3600);
 
-    fn tracking_sample(at: Instant) -> AxisSnapshot {
+    /// A `:f` reply: running (or not) in tracking mode, CW, slow,
+    /// initialised — the shape a sidereal-tracking RA axis reports.
+    const fn status(running: bool) -> AxisStatus {
+        AxisStatus {
+            mode: ModeKind::Tracking,
+            direction: Direction::Cw,
+            speed: Speed::Slow,
+            motion: MotionFlags {
+                running,
+                blocked: false,
+            },
+            init: InitFlags {
+                initialized: true,
+                level_switch_on: false,
+            },
+        }
+    }
+
+    /// `sample` with its status replaced by `edit(status)`.
+    fn with_status(sample: AxisSnapshot, edit: impl FnOnce(&mut AxisStatus)) -> AxisSnapshot {
+        let mut st = sample.status.unwrap_or(status(false));
+        edit(&mut st);
+        AxisSnapshot {
+            status: Some(st),
+            ..sample
+        }
+    }
+
+    const fn tracking_sample(at: Instant) -> AxisSnapshot {
         AxisSnapshot {
             position_ticks: 1_000,
             sampled_at: Some(at),
-            running: true,
+            status: Some(status(true)),
             step_period: PERIOD_40_PER_SEC,
-            ..AxisSnapshot::default()
         }
     }
 
@@ -2233,19 +2349,15 @@ mod tests {
 
     #[test]
     fn a_ccw_tracking_axis_counts_down() {
-        let s = AxisSnapshot {
-            ccw: true,
-            ..tracking_sample(Instant::now())
-        };
+        let s = with_status(tracking_sample(Instant::now()), |s| {
+            s.direction = Direction::Ccw;
+        });
         assert_eq!(s.rate_ticks_per_sec(TMR, HSR), -40.0);
     }
 
     #[test]
     fn the_fast_regime_multiplies_the_rate_by_the_high_speed_ratio() {
-        let s = AxisSnapshot {
-            fast: true,
-            ..tracking_sample(Instant::now())
-        };
+        let s = with_status(tracking_sample(Instant::now()), |s| s.speed = Speed::Fast);
         assert_eq!(s.rate_ticks_per_sec(TMR, HSR), 1_280.0);
     }
 
@@ -2262,19 +2374,15 @@ mod tests {
 
     #[test]
     fn a_stopped_axis_has_no_rate() {
-        let s = AxisSnapshot {
-            running: false,
-            ..tracking_sample(Instant::now())
-        };
+        let s = with_status(tracking_sample(Instant::now()), |s| {
+            s.motion.running = false;
+        });
         assert_eq!(s.rate_ticks_per_sec(TMR, HSR), 0.0);
     }
 
     #[test]
     fn a_goto_axis_is_not_given_a_rate() {
-        let s = AxisSnapshot {
-            goto: true,
-            ..tracking_sample(Instant::now())
-        };
+        let s = with_status(tracking_sample(Instant::now()), |s| s.mode = ModeKind::Goto);
         assert_eq!(s.rate_ticks_per_sec(TMR, HSR), 0.0);
     }
 
@@ -2299,10 +2407,7 @@ mod tests {
     #[test]
     fn projection_leaves_a_stopped_sample_where_it_was() {
         let t0 = Instant::now();
-        let s = AxisSnapshot {
-            running: false,
-            ..tracking_sample(t0)
-        };
+        let s = with_status(tracking_sample(t0), |s| s.motion.running = false);
         let p = s.projected_to(t0 + Duration::from_secs(10), TMR, HSR, NO_CAP);
         assert_eq!(p.position_ticks, 1_000);
     }
@@ -2372,7 +2477,7 @@ mod tests {
         let snap = m.poll_axes_now(&session).await.unwrap();
         assert!(snap.ra.sampled_at.unwrap() >= before);
         assert!(snap.dec.sampled_at.unwrap() >= snap.ra.sampled_at.unwrap());
-        assert!(snap.ra.running && snap.ra.ccw && snap.ra.fast && !snap.ra.goto);
+        assert!(snap.ra.running() && snap.ra.ccw() && snap.ra.fast() && !snap.ra.goto());
         session.close().await.unwrap();
     }
 
@@ -2434,5 +2539,81 @@ mod tests {
             "the raw sample is untouched"
         );
         session.close().await.unwrap();
+    }
+
+    #[test]
+    fn a_blocked_axis_has_no_rate() {
+        let s = with_status(tracking_sample(Instant::now()), |s| s.motion.blocked = true);
+        assert_eq!(s.rate_ticks_per_sec(TMR, HSR), 0.0);
+    }
+
+    #[test]
+    fn merge_keeps_a_cached_axis_sampled_later_than_the_incoming_one() {
+        let t0 = Instant::now();
+        let newer = AxisSnapshot {
+            position_ticks: 2_000,
+            ..tracking_sample(t0 + Duration::from_millis(50))
+        };
+        let mut cached = MountSnapshot {
+            ra: newer,
+            dec: AxisSnapshot::default(),
+        };
+        let older = MountSnapshot {
+            ra: tracking_sample(t0),
+            dec: tracking_sample(t0),
+        };
+        cached.merge_newer(&older);
+        assert_eq!(cached.ra.position_ticks, 2_000, "the newer RA sample stays");
+        assert_eq!(
+            cached.dec.position_ticks, 1_000,
+            "the unsampled Dec takes the incoming one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stop_whose_re_read_fails_still_marks_the_rate_unknown() {
+        let (m, state) = fast_polling_manager();
+        let session = m.transport().acquire().await.unwrap();
+        let _pause = m.pause_background_polling();
+        *m.snapshot.write().await = MountSnapshot {
+            ra: tracking_sample(Instant::now()),
+            dec: AxisSnapshot::default(),
+        };
+        state.lock().await.fail_command = Some(b'j');
+        m.send(&session, Command::StopMotion(Axis::Ra))
+            .await
+            .unwrap();
+        state.lock().await.fail_command = None;
+        assert_eq!(m.snapshot().await.ra.step_period, 0);
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_fresh_handshake_resets_the_cached_rate_state() {
+        let m = manager();
+        let session = m.transport().acquire().await.unwrap();
+        m.snapshot.write().await.ra = tracking_sample(Instant::now());
+        session.close().await.unwrap();
+        // LazyAcquire: the next acquire re-runs the handshake.
+        let session = m.transport().acquire().await.unwrap();
+        let ra = m.snapshot().await.ra;
+        assert!(!ra.running());
+        assert_eq!(ra.step_period, 0);
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_last_disconnect_safety_stop_marks_the_rates_unknown() {
+        let m = manager();
+        let session = m.transport().acquire().await.unwrap();
+        let _pause = m.pause_background_polling();
+        *m.snapshot.write().await = MountSnapshot {
+            ra: tracking_sample(Instant::now()),
+            dec: tracking_sample(Instant::now()),
+        };
+        session.close().await.unwrap();
+        let snap = m.snapshot().await;
+        assert_eq!(snap.ra.step_period, 0);
+        assert_eq!(snap.dec.step_period, 0);
     }
 }

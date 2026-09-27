@@ -2378,13 +2378,13 @@ async fn set_park_refuses_when_wire_snapshot_reports_axis_running() {
     // Wait for the background poll to ingest the new wire state.
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     while std::time::Instant::now() < deadline {
-        if d.manager.snapshot().await.ra.running {
+        if d.manager.snapshot().await.ra.running() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(
-        d.manager.snapshot().await.ra.running,
+        d.manager.snapshot().await.ra.running(),
         "precondition: snapshot must reflect RA running=true"
     );
     // slew_in_progress flag is still false — only the wire
@@ -5031,7 +5031,9 @@ const RA_READ_SPREAD_BUDGET_S: f64 = 0.05;
 fn spread_seconds(values: &[f64]) -> f64 {
     let (lo, hi) = values
         .iter()
-        .fold((f64::MAX, f64::MIN), |(lo, hi), v| (lo.min(*v), hi.max(*v)));
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+            (lo.min(*v), hi.max(*v))
+        });
     (hi - lo) * 3600.0
 }
 

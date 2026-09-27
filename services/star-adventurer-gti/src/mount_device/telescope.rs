@@ -306,8 +306,8 @@ impl Telescope for MountDevice {
             return Ok(true);
         }
         let snap = self.manager.snapshot().await;
-        let ra_slewing = snap.ra.running && snap.ra.goto;
-        let dec_slewing = snap.dec.running && snap.dec.goto;
+        let ra_slewing = snap.ra.running() && snap.ra.goto();
+        let dec_slewing = snap.dec.running() && snap.dec.goto();
         Ok(ra_slewing || dec_slewing)
     }
 
@@ -1009,7 +1009,7 @@ impl Telescope for MountDevice {
                     .map_err(ASCOMError::from)
             })
             .await?;
-        if snap.ra.running || snap.dec.running {
+        if snap.ra.running() || snap.dec.running() {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "SetPark refused while an axis is running per the wire snapshot",

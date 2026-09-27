@@ -698,8 +698,9 @@ residual) use the sample **projected to now**:
 - **Stamp.** Each axis' sample records the instant its `:j` reply
   arrived. A `SyncToCoordinates` / connect-time seed is stamped when it
   publishes the just-written `:E` value.
-- **Rate.** The sample also records the `:f` running / goto / direction
-  / speed bits and the `:I` step period the driver last sent that axis.
+- **Rate.** The sample also keeps the axis' decoded `:f` status reply
+  (running, goto vs tracking, direction, speed, blocked) and the `:I`
+  step period the driver last sent that axis.
   An axis running in **tracking** mode moves at
   `tmr_freq / step_period` steps per second (times the axis'
   high-speed ratio in the fast regime), CW counting up — the rate the
@@ -712,10 +713,11 @@ residual) use the sample **projected to now**:
   right while the axis tracks at sidereal, and would make a stopped or
   parked mount's RA lag by up to a poll instead. A goto is not
   projected (its accelerating profile has no single rate, and nothing
-  precision-critical reads the encoder mid-goto). An unknown period
-  (none sent since the handshake — a fresh conduit may be a
-  power-cycled mount, so the handshake forgets the record) is not
-  projected either.
+  precision-critical reads the encoder mid-goto). A blocked axis is not
+  projected (the firmware steps but the encoder does not advance), and
+  neither is an unknown period — none sent since the handshake: a fresh
+  conduit may be a power-cycled mount, so the handshake forgets the
+  record and resets the cached samples' status and rate.
 - **Age cap.** A sample is carried forward by at most four polling
   intervals. Past that the poll loop is failing or paused with nobody
   refreshing it, and the estimate stops advancing rather than
@@ -726,11 +728,16 @@ residual) use the sample **projected to now**:
   finishing a pulse. So `:J` re-reads the axis at once (a sample that
   carries the new motion), and `:K` / `:L` re-read its position and
   mark the rate unknown (the axis is halting; where it stops is for
-  the next poll to say). A failed re-read leaves it to the next poll.
+  the next poll to say) — the rate is marked unknown even when that
+  re-read fails. The last-disconnect safety stop (`:L1`, `:L2`, `:K1`,
+  sent outside the driver's command path) marks both axes' rates
+  unknown the same way. A failed re-read after a start leaves the
+  sample to the next poll.
 - **Ordering.** The poll builds its sample over four round trips and
   publishes at the end; it replaces an axis only with a sample at
   least as new as the cached one, so it never overwrites a seed or a
-  motion-command re-read that landed meanwhile.
+  motion-command re-read that landed meanwhile — and a motion-command
+  re-read follows the same rule against a poll that landed during it.
 
 The residual is the `:j` round trip — the stamp is taken on receipt,
 late by at most one round trip of motion — plus half a tick of
