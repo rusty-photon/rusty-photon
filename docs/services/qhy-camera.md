@@ -423,12 +423,15 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   12V is off still enumerates, answers every Camera member and passes its
   ConformU suites, while the service logs `filter_wheels=0` and every FilterWheel
   endpoint answers *"Device FilterWheel\[0\] not found"*. Restoring 12V is not
-  enough on its own: enumeration happens once, here, so the service has to be
-  restarted after the wheel has power. An operator seeing `filter_wheels=0` on a
-  camera that otherwise works should check the 12V rail and restart before
-  suspecting the driver or the SDK — the symptom looks nothing like a power
-  problem, and is easily misread as the wedged-handle state that does need a
-  physical power cycle.
+  enough on its own, because the device list is fixed at build: something has to
+  make this run again. A **reload** is sufficient — `main.rs` rebuilds the
+  `ServerBuilder` on each one, which is the re-enumeration promised above — so an
+  operator does not need to restart the process, though a restart works too.
+
+  An operator seeing `filter_wheels=0` on a camera that otherwise works should
+  check the 12V rail and reload before suspecting the driver or the SDK. The
+  symptom looks nothing like a power problem, and is easily misread as the
+  wedged-handle state that does need a physical power cycle.
 - **C1.** `set_connected(true)` on a device opens *that* camera, sets single-frame
   mode, readout mode 0, `init()`, 16-bit transfer, and caches CCD info, effective
   area, valid binning modes, and exposure/gain/offset/speed min-max-step. On
@@ -702,7 +705,10 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   `INVALID_OPERATION` here is a decision about this SDK, taken because the writes
   reach the camera immediately and the alternative is a frame armed against
   geometry it no longer has. A different driver answering differently is not
-  thereby non-conforming, and ConformU does not test the case. Worth knowing
+  thereby non-conforming, and ConformU does not test the case. `zwo-camera` and
+  `svbony-camera` refuse a mid-exposure `ReadoutMode` too (their RM1), but for
+  their own reason — keeping the frame and the `MaxADU` describing it in
+  agreement — so those are parallel choices rather than this one applied thrice. Worth knowing
   before treating the refusal as fixed: it is exactly the behaviour #1336 would
   replace, by having the setters cache and `StartExposure` validate the way the
   ROI setters already do (R1).
