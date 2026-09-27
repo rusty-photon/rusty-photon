@@ -3507,11 +3507,35 @@ fn gti_mount_parameters() -> crate::manager::MountParameters {
     }
 }
 
+/// Northern-hemisphere latitude for the guide-pulse tests. Any
+/// non-negative value picks the same hemisphere convention; 45° is
+/// unremarkable.
+const NORTHERN_LAT: f64 = 45.0;
+
+/// Resolve a guide pulse with the mount counterweight-down in the
+/// northern hemisphere — the side the direction table is written for.
+/// The counterweight-up inversion is covered by its own tests below,
+/// which call `resolve` with the other side.
+fn cw_down_pulse(
+    direction: GuideDirection,
+    ra_fraction: f64,
+    dec_fraction: f64,
+) -> super::telescope::GuidePulse {
+    super::telescope::GuidePulse::resolve(
+        direction,
+        ra_fraction,
+        dec_fraction,
+        &gti_mount_parameters(),
+        PierSide::West,
+        NORTHERN_LAT,
+    )
+}
+
 #[test]
 fn guide_pulse_east_slows_ra_by_the_ra_fraction() {
     use super::telescope::GuidePulse;
     assert_eq!(
-        GuidePulse::resolve(GuideDirection::East, 0.25, 0.75, &gti_mount_parameters()),
+        cw_down_pulse(GuideDirection::East, 0.25, 0.75),
         GuidePulse {
             axis: Axis::Ra,
             ccw: false,
@@ -3525,7 +3549,7 @@ fn guide_pulse_east_slows_ra_by_the_ra_fraction() {
 fn guide_pulse_west_speeds_ra_by_the_ra_fraction() {
     use super::telescope::GuidePulse;
     assert_eq!(
-        GuidePulse::resolve(GuideDirection::West, 0.25, 0.75, &gti_mount_parameters()),
+        cw_down_pulse(GuideDirection::West, 0.25, 0.75),
         GuidePulse {
             axis: Axis::Ra,
             ccw: false,
@@ -3539,7 +3563,7 @@ fn guide_pulse_west_speeds_ra_by_the_ra_fraction() {
 fn guide_pulse_north_runs_dec_cw_on_the_dec_sidereal_period() {
     use super::telescope::GuidePulse;
     assert_eq!(
-        GuidePulse::resolve(GuideDirection::North, 0.25, 0.75, &gti_mount_parameters()),
+        cw_down_pulse(GuideDirection::North, 0.25, 0.75),
         GuidePulse {
             axis: Axis::Dec,
             ccw: false,
@@ -3553,7 +3577,7 @@ fn guide_pulse_north_runs_dec_cw_on_the_dec_sidereal_period() {
 fn guide_pulse_south_runs_dec_ccw_on_the_dec_sidereal_period() {
     use super::telescope::GuidePulse;
     assert_eq!(
-        GuidePulse::resolve(GuideDirection::South, 0.25, 0.75, &gti_mount_parameters()),
+        cw_down_pulse(GuideDirection::South, 0.25, 0.75),
         GuidePulse {
             axis: Axis::Dec,
             ccw: true,
@@ -3563,21 +3587,137 @@ fn guide_pulse_south_runs_dec_ccw_on_the_dec_sidereal_period() {
     );
 }
 
+// Issue #1300: past a celestial pole the Dec encoder counts against
+// declination, so `guideNorth` has to turn the Dec axis the other way
+// to keep moving the OTA north. RA is unaffected — a flip shifts
+// `mech_HA` by 12 h rather than mirroring it.
+
+#[test]
+fn guide_pulse_north_inverts_dec_on_the_counterweight_up_side() {
+    use super::telescope::GuidePulse;
+    let pulse = GuidePulse::resolve(
+        GuideDirection::North,
+        0.25,
+        0.75,
+        &gti_mount_parameters(),
+        PierSide::East,
+        NORTHERN_LAT,
+    );
+    assert_eq!(
+        pulse,
+        GuidePulse {
+            axis: Axis::Dec,
+            ccw: true,
+            rate_factor: 0.75,
+            sidereal_period: 474_890,
+        }
+    );
+}
+
+#[test]
+fn guide_pulse_south_inverts_dec_on_the_counterweight_up_side() {
+    use super::telescope::GuidePulse;
+    let pulse = GuidePulse::resolve(
+        GuideDirection::South,
+        0.25,
+        0.75,
+        &gti_mount_parameters(),
+        PierSide::East,
+        NORTHERN_LAT,
+    );
+    assert_eq!(
+        pulse,
+        GuidePulse {
+            axis: Axis::Dec,
+            ccw: false,
+            rate_factor: 0.75,
+            sidereal_period: 474_890,
+        }
+    );
+}
+
+/// In the southern hemisphere the counterweight-up label is `West`,
+/// so the same encoder geometry inverts on the opposite `PierSide`
+/// value. Asserted on both sides so a helper that ignored latitude
+/// could not pass.
+#[test]
+fn guide_pulse_dec_inversion_follows_the_hemisphere_not_the_label() {
+    use super::telescope::GuidePulse;
+    const SOUTHERN_LAT: f64 = -33.9;
+    let resolve = |side| {
+        GuidePulse::resolve(
+            GuideDirection::North,
+            0.25,
+            0.75,
+            &gti_mount_parameters(),
+            side,
+            SOUTHERN_LAT,
+        )
+        .ccw
+    };
+    assert!(
+        !resolve(PierSide::East),
+        "pierEast is counterweight-down in the southern hemisphere — North stays ccw=false"
+    );
+    assert!(
+        resolve(PierSide::West),
+        "pierWest is counterweight-up in the southern hemisphere — North must invert"
+    );
+}
+
+/// No Dec-axis CPR means no classification, and the driver does not
+/// invert on a side it cannot name: `Unknown` keeps the
+/// counterweight-down mapping rather than guessing.
+#[test]
+fn guide_pulse_unknown_side_keeps_the_counterweight_down_mapping() {
+    use super::telescope::GuidePulse;
+    let pulse = GuidePulse::resolve(
+        GuideDirection::North,
+        0.25,
+        0.75,
+        &gti_mount_parameters(),
+        PierSide::Unknown,
+        NORTHERN_LAT,
+    );
+    assert!(!pulse.ccw);
+}
+
+/// RA guide pulses are rate shifts on a tracking axis whose relation
+/// to `mech_HA` the flip does not mirror, so the counterweight-up side
+/// must not touch them.
+#[test]
+fn guide_pulse_ra_directions_are_unchanged_by_the_pier_side() {
+    use super::telescope::GuidePulse;
+    for direction in [GuideDirection::East, GuideDirection::West] {
+        let flipped = GuidePulse::resolve(
+            direction,
+            0.25,
+            0.75,
+            &gti_mount_parameters(),
+            PierSide::East,
+            NORTHERN_LAT,
+        );
+        assert_eq!(
+            flipped,
+            cw_down_pulse(direction, 0.25, 0.75),
+            "{direction:?} must resolve identically on both sides"
+        );
+    }
+}
+
 // The slowest guide rate the 24-bit `:I` payload can express is
 // per-axis, because the sidereal period is: 379,912 / 0xFFFFFF ≈ 0.0226
 // on RA, 474,890 / 0xFFFFFF ≈ 0.0283 on Dec. A Dec fraction of 0.025
 // sits between the two floors.
 #[test]
 fn guide_pulse_step_period_divides_the_sidereal_period_by_the_rate() {
-    use super::telescope::GuidePulse;
-    let pulse = GuidePulse::resolve(GuideDirection::North, 0.5, 0.5, &gti_mount_parameters());
+    let pulse = cw_down_pulse(GuideDirection::North, 0.5, 0.5);
     assert_eq!(pulse.step_period().unwrap(), 949_780);
 }
 
 #[test]
 fn guide_pulse_step_period_rejects_a_dec_rate_below_the_dec_floor() {
-    use super::telescope::GuidePulse;
-    let pulse = GuidePulse::resolve(GuideDirection::North, 0.5, 0.025, &gti_mount_parameters());
+    let pulse = cw_down_pulse(GuideDirection::North, 0.5, 0.025);
     assert_eq!(
         pulse.step_period().unwrap_err().code,
         ASCOMErrorCode::INVALID_VALUE
@@ -3586,9 +3726,8 @@ fn guide_pulse_step_period_rejects_a_dec_rate_below_the_dec_floor() {
 
 #[test]
 fn guide_pulse_step_period_accepts_on_ra_a_rate_the_dec_floor_rejects() {
-    use super::telescope::GuidePulse;
     // East at an RA fraction of 0.975 runs RA at 0.025 × sidereal.
-    let pulse = GuidePulse::resolve(GuideDirection::East, 0.975, 0.5, &gti_mount_parameters());
+    let pulse = cw_down_pulse(GuideDirection::East, 0.975, 0.5);
     assert_eq!(pulse.step_period().unwrap(), 15_196_480);
 }
 

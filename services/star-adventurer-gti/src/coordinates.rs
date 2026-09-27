@@ -155,6 +155,39 @@ pub fn side_of_pier(dec_ticks: DecTicks, cpr_dec: Cpr, site_latitude_deg: f64) -
     }
 }
 
+/// Convert latitude sign into the natural counterweight-down
+/// ("pre-flip") pier side: `West` for the northern hemisphere
+/// (Polaris-side counterweight), `East` for the southern.
+///
+/// The single definition of the hemisphere rule — everything that
+/// compares a `PierSide` against the pre-flip pose resolves it here
+/// rather than hardcoding `West`.
+#[must_use]
+pub fn pre_flip_side(site_latitude_deg: f64) -> PierSide {
+    if site_latitude_deg >= 0.0 {
+        PierSide::West
+    } else {
+        PierSide::East
+    }
+}
+
+/// Whether `side` is the counterweight-up ("flipped") side for the
+/// observer's hemisphere.
+///
+/// The counterweight-down side is `West` in the northern hemisphere
+/// and `East` in the southern, so the label alone does not say which
+/// pointing state the mount is in — the hemisphere does. Anything that
+/// depends on the Dec axis having rotated past a celestial pole asks
+/// this rather than comparing against a hardcoded `PierSide`.
+///
+/// `Unknown` is not flipped: with no Dec-axis CPR there is no
+/// classification, and the driver does not invert on a side it cannot
+/// name.
+#[must_use]
+pub fn is_flipped_side(side: PierSide, site_latitude_deg: f64) -> bool {
+    side != pre_flip_side(site_latitude_deg) && side != PierSide::Unknown
+}
+
 /// Compute the target's RA/Dec encoder pair for the "normal"
 /// (pre-flip) pointing state.
 ///
@@ -238,13 +271,7 @@ pub fn encoder_to_celestial(
     let mech_ha = ra_ticks.to_mech_ha(cpr_ra);
     let dec_enc = dec_ticks.to_mech_dec(cpr_dec);
     let pier = side_of_pier(dec_ticks, cpr_dec, site_latitude_deg);
-    let pre_flip_side = if site_latitude_deg >= 0.0 {
-        PierSide::West
-    } else {
-        PierSide::East
-    };
-    let is_flipped = pier != pre_flip_side && pier != PierSide::Unknown;
-    if is_flipped {
+    if is_flipped_side(pier, site_latitude_deg) {
         let ra = mech_ha.to_ra_flipped(lst);
         // The degenerate `dec_enc == 0` post-flip case (dec encoder at the
         // wrap) is unreachable when `is_flipped == true` because
@@ -399,13 +426,9 @@ pub fn select_pier_side_for_target(
         return PierSide::Unknown;
     }
     let target_hour_angle = lst.hour_angle_of(target_ra).to_mech();
-    let pre_flip_side = if site_latitude_deg >= 0.0 {
-        PierSide::West
-    } else {
-        PierSide::East
-    };
+    let pre_flip = pre_flip_side(site_latitude_deg);
     let usable = |side: PierSide| {
-        let target_mech_ha = if side == pre_flip_side {
+        let target_mech_ha = if side == pre_flip {
             target_hour_angle
         } else {
             target_hour_angle.flipped()

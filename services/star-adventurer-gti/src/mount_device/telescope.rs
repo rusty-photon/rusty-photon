@@ -22,9 +22,9 @@ use skywatcher_motor_protocol::{Axis, Command};
 use tracing::debug;
 
 use crate::coordinates::{
-    encoder_to_celestial, local_sidereal_time_hours, pulse_guide_step_period, ra_dec_to_alt_az,
-    select_pier_side_for_target, side_of_pier as side_of_pier_calc, target_encoder_flipped,
-    target_encoder_normal, SIDEREAL_DEG_PER_SEC,
+    encoder_to_celestial, is_flipped_side, local_sidereal_time_hours, pulse_guide_step_period,
+    ra_dec_to_alt_az, select_pier_side_for_target, side_of_pier as side_of_pier_calc,
+    target_encoder_flipped, target_encoder_normal, SIDEREAL_DEG_PER_SEC,
 };
 use crate::manager::MountParameters;
 use crate::units::{Cpr, Dec, DecTicks, Ra, RaTicks};
@@ -43,6 +43,12 @@ use super::{pre_flip_side_for_latitude, MountDevice, SlewReservation};
 /// picked alongside it, because the period is per-axis: the `GTi`'s Dec
 /// axis has fewer counts per revolution than RA, so a Dec pulse sent an
 /// RA-derived period guides 1.25× too fast.
+///
+/// The Dec direction is derived from the pier side for the same reason
+/// it cannot be a constant: past a celestial pole the Dec encoder
+/// counts against declination, so `guideNorth` is `ccw = false` on the
+/// counterweight-down side and `ccw = true` on the counterweight-up one
+/// (issue #1300).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct GuidePulse {
     pub(super) axis: Axis,
@@ -55,11 +61,19 @@ pub(super) struct GuidePulse {
 }
 
 impl GuidePulse {
+    /// `current_side` is the side [`side_of_pier`] reports for the
+    /// mount's present Dec encoder, and `site_latitude_deg` says which
+    /// label that hemisphere calls counterweight-up. `PierSide::Unknown`
+    /// resolves as counterweight-down.
+    ///
+    /// [`side_of_pier`]: crate::coordinates::side_of_pier
     pub(super) fn resolve(
         direction: GuideDirection,
         ra_fraction: f64,
         dec_fraction: f64,
         params: &MountParameters,
+        current_side: PierSide,
+        site_latitude_deg: f64,
     ) -> Self {
         let (axis, ccw, rate_factor) = match direction {
             GuideDirection::East => (Axis::Ra, false, 1.0 - ra_fraction),
@@ -67,6 +81,15 @@ impl GuidePulse {
             GuideDirection::North => (Axis::Dec, false, dec_fraction),
             GuideDirection::South => (Axis::Dec, true, dec_fraction),
         };
+        // The table above is the counterweight-down mapping, where the
+        // Dec encoder and celestial declination run together. Past a
+        // celestial pole `Dec = sign(θ) · (180° − |θ|)`, so the encoder
+        // counts the other way and North/South must swap direction for
+        // `guideNorth` to keep moving the OTA north (issue #1300). RA
+        // needs no such correction: a flip shifts `mech_HA` by 12 h
+        // rather than mirroring it, so the East/West rate shifts mean
+        // the same thing on both sides.
+        let ccw = ccw ^ (axis == Axis::Dec && is_flipped_side(current_side, site_latitude_deg));
         let sidereal_period = if axis == Axis::Ra {
             params.sidereal_step_period_ra()
         } else {
@@ -1139,6 +1162,34 @@ impl Telescope for MountDevice {
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
+        // Which way a Dec pulse has to turn depends on whether the Dec
+        // axis sits past a celestial pole, so the pulse resolves
+        // against the side the mount is on — the same Dec-encoder
+        // classification `SideOfPier` reports, read from the same
+        // background-poll snapshot.
+        //
+        // Sampled once, at pulse start, and not pinned: the `slewing()`
+        // gate above is a plain read, and `PulseGuide` claims no
+        // `axis_ownership`, so a slew or auto-flip starting in the
+        // window between that check and the `:G2` below can move the
+        // Dec axis under this pulse — and its own wire commands would
+        // interleave with ours regardless of which side we sampled.
+        // That window is issue #1311 (the lock serializes the commit,
+        // not the operation); `PulseGuide` is one of the operations it
+        // covers. It is not specific to the side read, which only
+        // inherits it.
+        //
+        // The sample also cannot straddle a pole crossing *within* one
+        // pulse. That needs the OTA to start within the pulse's own
+        // travel of the celestial pole — 37.6″ for a 5 s pulse at the
+        // default rate — where declination genuinely peaks and comes
+        // back down whichever way the encoder turns. See the design
+        // doc's Dec sign convention.
+        let current_side = side_of_pier_calc(
+            DecTicks::new(self.manager.snapshot().await.dec.position_ticks),
+            Cpr::new(params.cpr_dec),
+            self.config.site_latitude_deg,
+        );
         // Resolve the pulse under a read lock. The in-flight check +
         // flag-set happens later under a write lock so it's atomic
         // against concurrent same-axis calls (the rate /
@@ -1152,6 +1203,8 @@ impl Telescope for MountDevice {
                 s.guide_rate_ra_fraction,
                 s.guide_rate_dec_fraction,
                 &params,
+                current_side,
+                self.config.site_latitude_deg,
             );
             let tracking_was_on = pulse.axis == Axis::Ra && s.tracking_requested;
             drop(s);
