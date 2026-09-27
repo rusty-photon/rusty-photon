@@ -1205,7 +1205,9 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   camera offers — and resets to it on every connect. `set_readout_mode`
   validates the index; out of range → `INVALID_VALUE`. Changing it while
   an exposure is in flight → `INVALID_OPERATION`, so the delivered frame
-  and the `MaxADU` describing it can never disagree.
+  and the `MaxADU` describing it can never disagree. That refusal is a
+  driver decision rather than a spec requirement — the reasoning is
+  recorded once, in [qhy-camera's B4](qhy-camera.md#behavioral-contracts).
 - **RM2.** The selected mode is the driver's whole format story: it is
   what `SVBSetOutputImageType` receives before each soft trigger, what
   sizes the `SVBGetVideoData` buffer (`w × h × bytes_per_pixel`), which

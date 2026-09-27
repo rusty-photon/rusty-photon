@@ -795,7 +795,9 @@ EAF; those belong to the other zwo services.)
   and resets to it on every connect. `set_readout_mode` validates the index;
   out of range → `INVALID_VALUE`. Changing it while an exposure is in flight →
   `INVALID_OPERATION`, so the delivered frame and the `MaxADU` describing it
-  can never disagree.
+  can never disagree. That refusal is a driver decision rather than a spec
+  requirement — the reasoning is recorded once, in
+  [qhy-camera's B4](qhy-camera.md#behavioral-contracts).
 - **RM2.** The selected mode is the driver's whole format story: it is what
   `ASISetROIFormat` receives, what sizes the download buffer
   (`w × h × bytes_per_pixel`), which unpack `ImageArray` uses (1 or 2 bytes per
