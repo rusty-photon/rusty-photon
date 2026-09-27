@@ -195,13 +195,14 @@ mod tests {
 
     #[test]
     fn decode_status_response_strips_terminator_and_parses() {
-        let frame = b"PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:0:0:0\n";
+        let frame = b"PPBA:12.5:130:25.0:60:15.5:1:0:128:64:0:0:0\n";
         let resp = PpbaCodec.decode(frame).unwrap();
         let status = match resp {
             PpbaResponse::Status(s) => s,
             other => panic!("expected Status, got {other:?}"),
         };
         assert!((status.voltage - 12.5).abs() < f64::EPSILON);
+        assert!((status.current - 2.0).abs() < f64::EPSILON);
         assert!(status.switches.quad_12v);
         assert_eq!(status.dew_a, 128);
     }

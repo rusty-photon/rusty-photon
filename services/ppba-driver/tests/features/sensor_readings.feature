@@ -3,15 +3,30 @@ Feature: Sensor Readings
   I want to read sensor values from the PPBA
   So that I can monitor environmental conditions and power stats
 
+  Read-only switches 6-15 carry the PPBA's power statistics and sensor data.
+  Most come off the wire already in their published units. The current in
+  the PA reply does not: the device sends a raw sense count from 0 to 1024,
+  which the driver divides by 65 so that switch 11 publishes Amps.
+
+  Against the mock the wire frame is fixed, with a current count of 130, so
+  the current scenario asserts an exact value. A missing or wrong divisor
+  has to fail there. A reading outside a switch's own published range fails
+  the range scenario, whichever switch it lands on.
+
   Scenario: Voltage is in valid range
     Given a running PPBA server with the switch connected
     When I wait for the switch data to be available
     Then switch 10 value should be approximately 12.5
 
-  Scenario: Current is in valid range
+  Scenario: Total current is scaled from the raw sense count by 65
     Given a running PPBA server with the switch connected
     When I wait for the switch data to be available
-    Then switch 11 value should be in range 0.0 to 20.0
+    Then switch 11 value should be 2.0
+
+  Scenario: Every switch reports a value inside the range it publishes
+    Given a running PPBA server with the switch connected
+    When I wait for the switch data to be available
+    Then every switch value should lie between its published minimum and maximum
 
   Scenario: Temperature is in valid range
     Given a running PPBA server with the switch connected

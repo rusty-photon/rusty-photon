@@ -10,6 +10,11 @@ use std::time::Duration;
 
 use crate::error::{PpbaError, Result};
 
+/// Sense counts per Amp in `PA`'s current field. The device reports that
+/// field as a raw 0-1024 sense count, not in Amps, and the vendor's command
+/// table gives this divisor for converting it.
+const CURRENT_SENSE_PER_AMP: f64 = 65.0;
+
 /// Dew-heater PWM duty, clamped to the device's 0-255 range. Owns the
 /// one analog-value (ASCOM switch `f64`) → wire-byte conversion so call
 /// sites stay cast-free.
@@ -80,7 +85,8 @@ impl PpbaCommand {
 pub struct PpbaStatus {
     /// Input voltage in Volts
     pub voltage: f64,
-    /// Total current in Amps
+    /// Total current in Amps, scaled from the wire's raw sense count (65
+    /// counts per Amp)
     pub current: f64,
     /// Temperature in Celsius
     pub temperature: f64,
@@ -164,6 +170,14 @@ impl Payload<'_> {
             .parse()
             .map_err(|_| PpbaError::ParseError(format!("Invalid {field} value: {}", self.0)))
     }
+
+    /// A raw sense count, scaled to Amps. The count is an unsigned integer
+    /// on the wire, so a decimal here is a misaligned frame, not a reading
+    /// already in Amps.
+    fn amps_field(self, field: &str) -> Result<f64> {
+        let count: u16 = self.parse_field(field)?;
+        Ok(f64::from(count) / CURRENT_SENSE_PER_AMP)
+    }
 }
 
 /// `field!(voltage)` → `voltage.parse_field("voltage")?`: the binding the
@@ -216,7 +230,7 @@ impl std::str::FromStr for PpbaStatus {
 
         Ok(Self {
             voltage: field!(voltage),
-            current: field!(current),
+            current: current.amps_field("current")?,
             temperature: field!(temperature),
             humidity: field!(humidity),
             dewpoint: field!(dewpoint),
@@ -319,11 +333,11 @@ mod tests {
 
         #[test]
         fn parses_valid_status_response() {
-            let response = "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0";
+            let response = "PPBA:12.5:130:25.0:60:15.5:1:0:128:64:1:0:0";
             let status = response.parse::<PpbaStatus>().unwrap();
 
             assert_eq!(status.voltage, 12.5);
-            assert_eq!(status.current, 3.2);
+            assert_eq!(status.current, 2.0);
             assert_eq!(status.temperature, 25.0);
             assert_eq!(status.humidity, 60.0);
             assert_eq!(status.dewpoint, 15.5);
@@ -338,7 +352,7 @@ mod tests {
 
         #[test]
         fn parses_status_with_trailing_newline() {
-            let response = "PPBA:12.0:2.0:20.0:50:10.0:0:1:0:255:0:1:12\n";
+            let response = "PPBA:12.0:130:20.0:50:10.0:0:1:0:255:0:1:12\n";
             let status = response.parse::<PpbaStatus>().unwrap();
 
             assert_eq!(status.voltage, 12.0);
@@ -351,7 +365,7 @@ mod tests {
 
         #[test]
         fn parses_status_with_negative_temperature() {
-            let response = "PPBA:11.8:1.5:-5.0:80:-10.2:1:1:100:100:1:0:5";
+            let response = "PPBA:11.8:65:-5.0:80:-10.2:1:1:100:100:1:0:5";
             let status = response.parse::<PpbaStatus>().unwrap();
 
             assert_eq!(status.temperature, -5.0);
@@ -360,30 +374,94 @@ mod tests {
 
         #[test]
         fn rejects_invalid_prefix() {
-            let response = "INVALID:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0";
+            let response = "INVALID:12.5:130:25.0:60:15.5:1:0:128:64:1:0:0";
             let result = response.parse::<PpbaStatus>();
             assert!(result.is_err());
         }
 
         #[test]
         fn rejects_too_few_fields() {
-            let response = "PPBA:12.5:3.2:25.0";
+            let response = "PPBA:12.5:130:25.0";
             let result = response.parse::<PpbaStatus>();
             assert!(result.is_err());
         }
 
         #[test]
         fn rejects_invalid_float_field() {
-            let response = "PPBA:invalid:3.2:25.0:60:15.5:1:0:128:64:1:0:0";
+            let response = "PPBA:invalid:130:25.0:60:15.5:1:0:128:64:1:0:0";
             let result = response.parse::<PpbaStatus>();
             assert!(result.is_err());
         }
 
         #[test]
         fn rejects_invalid_boolean_field() {
-            let response = "PPBA:12.5:3.2:25.0:60:15.5:2:0:128:64:1:0:0";
+            let response = "PPBA:12.5:130:25.0:60:15.5:2:0:128:64:1:0:0";
             let result = response.parse::<PpbaStatus>();
             assert!(result.is_err());
+        }
+
+        #[test]
+        fn scales_hardware_current_count_to_amps() {
+            // Read off a PPBADV Gen2C on firmware 2.12.3 with the quad
+            // output on: the current field is 40 counts, not 40 Amps.
+            let response = "PPBA:12.0:40:0.0:0:0.0:1:1:210:210:1:0:3";
+            let status = response.parse::<PpbaStatus>().unwrap();
+
+            assert_eq!(status.current, 40.0 / 65.0);
+        }
+
+        #[test]
+        fn current_count_of_zero_is_zero_amps() {
+            let response = "PPBA:12.0:0:20.0:50:10.0:0:0:0:0:0:0:0";
+            let status = response.parse::<PpbaStatus>().unwrap();
+
+            assert_eq!(status.current, 0.0);
+        }
+
+        #[test]
+        fn full_scale_current_count_stays_within_the_published_range() {
+            // 1024 is the top of the documented sense range, so no count
+            // the device documents sending may scale past the maximum the
+            // switch publishes.
+            let response = "PPBA:12.0:1024:20.0:50:10.0:0:0:0:0:0:0:0";
+            let status = response.parse::<PpbaStatus>().unwrap();
+            let max = crate::switches::SwitchId::TotalCurrent.info().max_value;
+
+            assert!(
+                status.current <= max,
+                "full-scale current {} A exceeds the {max} A the switch publishes",
+                status.current
+            );
+        }
+
+        #[test]
+        fn rejects_decimal_current() {
+            // The device sends an integer sense count. A decimal is not a
+            // reading already in Amps; it is a field the parser misread.
+            let response = "PPBA:12.5:3.2:25.0:60:15.5:1:0:128:64:1:0:0";
+            let err = response.parse::<PpbaStatus>().unwrap_err();
+
+            match err {
+                PpbaError::ParseError(msg) => assert!(
+                    msg.contains("current") && msg.contains("3.2"),
+                    "error should name the current field and its value: {msg}"
+                ),
+                other => panic!("expected ParseError, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn rejects_negative_current() {
+            let response = "PPBA:12.5:-5:25.0:60:15.5:1:0:128:64:1:0:0";
+            let err = response.parse::<PpbaStatus>().unwrap_err();
+
+            match err {
+                PpbaError::ParseError(msg) => assert!(
+                    msg.contains("current"),
+                    "error should name the current field: {msg}"
+                ),
+                other => panic!("expected ParseError, got {other:?}"),
+            }
         }
     }
 
