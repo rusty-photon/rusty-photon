@@ -757,7 +757,7 @@ impl MountDevice {
         // `reservation`, which clears `slew_in_progress` — the driver
         // can't get stuck reporting Slewing after a failed slew.
         let result: ASCOMResult<()> = async {
-            let snap = self.manager.snapshot().await;
+            let snap = self.manager.snapshot_now().await;
             let (ra_delta, dec_delta) =
                 self.slew_axis_deltas(&snap, &params, ra_ticks, dec_ticks, chosen_side)?;
             // Both axes use the INDI wire sequence: `:K` + poll `:f`

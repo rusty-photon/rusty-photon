@@ -530,6 +530,9 @@ impl SlewWatchCtx {
         else {
             return None;
         };
+        // The sample is a wire round trip or two old; bring it to the
+        // instant the LST below is taken (issue #1334).
+        let snap = &self.manager.project_to_now(snap, &params);
         // ERFA refuses the host UTC if `eraCal2jd` rejects the year
         // (below `IYMIN = -4799`). A leap-second-table-out-of-range
         // clock returns `Ok` with a warning, not an error — see the

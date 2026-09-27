@@ -602,7 +602,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 
 | Property | Implementation |
 |---|---|
-| `RightAscension` | from current RA-axis encoder + LST + sync offset |
+| `RightAscension` | from current RA-axis encoder + LST + sync offset. The encoder is the background-poll sample **carried forward to the read instant** at the axis' commanded rate, so it pairs with an LST taken at the same instant — see [§Encoder samples and the read instant](#encoder-samples-and-the-read-instant) |
 | `Declination` | from current Dec-axis encoder + sync offset |
 | `Azimuth` | derived from RA/Dec + site lat/lon + LST |
 | `Altitude` | derived as above |
@@ -669,6 +669,75 @@ rather than panicking the tokio task. The slew-completion
 watcher's pickup loop matches the same pattern: on ERFA failure
 it logs `warn!`, clears `slew_in_progress`, and exits cleanly so
 the next Alpaca client read of `Slewing` flips to `false`.
+
+#### Encoder samples and the read instant
+
+The background poll samples each axis (`:j` position, `:f` status)
+once per `polling_interval`, so a sample is a *past* state of the
+axis — up to one interval, plus the poll cycle's own wire time, old by
+the time a read uses it. `RightAscension` is `LST − HA`, and while the
+mount tracks, the HA keeps advancing after the sample. Pairing a stale
+sample with an LST taken *now* therefore reads the sky off by the
+sample's age: always high, by up to one poll interval of RA (0.2 s at
+the 200 ms default), with the error set by where in the poll cycle the
+read happens to fall. Two reads a few seconds apart then disagree by up
+to ±0.2 s with the RA axis doing exactly what it should — which is what
+ConformU's cross-axis PulseGuide check measured on the rig (issue
+#1334). Re-reading the encoder from the wire on every read would fix
+the pairing at the cost of two round trips per read, and over Wi-Fi a
+round trip is not much cheaper than the poll it would replace.
+
+So every sample carries what is needed to bring it to the read
+instant, and the reads that pair the encoder with the current LST
+(`RightAscension`, and `Azimuth` / `Altitude` through it;
+`Declination`; the current pointing `SetSideOfPier` flips about; the
+current side and `mech_HA` the slew and sync planners and
+`DestinationSideOfPier` start from; the slew watcher's pickup-loop
+residual) use the sample **projected to now**:
+
+- **Stamp.** Each axis' sample records the instant its `:j` reply
+  arrived. A `SyncToCoordinates` / connect-time seed is stamped when it
+  publishes the just-written `:E` value.
+- **Rate.** The sample also records the `:f` running / goto / direction
+  / speed bits and the `:I` step period the driver last sent that axis.
+  An axis running in **tracking** mode moves at
+  `tmr_freq / step_period` steps per second (times the axis'
+  high-speed ratio in the fast regime), CW counting up — the rate the
+  driver *commanded*, not an assumed sidereal. A guide-shifted pulse,
+  and any tracking rate the driver adds later (lunar, solar, custom),
+  is just another `:I` period and needs nothing further here.
+- **Projection.** `position(now) = position + rate × (now − stamp)`.
+  A stopped axis has rate 0 and is read as sampled — exact, which is
+  why the fix is *not* "take LST at the sample instant": that is only
+  right while the axis tracks at sidereal, and would make a stopped or
+  parked mount's RA lag by up to a poll instead. A goto is not
+  projected (its accelerating profile has no single rate, and nothing
+  precision-critical reads the encoder mid-goto). An unknown period
+  (none sent since the handshake — a fresh conduit may be a
+  power-cycled mount, so the handshake forgets the record) is not
+  projected either.
+- **Age cap.** A sample is carried forward by at most four polling
+  intervals. Past that the poll loop is failing or paused with nobody
+  refreshing it, and the estimate stops advancing rather than
+  extrapolating a state the axis may have left.
+- **Motion changes.** A sample taken just before a start or stop would
+  otherwise be projected at the old rate until the next poll, in
+  exactly the window a client reads in after starting tracking or
+  finishing a pulse. So `:J` re-reads the axis at once (a sample that
+  carries the new motion), and `:K` / `:L` re-read its position and
+  mark the rate unknown (the axis is halting; where it stops is for
+  the next poll to say). A failed re-read leaves it to the next poll.
+- **Ordering.** The poll builds its sample over four round trips and
+  publishes at the end; it replaces an axis only with a sample at
+  least as new as the cached one, so it never overwrites a seed or a
+  motion-command re-read that landed meanwhile.
+
+The residual is the `:j` round trip — the stamp is taken on receipt,
+late by at most one round trip of motion — plus half a tick of
+rounding (one RA tick is 0.024 s), against ConformU's 0.07 s
+tolerance. The raw sample is still what `Slewing`, `SideOfPier`, the
+PulseGuide side and the tracking guard read: they use the encoder
+alone, not against an LST, and a poll of motion is immaterial to them.
 
 ### Slew lifecycle
 
@@ -1874,7 +1943,9 @@ Notes:
 - `polling_interval` controls the rate at which the background loop reads
   `:f` (axis status) and `:j` (axis position). 200 ms is a reasonable
   default; `rp` polls `Slewing` no faster than 100 ms so this gives the
-  driver headroom.
+  driver headroom. Pointing reads do not get more precise with a shorter
+  interval: they carry the last sample forward to the read instant (see
+  [§Encoder samples and the read instant](#encoder-samples-and-the-read-instant)).
 - `settle_after_slew` is applied *after* both axes report stopped, before
   `Slewing` clears. Mirrors `rp`'s `mount.settle_after_slew` config.
 - `site_latitude_deg` is in WGS84 degrees, `+N`. `site_longitude_deg` is
@@ -2294,7 +2365,11 @@ src/
                            Command in scope
   manager.rs             — MountManager: wraps Arc<SharedTransport<SkywatcherCodec>>;
                            owns parameter cache (CPR, TMR_Freq, hsr per axis)
-                           and snapshot. Handshake + poll loop +
+                           and snapshot (per-axis samples stamped with
+                           their capture instant and rate state; the
+                           last `:I` period per axis; `snapshot_now`
+                           projects a sample to the read instant).
+                           Handshake + poll loop +
                            on-last-disconnect / shutdown teardown live
                            in `Hooks` closures.
   coordinates.rs         — encoder-tick ↔ angle, LST, sync offset,
@@ -2533,7 +2608,14 @@ measured **11** on 2026-09-26: seven of the eight RA offsets (East at
 HA −3 passed, at +2.52 s) plus four cross-axis RA readings of
 0.07–0.17 s during Dec pulses that the mock never shows — issue
 #1334, a poll-snapshot-versus-live-LST read artefact, neither #1299
-nor #1300.
+nor #1300. The driver now carries each sample forward to the read
+instant ([§Encoder samples and the read instant](#encoder-samples-and-the-read-instant)),
+so those four should read ≈ 0.00 s; that is measured against the mock,
+and a rig re-run is still owed. The mock never showed them because it
+stops an axis instantly and a 5 s pulse is exactly 25 polls at 200 ms:
+the reads before and after a pulse fell on the same poll phase and the
+artefact cancelled. The integration test's mock config therefore polls
+at 300 ms, which does not divide 5 s.
 
 To reproduce locally, run the in-tree integration test — same
 binary, same config, same ConformU invocation the workflow used:

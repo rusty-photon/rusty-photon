@@ -91,13 +91,21 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     // (the binary is built with `--features mock`, so the
     // MockTransportFactory replaces both serial and UDP factories — the
     // device path doesn't matter).
+    //
+    // `polling_interval` is deliberately *not* a divisor of ConformU's
+    // 5 s PulseGuide duration. The mock stops an axis instantly, so at
+    // 200 ms (25 polls per pulse) the RA reads before and after a pulse
+    // landed on the same poll phase, and any read that paired a stale
+    // encoder sample with a live LST cancelled out — the mock could not
+    // see the ±0.2 s cross-axis readings the hardware showed (issue
+    // #1334). 300 ms leaves the two reads a third of a poll apart.
     let config = serde_json::json!({
         "transport": {
             "kind": "usb",
             "port": "/dev/mock",
             "baud_rate": 115_200,
             "command_timeout": "2s",
-            "polling_interval": "200ms"
+            "polling_interval": "300ms"
         },
         "server": {
             "port": 0
