@@ -97,6 +97,11 @@ when every one of these is true:
 - **None of the remaining findings is in the behaviour the run set out to
   validate.** A scoped record proves one thing and says which; it does
   not quietly narrow what "pass" means.
+- **`ConfigurationAlertCount` and `TimingIssuesCount` are still 0.** The
+  exception covers findings against the device that an open issue
+  already owns. A configuration alert means the run itself was narrowed,
+  and a timing issue is a defect no open issue is likely to carry —
+  either one makes it a failed run, not a scoped record.
 - **The decision to file is recorded outside the record** — on the issue
   that asked for the run — so the README reports a decision rather than
   making one.
