@@ -48,6 +48,69 @@ The PPBA communicates via serial at 9600 baud, 8N1, with newline-terminated comm
 | `PU:b` | USB2 hub control (0/1) | `PU:b` |
 | `PD:b` | Auto-dew enable (0/1) | `PD:b` |
 
+### `PA` response layout
+
+Captured from the dev box's unit (`PPBADV Gen2C`, firmware `2.12.3`) rather
+than copied from the vendor table:
+
+```
+PPBA:12.0:14:27.4:68:21.0:0:1:52:52:1:0:3
+```
+
+| # | Field | Notes |
+|---|-------|-------|
+| 0 | prefix | `PPBA:` |
+| 1 | voltage | Volts, decimal |
+| 2 | current | raw sense count, integer 0-1024; **÷ 65** for Amps |
+| 3 | temperature | °C, decimal |
+| 4 | humidity | % RH, integer |
+| 5 | dewpoint | °C, decimal |
+| 6 | quad | `0`/`1` |
+| 7 | adj | `0`/`1` |
+| 8-9 | dewA / dewB | PWM duty, 0-255 |
+| 10 | autodew | `0`/`1` |
+| 11 | warn | `0`/`1` |
+| 12 | pwradj | adjustable-output setting |
+
+The divisor lives in the parser, so the switch table and the ASCOM surface
+only ever see Amps. The count is an unsigned integer on the wire, so a
+decimal in that slot fails the parse like any other corrupted field rather
+than being read as a value already in Amps.
+
+### The current is a sense count, not Amps
+
+`PA`'s current field is the one field of that reply not already in its
+unit. Pegasus's command table (firmware 2.5 and later) calls it a *"sens
+current 0-1024"* that is converted to Amps by dividing by 65, a scale
+the PPBA keeps for compatibility with the original Pocket Powerbox. INDI's
+PPBA driver applies the same divisor.
+
+Publishing the count as Amps is not only a wrong number: a count of 40 was
+published as 40 A from a box drawing about 0.6 A, far outside the 0-20 A
+the switch declares for itself, which is an ASCOM conformance failure as
+well as a misreading. Scaled by 65, the top of the documented sense range,
+1024, is 15.75 A, so every count the device documents sending lands inside
+the published range. The parser does not clamp or range-check the count,
+the same as every other `PA` field: a count above 1024 is outside the
+device's contract, and is published as read rather than hidden.
+
+The divisor was checked against the box's own energy counters, because a
+fixture built from the vendor table only confirms the table. With the unit
+at a steady load, the watt-hour counter in `PS` advanced 1.26 Wh over
+1764 s at 12.0 V, a mean draw of 0.214 A, while `PA` reported a
+steady count of 14. That is 65.3 counts per Amp (64.8-65.9 at the
+counter's 0.01 Wh resolution), which admits 65 and rules out a centi-amp
+reading: `÷ 100` would put the draw at 0.14 A.
+
+**On a Gen2C the count is the total draw, not the Quad 12V group.** The
+vendor table labels this field the Quad 12V outputs' current. Over the
+same run the quad output was off, and `PC` (*Print Power Metrics*, whose
+currents are already in Amps) reported `total_current` 0.2 A and
+`current_12V_outputs` 0.0 A while `PA` sent 14 counts, 0.215 A. The field
+follows the total, which is why switch 11 is Total Current. The driver
+still reads it from `PA` rather than `PC`: `PC` reports to 0.1 A, while one
+count of the sense field is about 0.015 A.
+
 ## Switch Mapping
 
 ### Controllable Switches (CanWrite = true)
@@ -77,7 +140,7 @@ The PPBA communicates via serial at 9600 baud, 8N1, with newline-terminated comm
 | ID | Name | Type | Min | Max | Step | Source |
 |----|------|------|-----|-----|------|--------|
 | 10 | Input Voltage | Volts | 0 | 15 | 0.1 | `PA` command |
-| 11 | Total Current | Amps | 0 | 20 | 0.01 | `PA` command |
+| 11 | Total Current | Amps | 0 | 20 | 0.01 | `PA[2] ÷ 65` (see [the sense count](#the-current-is-a-sense-count-not-amps)) |
 | 12 | Temperature | °C | -40 | 60 | 0.1 | `PA` command |
 | 13 | Humidity | % | 0 | 100 | 1 | `PA` command |
 | 14 | Dewpoint | °C | -40 | 60 | 0.1 | `PA` command |
@@ -585,6 +648,24 @@ bazel test //services/ppba-driver:conformu_integration
 ```
 
 BDD tests use cucumber-rs with feature files in `tests/features/`. Tests spawn the actual ppba-driver binary as a subprocess (with `--features mock` for the mock serial port) and communicate via ASCOM Alpaca HTTP REST API, testing the full stack from config loading through HTTP routing to device logic.
+
+### The mock's pinned frame
+
+`src/mock.rs` serves fixed frames, and `sensor_readings.feature` asserts the
+current exactly, so a scaling regression has to fail there:
+
+```
+PA  PPBA:12.5:130:25:60:15.5:1:0:128:64:0:0:0
+PS  PS:2.5:10.5:126:3600000
+```
+
+The current slot carries an integer sense count, as the hardware sends it,
+so switch 11 reads 2.0 A (130 / 65). A fixture that emitted a decimal such
+as `3.2` there would describe a frame no PPBA produces, and would agree with
+any parser written from the same misreading of the vendor table. The same
+feature also asserts that every switch reads inside the range it publishes,
+the check ConformU applies, so a scaling error surfaces as a failing
+scenario rather than as an out-of-range reading a client has to notice.
 
 ### ConformU Compliance Testing
 

@@ -30,6 +30,25 @@ async fn switch_value_in_range(world: &mut PpbaWorld, id: usize, min: f64, max: 
     );
 }
 
+#[then("every switch value should lie between its published minimum and maximum")]
+async fn every_switch_value_within_published_range(world: &mut PpbaWorld) {
+    let switch = world.switch_ref();
+    let count = switch.max_switch().await.unwrap();
+    let mut out_of_range = Vec::new();
+    for id in 0..count {
+        let min = switch.min_switch_value(id).await.unwrap();
+        let max = switch.max_switch_value(id).await.unwrap();
+        let value = switch.get_switch_value(id).await.unwrap();
+        if !(min..=max).contains(&value) {
+            out_of_range.push(format!("switch {id}: {value} outside {min}..={max}"));
+        }
+    }
+    assert!(
+        out_of_range.is_empty(),
+        "switch values outside their published range: {out_of_range:?}"
+    );
+}
+
 #[then(expr = "switch {int} value should be non-negative")]
 async fn switch_value_non_negative(world: &mut PpbaWorld, id: usize) {
     let value = world.switch_ref().get_switch_value(id).await.unwrap();

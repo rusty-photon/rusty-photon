@@ -41,7 +41,9 @@ struct MockDeviceState {
     dew_b: u8,
     usb_hub: bool,
     voltage: f64,
-    current: f64,
+    /// `PA`'s current field as the device sends it: an integer sense count,
+    /// never Amps. A decimal here would be a frame no PPBA can produce.
+    current_sense: u16,
     temperature: f64,
     humidity: f64,
     dewpoint: f64,
@@ -65,7 +67,9 @@ impl Default for MockDeviceState {
             dew_b: 64,
             usb_hub: false,
             voltage: 12.5,
-            current: 3.2,
+            // 130 / 65 = 2.0 A. A reading that skipped the divisor would be
+            // 130 A, far outside the switch's published range.
+            current_sense: 130,
             temperature: 25.0,
             humidity: 60.0,
             dewpoint: 15.5,
@@ -83,7 +87,7 @@ impl MockDeviceState {
         format!(
             "PPBA:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
             self.voltage,
-            self.current,
+            self.current_sense,
             self.temperature,
             // Integer percent on the wire; `trunc` prints the same digits
             // the old `as u8` cast produced for any in-range humidity.
@@ -248,6 +252,21 @@ mod tests {
         t.recv_frame(&mut buf).await.unwrap();
         assert!(buf.starts_with(b"PPBA:"));
         assert!(buf.ends_with(b"\n"));
+    }
+
+    #[tokio::test]
+    async fn status_frame_carries_the_current_as_an_integer_count() {
+        let factory = MockPpbaTransportFactory::default();
+        let mut t = open(&factory).await;
+        t.send_frame(b"PA\n").await.unwrap();
+        let mut buf = Vec::new();
+        t.recv_frame(&mut buf).await.unwrap();
+        let text = std::str::from_utf8(&buf).unwrap().trim();
+        let parts: Vec<&str> = text.split(':').collect();
+        assert_eq!(parts[2], "130", "current field: {text}");
+
+        let status = text.parse::<crate::protocol::PpbaStatus>().unwrap();
+        assert_eq!(status.current, 2.0);
     }
 
     #[tokio::test]
