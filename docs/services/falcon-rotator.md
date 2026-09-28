@@ -236,7 +236,11 @@ ASCOM `IObservingConditions` was considered for voltage and rejected: its standa
 Because both switches are read-only, the write surface is a capability gap rather than a state-dependent rejection:
 
 - `SetSwitch`, `SetSwitchValue`, `SetSwitchName` return `NOT_IMPLEMENTED` (`0x400` / 1024) for any valid id. ConformU treats `INVALID_OPERATION` (`0x40B` / 1035) as the wrong code here — that code is for "the device is in a state where this operation isn't allowed", not for "this device fundamentally doesn't support this operation".
-- The ISwitchV3 async surface (`CanAsync`, `SetAsync`, `SetAsyncValue`, `CancelAsync`) is explicitly overridden so id validation runs before the trait defaults. `CanAsync(valid_id)` returns `false`; the three writers return `NOT_IMPLEMENTED`. Out-of-range ids return `INVALID_VALUE` (1025) on every async method.
+- The ISwitchV3 async surface follows what the spec requires of a switch whose `CanAsync` is false. Every member validates the id first, so out-of-range ids return `INVALID_VALUE` (1025) on every async method.
+  - `CanAsync(valid_id)` returns `false`.
+  - `SetAsync`, `SetAsyncValue` and `StateChangeComplete` return `NOT_IMPLEMENTED`.
+  - `CancelAsync` succeeds as a no-op, since ISwitchV3 makes it mandatory ("must not throw a MethodNotImplementedException"). The crate's default for it is `NOT_IMPLEMENTED`, which is off-spec.
+  - With `StateChangeComplete` unavailable, `DeviceState` omits `StateChangeComplete{n}`, as ASCOM's read-all rules require. ConformU notes each omission as `INFO`.
 - Every write method still runs the `ensure_connected!` guard first, so a disconnected client always sees `NOT_CONNECTED` (1031) regardless of id or method.
 
 ### Scale calibration
@@ -448,7 +452,7 @@ Matches the qhy-focuser / ppba-driver precedent for cross-driver consistency: on
 |---|---|---|
 | `NotConnected` | `NOT_CONNECTED` (`0x407`) | Any property/method called while `connected() == false` |
 | `InvalidValue(msg)` | `INVALID_VALUE` (`0x401`) | Client supplied `NaN` / non-finite angle to `Move*` / `Sync`; switch id ≥ `MaxSwitch` on any Switch method |
-| n/a (Switch capability gap) | `NOT_IMPLEMENTED` (`0x400`) | `SetSwitch` / `SetSwitchValue` / `SetSwitchName` and the `SetAsync` / `SetAsyncValue` / `CancelAsync` writers on the read-only Status Switch device — see [Write surface](#write-surface-read-only-device) |
+| n/a (Switch capability gap) | `NOT_IMPLEMENTED` (`0x400`) | `SetSwitch` / `SetSwitchValue` / `SetSwitchName`, and `SetAsync` / `SetAsyncValue` / `StateChangeComplete` (every switch has `CanAsync = false`), on the read-only Status Switch device. `CancelAsync` is mandatory and succeeds — see [Write surface](#write-surface-read-only-device) |
 | All others | `INVALID_OPERATION` (`0x40B`) | `ConnectionFailed` (handshake failure), `SerialPort`, `Timeout`, `Io`, `InvalidResponse`, `ParseError`, `Communication` |
 
 ## MVP Scope

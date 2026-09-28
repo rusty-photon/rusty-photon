@@ -401,6 +401,13 @@ impl Switch for PpbaSwitchDevice {
         Ok(switch_id.info().step)
     }
 
+    // ISwitchV3's async surface. Every switch is synchronous (`CanAsync`
+    // false), and the spec ties the other members to that: `SetAsync`,
+    // `SetAsyncValue` and `StateChangeComplete` must raise
+    // `MethodNotImplemented`, while `CancelAsync` is mandatory and must not.
+    // Each checks the connection and the id first, so a bad id still answers
+    // `INVALID_VALUE`, which ConformU requires of every member.
+
     async fn can_async(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
         if id >= MAX_SWITCH {
@@ -420,7 +427,7 @@ impl Switch for PpbaSwitchDevice {
                 format!("Invalid switch ID: {id}"),
             ));
         }
-        Ok(true)
+        Err(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn cancel_async(&self, id: usize) -> ASCOMResult<()> {
@@ -434,7 +441,7 @@ impl Switch for PpbaSwitchDevice {
         Ok(())
     }
 
-    async fn set_async(&self, id: usize, state: bool) -> ASCOMResult<()> {
+    async fn set_async(&self, id: usize, _state: bool) -> ASCOMResult<()> {
         ensure_connected!(self);
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
@@ -442,10 +449,10 @@ impl Switch for PpbaSwitchDevice {
                 format!("Invalid switch ID: {id}"),
             ));
         }
-        self.set_switch(id, state).await
+        Err(ASCOMError::NOT_IMPLEMENTED)
     }
 
-    async fn set_async_value(&self, id: usize, value: f64) -> ASCOMResult<()> {
+    async fn set_async_value(&self, id: usize, _value: f64) -> ASCOMResult<()> {
         ensure_connected!(self);
         if id >= MAX_SWITCH {
             return Err(ASCOMError::new(
@@ -453,7 +460,7 @@ impl Switch for PpbaSwitchDevice {
                 format!("Invalid switch ID: {id}"),
             ));
         }
-        self.set_switch_value(id, value).await
+        Err(ASCOMError::NOT_IMPLEMENTED)
     }
 }
 
@@ -680,9 +687,24 @@ mod tests {
         assert!((min - 0.0).abs() < f64::EPSILON);
         assert!((max - 1.0).abs() < f64::EPSILON);
         assert!((step - 1.0).abs() < f64::EPSILON);
-        assert!(!device.can_async(0).await.unwrap());
-        assert!(device.state_change_complete(0).await.unwrap());
-        device.cancel_async(0).await.unwrap();
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn async_members_follow_can_async_false() {
+        let device = connected_device().await;
+        assert!(!device.can_async(1).await.unwrap());
+        let not_implemented = [
+            device.state_change_complete(1).await.unwrap_err(),
+            device.set_async(1, true).await.unwrap_err(),
+            device.set_async_value(1, 1.0).await.unwrap_err(),
+        ];
+        for err in not_implemented {
+            assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED, "{err}");
+        }
+        device.cancel_async(1).await.unwrap();
+        // Neither refused write reached the adjustable output (off by default).
+        assert!((device.get_switch_value(1).await.unwrap() - 0.0).abs() < f64::EPSILON);
         device.set_connected(false).await.unwrap();
     }
 

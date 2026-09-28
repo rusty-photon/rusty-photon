@@ -3,7 +3,10 @@ Feature: Switch error handling
   the ASCOM specification requires. An id outside 0-38 reports INVALID_VALUE,
   a write to a read-only switch reports NOT_IMPLEMENTED, and a value outside
   a switch's published range reports INVALID_VALUE without anything reaching
-  the device.
+  the device. All switches are synchronous (CanAsync false), so SetAsync,
+  SetAsyncValue and StateChangeComplete report NOT_IMPLEMENTED and write
+  nothing, while CancelAsync, which ASCOM makes mandatory, succeeds as a
+  no-op.
 
   Scenario Outline: Reads and writes report NOT_CONNECTED while disconnected
     Given a running UPBv2 server
@@ -84,27 +87,42 @@ Feature: Switch error handling
     Given a running UPBv2 server with the switch connected
     Then can_async should return false for all 39 switches
 
-  Scenario: Every write completes synchronously
+  Scenario: StateChangeComplete is not implemented on any switch
     Given a running UPBv2 server with the switch connected
-    Then state_change_complete should return true for all 39 switches
+    Then state_change_complete should answer NOT_IMPLEMENTED for all 39 switches
 
   Scenario: Cancelling a write is accepted and does nothing
     Given a running UPBv2 server with the switch connected
     Then cancel_async should succeed for all 39 switches
 
-  Scenario Outline: Asynchronous operations reject an out-of-range id
+  Scenario: SetAsync is refused as not implemented and leaves output 3 off
+    Given a running UPBv2 server with the switch connected
+    When I wait for the switch data to be available
+    And I try to call set_async on switch 2
+    Then the last error code should be NOT_IMPLEMENTED
+    And switch 2 value should be 0.0
+
+  Scenario: SetAsyncValue is refused as not implemented and leaves output 1 on
+    Given a running UPBv2 server with the switch connected
+    When I wait for the switch data to be available
+    And I try to call set_async_value on switch 0
+    Then the last error code should be NOT_IMPLEMENTED
+    And switch 0 value should be 1.0
+
+  Scenario Outline: Asynchronous operations reject an out-of-range id with INVALID_VALUE
     Given a running UPBv2 server with the switch connected
     When I try to <operation>
-    Then the last operation should have failed
+    Then the last error code should be INVALID_VALUE
 
     Examples:
-      | operation                                |
+      | operation                                 |
+      | query can_async for switch 39             |
       | query state_change_complete for switch 39 |
-      | call cancel_async on switch 39           |
-      | call set_async on switch 39              |
-      | call set_async_value on switch 39        |
+      | call cancel_async on switch 39            |
+      | call set_async on switch 39               |
+      | call set_async_value on switch 39         |
 
-  Scenario: can_async rejects an out-of-range id while disconnected
+  Scenario: An out-of-range id while disconnected reports NOT_CONNECTED first
     Given a running UPBv2 server
     When I try to query can_async for switch 39
-    Then the last operation should have failed
+    Then the last error code should be NOT_CONNECTED

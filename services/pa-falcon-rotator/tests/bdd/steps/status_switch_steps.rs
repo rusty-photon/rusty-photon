@@ -145,6 +145,38 @@ async fn call_set_switch(world: &mut FalconRotatorWorld, id: usize, value: Strin
     }
 }
 
+/// Drive one `ISwitchV3` async member. `CanAsync` and `StateChangeComplete`
+/// capture their boolean; the writers send fixed arguments, which never
+/// matter because both switches refuse them.
+#[when(expr = "I call {word} on switch id {int}")]
+async fn call_async_member(world: &mut FalconRotatorWorld, member: String, id: usize) {
+    let switch = world.status_switch();
+    let result = match member.as_str() {
+        "CanAsync" => switch.can_async(id).await.map(Some),
+        "StateChangeComplete" => switch.state_change_complete(id).await.map(Some),
+        "SetAsync" => switch.set_async(id, true).await.map(|()| None),
+        "SetAsyncValue" => switch.set_async_value(id, 0.0).await.map(|()| None),
+        "CancelAsync" => switch.cancel_async(id).await.map(|()| None),
+        other => panic!("unknown async member '{other}'"),
+    };
+    match result {
+        Ok(value) => {
+            world.switch_bool_result = value;
+            world.last_error_code = None;
+        }
+        Err(e) => world.last_error_code = Some(e.code.raw()),
+    }
+}
+
+#[then("the async call should succeed")]
+async fn async_call_should_succeed(world: &mut FalconRotatorWorld) {
+    assert_eq!(
+        world.last_error_code, None,
+        "expected success, got ASCOM error code {:?}",
+        world.last_error_code
+    );
+}
+
 #[then(expr = "the switch name should be {string}")]
 async fn switch_name_should_be(world: &mut FalconRotatorWorld, expected: String) {
     let actual = world

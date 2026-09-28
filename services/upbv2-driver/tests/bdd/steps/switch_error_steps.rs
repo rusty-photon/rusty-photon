@@ -2,6 +2,7 @@
 
 use crate::steps::switch_control_steps::switch_state;
 use crate::world::Upbv2World;
+use ascom_alpaca::ASCOMErrorCode;
 use cucumber::{then, when};
 
 // ============================================================================
@@ -127,13 +128,15 @@ async fn can_async_returns_false_for_all(world: &mut Upbv2World, count: usize) {
     }
 }
 
-#[then(expr = "state_change_complete should return true for all {int} switches")]
-async fn state_change_complete_returns_true_for_all(world: &mut Upbv2World, count: usize) {
+#[then(expr = "state_change_complete should answer NOT_IMPLEMENTED for all {int} switches")]
+async fn state_change_complete_not_implemented_for_all(world: &mut Upbv2World, count: usize) {
     let switch = world.switch_ref();
     for id in 0..count {
-        assert!(
-            switch.state_change_complete(id).await.unwrap(),
-            "switch {id} state change should be complete"
+        let err = switch.state_change_complete(id).await.unwrap_err();
+        assert_eq!(
+            err.code,
+            ASCOMErrorCode::NOT_IMPLEMENTED,
+            "switch {id}: StateChangeComplete should be NOT_IMPLEMENTED, got {err}"
         );
     }
 }

@@ -555,7 +555,12 @@ ppba-driver/
 
 3. **PWM Values**: Dew heaters use raw 0-255 PWM values matching the device protocol directly. ASCOM clients can use `SetSwitchValue()` with the PWM value.
 
-4. **Synchronous Operations**: The MVP uses synchronous switch operations. Async switch methods are not implemented.
+4. **Synchronous switches only**: every switch reports `CanAsync = false`, and the ISwitchV3 async members follow what the spec requires of such a switch:
+   - `SetAsync`, `SetAsyncValue` and `StateChangeComplete` answer `NOT_IMPLEMENTED` and write nothing. Use `SetSwitch` / `SetSwitchValue`.
+   - `CancelAsync` is mandatory and succeeds as a no-op.
+   - All four check the connection and the id first, so a bad id answers `INVALID_VALUE`, as ConformU requires.
+
+   With `StateChangeComplete` unavailable, `DeviceState` carries `GetSwitch{n}` and `GetSwitchValue{n}` but omits `StateChangeComplete{n}`. ASCOM's read-all rules say to omit an unavailable property, and ConformU notes each omission as `INFO`.
 
 5. **USB Hub Tracking**: USB hub state is tracked separately since it's not included in the `PA` status response.
 
