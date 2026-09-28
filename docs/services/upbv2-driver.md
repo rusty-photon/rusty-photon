@@ -460,6 +460,9 @@ error, because the rules are enforced by the label type's own deserializer.
 | Any field unparseable | `ParseError` naming the wire field; cache untouched. |
 | Write to an auto-dew-controlled channel | `NOT_IMPLEMENTED` naming the channel and the Pegasus software — the classification ASCOM requires of a switch whose `CanWrite` is false. |
 | Switch 7 written outside 3-12 | `INVALID_VALUE`; nothing sent to the device. |
+| `SetAsync`, `SetAsyncValue` or `StateChangeComplete` on a valid id | `NOT_IMPLEMENTED`; nothing sent to the device. Every switch reports `CanAsync = false`, and ISwitchV3 requires `MethodNotImplemented` from these members for such a switch. Use `SetSwitch` / `SetSwitchValue`. `DeviceState` therefore omits `StateChangeComplete{n}`; ConformU notes each omission as `INFO`. |
+| `CancelAsync` on a valid id | Succeeds as a no-op. ISwitchV3 makes it mandatory: it must not raise `MethodNotImplemented`. |
+| Any async member with an id outside 0-38 | `INVALID_VALUE` (or `NOT_CONNECTED` while disconnected), checked before `NOT_IMPLEMENTED`, as ConformU requires. |
 | `SetAveragePeriod` given `NaN`, or a value outside `[0, 24]` hours | `INVALID_VALUE`; the windows and the recorded period are both left as they were. `NaN` is called out because it passes an ordered range comparison — see [`AveragePeriod`](#averageperiod-and-the-meaning-of-zero). |
 | Read before first successful poll | `NOT_CONNECTED`. |
 | Sensor read after the averaging window has emptied | `VALUE_NOT_SET`. The window is applied on read, so a stalled poll loop degrades to "no value" rather than reporting an aged-out mean as current. |
@@ -568,7 +571,7 @@ counters moved.
 
 Per [testing.md](../skills/testing.md) and the `ppba-driver` precedent:
 feature files under `tests/features/`, steps under `tests/bdd/steps/`, the
-binary spawned with `--features mock`. 11 features, 230 scenarios, plus 241
+binary spawned with `--features mock`. 11 features, 234 scenarios, plus 237
 unit tests in `src/`.
 
 ### The mock's pinned frame
