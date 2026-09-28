@@ -645,6 +645,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refused_dew_heater_writes_send_the_auto_dew_read_but_no_heater_command() {
+        let factory = Arc::new(MockPpbaTransportFactory::default());
+        let config = Config::default();
+        let manager = PpbaManager::new(&config, Arc::clone(&factory) as _);
+        let device = PpbaSwitchDevice::new(config.switch, manager);
+        device.set_connected(true).await.unwrap();
+        device.set_switch_value(5, 1.0).await.unwrap();
+        factory.take_received().await;
+
+        device.set_switch_value(2, 200.0).await.unwrap_err();
+        device.set_switch(3, true).await.unwrap_err();
+
+        // The background poll may add its own PA/PS; only P3/P4 must be absent.
+        let received = factory.take_received().await;
+        assert!(
+            received.iter().any(|c| c == "PA"),
+            "the refusal must read auto-dew from the device first: {received:?}"
+        );
+        assert!(
+            !received
+                .iter()
+                .any(|c| c.starts_with("P3:") || c.starts_with("P4:")),
+            "a refused write must send no heater command: {received:?}"
+        );
+        device.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn set_switch_auto_dew_enabled_blocks_dew_heater_write() {
         let device = connected_device().await;
         device.set_switch_value(5, 1.0).await.unwrap();

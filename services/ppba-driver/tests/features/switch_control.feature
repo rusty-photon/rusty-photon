@@ -64,7 +64,7 @@ Feature: Switch Control
     When I try to set switch 2 value to 100.0
     Then the last error message should contain "Disable auto-dew (switch 5) first"
 
-  Scenario: A refused dew-heater write sends no heater command, so heater A keeps its 128
+  Scenario: A refused dew-heater write leaves heater A at its 128
     Given a running PPBA server with auto-dew enabled
     When I try to set switch 2 value to 200.0
     Then switch 2 value should be 128.0
