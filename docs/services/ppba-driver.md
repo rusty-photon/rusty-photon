@@ -744,7 +744,7 @@ with switches 2 and 3 read-only. It is the pass that holds the driver to
 `upbv2-driver`'s `UPBV2_MOCK_AUTO_DEW`: this driver writes `PD` itself, and
 the mock honours it.
 
-**What the settings can and cannot do**: `FullRunSettings` carries only timeouts and delays. ConformU's URL-argument verbs (which `bdd_infra::run_conformu` drives) call `SetFullTest()` after reading the settings file, so every test-selection setting is force-enabled — `SwitchEnableSet` included, which means the mock run **does** exercise the Switch write tests. A ConformU settings file needs only `SettingsCompatibilityVersion`; every property it omits keeps ConformU's default.
+**What the settings can and cannot do**: `FullRunSettings` carries only timeouts and delays. ConformU's URL-argument verbs (which `bdd_infra::run_conformu` drives) call `SetFullTest()` after reading the settings file, so every selection ConformU marks `[MandatoryInFullTest]` is forced to its full-test value — `SwitchEnableSet` included (ConformU ships it off; the full test forces it on), which means the mock run **does** exercise the Switch write tests. A ConformU settings file needs only `"SettingsCompatibilityVersion": 1` (spelled exactly so — ConformU finds it by literal text search); every property it omits keeps ConformU's default.
 
 #### Running ConformU Against Real Hardware
 

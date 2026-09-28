@@ -83,10 +83,15 @@ file, so a record is always the **full** test set. A settings file on
 these verbs is for connection settings (the `AlpacaConfiguration` block
 for HTTPS and credentials), timeouts and delays: every key ConformU marks
 `[MandatoryInFullTest]` is overridden, whatever it says, and the
-`TelescopeTests` dictionary is rebuilt all-true. (The `DomeTests`
-dictionary is the one selection `SetFullTest()` leaves alone; there is no
-dome driver here, and a deselected dome test still raises a configuration
-alert, which the all-zero rule below rejects.) The forced-on keys that
+`TelescopeTests` dictionary is rebuilt all-true. (A few settings that
+shape the test set carry no such attribute and are left to the file. A
+deselected `DomeTests` entry raises a configuration alert, which the
+all-zero rule below rejects; there is no dome driver here anyway.
+`TestPerformance` and `AlpacaConfiguration.ProtocolTestPrimaryUrlStructure`
+only add tests and are off by default. The camera caps (`CameraMaxBinX`
+/ `CameraMaxBinY`, `CameraXMax` / `CameraYMax`) and a Switch's
+`SwitchExtendedNumberTestRange` narrow the tests they bound without
+raising any alert.) The forced-on keys that
 ConformU ships *off* are the ones that move hardware, so plan for them:
 on a Switch, `SwitchEnableSet` is forced on and ConformU **will write**
 the switches (a powerbox's outputs included); on a German-equatorial
@@ -105,7 +110,13 @@ evidence is the value ConformU prints inline on each measurement line
 record's settings file must never loosen a tolerance beyond ConformU's
 defaults. The smallest valid file is
 `{"SettingsCompatibilityVersion": 1}` plus whatever `AlpacaConfiguration`
-the endpoint needs; every property it omits keeps ConformU's default. (The
+the endpoint needs; every property it omits keeps ConformU's default. Spell
+that key exactly so, with no whitespace before the colon: ConformU finds it
+by literal text search, and a file without it is silently renamed to
+`<file>.prereleaseversion` and replaced by defaults — HTTPS and credentials
+included. A file ConformU cannot parse (a comment, a trailing comma, a
+wrongly typed value) is ignored for the run with only an `ERROR` line at the
+top of the output, and the exit code does not show it. (The
 in-tree tests build theirs from `bdd_infra::FullRunSettings`, which cannot
 express a selection or a tolerance at all — see
 [testing.md §1.4](testing.md#14-conformu-integration-tests).)

@@ -2,11 +2,12 @@
 //!
 //! Runs the `ConformU` suites in their `*-settings` variants (the device under
 //! test is configured inside the settings file): the URL-argument commands
-//! force-enable every test via `ConformU`'s `SetFullTest()`, and this device's
-//! capability set cannot satisfy the full set — with `CanPulseGuide = false`
-//! the protocol suite's `PulseGuide` test polls `IsPulseGuiding` as its
-//! completion check and records the spec-mandated `NOT_IMPLEMENTED` answer as
-//! an error, so that one test is deselected via `TelescopeTests`.
+//! force the full Telescope test set via `ConformU`'s `SetFullTest()`, and
+//! this device's capability set cannot satisfy the full set — with
+//! `CanPulseGuide = false` the protocol suite's `PulseGuide` test polls
+//! `IsPulseGuiding` as its completion check and records the spec-mandated
+//! `NOT_IMPLEMENTED` answer as an error, so that one test is deselected via
+//! `TelescopeTests`.
 //!
 //! Two deliberate config choices (docs/services/planetarium-bridge.md
 //! §ConformU): the reported-position altitude floor is `null` — the floor is
