@@ -2583,6 +2583,8 @@ impl Camera for QhyCameraDevice {
     }
 
     async fn set_gain(&self, gain: i32) -> ASCOMResult<()> {
+        // Before the connected check (see `set_bin_x`).
+        let session = self.state.session();
         self.ensure_connected()?;
         // Behind a readout-mode change, never between its read of the gain and
         // its restore, where this write would be reset or overwritten — and
@@ -2593,7 +2595,13 @@ impl Camera for QhyCameraDevice {
         let device = self.clone();
         Self::detached(tokio::spawn(async move {
             let _controls = device.state.control_lock.lock().await;
-            let (min, max) = cached_range(&device.state.gain_min_max)?;
+            // A request queued behind the lock can outlive its session — a
+            // disconnect and a reconnect fit in the wait — and must not reach
+            // the camera the reconnect opened (C6).
+            let (min, max) = {
+                let _session = device.commit_guard(session)?;
+                cached_range(&device.state.gain_min_max)?
+            };
             if gain < min || gain > max {
                 return Err(ASCOMError::invalid_value(format!(
                     "gain {gain} outside [{min}, {max}]"
@@ -2632,13 +2640,17 @@ impl Camera for QhyCameraDevice {
     }
 
     async fn set_offset(&self, offset: i32) -> ASCOMResult<()> {
+        let session = self.state.session();
         self.ensure_connected()?;
-        // As `set_gain`: behind a readout-mode change, and against the bounds of
-        // the mode in force (RM4).
+        // As `set_gain`: behind a readout-mode change, against the bounds of the
+        // mode in force (RM4), and only in the session it was made in (C6).
         let device = self.clone();
         Self::detached(tokio::spawn(async move {
             let _controls = device.state.control_lock.lock().await;
-            let (min, max) = cached_range(&device.state.offset_min_max)?;
+            let (min, max) = {
+                let _session = device.commit_guard(session)?;
+                cached_range(&device.state.offset_min_max)?
+            };
             if offset < min || offset > max {
                 return Err(ASCOMError::invalid_value(format!(
                     "offset {offset} outside [{min}, {max}]"
@@ -2784,13 +2796,16 @@ impl Camera for QhyCameraDevice {
     }
 
     async fn set_set_ccd_temperature(&self, set_ccd_temperature: f64) -> ASCOMResult<()> {
+        let session = self.state.session();
         self.ensure_connected()?;
         // Behind a readout-mode change, which re-asserts the target in force
         // once its init is over: landing inside one, this target would be
-        // overwritten by the one it replaced (RM4).
+        // overwritten by the one it replaced (RM4). Only in the session it was
+        // made in, as `set_gain` (C6).
         let device = self.clone();
         Self::detached(tokio::spawn(async move {
             let _controls = device.state.control_lock.lock().await;
+            drop(device.commit_guard(session)?);
             device
                 .on_handle(move |h| {
                     cooler_available(h)?;
@@ -2818,6 +2833,7 @@ impl Camera for QhyCameraDevice {
     }
 
     async fn set_cooler_on(&self, cooler_on: bool) -> ASCOMResult<()> {
+        let session = self.state.session();
         self.ensure_connected()?;
         // Detached, so a dropped request cannot let the lock go while its write
         // is still inside the SDK, nor skip the state stores after it.
@@ -2828,10 +2844,10 @@ impl Camera for QhyCameraDevice {
             // re-assertion, or an engagement stopped by its init with nothing
             // to put it back (RM4).
             let _controls = device.state.control_lock.lock().await;
-            // Read under the lock, so it is the session this write runs in —
-            // the one a readout-mode change will re-assert the cooler for.
-            let session = device.state.session();
-            device.ensure_connected()?;
+            // Only in the session it was made in, as `set_gain` (C6) — which
+            // makes that session the one this write runs in, and the one a
+            // readout-mode change will re-assert the cooler for.
+            drop(device.commit_guard(session)?);
             let cached_target = *device.state.target_temperature.lock();
             let engaged_at = device
                 .on_handle(move |h| {
@@ -6364,6 +6380,69 @@ mod tests {
         switching.await.unwrap().unwrap();
         assert_eq!(device.readout_mode().await.unwrap(), 1);
         assert_eq!(device.gain().await.unwrap(), 55);
+    }
+
+    /// Queue `request` behind [`DeviceState::control_lock`], held as a
+    /// readout-mode change holds it, reconnect while it waits, then let it go:
+    /// the request was made in a session that has ended, so it must answer
+    /// `NOT_CONNECTED` and send the reconnected camera nothing (C6, RM4).
+    async fn assert_refused_across_a_reconnect<F, Fut>(request: F)
+    where
+        F: FnOnce(QhyCameraDevice) -> Fut,
+        Fut: std::future::Future<Output = ASCOMResult<()>> + Send + 'static,
+    {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        let held = device.state.control_lock.lock().await;
+        let queued = tokio::spawn(request(device.clone()));
+        // On this single-threaded runtime a yield runs the request up to the
+        // lock, so it has read its session before the reconnect below.
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !queued.is_finished(),
+            "the request did not wait for the lock"
+        );
+        device.disconnect().await.unwrap();
+        device.connect().await.unwrap();
+        mock.clear_calls();
+
+        drop(held);
+
+        assert_eq!(
+            queued.await.unwrap().unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            mock.calls(),
+            Vec::<String>::new(),
+            "a request from an ended session reached the reconnected camera"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_gain_queued_across_a_reconnect_is_refused() {
+        assert_refused_across_a_reconnect(|device| async move { device.set_gain(55).await }).await;
+    }
+
+    #[tokio::test]
+    async fn an_offset_queued_across_a_reconnect_is_refused() {
+        assert_refused_across_a_reconnect(|device| async move { device.set_offset(40).await })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_setpoint_queued_across_a_reconnect_is_refused() {
+        assert_refused_across_a_reconnect(|device| async move {
+            device.set_set_ccd_temperature(-10.0).await
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_cooler_command_queued_across_a_reconnect_is_refused() {
+        assert_refused_across_a_reconnect(|device| async move { device.set_cooler_on(true).await })
+            .await;
     }
 
     /// RM4: the offset is held to the same rule as the gain — set during a mode

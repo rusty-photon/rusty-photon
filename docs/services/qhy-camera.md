@@ -593,7 +593,10 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   without taking the claim (behind a mode change it waits on the lifecycle lock
   before it gets that far) — so the check taken there covers every write that
   follows it. The check at the commit is the rule every cache writer follows,
-  kept though the claim already rules out a new session by then.
+  kept though the claim already rules out a new session by then. The gain,
+  offset, setpoint and cooler setters, which take no claim, ask it once, when
+  they hold the lock a mode change holds and before their SDK write (RM4): they
+  can wait there for as long as a mode change runs.
 
   A connect's own handshake answers to the same rule: it publishes **in the
   session it established, or not at all.** A disconnect or a later connect
@@ -1184,7 +1187,13 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   setter that waited is then checked against the bounds of the mode the change
   left the camera in, not those of the mode it was leaving. A client
   therefore sees one of these calls take up to the length of an `InitQHYCCD`
-  while a mode change runs.
+  while a mode change runs. And a request that waited is checked against the
+  session it was made in before it writes: queued behind the change, it can
+  outlive that session — a disconnect and a reconnect fit in the wait — and it
+  answers `NOT_CONNECTED` rather than reach the camera the reconnect opened
+  (C6). A `CoolerOn` that passes the check records that session as the one its
+  cooler was engaged in, which is the session a later mode change re-asserts it
+  for.
 
 ### Cooling
 
