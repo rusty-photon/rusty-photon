@@ -1009,8 +1009,12 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   (the reconnect hygiene of C3, applied to the control caches).
 - **RM1 (a mode change is a re-initialization, applied at the setter).**
   `ReadoutModes` is the SDK's named mode list, read once per connect and
-  answered from that cache; `ReadoutMode` is the mode the camera was last
-  switched into, answered from the same place — 0 after every connect, because
+  answered from that cache — **every mode the SDK names, whether or not the
+  camera can deliver a frame in it.** The driver reports what the SDK and the
+  hardware report and does not second-guess them: which modes work is the
+  camera's to decide, and rig2's QHY600M lists modes it never delivers a frame
+  in (*Measured on hardware*, below). `ReadoutMode` is the mode the camera
+  was last switched into, answered from the same place — 0 after every connect, because
   the handshake selects it (C1). The SDK answers the list from static tables,
   without switching modes, so reading it costs the handshake a few calls and
   nothing on the camera. `set_readout_mode` checks the index against the cached
@@ -1046,8 +1050,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   after choosing a mode — the ordinary sequence — would size its frame for a
   sensor it is no longer using: the disagreement between the reported size and
   the next frame that R4 exists to rule out. A per-mode table built at connect
-  would cost an `InitQHYCCD` per mode (eleven on a QHY600M) inside the window
-  C6 and C7 make safe to sit in. So the readout mode is the one image setting
+  would cost an `InitQHYCCD` per mode (ten or eleven on a QHY600M, depending
+  on the SDK, at 2.0 s each) inside the window C6 and C7 make safe to sit in.
+  So the readout mode is the one image setting
   applied where it is set: it reconfigures the sensor rather than describing
   the next frame.
 
@@ -1071,15 +1076,36 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   is the claim — a capture, an abort's cancel or a bin write owning the device
   (B4); none of those takes the lifecycle lock.
 
-  The setter takes as long as `InitQHYCCD` does. The QHY600 SDK sleeps 0.4 s
-  inside it before its USB round trips, and a whole QHY178M connect, init
-  included, measures 0.32 s — inside ConformU's 1 s target for a property
-  write. ConformU never writes `ReadoutMode`. The SDK also starts a
+  The setter takes as long as `InitQHYCCD` does, which is the model's cost: a
+  whole QHY178M connect, init included, measures 0.32 s, while the QHY600M's
+  init alone measures 2.0 s, so a `ReadoutMode` write on it answers in about
+  2.2 s — past ConformU's 1 s target for a property write, which ConformU does
+  not test, since it never writes `ReadoutMode`. The SDK also starts a
   sensor-status thread of its own inside every `InitQHYCCD`, which lives until
-  the handle closes, so a client that switches modes between frames — a
-  separate mode for snapshots and for sequences, say — leaves one more of them
-  per switch for the rest of the session. How many that is over a night, and
-  whether it matters, is part of the multi-mode hardware run (*Future Work*).
+  the handle closes: measured, one more thread per switch (seven switches,
+  seven threads), all of them gone once the camera disconnects. A client that
+  switches modes between frames — a separate mode for snapshots and for
+  sequences, say — accumulates them for the length of a connection, not of the
+  process.
+
+  **Measured on hardware** (rig2's QHY600M, an early unit with fiber hardware
+  fitted but not connected, firmware 2023-06-14; Windows, `qhyccd.dll`
+  24.1.9.12 and 26.7.28.15; 2026-09-28). The SDK lists 10 modes on 24.1.9.12
+  and 11 on 26.7.28.15, which adds a fourth `(Fiber Only)` mode;
+  `Bin3*3Mode (hardware)` is index 5 in both. Switching from mode 0 to mode 1
+  and back gives full frames in each, mode 0's geometry reads back identical
+  after the round trip, gain and offset carry across a switch, and B4's
+  refusals answer as specified. A switch into mode 5 publishes that mode's
+  geometry — a 3200x2144 chip, effective area (8, 0, 3192, 2124), reported
+  3192x2112, and a pixel size the SDK still gives as 3.76 µm — but no exposure
+  in it completes: `GetQHYCCDSingleFrame` returns success after 60 s with a
+  frame of zeros, every time, whether the mode is entered by this driver's
+  switch or selected ahead of the first init of a fresh `OpenQHYCCD` in the
+  vendor's order, and whatever the ROI. SharpCap fails the same way in mode 5
+  and in the `(Fiber Only)` modes. The init did not start the cooler
+  (`disable_auto_cooler=false` on that rig), and the filter wheel read
+  position 0 before and after a switch, which says nothing about homing (C5),
+  since it was at 0 already.
 - **RM2.** The `ImageArray` unpack is total in both directions, and reports the
   **format before the length**: a bit depth the driver cannot unpack is rejected
   as such even when the buffer is also short, because the length it would be
@@ -1102,7 +1128,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   failed inside, which the SDK reports as success and which leaves nothing the
   driver can read to tell — the mode read back is the one recorded before the
   init, and the geometry reads return whatever the init left. That shows only
-  in a frame, and is part of the multi-mode hardware run (*Future Work*). If any
+  in a frame: in a mode the camera cannot read out in, an exposure is a 60 s
+  wait and a frame of zeros the SDK reports as a success (RM1, *Measured on
+  hardware*), which the driver serves as it gets it (*Future Work*). If any
   step of the switch fails, the change
   returns `INVALID_OPERATION` naming the step, and the mode-dependent caches —
   the geometry and reported size, the bin, the sub-frame, the bin list, the
@@ -1878,9 +1906,12 @@ the "how" decisions made while building.
 
   Other drivers split the same way: INDI and AlpacaBridge re-initialize at the
   setter, N.I.N.A. switches inside `StartExposure` with a re-init, and INDIGO
-  and several smaller drivers call `SetQHYCCDReadMode` alone. None of this has
-  yet been confirmed on a multi-mode camera, and the Windows `qhyccd.dll` has
-  not been read — see *Future Work*.
+  and several smaller drivers call `SetQHYCCDReadMode` alone. The switch has
+  since been run on a multi-mode camera on Windows (RM1, *Measured on
+  hardware*), and what that run could see agrees with this reading — the new
+  mode's geometry after the init, one more SDK thread per init until the close,
+  the mode list and mode 5's size — but the Windows `qhyccd.dll` itself has not
+  been read.
 
 ## Future Work
 
@@ -1889,22 +1920,14 @@ the "how" decisions made while building.
   (plus a cap-on / explicit-override workflow for shutterless models, e.g. the
   5III series) so `calibrator-flats` darks/bias work.
 - **`StopExposure`** (graceful stop with readout) — currently `NOT_IMPLEMENTED`.
-- **A readout-mode change on a multi-mode camera.** RM1's re-initialization is
-  specified from the vendor manual and the SDK library and exercised against
-  the unit-test double; no QHY camera with more than one mode has run it. The
-  QHY600M on rig2 is the one in reach, and runs the Windows `qhyccd.dll`,
-  which has not been read. The run to make there, with `debugOutPut=true` in
-  `qhyccd.ini`: the mode list it reports over USB (whether the four
-  `(Fiber Only)` modes appear, and whether they should then be withheld from
-  `ReadoutModes`), one switch into mode 5 and back with the geometry each
-  reports and a frame taken in each, the time the setter takes, whether that
-  rig's `qhyccd.ini` sets `disable_auto_cooler`, the process's thread count
-  before and after a series of switches (each init starts an SDK thread that
-  lives until close, RM1), and what a switch looks like when its init fails
-  inside — which RM3's checks cannot see, so a frame has to. The same run is what the
-  `qhyccd-rs` simulation — one geometry for every mode today — should be
-  seeded from if it is to model modes, rather than from the reading of the SDK
-  this driver was written against.
+- **A frame the SDK never delivers.** In a mode the camera cannot read out
+  in (RM1, *Measured on hardware*), `GetQHYCCDSingleFrame` returns success
+  after 60 s with a frame of zeros, and the driver serves it as an image.
+  Whether to recognize that signature, rather than hand a client an empty
+  frame as a good one, is open.
+- **Readout modes in the simulation.** The `qhyccd-rs` simulation has one mode
+  and one geometry. The mode lists and the mode-5 geometry measured on rig2
+  (RM1) are what it should be seeded from if it is to model modes.
 - **FastReadout** validation on real hardware.
 - **PulseGuide** / `CanPulseGuide`.
 - **Focuser consolidation.** `qhyccd-rs` also covers QHY focusers; a future
