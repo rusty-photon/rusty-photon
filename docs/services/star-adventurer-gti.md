@@ -2525,12 +2525,15 @@ This service is deliberately **not** in the nightly `conformu`
 workflow rotation. The in-tree integration test runs ConformU through
 `bdd_infra::run_conformu` — the URL-argument verbs, which call
 ConformU's `SetFullTest()` — so it is always the **full** test set:
-`alpacaprotocol` then `conformance`, every test group enabled, the same
-shape a hardware record uses. The settings that runner can write carry
-only timeouts and delays (`bdd_infra::FullRunSettings`); this test
-passes none, so the run is on ConformU's defaults. The `alpacaprotocol`
-phase completes; the `conformance` phase records three findings, of
-which one still needs driver work before re-adding
+`alpacaprotocol` then `conformance`, every test group enabled except
+ConformU's two opt-in ones, both off by default: the performance timing
+(`TestPerformance`) and the protocol suite's primary-URL-structure
+checks (`AlpacaConfiguration.ProtocolTestPrimaryUrlStructure`). That is
+the same shape a hardware record uses. The settings that runner can
+write carry only timeouts and delays (`bdd_infra::FullRunSettings`);
+this test passes none, so the run is on ConformU's defaults. The
+`alpacaprotocol` phase completes; the `conformance` phase records three
+findings, of which one still needs driver work before re-adding
 `[package.metadata.conformu]` to the package's `Cargo.toml`:
 
 1. **The HA +9 pulse-guide leg aborts CheckMethods.** With
@@ -2657,11 +2660,16 @@ CONFORMU_PATH=$HOME/tools/conformu/conformu \
 ```
 
 The run is ConformU's full test set. The URL-argument verbs the runner
-drives call `SetFullTest()`, which force-enables every test-selection
-setting (`TestSideOfPierWrite`, `TelescopeExtendedPulseGuideTests`,
-`TelescopeFirstUseTests`, …) whatever a settings file says, and
-`bdd_infra::run_conformu` accepts only a `FullRunSettings` of timeouts
-and delays, so no narrowing is expressible from the test. What the test
+drives call `SetFullTest()`, which forces the Telescope test selections
+on — the `[MandatoryInFullTest]` flags (`TestSideOfPierWrite`,
+`TelescopeExtendedPulseGuideTests`, `TelescopeFirstUseTests`, …) and the
+whole `TelescopeTests` dictionary — whatever a settings file says. Only
+ConformU's two opt-in groups are left to the file — the performance
+timing (`TestPerformance`) and the protocol suite's primary-URL-structure
+checks (`AlpacaConfiguration.ProtocolTestPrimaryUrlStructure`), both off
+by default — and `bdd_infra::run_conformu` accepts only a
+`FullRunSettings` of timeouts and delays, so both stay off and no
+narrowing is expressible from the test. What the test
 does shape is the **device**: its mount config sets
 `site_latitude_deg = 47.6062` so ConformU's
 `SIDE_OF_PIER_INVALID_LATITUDE = 10°` gate does not skip the

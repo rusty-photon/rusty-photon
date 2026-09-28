@@ -291,13 +291,14 @@ rather than device semantics:
 - The suites run via ConformU's `*-settings` commands (the device
   under test is configured inside the settings file;
   `bdd_infra::run_conformu_from_settings`). The URL-argument commands
-  force-enable every test, and a `CanPulseGuide = false` device cannot
-  satisfy the full set: the protocol suite's PulseGuide test polls
-  `IsPulseGuiding` as its completion check and records the
-  spec-mandated `NOT_IMPLEMENTED` answer as an error, while the
-  conformance suite requires exactly that answer. The settings
-  deselect the PulseGuide test (`TelescopeTests`), which only the
-  `*-settings` commands honor.
+  force the full Telescope test set (`SetFullTest()` rebuilds the
+  `TelescopeTests` dictionary all-enabled), and a
+  `CanPulseGuide = false` device cannot satisfy the full set: the
+  protocol suite's PulseGuide test polls `IsPulseGuiding` as its
+  completion check and records the spec-mandated `NOT_IMPLEMENTED`
+  answer as an error, while the conformance suite requires exactly
+  that answer. The settings deselect the PulseGuide test
+  (`TelescopeTests`), which only the `*-settings` commands honor.
 - Deliberately deselected tests surface as ConformU "configuration
   alerts", which count into its exit code like errors; the runner
   accepts a run whose summary shows zero errors and zero issues.

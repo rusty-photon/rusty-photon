@@ -93,7 +93,10 @@ hand-written file, logs a configuration alert per omitted test, and can
 never produce a `docs/validation/` record (planetarium-bridge is the worked
 example). Adding a field to `FullRunSettings` means checking, in the
 ConformU source, that the setting is read on the URL-verb path, carries no
-`[MandatoryInFullTest]` attribute, and cannot loosen a verdict.
+`[MandatoryInFullTest]` attribute, cannot loosen a verdict, and does not
+change which tests run (so no `DomeTests`, `TestPerformance`,
+`ProtocolTestPrimaryUrlStructure`, `SwitchExtendedNumberTestRange` or
+camera caps).
 
 ---
 

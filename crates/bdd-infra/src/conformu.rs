@@ -21,14 +21,20 @@
 //! differently:
 //!
 //! - The URL-argument commands (`conformance <url>`, `alpacaprotocol <url>`)
-//!   read `--settingsfile` and then call `SetFullTest()`, which force-enables
-//!   every test-selection setting and replaces the per-method test dictionary
-//!   with an all-enabled one. The `conformance` verb's help text says so
-//!   (*"with all tests enabled"*); `alpacaprotocol` does the same without
-//!   saying so. Everything else in the file survives: timeouts and delays, but
-//!   also tolerances. [`run_conformu`] drives these, and takes a
-//!   [`FullRunSettings`] rather than a file so that nothing a caller writes is
-//!   silently overridden (a selection) or silently honoured (a tolerance) —
+//!   read `--settingsfile` and then call `SetFullTest()`, which forces every
+//!   setting `ConformU` marks `[MandatoryInFullTest]` to its full-test value
+//!   (most of them test selections) and replaces the per-method
+//!   `TelescopeTests` dictionary with an all-enabled one. The `conformance`
+//!   verb's help text says so (*"with all tests enabled"*); `alpacaprotocol`
+//!   does the same without saying so. Everything else in the file survives,
+//!   apart from the device address, which comes from the URL: timeouts and
+//!   delays, but also tolerances, and settings that shape the test set without
+//!   carrying the attribute, among them the `DomeTests` dictionary,
+//!   `TestPerformance`, `AlpacaConfiguration.ProtocolTestPrimaryUrlStructure`,
+//!   the camera caps (`CameraMaxBinX`, `CameraXMax`, …) and
+//!   `SwitchExtendedNumberTestRange`. [`run_conformu`] drives these, and takes
+//!   a [`FullRunSettings`] rather than a file so that nothing a caller writes
+//!   is silently overridden (a selection) or silently honoured (a tolerance) —
 //!   see that type for why it exposes only the timeouts and delays.
 //! - The `*-settings` commands read the device **and** the test selection from
 //!   the file and honour both. [`run_conformu_from_settings`] drives these; it
@@ -66,19 +72,26 @@ pub enum ConformuRun {
 ///   flag (`TestSideOfPierWrite`, `TelescopeExtendedPulseGuideTests`,
 ///   `SwitchEnableSet`, …) and rebuild the `TelescopeTests` dictionary, so a
 ///   value written here for any of them would document a narrowing that never
-///   happens. The one selection `SetFullTest()` leaves alone is the `DomeTests`
-///   dictionary; it is kept out of this type on purpose, so a run driven here
-///   is the full set for every device class. A device that genuinely cannot
-///   run a test uses [`run_conformu_from_settings`].
+///   happens. Settings that shape the test set but that `SetFullTest()`
+///   leaves alone (among them the `DomeTests` dictionary, `TestPerformance`,
+///   `AlpacaConfiguration.ProtocolTestPrimaryUrlStructure`, the camera caps
+///   `CameraMaxBinX` / `CameraXMax` / … and `SwitchExtendedNumberTestRange`)
+///   are kept out of this type on purpose, so a run driven here is
+///   `ConformU`'s full set for every device class at `ConformU`'s own
+///   defaults (every dome test on, no camera cap, the opt-in performance and
+///   primary-URL-structure checks off). A device that genuinely cannot run a
+///   test uses [`run_conformu_from_settings`].
 /// - **Tolerances** (`TelescopePulseGuideTolerance`, `TelescopeSlewTolerance`,
 ///   …). These *are* honoured, and a loosened one softens the verdict without
 ///   producing a configuration alert or any trace in the results file — a run
 ///   made with one could still satisfy the all-zero record rule. Keeping them
 ///   out of the type keeps every in-tree run on `ConformU`'s own tolerances.
-/// - **Application settings** the CLI never uses (`ConnectionTimeout`, which
-///   is the GUI host's browser-disconnect retention period, `UpdateCheck`,
-///   `ApplicationPort`, …). A field for one of those would promise an effect
-///   the run does not have.
+/// - **Application settings** (`ConnectionTimeout`, which is the GUI host's
+///   browser-disconnect retention period, `UpdateCheck`, `ApplicationPort`,
+///   …). The CLI never reads most of them, so a field for one would promise
+///   an effect the run does not have; the exception, `RunAs32Bit`, would make
+///   a Windows run exit 0 at once while a detached 32-bit copy of `ConformU`
+///   tests the device unobserved.
 ///
 /// Every default equals `ConformU`'s own, and [`run_conformu`] always writes
 /// the file — `None` means these defaults — so `ConformU`'s persisted
@@ -86,8 +99,8 @@ pub enum ConformuRun {
 /// tolerances included) is never consulted by an in-tree run. Adding a field
 /// means checking, against the `ConformU` source for the version the nightly
 /// installs, that the setting is read on the `conformance` / `alpacaprotocol`
-/// path, carries no `[MandatoryInFullTest]` attribute, and cannot loosen a
-/// verdict.
+/// path, carries no `[MandatoryInFullTest]` attribute, cannot loosen a
+/// verdict, and does not change which tests run.
 #[derive(Debug, Clone)]
 pub struct FullRunSettings {
     /// `ConnectDisconnectTimeout`: seconds `ConformU` waits for `Connecting` to
@@ -120,10 +133,11 @@ impl Default for FullRunSettings {
 }
 
 impl FullRunSettings {
-    /// The settings-file schema version this struct writes. `ConformU` resets
-    /// a file without a `SettingsCompatibilityVersion` key to its defaults
-    /// (it treats it as a pre-release file); with the key present, every
-    /// property the file omits simply keeps its default.
+    /// The settings-file schema version this struct writes. `ConformU` looks
+    /// for the literal text `"SettingsCompatibilityVersion":` (no whitespace
+    /// before the colon); a file without it is treated as a pre-release file,
+    /// renamed aside and replaced by defaults. With it present, every property
+    /// the file omits simply keeps its default.
     const SETTINGS_COMPATIBILITY_VERSION: u32 = 1;
 
     /// The settings file, under `ConformU`'s own property names.
@@ -248,15 +262,16 @@ pub async fn run_conformu(
 /// `TelescopeTests` etc. select the tests.
 ///
 /// This exists because the URL-argument commands (`alpacaprotocol <url>`,
-/// used by [`run_conformu`]) call `ConformU`'s `SetFullTest()`, which
-/// force-enables every test — and some capability sets cannot satisfy the
-/// full set. The worked example is a `CanPulseGuide = false` Telescope
-/// (planetarium-bridge): the protocol suite's `PulseGuide` test polls
-/// `IsPulseGuiding` as its completion check and records the spec-mandated
-/// `NOT_IMPLEMENTED` answer as an error, so the test must be deselected —
-/// which only the `*-settings` commands honor. This is the only entry point
-/// where a deselection takes effect, and it is for a documented capability
-/// gap, not for a test the device implements and currently fails.
+/// used by [`run_conformu`]) call `ConformU`'s `SetFullTest()`, which forces
+/// the full test selection — every `[MandatoryInFullTest]` flag and an
+/// all-enabled `TelescopeTests` dictionary — and some capability sets cannot
+/// satisfy the full set. The worked example is a `CanPulseGuide = false`
+/// Telescope (planetarium-bridge): the protocol suite's `PulseGuide` test
+/// polls `IsPulseGuiding` as its completion check and records the
+/// spec-mandated `NOT_IMPLEMENTED` answer as an error, so the test must be
+/// deselected — which only the `*-settings` commands honor. This is the only
+/// entry point where a deselection takes effect, and it is for a documented
+/// capability gap, not for a test the device implements and currently fails.
 ///
 /// The file is the caller's to write in full. `ConformU` uses a
 /// `TelescopeTests` dictionary exactly as deserialised — a missing key is a
@@ -424,8 +439,12 @@ mod tests {
         "FocuserMoveTolerance",
     ];
 
-    /// Application settings `ConformU` reads only on its GUI paths. A field for
-    /// one would promise an effect a CLI run does not have.
+    /// Application settings no field may carry. Most are read only on
+    /// `ConformU`'s GUI paths, so a field for one would promise an effect a
+    /// CLI run does not have. `RunAs32Bit` is read by the CLI too: on 64-bit
+    /// Windows it makes `ConformU` start a detached 32-bit copy of itself on
+    /// the same command line and exit 0 at once, so the caller sees a pass
+    /// while that copy, whose verdict nobody reads, drives the device.
     const APPLICATION_ONLY: &[&str] = &[
         "ConnectionTimeout",
         "GoHomeOnDeviceSelected",
