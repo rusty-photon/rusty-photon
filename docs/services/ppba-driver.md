@@ -569,8 +569,8 @@ This driver implements **dynamic write protection** for dew heater switches (2 &
 
 **When auto-dew is ENABLED (switch 5 = ON):**
 - `CanWrite(2)` and `CanWrite(3)` return `false` (read-only)
-- Attempting to write to switches 2 or 3 returns an `INVALID_OPERATION` error
-- Error message: "Cannot write to switch X while auto-dew is enabled. Disable auto-dew (switch 5) first."
+- `SetSwitch` and `SetSwitchValue` on switches 2 or 3 return `NOT_IMPLEMENTED`. The driver sends the `PA` status query that reads auto-dew, and no heater command (`P3`/`P4`)
+- Error message: "cannot write to switch X while auto-dew is enabled. Disable auto-dew (switch 5) first."
 
 **When auto-dew is DISABLED (switch 5 = OFF):**
 - `CanWrite(2)` and `CanWrite(3)` return `true` (writable)
@@ -579,17 +579,45 @@ This driver implements **dynamic write protection** for dew heater switches (2 &
 **When disconnected:**
 - `CanWrite()` for any switch returns a `NOT_CONNECTED` error (per ASCOM specification)
 
+**Why `NOT_IMPLEMENTED`, not `INVALID_OPERATION`.** "The heater is busy
+with auto-dew" reads like an operation error, but ASCOM ties the Switch
+write methods to `CanWrite`: `SetSwitch` and `SetSwitchValue` must raise
+`MethodNotImplemented` when `CanWrite` is false for that switch, and
+ConformU judges every write by the `CanWrite` it read for the switch. A
+heater under auto-dew already reports `CanWrite = false`, so any other code
+makes the two answers disagree, which on hardware was four ConformU issues
+(one per write method per heater). `upbv2-driver` classifies its auto-dew
+refusal the same way. The message still tells the operator what to do.
+
+The auto-dew check comes before the range check, so an out-of-range value
+on a heater under auto-dew is also answered `NOT_IMPLEMENTED`: the switch
+cannot be written, whatever the value.
+
 ### State Caching and Refresh Behavior
 
 The driver caches device state to minimize serial communication overhead:
 
 - **Background polling**: Device state is refreshed every `polling_interval` (default: `"5s"`)
 - **CanWrite() queries**: Use cached state (may be up to `polling_interval` stale if auto-dew changed externally), except for dew heaters (switches 2 & 3) which refresh the cache if not yet populated to ensure accurate writability reporting
-- **SetSwitchValue() for dew heaters**: Refreshes state immediately before validation (always validates against current device state)
+- **SetSwitch() / SetSwitchValue() for dew heaters**: Refreshes state (`PA`) immediately before the auto-dew check (always validates against current device state)
 - **After successful writes**: State is refreshed immediately to reflect the change
 - **External changes**: Auto-dew changes made by other clients or via serial are detected within the polling interval
 
 For tighter synchronization with external changes, reduce `polling_interval` in the configuration. However, note that very short intervals (< 1s) increase serial communication overhead.
+
+**The check and the write are separate serial requests.** The transport is
+locked per request, not across a heater write's refresh, check and send, so
+another client's `PD:1` can land between the driver's `PA` and its `P3`/`P4`.
+The heater write then reaches a box that has just turned auto-dew on. The
+driver leaves this window open because the box makes it harmless. Measured on
+the dev box's PPBADV Gen2C (fw 2.12.3) with auto-dew on:
+- the box accepts a manual `P3:0` (it echoes `P3:0`, and `PA` reads heater A
+  at 0);
+- auto-dew stays on;
+- its own loop puts heater A back to its computed 52 within 6 s.
+
+So the stray value lasts at most one auto-dew cycle. It never turns auto-dew
+off.
 
 ### Manual Dew Heater Control
 
@@ -608,10 +636,10 @@ curl -X PUT http://localhost:11112/api/v1/switch/0/setswitchvalue \
 If you attempt to set a dew heater while auto-dew is enabled, you'll receive an error:
 
 ```bash
-# This will fail with INVALID_OPERATION error:
+# This will fail with NOT_IMPLEMENTED (0x400):
 curl -X PUT http://localhost:11112/api/v1/switch/0/setswitchvalue \
   -d "Id=2&Value=128"
-# Error: "Cannot write to switch 2 while auto-dew is enabled. Disable auto-dew (switch 5) first."
+# Error: "cannot write to switch 2 while auto-dew is enabled. Disable auto-dew (switch 5) first."
 ```
 
 ### Client Recommendations
@@ -620,7 +648,7 @@ For robust client applications:
 
 1. **Always connect first**: `CanWrite()` requires an active connection
 2. **Check CanWrite() before writing**: Query `CanWrite(id)` to determine if a switch is currently writable
-3. **Handle write errors gracefully**: Catch `INVALID_OPERATION` errors when writing to dew heaters
+3. **Handle write errors gracefully**: Catch `NOT_IMPLEMENTED` when writing to dew heaters. From a heater it means "not writable right now", since auto-dew can be switched on between your `CanWrite` and your write; re-read `CanWrite` rather than treating the heater as permanently read-only
 4. **Update UI on auto-dew changes**: If your UI allows controlling both auto-dew and manual heaters, update the dew heater controls' enabled/disabled state when auto-dew changes
 
 Example client flow:
@@ -640,7 +668,18 @@ else:
 
 ### ConformU Testing
 
-When running ASCOM ConformU compliance tests against real hardware, auto-dew must be disabled first for the dew heater tests (switches 2 and 3) to pass. That is a defect, not a requirement: with auto-dew on, `CanWrite` correctly reads false for both heaters, but a write answers `INVALID_OPERATION` where ASCOM requires `NOT_IMPLEMENTED` from a switch that cannot be written. On hardware this is four ConformU issues ([#1347](https://github.com/rusty-photon/rusty-photon/issues/1347)).
+ConformU passes in either auto-dew state, and the two states test different
+things:
+- **Auto-dew off:** ConformU finds both heaters writable and drives them
+  across 0-255.
+- **Auto-dew on** (the box's normal state): it finds them read-only and
+  checks that `SetSwitch` and `SetSwitchValue` answer `NOT_IMPLEMENTED`.
+
+ConformU tests switches in ascending order and reads each one's `CanWrite`
+once, before that switch's write tests. So switches 2 and 3 are judged before
+it reaches switch 5. At switch 5 it toggles auto-dew and then writes back the
+value it found. The in-tree ConformU test runs the Switch device in both
+states (see [ConformU Compliance Testing](#conformu-compliance-testing)).
 
 ## Testing
 
@@ -689,7 +728,16 @@ The driver includes ASCOM ConformU compliance tests that verify conformance to t
 - `SwitchReadDelay`: 50ms (default: 500ms)
 - `SwitchWriteDelay`: 100ms (default: 3000ms)
 
-This reduces test time from ~8 minutes to ~35 seconds per platform.
+This reduces a Switch pass from ~8 minutes to ~35 seconds per platform.
+
+**Two Switch passes, one per auto-dew state.** The mock starts with auto-dew
+off, so the first pass drives both dew heaters through ConformU's write
+tests. A second Switch pass, against a fresh mock, first turns auto-dew on
+over Alpaca (`SetSwitchValue(5, 1)`, as a client would), then runs ConformU
+with switches 2 and 3 read-only. It is the pass that holds the driver to
+`NOT_IMPLEMENTED` for a refused heater write. No mock knob is needed, unlike
+`upbv2-driver`'s `UPBV2_MOCK_AUTO_DEW`: this driver writes `PD` itself, and
+the mock honours it.
 
 **What the settings can and cannot do**: `FullRunSettings` carries only timeouts and delays. ConformU's URL-argument verbs (which `bdd_infra::run_conformu` drives) call `SetFullTest()` after reading the settings file, so every test-selection setting is force-enabled — `SwitchEnableSet` included, which means the mock run **does** exercise the Switch write tests. A ConformU settings file needs only `SettingsCompatibilityVersion`; every property it omits keeps ConformU's default.
 
@@ -697,9 +745,9 @@ This reduces test time from ~8 minutes to ~35 seconds per platform.
 
 To run ConformU compliance tests against the actual PPBA hardware on `/dev/ttyUSB0`:
 
-**Step 1: Ensure auto-dew is disabled on the hardware**
+**Step 1: Note the auto-dew state**
 
-Auto-dew must be OFF before running ConformU. With it on, the dew-heater write tests report four issues: `SetSwitch` / `SetSwitchValue` on switches 2 and 3 answer `INVALID_OPERATION` although `CanWrite` is false ([#1347](https://github.com/rusty-photon/rusty-photon/issues/1347)). Turn it back on afterwards; ConformU restores the switches it wrote to the values it found, so it leaves auto-dew off.
+Run in whichever auto-dew state the box is in; both pass (see [ConformU Testing](#conformu-testing)). Note the state first. ConformU writes every writable switch, auto-dew included, and puts each back to the value it found. Check auto-dew afterwards anyway: ConformU's `SetSwitch` restore always writes `false`, and only the later `SetSwitchValue` restore puts the original back.
 
 **Step 2: Start the ppba-driver service**
 
@@ -729,7 +777,6 @@ conformu conformance    http://localhost:11112/api/v1/observingconditions/0 -n c
 - ConformU will test all 16 switches including read/write operations on controllable switches
 
 **Troubleshooting:**
-- If `SetSwitch` / `SetSwitchValue` on switch 2 or 3 report an issue quoting *"cannot write to switch 2 while auto-dew is enabled"*, auto-dew is on ([#1347](https://github.com/rusty-photon/rusty-photon/issues/1347)). Disable it before running ConformU.
 - If the service fails to start, ensure no other process is using port 11112 or `/dev/ttyUSB0`
 - If connection fails, verify the PPBA is powered on and connected via USB
 

@@ -60,7 +60,8 @@ impl Default for MockDeviceState {
             switches: PpbaSwitches {
                 quad_12v: true,
                 adjustable_output: false,
-                // Auto-dew OFF by default so ConformU dew-heater writes pass.
+                // Auto-dew OFF by default so ConformU drives the dew-heater
+                // writes; its auto-dew pass turns it on through switch 5.
                 auto_dew: false,
             },
             dew_a: 128,

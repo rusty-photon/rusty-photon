@@ -27,8 +27,53 @@
     clippy::struct_excessive_bools
 )]
 
+use std::time::Duration;
+
+use ascom_alpaca::api::{Switch, TypedDevice};
+use ascom_alpaca::Client;
 use bdd_infra::{run_conformu, ConformuRun, FullRunSettings, ServiceHandle};
 use tracing_subscriber::{fmt, EnvFilter};
+
+type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+const AUTO_DEW: usize = 5;
+const DEW_HEATERS: [usize; 2] = [2, 3];
+
+/// Discover the Switch device through the typed client, retrying for up to
+/// ~2 s while the service's Alpaca routes come up.
+async fn discover_switch(base_url: &str) -> Result<std::sync::Arc<dyn Switch>, String> {
+    let client = Client::new(base_url).map_err(|e| e.to_string())?;
+    for _ in 0..20 {
+        if let Ok(devices) = client.get_devices().await {
+            for device in devices {
+                if let TypedDevice::Switch(switch) = device {
+                    return Ok(switch);
+                }
+            }
+            return Err(format!("no Switch device served at {base_url}"));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(format!("Switch discovery at {base_url} failed 20 times"))
+}
+
+/// Turn auto-dew on through switch 5, as a client would, then check that both
+/// dew heaters now report read-only. Without that check a mock that ignored
+/// `PD` would let the auto-dew pass silently re-run the auto-dew-off case.
+async fn engage_auto_dew(base_url: &str) -> TestResult {
+    let switch = discover_switch(base_url).await?;
+    switch.set_connected(true).await?;
+    switch.set_switch_value(AUTO_DEW, 1.0).await?;
+    for heater in DEW_HEATERS {
+        if switch.can_write(heater).await? {
+            return Err(format!("dew heater {heater} is still writable with auto-dew on").into());
+        }
+    }
+    // ConformU connects for itself; the mock keeps auto-dew across the
+    // disconnect, and the next connect's handshake reads it back.
+    switch.set_connected(false).await?;
+    Ok(())
+}
 
 #[tokio::test]
 async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -139,7 +184,50 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     .await;
 
     handle.stop().await;
-
     result?;
+
+    // Second Switch pass with auto-dew on, the state a PPBA normally runs in.
+    // The mock starts with auto-dew off, so the pass above drives both dew
+    // heaters through ConformU's write tests but never sees them read-only.
+    // ASCOM requires a switch reporting `CanWrite = false` to raise
+    // `MethodNotImplemented` from SetSwitch/SetSwitchValue, and ConformU
+    // checks that pairing, so this is the run that holds the auto-dew
+    // refusal to it. ConformU reads each switch's `CanWrite` before testing
+    // it and walks the ids upward, so heaters 2 and 3 are judged before it
+    // toggles auto-dew at switch 5.
+    let mut gated = ServiceHandle::try_start(
+        env!("CARGO_PKG_NAME"),
+        config_path
+            .to_str()
+            .expect("conformu temp path must be UTF-8"),
+    )
+    .await?;
+
+    let gated_result: TestResult = async {
+        engage_auto_dew(&gated.base_url).await?;
+
+        println!("::group::ConformU Switch Compliance Test Results (auto-dew on)");
+        println!(
+            "Running ASCOM Alpaca Switch compliance tests on port {}...",
+            gated.port
+        );
+
+        match run_conformu("switch", &gated.base_url, 0, Some(&conformu_settings)).await? {
+            ConformuRun::Skipped => {
+                println!("ConformU Switch (auto-dew on): CONFORMU_PATH not set, skipping.");
+            }
+            ConformuRun::Passed => {
+                println!("ConformU Switch (auto-dew on) compliance tests PASSED");
+            }
+        }
+        println!("::endgroup::");
+
+        Ok(())
+    }
+    .await;
+
+    gated.stop().await;
+
+    gated_result?;
     Ok(())
 }

@@ -1,7 +1,12 @@
 Feature: Switch Control
-  As an ASCOM client
-  I want to control PPBA switches
-  So that I can manage power outputs and dew heaters
+  Switches 0 to 5 are the PPBA's controls; 6 to 15 are read-only readings.
+  The two dew heaters, switches 2 and 3, are writable only while auto-dew
+  (switch 5) is off. With auto-dew on they report CanWrite false, and both
+  SetSwitch and SetSwitchValue refuse them with NOT_IMPLEMENTED, the code
+  ASCOM requires from any switch whose CanWrite is false. The driver reads
+  auto-dew from the device (PA) before it decides; the refusal comes before
+  the value is range-checked, sends no heater command, and tells the
+  operator to turn auto-dew off at switch 5.
 
   Scenario: Get boolean switch value when connected
     Given a running PPBA server with the switch connected
@@ -37,10 +42,32 @@ Feature: Switch Control
     And switch 4 should be writable
     And switch 5 should be writable
 
-  Scenario: Writing dew heater with auto-dew enabled returns INVALID_OPERATION
+  Scenario Outline: A dew heater under auto-dew refuses every write as not implemented
+    Given a running PPBA server with auto-dew enabled
+    When I try to <write>
+    Then the last error code should be NOT_IMPLEMENTED
+
+    Examples:
+      | write                        |
+      | set switch 2 value to 100.0  |
+      | set switch 2 boolean to true |
+      | set switch 3 value to 100.0  |
+      | set switch 3 boolean to true |
+
+  Scenario: A dew heater under auto-dew is refused before its value is range-checked
+    Given a running PPBA server with auto-dew enabled
+    When I try to set switch 2 value to 300.0
+    Then the last error code should be NOT_IMPLEMENTED
+
+  Scenario: The auto-dew refusal names switch 5 as the way out
     Given a running PPBA server with auto-dew enabled
     When I try to set switch 2 value to 100.0
-    Then the last error code should be INVALID_OPERATION
+    Then the last error message should contain "Disable auto-dew (switch 5) first"
+
+  Scenario: A refused dew-heater write sends no heater command, so heater A keeps its 128
+    Given a running PPBA server with auto-dew enabled
+    When I try to set switch 2 value to 200.0
+    Then switch 2 value should be 128.0
 
   Scenario: Setting Dew Heater A PWM succeeds when auto-dew is off
     Given a running PPBA server with the switch connected
