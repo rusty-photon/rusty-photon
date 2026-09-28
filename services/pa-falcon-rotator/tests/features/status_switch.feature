@@ -2,7 +2,11 @@ Feature: Status Switch device
   A second ASCOM device on the same Alpaca server exposes two read-only
   switches the Rotator interface has no slot for: id 0 reports the Falcon's
   input voltage as a raw ADC count from VS (scale calibration deferred), id 1
-  reports FA.limit_detect as a boolean.
+  reports FA.limit_detect as a boolean. Both are synchronous (CanAsync
+  false): SetAsync, SetAsyncValue and StateChangeComplete answer
+  NOT_IMPLEMENTED (1024), CancelAsync, which ISwitchV3 makes mandatory,
+  succeeds as a no-op, and every async member rejects id 2 with
+  INVALID_VALUE (1025).
 
   Scenario: MaxSwitch reports the two read-only switches
     Given a running pa-falcon-rotator service
@@ -114,3 +118,54 @@ Feature: Status Switch device
       | MaxSwitchValue        |
       | SwitchStep            |
       | CanWrite              |
+
+  Scenario Outline: Both switches report CanAsync false
+    Given a running pa-falcon-rotator service
+    When I connect the status switch
+    And I call CanAsync on switch id <id>
+    Then the switch boolean should be false
+
+    Examples:
+      | id |
+      | 0  |
+      | 1  |
+
+  Scenario Outline: SetAsync, SetAsyncValue and StateChangeComplete are rejected with NOT_IMPLEMENTED
+    Given a running pa-falcon-rotator service
+    When I connect the status switch
+    And I call <member> on switch id <id>
+    Then the operation should fail with code 1024
+
+    Examples:
+      | member              | id |
+      | SetAsync            | 0  |
+      | SetAsync            | 1  |
+      | SetAsyncValue       | 0  |
+      | SetAsyncValue       | 1  |
+      | StateChangeComplete | 0  |
+      | StateChangeComplete | 1  |
+
+  Scenario Outline: CancelAsync is mandatory and succeeds as a no-op
+    Given a running pa-falcon-rotator service
+    When I connect the status switch
+    And I call CancelAsync on switch id <id>
+    Then the async call should succeed
+
+    Examples:
+      | id |
+      | 0  |
+      | 1  |
+
+  Scenario Outline: The async members reject an out-of-range switch id with INVALID_VALUE
+    Given a running pa-falcon-rotator service
+    When I connect the status switch
+    And I call <member> on switch id 2
+    Then the operation should fail with code 1025
+
+    Examples:
+      | member              |
+      | CanAsync            |
+      | SetAsync            |
+      | SetAsyncValue       |
+      | StateChangeComplete |
+      | CancelAsync         |

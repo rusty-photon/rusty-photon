@@ -334,8 +334,8 @@ impl Switch for FalconStatusSwitchDevice {
     async fn state_change_complete(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
         SwitchId::try_from(id)?;
-        // Read-only switches never change asynchronously.
-        Ok(true)
+        // ISwitchV3: MethodNotImplemented when CanAsync is false.
+        Err(ASCOMError::NOT_IMPLEMENTED)
     }
 
     // Both advertised switches are read-only (`CanWrite = false`). ConformU
@@ -365,13 +365,16 @@ impl Switch for FalconStatusSwitchDevice {
     }
 
     // ISwitchV3 async surface. The trait defaults return `Ok(false)` for
-    // `can_async` and `NOT_IMPLEMENTED` for the three writers, *without*
-    // running id validation. ConformU flags both: it expects an
-    // InvalidValueException when called with `id >= MaxSwitch` regardless
-    // of whether the device supports the operation. Overriding here
-    // chains `ensure_connected!` + `SwitchId::try_from` before the trait-default
-    // body so out-of-range ids return `INVALID_VALUE` (or `NOT_CONNECTED`
-    // when disconnected, matching the rest of the surface).
+    // `can_async` and `NOT_IMPLEMENTED` for `set_async`, `set_async_value`
+    // and `cancel_async`, *without* running id validation. ConformU flags
+    // that: it expects an InvalidValueException when called with
+    // `id >= MaxSwitch` regardless of whether the device supports the
+    // operation. Overriding here chains `ensure_connected!` +
+    // `SwitchId::try_from` before the body so out-of-range ids return
+    // `INVALID_VALUE` (or `NOT_CONNECTED` when disconnected, matching the rest
+    // of the surface). With `CanAsync` false the setters stay
+    // `NOT_IMPLEMENTED`, but `cancel_async` must succeed: the spec makes it
+    // mandatory, so the trait default is wrong for it.
 
     async fn can_async(&self, id: usize) -> ASCOMResult<bool> {
         ensure_connected!(self);
@@ -394,7 +397,7 @@ impl Switch for FalconStatusSwitchDevice {
     async fn cancel_async(&self, id: usize) -> ASCOMResult<()> {
         ensure_connected!(self);
         SwitchId::try_from(id)?;
-        Err(ASCOMError::NOT_IMPLEMENTED)
+        Ok(())
     }
 }
 
@@ -532,6 +535,21 @@ mod tests {
         let device = disconnected_device();
         let err = device.state_change_complete(0).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    #[tokio::test]
+    async fn async_members_return_not_connected_when_disconnected() {
+        // cancel_async succeeds when connected, so only this guard stands
+        // between a disconnected client and a silent success.
+        let device = disconnected_device();
+        for err in [
+            device.can_async(0).await.unwrap_err(),
+            device.set_async(0, true).await.unwrap_err(),
+            device.set_async_value(0, 0.0).await.unwrap_err(),
+            device.cancel_async(0).await.unwrap_err(),
+        ] {
+            assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED, "{err}");
+        }
     }
 
     #[tokio::test]
@@ -794,8 +812,8 @@ mod mock_tests {
         assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
     }
 
-    // ---- ISwitchV3 async surface: id validation precedes the
-    // not-implemented body. See the ConformU-driven override above. -------
+    // ---- ISwitchV3 async surface: id validation precedes each body. See
+    // the ConformU-driven override above. -----------------------------------
 
     #[tokio::test]
     async fn can_async_returns_false_for_valid_id() {
@@ -843,10 +861,26 @@ mod mock_tests {
     }
 
     #[tokio::test]
-    async fn cancel_async_returns_not_implemented_for_valid_id() {
+    async fn state_change_complete_returns_not_implemented_for_valid_id() {
         let (device, _) = connected_device().await;
-        let err = device.cancel_async(SWITCH_ID_VOLTAGE).await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
+        for id in [SWITCH_ID_VOLTAGE, SWITCH_ID_LIMIT] {
+            let err = device.state_change_complete(id).await.unwrap_err();
+            assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED, "switch {id}");
+        }
+    }
+
+    #[tokio::test]
+    async fn state_change_complete_rejects_out_of_range_id() {
+        let (device, _) = connected_device().await;
+        let err = device.state_change_complete(2).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[tokio::test]
+    async fn cancel_async_succeeds_for_valid_id_because_the_spec_makes_it_mandatory() {
+        let (device, _) = connected_device().await;
+        device.cancel_async(SWITCH_ID_VOLTAGE).await.unwrap();
+        device.cancel_async(SWITCH_ID_LIMIT).await.unwrap();
     }
 
     #[tokio::test]
