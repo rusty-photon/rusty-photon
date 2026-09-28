@@ -85,12 +85,15 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// The connect/disconnect lock for the *physical* connection behind this
     /// handle, shared with any other ASCOM device on it (C8).
     fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()>;
-    /// Run the SDK's post-open initialisation (`InitQHYCCD`).
+    /// Run the SDK's initialisation (`InitQHYCCD`), which is also where a
+    /// selected readout mode reaches the camera (RM1). The SDK reports success
+    /// even when its model-specific part fails, so a caller that needs to know
+    /// checks the camera's state afterwards (RM3).
     ///
     /// # Errors
     ///
     /// Returns a [`BackendError`] if the camera is not open or the SDK's init
-    /// fails.
+    /// reports a failure.
     fn init(&self) -> BackendResult<()>;
 
     /// Force single-frame (long-exposure) stream mode.
@@ -100,14 +103,16 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// Returns a [`BackendError`] if the camera is not open or the SDK rejects
     /// the mode.
     fn set_stream_mode_single(&self) -> BackendResult<()>;
-    /// Select readout mode `mode` (an index into the SDK's mode list).
+    /// Select readout mode `mode` (an index into the SDK's mode list). The SDK
+    /// only records it: the camera is switched by the next [`Self::init`].
     ///
     /// # Errors
     ///
     /// Returns a [`BackendError`] if the camera is not open or the SDK rejects
     /// `mode`.
     fn set_readout_mode(&self, mode: u32) -> BackendResult<()>;
-    /// The currently selected readout mode index.
+    /// The readout mode index the SDK last recorded — which, until an init has
+    /// applied it, need not be the mode the camera is in.
     ///
     /// # Errors
     ///
@@ -128,13 +133,6 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// Returns a [`BackendError`] if the camera is not open or the SDK cannot
     /// answer for `index` — an `index` past its mode count included.
     fn get_readout_mode_name(&self, index: u32) -> BackendResult<String>;
-    /// The `(width, height)` readout mode `index` produces.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`BackendError`] if the camera is not open or the SDK cannot
-    /// answer for `index` — an `index` past its mode count included.
-    fn get_readout_mode_resolution(&self, index: u32) -> BackendResult<(u32, u32)>;
 
     /// Force 16-bit USB transfer (`ControlType::TransferBit`).
     ///
@@ -444,8 +442,9 @@ pub struct SharedCameraConnection {
     /// side of them.
     ///
     /// `tokio`'s rather than `parking_lot`'s because a connect handshake is
-    /// awaited, and it is taken by `set_connected` alone, so a `Connected` read
-    /// never queues behind it.
+    /// awaited. It is taken by `set_connected` and by the camera's readout-mode
+    /// change — which runs `InitQHYCCD` too — and by nothing else, so a
+    /// `Connected` read never queues behind it.
     lifecycle: tokio::sync::Mutex<()>,
 }
 
@@ -585,12 +584,6 @@ impl CameraHandle for QhyCameraHandle {
         self.conn
             .camera()
             .get_readout_mode_name(index)
-            .map_err(BackendError::from_err)
-    }
-    fn get_readout_mode_resolution(&self, index: u32) -> BackendResult<(u32, u32)> {
-        self.conn
-            .camera()
-            .get_readout_mode_resolution(index)
             .map_err(BackendError::from_err)
     }
     fn set_transfer_bit_16(&self) -> BackendResult<()> {
@@ -774,9 +767,19 @@ pub(crate) mod mock {
 
     use super::*;
     use parking_lot::Mutex;
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
     use std::time::Duration;
+
+    /// One readout mode in the mock's table: its name, and the sensor the camera
+    /// has once an init has switched it into this mode.
+    #[derive(Debug, Clone)]
+    pub struct MockReadoutMode {
+        pub name: String,
+        pub ccd_info: CCDChipInfo,
+        /// At bin 1, in chip coordinates.
+        pub effective_area: CCDChipArea,
+    }
 
     #[derive(Debug)]
     pub struct MockCameraHandle {
@@ -788,9 +791,43 @@ pub(crate) mod mock {
         controls: Mutex<HashMap<ControlType, u32>>,
         params: Mutex<HashMap<ControlType, f64>>,
         ranges: Mutex<HashMap<ControlType, (f64, f64, f64)>>,
-        ccd_info: CCDChipInfo,
+        /// The chip the SDK reports for the mode the last init applied.
+        ccd_info: Mutex<CCDChipInfo>,
+        /// The effective area at bin 1 for that same mode — reported scaled by
+        /// the bin, as the SDK reports it.
         effective_area: Mutex<CCDChipArea>,
-        readout_modes: Vec<(String, (u32, u32))>,
+        /// The SDK's mode table: each mode's name, and the sensor an init
+        /// switches the mock into once that mode is the one recorded.
+        readout_modes: Mutex<Vec<MockReadoutMode>>,
+        /// The mode `set_readout_mode` last recorded. It is what
+        /// `get_readout_mode` reports, as the SDK's own read does, whether or
+        /// not an init has applied it yet.
+        recorded_mode: AtomicU32,
+        /// The mode the last init applied — the one the camera is in.
+        applied_mode: AtomicU32,
+        /// Make `init` reset gain and offset to 0, as some models' init does
+        /// (qhy-camera.md RM4), so the driver's restore has something to undo.
+        pub init_resets_gain_offset: AtomicBool,
+        /// Make `init` switch the cooler off, as the SDK does inside every init
+        /// when `qhyccd.ini` sets `disable_auto_cooler` (RM4).
+        pub init_stops_cooler: AtomicBool,
+        /// Make `set_readout_mode` report success and record nothing, so the
+        /// driver's check that the SDK holds the mode it was given is reached
+        /// (RM3).
+        pub ignore_readout_mode_writes: AtomicBool,
+        /// Make the best-effort 16-bit transfer write fail.
+        pub fail_transfer_bit: AtomicBool,
+        /// Controls whose `get_parameter` fails, so a read the driver makes
+        /// before it changes anything can be made to fail.
+        fail_reads: Mutex<HashSet<ControlType>>,
+        /// Controls whose `set_parameter` fails — the gain, offset or cooler
+        /// write a readout-mode change makes after its init, say.
+        fail_writes: Mutex<HashSet<ControlType>>,
+        /// Every configuration call the driver makes, in order — the mode,
+        /// stream mode, init, transfer depth, parameter, bin and ROI writes —
+        /// so a test can assert the sequence a readout-mode change runs, and
+        /// that a request that should not have reached the camera did not.
+        calls: Mutex<Vec<String>>,
         roi: Mutex<CCDChipArea>,
         bin: Mutex<(u32, u32)>,
         /// E9 injection: make the next single-frame exposure fail.
@@ -906,6 +943,11 @@ pub(crate) mod mock {
         /// Set while such a held `set_bin_mode` is executing, so a test can
         /// wait for it to be *in* the SDK instead of guessing.
         in_binned_set: AtomicBool,
+        /// Holds a gain write open, before it lands, until a test releases it —
+        /// a client's `Gain` write parked inside the SDK.
+        gain_write_held: AtomicBool,
+        /// Set while such a held gain write is executing.
+        in_gain_write: AtomicBool,
         /// Holds the **offset** range read open until a test releases it.
         /// `open_handshake` asks for the exposure range, then gain, then offset,
         /// so this is its last question to the device: it parks a connect that
@@ -969,6 +1011,16 @@ pub(crate) mod mock {
                 width: 3072,
                 height: 2048,
             };
+            let chip = CCDChipInfo {
+                // um, matching the real SDK (chip dims ≈ image_dim × pixel_size).
+                chip_width: 7372.8,  // um (3072 × 2.4)
+                chip_height: 4915.2, // um (2048 × 2.4)
+                image_width: 3072,
+                image_height: 2048,
+                pixel_width: 2.4,
+                pixel_height: 2.4,
+                bits_per_pixel: 16,
+            };
             Self {
                 id: "SIM-QHY178M".to_string(),
                 model: "QHY178M-Simulated".to_string(),
@@ -976,18 +1028,22 @@ pub(crate) mod mock {
                 controls: Mutex::new(controls),
                 params: Mutex::new(params),
                 ranges: Mutex::new(ranges),
-                ccd_info: CCDChipInfo {
-                    // um, matching the real SDK (chip dims ≈ image_dim × pixel_size).
-                    chip_width: 7372.8,  // um (3072 × 2.4)
-                    chip_height: 4915.2, // um (2048 × 2.4)
-                    image_width: 3072,
-                    image_height: 2048,
-                    pixel_width: 2.4,
-                    pixel_height: 2.4,
-                    bits_per_pixel: 16,
-                },
+                ccd_info: Mutex::new(chip),
                 effective_area: Mutex::new(area),
-                readout_modes: vec![("Standard".to_string(), (3072, 2048))],
+                readout_modes: Mutex::new(vec![MockReadoutMode {
+                    name: "Standard".to_string(),
+                    ccd_info: chip,
+                    effective_area: area,
+                }]),
+                recorded_mode: AtomicU32::new(0),
+                applied_mode: AtomicU32::new(0),
+                init_resets_gain_offset: AtomicBool::new(false),
+                init_stops_cooler: AtomicBool::new(false),
+                ignore_readout_mode_writes: AtomicBool::new(false),
+                fail_transfer_bit: AtomicBool::new(false),
+                fail_reads: Mutex::new(HashSet::new()),
+                fail_writes: Mutex::new(HashSet::new()),
+                calls: Mutex::new(Vec::new()),
                 roi: Mutex::new(area),
                 bin: Mutex::new((1, 1)),
                 fail_single_frame: AtomicBool::new(false),
@@ -1020,6 +1076,8 @@ pub(crate) mod mock {
                 lifecycle: Arc::new(tokio::sync::Mutex::new(())),
                 binned_set_held: AtomicBool::new(false),
                 in_binned_set: AtomicBool::new(false),
+                gain_write_held: AtomicBool::new(false),
+                in_gain_write: AtomicBool::new(false),
                 offset_range_held: AtomicBool::new(false),
                 in_offset_range: AtomicBool::new(false),
                 single_frame_calls: AtomicU32::new(0),
@@ -1123,10 +1181,60 @@ pub(crate) mod mock {
         pub fn bin(&self) -> (u32, u32) {
             *self.bin.lock()
         }
-        /// Make the SDK report an empty effective area, the way a wedged camera
-        /// does. The driver must refuse the connect rather than cache it.
+        /// Make the SDK report `area` as the effective area — an empty one is how
+        /// a wedged camera reports. It is the area of the mode in force, so the
+        /// next init into that mode reports it too.
         pub fn set_effective_area(&self, area: CCDChipArea) {
             *self.effective_area.lock() = area;
+            let applied = self.applied_mode.load(Ordering::SeqCst) as usize;
+            if let Some(mode) = self.readout_modes.lock().get_mut(applied) {
+                mode.effective_area = area;
+            }
+        }
+        /// Add readout mode `name` to the SDK's table: a sensor of `ccd_info`
+        /// with `effective_area` (at bin 1, in chip coordinates), which the
+        /// camera takes on once an init runs with this mode recorded.
+        pub fn with_readout_mode(
+            self,
+            name: &str,
+            ccd_info: CCDChipInfo,
+            effective_area: CCDChipArea,
+        ) -> Self {
+            self.readout_modes.lock().push(MockReadoutMode {
+                name: name.to_string(),
+                ccd_info,
+                effective_area,
+            });
+            self
+        }
+        /// The mode the last init applied — the one the camera is in, which
+        /// `get_readout_mode` does not tell you.
+        pub fn applied_mode(&self) -> u32 {
+            self.applied_mode.load(Ordering::SeqCst)
+        }
+        /// Change a control's `(min, max, step)` on a mock already in use, so a
+        /// driver that re-reads it can be told apart from one that does not.
+        pub fn set_range(&self, control: ControlType, range: (f64, f64, f64)) {
+            self.ranges.lock().insert(control, range);
+        }
+        /// Make every read of `control` fail.
+        pub fn fail_reads_of(&self, control: ControlType) {
+            self.fail_reads.lock().insert(control);
+        }
+        /// Make every write of `control` fail.
+        pub fn fail_writes_of(&self, control: ControlType) {
+            self.fail_writes.lock().insert(control);
+        }
+        /// Every configuration call so far, in order.
+        pub fn calls(&self) -> Vec<String> {
+            self.calls.lock().clone()
+        }
+        /// Forget the calls so far, so a test can look at what one request made.
+        pub fn clear_calls(&self) {
+            self.calls.lock().clear();
+        }
+        fn record(&self, call: String) {
+            self.calls.lock().push(call);
         }
         /// Hold `close` open once it starts, until
         /// [`release_close`](Self::release_close). Pair it with
@@ -1221,6 +1329,21 @@ pub(crate) mod mock {
         pub fn is_in_binned_set(&self) -> bool {
             self.in_binned_set.load(Ordering::SeqCst)
         }
+        /// Hold a gain write open once it starts, before the gain lands, until
+        /// [`release_gain_write`](Self::release_gain_write). Pair it with
+        /// [`is_in_gain_write`](Self::is_in_gain_write) to drop a `Gain` write
+        /// while it is demonstrably inside the SDK.
+        pub fn hold_gain_write(&self) {
+            self.gain_write_held.store(true, Ordering::SeqCst);
+        }
+        /// Let a held gain write finish.
+        pub fn release_gain_write(&self) {
+            self.gain_write_held.store(false, Ordering::SeqCst);
+        }
+        /// Whether a held gain write is executing right now.
+        pub fn is_in_gain_write(&self) -> bool {
+            self.in_gain_write.load(Ordering::SeqCst)
+        }
         /// Hold the offset range read open once the handshake reaches it, until
         /// [`release_offset_range`](Self::release_offset_range). Pair it with
         /// [`is_in_offset_range`](Self::is_in_offset_range) to keep a connect
@@ -1283,7 +1406,14 @@ pub(crate) mod mock {
         fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
             &self.lifecycle
         }
+        /// Where the recorded mode reaches the camera, as it does in the SDK:
+        /// the mode's sensor becomes the one `get_ccd_info` and
+        /// `get_effective_area` describe, and the exposure time and the
+        /// transfer depth go back to the SDK's defaults (qhy-camera.md,
+        /// Implementation notes). Gain, offset and the cooler survive unless a
+        /// test asks for the models that do not keep them.
         fn init(&self) -> BackendResult<()> {
+            self.record("init".to_string());
             self.init_calls.fetch_add(1, Ordering::SeqCst);
             self.in_init.store(true, Ordering::SeqCst);
             // Same shape (and same runaway backstop) as the held close above.
@@ -1291,43 +1421,66 @@ pub(crate) mod mock {
             while self.init_held.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
                 std::thread::sleep(Duration::from_millis(1));
             }
+            let recorded = self.recorded_mode.load(Ordering::SeqCst);
+            if let Some(mode) = self.readout_modes.lock().get(recorded as usize) {
+                *self.ccd_info.lock() = mode.ccd_info;
+                *self.effective_area.lock() = mode.effective_area;
+            }
+            self.applied_mode.store(recorded, Ordering::SeqCst);
+            self.ccd_info.lock().bits_per_pixel = 16;
+            let mut params = self.params.lock();
+            params.insert(ControlType::Exposure, 5_000_000.0);
+            if self.init_resets_gain_offset.load(Ordering::SeqCst) {
+                params.insert(ControlType::Gain, 0.0);
+                params.insert(ControlType::Offset, 0.0);
+            }
+            if self.init_stops_cooler.load(Ordering::SeqCst) {
+                params.remove(&ControlType::Cooler);
+                params.insert(ControlType::CurPWM, 0.0);
+            }
+            drop(params);
             self.in_init.store(false, Ordering::SeqCst);
             Ok(())
         }
         fn set_stream_mode_single(&self) -> BackendResult<()> {
+            self.record("set_stream_mode_single".to_string());
             Ok(())
         }
+        /// Records the mode and nothing else, as the SDK does: the camera is
+        /// switched by the next [`init`](Self::init).
         fn set_readout_mode(&self, mode: u32) -> BackendResult<()> {
+            self.record(format!("set_readout_mode({mode})"));
             if self.fail_set_controls.load(Ordering::SeqCst) {
                 return Err(BackendError(
                     "simulated set_readout_mode failure".to_string(),
                 ));
             }
-            if (mode as usize) < self.readout_modes.len() {
-                Ok(())
-            } else {
-                Err(BackendError("readout mode out of range".to_string()))
+            if (mode as usize) >= self.readout_modes.lock().len() {
+                return Err(BackendError("readout mode out of range".to_string()));
             }
+            if !self.ignore_readout_mode_writes.load(Ordering::SeqCst) {
+                self.recorded_mode.store(mode, Ordering::SeqCst);
+            }
+            Ok(())
         }
         fn get_readout_mode(&self) -> BackendResult<u32> {
-            Ok(0)
+            Ok(self.recorded_mode.load(Ordering::SeqCst))
         }
         fn get_number_of_readout_modes(&self) -> BackendResult<u32> {
-            Ok(self.readout_modes.len() as u32)
+            Ok(self.readout_modes.lock().len() as u32)
         }
         fn get_readout_mode_name(&self, index: u32) -> BackendResult<String> {
             self.readout_modes
+                .lock()
                 .get(index as usize)
-                .map(|(name, _)| name.clone())
-                .ok_or_else(|| BackendError("readout mode index out of range".to_string()))
-        }
-        fn get_readout_mode_resolution(&self, index: u32) -> BackendResult<(u32, u32)> {
-            self.readout_modes
-                .get(index as usize)
-                .map(|(_, res)| *res)
+                .map(|mode| mode.name.clone())
                 .ok_or_else(|| BackendError("readout mode index out of range".to_string()))
         }
         fn set_transfer_bit_16(&self) -> BackendResult<()> {
+            self.record("set_transfer_bit_16".to_string());
+            if self.fail_transfer_bit.load(Ordering::SeqCst) {
+                return Err(BackendError("simulated transfer bit failure".to_string()));
+            }
             Ok(())
         }
         fn get_model(&self) -> BackendResult<String> {
@@ -1337,7 +1490,7 @@ pub(crate) mod mock {
             if self.fail_handshake.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated handshake failure".to_string()));
             }
-            Ok(self.ccd_info)
+            Ok(*self.ccd_info.lock())
         }
         /// Scaled by the current binning, as the real SDK reports it: the value
         /// depends on device state the previous session left behind, not just on
@@ -1368,6 +1521,9 @@ pub(crate) mod mock {
             self.controls.lock().get(&control).copied()
         }
         fn get_parameter(&self, control: ControlType) -> BackendResult<f64> {
+            if self.fail_reads.lock().contains(&control) {
+                return Err(BackendError(format!("simulated {control:?} read failure")));
+            }
             let delay = self.read_delay_us.load(Ordering::SeqCst);
             if delay > 0 {
                 std::thread::sleep(Duration::from_micros(delay));
@@ -1400,6 +1556,21 @@ pub(crate) mod mock {
                 .ok_or_else(|| BackendError(format!("no range for {control:?}")))
         }
         fn set_parameter(&self, control: ControlType, value: f64) -> BackendResult<()> {
+            self.record(format!("set_parameter({control:?})"));
+            if self.fail_writes.lock().contains(&control) {
+                return Err(BackendError(format!("simulated {control:?} write failure")));
+            }
+            if control == ControlType::Gain && self.gain_write_held.load(Ordering::SeqCst) {
+                self.in_gain_write.store(true, Ordering::SeqCst);
+                // Same shape (and same runaway backstop) as the held close above.
+                let deadline = std::time::Instant::now() + Duration::from_mins(1);
+                while self.gain_write_held.load(Ordering::SeqCst)
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                self.in_gain_write.store(false, Ordering::SeqCst);
+            }
             // Mirror the simulation's cooler routing so device-level cooling tests
             // observe the same coupling as the live backend.
             match control {
@@ -1416,6 +1587,7 @@ pub(crate) mod mock {
             Ok(())
         }
         fn set_bin_mode(&self, bin_x: u32, bin_y: u32) -> BackendResult<()> {
+            self.record(format!("set_bin_mode({bin_x}, {bin_y})"));
             if self.fail_set_controls.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated set_bin_mode failure".to_string()));
             }
@@ -1437,6 +1609,7 @@ pub(crate) mod mock {
             Ok(())
         }
         fn set_roi(&self, area: CCDChipArea) -> BackendResult<()> {
+            self.record("set_roi".to_string());
             self.in_set_roi.store(true, Ordering::SeqCst);
             // Same shape (and same runaway backstop) as the held close above.
             let deadline = std::time::Instant::now() + Duration::from_mins(1);

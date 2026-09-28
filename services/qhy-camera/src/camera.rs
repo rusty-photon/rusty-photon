@@ -80,7 +80,7 @@ const BIN_UNPUBLISHED: u8 = 0;
 /// Per-device runtime state: caches populated at connect plus the exposure state
 /// machine. Atomics for the hot/simple flags; `parking_lot::Mutex` for the
 /// `Option<…>` caches and the captured image. Locks are never held across an
-/// `await`.
+/// `await`, except [`DeviceState::control_lock`], which exists to be.
 #[derive(Debug)]
 struct DeviceState {
     /// Current symmetric bin, [`BIN_UNPUBLISHED`] until a connect handshake
@@ -110,10 +110,11 @@ struct DeviceState {
     /// a setter left outside it is a way for a session that has ended to reach
     /// into the one that replaced it.
     ///
-    /// **Lock order:** outermost — taken before [`Self::valid_bins`],
-    /// [`Self::ccd_info`], [`Self::intended_roi`], [`Self::result_lock`] and
-    /// [`Self::in_flight_capture`], never after. Nothing awaits while it is
-    /// held.
+    /// **Lock order:** outermost of the synchronous locks — taken before
+    /// [`Self::valid_bins`], [`Self::ccd_info`], [`Self::intended_roi`],
+    /// [`Self::result_lock`] and [`Self::in_flight_capture`], never after. A
+    /// readout-mode change commits under it while holding
+    /// [`Self::control_lock`]. Nothing awaits while it is held.
     cache_commit_lock: Mutex<()>,
     valid_bins: Mutex<Vec<u8>>,
     ccd_info: Mutex<Option<CachedCcdInfo>>,
@@ -128,6 +129,30 @@ struct DeviceState {
     gain_min_max: Mutex<Option<CachedRange>>,
     /// Offset range, on the same terms as [`DeviceState::gain_min_max`].
     offset_min_max: Mutex<Option<CachedRange>>,
+    /// The SDK's named readout modes (RM1), read once per connect. `None` until
+    /// a connect's handshake has read them (C6). A mode change that fails
+    /// part-way leaves it standing (RM3): no mode changes it, and it is what a
+    /// client recovers by selecting from.
+    readout_modes: Mutex<Option<Vec<String>>>,
+    /// The readout mode the camera was last switched into — 0 once a connect has
+    /// selected it. `None` before that, and after a mode change that failed
+    /// part-way (RM3), when the camera may be in either mode or in neither.
+    readout_mode: Mutex<Option<u32>>,
+    /// Held by a readout-mode change from its read of the gain and offset until
+    /// the new mode is published, and for their whole length by the `Gain` and
+    /// `Offset` reads and writes and the `CoolerOn` and `SetCCDTemperature`
+    /// writes. Each of those therefore lands wholly before a mode change or
+    /// wholly after it — never between the switch's read of a value and its
+    /// restore, where the init would reset it or the restore overwrite it, and
+    /// never validated against the bounds of a mode the camera is leaving
+    /// (RM4).
+    ///
+    /// Async because it is held across SDK hops. **Lock order:** a mode change
+    /// takes it after the connection's lifecycle lock and the device claim, and
+    /// takes [`Self::cache_commit_lock`] inside it for its commit, never the
+    /// other way round; nothing holding it takes the lifecycle lock or claims
+    /// the device.
+    control_lock: tokio::sync::Mutex<()>,
     target_temperature: Mutex<Option<f64>>,
     /// Tracked independently of the SDK's `CurPWM` readback: neither real
     /// hardware nor the simulation backend updates `CurPWM` synchronously
@@ -135,6 +160,12 @@ struct DeviceState {
     /// settled regulation loop can legitimately read back 0% PWM while still
     /// engaged.
     cooler_engaged: AtomicBool,
+    /// The session in which a client last engaged the cooler, or 0 once one
+    /// switched it off (sessions start at 1). `cooler_engaged` outlives a
+    /// reconnect, as `CoolerOn` is the last command given; a readout-mode
+    /// change re-asserts only a cooler engaged in *its own* session, so it never
+    /// switches on a TEC for a command given to a session that has ended (RM4).
+    cooler_session: AtomicU64,
 
     /// The in-flight capture's own cancel channel ([`CaptureCancel`]) and,
     /// because `Some` here *is* the in-flight claim, the single answer to
@@ -218,11 +249,14 @@ enum CachedRange {
     Unavailable,
 }
 
-/// Cached sensor geometry. `image_width`/`image_height` are the chip the SDK
-/// reports (`GetQHYCCDChipInfo`) for the active readout mode, and `effective`
-/// the part of it the SDK will read out (`GetQHYCCDEffectiveArea` at bin 1, in
-/// chip coordinates); both are re-read on a readout-mode change. The rest is
-/// fixed at connect.
+/// Cached sensor geometry for the active readout mode: the pixel size and
+/// depth the SDK reports with the chip (`GetQHYCCDChipInfo`), and `effective`,
+/// the part of the chip the SDK will read out (`GetQHYCCDEffectiveArea` at
+/// bin 1, in chip coordinates). All of it belongs to the mode, and all of it is
+/// read again when the mode changes (RM1). The chip's own extent is used once,
+/// to arm the whole chip before the effective area is read
+/// ([`normalize_geometry`]), and not kept: nothing a client asks for is sized
+/// by it (G1).
 ///
 /// The effective area is the sensor as far as a client is concerned: its
 /// origin is what a client's `StartX`/`StartY` is offset from when the ROI
@@ -235,8 +269,6 @@ enum CachedRange {
 /// area, the largest frame it divides into even extents at every bin.
 #[derive(Debug, Clone, Copy)]
 struct CachedCcdInfo {
-    image_width: u32,
-    image_height: u32,
     pixel_width: f64,
     pixel_height: f64,
     bits_per_pixel: u32,
@@ -265,8 +297,12 @@ impl DeviceState {
             exposure_range_us: Mutex::new(None),
             gain_min_max: Mutex::new(None),
             offset_min_max: Mutex::new(None),
+            readout_modes: Mutex::new(None),
+            readout_mode: Mutex::new(None),
+            control_lock: tokio::sync::Mutex::new(()),
             target_temperature: Mutex::new(None),
             cooler_engaged: AtomicBool::new(false),
+            cooler_session: AtomicU64::new(0),
             in_flight_capture: Mutex::new(None),
             image_ready: AtomicBool::new(false),
             exposure_generation: AtomicU64::new(0),
@@ -323,17 +359,14 @@ impl DeviceState {
     /// `VALUE_NOT_SET` for geometry nothing has read yet.
     ///
     /// Exactly the set the handshake writes, so the two cannot drift apart:
-    /// what is cleared here is republished there. A cache neither touches — the
-    /// cooler setpoint a client asked for — is not a connect's to forget.
+    /// what is cleared here is republished there — the mode's caches through
+    /// the same [`Self::withdraw_mode_caches`] a failed mode change uses, and
+    /// the mode list beside them. A cache neither touches — the cooler setpoint
+    /// a client asked for — is not a connect's to forget.
     fn begin_session(&self) -> u64 {
         let commit = self.cache_commit_lock.lock();
-        self.valid_bins.lock().clear();
-        *self.ccd_info.lock() = None;
-        *self.intended_roi.lock() = None;
-        self.bin.store(BIN_UNPUBLISHED, Ordering::Release);
-        *self.exposure_range_us.lock() = None;
-        *self.gain_min_max.lock() = None;
-        *self.offset_min_max.lock() = None;
+        self.withdraw_mode_caches();
+        *self.readout_modes.lock() = None;
         // Inside the same section (C3): a stale `Error`, `ImageReady` or frame is
         // no more this session's than the geometry beside it. Lock order holds —
         // this one, then `result_lock`, then `in_flight_capture`.
@@ -354,6 +387,64 @@ impl DeviceState {
             .wrapping_add(1);
         drop(commit);
         session
+    }
+
+    /// Withdraw everything a readout mode decides. A connect does it before it
+    /// opens (C6), and a mode change that failed part-way does it because the
+    /// camera is no longer in the configuration these describe (RM3).
+    ///
+    /// The two caches that gate a path into the device go first — the bin, which
+    /// `validated_roi` requires before it will arm anything, and the bin list
+    /// `set_bin_x` validates against — the mirror of [`Self::publish_mode`],
+    /// which writes them last. The mode list is not among them: no mode changes
+    /// it. Call it holding [`Self::cache_commit_lock`].
+    fn withdraw_mode_caches(&self) {
+        self.bin.store(BIN_UNPUBLISHED, Ordering::Release);
+        self.valid_bins.lock().clear();
+        *self.readout_mode.lock() = None;
+        *self.ccd_info.lock() = None;
+        *self.intended_roi.lock() = None;
+        *self.exposure_range_us.lock() = None;
+        *self.gain_min_max.lock() = None;
+        *self.offset_min_max.lock() = None;
+    }
+
+    /// Make `readings` live as the caches of readout `mode`, in one section —
+    /// a connect publishing mode 0 (C6) and a mode change publishing the mode it
+    /// switched to (RM1) alike. Call it holding [`Self::cache_commit_lock`], in
+    /// the session the readings were taken in, over caches that have been
+    /// withdrawn: [`Self::begin_session`] empties them for a connect, and a mode
+    /// change withdraws the previous mode's first.
+    ///
+    /// Readers take no lock, so the order within this section is load-bearing
+    /// even though the section is one critical region to every writer. The two
+    /// caches that *gate* a path into the device go last: the bin, which
+    /// `validated_roi` requires before it will arm anything, and the bin list
+    /// `set_bin_x` validates against. Everything published ahead of them is
+    /// read-only and already correct, so the widest a reader's view can be split
+    /// is one property answering while another says `VALUE_NOT_SET` — never a
+    /// request acting on half a mode.
+    ///
+    /// The reduced size travels *inside* the geometry snapshot, so a reader can
+    /// never pair a live geometry with a bin list that has not been written yet
+    /// and be told the unreduced extent (R4).
+    fn publish_mode(&self, readings: ModeReadings, mode: u32) {
+        let ModeReadings {
+            ccd,
+            exposure,
+            gain_range,
+            offset_range,
+            bins,
+        } = readings;
+        let (width, height) = ccd.reported;
+        *self.ccd_info.lock() = Some(ccd);
+        *self.intended_roi.lock() = Some(UnbinnedRoi::full_frame(width, height));
+        *self.exposure_range_us.lock() = Some(exposure);
+        cache_range(&self.gain_min_max, "gain", gain_range);
+        cache_range(&self.offset_min_max, "offset", offset_range);
+        *self.readout_mode.lock() = Some(mode);
+        self.bin.store(1, Ordering::Release);
+        *self.valid_bins.lock() = bins;
     }
 
     /// End `session`, if it is still the running one, so a request that read it
@@ -860,10 +951,11 @@ impl QhyCameraDevice {
     }
 
     /// The open → single-frame → readout-mode-0 → init → 16-bit → cache handshake,
-    /// run after `open()`. Caches CCD info, effective area, valid binning modes,
-    /// and the exposure/gain/offset limits.
+    /// run after `open()`. Caches the readout-mode list and everything mode 0
+    /// decides: CCD info, effective area, valid binning modes, and the
+    /// exposure/gain/offset limits.
     fn open_handshake(&self, session: u64) -> ASCOMResult<()> {
-        let h = &self.handle;
+        let h = self.handle.as_ref();
         let nc = |_e: BackendError| ASCOMError::NOT_CONNECTED;
         if h.is_control_available(ControlType::CamSingleFrameMode)
             .is_none()
@@ -871,37 +963,13 @@ impl QhyCameraDevice {
             warn!("camera does not advertise single-frame mode");
             return Err(ASCOMError::NOT_CONNECTED);
         }
-        h.set_stream_mode_single().map_err(nc)?;
-        h.set_readout_mode(0).map_err(nc)?;
-        h.init().map_err(nc)?;
-        // Best-effort 16-bit transfer; not every model exposes the control.
-        if let Err(e) = h.set_transfer_bit_16() {
-            debug!(error = %e, "16-bit transfer not set");
-        }
-
-        let ccd = h.get_ccd_info().map_err(nc)?;
-        let effective = normalize_geometry(
-            h.as_ref(),
-            ccd.image_width,
-            ccd.image_height,
-            ccd.bits_per_pixel,
-        )
-        .map_err(nc)?;
-        let bins = self.valid_binning_modes();
-        let (width, height) = reported_sensor(effective, &bins);
-        let exposure = h.exposure_range_us().map_err(nc)?;
-        let gain_range = if h.is_control_available(ControlType::Gain).is_some() {
-            let (min, max, _) = h.gain_range().map_err(nc)?;
-            Some((min, max))
-        } else {
-            None
-        };
-        let offset_range = if h.is_control_available(ControlType::Offset).is_some() {
-            let (min, max, _) = h.offset_range().map_err(nc)?;
-            Some((min, max))
-        } else {
-            None
-        };
+        initialize_in_mode(h, 0).map_err(nc)?;
+        // The list does not depend on the mode, so it is read once here rather
+        // than again by every mode change (RM1) — and ahead of the mode's own
+        // reads, which keep the offset range as the last thing a connect asks
+        // the device.
+        let modes = read_readout_modes(h).map_err(nc)?;
+        let readings = read_mode(h).map_err(nc)?;
 
         // Everything the device had to be asked for is in hand, so the caches go
         // live together, here, rather than one at a time across the handshake.
@@ -909,20 +977,9 @@ impl QhyCameraDevice {
         // client is free to call throughout: publishing the exposure range and
         // the geometry early would let a `StartExposure` arm the SDK while these
         // reads were still running, two owners on one handle. Nothing below asks
-        // the device anything.
+        // the device anything, and `publish_mode` says why its order is the one
+        // it is.
         //
-        // The reduced size still travels *inside* the geometry snapshot, so a
-        // reader can never pair a live geometry with a bin list that has not been
-        // written yet and be told the unreduced extent (R4).
-        //
-        // Readers take no lock, so the order within this section is load-bearing
-        // even though the section is one critical region to every writer. The two
-        // caches that *gate* a path into the device go last: the bin, which
-        // `validated_roi` requires before it will arm anything, and the bin list
-        // `set_bin_x` validates against. Everything published ahead of them is
-        // read-only and already correct, so the widest a reader's view can be
-        // split is one property answering while another says `VALUE_NOT_SET` —
-        // never a request acting on half a session.
         // In the session this connect established and on a device still open,
         // or not at all — the same guard every other writer here answers to, and
         // the handshake is no exception. A disconnect or a later connect landing
@@ -934,21 +991,8 @@ impl QhyCameraDevice {
         // connect would answer `Ok` to a client whose next read is
         // `Connected == false`.
         let commit = self.commit_guard(session)?;
-        *self.state.ccd_info.lock() = Some(CachedCcdInfo {
-            image_width: ccd.image_width,
-            image_height: ccd.image_height,
-            pixel_width: ccd.pixel_width,
-            pixel_height: ccd.pixel_height,
-            bits_per_pixel: ccd.bits_per_pixel,
-            effective,
-            reported: (width, height),
-        });
-        *self.state.intended_roi.lock() = Some(UnbinnedRoi::full_frame(width, height));
-        *self.state.exposure_range_us.lock() = Some(exposure);
-        cache_range(&self.state.gain_min_max, "gain", gain_range);
-        cache_range(&self.state.offset_min_max, "offset", offset_range);
-        self.state.bin.store(1, Ordering::Release);
-        *self.state.valid_bins.lock() = bins;
+        *self.state.readout_modes.lock() = Some(modes);
+        self.state.publish_mode(readings, 0);
         drop(commit);
         Ok(())
     }
@@ -1249,10 +1293,6 @@ impl QhyCameraDevice {
         true
     }
 
-    fn valid_binning_modes(&self) -> Vec<u8> {
-        valid_binning_modes(self.handle.as_ref())
-    }
-
     /// Push `bin_x` to the camera and commit it, holding the device across both
     /// (B4).
     ///
@@ -1274,6 +1314,19 @@ impl QhyCameraDevice {
             ));
         };
         let _guard = ClaimGuard::new(&self.state, &mine);
+        // The caller checked the bin against the list before the claim; a
+        // readout-mode change can have replaced that list since (RM1), or
+        // withdrawn it (RM3), so the check is made again where nothing can move
+        // it — and in the session the request was made in, so a bin asked of a
+        // session that has ended never reaches the reconnected camera (C6).
+        {
+            let _commit = self.commit_guard(session)?;
+            if !self.state.valid_bins.lock().contains(&bin_x) {
+                return Err(ASCOMError::invalid_value(format!(
+                    "bin {bin_x} is not a supported binning mode"
+                )));
+            }
+        }
         // The bin in force is read here rather than in the caller: it has to be
         // the one the camera is actually in, and another setter can have moved
         // it between the caller's own read and this claim. Finding it already
@@ -1294,13 +1347,12 @@ impl QhyCameraDevice {
                 })
         })
         .await?;
-        // The camera this bin was set on can have been disconnected and
-        // reconnected while the SDK call was off the executor, and a connect
-        // republishes both caches written below (C6). Committing anyway would
-        // name a bin the camera is no longer in — the drift this contract
-        // closes, reached from the far side of a single `await`. The claim keeps
-        // a *disconnect* out of that window; the session check is what answers
-        // for a connect, which signals a claim rather than taking it.
+        // Committed under the same lock and session check as every other cache
+        // write (C6). Nothing can end the session here: the claim has been held
+        // since the check above, so a disconnect cannot close the device, and a
+        // connect needs that close first. The check before the write is what
+        // keeps a bin from an ended session off the camera; this one keeps the
+        // commit on the same rule as every other writer.
         let commit = self.commit_guard(session)?;
         // Nothing to rewrite: the ROI is held in unbinned pixels (B3), and the
         // bin stored below is only the divisor its binned view is read through.
@@ -1309,31 +1361,31 @@ impl QhyCameraDevice {
         Ok(())
     }
 
-    /// Select `mode` on the camera, re-read the geometry it brings, and commit
-    /// both, holding the device across the lot (B4).
+    /// Re-initialize the camera in readout `mode` and commit everything the mode
+    /// decides, holding the physical connection's lifecycle lock and the device
+    /// across the lot (RM1, B4, C8).
     ///
-    /// A mode change is several writes to the camera — the mode itself, then
-    /// `normalize_geometry`'s `SetQHYCCDBinMode(1, 1)` and
-    /// `SetQHYCCDResolution(whole chip)` — and the cache they land in is what
-    /// the next `StartExposure` bounds and translates its ROI against. Neither
-    /// half may run beside a capture: the writes would reach a camera that is
-    /// integrating or reading out, and the cache would move under an exposure
-    /// that has already measured its geometry. The claim is what excludes both,
-    /// in both directions — a `StartExposure` racing this one is refused by the
+    /// A mode change is a whole re-initialization — the stream mode, the mode,
+    /// `InitQHYCCD`, the transfer depth, then `normalize_geometry`'s bin and
+    /// resolution — and the caches it lands in are what the next
+    /// `StartExposure` bounds and translates its ROI against. None of it may run
+    /// beside a capture: the writes would reach a camera that is integrating or
+    /// reading out, and the caches would move under an exposure that has already
+    /// measured its geometry. The claim is what excludes both, in both
+    /// directions — a `StartExposure` racing this one is refused by the
     /// ordinary E2 path.
     ///
-    /// The range check is inside the claim because the count comes off the
-    /// device: this driver cannot say whether an index is in range without
-    /// asking, and it may not ask while a capture owns the camera. So a
-    /// mode change attempted during an exposure is refused as `INVALID_OPERATION`
-    /// whether or not its index would also have been out of range.
-    async fn write_readout_mode(
-        &self,
-        session: u64,
-        readout_mode: usize,
-        mode: u32,
-        bits_per_pixel: u32,
-    ) -> ASCOMResult<()> {
+    /// Locks, in the order taken: the connection's lifecycle lock (C8) and the
+    /// device claim (B4), held throughout; [`DeviceState::cache_commit_lock`],
+    /// briefly, for the session and no-op checks; [`DeviceState::control_lock`]
+    /// (RM4), held to the end; and `cache_commit_lock` again, inside it, for the
+    /// commit.
+    async fn switch_readout_mode(&self, session: u64, mode: u32) -> ASCOMResult<()> {
+        // The lock first and the claim second — the order a disconnect takes
+        // them in, so neither can wait on the other (C8). `InitQHYCCD` is the
+        // call that lock keeps from overlapping the filter wheel's handshake on
+        // the same handle, and this is one more place that makes it.
+        let _lifecycle = self.handle.lifecycle_lock().lock().await;
         let Some(mine) = self.try_claim(CaptureCancel::for_geometry_write()) else {
             return Err(ASCOMError::invalid_operation(
                 "the device is in use; the readout mode cannot be changed while \
@@ -1341,61 +1393,70 @@ impl QhyCameraDevice {
             ));
         };
         let _guard = ClaimGuard::new(&self.state, &mine);
-        let (width, height, effective, reported) = self
+        // The session is asked here, before the first write, and not only at
+        // the commit (C6). A reconnect that landed before the claim has run its
+        // own handshake, and a switch reaching that handle would leave the
+        // camera re-initialized in a mode its fresh caches do not describe —
+        // refusing the commit afterwards would not put the camera back. With the
+        // claim held no new session can begin, so this one check covers every
+        // write below.
+        //
+        // Whether the request is redundant is decided under the claim too, like
+        // a redundant bin (B4): read outside it, the mode compared against could
+        // be one an in-flight switch is replacing.
+        {
+            let _commit = self.commit_guard(session)?;
+            if *self.state.readout_mode.lock() == Some(mode) {
+                return Ok(());
+            }
+        }
+        // Gain, offset and the cooler hold still from here until the new mode is
+        // published: a client's command for any of them lands wholly before
+        // this change, and is what gets restored, or wholly after it, against
+        // the new mode's bounds (RM4).
+        let _controls = self.state.control_lock.lock().await;
+        // Only a cooler a client engaged in this session is put back: one
+        // engaged before a reconnect was a command to a session that has ended.
+        let cooler_target = (self.state.cooler_engaged.load(Ordering::Acquire)
+            && self.state.cooler_session.load(Ordering::Acquire) == session)
+            .then(|| *self.state.target_temperature.lock())
+            .flatten();
+        let switched = self
             .on_handle(move |h| {
-                let count = h
-                    .get_number_of_readout_modes()
-                    .map_err(|_| ASCOMError::INVALID_VALUE)?;
-                if mode >= count {
-                    return Err(ASCOMError::invalid_value(format!(
-                        "readout mode {readout_mode} out of range (0..{count})"
-                    )));
-                }
-                let (width, height) = h
-                    .get_readout_mode_resolution(mode)
-                    .map_err(|_| ASCOMError::INVALID_VALUE)?;
-                h.set_readout_mode(mode).map_err(|e| {
-                    ASCOMError::invalid_operation(format!("failed to set readout mode: {e}"))
-                })?;
-                // The effective area belongs to the mode: one that changes the
-                // resolution moves the readable region with it, so the geometry
-                // is normalized and read back exactly as on connect.
-                let effective =
-                    normalize_geometry(h, width, height, bits_per_pixel).map_err(|e| {
-                        ASCOMError::invalid_operation(format!(
-                            "failed to read the readout mode's geometry: {e}"
-                        ))
-                    })?;
-                // The bins come off the device rather than out of
-                // `valid_bins`: a connect handshake publishes that list last,
-                // and a mode change landing before it would read an empty one,
-                // reduce nothing, and cache the unreduced extent for the rest
-                // of the session (R4).
-                let reported = reported_sensor(effective, &valid_binning_modes(h));
-                Ok((width, height, effective, reported))
+                // Read before anything is written, so a failure here has changed
+                // nothing on the camera (RM3).
+                let gain = read_to_restore(h, ControlType::Gain, "gain")?;
+                let offset = read_to_restore(h, ControlType::Offset, "offset")?;
+                Ok(reinitialize_in_mode(h, mode, gain, offset, cooler_target))
             })
             .await?;
-        // The mode was read and set in a session that may have ended while
-        // those SDK calls were off the executor; the geometry below belongs to
-        // that session, not to whichever one is running now (C6). The claim
-        // keeps a *disconnect* out of that window; the session check is what
-        // answers for a connect, which signals a claim rather than taking it.
         let commit = self.commit_guard(session)?;
-        if let Some(info) = self.state.ccd_info.lock().as_mut() {
-            info.image_width = width;
-            info.image_height = height;
-            info.effective = effective;
-            // The mode decides the area, and the area decides the size it is
-            // reported at: the pair moves together or a ROI is bounded against
-            // one mode and armed against another.
-            info.reported = reported;
+        match switched {
+            Ok(readings) => {
+                // Withdrawn first so that, as on a connect, a reader in the
+                // middle of this section sees `VALUE_NOT_SET` rather than one
+                // mode's values beside the other's (see `publish_mode`).
+                self.state.withdraw_mode_caches();
+                self.state.publish_mode(readings, mode);
+                drop(commit);
+                debug!(camera = %self.unique_id, mode, "readout mode changed");
+                Ok(())
+            }
+            Err(e) => {
+                // The switch began, so the caches describe a configuration the
+                // camera may no longer be in (RM3).
+                self.state.withdraw_mode_caches();
+                drop(commit);
+                warn!(
+                    camera = %self.unique_id,
+                    mode,
+                    error = %e,
+                    "readout mode change failed part-way; the geometry stays \
+                     unpublished until a mode change succeeds or the camera reconnects"
+                );
+                Err(e)
+            }
         }
-        // The camera is at bin 1 with the whole sensor armed, so the cached
-        // geometry says the same.
-        *self.state.intended_roi.lock() = Some(UnbinnedRoi::full_frame(reported.0, reported.1));
-        self.state.bin.store(1, Ordering::Release);
-        drop(commit);
-        Ok(())
     }
 
     /// Validate the cached ROI against the binned reported sensor (R2/R4),
@@ -1492,14 +1553,187 @@ impl QhyCameraDevice {
     }
 }
 
+/// Everything a readout mode decides, read off the camera once it has been
+/// initialized in that mode — in hand before any of it is published, by a
+/// connect (C6) or by a mode change (RM1).
+struct ModeReadings {
+    ccd: CachedCcdInfo,
+    exposure: (f64, f64, f64),
+    gain_range: Option<(f64, f64)>,
+    offset_range: Option<(f64, f64)>,
+    bins: Vec<u8>,
+}
+
+/// Put the camera into single-frame capture in readout `mode`, initialized
+/// there, with the 16-bit transfer set.
+///
+/// The SDK only *records* a readout mode: the camera is told it, and the SDK
+/// builds its own geometry for it, inside `InitQHYCCD`. So the mode and the init
+/// always go together — on connect with mode 0 (C1), and on a mode change with
+/// the new one (RM1) — in the order connect has always sent them. The init
+/// resets the transfer depth, which is why that is set after it.
+fn initialize_in_mode(h: &dyn CameraHandle, mode: u32) -> Result<(), BackendError> {
+    h.set_stream_mode_single()?;
+    h.set_readout_mode(mode)?;
+    h.init()?;
+    // Best-effort 16-bit transfer; not every model exposes the control.
+    if let Err(e) = h.set_transfer_bit_16() {
+        debug!(error = %e, "16-bit transfer not set");
+    }
+    Ok(())
+}
+
+/// The SDK's named readout modes. Static tables in the SDK: reading them
+/// switches nothing.
+fn read_readout_modes(h: &dyn CameraHandle) -> Result<Vec<String>, BackendError> {
+    let count = h.get_number_of_readout_modes()?;
+    // Capacity is only a hint, so a count too large to address just means no
+    // preallocation — the loop below is bounded by that same count.
+    let mut modes = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
+    for index in 0..count {
+        modes.push(h.get_readout_mode_name(index)?);
+    }
+    Ok(modes)
+}
+
+/// Read everything the mode the camera is in decides: the chip, the geometry
+/// normalized and its effective area (G1), the bins, the size reported from
+/// them (R4), and the exposure, gain and offset ranges.
+///
+/// The chip is read after the init that applied the mode, never looked up by
+/// index: `GetQHYCCDReadModeResolution` answers for a mode the camera is not in,
+/// and on some models it rewrites the SDK's margins as a side effect.
+fn read_mode(h: &dyn CameraHandle) -> Result<ModeReadings, BackendError> {
+    let chip = h.get_ccd_info()?;
+    let effective =
+        normalize_geometry(h, chip.image_width, chip.image_height, chip.bits_per_pixel)?;
+    let bins = valid_binning_modes(h);
+    let reported = reported_sensor(effective, &bins);
+    let exposure = h.exposure_range_us()?;
+    let gain_range = if h.is_control_available(ControlType::Gain).is_some() {
+        let (min, max, _) = h.gain_range()?;
+        Some((min, max))
+    } else {
+        None
+    };
+    let offset_range = if h.is_control_available(ControlType::Offset).is_some() {
+        let (min, max, _) = h.offset_range()?;
+        Some((min, max))
+    } else {
+        None
+    };
+    Ok(ModeReadings {
+        ccd: CachedCcdInfo {
+            pixel_width: chip.pixel_width,
+            pixel_height: chip.pixel_height,
+            bits_per_pixel: chip.bits_per_pixel,
+            effective,
+            reported,
+        },
+        exposure,
+        gain_range,
+        offset_range,
+        bins,
+    })
+}
+
+/// The value of `control` the SDK holds now, for a mode change to put back once
+/// the init is over (RM4); `None` for a control the model lacks.
+fn read_to_restore(
+    h: &dyn CameraHandle,
+    control: ControlType,
+    name: &str,
+) -> ASCOMResult<Option<f64>> {
+    if h.is_control_available(control).is_none() {
+        return Ok(None);
+    }
+    h.get_parameter(control).map(Some).map_err(|e| {
+        ASCOMError::invalid_operation(format!(
+            "failed to read the {name} before changing the readout mode: {e}"
+        ))
+    })
+}
+
+/// The camera side of a readout-mode change (RM1, RM3, RM4): initialize the
+/// camera in `mode`, put back an engaged cooler the init may have stopped,
+/// check the SDK recorded the mode, read back everything the mode decides, and
+/// restore the `gain` and `offset` read before the init.
+///
+/// Every error means the switch began and did not finish, which the caller
+/// answers by withdrawing the mode's caches (RM3); each names the step.
+fn reinitialize_in_mode(
+    h: &dyn CameraHandle,
+    mode: u32,
+    gain: Option<f64>,
+    offset: Option<f64>,
+    cooler_target: Option<f64>,
+) -> ASCOMResult<ModeReadings> {
+    let failed = |step: &str, e: BackendError| {
+        ASCOMError::invalid_operation(format!("readout mode {mode}: {step} failed: {e}"))
+    };
+    let initialized = initialize_in_mode(h, mode);
+    // With `disable_auto_cooler` set in `qhyccd.ini` the SDK switches the TEC off
+    // inside every init. The regulation a client asked for is put back straight
+    // after it — before anything later in the switch can fail, and whether or
+    // not the switch itself did — so a change that goes wrong does not also
+    // leave a sensor warming while `CoolerOn` reads true. A cooler nobody
+    // engaged is not touched.
+    if let Some(target) = cooler_target {
+        if let Err(e) = h.set_target_temperature_celsius(target) {
+            if initialized.is_ok() {
+                return Err(failed("re-asserting the cooler target", e));
+            }
+            warn!(error = %e, "cooler target not re-asserted after a failed readout mode switch");
+        }
+    }
+    initialized.map_err(|e| failed("switching the camera", e))?;
+    // The SDK records the mode it is given and reports it back whether or not
+    // its init applied it, so this catches a mode the SDK did not record — not
+    // an init that failed inside, which `InitQHYCCD` reports as success and
+    // nothing short of the frame shows.
+    let held = h
+        .get_readout_mode()
+        .map_err(|e| failed("reading the mode back", e))?;
+    if held != mode {
+        return Err(ASCOMError::invalid_operation(format!(
+            "readout mode {mode}: the SDK reports mode {held} after the switch"
+        )));
+    }
+    let readings = read_mode(h).map_err(|e| failed("reading the mode's geometry", e))?;
+    // A value the new mode's range no longer admits is left as the SDK set it:
+    // writing it would be refused, and clamping it would be a gain nobody asked
+    // for.
+    if let (Some(value), Some((min, max))) = (gain, readings.gain_range) {
+        if (min..=max).contains(&value) {
+            h.set_gain(value)
+                .map_err(|e| failed("restoring the gain", e))?;
+        } else {
+            debug!(
+                gain = value,
+                min, max, "gain outside the new mode's range; not restored"
+            );
+        }
+    }
+    if let (Some(value), Some((min, max))) = (offset, readings.offset_range) {
+        if (min..=max).contains(&value) {
+            h.set_offset(value)
+                .map_err(|e| failed("restoring the offset", e))?;
+        } else {
+            debug!(
+                offset = value,
+                min, max, "offset outside the new mode's range; not restored"
+            );
+        }
+    }
+    Ok(readings)
+}
+
 /// The bins this camera offers, asked of the device rather than of a cache.
 ///
 /// The reduction R4 applies to the reported size depends on them, so whoever
-/// computes that size needs the list — including `set_readout_mode`, which can
-/// run while a connect handshake has published the geometry but not yet the
-/// bin list. Reading the cache there would answer "no bins", which reduces
-/// nothing and would cache the unreduced extent for the rest of the session.
-/// The device always knows.
+/// computes that size needs the list the mode in force has — which a connect
+/// and a mode change both compute *before* they publish, while the cache still
+/// holds nothing or the previous mode's. The device always knows.
 fn valid_binning_modes(h: &dyn CameraHandle) -> Vec<u8> {
     let mut bins = Vec::new();
     for (control, bin) in [
@@ -2324,6 +2558,9 @@ impl Camera for QhyCameraDevice {
 
     async fn gain(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
+        // Behind a readout-mode change rather than inside it, where the init may
+        // have reset the gain the switch is about to restore (RM4).
+        let _controls = self.state.control_lock.lock().await;
         // The cache holds a range only for a control that is both available and
         // describable in ASCOM's width, so it answers both questions at once —
         // and without an SDK round-trip on every read.
@@ -2346,22 +2583,44 @@ impl Camera for QhyCameraDevice {
     }
 
     async fn set_gain(&self, gain: i32) -> ASCOMResult<()> {
+        // Before the connected check (see `set_bin_x`).
+        let session = self.state.session();
         self.ensure_connected()?;
-        let (min, max) = cached_range(&self.state.gain_min_max)?;
-        if gain < min || gain > max {
-            return Err(ASCOMError::invalid_value(format!(
-                "gain {gain} outside [{min}, {max}]"
-            )));
-        }
-        self.on_handle(move |h| {
-            h.set_gain(f64::from(gain))
-                .map_err(|_| ASCOMError::INVALID_OPERATION)
-        })
+        // Behind a readout-mode change, never between its read of the gain and
+        // its restore, where this write would be reset or overwritten — and
+        // validated against the bounds of the mode in force once any change has
+        // published, not those of a mode the camera is leaving (RM4).
+        // Detached, so a dropped request cannot let the lock go while its write
+        // is still inside the SDK (see [`Self::detached`]).
+        let device = self.clone();
+        Self::detached(tokio::spawn(async move {
+            let _controls = device.state.control_lock.lock().await;
+            // A request queued behind the lock can outlive its session — a
+            // disconnect and a reconnect fit in the wait — and must not reach
+            // the camera the reconnect opened (C6).
+            let (min, max) = {
+                let _session = device.commit_guard(session)?;
+                cached_range(&device.state.gain_min_max)?
+            };
+            if gain < min || gain > max {
+                return Err(ASCOMError::invalid_value(format!(
+                    "gain {gain} outside [{min}, {max}]"
+                )));
+            }
+            device
+                .on_handle(move |h| {
+                    h.set_gain(f64::from(gain))
+                        .map_err(|_| ASCOMError::INVALID_OPERATION)
+                })
+                .await
+        }))
         .await
     }
 
     async fn offset(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
+        // As `gain`: behind a readout-mode change, never inside it (RM4).
+        let _controls = self.state.control_lock.lock().await;
         cached_range(&self.state.offset_min_max)?;
         let raw = self
             .on_handle(|h| h.offset().map_err(|_| ASCOMError::INVALID_OPERATION))
@@ -2381,30 +2640,40 @@ impl Camera for QhyCameraDevice {
     }
 
     async fn set_offset(&self, offset: i32) -> ASCOMResult<()> {
+        let session = self.state.session();
         self.ensure_connected()?;
-        let (min, max) = cached_range(&self.state.offset_min_max)?;
-        if offset < min || offset > max {
-            return Err(ASCOMError::invalid_value(format!(
-                "offset {offset} outside [{min}, {max}]"
-            )));
-        }
-        self.on_handle(move |h| {
-            h.set_offset(f64::from(offset))
-                .map_err(|_| ASCOMError::INVALID_OPERATION)
-        })
+        // As `set_gain`: behind a readout-mode change, against the bounds of the
+        // mode in force (RM4), and only in the session it was made in (C6).
+        let device = self.clone();
+        Self::detached(tokio::spawn(async move {
+            let _controls = device.state.control_lock.lock().await;
+            let (min, max) = {
+                let _session = device.commit_guard(session)?;
+                cached_range(&device.state.offset_min_max)?
+            };
+            if offset < min || offset > max {
+                return Err(ASCOMError::invalid_value(format!(
+                    "offset {offset} outside [{min}, {max}]"
+                )));
+            }
+            device
+                .on_handle(move |h| {
+                    h.set_offset(f64::from(offset))
+                        .map_err(|_| ASCOMError::INVALID_OPERATION)
+                })
+                .await
+        }))
         .await
     }
 
     // --- readout modes ----------------------------------------------------------
 
+    /// The mode the camera was last switched into, from the cache rather than
+    /// the SDK: the SDK reports the mode it last *recorded*, which is not the
+    /// camera's until an init has applied it (RM1, RM3).
     async fn readout_mode(&self) -> ASCOMResult<usize> {
         self.ensure_connected()?;
-        let mode = self
-            .on_handle(|h| {
-                h.get_readout_mode()
-                    .map_err(|_| ASCOMError::INVALID_OPERATION)
-            })
-            .await?;
+        let mode = (*self.state.readout_mode.lock()).ok_or(ASCOMError::VALUE_NOT_SET)?;
         // The SDK numbers modes in `u32`; ASCOM indexes `ReadoutModes` with a
         // `usize`.
         usize::try_from(mode).map_err(|_| ASCOMError::INVALID_OPERATION)
@@ -2412,43 +2681,41 @@ impl Camera for QhyCameraDevice {
 
     async fn readout_modes(&self) -> ASCOMResult<Vec<String>> {
         self.ensure_connected()?;
-        self.on_handle(|h| {
-            let count = h
-                .get_number_of_readout_modes()
-                .map_err(|_| ASCOMError::INVALID_OPERATION)?;
-            // Capacity is only a hint, so a count too large to address just means
-            // no preallocation — the loop below is bounded by that same count.
-            let mut modes = Vec::with_capacity(usize::try_from(count).unwrap_or(0));
-            for index in 0..count {
-                modes.push(
-                    h.get_readout_mode_name(index)
-                        .map_err(|_| ASCOMError::INVALID_OPERATION)?,
-                );
-            }
-            Ok(modes)
-        })
-        .await
+        self.state
+            .readout_modes
+            .lock()
+            .clone()
+            .ok_or(ASCOMError::VALUE_NOT_SET)
     }
 
     async fn set_readout_mode(&self, readout_mode: usize) -> ASCOMResult<()> {
         // Before the connected check (see `set_bin_x`).
         let session = self.state.session();
         self.ensure_connected()?;
-        // An index the SDK's `u32` cannot hold is out of range by definition,
-        // and the count check the claimed section makes is where that is
-        // reported.
-        let mode = u32::try_from(readout_mode).unwrap_or(u32::MAX);
-        let bits_per_pixel = (*self.state.ccd_info.lock())
-            .map(|c| c.bits_per_pixel)
+        // The list is cached, so an index outside it is answered here, before
+        // anything is claimed, whoever owns the device (B4) — as an unsupported
+        // bin is (B1).
+        let count = self
+            .state
+            .readout_modes
+            .lock()
+            .as_ref()
+            .map(Vec::len)
             .ok_or(ASCOMError::VALUE_NOT_SET)?;
-        // The writes below are the device's (B4), so they go through the
-        // device's one owner — and so they run where a dropped request cannot
-        // orphan the claim they take (see [`Self::detached`]).
+        let mode = u32::try_from(readout_mode)
+            .ok()
+            .filter(|_| readout_mode < count)
+            .ok_or_else(|| {
+                ASCOMError::invalid_value(format!(
+                    "readout mode {readout_mode} out of range (0..{count})"
+                ))
+            })?;
+        // A mode change re-initializes the camera (RM1), so it runs where a
+        // dropped request cannot orphan the lock and the claim it takes (see
+        // [`Self::detached`]).
         let device = self.clone();
         Self::detached(tokio::spawn(async move {
-            device
-                .write_readout_mode(session, readout_mode, mode, bits_per_pixel)
-                .await
+            device.switch_readout_mode(session, mode).await
         }))
         .await
     }
@@ -2529,20 +2796,34 @@ impl Camera for QhyCameraDevice {
     }
 
     async fn set_set_ccd_temperature(&self, set_ccd_temperature: f64) -> ASCOMResult<()> {
+        let session = self.state.session();
         self.ensure_connected()?;
-        self.on_handle(move |h| {
-            cooler_available(h)?;
-            if !(-273.15..=80.0).contains(&set_ccd_temperature) {
-                return Err(ASCOMError::invalid_value(format!(
-                    "target temperature {set_ccd_temperature} outside [-273.15, 80]"
-                )));
-            }
-            h.set_target_temperature_celsius(set_ccd_temperature)
-                .map_err(|_| ASCOMError::invalid_operation("failed to set target temperature"))
-        })
-        .await?;
-        *self.state.target_temperature.lock() = Some(set_ccd_temperature);
-        Ok(())
+        // Behind a readout-mode change, which re-asserts the target in force
+        // once its init is over: landing inside one, this target would be
+        // overwritten by the one it replaced (RM4). Only in the session it was
+        // made in, as `set_gain` (C6).
+        let device = self.clone();
+        Self::detached(tokio::spawn(async move {
+            let _controls = device.state.control_lock.lock().await;
+            drop(device.commit_guard(session)?);
+            device
+                .on_handle(move |h| {
+                    cooler_available(h)?;
+                    if !(-273.15..=80.0).contains(&set_ccd_temperature) {
+                        return Err(ASCOMError::invalid_value(format!(
+                            "target temperature {set_ccd_temperature} outside [-273.15, 80]"
+                        )));
+                    }
+                    h.set_target_temperature_celsius(set_ccd_temperature)
+                        .map_err(|_| {
+                            ASCOMError::invalid_operation("failed to set target temperature")
+                        })
+                })
+                .await?;
+            *device.state.target_temperature.lock() = Some(set_ccd_temperature);
+            Ok(())
+        }))
+        .await
     }
 
     async fn cooler_on(&self) -> ASCOMResult<bool> {
@@ -2552,40 +2833,62 @@ impl Camera for QhyCameraDevice {
     }
 
     async fn set_cooler_on(&self, cooler_on: bool) -> ASCOMResult<()> {
+        let session = self.state.session();
         self.ensure_connected()?;
-        let cached_target = *self.state.target_temperature.lock();
-        let engaged_at = self
-            .on_handle(move |h| {
-                cooler_available(h)?;
-                if !cooler_on {
-                    h.set_manual_cooler_pwm(0.0)
+        // Detached, so a dropped request cannot let the lock go while its write
+        // is still inside the SDK, nor skip the state stores after it.
+        let device = self.clone();
+        Self::detached(tokio::spawn(async move {
+            // Behind a readout-mode change, as `set_set_ccd_temperature` is:
+            // inside one, a switch-off could be undone by the change's
+            // re-assertion, or an engagement stopped by its init with nothing
+            // to put it back (RM4).
+            let _controls = device.state.control_lock.lock().await;
+            // Only in the session it was made in, as `set_gain` (C6) — which
+            // makes that session the one this write runs in, and the one a
+            // readout-mode change will re-assert the cooler for.
+            drop(device.commit_guard(session)?);
+            let cached_target = *device.state.target_temperature.lock();
+            let engaged_at = device
+                .on_handle(move |h| {
+                    cooler_available(h)?;
+                    if !cooler_on {
+                        h.set_manual_cooler_pwm(0.0).map_err(|_| {
+                            ASCOMError::invalid_operation("failed to set cooler state")
+                        })?;
+                        return Ok(None);
+                    }
+                    // Engage the SDK's auto-regulation via
+                    // `set_target_temperature_celsius` (`ControlType::Cooler`) at
+                    // the stored target — `set_manual_cooler_pwm`
+                    // (`ControlType::ManualPWM`) instead pins a fixed duty cycle
+                    // and does not regulate — falling back to the current CCD
+                    // temperature if SetCCDTemperature was never called.
+                    let target = match cached_target {
+                        Some(target) => target,
+                        None => h
+                            .current_temperature_celsius()
+                            .map_err(|_| ASCOMError::INVALID_VALUE)?,
+                    };
+                    h.set_target_temperature_celsius(target)
                         .map_err(|_| ASCOMError::invalid_operation("failed to set cooler state"))?;
-                    return Ok(None);
-                }
-                // Engage the SDK's auto-regulation via
-                // `set_target_temperature_celsius` (`ControlType::Cooler`) at the
-                // stored target — `set_manual_cooler_pwm`
-                // (`ControlType::ManualPWM`) instead pins a fixed duty cycle and
-                // does not regulate — falling back to the current CCD temperature
-                // if SetCCDTemperature was never called.
-                let target = match cached_target {
-                    Some(target) => target,
-                    None => h
-                        .current_temperature_celsius()
-                        .map_err(|_| ASCOMError::INVALID_VALUE)?,
-                };
-                h.set_target_temperature_celsius(target)
-                    .map_err(|_| ASCOMError::invalid_operation("failed to set cooler state"))?;
-                Ok(Some(target))
-            })
-            .await?;
-        if let Some(target) = engaged_at {
-            *self.state.target_temperature.lock() = Some(target);
-        }
-        self.state
-            .cooler_engaged
-            .store(cooler_on, Ordering::Release);
-        Ok(())
+                    Ok(Some(target))
+                })
+                .await?;
+            if let Some(target) = engaged_at {
+                *device.state.target_temperature.lock() = Some(target);
+            }
+            device
+                .state
+                .cooler_session
+                .store(if cooler_on { session } else { 0 }, Ordering::Release);
+            device
+                .state
+                .cooler_engaged
+                .store(cooler_on, Ordering::Release);
+            Ok(())
+        }))
+        .await
     }
 
     async fn cooler_power(&self) -> ASCOMResult<f64> {
@@ -2763,17 +3066,7 @@ impl Camera for QhyCameraDevice {
             return Err(ASCOMError::NOT_IMPLEMENTED);
         }
 
-        let (min_us, max_us) = {
-            let (min, max, _) =
-                (*self.state.exposure_range_us.lock()).ok_or(ASCOMError::INVALID_VALUE)?;
-            (min, max)
-        };
         let exposure_us = (duration.as_secs_f64() * 1_000_000.0).round();
-        if exposure_us < min_us || exposure_us > max_us {
-            return Err(ASCOMError::invalid_value(format!(
-                "exposure {exposure_us}us outside [{min_us}, {max_us}]"
-            )));
-        }
 
         // Claim the device and give this capture its cancel channel in ONE
         // critical section (lose the race → already exposing, E2). Installing
@@ -2792,6 +3085,18 @@ impl Camera for QhyCameraDevice {
             // opened. Order is `cache_commit_lock` → `result_lock` →
             // `in_flight_capture`; nothing takes them the other way round.
             let _commit = self.commit_guard(session)?;
+            // The duration is checked against the exposure range here, in the
+            // section that claims the device, rather than ahead of it: a
+            // readout-mode change republishes the range (RM1) under this lock,
+            // so a range read earlier could belong to a mode the camera has
+            // left by the time this exposure owns it.
+            let (min_us, max_us, _) =
+                (*self.state.exposure_range_us.lock()).ok_or(ASCOMError::INVALID_VALUE)?;
+            if exposure_us < min_us || exposure_us > max_us {
+                return Err(ASCOMError::invalid_value(format!(
+                    "exposure {exposure_us}us outside [{min_us}, {max_us}]"
+                )));
+            }
             let _guard = self.state.result_lock.lock();
             let mut slot = self.state.in_flight_capture.lock();
             if slot.is_some() {
@@ -2855,6 +3160,7 @@ mod tests {
     use super::*;
     use crate::backend::mock::{MockCameraHandle, MockFilterWheelHandle};
     use crate::filterwheel::QhyFilterWheelDevice;
+    use qhyccd_rs::CCDChipInfo;
     use std::sync::atomic::Ordering;
 
     fn area(start_x: u32, start_y: u32, width: u32, height: u32) -> CCDChipArea {
@@ -2864,6 +3170,28 @@ mod tests {
             width,
             height,
         }
+    }
+
+    /// A camera with a second readout mode whose sensor is not the first's —
+    /// the shape of a QHY600M's hardware 3x3 mode, at the mock's scale: a
+    /// 1024x682 chip of 7.2 µm pixels whose readable area starts 8 columns in.
+    /// The mock takes that sensor on only when an init runs with the mode
+    /// recorded, as the SDK does, so a driver that skipped the init would go on
+    /// reading mode 0's chip.
+    fn two_mode_mock() -> MockCameraHandle {
+        MockCameraHandle::default().with_readout_mode(
+            "Bin3*3Mode (hardware)",
+            CCDChipInfo {
+                chip_width: 7372.8,
+                chip_height: 4910.4,
+                image_width: 1024,
+                image_height: 682,
+                pixel_width: 7.2,
+                pixel_height: 7.2,
+                bits_per_pixel: 16,
+            },
+            area(8, 0, 1016, 682),
+        )
     }
 
     async fn connected_device(handle: MockCameraHandle) -> QhyCameraDevice {
@@ -2916,15 +3244,16 @@ mod tests {
         }
     }
 
-    /// Blocks until the mock is actually executing the handshake's `init`, on
-    /// the same terms as [`await_close`]. The connect has opened the handle by
-    /// then and published none of its caches, which is the window C6 is about.
+    /// Blocks until the mock is actually executing an `init`, on the same terms
+    /// as [`await_close`] — a connect's handshake, which has opened the handle by
+    /// then and published none of its caches (the window C6 is about), or a
+    /// readout-mode change, which owns the device and the connection (RM1).
     async fn await_init(handle: &MockCameraHandle) {
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while !handle.is_in_init() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the handshake never started"
+                "the init never started"
             );
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -3674,42 +4003,69 @@ mod tests {
         assert_eq!(handle.bin(), (2, 2));
     }
 
-    /// B4: and the same for a readout-mode change, which is several writes —
-    /// the mode, then `normalize_geometry`'s bin and resolution — landing on a
-    /// camera the capture is reading out. The refusal beats the range check,
-    /// because the count comes off the device and this driver may not ask it
-    /// while a capture owns it.
+    /// B4: a readout-mode change is a whole re-initialization — the mode, the
+    /// init, then `normalize_geometry`'s bin and resolution — landing on a
+    /// camera the capture is reading out, so it is refused while a capture owns
+    /// the device, and none of it reaches the camera.
     #[tokio::test]
     async fn a_readout_mode_change_is_refused_while_a_capture_owns_the_device() {
-        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
         device.set_bin_x(2).await.unwrap();
-        mock.set_effective_area(area(24, 0, 3048, 2046));
         *device.state.in_flight_capture.lock() = Some(Arc::new(CaptureCancel::for_capture()));
+        mock.clear_calls();
 
-        let err = device.set_readout_mode(0).await.unwrap_err();
+        let err = device.set_readout_mode(1).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(
+            mock.calls(),
+            Vec::<String>::new(),
+            "a refused mode change reached the camera"
+        );
         assert_eq!(
             mock.bin(),
             (2, 2),
             "`normalize_geometry` must not re-bin a camera that is exposing"
         );
+        assert_eq!(device.readout_mode().await.unwrap(), 0);
         assert_eq!(
             device.camera_x_size().await.unwrap(),
             3072,
             "a refused mode change leaves the geometry where it was"
         );
-
-        // An index nobody could honour is refused the same way, and for the
-        // same reason: asking the device for its mode count is itself a call
-        // this request is not allowed to make.
+        // The mode in force is refused the same way: whether a request is
+        // redundant is decided under the claim (B4), not by reading the cache
+        // beside a device something else owns.
         assert_eq!(
-            device.set_readout_mode(99).await.unwrap_err().code,
+            device.set_readout_mode(0).await.unwrap_err().code,
             ASCOMErrorCode::INVALID_OPERATION
         );
 
         *device.state.in_flight_capture.lock() = None;
-        device.set_readout_mode(0).await.unwrap();
-        assert_eq!(device.camera_x_size().await.unwrap(), 3048);
+        device.set_readout_mode(1).await.unwrap();
+        assert_eq!(device.camera_x_size().await.unwrap(), 1016);
+    }
+
+    /// B4 with RM1's cached list: an index past the end is refused on its face,
+    /// whoever owns the device, as an unsupported bin is — the answer needs no
+    /// camera, and `INVALID_VALUE` does not invite a retry that would fail
+    /// identically.
+    #[tokio::test]
+    async fn an_out_of_range_readout_mode_is_refused_on_its_face_even_while_a_capture_owns_the_device(
+    ) {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        *device.state.in_flight_capture.lock() = Some(Arc::new(CaptureCancel::for_capture()));
+        mock.clear_calls();
+
+        assert_eq!(
+            device.set_readout_mode(2).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_VALUE,
+            "a mode the camera does not list is an invalid value, not a busy device"
+        );
+        assert_eq!(
+            mock.calls(),
+            Vec::<String>::new(),
+            "a refused index reached the camera"
+        );
     }
 
     /// B4: a redundant `BinX` is only redundant if nothing is moving the bin.
@@ -3747,8 +4103,8 @@ mod tests {
     /// B1 before B4: an unsupported bin is refused on its face, whoever owns
     /// the device. `valid_bins` is cached, so the answer needs no camera — and
     /// `INVALID_VALUE` is the useful one, because `INVALID_OPERATION` invites a
-    /// retry that would fail identically. `set_readout_mode` differs only
-    /// because its range lives on the device.
+    /// retry that would fail identically. `set_readout_mode` answers the same
+    /// way for an index past its cached list (RM1).
     #[tokio::test]
     async fn an_unsupported_bin_is_refused_on_its_face_even_while_a_capture_owns_the_device() {
         let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
@@ -3887,7 +4243,7 @@ mod tests {
     /// camera.
     #[tokio::test(flavor = "multi_thread")]
     async fn an_exposure_arms_the_geometry_it_validated() {
-        let handle = Arc::new(MockCameraHandle::default());
+        let handle = Arc::new(two_mode_mock());
         let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
         device.connect().await.unwrap();
 
@@ -3902,8 +4258,7 @@ mod tests {
 
         // The mode change would rewrite the very cache the region above came
         // out of; it does not get the chance.
-        handle.set_effective_area(area(24, 0, 3048, 2046));
-        let err = device.set_readout_mode(0).await.unwrap_err();
+        let err = device.set_readout_mode(1).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
 
         handle.release_set_roi();
@@ -4640,18 +4995,27 @@ mod tests {
         );
     }
 
+    /// RM1: the list and the mode in force come from what the connect read, not
+    /// from the SDK — whose own read reports the mode it last *recorded*,
+    /// whether or not the camera was ever switched into it.
     #[tokio::test]
-    async fn readout_modes_list_select_and_reject_out_of_range() {
-        let device = connected_device(MockCameraHandle::default()).await;
+    async fn readout_modes_are_answered_from_what_the_connect_read() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
         assert_eq!(
             device.readout_modes().await.unwrap(),
-            vec!["Standard".to_string()]
+            vec!["Standard".to_string(), "Bin3*3Mode (hardware)".to_string()]
         );
         assert_eq!(device.readout_mode().await.unwrap(), 0);
-        device.set_readout_mode(0).await.unwrap();
-        // Only one mode (0); selecting 1 is out of range.
+
+        // The SDK records a mode that no init has applied.
+        mock.set_readout_mode(1).unwrap();
         assert_eq!(
-            device.set_readout_mode(1).await.unwrap_err().code,
+            device.readout_mode().await.unwrap(),
+            0,
+            "ReadoutMode reported a mode the camera was never switched into"
+        );
+        assert_eq!(
+            device.set_readout_mode(2).await.unwrap_err().code,
             ASCOMErrorCode::INVALID_VALUE
         );
     }
@@ -4853,18 +5217,6 @@ mod tests {
         // bin 2 is valid and differs from the current 1, so it reaches the SDK.
         assert_eq!(
             device.set_bin_x(2).await.unwrap_err().code,
-            ASCOMErrorCode::INVALID_OPERATION
-        );
-    }
-
-    #[tokio::test]
-    async fn set_readout_mode_surfaces_sdk_failure_as_invalid_operation() {
-        let mock = Arc::new(MockCameraHandle::default());
-        let device = QhyCameraDevice::new(mock.clone(), None);
-        device.set_connected(true).await.unwrap();
-        mock.fail_set_controls.store(true, Ordering::SeqCst);
-        assert_eq!(
-            device.set_readout_mode(0).await.unwrap_err().code,
             ASCOMErrorCode::INVALID_OPERATION
         );
     }
@@ -5081,27 +5433,72 @@ mod tests {
         assert_eq!(device.num_y().await.unwrap(), 6384);
     }
 
+    /// RM1: the SDK records a readout mode and applies it only inside
+    /// `InitQHYCCD`, so a change runs the vendor's whole switch — stream mode,
+    /// mode, init, then the transfer depth the init resets — and only then asks
+    /// the camera what the mode is.
     #[tokio::test]
-    async fn a_readout_mode_change_re_reads_the_geometry() {
-        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
-        assert_eq!(device.camera_x_size().await.unwrap(), 3072);
+    async fn a_readout_mode_change_reinitializes_the_camera_in_the_new_mode() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.clear_calls();
+
+        device.set_readout_mode(1).await.unwrap();
+
+        assert_eq!(
+            mock.calls()[..4],
+            [
+                "set_stream_mode_single",
+                "set_readout_mode(1)",
+                "init",
+                "set_transfer_bit_16"
+            ],
+            "the mode was not applied by an init"
+        );
+        assert_eq!(mock.applied_mode(), 1);
+        assert_eq!(
+            mock.init_calls.load(Ordering::SeqCst),
+            2,
+            "one init for the connect and one for the change"
+        );
+        assert_eq!(device.readout_mode().await.unwrap(), 1);
+    }
+
+    /// RM1: everything the connect read about mode 0 is read again for the new
+    /// mode, and published as that mode's — the sensor, the pixel, the bins B1
+    /// validates against, and the exposure, gain and offset bounds — and the
+    /// camera is left at bin 1 with the new full frame as its sub-frame, which
+    /// is what the next exposure arms.
+    #[tokio::test]
+    async fn a_readout_mode_change_re_reads_everything_the_mode_decides() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
         device.set_bin_x(2).await.unwrap();
-        // The camera answers for its new mode with a margin the old one
-        // lacked, and with an odd number of readable rows — so a mode change
-        // that reported the raw effective height instead of the reduced one
-        // would be visible here rather than at bin 3 on a telescope (R4).
-        mock.set_effective_area(area(24, 0, 3048, 2046));
-        device.set_readout_mode(0).await.unwrap();
-        assert_eq!(device.camera_x_size().await.unwrap(), 3048);
-        assert_eq!(device.camera_y_size().await.unwrap(), 2044);
-        // The geometry was re-established the way connect does it: bin 1 on
-        // the device as well as in the cache, and the whole sensor armed.
+        device.set_num_x(100).await.unwrap();
+        // What the new mode offers besides its sensor: no 2x2, and other bounds.
+        mock.remove_control(ControlType::CamBin2x2mode);
+        mock.set_range(ControlType::Gain, (0.0, 50.0, 1.0));
+        mock.set_range(ControlType::Offset, (0.0, 100.0, 1.0));
+        mock.set_range(ControlType::Exposure, (10.0, 1_000_000.0, 1.0));
+
+        device.set_readout_mode(1).await.unwrap();
+
+        assert_eq!(device.camera_x_size().await.unwrap(), 1016);
+        assert_eq!(device.camera_y_size().await.unwrap(), 682);
+        assert_eq!(device.pixel_size_x().await.unwrap(), 7.2);
+        assert_eq!(device.max_bin_x().await.unwrap(), 1);
+        assert_eq!(
+            device.set_bin_x(2).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_VALUE,
+            "B1 still validates against the previous mode's bins"
+        );
+        assert_eq!(device.gain_max().await.unwrap(), 50);
+        assert_eq!(device.offset_max().await.unwrap(), 100);
+        assert_eq!(device.exposure_max().await.unwrap(), Duration::from_secs(1));
+
         assert_eq!(mock.bin(), (1, 1), "the SDK was left binned");
         assert_eq!(device.bin_x().await.unwrap(), 1);
         assert_eq!(device.start_x().await.unwrap(), 0);
-        assert_eq!(device.num_x().await.unwrap(), 3048);
-        assert_eq!(device.num_y().await.unwrap(), 2044);
-        // And the frame that reduction describes is the one armed.
+        assert_eq!(device.num_x().await.unwrap(), 1016);
+        assert_eq!(device.num_y().await.unwrap(), 682);
         device
             .start_exposure(Duration::from_millis(10), true)
             .await
@@ -5110,22 +5507,1144 @@ mod tests {
             device.wait_until_drained(Duration::from_secs(30)).await,
             "capture task did not drain in time"
         );
-        assert_eq!(mock.get_current_roi().unwrap(), area(24, 0, 3048, 2044));
+        assert_eq!(
+            mock.get_current_roi().unwrap(),
+            area(8, 0, 1016, 682),
+            "the frame is armed from the new mode's readable area"
+        );
+    }
+
+    /// RM1: re-selecting the mode in force is not a mode change. Nothing reaches
+    /// the camera, and the bin and sub-frame the client set are kept — a client
+    /// that sends its whole configuration before every frame must not lose them.
+    #[tokio::test]
+    async fn selecting_the_mode_in_force_changes_nothing() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        device.set_bin_x(2).await.unwrap();
+        device.set_start_x(10).await.unwrap();
+        device.set_num_x(100).await.unwrap();
+        mock.clear_calls();
+
+        device.set_readout_mode(0).await.unwrap();
+
+        assert_eq!(mock.calls(), Vec::<String>::new());
+        assert_eq!(mock.init_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(device.bin_x().await.unwrap(), 2);
+        assert_eq!(device.start_x().await.unwrap(), 10);
+        assert_eq!(device.num_x().await.unwrap(), 100);
+    }
+
+    /// RM1/C8: a second mode change waits for the first on the connection's
+    /// lifecycle lock rather than being refused or overlapping it, then decides
+    /// from the mode the first left the camera in.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_second_readout_mode_change_waits_for_the_first() {
+        let handle = Arc::new(two_mode_mock());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+
+        handle.hold_init();
+        let first = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_readout_mode(1).await })
+        };
+        await_init(&handle).await;
+        let second = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_readout_mode(0).await })
+        };
+        for _ in 0..50 {
+            assert!(
+                !second.is_finished(),
+                "the second mode change did not wait for the first"
+            );
+            assert_eq!(
+                handle.init_calls.load(Ordering::SeqCst),
+                2,
+                "the second mode change reached the camera while the first was in it"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        handle.release_init();
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+        assert_eq!(device.readout_mode().await.unwrap(), 0);
+        assert_eq!(handle.applied_mode(), 0);
+        assert_eq!(device.camera_x_size().await.unwrap(), 3072);
+    }
+
+    /// RM4: the init resets gain and offset on some models, so the change puts
+    /// back the values the SDK held before it — after the init, not before it.
+    #[tokio::test]
+    async fn a_readout_mode_change_restores_the_gain_and_offset_the_init_reset() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.init_resets_gain_offset.store(true, Ordering::SeqCst);
+        device.set_gain(42).await.unwrap();
+        device.set_offset(17).await.unwrap();
+        mock.clear_calls();
+
+        device.set_readout_mode(1).await.unwrap();
+
+        assert_eq!(device.gain().await.unwrap(), 42);
+        assert_eq!(device.offset().await.unwrap(), 17);
+        let calls = mock.calls();
+        let init = calls.iter().position(|c| c == "init").unwrap();
+        let gain = calls
+            .iter()
+            .rposition(|c| c == "set_parameter(Gain)")
+            .unwrap();
+        assert!(
+            gain > init,
+            "the gain was restored before the init reset it"
+        );
+    }
+
+    /// RM4: a gain the new mode's range does not admit is left as the SDK set
+    /// it — writing it would be refused, and clamping it would be a gain nobody
+    /// asked for — and the change still succeeds.
+    #[tokio::test]
+    async fn a_gain_the_new_mode_does_not_admit_is_left_as_the_sdk_set_it() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.init_resets_gain_offset.store(true, Ordering::SeqCst);
+        device.set_gain(80).await.unwrap();
+        mock.set_range(ControlType::Gain, (0.0, 50.0, 1.0));
+        mock.clear_calls();
+
+        device.set_readout_mode(1).await.unwrap();
+
+        assert_eq!(device.gain().await.unwrap(), 0);
+        assert!(
+            !mock.calls().iter().any(|c| c == "set_parameter(Gain)"),
+            "a gain outside the new range was written"
+        );
+    }
+
+    /// RM4: the offset is held to the gain's rule — one the new mode's range does
+    /// not admit is left as the SDK set it, and the change still succeeds.
+    #[tokio::test]
+    async fn an_offset_the_new_mode_does_not_admit_is_left_as_the_sdk_set_it() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.init_resets_gain_offset.store(true, Ordering::SeqCst);
+        device.set_offset(80).await.unwrap();
+        mock.set_range(ControlType::Offset, (0.0, 50.0, 1.0));
+        mock.clear_calls();
+
+        device.set_readout_mode(1).await.unwrap();
+
+        assert_eq!(device.offset().await.unwrap(), 0);
+        assert!(
+            !mock.calls().iter().any(|c| c == "set_parameter(Offset)"),
+            "an offset outside the new range was written"
+        );
+    }
+
+    /// RM4: with `disable_auto_cooler` set, the SDK switches the TEC off inside
+    /// every init. A client that has the cooler engaged has its target put back
+    /// after the init, so `CoolerOn` goes on describing a running cooler.
+    #[tokio::test]
+    async fn an_engaged_cooler_is_re_asserted_after_the_re_initialization() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.init_stops_cooler.store(true, Ordering::SeqCst);
+        device.set_set_ccd_temperature(-10.0).await.unwrap();
+        device.set_cooler_on(true).await.unwrap();
+        mock.clear_calls();
+
+        device.set_readout_mode(1).await.unwrap();
+
+        assert_eq!(mock.param(ControlType::Cooler), Some(-10.0));
+        let calls = mock.calls();
+        let init = calls.iter().position(|c| c == "init").unwrap();
+        let cooler = calls
+            .iter()
+            .position(|c| c == "set_parameter(Cooler)")
+            .unwrap();
+        assert!(cooler > init, "the target was re-asserted before the init");
+    }
+
+    /// RM4: a cooler nobody engaged is not touched — the re-assertion restores a
+    /// client's command, and there is none to restore.
+    #[tokio::test]
+    async fn a_cooler_nobody_engaged_is_left_alone_by_a_readout_mode_change() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.init_stops_cooler.store(true, Ordering::SeqCst);
+        mock.clear_calls();
+
+        device.set_readout_mode(1).await.unwrap();
+
+        assert!(
+            !mock.calls().iter().any(|c| c == "set_parameter(Cooler)"),
+            "a cooler no client engaged was switched on"
+        );
+    }
+
+    /// RM1: the 16-bit transfer is best effort on a mode change as on connect —
+    /// not every model has the control.
+    #[tokio::test]
+    async fn a_transfer_depth_the_model_refuses_does_not_fail_a_readout_mode_change() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.fail_transfer_bit.store(true, Ordering::SeqCst);
+
+        device.set_readout_mode(1).await.unwrap();
+
+        assert_eq!(device.readout_mode().await.unwrap(), 1);
+        assert_eq!(device.camera_x_size().await.unwrap(), 1016);
+    }
+
+    /// Asserts every cache a readout mode decides has been withdrawn (RM3): the
+    /// members answer as in a connect's window, and no exposure can be armed.
+    async fn assert_mode_withdrawn(device: &QhyCameraDevice, mock: &MockCameraHandle) {
+        for (member, code) in [
+            ("CameraXSize", device.camera_x_size().await.err()),
+            ("PixelSizeX", device.pixel_size_x().await.map(|_| ()).err()),
+            ("MaxADU", device.max_adu().await.map(|_| ()).err()),
+            ("BinX", device.bin_x().await.map(|_| ()).err()),
+            ("NumX", device.num_x().await.map(|_| ()).err()),
+            ("GainMin", device.gain_min().await.map(|_| ()).err()),
+            ("OffsetMin", device.offset_min().await.map(|_| ()).err()),
+            ("ReadoutMode", device.readout_mode().await.map(|_| ()).err()),
+        ]
+        .map(|(member, error)| (member, error.map(|e| e.code)))
+        {
+            assert_eq!(
+                code,
+                Some(ASCOMErrorCode::VALUE_NOT_SET),
+                "{member} answered for a mode the camera may have left"
+            );
+        }
+        // The exposure range answers as it does in a connect's window, where an
+        // unread range has always been `INVALID_VALUE`.
+        for (member, code) in [
+            ("ExposureMin", device.exposure_min().await.err()),
+            ("ExposureMax", device.exposure_max().await.err()),
+        ]
+        .map(|(member, error)| (member, error.map(|e| e.code)))
+        {
+            assert_eq!(
+                code,
+                Some(ASCOMErrorCode::INVALID_VALUE),
+                "{member} answered for a mode the camera may have left"
+            );
+        }
+        mock.clear_calls();
+        assert_eq!(
+            device
+                .start_exposure(Duration::from_millis(10), true)
+                .await
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+        assert!(
+            !mock.calls().iter().any(|c| c == "set_roi"),
+            "an exposure was armed from withdrawn geometry"
+        );
+    }
+
+    /// RM3: once the switch has begun, a failure leaves the camera in a
+    /// configuration the caches no longer describe, so they are withdrawn — and
+    /// the error names the step. The mode list stays, since no mode changes it.
+    #[tokio::test]
+    async fn a_readout_mode_change_that_fails_part_way_withdraws_the_geometry() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.fail_handshake.store(true, Ordering::SeqCst);
+
+        let err = device.set_readout_mode(1).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            err.message
+                .contains("readout mode 1: reading the mode's geometry"),
+            "{}",
+            err.message
+        );
+        assert_mode_withdrawn(&device, &mock).await;
+        assert_eq!(device.readout_modes().await.unwrap().len(), 2);
+    }
+
+    /// RM3: with no mode in force no request is redundant, so selecting a mode
+    /// again — the one that failed included — runs the whole switch and
+    /// republishes, without a reconnect.
+    #[tokio::test]
+    async fn a_failed_readout_mode_change_is_recovered_by_selecting_a_mode_again() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.fail_handshake.store(true, Ordering::SeqCst);
+        device.set_readout_mode(1).await.unwrap_err();
+        mock.fail_handshake.store(false, Ordering::SeqCst);
+
+        device.set_readout_mode(1).await.unwrap();
+
+        assert_eq!(mock.init_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(device.readout_mode().await.unwrap(), 1);
+        assert_eq!(device.camera_x_size().await.unwrap(), 1016);
+        assert_eq!(device.bin_x().await.unwrap(), 1);
+    }
+
+    /// RM3: the change asks the SDK which mode it recorded rather than assuming
+    /// the one it sent, so an SDK that reported success without recording it
+    /// fails the change instead of publishing another mode's geometry.
+    #[tokio::test]
+    async fn an_sdk_that_does_not_record_the_mode_it_was_given_fails_the_change() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.ignore_readout_mode_writes
+            .store(true, Ordering::SeqCst);
+
+        let err = device.set_readout_mode(1).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(err.message.contains("reports mode 0"), "{}", err.message);
+        assert_mode_withdrawn(&device, &mock).await;
+    }
+
+    /// RM3: the mode write itself is part of the switch — a refusal of it is
+    /// not proof the camera is where it was.
+    #[tokio::test]
+    async fn a_mode_write_the_sdk_refuses_withdraws_the_geometry() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.fail_set_controls.store(true, Ordering::SeqCst);
+
+        let err = device.set_readout_mode(1).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_mode_withdrawn(&device, &mock).await;
+    }
+
+    /// RM3: a mode whose readable area comes back empty — the answer a wedged
+    /// camera gives — fails the change like any other step, and its geometry is
+    /// withdrawn rather than the previous mode's left standing.
+    #[tokio::test]
+    async fn a_readout_mode_whose_geometry_cannot_be_read_withdraws_the_geometry() {
+        let chip = CCDChipInfo {
+            chip_width: 7372.8,
+            chip_height: 4915.2,
+            image_width: 3072,
+            image_height: 2048,
+            pixel_width: 2.4,
+            pixel_height: 2.4,
+            bits_per_pixel: 16,
+        };
+        let (device, mock) = connected_device_with_handle(
+            MockCameraHandle::default().with_readout_mode("Wedged", chip, area(0, 0, 0, 0)),
+        )
+        .await;
+
+        let err = device.set_readout_mode(1).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_mode_withdrawn(&device, &mock).await;
+    }
+
+    /// RM3: what is read before the first write is read before anything has
+    /// changed, so a failure there leaves the camera and every cache as they
+    /// were.
+    #[tokio::test]
+    async fn a_gain_that_cannot_be_read_before_the_change_leaves_everything_as_it_was() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.fail_reads_of(ControlType::Gain);
+        mock.clear_calls();
+
+        let err = device.set_readout_mode(1).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(mock.calls(), Vec::<String>::new());
+        assert_eq!(device.readout_mode().await.unwrap(), 0);
+        assert_eq!(device.camera_x_size().await.unwrap(), 3072);
+    }
+
+    /// C6: a mode change asks for its session before its first write, not only
+    /// at its commit. A request made in a session that has since ended must not
+    /// re-initialize the camera a reconnect has just published caches for —
+    /// refusing the commit afterwards would not put the camera back.
+    #[tokio::test]
+    async fn a_readout_mode_change_from_an_ended_session_writes_nothing() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        let ended = device.state.session();
+        device.disconnect().await.unwrap();
+        device.connect().await.unwrap();
+        mock.clear_calls();
+
+        assert_eq!(
+            device.switch_readout_mode(ended, 1).await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            mock.calls(),
+            Vec::<String>::new(),
+            "a request from an ended session reached the reconnected camera"
+        );
+        assert_eq!(mock.applied_mode(), 0);
+        assert_eq!(device.readout_mode().await.unwrap(), 0);
+    }
+
+    /// C6/RM1: the mode list and the mode in force are a connect's to publish,
+    /// so a reconnect still handshaking answers `VALUE_NOT_SET` for both, and
+    /// for a mode change — not the previous session's list.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_reconnect_does_not_answer_readout_modes_until_its_handshake_has_read_them() {
+        let handle = Arc::new(two_mode_mock());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        device.disconnect().await.unwrap();
+
+        handle.hold_init();
+        let reconnecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.connect().await })
+        };
+        await_init(&handle).await;
+
+        assert_eq!(
+            device.readout_mode().await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET
+        );
+        assert_eq!(
+            device.readout_modes().await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET
+        );
+        assert_eq!(
+            device.set_readout_mode(1).await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET
+        );
+
+        handle.release_init();
+        reconnecting.await.unwrap().unwrap();
+        assert_eq!(device.readout_mode().await.unwrap(), 0);
+        assert_eq!(device.readout_modes().await.unwrap().len(), 2);
+    }
+
+    /// RM1/B4: a disconnect issued during a mode change waits for it rather than
+    /// closing the handle under an `InitQHYCCD` — and then closes it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_disconnect_waits_for_a_readout_mode_change_to_finish() {
+        let handle = Arc::new(two_mode_mock());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+
+        handle.hold_init();
+        let switching = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_readout_mode(1).await })
+        };
+        await_init(&handle).await;
+        let disconnecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_connected(false).await })
+        };
+        for _ in 0..50 {
+            assert_eq!(
+                handle.close_calls.load(Ordering::SeqCst),
+                0,
+                "the handle was closed under a mode change's init"
+            );
+            assert!(!disconnecting.is_finished());
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        handle.release_init();
+        switching.await.unwrap().unwrap();
+        disconnecting.await.unwrap().unwrap();
+        assert_eq!(handle.close_calls.load(Ordering::SeqCst), 1);
+        assert!(!device.connected().await.unwrap());
+    }
+
+    /// RM1/C8: a mode change runs `InitQHYCCD`, the call C8 keeps apart from the
+    /// filter wheel's handshake on the same `OpenQHYCCD`, so it holds the
+    /// physical connection's lifecycle lock: a wheel connect issued during it
+    /// waits, and handshakes once the camera is out of its init.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_wheel_connect_waits_for_a_readout_mode_change_on_the_same_handle() {
+        let lifecycle = Arc::new(tokio::sync::Mutex::new(()));
+        let camera_handle = Arc::new(two_mode_mock().with_lifecycle(Arc::clone(&lifecycle)));
+        let wheel_handle = Arc::new(
+            MockFilterWheelHandle::new("SIM-QHY178M", 7).with_lifecycle(Arc::clone(&lifecycle)),
+        );
+        let camera = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&camera_handle), None);
+        let wheel = QhyFilterWheelDevice::new(
+            Arc::<MockFilterWheelHandle>::clone(&wheel_handle),
+            None,
+            None,
+        );
+        camera.set_connected(true).await.unwrap();
+
+        camera_handle.hold_init();
+        let switching = {
+            let camera = camera.clone();
+            tokio::spawn(async move { camera.set_readout_mode(1).await })
+        };
+        await_init(&camera_handle).await;
+        let connecting_wheel = {
+            let wheel = wheel.clone();
+            tokio::spawn(async move { wheel.set_connected(true).await })
+        };
+        for _ in 0..50 {
+            assert_eq!(
+                wheel_handle.handshake_calls.load(Ordering::SeqCst),
+                0,
+                "the wheel handshook while the camera was inside its init"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        camera_handle.release_init();
+        switching.await.unwrap().unwrap();
+        connecting_wheel.await.unwrap().unwrap();
+        assert_eq!(wheel_handle.handshake_calls.load(Ordering::SeqCst), 1);
+        assert!(wheel.connected().await.unwrap());
+    }
+
+    /// RM4: a gain set while a mode change is inside the SDK waits for the
+    /// change to finish. Landing in the middle, it would be reset by the init or
+    /// overwritten by the restore of the value read before it, and the client
+    /// told `Ok` for a gain the camera does not have.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_gain_set_during_a_readout_mode_change_is_not_lost() {
+        let handle = Arc::new(two_mode_mock());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        device.set_gain(10).await.unwrap();
+
+        handle.hold_init();
+        let switching = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_readout_mode(1).await })
+        };
+        await_init(&handle).await;
+        let setting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_gain(55).await })
+        };
+        for _ in 0..50 {
+            assert_eq!(
+                handle.param(ControlType::Gain),
+                Some(10.0),
+                "a gain landed inside the mode change"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        handle.release_init();
+        switching.await.unwrap().unwrap();
+        setting.await.unwrap().unwrap();
+        assert_eq!(device.gain().await.unwrap(), 55);
+    }
+
+    /// RM4: a `CoolerOn(false)` issued while a mode change is inside its init
+    /// waits for the change, so the change's re-assertion of the cooler it
+    /// found engaged cannot undo the switch-off and leave the TEC regulating
+    /// while `CoolerOn` reads false.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cooler_switched_off_during_a_readout_mode_change_stays_off() {
+        let handle = Arc::new(two_mode_mock());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        device.set_set_ccd_temperature(-10.0).await.unwrap();
+        device.set_cooler_on(true).await.unwrap();
+
+        handle.hold_init();
+        let switching = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_readout_mode(1).await })
+        };
+        await_init(&handle).await;
+        handle.clear_calls();
+        let switching_off = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_cooler_on(false).await })
+        };
+        for _ in 0..50 {
+            assert!(
+                !handle
+                    .calls()
+                    .iter()
+                    .any(|c| c == "set_parameter(ManualPWM)"),
+                "the cooler was switched off inside the mode change"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        handle.release_init();
+        switching.await.unwrap().unwrap();
+        switching_off.await.unwrap().unwrap();
+        let calls = handle.calls();
+        let reasserted = calls
+            .iter()
+            .position(|c| c == "set_parameter(Cooler)")
+            .unwrap();
+        let off = calls
+            .iter()
+            .position(|c| c == "set_parameter(ManualPWM)")
+            .unwrap();
+        assert!(
+            reasserted < off,
+            "the switch-off was undone by the mode change: {calls:?}"
+        );
+        assert!(!device.cooler_on().await.unwrap());
+    }
+
+    /// RM4: a `CoolerOn(true)` issued while a mode change is inside its init
+    /// waits for the change rather than being sent into it — where an init that
+    /// stops the TEC would stop it again with nothing left to put it back.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_cooler_engaged_during_a_readout_mode_change_ends_up_regulating() {
+        let handle = Arc::new(two_mode_mock());
+        handle.init_stops_cooler.store(true, Ordering::SeqCst);
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        device.set_set_ccd_temperature(-10.0).await.unwrap();
+
+        handle.hold_init();
+        let switching = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_readout_mode(1).await })
+        };
+        await_init(&handle).await;
+        let engaging = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_cooler_on(true).await })
+        };
+        for _ in 0..50 {
+            assert!(
+                !engaging.is_finished(),
+                "the cooler was engaged inside the mode change"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        handle.release_init();
+        switching.await.unwrap().unwrap();
+        engaging.await.unwrap().unwrap();
+        assert_eq!(handle.param(ControlType::Cooler), Some(-10.0));
+    }
+
+    /// RM4: a `SetCCDTemperature` issued during a mode change is not
+    /// overwritten by the change re-asserting the target it replaced.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_setpoint_changed_during_a_readout_mode_change_is_the_one_in_force() {
+        let handle = Arc::new(two_mode_mock());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        device.set_set_ccd_temperature(-10.0).await.unwrap();
+        device.set_cooler_on(true).await.unwrap();
+
+        handle.hold_init();
+        let switching = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_readout_mode(1).await })
+        };
+        await_init(&handle).await;
+        let retargeting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_set_ccd_temperature(-20.0).await })
+        };
+        for _ in 0..50 {
+            assert_eq!(
+                handle.param(ControlType::Cooler),
+                Some(-10.0),
+                "the setpoint was written inside the mode change"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        handle.release_init();
+        switching.await.unwrap().unwrap();
+        retargeting.await.unwrap().unwrap();
+        assert_eq!(handle.param(ControlType::Cooler), Some(-20.0));
+        assert_eq!(device.set_ccd_temperature().await.unwrap(), -20.0);
+    }
+
+    /// RM4: the re-assertion is gated on the cooler being *engaged*, not on a
+    /// target being cached — a client that set a target, engaged the cooler and
+    /// switched it off again has no cooler to put back.
+    #[tokio::test]
+    async fn a_cooler_switched_off_before_a_readout_mode_change_is_left_off() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        device.set_set_ccd_temperature(-10.0).await.unwrap();
+        device.set_cooler_on(true).await.unwrap();
+        device.set_cooler_on(false).await.unwrap();
+        mock.clear_calls();
+
+        device.set_readout_mode(1).await.unwrap();
+
+        assert!(
+            !mock.calls().iter().any(|c| c == "set_parameter(Cooler)"),
+            "a cooler the client switched off was switched back on"
+        );
+    }
+
+    /// RM4: `CoolerOn` outlives a reconnect as the last command given, but a
+    /// mode change re-asserts only a cooler engaged in its own session — never
+    /// one commanded of a session that has ended.
+    #[tokio::test]
+    async fn a_cooler_engaged_in_an_ended_session_is_not_switched_on_by_a_readout_mode_change() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        device.set_set_ccd_temperature(-10.0).await.unwrap();
+        device.set_cooler_on(true).await.unwrap();
+        device.disconnect().await.unwrap();
+        device.connect().await.unwrap();
+        mock.clear_calls();
+
+        device.set_readout_mode(1).await.unwrap();
+
+        assert!(
+            !mock.calls().iter().any(|c| c == "set_parameter(Cooler)"),
+            "a mode change switched on a cooler engaged in an ended session"
+        );
+    }
+
+    /// RM3/RM4: the cooler is put back straight after the init, so a change
+    /// that fails further on does not also leave the sensor warming while
+    /// `CoolerOn` reads true.
+    #[tokio::test]
+    async fn a_readout_mode_change_that_fails_after_its_init_still_puts_the_cooler_back() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.init_stops_cooler.store(true, Ordering::SeqCst);
+        device.set_set_ccd_temperature(-10.0).await.unwrap();
+        device.set_cooler_on(true).await.unwrap();
+        mock.fail_handshake.store(true, Ordering::SeqCst);
+
+        device.set_readout_mode(1).await.unwrap_err();
+
+        assert_eq!(
+            mock.param(ControlType::Cooler),
+            Some(-10.0),
+            "a failed mode change left the cooler stopped"
+        );
+    }
+
+    /// RM3/RM4: the cooler is put back when the switch itself fails too — a
+    /// failure before the init leaves the TEC regulating, and sending its target
+    /// again changes nothing, so the driver does not branch on which step
+    /// failed — and the error names the switch.
+    #[tokio::test]
+    async fn a_readout_mode_change_whose_switch_fails_still_puts_the_cooler_back() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        device.set_set_ccd_temperature(-10.0).await.unwrap();
+        device.set_cooler_on(true).await.unwrap();
+        mock.fail_set_controls.store(true, Ordering::SeqCst);
+        mock.clear_calls();
+
+        let err = device.set_readout_mode(1).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            err.message
+                .contains("readout mode 1: switching the camera failed"),
+            "{}",
+            err.message
+        );
+        assert!(
+            mock.calls().iter().any(|c| c == "set_parameter(Cooler)"),
+            "a failed switch did not put the cooler back: {:?}",
+            mock.calls()
+        );
+        assert_mode_withdrawn(&device, &mock).await;
+    }
+
+    /// RM3/RM4: when the switch failed and the cooler cannot be put back either,
+    /// the client is told about the switch — the step that failed first, and
+    /// the one a retry has to get past — and the cooler is only logged.
+    #[tokio::test]
+    async fn a_cooler_that_cannot_be_put_back_after_a_failed_switch_does_not_hide_the_switch_failure(
+    ) {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        device.set_set_ccd_temperature(-10.0).await.unwrap();
+        device.set_cooler_on(true).await.unwrap();
+        mock.fail_set_controls.store(true, Ordering::SeqCst);
+        mock.fail_writes_of(ControlType::Cooler);
+
+        let err = device.set_readout_mode(1).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            err.message
+                .contains("readout mode 1: switching the camera failed"),
+            "{}",
+            err.message
+        );
+        assert_mode_withdrawn(&device, &mock).await;
+    }
+
+    /// RM3/RM4: after an init that succeeded, a cooler target the SDK refuses
+    /// fails the change — reporting success would leave `CoolerOn` true of a
+    /// TEC the init may have stopped — and, the switch having begun, the mode's
+    /// caches are withdrawn.
+    #[tokio::test]
+    async fn a_cooler_target_the_sdk_refuses_after_the_init_fails_the_change() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        device.set_set_ccd_temperature(-10.0).await.unwrap();
+        device.set_cooler_on(true).await.unwrap();
+        mock.fail_writes_of(ControlType::Cooler);
+
+        let err = device.set_readout_mode(1).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(
+            err.message
+                .contains("readout mode 1: re-asserting the cooler target failed"),
+            "{}",
+            err.message
+        );
+        assert_eq!(mock.applied_mode(), 1);
+        assert_mode_withdrawn(&device, &mock).await;
+    }
+
+    /// RM4: a gain set during a mode change is validated against the bounds of
+    /// the mode the change leaves the camera in, not those of the mode it is
+    /// leaving — a gain only the old range admits is refused, and never
+    /// written.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_gain_set_during_a_readout_mode_change_is_checked_against_the_new_mode() {
+        let handle = Arc::new(two_mode_mock());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+
+        handle.hold_init();
+        let switching = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_readout_mode(1).await })
+        };
+        await_init(&handle).await;
+        let setting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_gain(80).await })
+        };
+        // Still inside the change the old range admits 80, so a gain that did
+        // not wait would be validated and written here.
+        for _ in 0..50 {
+            assert!(
+                !setting.is_finished(),
+                "a gain was answered from inside the mode change"
+            );
+            assert_eq!(
+                handle.param(ControlType::Gain),
+                Some(10.0),
+                "a gain landed inside the mode change"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        // The mode the camera is being switched into offers less gain.
+        handle.set_range(ControlType::Gain, (0.0, 50.0, 1.0));
+
+        handle.release_init();
+        switching.await.unwrap().unwrap();
+        assert_eq!(
+            setting.await.unwrap().unwrap_err().code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+        assert_eq!(
+            handle.param(ControlType::Gain),
+            Some(10.0),
+            "a gain outside the new mode's range reached the camera"
+        );
+        assert_eq!(device.gain_max().await.unwrap(), 50);
+    }
+
+    /// RM4: a gain write runs where dropping the request cannot cut it short. A
+    /// client that gives up while the write is inside the SDK leaves it holding
+    /// the controls until it returns, so a mode change behind it can neither
+    /// read the gain under the write nor re-initialize the camera beneath it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dropped_gain_write_finishes_before_a_readout_mode_change_starts() {
+        let handle = Arc::new(two_mode_mock());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+
+        handle.hold_gain_write();
+        let setting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_gain(55).await })
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !handle.is_in_gain_write() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the gain write never started"
+            );
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        setting.abort();
+        let switching = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_readout_mode(1).await })
+        };
+        for _ in 0..50 {
+            assert_eq!(
+                handle.init_calls.load(Ordering::SeqCst),
+                1,
+                "a mode change re-initialized the camera under a gain write"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        handle.release_gain_write();
+        switching.await.unwrap().unwrap();
+        assert_eq!(device.readout_mode().await.unwrap(), 1);
+        assert_eq!(device.gain().await.unwrap(), 55);
+    }
+
+    /// Queue `request` behind [`DeviceState::control_lock`], held as a
+    /// readout-mode change holds it, reconnect while it waits, then let it go:
+    /// the request was made in a session that has ended, so it must answer
+    /// `NOT_CONNECTED` and send the reconnected camera nothing (C6, RM4).
+    async fn assert_refused_across_a_reconnect<F, Fut>(request: F)
+    where
+        F: FnOnce(QhyCameraDevice) -> Fut,
+        Fut: std::future::Future<Output = ASCOMResult<()>> + Send + 'static,
+    {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        let held = device.state.control_lock.lock().await;
+        let queued = tokio::spawn(request(device.clone()));
+        // On this single-threaded runtime a yield runs the request up to the
+        // lock, so it has read its session before the reconnect below.
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !queued.is_finished(),
+            "the request did not wait for the lock"
+        );
+        device.disconnect().await.unwrap();
+        device.connect().await.unwrap();
+        mock.clear_calls();
+
+        drop(held);
+
+        assert_eq!(
+            queued.await.unwrap().unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            mock.calls(),
+            Vec::<String>::new(),
+            "a request from an ended session reached the reconnected camera"
+        );
     }
 
     #[tokio::test]
-    async fn a_readout_mode_whose_geometry_cannot_be_read_is_refused() {
-        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
-        // The SDK answers the mode switch with the empty area a wedged camera
-        // reports. The mode is refused as an operation failure — the index
-        // was valid — and the cached geometry is left as it was: the connect
-        // path documents that state as unrecoverable in-process, so there is
-        // no better answer to cache.
-        mock.set_effective_area(area(0, 0, 0, 0));
-        let err = device.set_readout_mode(0).await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    async fn a_gain_queued_across_a_reconnect_is_refused() {
+        assert_refused_across_a_reconnect(|device| async move { device.set_gain(55).await }).await;
+    }
+
+    #[tokio::test]
+    async fn an_offset_queued_across_a_reconnect_is_refused() {
+        assert_refused_across_a_reconnect(|device| async move { device.set_offset(40).await })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn a_setpoint_queued_across_a_reconnect_is_refused() {
+        assert_refused_across_a_reconnect(|device| async move {
+            device.set_set_ccd_temperature(-10.0).await
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_cooler_command_queued_across_a_reconnect_is_refused() {
+        assert_refused_across_a_reconnect(|device| async move { device.set_cooler_on(true).await })
+            .await;
+    }
+
+    /// RM4: the offset is held to the same rule as the gain — set during a mode
+    /// change, it lands after the change, not inside it to be overwritten.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_offset_set_during_a_readout_mode_change_is_not_lost() {
+        let handle = Arc::new(two_mode_mock());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+        device.set_offset(10).await.unwrap();
+
+        handle.hold_init();
+        let switching = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_readout_mode(1).await })
+        };
+        await_init(&handle).await;
+        let setting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_offset(40).await })
+        };
+        for _ in 0..50 {
+            assert_eq!(
+                handle.param(ControlType::Offset),
+                Some(10.0),
+                "an offset landed inside the mode change"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        handle.release_init();
+        switching.await.unwrap().unwrap();
+        setting.await.unwrap().unwrap();
+        assert_eq!(device.offset().await.unwrap(), 40);
+    }
+
+    /// B4: a mode change owns the device for its whole SDK sequence. While it is
+    /// inside its init, a `StartExposure` and a bin change are refused as busy,
+    /// and an abort finds no exposure to abort and sends the camera nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_readout_mode_change_holds_the_device_while_it_is_inside_the_sdk() {
+        let handle = Arc::new(two_mode_mock());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+
+        handle.hold_init();
+        let switching = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_readout_mode(1).await })
+        };
+        await_init(&handle).await;
+        handle.clear_calls();
+
+        assert_eq!(
+            device
+                .start_exposure(Duration::from_millis(10), true)
+                .await
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+        assert_eq!(
+            device.set_bin_x(2).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+        device.abort_exposure().await.unwrap();
+        assert!(
+            !handle.aborted.load(Ordering::SeqCst),
+            "an abort sent the SDK cancel into a mode change"
+        );
+        assert_eq!(
+            handle.calls(),
+            Vec::<String>::new(),
+            "a request reached the camera beside a mode change"
+        );
+
+        handle.release_init();
+        switching.await.unwrap().unwrap();
+        assert_eq!(device.readout_mode().await.unwrap(), 1);
+    }
+
+    /// RM1: a mode change runs where dropping the request cannot cut it short.
+    /// A client that gives up while the init is running leaves the change to
+    /// finish, still holding the connection, so a disconnect after it waits
+    /// rather than closing the handle under the init.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_dropped_readout_mode_change_finishes_before_the_connection_moves_on() {
+        let handle = Arc::new(two_mode_mock());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        device.connect().await.unwrap();
+
+        handle.hold_init();
+        let switching = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_readout_mode(1).await })
+        };
+        await_init(&handle).await;
+        switching.abort();
+        let disconnecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_connected(false).await })
+        };
+        for _ in 0..50 {
+            assert_eq!(
+                handle.close_calls.load(Ordering::SeqCst),
+                0,
+                "the handle was closed under a dropped mode change's init"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        handle.release_init();
+        disconnecting.await.unwrap().unwrap();
+        assert_eq!(
+            handle.applied_mode(),
+            1,
+            "the dropped change did not finish"
+        );
+        assert_eq!(handle.close_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// RM3: recovering from a failed change by going back to the mode that
+    /// worked runs the whole switch too — with no mode in force, mode 0 is not
+    /// redundant.
+    #[tokio::test]
+    async fn a_failed_readout_mode_change_is_recovered_by_returning_to_mode_0() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.fail_handshake.store(true, Ordering::SeqCst);
+        device.set_readout_mode(1).await.unwrap_err();
+        mock.fail_handshake.store(false, Ordering::SeqCst);
+
+        device.set_readout_mode(0).await.unwrap();
+
+        assert_eq!(mock.init_calls.load(Ordering::SeqCst), 3);
+        assert_eq!(device.readout_mode().await.unwrap(), 0);
         assert_eq!(device.camera_x_size().await.unwrap(), 3072);
-        assert_eq!(device.num_x().await.unwrap(), 3072);
+    }
+
+    /// C1: every connect leaves the camera in mode 0 — a mode a client chose is
+    /// not carried across a reconnect, and the caches the reconnect publishes
+    /// describe mode 0 because the camera is in mode 0.
+    #[tokio::test]
+    async fn a_reconnect_returns_the_camera_to_readout_mode_0() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        device.set_readout_mode(1).await.unwrap();
+        device.disconnect().await.unwrap();
+
+        device.connect().await.unwrap();
+
+        assert_eq!(mock.applied_mode(), 0);
+        assert_eq!(device.readout_mode().await.unwrap(), 0);
+        assert_eq!(device.camera_x_size().await.unwrap(), 3072);
+        assert_eq!(device.pixel_size_x().await.unwrap(), 2.4);
+    }
+
+    /// B1 under the claim: a mode change can replace the bin list between
+    /// `set_bin_x`'s check and its write, so the write checks again once it
+    /// owns the device, and a bin the mode in force does not offer never
+    /// reaches the camera.
+    #[tokio::test]
+    async fn a_bin_write_rechecks_the_bin_list_once_it_owns_the_device() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.remove_control(ControlType::CamBin2x2mode);
+        device.set_readout_mode(1).await.unwrap();
+
+        assert_eq!(
+            device
+                .write_bin(device.state.session(), 2)
+                .await
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+        assert_eq!(
+            mock.bin(),
+            (1, 1),
+            "a bin the mode lacks reached the camera"
+        );
+        assert_eq!(device.bin_x().await.unwrap(), 1);
+    }
+
+    /// C6: a bin write asks for its session before it reaches the camera, not
+    /// only at its commit, so a bin asked of a session that has ended never
+    /// reaches the camera a reconnect has just normalized.
+    #[tokio::test]
+    async fn a_bin_write_from_an_ended_session_writes_nothing() {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        let ended = device.state.session();
+        device.disconnect().await.unwrap();
+        device.connect().await.unwrap();
+        mock.clear_calls();
+
+        assert_eq!(
+            device.write_bin(ended, 2).await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            mock.calls(),
+            Vec::<String>::new(),
+            "a bin from an ended session reached the camera"
+        );
+        assert_eq!(device.bin_x().await.unwrap(), 1);
     }
 
     #[tokio::test]
