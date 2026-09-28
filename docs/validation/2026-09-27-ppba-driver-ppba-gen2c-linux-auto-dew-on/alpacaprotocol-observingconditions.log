@@ -1,0 +1,19 @@
+17:19:59.033 Check Alpaca Protocol - Conform Universal 4.5.0 (Build 53834.49ab847) 
+17:19:59.034                                     
+17:19:59.034 Test ObservingConditions device:  - 127.0.0.1:11112 through URL: http://127.0.0.1:11112 
+17:19:59.034                                     
+17:19:59.038 OK messages are suppressed, they can be enabled through the Alpaca and COM settings page. 
+17:19:59.038                                     
+17:19:59.038 Connecting to device...             
+17:19:59.079                                     
+17:19:59.079 Successfully connected to device, disconnecting in order to test that connection using a different PUT parameter order is successful... 
+17:19:59.079                                     
+17:19:59.079 Successfully disconnected from device, re-connecting using re-ordered PUT parameters... 
+17:19:59.079                                     
+17:19:59.080 Successfully connected to device using re-ordered PUT parameters, testing device... 
+17:19:59.080                                     
+17:19:59.083 Device exposes interface version 2  
+17:19:59.483                                     
+17:19:59.483 Successfully disconnected from device. 
+17:19:59.483                                     
+17:19:59.483 Congratulations there were no errors, issues or information alerts - Your device passes ASCOM Alpaca protocol validation!! 

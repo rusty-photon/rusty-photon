@@ -141,3 +141,16 @@ fn last_error_code_should_be(world: &mut PpbaWorld, expected_code: String) {
         error.code, error.message
     );
 }
+
+#[then(expr = "the last error message should contain {string}")]
+fn last_error_message_should_contain(world: &mut PpbaWorld, expected: String) {
+    let error = world
+        .last_error
+        .as_ref()
+        .expect("expected an error but none was set");
+    assert!(
+        error.message.contains(&expected),
+        "expected the error message to contain {expected:?}, got {:?}",
+        error.message
+    );
+}

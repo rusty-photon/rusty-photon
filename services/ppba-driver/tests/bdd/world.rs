@@ -78,10 +78,8 @@ impl PpbaWorld {
         // Wait for the server to be ready
         self.wait_for_ready().await;
 
-        // Discover devices via typed ASCOM client.
-        // Creates a fresh Client on each attempt because the random ClientID
-        // may exceed i32::MAX, which the server rejects with 400 (it parses
-        // integers as i32 per ASCOM spec). Retrying gives a fresh random ID.
+        // Discover devices via typed ASCOM client, retrying while the
+        // service's Alpaca routes come up.
         let base_url = self.base_url.as_ref().unwrap();
         for attempt in 0..20 {
             let client = Client::new(base_url).unwrap();

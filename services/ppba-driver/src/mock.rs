@@ -30,6 +30,10 @@ use crate::protocol::PpbaSwitches;
 struct MockState {
     response_queue: VecDeque<Vec<u8>>,
     device_state: MockDeviceState,
+    /// Every command received, in order, so a unit test can assert what the
+    /// driver did not send.
+    #[cfg(test)]
+    received: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -60,7 +64,8 @@ impl Default for MockDeviceState {
             switches: PpbaSwitches {
                 quad_12v: true,
                 adjustable_output: false,
-                // Auto-dew OFF by default so ConformU dew-heater writes pass.
+                // Auto-dew OFF by default so ConformU drives the dew-heater
+                // writes; its auto-dew pass turns it on through switch 5.
                 auto_dew: false,
             },
             dew_a: 128,
@@ -128,6 +133,8 @@ impl MockState {
             auto_dew = self.device_state.switches.auto_dew,
             "mock processing command"
         );
+        #[cfg(test)]
+        self.received.push(command.to_string());
 
         let response = if command == "P#" {
             "PPBA_OK".to_string()
@@ -213,6 +220,14 @@ impl FrameTransport for MockFrameTransport {
 #[derive(Clone, Default)]
 pub struct MockPpbaTransportFactory {
     state: Arc<Mutex<MockState>>,
+}
+
+#[cfg(test)]
+impl MockPpbaTransportFactory {
+    /// Drain the commands received since the last call.
+    pub(crate) async fn take_received(&self) -> Vec<String> {
+        std::mem::take(&mut self.state.lock().await.received)
+    }
 }
 
 #[async_trait]

@@ -7,6 +7,14 @@
 //! [`rusty_photon_driver::driver_error!`]. The codec-layer
 //! `From<SessionError<PpbaCodecError>>` lives in [`crate::codec`] and targets
 //! this (local) enum.
+//!
+//! `AutoDewEnabled` maps to `NOT_IMPLEMENTED`, even though "the heater is busy
+//! with auto-dew" reads like an operation error. ASCOM couples the Switch
+//! write path to `CanWrite`: when `CanWrite` is false, `SetSwitch` and
+//! `SetSwitchValue` must raise `MethodNotImplemented`. A dew heater under
+//! auto-dew already reports `CanWrite = false`, so any other classification
+//! makes the two disagree — which is a `ConformU` issue, not a stylistic
+//! choice. The message still tells the operator how to free the heater.
 
 rusty_photon_driver::driver_error! {
     /// Errors that can occur when interacting with the PPBA device.
@@ -21,5 +29,39 @@ rusty_photon_driver::driver_error! {
     ascom {
         Self::InvalidSwitchId(_) => INVALID_VALUE,
         Self::SwitchNotWritable(_) => NOT_IMPLEMENTED,
+        Self::AutoDewEnabled(_) => NOT_IMPLEMENTED,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ascom_alpaca::ASCOMErrorCode;
+
+    #[test]
+    fn invalid_switch_id_is_invalid_value() {
+        let err = PpbaError::InvalidSwitchId(99).to_ascom_error();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+    }
+
+    #[test]
+    fn switch_not_writable_is_not_implemented() {
+        let err = PpbaError::SwitchNotWritable(10).to_ascom_error();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
+    }
+
+    #[test]
+    fn auto_dew_refusal_is_not_implemented_like_any_unwritable_switch() {
+        let err = PpbaError::AutoDewEnabled(2).to_ascom_error();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
+    }
+
+    #[test]
+    fn auto_dew_refusal_names_the_switch_and_the_way_out() {
+        let err = PpbaError::AutoDewEnabled(3).to_ascom_error();
+        assert_eq!(
+            err.message,
+            "cannot write to switch 3 while auto-dew is enabled. Disable auto-dew (switch 5) first."
+        );
     }
 }
