@@ -772,9 +772,9 @@ conformu conformance    http://localhost:11112/api/v1/observingconditions/0 -n c
 **Note:** We use ConformU's default timing settings for real hardware tests (SwitchReadDelay: 500ms, SwitchWriteDelay: 3000ms). These conservative delays ensure reliable operation with actual hardware. The automated CI tests use reduced delays with mock hardware for faster execution.
 
 **Expected results:**
-- All four suites pass with 0 errors and 0 issues
-- Test duration: about 9 minutes for the Switch `conformance` suite with default timing; the others take seconds
-- ConformU will test all 16 switches including read/write operations on controllable switches
+- All four suites pass with 0 errors and 0 issues, in either auto-dew state
+- Test duration with default timing, for the Switch `conformance` suite: about 9 minutes with auto-dew off and about 3 with it on. The heaters' write tests account for the difference: with auto-dew on those writes are refused immediately and never reach ConformU's 3000 ms write delay. The other suites take seconds.
+- ConformU tests all 16 switches, with read/write tests on every switch that reports `CanWrite = true` (both heaters only when auto-dew is off)
 
 **Troubleshooting:**
 - If the service fails to start, ensure no other process is using port 11112 or `/dev/ttyUSB0`
@@ -784,6 +784,12 @@ conformu conformance    http://localhost:11112/api/v1/observingconditions/0 -n c
 
 The evidence trail is [`docs/validation/`](../validation/README.md);
 this service's runs, newest first:
+
+- **2026-09-27 — PPBADV Gen2C on Linux x86_64, auto-dew on**
+  ([record](../validation/2026-09-27-ppba-driver-ppba-gen2c-linux-auto-dew-on/README.md)).
+  Both devices, both suites, clean in the box's normal state. ConformU finds
+  the dew heaters read-only and confirms that both write methods answer
+  `NOT_IMPLEMENTED`, the four checks that were issues before this was fixed.
 
 - **2026-09-27 — PPBADV Gen2C on Linux x86_64**
   ([record](../validation/2026-09-27-ppba-driver-ppba-gen2c-linux/README.md)).
