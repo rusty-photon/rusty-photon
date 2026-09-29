@@ -176,9 +176,10 @@ graph TD;
   session left at bin 2 reports `BinX == 1` beside a frame half the width of
   `CameraXSize` — and once the SDK's bin and resolution disagree it reports an
   empty area instead, which is unrecoverable in-process (only restarting the
-  service clears it). Verified on a QHY178M: without the normalization, set bin
-  2 → disconnect → reconnect yields a 0x0 effective area and every later connect
-  fails. An empty area is refused rather than cached, since caching one makes
+  service clears it). Verified on a QHY178M: without the normalization, a
+  camera left at bin 2 (by a bin-2 frame — the bin reaches the camera at
+  `StartExposure`, B1) → disconnect → reconnect yields a 0x0 effective area
+  and every later connect fails. An empty area is refused rather than cached, since caching one makes
   `NumX`/`NumY` report 0 — outside the range ASCOM allows — for the life of the
   process. The area read here is the sensor the driver advertises (G1), and it
   is re-read the same way after a readout-mode change (RM1), which re-runs the
@@ -261,8 +262,9 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
 - Sensor geometry — `CameraXSize`/`YSize` from the SDK's effective area (the
   region it reads out, not the chip), `PixelSizeX`/`Y` from cached CCD info.
 - **Binning** — symmetric only (`CanAsymmetricBin = false`); `MaxBinX/Y` from the
-  SDK's valid binning modes; the ROI is held in unbinned pixels, so a bin
-  change only changes the divisor its binned members are read through (B3).
+  SDK's valid binning modes; cached at the setter and armed by `StartExposure`
+  (B1); the ROI is held in unbinned pixels, so a bin change only changes the
+  divisor its binned members are read through (B3).
 - **ROI** — `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry validated at
   `StartExposure` (ConformU "Reject Bad…" semantics).
 - **Exposure** — `ExposureMin/Max/Resolution` from the SDK; single-frame
@@ -509,17 +511,18 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   behind it is a dozen SDK calls of which `InitQHYCCD` alone can take seconds,
   so every request arriving in that window is answered from the caches. Left
   standing, the previous session's bin list is the one B1 validates against: a
-  `set_bin_x(2)` in the window is accepted, writes bin 2 to the camera, and is
-  then overwritten by the handshake's own `bin = 1` — leaving the cache at 1
-  while the camera is at 2, the next exposure arming bin-1 extents against it,
-  and the client that asked for bin 2 told it succeeded. Cleared, the window
+  `set_bin_x(2)` in the window is accepted and then overwritten by the
+  handshake's own `bin = 1`, so the client that asked for bin 2 is told it
+  succeeded and its next frame is taken at bin 1. Cleared, the window
   answers as a first connect does: `INVALID_VALUE` from `set_bin_x` for a bin
   no list supports, `VALUE_NOT_SET` for the geometry, for `BinX`/`BinY`, for
   the gain and offset bounds and for `ReadoutMode`, `ReadoutModes` and a
   `ReadoutMode` write, and a refused `StartExposure` — *not ready yet*
-  rather than the previous session's numbers. `BinX` is `VALUE_NOT_SET` rather than the 1 the handshake
-  settles on because the camera is not at 1 until `normalize_geometry` has put
-  it there; the SDK still holds whatever the last session left. A **gain or
+  rather than the previous session's numbers. `BinX` is `VALUE_NOT_SET` rather
+  than the 1 the handshake settles on because that 1 belongs to the geometry
+  the handshake has not read yet, and is published with it and with the list
+  a bin is checked against (B1): answered in the window, it would be a bin for
+  a mode nothing has asked the camera about. A **gain or
   offset range this connect has not read yet is `VALUE_NOT_SET`, never
   `NOT_IMPLEMENTED`** — the cache distinguishes *not asked yet* from *asked, and
   the answer was no* (GO4), because the second tells a client the camera cannot
@@ -535,14 +538,14 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   that surface takes (E10).
 
   The same rule runs the other way: **a request made in one session does not
-  commit into the next.** `set_bin_x` and `set_readout_mode` read their session
-  and test the connection at the top of the request, and a disconnect and a
-  reconnect can both land between that and the device claim — so the connected
-  test taken there cannot speak for the writes and the commit that follow it.
-  Each therefore checks that the session it was made in is still the running
-  one and answers `NOT_CONNECTED` if it is not, leaving the camera and the
-  caches as the new connect left them rather than naming a bin or a geometry
-  the camera has since left. A commit asks two things, and needs both: *is the
+  commit into the next.** `set_readout_mode` reads its session and tests the
+  connection at the top of the request, and a disconnect and a reconnect can
+  both land between that and the device claim — so the connected test taken
+  there cannot speak for the writes and the commit that follow it. It
+  therefore checks that the session it was made in is still the running one
+  and answers `NOT_CONNECTED` if it is not, leaving the camera and the caches
+  as the new connect left them rather than naming a geometry the camera has
+  since left. A commit asks two things, and needs both: *is the
   session I read still the running one*, and *is this device still here*. The
   session alone cannot answer the second — a close takes no part in that lock,
   and a disconnect clears the handle's flag before `CloseQHYCCD` runs while the
@@ -554,8 +557,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   to a client whose next read is `Connected == false`. The session is read **before the connected check and before
   the caches** the request answers from, so a request that passed those in one
   session cannot adopt whichever session has begun by the time it commits.
-  `set_bin_x` is held to it even when it has nothing to write, because *already
-  at that bin* is an answer about the session it read. `StartExposure`
+  `set_bin_x` is held to it as a cache write: the bin it stores arms the next
+  exposure (B1), and stored into the session after the one it was set in, it
+  would arm that session's frames at a bin nobody set there. `StartExposure`
   takes its claim in the session it measured its geometry against, under the
   same lock the clear takes, so a request whose snapshot predates a reconnect
   cannot arm that geometry on the handle the reconnect has just opened. The ROI
@@ -568,35 +572,33 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   reach into the one that replaced it.
 
   The check keeps the **caches** honest about which session they belong to, and
-  it is the second of two things holding `set_bin_x` and `set_readout_mode`
-  together. The first is ownership: both hold the device claim (B4) from before
-  their SDK writes until after their commit, so a *disconnect* cannot land in
-  that window at all. Behind a bin write it drains on its deadline and refuses
-  to close instead; behind a mode change it does not even reach the claim, but
-  waits on the connection's lifecycle lock, which the mode change took first
-  (RM1, C8). What
-  the claim does not cover is the stretch before it is taken, between reading the
-  session at the top of the request and claiming the device: a disconnect and a
-  reconnect fit there, and unchecked the write would then land on the new
-  session's handle. The session check taken under the claim, before the first
-  SDK write, is what refuses it.
+  it is the second of two things holding `set_readout_mode` together. The first
+  is ownership: it holds the device claim (B4) from before its SDK writes until
+  after its commit, and the connection's lifecycle lock around both, so a
+  *disconnect* cannot land in that window at all — it does not even reach the
+  claim, but waits on the lifecycle lock the mode change took first (RM1, C8).
+  What the claim does not cover is the stretch before it is taken, between
+  reading the session at the top of the request and claiming the device: a
+  disconnect and a reconnect fit there, and unchecked the write would then land
+  on the new session's handle. The session check taken under the claim, before
+  the first SDK write, is what refuses it.
 
-  `set_bin_x` and `set_readout_mode` both ask the session question **twice**:
-  once under the claim, before the first SDK write, and again at the commit.
-  Refusing only the commit would not be enough for either: the reconnect that
-  ended the request's session has already run its handshake, so a bin or a mode
-  written to the reconnected handle would leave the camera binned, or
-  re-initialized, in a configuration its freshly published caches do not
-  describe, and nothing would put it back before the next connect. Once the
-  claim is held, no new session can begin until it is released — a reconnect
-  needs the disconnect in front of it, and a disconnect cannot close the device
-  without taking the claim (behind a mode change it waits on the lifecycle lock
-  before it gets that far) — so the check taken there covers every write that
-  follows it. The check at the commit is the rule every cache writer follows,
-  kept though the claim already rules out a new session by then. The gain,
-  offset, setpoint and cooler setters, which take no claim, ask it once, when
-  they hold the lock a mode change holds and before their SDK write (RM4): they
-  can wait there for as long as a mode change runs.
+  `set_readout_mode` asks the session question **twice**: once under the
+  claim, before the first SDK write, and again at the commit. Refusing only the
+  commit would not be enough: the reconnect that ended the request's session
+  has already run its handshake, so a mode written to the reconnected handle
+  would leave the camera re-initialized in a configuration its freshly
+  published caches do not describe, and nothing would put it back before the
+  next connect. Once the claim is held, no new session can begin until it is
+  released — a reconnect needs the disconnect in front of it, and that
+  disconnect waits on the lifecycle lock the mode change holds — so the check
+  taken there covers every write that follows it. The check at the commit is
+  the rule every cache writer follows, kept though the claim already rules out
+  a new session by then. `set_bin_x` sends the camera nothing, so it asks
+  once, in the section that stores its bin (B1). The gain, offset, setpoint
+  and cooler setters, which take no claim, ask it once, when they hold the
+  lock a mode change holds and before their SDK write (RM4): they can wait
+  there for as long as a mode change runs.
 
   A connect's own handshake answers to the same rule: it publishes **in the
   session it established, or not at all.** A disconnect or a later connect
@@ -691,8 +693,48 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   simulated camera carries a 24-column margin and two unread rows (3072x2048
   chip, effective area `(24, 0, 3048x2046)`, reported size 3048x2044) so the
   BDD and ConformU suites exercise both distinctions on every run.
-- **B1.** `set_bin_x`/`set_bin_y` validate against the SDK's valid binning modes
-  and set symmetric binning; an unsupported bin returns `INVALID_VALUE`.
+- **B1 (a bin is cached, and `StartExposure` arms it).** `set_bin_x`/`set_bin_y`
+  validate against the SDK's valid binning modes and cache symmetric binning;
+  an unsupported bin returns `INVALID_VALUE`, whoever owns the device — the
+  list is cached, so the answer needs no camera. Nothing is sent to the camera
+  at the setter: `StartExposure` pushes the bin, then the region (R2), under
+  the claim the exposure already holds — the way the ROI setters' values reach
+  it (R1). `BinX`/`BinY` therefore report the bin the next exposure arms, which
+  is the bargain `NumX` already makes, and between exposures the camera can
+  still be at the last frame's bin; nothing reads the camera's bin in that
+  time. Every exposure pushes its bin, not only a changed one, so the camera
+  is at the bin its frame was validated at, and there is no second record of
+  the camera's own bin to fall out of step with the first.
+
+  **A bin set needs no device, so it is never refused as busy.** It is taken
+  while an exposure is in flight, and describes the next frame — the one in
+  flight is delivered at the bin it was armed with — which is what
+  `zwo-camera` and `svbony-camera` do with theirs. And `BinX` and `BinY` sent
+  *together* are both taken. A client pairs them routinely: `ascom-alpaca`'s
+  `set_bin`, which `rp` calls before every capture, sends the two as
+  concurrent requests. A setter that took the device to write the bin would
+  refuse whichever of the pair arrived second: measured against a QHY178M
+  with one that did, 109 of 200 concurrent pairs had one half answered
+  `INVALID_OPERATION` ("an exposure is in flight", with none), redundant pairs
+  as often as real changes, and every such answer fails an `rp` capture.
+  Cached, the same 200 pairs are all taken.
+
+  The list is checked in the section that stores the bin, under the lock a
+  readout-mode change publishes its list *and* its bin under (RM1). A change
+  therefore lands wholly before the check, which then validates against the
+  new mode's list, or wholly after the store, and resets the bin to 1 with the
+  rest of the mode's geometry — the bin cached is always one the mode in force
+  offers. A bin set while a change is running is taken, lands before the
+  change, and is reset by it, as a sub-frame set at that moment is.
+
+  **Measured on a QHY178M** (2026-09-28, Linux, 3 s frames with no light on
+  the sensor): twelve isolated hot pixels found in a bin-1 frame each appear
+  at `(x/2, y/2)` of a bin-2 frame armed this way, and none where an unbinned
+  crop of the same shape would put them; back at bin 1, all twelve are at
+  `(x, y)` again. Twelve concurrent `BinX`/`BinY` pairs, each followed by a
+  frame, came back at `NumX` by `NumY` every time, and `StartExposure`
+  answered in 16 ms at either bin. The QHY600M has not been run with the bin
+  armed this way.
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from the valid
   modes (typically 1–4, up to 8).
 - **B3.** The cached ROI is held in **unbinned** sensor pixels: the region the
@@ -725,114 +767,108 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   rule was three copies until one drifted, and the drift went unseen because
   each driver curated its own test cases, so the missing behaviour and its
   missing test hid each other.
-- **B4 (geometry writes take the device claim).** `set_bin_x` and
-  `set_readout_mode` write to the *camera* — `SetQHYCCDBinMode` for the first,
-  and for the second a whole re-initialization in the new mode (RM1):
+- **B4 (a readout-mode change takes the device claim).** `set_readout_mode`
+  writes to the *camera* — a whole re-initialization in the new mode (RM1):
   `SetQHYCCDStreamMode`, `SetQHYCCDReadMode`, `InitQHYCCD`, the transfer depth,
   and `normalize_geometry`'s `SetQHYCCDBinMode(1, 1)` and
-  `SetQHYCCDResolution(whole chip)`. Both therefore
-  take the same in-flight claim a capture does, hold it across the SDK writes
-  *and* the cache commit that describes them, and return `INVALID_OPERATION`
-  while anything else owns the device. Without it either can reach a camera that
-  is integrating or is inside the uninterruptible `GetQHYCCDSingleFrame` readout
-  the abort path exists to keep clear, and a mode change can replace the
-  geometry cache under an exposure that has already measured its ROI against it
-  — a frame armed for the readout mode the camera has just left, which the SDK
-  reports no differently from a correct one (the same silence as R4's short
-  frames). A *check* placed immediately before the writes would only race them;
-  the claim is what makes the exclusion hold in both directions, since a
-  `StartExposure` arriving meanwhile is refused by the ordinary E2 path.
+  `SetQHYCCDResolution(whole chip)`. It is this driver's one **geometry
+  write**: it takes the same in-flight claim a capture does, holds it across
+  the SDK writes *and* the cache commit that describes them, and returns
+  `INVALID_OPERATION` while a capture or an abort's cancel owns the device.
+  Without it the switch can reach a camera that is integrating or is inside
+  the uninterruptible `GetQHYCCDSingleFrame` readout the abort path exists to
+  keep clear, and can replace the geometry cache under an exposure that has
+  already measured its ROI against it — a frame armed for the readout mode the
+  camera has just left, which the SDK reports no differently from a correct
+  one (the same silence as R4's short frames). A *check* placed immediately
+  before the writes would only race them; the claim is what makes the
+  exclusion hold in both directions, since a `StartExposure` arriving meanwhile
+  is refused by the ordinary E2 path. The bin is not a geometry write: nothing
+  reaches the camera at its setter, so it takes no claim and is never refused
+  as busy (B1).
 
   **The refusal is this driver's choice, not the spec's requirement.** ASCOM and
-  Alpaca say what `BinX`, `BinY` and `ReadoutMode` mean and when a value is
-  invalid, but they do not say what a *setter* must do while an exposure is in
-  flight: there is no documented error for it, and nothing obliges a driver to
-  refuse rather than accept-and-defer, or to accept rather than refuse. So
-  `INVALID_OPERATION` here is a decision about this SDK, taken because the writes
-  reach the camera immediately and the alternative is a frame armed against
-  geometry it no longer has. A different driver answering differently is not
-  thereby non-conforming, and ConformU does not test the case. `zwo-camera` and
+  Alpaca say what `ReadoutMode` means and when a value is invalid, but they do
+  not say what a *setter* must do while an exposure is in flight: there is no
+  documented error for it, and nothing obliges a driver to refuse rather than
+  accept-and-defer, or to accept rather than refuse. So `INVALID_OPERATION`
+  here is a decision about this SDK, taken because the mode is applied at the
+  setter (RM1) and the alternative is a frame armed against geometry it no
+  longer has. A different driver answering differently is not thereby
+  non-conforming, and ConformU does not test the case. `zwo-camera` and
   `svbony-camera` refuse a mid-exposure `ReadoutMode` too (their RM1), but for
   their own reason — keeping the frame and the `MaxADU` describing it in
-  agreement — so those are parallel choices rather than this one applied thrice. Worth knowing
-  before treating the refusal as fixed: for the bin it is exactly the behaviour
-  #1336 would replace, by having the setter cache and `StartExposure` apply it
-  the way the ROI setters already do (R1). For the readout mode it is not: the
-  mode is applied at the setter on purpose (RM1), so its refusal stays.
+  agreement — so those are parallel choices rather than this one applied
+  thrice.
 
   **An invalid value is refused before the claim, whoever owns the device.**
-  Both lists a request is checked against are cached — `valid_bins` (B1) and the
-  readout-mode list (RM1) — so an unsupported bin or an out-of-range mode index
-  is answerable without the camera: each setter checks it *before* it claims
+  The readout-mode list is cached (RM1), so an out-of-range index is
+  answerable without the camera: the setter checks it *before* it claims
   anything, and the answer is `INVALID_VALUE` whether or not a capture owns the
-  device. That is the useful answer — a client told `INVALID_OPERATION` retries,
-  and the retry fails identically — and it keeps a request that can never
-  succeed from taking the device at all. A bin is checked a second time once
-  its write owns the device, because a mode change can have replaced the list
-  in between (RM1) or withdrawn it (RM3); a bin the mode in force does not
-  offer is `INVALID_VALUE` there too, and never reaches the camera. A *valid*
-  bin asked for while something else owns the device is still
-  `INVALID_OPERATION`, which is B4's half; so is a valid mode while a capture,
-  an abort's cancel or a bin write owns it. A mode asked for behind another
-  mode change or a disconnect waits for it on the lifecycle lock instead, and
-  is then decided under its own claim (RM1, C8). And a disconnect arriving while a geometry write is inside the SDK
-  never closes through it. Behind a bin write it drains on its deadline like
-  any other owner, refusing to close if the write does not return, and
-  succeeding in the milliseconds the write normally takes. Behind a mode change
-  it waits on the connection's lifecycle lock (C8) for the switch to finish —
-  with no deadline, as it would behind a connect's handshake, so an
-  `InitQHYCCD` that never returns holds the disconnect, and every other
-  transition on that connection, the filter wheel's included, for as long as
-  it does.
+  device. That is the useful answer — a client told `INVALID_OPERATION`
+  retries, and the retry fails identically — and it keeps a request that can
+  never succeed from taking the device at all. A valid mode is
+  `INVALID_OPERATION` while a capture or an abort's cancel owns the device. A
+  mode asked for behind another mode change or a disconnect waits for it on
+  the lifecycle lock instead, and is then decided under its own claim (RM1,
+  C8). And a disconnect arriving while a mode change is inside the SDK never
+  closes through it: it waits on the connection's lifecycle lock (C8) for the
+  switch to finish — with no deadline, as it would behind a connect's
+  handshake, so an `InitQHYCCD` that never returns holds the disconnect, and
+  every other transition on that connection, the filter wheel's included, for
+  as long as it does.
 
-  The no-op paths (`BinX` set to the bin already in force, `ReadoutMode` to the
-  mode already in force) write nothing, but the *decision* that a request is a
-  no-op is made under the claim, not before it. Read outside, the value it
-  compares against is one an in-flight write may already be replacing: a
-  request naming the currently-cached value would be answered `Ok` while the
-  camera was being moved off it, and the client would be told it has a bin or a
-  mode it does not have — worse than any refusal, because nothing later
-  contradicts it. So a redundant `BinX` is `INVALID_OPERATION` while something
-  else owns the device, and a redundant `ReadoutMode` while a capture, an
-  abort's cancel or a bin write does (behind a mode change or a disconnect it
-  waits, as above); either is `Ok` — with no SDK call and the C6 session check
-  on the answer — when nothing does.
+  The no-op path (`ReadoutMode` set to the mode already in force) writes
+  nothing, but the *decision* that a request is a no-op is made under the
+  claim, not before it. Read outside, the value it compares against is one an
+  in-flight switch may already be replacing: a request naming the
+  currently-cached mode would be answered `Ok` while the camera was being moved
+  off it, and the client would be told it has a mode it does not have — worse
+  than any refusal, because nothing later contradicts it. So a redundant
+  `ReadoutMode` is `INVALID_OPERATION` while a capture or an abort's cancel
+  owns the device (behind a mode change or a disconnect it waits, as above),
+  and `Ok` — with no SDK call and the C6 session check on the answer — when
+  nothing does.
 
-  While a geometry write holds the claim the device reports itself busy —
+  While a mode change holds the claim the device reports itself busy —
   `CameraState` `Exposing`, `PercentCompleted` 0, `ImageReady` false — on
   exactly the terms an abort's SDK cancel and a disconnect's close already do,
   because the claim means *something is inside the SDK* rather than *a frame is
   being taken*. A sequential client never sees it: the setter has returned
   before its next request is read. A second, concurrent client can, and *busy*
-  is the honest answer to give it. For a bin change that is milliseconds; for a
-  mode change it is the length of an `InitQHYCCD` (RM1), during which a frame
-  already taken cannot be downloaded either.
+  is the honest answer to give it, for the length of an `InitQHYCCD` (RM1),
+  during which a frame already taken cannot be downloaded either.
 
   **Busy is not the same as ended, so the claim records which kind of owner it
   is.** Every owner shares one slot, but only a geometry write has no exposure
   behind it, and the lifecycle paths ask before they act on one. An
-  `AbortExposure` that meets a geometry write has nothing to abort: it succeeds
+  `AbortExposure` that meets a mode change has nothing to abort: it succeeds
   having changed nothing, rather than clearing `ImageReady` on a frame the
-  client has already been told about — busy for as long as the write holds
+  client has already been told about — busy for as long as the change holds
   the device is a report, but a cleared latch is a frame destroyed — and
   rather than issuing the SDK cancel, which would tell a camera that is not
-  exposing to stop. A disconnect drains a geometry write like any other owner
-  but does not count it as a capture it stopped, so closing a camera that was
-  only having its bin written issues no cancel either. A cancel's *own* re-claim
-  is not a geometry write: it stands in for the capture it is ending and keeps
-  that capture's reporting, so a second abort still waits for the first one's
-  SDK cancel.
+  exposing to stop. A disconnect does not meet one, since it waits on the
+  lifecycle lock the change holds; were one there, it would be drained like
+  any other owner and not counted as a capture stopped, so no cancel would be
+  issued either. A cancel's *own* re-claim is not a geometry write: it stands
+  in for the capture it is ending and keeps that capture's reporting, so a
+  second abort still waits for the first one's SDK cancel.
 - **R1.** `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry is validated at
   `StartExposure` (R2), not at the setter.
 - **R2.** `StartExposure` with `StartX + NumX > CameraXSize / BinX` (or the Y
   analogue), or `NumX/NumY = 0`, returns `INVALID_VALUE` — the bound is the
   reported sensor (G1/R4), so it is the region the SDK can actually deliver.
   The geometry is read **after** the device is claimed, not before it: the cache
-  it reads is the one B4's writers rewrite, and they cannot run while this
+  it reads is the one B4's mode change rewrites, and that cannot run while this
   exposure owns the camera, so the region validated here is the region armed
-  below. A refusal hands the device straight back, so a rejected geometry never
-  leaves a camera claimed with nothing in flight to explain it.
-  Otherwise the ROI is applied to the SDK before exposing, **translated into
+  below. The bin comes out of the same read, under the lock a bin set stores
+  under (B1), so the bin armed is the one the region was checked at. A refusal
+  hands the device straight back, so a rejected geometry never leaves a camera
+  claimed with nothing in flight to explain it.
+  Otherwise the bin and then the ROI are applied to the SDK before exposing —
+  the bin first, the order the SDK takes them in, since a region is addressed
+  in the bin's units — and a bin the camera refuses fails the exposure as
+  `INVALID_OPERATION`, with no region armed. The ROI is **translated into
   the SDK's coordinates**: the SDK addresses every ROI from the chip's top-left
   corner, overscan included, and at bin *n* scales the whole layout — the
   effective area's origin along with every size — by *n* (SDK manual, *Mixed
@@ -1062,7 +1098,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   **A redundant set changes nothing.** Setting the mode already in force is
   `Ok` with no SDK call, and leaves the bin and the sub-frame as the client set
   them; only a change of mode resets them. Whether a request *is* redundant is
-  decided under the claim, like a redundant bin (B4).
+  decided under the claim (B4).
 
   **A mode change is ordered against the physical connection's other
   transitions.** It takes the same lifecycle lock a connect and a disconnect
@@ -1076,7 +1112,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   finish. Two mode changes are ordered the same way: the second waits for the
   first rather than being refused, and then either finds its mode already in
   force or switches from the one the first left. What *refuses* a mode change
-  is the claim — a capture, an abort's cancel or a bin write owning the device
+  is the claim — a capture or an abort's cancel owning the device
   (B4); none of those takes the lifecycle lock.
 
   The setter takes as long as `InitQHYCCD` does, which is the model's cost: a
@@ -1275,7 +1311,7 @@ device is there at all.
 |---|---|
 | `CameraXSize` / `CameraYSize` | The SDK's effective area at bin 1 (G1) — the region it reads out, not the chip — reduced so the full frame at every bin has even extents (R4) |
 | `PixelSizeX` / `PixelSizeY` | Cached `get_ccd_info()` pixel width/height |
-| `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; max from valid binning modes |
+| `BinX` / `BinY` / `MaxBinX` / `MaxBinY` | Symmetric; cached, armed by `StartExposure` (B1); max from valid binning modes |
 | `CanAsymmetricBin` | `false`; never implemented, so answered at any time (E11) |
 | `NumX` / `NumY` / `StartX` / `StartY` | Origin at the effective area's corner; default `CameraXSize`/`CameraYSize` and `0`; setters relaxed, validated (bounds R2, even extents R4) and translated at `StartExposure` |
 | `MaxADU` | `(2^transfer_bits) - 1` (65535) from `GetQHYCCDChipInfo` bpp, not `OutputDataActualBits` |
@@ -1699,7 +1735,7 @@ the "how" decisions made while building.
   channel in `in_flight_capture`: `Some` **is** the claim, so a device that
   reports itself exposing always has something an abort can signal. A capture is
   the usual holder but not the only one — a disconnect's close, an abort's SDK
-  cancel and a geometry write (B4) each take a claim of their own, on the same
+  cancel and a readout-mode change (B4) each take a claim of their own, on the same
   terms: while it is installed, that holder and nothing else may be inside the
   SDK. Holding the
   two apart — an `AtomicBool` claim taken first, a handle-wide cancel flag
@@ -1887,7 +1923,8 @@ the "how" decisions made while building.
   - The bin is different, which is why the vendor manual's §15 — one procedure
     for readout mode, bin and data format — over-generalizes: `SetChipBinMode`
     rebuilds the effective area and overscan itself, with no init, and a bare
-    `SetQHYCCDBinMode` is hardware-validated (R4).
+    `SetQHYCCDBinMode` is hardware-validated (R4) — sent, as `StartExposure`
+    sends it, just ahead of the region (B1).
   - `SetQHYCCDStreamMode` does not read the recorded mode either (no class's
     stream-mode code refers to it), so the order of the stream mode and the
     read mode ahead of an init does not matter to the SDK; the driver sends
@@ -1944,14 +1981,14 @@ the "how" decisions made while building.
 - **TLS / Basic Auth** via `rusty-photon-tls` / `rp-auth`.
 - **`ElectronsPerADU` / `FullWellCapacity`** real values if a signal model is
   added.
-- **A connect's own handshake takes no device claim.** `set_bin_x` and
-  `set_readout_mode` now hold the device across their SDK writes (B4), but a
-  connect's handshake still writes the stream mode, the readout mode, the
+- **A connect's own handshake takes no device claim.** `set_readout_mode`
+  holds the device across its SDK writes (B4), and a bin reaches the camera
+  only inside an exposure's claim (B1), but a connect's handshake still writes the stream mode, the readout mode, the
   transfer bit and `normalize_geometry`'s bin and resolution with no ownership
   at all. A superseded handshake publishes nothing, so the caches stay honest,
   but nothing puts the *camera* back — and a check placed immediately before a
-  write only races that write. It needs the same claim the geometry setters
-  take (B4), held from the open through to the caches going live.
+  write only races that write. It needs the same claim a mode change takes
+  (B4), held from the open through to the caches going live.
 
   The racing *connect* this was originally written against is gone: C8
   serializes every transition on one physical connection, so no second connect

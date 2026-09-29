@@ -83,8 +83,11 @@ const BIN_UNPUBLISHED: u8 = 0;
 /// `await`, except [`DeviceState::control_lock`], which exists to be.
 #[derive(Debug)]
 struct DeviceState {
-    /// Current symmetric bin, [`BIN_UNPUBLISHED`] until a connect handshake
-    /// stores the 1 it normalizes the camera to.
+    /// The symmetric bin the next exposure arms (B1): the 1 a connect handshake
+    /// or a readout-mode change normalizes the camera to, then whatever a
+    /// client last set. It reaches the camera only when `StartExposure` pushes
+    /// it, so between exposures the camera can still be at the last frame's
+    /// bin. [`BIN_UNPUBLISHED`] until a handshake has stored its 1.
     bin: AtomicU8,
     /// Which session the caches below belong to, bumped by
     /// [`Self::clear_handshake_caches`] as each connect starts.
@@ -353,8 +356,8 @@ impl DeviceState {
     /// them — is still running. Every request arriving in that window is
     /// answered from these caches, and a bin list left standing from a previous
     /// session is the one `set_bin_x` validates against: a bin accepted there
-    /// reaches the camera, and the handshake's own `bin = 1` then overwrites the
-    /// cache, leaving it at 1 with the camera at 2. Emptied first, the window
+    /// is answered `Ok` and then overwritten by the handshake's own `bin = 1`,
+    /// and the client is told it has a bin it does not. Emptied first, the window
     /// answers the way a first connect does — an unsupported bin, and
     /// `VALUE_NOT_SET` for geometry nothing has read yet.
     ///
@@ -393,9 +396,9 @@ impl DeviceState {
     /// opens (C6), and a mode change that failed part-way does it because the
     /// camera is no longer in the configuration these describe (RM3).
     ///
-    /// The two caches that gate a path into the device go first — the bin, which
-    /// `validated_roi` requires before it will arm anything, and the bin list
-    /// `set_bin_x` validates against — the mirror of [`Self::publish_mode`],
+    /// The two caches that gate what a request may act on go first — the bin,
+    /// which `validated_geometry` requires before it will arm anything, and the
+    /// bin list `set_bin_x` validates against — the mirror of [`Self::publish_mode`],
     /// which writes them last. The mode list is not among them: no mode changes
     /// it. Call it holding [`Self::cache_commit_lock`].
     fn withdraw_mode_caches(&self) {
@@ -418,9 +421,9 @@ impl DeviceState {
     ///
     /// Readers take no lock, so the order within this section is load-bearing
     /// even though the section is one critical region to every writer. The two
-    /// caches that *gate* a path into the device go last: the bin, which
-    /// `validated_roi` requires before it will arm anything, and the bin list
-    /// `set_bin_x` validates against. Everything published ahead of them is
+    /// caches that *gate* what a request may act on go last: the bin, which
+    /// `validated_geometry` requires before it will arm anything, and the bin
+    /// list `set_bin_x` validates against. Everything published ahead of them is
     /// read-only and already correct, so the widest a reader's view can be split
     /// is one property answering while another says `VALUE_NOT_SET` — never a
     /// request acting on half a mode.
@@ -579,15 +582,15 @@ struct CaptureCancel {
     /// requested, so abort latency tracks the readout rather than the exposure
     /// length.
     wake: tokio::sync::Notify,
-    /// Whether this owner is a **geometry write** (B4) — an owner of the device
-    /// that is not, and never becomes, a frame.
+    /// Whether this owner is a **geometry write** (B4) — a readout-mode change,
+    /// an owner of the device that is not, and never becomes, a frame.
     ///
     /// Every owner shares this one slot, because each is *the device's one
     /// owner*. Only this kind has no exposure behind it, and the lifecycle
     /// paths ask before they invalidate exposure state or stop the camera: an
-    /// `AbortExposure` meeting a bin write would otherwise clear `ImageReady` on
-    /// a frame the client has already been told about, and tell a camera that is
-    /// not exposing to stop. A cancel's own re-claim is *not* a geometry write —
+    /// `AbortExposure` meeting a mode change would otherwise clear `ImageReady`
+    /// on a frame the client has already been told about, and tell a camera
+    /// that is not exposing to stop. A cancel's own re-claim is *not* a geometry write —
     /// it stands in for the capture it is ending, and keeps that capture's
     /// reporting.
     is_geometry_write: bool,
@@ -832,7 +835,7 @@ impl QhyCameraDevice {
             .map_err(|e| ASCOMError::invalid_operation(format!("device task failed: {e}")))?
     }
 
-    /// Validate the geometry, push the ROI and exposure time, record the
+    /// Validate the geometry, push the bin, ROI and exposure time, record the
     /// exposure, and launch the capture task. Runs only with the device already
     /// claimed.
     async fn arm_and_launch(
@@ -843,24 +846,36 @@ impl QhyCameraDevice {
         exposure_us: f64,
         duration: Duration,
     ) -> ASCOMResult<()> {
-        // Both settings ride one hop off the executor: they are the same act of
-        // arming the exposure, and this capture owns the device across both
-        // either way. Every way out hands the device back except the launch at
-        // the end, which passes it to the capture task.
+        // The settings ride one hop off the executor: they are the same act of
+        // arming the exposure, and this capture owns the device across all of
+        // them either way. Every way out hands the device back except the
+        // launch at the end, which passes it to the capture task.
         let guard = ClaimGuard::new(&self.state, &claim);
-        // The geometry is read *after* the claim, not before it. The cache it
-        // reads is the one a readout-mode or bin change rewrites, and both now
-        // take the device (B4) — so a snapshot taken here is the snapshot this
-        // exposure arms, rather than one a mode change could replace between the
-        // reading and the arming. Under `commit_guard` for the second half of
-        // the same question: a connect signals a claim rather than taking it, so
-        // it is the session check that keeps the ended session's geometry from
-        // arming the new session's frame (C6).
-        let roi = {
+        // The geometry is read *after* the claim, not before it. A readout-mode
+        // change rewrites this cache and takes the device to do it (B4), so a
+        // snapshot taken here is the snapshot this exposure arms, rather than
+        // one a mode change could replace between the reading and the arming.
+        // A bin set takes no device, but it writes only the cached bin, under
+        // the lock held for this read — so the bin and the region below are
+        // one client's geometry, whichever side of this read a set lands on.
+        // Under `commit_guard` for the second half of the same question: a
+        // connect signals a claim rather than taking it, so it is the session
+        // check that keeps the ended session's geometry from arming the new
+        // session's frame (C6).
+        let (bin, roi) = {
             let _commit = self.commit_guard(session)?;
-            self.validated_roi()?
+            self.validated_geometry()?
         };
         self.on_handle(move |h| {
+            // The bin first and the region second, the order the SDK takes
+            // them in: the region is addressed in the bin's units (R2). Pushed
+            // on every exposure, not only when a client changed it, so the
+            // camera is at the bin this frame was validated at, with no record
+            // of the camera's own bin to fall out of step with it.
+            let bin = u32::from(bin);
+            h.set_bin_mode(bin, bin).map_err(|e| {
+                ASCOMError::invalid_operation(format!("failed to set binning mode: {e}"))
+            })?;
             h.set_roi(roi)
                 .map_err(|e| ASCOMError::invalid_value(format!("failed to set ROI: {e}")))?;
             // The SDK may adjust a request to what the readout can deliver;
@@ -1150,7 +1165,10 @@ impl QhyCameraDevice {
             if let Some(claim) = self.signal_owner() {
                 // A geometry write is waited out like any other owner, but it is
                 // not a capture: the SDK cancel below is no part of closing a
-                // camera that was only having its bin written.
+                // camera that was not exposing. (The one geometry write, a
+                // readout-mode change, holds the lifecycle lock `set_connected`
+                // takes before it gets here, so it has finished by now; the
+                // check keeps this path from relying on that.)
                 stopped_a_capture |= !claim.is_geometry_write;
                 let budget = self.drain_timeout.saturating_sub(started.elapsed());
                 if !self.wait_until_released(&claim, budget).await {
@@ -1293,70 +1311,31 @@ impl QhyCameraDevice {
         true
     }
 
-    /// Push `bin_x` to the camera and commit it, holding the device across both
-    /// (B4).
+    /// Cache `bin` as the one the next exposure arms (B1), on behalf of a
+    /// request made in `session`.
     ///
-    /// `SetQHYCCDBinMode` is a write to the camera itself, so it belongs to
-    /// whoever owns the device — not beside a capture that is being armed or is
-    /// inside the uninterruptible `GetQHYCCDSingleFrame` readout the abort path
-    /// exists to keep out of. Taking the claim is what makes that exclusion
-    /// hold in both directions: a `StartExposure` racing this one is refused by
-    /// the ordinary E2 path, and this one is refused while a capture owns the
-    /// device. A check placed immediately before the write would only race it.
+    /// Nothing reaches the camera here: [`Self::arm_and_launch`] pushes the bin
+    /// with the region, under the claim the exposure already holds, so a bin
+    /// set needs no device of its own and cannot be refused for another owner
+    /// having it — not a capture, not a readout-mode change, and not the other
+    /// half of a client's `BinX`/`BinY` pair.
     ///
-    /// The claim also spans the commit below, so the SDK write and the caches
-    /// that describe it cannot be split by anything that takes the device.
-    async fn write_bin(&self, session: u64, bin_x: u8) -> ASCOMResult<()> {
-        let Some(mine) = self.try_claim(CaptureCancel::for_geometry_write()) else {
-            return Err(ASCOMError::invalid_operation(
-                "the device is in use; the binning mode cannot be changed while \
-                 an exposure is in flight",
-            ));
-        };
-        let _guard = ClaimGuard::new(&self.state, &mine);
-        // The caller checked the bin against the list before the claim; a
-        // readout-mode change can have replaced that list since (RM1), or
-        // withdrawn it (RM3), so the check is made again where nothing can move
-        // it — and in the session the request was made in, so a bin asked of a
-        // session that has ended never reaches the reconnected camera (C6).
-        {
-            let _commit = self.commit_guard(session)?;
-            if !self.state.valid_bins.lock().contains(&bin_x) {
-                return Err(ASCOMError::invalid_value(format!(
-                    "bin {bin_x} is not a supported binning mode"
-                )));
-            }
-        }
-        // The bin in force is read here rather than in the caller: it has to be
-        // the one the camera is actually in, and another setter can have moved
-        // it between the caller's own read and this claim. Finding it already
-        // there means that setter did this
-        // request's work, and the answer is the same `Ok` its own no-op path
-        // gives — still session-checked, because it is still an answer about the
-        // session the request was made in.
-        let old = self.state.bin.load(Ordering::Acquire);
-        if old == bin_x {
-            let commit = self.commit_guard(session)?;
-            drop(commit);
-            return Ok(());
-        }
-        self.on_handle(move |h| {
-            h.set_bin_mode(u32::from(bin_x), u32::from(bin_x))
-                .map_err(|e| {
-                    ASCOMError::invalid_operation(format!("failed to set binning mode: {e}"))
-                })
-        })
-        .await?;
-        // Committed under the same lock and session check as every other cache
-        // write (C6). Nothing can end the session here: the claim has been held
-        // since the check above, so a disconnect cannot close the device, and a
-        // connect needs that close first. The check before the write is what
-        // keeps a bin from an ended session off the camera; this one keeps the
-        // commit on the same rule as every other writer.
+    /// The list is checked under the lock a readout-mode change publishes its
+    /// list *and* its bin under (RM1), so the bin cached is always one the mode
+    /// in force offers: a change lands wholly before this check, and is checked
+    /// against, or wholly after the store, and resets it. Behind
+    /// [`Self::commit_guard`] like every other cache write, so a request made
+    /// in a session that has ended stores nothing (C6).
+    fn store_bin(&self, session: u64, bin: u8) -> ASCOMResult<()> {
         let commit = self.commit_guard(session)?;
+        if !self.state.valid_bins.lock().contains(&bin) {
+            return Err(ASCOMError::invalid_value(format!(
+                "bin {bin} is not a supported binning mode"
+            )));
+        }
         // Nothing to rewrite: the ROI is held in unbinned pixels (B3), and the
-        // bin stored below is only the divisor its binned view is read through.
-        self.state.bin.store(bin_x, Ordering::Release);
+        // bin stored here is only the divisor its binned view is read through.
+        self.state.bin.store(bin, Ordering::Release);
         drop(commit);
         Ok(())
     }
@@ -1401,9 +1380,9 @@ impl QhyCameraDevice {
         // claim held no new session can begin, so this one check covers every
         // write below.
         //
-        // Whether the request is redundant is decided under the claim too, like
-        // a redundant bin (B4): read outside it, the mode compared against could
-        // be one an in-flight switch is replacing.
+        // Whether the request is redundant is decided under the claim too (B4):
+        // read outside it, the mode compared against could be one an in-flight
+        // switch is replacing.
         {
             let _commit = self.commit_guard(session)?;
             if *self.state.readout_mode.lock() == Some(mode) {
@@ -1460,8 +1439,8 @@ impl QhyCameraDevice {
     }
 
     /// Validate the cached ROI against the binned reported sensor (R2/R4),
-    /// returning the `CCDChipArea` to push to the SDK: the same region,
-    /// addressed from the chip's corner rather than the sensor's.
+    /// returning the bin to arm and the `CCDChipArea` to push to the SDK: the
+    /// same region, addressed from the chip's corner rather than the sensor's.
     ///
     /// The bound and the origin come from **one** read of the cached geometry.
     /// `set_readout_mode` is what replaces that cache, and under B4 it must own
@@ -1471,7 +1450,11 @@ impl QhyCameraDevice {
     /// nothing about the claim would show in the code that a later edit is
     /// reading. Whichever mode this snapshot belongs to, the two halves agree
     /// with each other.
-    fn validated_roi(&self) -> ASCOMResult<CCDChipArea> {
+    ///
+    /// The bin is returned from the same read for the same reason: it is the
+    /// divisor the region was checked at, and the bin the camera must be put
+    /// in for that region to mean what was checked.
+    fn validated_geometry(&self) -> ASCOMResult<(u8, CCDChipArea)> {
         let roi = (*self.state.intended_roi.lock())
             .ok_or_else(|| ASCOMError::invalid_value("no ROI defined for camera"))?;
         let ccd = (*self.state.ccd_info.lock()).ok_or(ASCOMError::VALUE_NOT_SET)?;
@@ -1483,10 +1466,9 @@ impl QhyCameraDevice {
         // binned pixels, so the unbinned region becomes a view exactly once,
         // here, and that one view is what is both checked and armed.
         let area = from_roi(roi.binned(bin));
-        let bin = u32::from(bin);
         let (width, height) = ccd.reported;
-        check_geometry(area, width, height, bin)?;
-        Ok(to_sdk_coordinates(area, ccd.effective, bin))
+        check_geometry(area, width, height, u32::from(bin))?;
+        Ok((bin, to_sdk_coordinates(area, ccd.effective, u32::from(bin))))
     }
 
     /// Take the cache-commit lock for a request made in `session`, or refuse.
@@ -1907,7 +1889,7 @@ const fn from_roi(roi: Roi) -> CCDChipArea {
     }
 }
 
-/// Geometry validation shared by `validated_roi` (R2/R4), as the ASCOM error a
+/// Geometry validation shared by `validated_geometry` (R2/R4), as the ASCOM error a
 /// client sees.
 ///
 /// The rules, their order, and the message text all live in
@@ -2400,10 +2382,10 @@ impl Camera for QhyCameraDevice {
 
     async fn bin_x(&self) -> ASCOMResult<u8> {
         self.ensure_connected()?;
-        // The 1 a handshake settles on is stored once it has put the camera
-        // there. Answering it from the window before that (C6) would name a
-        // binning the camera is not in: the previous session's is what the SDK
-        // still holds until `normalize_geometry` runs.
+        // The 1 a handshake settles on is published with the geometry it is
+        // read at and the list a bin is checked against (C6). Answered from the
+        // window before that, it would be a bin for a mode nothing has asked
+        // the camera about yet.
         match self.state.bin.load(Ordering::Acquire) {
             BIN_UNPUBLISHED => Err(ASCOMError::VALUE_NOT_SET),
             bin => Ok(bin),
@@ -2421,27 +2403,8 @@ impl Camera for QhyCameraDevice {
         // had begun by then and commit its own answer into it.
         let session = self.state.session();
         self.ensure_connected()?;
-        let valid = self.state.valid_bins.lock().clone();
-        if !valid.contains(&bin_x) {
-            return Err(ASCOMError::invalid_value(format!(
-                "bin {bin_x} is not a supported binning mode"
-            )));
-        }
-        // Whether this is a no-op is decided in `write_bin`, under the claim.
-        // Deciding it here would read a bin an in-flight write is about to
-        // replace: a request for the bin currently cached would answer `Ok`
-        // while the camera was already being moved off it, and the client would
-        // be told a bin it does not have. The no-op still writes nothing — it
-        // just cannot be *recognised* as one without owning the device.
-        //
-        // The write below is the device's, so it goes through the device's one
-        // owner (B4) — and so it runs where a dropped request cannot orphan the
-        // claim it takes (see [`Self::detached`]).
-        let device = self.clone();
-        Self::detached(tokio::spawn(async move {
-            device.write_bin(session, bin_x).await
-        }))
-        .await
+        // Cached, not written: the next exposure arms it (B1, R2).
+        self.store_bin(session, bin_x)
     }
 
     async fn set_bin_y(&self, bin_y: u8) -> ASCOMResult<()> {
@@ -3287,19 +3250,6 @@ mod tests {
         }
     }
 
-    /// Blocks until the mock is executing a held bin change, on the same terms
-    /// as [`await_close`].
-    async fn await_binned_set(handle: &MockCameraHandle) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while !handle.is_in_binned_set() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the bin change never reached the SDK"
-            );
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    }
-
     /// Blocks until the capture task has actually polled the camera for its
     /// remaining exposure time, so a test reading progress does so with the
     /// capture demonstrably in its wait rather than before it has started.
@@ -3816,9 +3766,9 @@ mod tests {
 
     /// C6: `open()` makes the device answer again while the handshake behind it
     /// is still running, and the bin list is what `set_bin_x` validates against.
-    /// A list left over from the previous session accepts a bin, writes it to
-    /// the camera, and is then overwritten by the handshake's own `bin = 1` —
-    /// the client told it succeeded, the cache saying 1, the camera at 2.
+    /// A list left over from the previous session accepts a bin that the
+    /// handshake's own `bin = 1` then overwrites — the client told it
+    /// succeeded, and the next frame taken at 1.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_reconnect_refuses_a_bin_until_its_handshake_has_published_one() {
         let handle = Arc::new(MockCameraHandle::default());
@@ -3842,13 +3792,8 @@ mod tests {
         // is the point: what stops it is a bin list that went with the session.
         let err = device.set_bin_x(2).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
-        assert_eq!(
-            handle.bin(),
-            (1, 1),
-            "a bin the handshake is about to overwrite reached the camera"
-        );
-        // And no bin is reported either: the 1 the handshake settles on is not
-        // the camera's until `normalize_geometry` has put it there.
+        // And no bin is reported either: the 1 the handshake settles on is
+        // published with the geometry it belongs to, not ahead of it.
         assert_eq!(
             device.bin_x().await.unwrap_err().code,
             ASCOMErrorCode::VALUE_NOT_SET
@@ -3858,11 +3803,10 @@ mod tests {
         reconnecting.await.unwrap().unwrap();
 
         // The list came back with the session, so the same call now lands, and
-        // the cache and the camera say the same thing.
+        // it is still the bin once the handshake is done with it.
         assert_eq!(device.bin_x().await.unwrap(), 1);
         device.set_bin_x(2).await.unwrap();
         assert_eq!(device.bin_x().await.unwrap(), 2);
-        assert_eq!(handle.bin(), (2, 2));
     }
 
     /// C6: the geometry a reconnect has yet to read answers `VALUE_NOT_SET`
@@ -3937,72 +3881,6 @@ mod tests {
         reconnecting.await.unwrap().unwrap();
     }
 
-    /// B4/C6: a bin change owns the device from before its SDK write until
-    /// after its commit, so a disconnect cannot land in between and close the
-    /// handle under it — the interleaving that used to leave the cache naming a
-    /// bin the camera had left. The disconnect refuses on its drain deadline
-    /// rather than closing through, which is the same answer a stuck readout
-    /// gets, and the handle stays open.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_disconnect_will_not_close_the_handle_under_a_bin_change() {
-        let handle = Arc::new(MockCameraHandle::default());
-        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None)
-            .with_drain_timeout(Duration::from_millis(50));
-        device.connect().await.unwrap();
-
-        // The camera takes the bin and the call is then parked, so the
-        // disconnect below runs with the bin change demonstrably still inside
-        // the SDK.
-        handle.hold_binned_set();
-        let setting = {
-            let device = device.clone();
-            tokio::spawn(async move { device.set_bin_x(2).await })
-        };
-        await_binned_set(&handle).await;
-        assert_eq!(handle.bin(), (2, 2), "the bin reached the camera");
-
-        let err = device.disconnect().await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-        assert!(
-            handle.is_open().unwrap(),
-            "a bin change still inside the SDK must not be closed through"
-        );
-
-        handle.release_binned_set();
-        setting.await.unwrap().unwrap();
-        assert_eq!(device.bin_x().await.unwrap(), 2);
-        // And the device goes away normally once nothing is inside the SDK.
-        device.disconnect().await.unwrap();
-        assert!(!handle.is_open().unwrap());
-    }
-
-    /// B4: a bin change is a write to the camera, so it is refused outright
-    /// while a capture owns the device — `SetQHYCCDBinMode` beside a live
-    /// integration or inside the uninterruptible readout is the hazard the
-    /// claim exists to keep out.
-    #[tokio::test]
-    async fn a_bin_change_is_refused_while_a_capture_owns_the_device() {
-        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
-        *device.state.in_flight_capture.lock() = Some(Arc::new(CaptureCancel::for_capture()));
-
-        let err = device.set_bin_x(2).await.unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-        assert_eq!(
-            handle.bin(),
-            (1, 1),
-            "no bin may reach a camera that is exposing"
-        );
-        assert_eq!(
-            device.bin_x().await.unwrap(),
-            1,
-            "a refused bin change leaves the cache where it was"
-        );
-
-        *device.state.in_flight_capture.lock() = None;
-        device.set_bin_x(2).await.unwrap();
-        assert_eq!(handle.bin(), (2, 2));
-    }
-
     /// B4: a readout-mode change is a whole re-initialization — the mode, the
     /// init, then `normalize_geometry`'s bin and resolution — landing on a
     /// camera the capture is reading out, so it is refused while a capture owns
@@ -4010,7 +3888,8 @@ mod tests {
     #[tokio::test]
     async fn a_readout_mode_change_is_refused_while_a_capture_owns_the_device() {
         let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
-        device.set_bin_x(2).await.unwrap();
+        // The camera at the bin its frame was armed with.
+        mock.preset_bin(2, 2);
         *device.state.in_flight_capture.lock() = Some(Arc::new(CaptureCancel::for_capture()));
         mock.clear_calls();
 
@@ -4068,40 +3947,8 @@ mod tests {
         );
     }
 
-    /// B4: a redundant `BinX` is only redundant if nothing is moving the bin.
-    /// Deciding that outside the claim reads a value an in-flight write is
-    /// about to replace, and answers `Ok` for a bin the camera is already
-    /// leaving — the one failure mode worse than a refusal, because the client
-    /// is told it has a bin it does not have.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_redundant_bin_is_refused_while_another_write_is_moving_the_bin() {
-        let handle = Arc::new(MockCameraHandle::default());
-        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
-        device.connect().await.unwrap();
-        let cached = device.bin_x().await.unwrap();
-
-        // A write to a *different* bin, parked inside the SDK: the camera is
-        // moving off `cached`, but the cache still says `cached`.
-        handle.hold_binned_set();
-        let moving = {
-            let device = device.clone();
-            tokio::spawn(async move { device.set_bin_x(2).await })
-        };
-        await_binned_set(&handle).await;
-
-        assert_eq!(
-            device.set_bin_x(cached).await.unwrap_err().code,
-            ASCOMErrorCode::INVALID_OPERATION,
-            "a bin the camera is leaving was reported as already in force"
-        );
-
-        handle.release_binned_set();
-        moving.await.unwrap().unwrap();
-        assert_eq!(device.bin_x().await.unwrap(), 2);
-    }
-
-    /// B1 before B4: an unsupported bin is refused on its face, whoever owns
-    /// the device. `valid_bins` is cached, so the answer needs no camera — and
+    /// B1: an unsupported bin is refused on its face, whoever owns the device.
+    /// `valid_bins` is cached, so the answer needs no camera — and
     /// `INVALID_VALUE` is the useful one, because `INVALID_OPERATION` invites a
     /// retry that would fail identically. `set_readout_mode` answers the same
     /// way for an index past its cached list (RM1).
@@ -4116,15 +3963,188 @@ mod tests {
             "a bin the camera does not offer is an invalid value, not a busy device"
         );
         assert_eq!(
-            handle.bin(),
-            (1, 1),
-            "a refused bin must not have reached the camera"
+            device.bin_x().await.unwrap(),
+            1,
+            "a refused bin replaced the one cached"
         );
 
-        // And a *supported* bin is still refused as busy, which is B4's half.
+        // And a *supported* bin is taken, for the next exposure: the device
+        // being owned is no reason to refuse a value nothing sends it yet.
+        device.set_bin_x(2).await.unwrap();
+        assert_eq!(device.bin_x().await.unwrap(), 2);
         assert_eq!(
-            device.set_bin_x(2).await.unwrap_err().code,
-            ASCOMErrorCode::INVALID_OPERATION
+            handle.bin(),
+            (1, 1),
+            "a bin reached a camera something else owns"
+        );
+    }
+
+    /// B1: rp — like any client using `ascom-alpaca`'s paired `set_bin` — sends
+    /// `BinX` and `BinY` as two concurrent requests. Neither needs the device,
+    /// so neither can be refused because the other holds it: both are taken,
+    /// and nothing reaches the camera until an exposure arms the bin.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn binx_and_biny_sent_together_are_both_accepted() {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        mock.clear_calls();
+        for round in 0..50u8 {
+            let bin = if round % 2 == 0 { 2 } else { 1 };
+            let x = {
+                let device = device.clone();
+                tokio::spawn(async move { device.set_bin_x(bin).await })
+            };
+            let y = {
+                let device = device.clone();
+                tokio::spawn(async move { device.set_bin_y(bin).await })
+            };
+            x.await.unwrap().unwrap();
+            y.await.unwrap().unwrap();
+            assert_eq!(device.bin_x().await.unwrap(), bin);
+        }
+        assert!(
+            !mock.calls().iter().any(|c| c.starts_with("set_bin_mode")),
+            "a bin reached the camera before an exposure armed it: {:?}",
+            mock.calls()
+        );
+    }
+
+    /// B1/R1: a bin set while an exposure owns the device is taken, as a
+    /// sub-frame set then is, and applies from the next exposure. It never
+    /// reaches the camera under the frame being read out, and the frame in
+    /// flight comes back at the bin it was armed with.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bin_set_during_an_exposure_is_taken_for_the_next_one() {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        mock.hold_readout();
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        await_readout(&mock).await;
+
+        device.set_bin_x(2).await.unwrap();
+        device.set_bin_y(2).await.unwrap();
+        assert_eq!(
+            device.bin_x().await.unwrap(),
+            2,
+            "BinX reports the bin the next exposure arms"
+        );
+        assert_eq!(
+            mock.bin(),
+            (1, 1),
+            "a bin reached a camera that was reading out"
+        );
+
+        mock.release_readout();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        let image = device.image_array().await.unwrap();
+        assert_eq!(
+            (image.dim().0, image.dim().1),
+            (3072, 2048),
+            "the frame in flight came back at the bin it was armed with"
+        );
+
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert_eq!(mock.bin(), (2, 2), "the next exposure did not arm the bin");
+        let image = device.image_array().await.unwrap();
+        assert_eq!((image.dim().0, image.dim().1), (1536, 1024));
+    }
+
+    /// R2/B1: the bin reaches the camera as the exposure arms, under the claim
+    /// the exposure holds, and ahead of the region — the SDK's order, since the
+    /// region is addressed in the bin's units.
+    #[tokio::test]
+    async fn an_exposure_arms_its_bin_ahead_of_its_region() {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        device.set_bin_x(2).await.unwrap();
+        mock.clear_calls();
+
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        let calls = mock.calls();
+        let bin = calls
+            .iter()
+            .position(|c| c == "set_bin_mode(2, 2)")
+            .unwrap_or_else(|| panic!("the exposure did not arm its bin: {calls:?}"));
+        let region = calls
+            .iter()
+            .position(|c| c == "set_roi")
+            .unwrap_or_else(|| panic!("the exposure did not arm its region: {calls:?}"));
+        assert!(
+            bin < region,
+            "the region was armed ahead of the bin it is addressed in: {calls:?}"
+        );
+        assert_eq!(mock.bin(), (2, 2));
+    }
+
+    /// B1: every exposure sends its bin, not only one a client changed. The
+    /// camera can be at another bin than the cache — the last frame's, after a
+    /// client went back to 1 — and an arm that skipped an unchanged bin would
+    /// take the frame there.
+    #[tokio::test]
+    async fn an_exposure_sends_its_bin_even_when_the_client_left_it_alone() {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        // Bin 1 since the connect, with the camera left at 2 the way a bin-2
+        // frame leaves it.
+        mock.preset_bin(2, 2);
+        mock.clear_calls();
+
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert!(
+            mock.calls().iter().any(|c| c == "set_bin_mode(1, 1)"),
+            "the exposure did not send a bin the client had not changed: {:?}",
+            mock.calls()
+        );
+        assert_eq!(mock.bin(), (1, 1));
+        let image = device.image_array().await.unwrap();
+        assert_eq!((image.dim().0, image.dim().1), (3072, 2048));
+    }
+
+    /// RM1/B1: a bin set while a readout-mode change is inside its init is
+    /// taken — a bin no longer needs the device the change owns — and lands
+    /// before the change, which then resets it to 1 with the rest of the mode's
+    /// geometry, as it does a sub-frame set at that moment.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_bin_set_during_a_readout_mode_change_lands_before_it() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.hold_init();
+        let switching = {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_readout_mode(1).await })
+        };
+        await_init(&mock).await;
+
+        device.set_bin_x(2).await.unwrap();
+
+        mock.release_init();
+        switching.await.unwrap().unwrap();
+        assert_eq!(
+            device.bin_x().await.unwrap(),
+            1,
+            "a bin set ahead of the change outlived the change's publish"
         );
     }
 
@@ -4134,8 +4154,8 @@ mod tests {
     /// already been told about, and must not tell a camera that is not exposing
     /// to stop.
     #[tokio::test(flavor = "multi_thread")]
-    async fn an_abort_meeting_a_bin_write_keeps_the_ready_frame_and_spares_the_camera() {
-        let handle = Arc::new(MockCameraHandle::default());
+    async fn an_abort_meeting_a_readout_mode_change_keeps_the_ready_frame_and_spares_the_camera() {
+        let handle = Arc::new(two_mode_mock());
         let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
         device.connect().await.unwrap();
 
@@ -4147,13 +4167,13 @@ mod tests {
         assert!(device.wait_until_drained(Duration::from_secs(30)).await);
         assert!(device.image_ready().await.unwrap());
 
-        // Now a bin write owns the device, parked inside the SDK.
-        handle.hold_binned_set();
-        let setting = {
+        // Now a mode change owns the device, parked inside its init.
+        handle.hold_init();
+        let switching = {
             let device = device.clone();
-            tokio::spawn(async move { device.set_bin_x(2).await })
+            tokio::spawn(async move { device.set_readout_mode(1).await })
         };
-        await_binned_set(&handle).await;
+        await_init(&handle).await;
 
         device.abort_exposure().await.unwrap();
         assert!(
@@ -4161,10 +4181,10 @@ mod tests {
             "the SDK was told to stop a camera that was not exposing"
         );
 
-        handle.release_binned_set();
-        setting.await.unwrap().unwrap();
-        // Busy *while* the write held the device is B4's documented answer; the
-        // frame surviving it is the part an abort must not take away.
+        handle.release_init();
+        switching.await.unwrap().unwrap();
+        // Busy *while* the change held the device is B4's documented answer;
+        // the frame surviving it is the part an abort must not take away.
         assert!(
             device.image_ready().await.unwrap(),
             "an abort with no exposure in flight discarded the ready frame"
@@ -4173,68 +4193,40 @@ mod tests {
 
     /// B4/C5: a disconnect drains a geometry write like any other owner, but
     /// draining one is not stopping a capture — the SDK cancel is no part of
-    /// closing a camera that was only having its bin written.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_disconnect_draining_a_bin_write_does_not_cancel_the_camera() {
-        let handle = Arc::new(MockCameraHandle::default());
-        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
-        device.connect().await.unwrap();
-
-        handle.hold_binned_set();
-        let setting = {
-            let device = device.clone();
-            tokio::spawn(async move { device.set_bin_x(2).await })
-        };
-        await_binned_set(&handle).await;
+    /// closing a camera that was not exposing.
+    ///
+    /// The owner is installed by hand: the one geometry write, a readout-mode
+    /// change, holds the lifecycle lock `set_connected` takes first, so an
+    /// ordinary disconnect finds it gone. This pins what the drain does if one
+    /// is ever there.
+    #[tokio::test]
+    async fn a_disconnect_draining_a_geometry_write_does_not_cancel_the_camera() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        let write = device
+            .try_claim(CaptureCancel::for_geometry_write())
+            .expect("the device was free");
 
         let disconnecting = {
             let device = device.clone();
             tokio::spawn(async move { device.disconnect().await })
         };
-        handle.release_binned_set();
-        setting.await.unwrap().unwrap();
+        // On this single-threaded runtime a yield runs the disconnect up to its
+        // wait for the owner it found.
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            !disconnecting.is_finished(),
+            "the disconnect did not wait for the geometry write"
+        );
+        device.state.release_claim(&write);
         disconnecting.await.unwrap().unwrap();
 
         assert!(
             !handle.aborted.load(Ordering::SeqCst),
-            "closing a camera that was only writing its bin issued an SDK cancel"
+            "closing a camera that was not exposing issued an SDK cancel"
         );
-    }
-
-    /// B4: the claim a geometry write takes is a claim, not a check. A
-    /// `StartExposure` arriving while the write is still inside the SDK meets
-    /// it through the ordinary E2 path, so the two can never overlap on the
-    /// device.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_bin_change_holds_the_device_against_a_start_exposure() {
-        let handle = Arc::new(MockCameraHandle::default());
-        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
-        device.connect().await.unwrap();
-
-        handle.hold_binned_set();
-        let setting = {
-            let device = device.clone();
-            tokio::spawn(async move { device.set_bin_x(2).await })
-        };
-        await_binned_set(&handle).await;
-
-        let err = device
-            .start_exposure(Duration::from_millis(10), true)
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-
-        handle.release_binned_set();
-        setting.await.unwrap().unwrap();
-        // The device is free again the moment the write gives it back.
-        device
-            .start_exposure(Duration::from_millis(10), true)
-            .await
-            .unwrap();
-        assert!(
-            device.wait_until_drained(Duration::from_secs(30)).await,
-            "capture task did not drain in time"
-        );
+        assert!(!handle.is_open().unwrap());
     }
 
     /// B4/R2: the exposure arms the geometry it validated. The ROI is read with
@@ -5208,17 +5200,38 @@ mod tests {
         );
     }
 
+    /// R2: the bin is the first thing an exposure arms, so a camera that
+    /// refuses it fails the `StartExposure` as `INVALID_OPERATION`, with no
+    /// region armed, and the device is handed back.
     #[tokio::test]
-    async fn set_bin_surfaces_sdk_failure_as_invalid_operation() {
-        let mock = Arc::new(MockCameraHandle::default());
-        let device = QhyCameraDevice::new(mock.clone(), None);
-        device.set_connected(true).await.unwrap();
+    async fn a_bin_the_sdk_refuses_fails_the_exposure_and_hands_the_device_back() {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        device.set_bin_x(2).await.unwrap();
         mock.fail_set_controls.store(true, Ordering::SeqCst);
-        // bin 2 is valid and differs from the current 1, so it reaches the SDK.
-        assert_eq!(
-            device.set_bin_x(2).await.unwrap_err().code,
-            ASCOMErrorCode::INVALID_OPERATION
+        mock.clear_calls();
+
+        let err = device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(err.message.contains("binning mode"), "{}", err.message);
+        assert!(
+            !mock.calls().iter().any(|c| c == "set_roi"),
+            "a region was armed at a bin the camera refused"
         );
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
+
+        mock.fail_set_controls.store(false, Ordering::SeqCst);
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert_eq!(mock.bin(), (2, 2));
     }
 
     #[tokio::test]
@@ -5473,6 +5486,9 @@ mod tests {
         let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
         device.set_bin_x(2).await.unwrap();
         device.set_num_x(100).await.unwrap();
+        // The camera where a bin-2 frame leaves it: the switch must re-bin it
+        // before reading the new mode's area, which the SDK scales by the bin.
+        mock.preset_bin(2, 2);
         // What the new mode offers besides its sensor: no 2x2, and other bounds.
         mock.remove_control(ControlType::CamBin2x2mode);
         mock.set_range(ControlType::Gain, (0.0, 50.0, 1.0));
@@ -6480,8 +6496,9 @@ mod tests {
     }
 
     /// B4: a mode change owns the device for its whole SDK sequence. While it is
-    /// inside its init, a `StartExposure` and a bin change are refused as busy,
-    /// and an abort finds no exposure to abort and sends the camera nothing.
+    /// inside its init, a `StartExposure` is refused as busy, a bin set is
+    /// taken for a later exposure (B1), and an abort finds no exposure to abort
+    /// — and none of them sends the camera anything.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_readout_mode_change_holds_the_device_while_it_is_inside_the_sdk() {
         let handle = Arc::new(two_mode_mock());
@@ -6504,10 +6521,7 @@ mod tests {
                 .code,
             ASCOMErrorCode::INVALID_OPERATION
         );
-        assert_eq!(
-            device.set_bin_x(2).await.unwrap_err().code,
-            ASCOMErrorCode::INVALID_OPERATION
-        );
+        device.set_bin_x(2).await.unwrap();
         device.abort_exposure().await.unwrap();
         assert!(
             !handle.aborted.load(Ordering::SeqCst),
@@ -6598,53 +6612,28 @@ mod tests {
         assert_eq!(device.pixel_size_x().await.unwrap(), 2.4);
     }
 
-    /// B1 under the claim: a mode change can replace the bin list between
-    /// `set_bin_x`'s check and its write, so the write checks again once it
-    /// owns the device, and a bin the mode in force does not offer never
-    /// reaches the camera.
+    /// C6: a bin set in one session is not stored into the next, where it
+    /// would arm the new session's frames at a bin nobody set in it.
     #[tokio::test]
-    async fn a_bin_write_rechecks_the_bin_list_once_it_owns_the_device() {
-        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
-        mock.remove_control(ControlType::CamBin2x2mode);
-        device.set_readout_mode(1).await.unwrap();
-
-        assert_eq!(
-            device
-                .write_bin(device.state.session(), 2)
-                .await
-                .unwrap_err()
-                .code,
-            ASCOMErrorCode::INVALID_VALUE
-        );
-        assert_eq!(
-            mock.bin(),
-            (1, 1),
-            "a bin the mode lacks reached the camera"
-        );
-        assert_eq!(device.bin_x().await.unwrap(), 1);
-    }
-
-    /// C6: a bin write asks for its session before it reaches the camera, not
-    /// only at its commit, so a bin asked of a session that has ended never
-    /// reaches the camera a reconnect has just normalized.
-    #[tokio::test]
-    async fn a_bin_write_from_an_ended_session_writes_nothing() {
-        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+    async fn a_bin_set_from_an_ended_session_is_refused() {
+        let (device, _mock) = connected_device_with_handle(MockCameraHandle::default()).await;
         let ended = device.state.session();
         device.disconnect().await.unwrap();
         device.connect().await.unwrap();
-        mock.clear_calls();
 
         assert_eq!(
-            device.write_bin(ended, 2).await.unwrap_err().code,
+            device.store_bin(ended, 2).unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
         );
         assert_eq!(
-            mock.calls(),
-            Vec::<String>::new(),
-            "a bin from an ended session reached the camera"
+            device.bin_x().await.unwrap(),
+            1,
+            "the ended session's bin reached the new session"
         );
-        assert_eq!(device.bin_x().await.unwrap(), 1);
+
+        // The same set, made in the session that is running, lands.
+        device.set_bin_x(2).await.unwrap();
+        assert_eq!(device.bin_x().await.unwrap(), 2);
     }
 
     #[tokio::test]

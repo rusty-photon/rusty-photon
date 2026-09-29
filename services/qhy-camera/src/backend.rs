@@ -853,7 +853,8 @@ pub(crate) mod mock {
         /// one probe. Set through [`close_during_next_probe`](Self::close_during_next_probe).
         close_during_probe: AtomicBool,
         /// Make control *writes* (`set_bin_mode` / `set_readout_mode`) fail, to
-        /// exercise the setters' SDK-failure → `INVALID_OPERATION` mapping.
+        /// exercise the SDK-failure → `INVALID_OPERATION` mapping of the
+        /// exposure that arms a bin and of the readout-mode setter.
         pub fail_set_controls: AtomicBool,
         /// Make `set_roi` fail, so a `StartExposure` the SDK refuses *after*
         /// the device has been claimed can be exercised.
@@ -933,16 +934,6 @@ pub(crate) mod mock {
         /// partner mock with `with_lifecycle` to put both on one physical
         /// connection the way `build()` does.
         lifecycle: Arc<tokio::sync::Mutex<()>>,
-        /// Holds a `set_bin_mode` **above 1x1** open until a test releases it,
-        /// after the new binning has landed the way it has on a camera by the
-        /// time the call returns. Above 1x1 is the discriminator on purpose: a
-        /// connect handshake only ever normalizes to 1x1, so a client's bin
-        /// change can be parked inside the SDK while a whole reconnect runs its
-        /// own normalization past it.
-        binned_set_held: AtomicBool,
-        /// Set while such a held `set_bin_mode` is executing, so a test can
-        /// wait for it to be *in* the SDK instead of guessing.
-        in_binned_set: AtomicBool,
         /// Holds a gain write open, before it lands, until a test releases it —
         /// a client's `Gain` write parked inside the SDK.
         gain_write_held: AtomicBool,
@@ -1074,8 +1065,6 @@ pub(crate) mod mock {
                 open_held: AtomicBool::new(false),
                 in_open: AtomicBool::new(false),
                 lifecycle: Arc::new(tokio::sync::Mutex::new(())),
-                binned_set_held: AtomicBool::new(false),
-                in_binned_set: AtomicBool::new(false),
                 gain_write_held: AtomicBool::new(false),
                 in_gain_write: AtomicBool::new(false),
                 offset_range_held: AtomicBool::new(false),
@@ -1311,23 +1300,6 @@ pub(crate) mod mock {
         /// Whether `init` is executing right now.
         pub fn is_in_init(&self) -> bool {
             self.in_init.load(Ordering::SeqCst)
-        }
-        /// Hold a `set_bin_mode` above 1x1 open once it has applied its bin,
-        /// until [`release_binned_set`](Self::release_binned_set). Pair it with
-        /// [`is_in_binned_set`](Self::is_in_binned_set) to drive another request
-        /// past a client's bin change that is demonstrably still inside the SDK
-        /// — which, since the change holds the device claim (B4), is how the
-        /// tests show a `StartExposure` and a disconnect both meeting it.
-        pub fn hold_binned_set(&self) {
-            self.binned_set_held.store(true, Ordering::SeqCst);
-        }
-        /// Let a held bin change finish.
-        pub fn release_binned_set(&self) {
-            self.binned_set_held.store(false, Ordering::SeqCst);
-        }
-        /// Whether a held `set_bin_mode` is executing right now.
-        pub fn is_in_binned_set(&self) -> bool {
-            self.in_binned_set.load(Ordering::SeqCst)
         }
         /// Hold a gain write open once it starts, before the gain lands, until
         /// [`release_gain_write`](Self::release_gain_write). Pair it with
@@ -1591,21 +1563,7 @@ pub(crate) mod mock {
             if self.fail_set_controls.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated set_bin_mode failure".to_string()));
             }
-            // The camera is binned first and held afterwards, which is the order
-            // the hardware has it in: the bin is applied, and only the driver's
-            // return from the SDK is what a test delays.
             *self.bin.lock() = (bin_x, bin_y);
-            if bin_x > 1 && self.binned_set_held.load(Ordering::SeqCst) {
-                self.in_binned_set.store(true, Ordering::SeqCst);
-                // Same shape (and same runaway backstop) as the held close above.
-                let deadline = std::time::Instant::now() + Duration::from_mins(1);
-                while self.binned_set_held.load(Ordering::SeqCst)
-                    && std::time::Instant::now() < deadline
-                {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                self.in_binned_set.store(false, Ordering::SeqCst);
-            }
             Ok(())
         }
         fn set_roi(&self, area: CCDChipArea) -> BackendResult<()> {
