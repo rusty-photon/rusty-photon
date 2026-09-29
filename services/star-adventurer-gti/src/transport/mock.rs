@@ -295,6 +295,11 @@ pub struct MockMountState {
     /// decelerate would; `:L` still stops it. `false` by default. Drives
     /// the driver's escalation from `:K` to `:L`.
     pub ignore_decelerating_stop: bool,
+    /// Ack `:L` without stopping the axis. `false` by default. With
+    /// [`ignore_decelerating_stop`](Self::ignore_decelerating_stop), no
+    /// stop the driver sends takes: drives the paths where a stop is
+    /// never confirmed.
+    pub ignore_instant_stop: bool,
     /// Pending replies the next `recv_frame` call should drain. Every
     /// processed command appends one frame; the [`FrameTransport`] impl
     /// pulls from the front to deliver replies in order.
@@ -342,6 +347,7 @@ impl Default for MockMountState {
             rate_change_step_ticks: 0.0,
             reject_live_step_period: false,
             ignore_decelerating_stop: false,
+            ignore_instant_stop: false,
             pending_replies: std::collections::VecDeque::new(),
         }
     }
@@ -673,7 +679,10 @@ impl MockMountState {
             // deceleration on real hardware; the mock stops instantly
             // either way.
             b'K' | b'L' => {
-                let ignore = cmd == b'K' && self.ignore_decelerating_stop;
+                let ignore = match cmd {
+                    b'K' => self.ignore_decelerating_stop,
+                    _ => self.ignore_instant_stop,
+                };
                 if let Some(ax) = self.axis_mut(axis) {
                     if !ignore {
                         ax.running = false;
@@ -1259,6 +1268,22 @@ mod tests {
         // A stopped axis takes a period as usual.
         assert_eq!(round_trip(&mut t, b":K1\r").await, b"=\r");
         assert_eq!(round_trip(&mut t, b":I110980B\r").await, b"=\r");
+    }
+
+    #[tokio::test]
+    async fn an_ignored_stop_is_acked_and_leaves_the_axis_running() {
+        let (mut t, state) = tracking_ra().await;
+        {
+            let mut s = state.lock().await;
+            s.ignore_decelerating_stop = true;
+            s.ignore_instant_stop = true;
+        }
+        assert_eq!(round_trip(&mut t, b":K1\r").await, b"=\r");
+        assert_eq!(round_trip(&mut t, b":L1\r").await, b"=\r");
+        assert!(state.lock().await.ra.running);
+        state.lock().await.ignore_instant_stop = false;
+        assert_eq!(round_trip(&mut t, b":L1\r").await, b"=\r");
+        assert!(!state.lock().await.ra.running);
     }
 
     #[tokio::test]
