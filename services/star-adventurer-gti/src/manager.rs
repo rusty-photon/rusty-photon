@@ -363,7 +363,10 @@ impl CommandedStepPeriods {
     }
 
     /// An `:I` went out: record it if the axis is set up to track.
-    fn record(&self, axis: Axis, period: u32) {
+    /// Returns whether it was recorded as a tracking period — i.e. the
+    /// `:I` changed the rate a tracking axis moves at.
+    fn record(&self, axis: Axis, period: u32) -> bool {
+        let mut recorded = false;
         for (flag, slot, applies) in [
             (
                 &self.ra_tracking,
@@ -377,14 +380,12 @@ impl CommandedStepPeriods {
             ),
         ] {
             if applies {
-                let value = if flag.load(Ordering::SeqCst) {
-                    period
-                } else {
-                    0
-                };
-                slot.store(value, Ordering::SeqCst);
+                let tracking = flag.load(Ordering::SeqCst);
+                slot.store(if tracking { period } else { 0 }, Ordering::SeqCst);
+                recorded |= tracking;
             }
         }
+        recorded
     }
 
     fn get(&self, axis: Axis) -> u32 {
@@ -608,7 +609,10 @@ impl MountManager {
     /// sample's rate state honest, so [`Self::snapshot_now`] never
     /// projects a sample at a rate the axis has already left:
     ///
-    /// * `:I` records the step period now in force for the axis;
+    /// * `:I` records the step period now in force for the axis, and a
+    ///   **tracking** `:I` also re-reads the axis: a guide pulse changes
+    ///   the rate of a running axis with `:I` alone, so this is a motion
+    ///   change like `:J` (a goto `:I` is a slew speed and is not);
     /// * `:J` re-reads the axis (`:j` + `:f`), stamping a sample that
     ///   carries the motion just started;
     /// * `:K` / `:L` re-read the axis position and mark its rate
@@ -629,7 +633,11 @@ impl MountManager {
         let response = self.request(session, command.clone()).await?;
         match command {
             Command::SetMotionMode { axis, mode } => self.step_periods.set_mode(axis, mode.kind),
-            Command::SetStepPeriod { axis, period } => self.step_periods.record(axis, period),
+            Command::SetStepPeriod { axis, period } => {
+                if self.step_periods.record(axis, period) {
+                    self.refresh_axis_samples(session, axis, false).await;
+                }
+            }
             Command::StartMotion(axis) => self.refresh_axis_samples(session, axis, false).await,
             Command::StopMotion(axis) | Command::InstantStop(axis) => {
                 self.step_periods.stop(axis);
@@ -638,6 +646,18 @@ impl MountManager {
             _ => {}
         }
         Ok(response)
+    }
+
+    /// The last **tracking** `:I` step period the driver sent `axis`, or
+    /// `0` when none is in force as far as the driver knows — nothing sent
+    /// since the handshake, the axis was last set up for a goto, or it was
+    /// stopped since. A guide pulse reads it to confirm the driver itself
+    /// last set RA tracking at sidereal; it is the driver's memory, not the
+    /// firmware's state, so it can only veto a decision the live `:f` read
+    /// makes.
+    #[must_use]
+    pub fn commanded_step_period(&self, axis: Axis) -> u32 {
+        self.step_periods.get(axis)
     }
 
     /// One validated round trip, with none of [`Self::send`]'s snapshot
@@ -913,7 +933,7 @@ async fn handshake(
         SkywatcherCodecError::wrong_device(
             port_label.as_ref(),
             format!(
-                "`:e1` reply mount-type byte {byte:#04X} is not a known Sky-Watcher \
+                "`:e1` reply mount code {byte:#04X} is not a known Sky-Watcher \
                  mount-controller ID (reply: {board:#08X})"
             ),
         )
@@ -1575,6 +1595,74 @@ mod tests {
         session.close().await.unwrap();
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_tracking_step_period_re_reads_the_axis_but_a_goto_one_does_not() {
+        // A guide pulse changes the rate of a running axis with `:I`
+        // alone, so a tracking `:I` must stamp a fresh sample the way `:J`
+        // does; a goto `:I` is a slew speed and must not. Polling is
+        // paused and time frozen, so the only `:j1` frames are re-reads.
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        let m = MountManager::new(&Config::default(), Arc::new(factory));
+        let session = m.transport().acquire().await.unwrap();
+        let _paused = m.pause_background_polling();
+        let reads = |log: &[Vec<u8>]| log.iter().filter(|f| f.as_slice() == b":j1\r").count();
+
+        m.send(
+            &session,
+            Command::SetMotionMode {
+                axis: Axis::Ra,
+                mode: MotionMode::GOTO_FAST_FORWARD,
+            },
+        )
+        .await
+        .unwrap();
+        let before = reads(&state.lock().await.command_log);
+        m.send(
+            &session,
+            Command::SetStepPeriod {
+                axis: Axis::Ra,
+                period: 6,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            reads(&state.lock().await.command_log),
+            before,
+            "goto :I re-read the axis"
+        );
+        assert_eq!(m.commanded_step_period(Axis::Ra), 0);
+
+        m.send(
+            &session,
+            Command::SetMotionMode {
+                axis: Axis::Ra,
+                mode: MotionMode::TRACKING,
+            },
+        )
+        .await
+        .unwrap();
+        let before = reads(&state.lock().await.command_log);
+        m.send(
+            &session,
+            Command::SetStepPeriod {
+                axis: Axis::Ra,
+                period: 379_912,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            reads(&state.lock().await.command_log),
+            before + 1,
+            "tracking :I did not re-read the axis"
+        );
+        assert_eq!(m.commanded_step_period(Axis::Ra), 379_912);
+        assert_eq!(m.snapshot().await.ra.step_period, 379_912);
+        session.close().await.unwrap();
+    }
+
     #[tokio::test]
     async fn pause_background_polling_stops_wire_traffic_and_resumes_on_drop() {
         // Hold a guard, watch for `:j`/`:f` traffic across a window
@@ -2034,14 +2122,13 @@ mod tests {
 
     #[tokio::test]
     async fn handshake_rejects_unknown_mount_type_byte_without_issuing_mount_commands() {
-        // Seed a motor-board-version whose type byte (low byte) is outside
-        // the `MountType` whitelist before the handshake reaches the wire.
-        // `0xFF` is a plausible "wrong device" byte: no Sky-Watcher motor
-        // controller reports it (the documented IDs top out at `0x06` for
-        // the EQ family and `0x82` for AZ-GTi).
+        // Seed a motor-board-version whose mount code (high byte) is outside
+        // the `MountType` whitelist before the handshake reaches the wire,
+        // behind the GTi's own firmware bytes. `0xFF` is a plausible
+        // "wrong device" byte: no Sky-Watcher motor controller reports it.
         let factory = CapturingMockFactory::new();
         let state = Arc::clone(&factory.state);
-        state.lock().await.motor_board_version = 0x000C_30FF;
+        state.lock().await.motor_board_version = 0x00FF_3003;
         let m = MountManager::new(&Config::default(), Arc::new(factory));
         let err = m
             .transport()
@@ -2269,7 +2356,7 @@ mod tests {
         // hardcoded default, so the verify-the-port hint is actionable.
         let factory = CapturingMockFactory::new();
         let state = Arc::clone(&factory.state);
-        state.lock().await.motor_board_version = 0x000C_3099;
+        state.lock().await.motor_board_version = 0x0099_3003;
         let mut cfg = Config::default();
         if let TransportConfig::Usb(usb) = &mut cfg.transport {
             usb.port = "/dev/serial/by-id/usb-Foo_Bar-port0".into();

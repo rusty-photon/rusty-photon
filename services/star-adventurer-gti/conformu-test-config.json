@@ -18,6 +18,8 @@
     "site_longitude_deg": -122.3321,
     "site_elevation_m": 56.0,
     "settle_after_slew": "100ms",
-    "tracking_rate": "sidereal"
+    "tracking_rate": "sidereal",
+    "flip_policy": { "enabled": true },
+    "ra_pulse_edge_steps": { "east": 0.0, "west": 0.0 }
   }
 }

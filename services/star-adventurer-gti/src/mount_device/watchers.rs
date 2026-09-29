@@ -1,12 +1,12 @@
-//! Slew, park and pulse-guide completion watchers spawned by
-//! [`super::MountDevice`].
+//! Slew and park completion watchers spawned by [`super::MountDevice`].
+//! (The pulse-guide watcher lives with the rest of `PulseGuide` in
+//! [`super::pulse`].)
 //!
 //! Each watcher is a tokio task that observes mount state in the
 //! background, applies the per-operation completion semantics (EQMOD
-//! pickup loop, post-slew tracking restore, `at_park = true`, axis
-//! restore after pulse), and clears the `slew_in_progress` /
-//! `pulse_guiding_<axis>` flag so the user-visible ASCOM state lines
-//! up with the wire state.
+//! pickup loop, post-slew tracking restore, `at_park = true`), and
+//! clears the `slew_in_progress` flag so the user-visible ASCOM state
+//! lines up with the wire state.
 //!
 //! The slew and park completion watchers share an identical outer
 //! loop — pause polling, sleep one tick, honour abort / disconnect /
@@ -17,9 +17,7 @@
 //! [`CompletionDecision`] plus a [`FnOnce(&mut DriverState)`]
 //! finalizer that lands the per-operation state mutation under a
 //! `DriverState` write lock, after which the watcher clears the
-//! `slew_in_progress` atomic. The pulse-guide
-//! watcher has a different shape (no polling loop, axis-targeted
-//! restore) and stays as a standalone spawner.
+//! `slew_in_progress` atomic.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -40,9 +38,7 @@ use crate::error::StarAdvError;
 use crate::manager::{MountManager, MountParameters, MountSnapshot};
 use crate::units::{Cpr, Dec, DecTicks, Lst, Ra, RaTicks};
 
-use super::slew::{
-    enable_sidereal_tracking_ra, pickup_reslew_axis, stop_axis_and_wait, AXIS_STOP_TIMEOUT,
-};
+use super::slew::{enable_sidereal_tracking_ra, pickup_reslew_axis};
 use super::{pre_flip_side_for_latitude, DriverState};
 
 /// Shared session slot the device holds. Watchers peek for `is_none()`
@@ -187,20 +183,6 @@ pub(super) async fn watcher_poll_with_retry(
     let _ = manager.send(session, Command::InstantStop(Axis::Dec)).await;
     Err(last_err
         .unwrap_or_else(|| StarAdvError::Transport("watcher poll retries exhausted".to_string())))
-}
-
-/// Clear the per-axis `pulse_guiding_<axis>` flag. `GuideDirection`
-/// only resolves to `Ra` or `Dec` (see the direction-to-axis match in
-/// `MountDevice::pulse_guide`), so this helper never sees
-/// `Axis::Both`. Using a boolean dispatch keeps the code exhaustive
-/// without an unreachable arm.
-pub(super) async fn clear_pulse_flag(state: &Arc<RwLock<DriverState>>, axis: Axis) {
-    let mut s = state.write().await;
-    if axis == Axis::Ra {
-        s.pulse_guiding.ra = false;
-    } else {
-        s.pulse_guiding.dec = false;
-    }
 }
 
 /// Decision returned by an `on_axes_stopped` closure after both
@@ -819,94 +801,6 @@ pub(super) async fn spawn_park_completion_watcher(
             },
         )
         .await;
-    });
-    Ok(())
-}
-
-/// Spawn the `PulseGuide` watcher.
-///
-/// Sleeps for `duration`, then restores prior state on the targeted
-/// axis:
-/// - **RA pulse**: stop-and-wait, then if `tracking_was_on_for_restore`
-///   re-issue `:G1 TRACKING` + `:I1 sidereal_period` + `:J1` so the
-///   user-observable `Tracking` state survives the pulse.
-/// - **Dec pulse**: stop-and-wait (Dec is normally idle; no restore).
-///
-/// The watcher checks the per-axis `pulse_guiding_<axis>` flag before
-/// the restore step and bails out if cleared (the cancellation rule:
-/// any axis-mutating call clears the flag before its own wire commands
-/// so the watcher steps aside). Errors during the restore are logged
-/// at `warn` and swallowed — matches [`pickup_reslew_axis`].
-pub(super) async fn spawn_pulse_guide_watcher(
-    state: Arc<RwLock<DriverState>>,
-    manager: Arc<MountManager>,
-    session_slot: SessionSlot,
-    slew_in_progress: Arc<AtomicBool>,
-    axis: Axis,
-    duration: Duration,
-    tracking_was_on_for_restore: bool,
-) -> crate::error::Result<()> {
-    // Acquire the watcher's own session up-front so the wait-for-`duration`
-    // sleep doesn't have to navigate a transport that might disconnect
-    // mid-pulse. The session keeps the shared transport alive until the
-    // watcher closes it; the user-disconnect signal is the device's
-    // `session_slot.read().await.is_none()`.
-    let session = manager
-        .transport()
-        .acquire()
-        .await
-        .map_err(StarAdvError::from)?;
-    tokio::spawn(async move {
-        tokio::time::sleep(duration).await;
-        // Bail if the pulse was cancelled externally (another op
-        // cleared the flag), the user disconnected, or the mount
-        // entered a state that takes ownership of the axis
-        // (slew/park).
-        let still_active = {
-            let s = state.read().await;
-            let active = if axis == Axis::Ra {
-                s.pulse_guiding.ra
-            } else {
-                s.pulse_guiding.dec
-            };
-            active && !s.at_park
-        } && !slew_in_progress.load(Ordering::SeqCst);
-        if !still_active || user_disconnected(&session_slot).await {
-            clear_pulse_flag(&state, axis).await;
-            if let Err(e) = session.close().await {
-                tracing::warn!(error = %e, "pulse-guide watcher session close failed");
-            }
-            return;
-        }
-        // Stop the axis. Any failure here means we can't safely restore
-        // either, so log and bail.
-        if let Err(e) = stop_axis_and_wait(&manager, &session, axis, AXIS_STOP_TIMEOUT).await {
-            tracing::warn!("pulse-guide restore stop {axis:?} failed: {e}");
-            clear_pulse_flag(&state, axis).await;
-            if let Err(e) = session.close().await {
-                tracing::warn!(error = %e, "pulse-guide watcher session close failed");
-            }
-            return;
-        }
-        // RA-only: re-issue sidereal tracking iff the user had it on
-        // at issue time. Dec just stays stopped (Dec is normally idle).
-        if axis == Axis::Ra && tracking_was_on_for_restore {
-            // Re-check the cancellation flag before issuing the restore
-            // commands — a concurrent set_tracking(false) between the
-            // stop above and here would otherwise be silently undone.
-            let still_want_restore = state.read().await.pulse_guiding.ra;
-            if still_want_restore {
-                if let Some(params) = manager.parameters().await {
-                    if let Err(e) = enable_sidereal_tracking_ra(&manager, &session, &params).await {
-                        tracing::warn!("pulse-guide tracking restore failed: {e}");
-                    }
-                }
-            }
-        }
-        clear_pulse_flag(&state, axis).await;
-        if let Err(e) = session.close().await {
-            tracing::warn!(error = %e, "pulse-guide watcher session close failed");
-        }
     });
     Ok(())
 }

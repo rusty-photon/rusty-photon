@@ -140,8 +140,8 @@ pub(super) async fn stop_axis_and_wait(
 /// Caller is responsible for the prior `:K1` + stop-wait — `:G` returns
 /// `!2 MotorNotStopped` if the motor is still decelerating. Returns on
 /// first wire failure so the caller picks the policy:
-/// `set_tracking(true)` maps to `ASCOMError` and propagates; the slew /
-/// pulse-guide watchers log at `warn` and continue.
+/// `set_tracking(true)` maps to `ASCOMError` and propagates; the slew
+/// watcher logs at `warn` and continues.
 pub(super) async fn enable_sidereal_tracking_ra(
     manager: &MountManager,
     session: &Session<SkywatcherCodec>,

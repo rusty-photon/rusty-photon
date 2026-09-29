@@ -12,8 +12,9 @@ use std::sync::atomic::Ordering;
 use ascom_alpaca::api::Device;
 use ascom_alpaca::ASCOMResult;
 use async_trait::async_trait;
+use skywatcher_motor_protocol::{Axis, Command};
 use strum::VariantArray;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use super::actions::ApParkAction;
 use super::MountDevice;
@@ -48,6 +49,33 @@ impl Device for MountDevice {
         // replacing the old `requested_connection` bool means the flag
         // and the resource are the same value — there is no second
         // source to desync from the shared transport's refcount.
+        //
+        // A disconnect first takes both axes from any guide pulse, under
+        // `axis_ownership` and before the session slot — the lock order
+        // every axis user follows — so a pulse's restore either lands
+        // before the disconnect or not at all, and stops every axis a
+        // pulse was driving. The cancelled pulse's watcher sends nothing
+        // when it wakes, and its own session defers the last-disconnect
+        // safety stop, so without this stop a client that reconnected
+        // before the pulse's deadline would find the axis still running
+        // at its guide rate with nothing left to end it.
+        let _axes = if connected {
+            None
+        } else {
+            let axes = self.axis_ownership.lock().await;
+            let pulses = std::mem::replace(
+                &mut self.state.write().await.pulse_guiding,
+                super::PulseGuiding::IDLE,
+            );
+            for axis in [Axis::Ra, Axis::Dec] {
+                if pulses.get(axis).is_some() {
+                    if let Err(e) = self.send(Command::StopMotion(axis)).await {
+                        warn!(?axis, error = %e, "disconnect: stopping a guide pulse's axis failed");
+                    }
+                }
+            }
+            Some(axes)
+        };
         let mut slot = self.session.write().await;
         match (connected, slot.is_some()) {
             (true, false) => {
@@ -114,6 +142,7 @@ impl Device for MountDevice {
                 // signals any in-flight completion watcher to bail.
                 self.state.write().await.reset_for_disconnect();
                 self.slew_in_progress.store(false, Ordering::SeqCst);
+                self.live_rate_refused.store(false, Ordering::SeqCst);
             }
             _ => {}
         }

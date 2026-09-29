@@ -21,8 +21,11 @@
 //!   the slew planner).
 //! - [`slew`] — wire-level slew helpers (`:K`/`:G`/`:I`/`:H`/`:M`/`:J`
 //!   sequence) and flip-aware delta geometry.
-//! - [`watchers`] — tokio tasks observing slew / park / pulse-guide
-//!   completion in the background.
+//! - [`watchers`] — tokio tasks observing slew / park completion in the
+//!   background.
+//! - [`pulse`] — `PulseGuide`: starting a pulse (the live rate change on
+//!   a tracking RA axis, or a start from rest) and the watcher that ends
+//!   it, with its failure ladder.
 //! - [`tracking_guard`] — per-connection background task that stops
 //!   tracking before the encoder `mech_HA` drifts into the CW
 //!   exclusion zone (issue #259).
@@ -49,6 +52,7 @@ mod actions;
 mod device;
 mod inherent;
 mod park_persistence;
+mod pulse;
 mod slew;
 mod telescope;
 mod tracking_guard;
@@ -116,21 +120,59 @@ struct DriverState {
     /// Resets to [`DEFAULT_GUIDE_RATE_FRACTION`] on each disconnect.
     guide_rate_ra_fraction: f64,
     guide_rate_dec_fraction: f64,
-    /// Per-axis `PulseGuide` in-flight flags. See §"`PulseGuide`
-    /// lifecycle" in the design doc.
+    /// Per-axis `PulseGuide` ownership. See §"`PulseGuide` lifecycle" in
+    /// the design doc.
     pulse_guiding: PulseGuiding,
+    /// Id the next pulse gets. Ids are never reused within a process, so
+    /// a watcher can tell its own pulse from a newer one on the same axis.
+    next_pulse_id: u64,
 }
 
-/// Per-axis `PulseGuide` in-flight flags. An axis' flag is `true`
-/// between issuing a `PulseGuide` on it and the watcher clearing the
-/// flag after the pulse `duration` has elapsed (or earlier, via the
-/// cancellation rule — any axis-mutating operation clears the flags
-/// before issuing its own wire commands so the watcher's post-sleep
-/// restore bails out).
+/// Identity of one `PulseGuide` call, held in [`PulseGuiding`] for as long
+/// as that pulse owns its axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PulseId(u64);
+
+/// Per-axis `PulseGuide` ownership: the id of the pulse in flight on the
+/// axis, or `None`. An axis holds its pulse's id from the moment
+/// `PulseGuide` claims it until the pulse's watcher has ended it — or
+/// until an operation that takes over the axis clears it (the
+/// cancellation rule), under `axis_ownership`, before its own wire
+/// commands. A watcher acts only while the slot still holds its own id,
+/// so a cancelled pulse's watcher never touches a newer pulse.
 #[derive(Debug, Clone, Copy, Default)]
 struct PulseGuiding {
-    ra: bool,
-    dec: bool,
+    ra: Option<PulseId>,
+    dec: Option<PulseId>,
+}
+
+impl PulseGuiding {
+    /// No pulse on either axis.
+    const IDLE: Self = Self {
+        ra: None,
+        dec: None,
+    };
+
+    /// The pulse in flight on `axis`. `GuideDirection` only resolves to
+    /// `Ra` or `Dec`; anything that is not RA is the Dec slot.
+    const fn get(&self, axis: skywatcher_motor_protocol::Axis) -> Option<PulseId> {
+        match axis {
+            skywatcher_motor_protocol::Axis::Ra => self.ra,
+            _ => self.dec,
+        }
+    }
+
+    const fn set(&mut self, axis: skywatcher_motor_protocol::Axis, pulse: Option<PulseId>) {
+        match axis {
+            skywatcher_motor_protocol::Axis::Ra => self.ra = pulse,
+            _ => self.dec = pulse,
+        }
+    }
+
+    /// `IsPulseGuiding`.
+    const fn is_active(&self) -> bool {
+        self.ra.is_some() || self.dec.is_some()
+    }
 }
 
 impl Default for DriverState {
@@ -148,12 +190,29 @@ impl Default for DriverState {
             target_pier_side: None,
             guide_rate_ra_fraction: DEFAULT_GUIDE_RATE_FRACTION,
             guide_rate_dec_fraction: DEFAULT_GUIDE_RATE_FRACTION,
-            pulse_guiding: PulseGuiding::default(),
+            pulse_guiding: PulseGuiding::IDLE,
+            next_pulse_id: 0,
         }
     }
 }
 
 impl DriverState {
+    /// Allocate the next [`PulseId`].
+    const fn allocate_pulse_id(&mut self) -> PulseId {
+        let id = PulseId(self.next_pulse_id);
+        self.next_pulse_id = self.next_pulse_id.wrapping_add(1);
+        id
+    }
+
+    /// Clear `axis`' pulse if it is still `id`; returns whether it was.
+    fn release_pulse(&mut self, axis: skywatcher_motor_protocol::Axis, id: PulseId) -> bool {
+        let owned = self.pulse_guiding.get(axis) == Some(id);
+        if owned {
+            self.pulse_guiding.set(axis, None);
+        }
+        owned
+    }
+
     /// Reset per-session client state on `set_connected(false)`.
     ///
     /// Disconnect resets the per-session client state but leaves
@@ -182,8 +241,9 @@ impl DriverState {
     ///     next connect. A sync-derived anchor deliberately does not
     ///     survive disconnect: a new session cannot know what an
     ///     earlier one measured (see the design doc's §Park lifecycle).
-    ///   - `pulse_guiding` — the pulse-guide watchers are bound to
-    ///     the now-closed transport; cancellation is implicit.
+    ///   - `pulse_guiding` — disconnect cancels every pulse (the
+    ///     disconnect path does this under `axis_ownership` first; the
+    ///     reset repeats it so the state is whole on its own).
     ///   - `guide_rate_*_fraction` — re-initialise to the default,
     ///     matching INDI's per-session reset.
     const fn reset_for_disconnect(&mut self) {
@@ -194,12 +254,7 @@ impl DriverState {
         self.park_dec_ticks = None;
         self.frame_anchored = false;
         self.preferred_ap_park = None;
-        // Literal instead of Default::default(): trait calls are not
-        // allowed in a `const fn`.
-        self.pulse_guiding = PulseGuiding {
-            ra: false,
-            dec: false,
-        };
+        self.pulse_guiding = PulseGuiding::IDLE;
         self.guide_rate_ra_fraction = DEFAULT_GUIDE_RATE_FRACTION;
         self.guide_rate_dec_fraction = DEFAULT_GUIDE_RATE_FRACTION;
     }
@@ -234,8 +289,11 @@ pub struct MountDevice {
     /// cleared by the completion watchers, `AbortSlew`, and disconnect.
     slew_in_progress: Arc<AtomicBool>,
     /// Serializes *taking ownership of the axes* — held across a sync's
-    /// encoder writes, and taken by a slew or park around its
-    /// [`SlewReservation`] acquisition.
+    /// encoder writes, taken by a slew or park around its
+    /// [`SlewReservation`] acquisition, and held by every `PulseGuide`
+    /// wire burst (a pulse's start and each restore attempt) and by
+    /// every operation that cancels a pulse, while it does so. Lock order:
+    /// this first, then the session slot or `state`.
     ///
     /// `slew_in_progress` alone cannot do this job for sync.
     /// `AbortSlew` clears that flag unconditionally, which is right for
@@ -247,6 +305,11 @@ pub struct MountDevice {
     /// not set the flag.
     #[debug(skip)]
     axis_ownership: Arc<tokio::sync::Mutex<()>>,
+    /// Whether the mount refused a live `:I1` (a step-period change on the
+    /// running RA motor) on this connection. Once it has, guide pulses
+    /// stop and restart RA instead of trying again. Cleared on
+    /// disconnect.
+    live_rate_refused: Arc<AtomicBool>,
     #[debug(skip)]
     manager: Arc<MountManager>,
     /// Config-action context; `Some` enables `config.get` / `config.apply` /
@@ -278,6 +341,7 @@ impl MountDevice {
             state: Arc::new(RwLock::new(DriverState::default())),
             slew_in_progress: Arc::new(AtomicBool::new(false)),
             axis_ownership: Arc::new(tokio::sync::Mutex::new(())),
+            live_rate_refused: Arc::new(AtomicBool::new(false)),
             manager,
             config_ctx: None,
         }

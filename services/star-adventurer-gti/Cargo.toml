@@ -44,26 +44,19 @@ chrono = { workspace = true }
 tempfile = { workspace = true }
 
 # Intentionally NOT opting in to the nightly ConformU workflow via
-# `[package.metadata.conformu]`. The in-tree conformu_integration test
-# runs ConformU's full test set (bdd_infra::run_conformu drives the
-# URL-argument verbs, which call SetFullTest()), and against the mock
-# that run is not green:
+# `[package.metadata.conformu]` yet. The in-tree conformu_integration
+# test runs ConformU's full test set (bdd_infra::run_conformu drives the
+# URL-argument verbs, which call SetFullTest()) with
+# `flip_policy.enabled = true` in its mock config: under the shipped
+# default ConformU's extended pulse-guide leg at mechanical HA +9 h lies
+# inside the counterweight exclusion zone, the driver refuses the slew,
+# and ConformU abandons `CheckMethods`. The flip reaches HA +9 through
+# the pole and turns on ConformU's seven-minute meridian-flip test, so a
+# full run takes about 11 minutes.
 #
-# 1. With the shipped default config (`flip_policy.enabled = false`)
-#    ConformU's extended pulse-guide leg at mechanical HA +9 h lies
-#    inside the counterweight exclusion zone, the driver refuses the
-#    slew, and ConformU abandons `CheckMethods` — the safety envelope
-#    doing its job, not a defect. Re-entry therefore needs
-#    `flip_policy.enabled = true` in the mock config (the config the
-#    2026-09-26 hardware record ran), which reaches HA +9 through the
-#    pole and turns on ConformU's seven-minute meridian-flip test.
-# 2. Every remaining issue is the RA pulse-guide stop-window offset
-#    (issue #1299): 7–8 issues measured against the mock on
-#    2026-09-27, all East/West legs at HA ±3 / ±9.
-#
-# Re-add `[package.metadata.conformu]` once #1299 lands, after one
-# clean full run against the mock on all three CI OSes with a
-# measured duration. Until then, run ConformU manually — see
+# Re-add `[package.metadata.conformu]` after one clean full run against
+# the mock on all three CI OSes with a measured duration (issue #1344).
+# Until then, run ConformU manually — see
 # `docs/services/star-adventurer-gti.md` §"Running ConformU manually".
 
 # Enable the Windows Service Control Manager dispatch only on Windows;
