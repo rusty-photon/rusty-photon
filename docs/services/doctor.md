@@ -287,22 +287,64 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   typically publishes both a `PCIROOT(…)`-rooted chain and an `ACPI(…)`
   one, and a device whose descriptor request failed may publish only the
   ACPI form. The collector selects the `PCIROOT(`-rooted element; a device
-  with none is a candidate with no usable port, which the rule below makes
-  an inventory failure rather than a silently port-less record.
+  with none is not a working device the inventory can place, so it is
+  reported as a fault (below) rather than listed without a port.
 
-  **A failed scan is not an empty bus, and the two must not be confused.**
-  Every collector used to fold its own failure into an empty `Vec`, which
-  reads as "no devices" — indistinguishable from a genuinely idle bus, and
-  the wrong answer for any consumer deciding what hardware it may touch.
-  So the inventory reports unavailability explicitly, and
-  `HardwareFacts::usb_present` answers `None` rather than `false` when it
-  cannot know. What counts as a failure is scoped to **candidate device
-  records** — an entry presenting as a USB device (it has a vendor id, or
-  its platform equivalent). The collectors legitimately skip a great deal
-  that is not a device: the Linux walk passes over interface and root-hub
-  entries with no `idVendor`, and the macOS tree carries non-device nodes.
-  Those are skipped silently, as before. A *candidate* that cannot be read
-  or parsed fails the scan. `Ok(empty)` still means a genuinely empty bus.
+  **A scan has three outcomes, and they must not be confused.**
+
+  - **The inventory** — the devices that are alive and working, each with
+    its port. This is all any consumer selects from: a device that is not
+    in it is not used, whatever the reason.
+  - **Faults** — records the scan found but could not count as working
+    devices. They are left out of the inventory, reported so an operator
+    can act on them, and **never fail the scan**: one dead device must not
+    cost the answer for every working one. What makes a fault, per
+    platform:
+    - **Windows** — a device whose PnP problem code is non-zero
+      (`ConfigManagerErrorCode`): no driver installed, failed to start,
+      disabled, or Windows' own placeholder for a device whose
+      enumeration failed — `USB\VID_0000&PID_000n`, *Unknown USB Device
+      (Device Descriptor Request Failed)* and its siblings, which a
+      marginal cable or a dying device leaves behind and which survives a
+      reboot. The reason names the code with Device Manager's meaning
+      for it, and what Windows lists the device as. Also a record with no
+      `PCIROOT(` location path, one whose problem code Windows did not
+      report (printed as an empty field — `[uint32]$null` would read as
+      `0`, a working device), or one whose instance id does not name a
+      vendor and product as four hex digits each.
+    - **Linux** — an entry that names a vendor but has no readable
+      `idProduct`, which in practice is a device unplugged mid-scan, or
+      one whose sysfs name is not valid UTF-8, so its port cannot be
+      named. A device whose enumeration fails never gets a sysfs entry at
+      all, so Linux cannot report one; the kernel log is the only trace.
+    - **macOS** — a device with a vendor and product id but no usable
+      `location_id`. As on Linux, a failed enumeration leaves no node.
+
+    A device on Windows ARM hosts or behind a USB-over-IP client may
+    publish no `PCIROOT(` path while working normally; such hosts are
+    outside the supported deployment, and their devices are reported as
+    faults like any other record the inventory cannot place.
+  - **A failed scan** — the collector itself could not run: sysfs
+    unreadable, `system_profiler` or `powershell.exe` erroring, timing out
+    or returning output that cannot be parsed. Every collector used to
+    fold this into an empty `Vec`, which reads as "no devices" —
+    indistinguishable from a genuinely idle bus, and the wrong answer for
+    any consumer deciding what hardware it may touch. So the scan reports
+    unavailability explicitly (with neither devices nor faults), and
+    `HardwareFacts::usb_present` answers `None` rather than `false` when
+    it cannot know. `Ok(empty)` still means a genuinely empty bus.
+
+  Only entries that present as a USB device — they carry a vendor id, or
+  their platform equivalent — are considered at all. The collectors pass
+  over a great deal that is not a device, silently, as before: Linux
+  interface entries (`1-4.2:1.0`) have no `idVendor`, Windows instance ids
+  that are not `USB\VID_…` (root hubs among them) are not candidates, nor
+  are a Windows composite device's per-interface children
+  (`USB\VID_…&PID_…&MI_nn\…` — the counterpart of the Linux interface
+  entries; the composite parent carries the device's ids and port, and a
+  driverless interface must not turn a healthy device into a fault), and
+  the macOS tree carries non-device nodes. Linux root hubs (`usb1`) do
+  carry `idVendor` and are inventoried like any other device.
 
   **The shell-outs are bounded.** The macOS and Windows collectors invoke
   `system_profiler` and `powershell.exe`, and an invocation that never
@@ -321,9 +363,9 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   `--platform-facts` below, at the level a single driver needs, and like that
   flag it does not exist in release builds.
 
-  The document is the two inventory fields of `HardwareFacts` under their own
-  names, so the `hardware` object of a facts file captured from a real rig can
-  be staged unchanged rather than hand-written:
+  The document is the three inventory fields of `HardwareFacts` under their
+  own names, so the `hardware` object of a facts file captured from a real rig
+  can be staged unchanged rather than hand-written:
 
   ```json
   {
@@ -331,8 +373,17 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
       {
         "vendor": "1618",
         "product": "c601",
-        "model": "QHY5IIISeries_IO",
+        "model": "QHY600U3G20-20230614",
         "port": "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)"
+      }
+    ],
+    "usb_faults": [
+      {
+        "record": "USB\\VID_0000&PID_0002\\5&27E528BF&0&5",
+        "vendor": "0000",
+        "product": "0002",
+        "location": "ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS05)",
+        "reason": "Windows reports it not working (problem code 43: Windows stopped it because it reported problems); Windows lists it as \"Unknown USB Device (Device Descriptor Request Failed)\""
       }
     ]
   }
@@ -342,17 +393,23 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   produce**, which is what keeps the affordance from proving things that
   cannot happen:
 
-  - `usb_unavailable` set *and* devices listed is rejected. A scan that
-    failed has no opinion about what is on the bus, so the gatherer pairs
-    the marker with an empty list; a document claiming both would let a test
-    assert on devices from a failed scan.
-  - A listed device with no `port` is rejected. A gathered candidate without
-    one is itself an inventory failure, so a scenario wanting that outcome
-    stages `usb_unavailable` with the reason and gets the same result the
-    collector would have produced.
+  - `usb_unavailable` set *and* devices or faults listed is rejected. A scan
+    that failed has no opinion about what is on the bus, so the gatherer
+    pairs the marker with empty lists; a document claiming both would let a
+    test assert on devices from a failed scan.
+  - A listed device with no `port` is rejected. A record the collector cannot
+    place is a fault, not a device, so a scenario wanting that outcome stages
+    it under `usb_faults` and gets the same result the collector would have
+    produced.
   - A listed device with no `vendor` or no `product` is rejected. A candidate
-    is a candidate *because* it has a vendor id, and an unreadable product
-    fails the scan, so a collector reports both or reports nothing.
+    is a candidate *because* it has a vendor id, and one with an unreadable
+    product is reported as a fault, so a device in the inventory always has
+    both.
+  - A fault with no `record` or no `reason` is rejected: doctor prints both,
+    so the operator can find the record and knows what is wrong with it. A
+    fault's `vendor`, `product`, `model` and `location` are optional — a
+    fault is often exactly the record whose identity or port could not be
+    read — but when present they follow the device rules below.
   - A failure with no reason is rejected, because doctor prints the reason to
     send an operator at the host fault rather than at a cable.
   - `"usb": null` is rejected. It is neither an empty bus nor an omitted
@@ -362,11 +419,15 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
     being an oversight: that field is an `Option`, so null there is how a
     **successful** scan serializes, and refusing it would make a healthy
     rig's own facts file unstageable.
-  - A document naming **neither** key is rejected. An empty bus stays
-    stageable — `"usb": []` is a state every collector can report, and it is
-    how a claimed port with nothing in it gets exercised — but it has to be
-    said out loud, so that a staging file which failed to be written cannot
-    read as an idle bus and let a scenario pass for the wrong reason.
+  - A document naming **neither** `usb` nor `usb_unavailable` is rejected —
+    faults alone do not count, because a scan that found only faults still
+    reports its (empty) device list. An empty bus stays stageable —
+    `"usb": []` is a state every collector can report, and it is how a
+    claimed port with nothing in it gets exercised — but it has to be said
+    out loud, so that a staging file which failed to be written cannot read
+    as an idle bus and let a scenario pass for the wrong reason.
+    `usb_faults` may be omitted: a scan that found none serializes `[]`,
+    and an older capture without the key meant the same.
 
   **Blank counts as absent throughout**, and is the more dangerous of the
   two: an empty `port` or `product` matches nothing while reading like a
@@ -389,7 +450,7 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   `USB\VID_1618&PID_C601`, and an id copied from it compares unequal to
   `c601` forever.
 
-  **A padded value is rejected too**, on every device field. Each collector
+  **A padded value is rejected too**, on every device and fault field. Each collector
   stores what the platform reported with nothing around it — the sysfs read
   is trimmed, each `LocationPaths` element is trimmed before the `PCIROOT(`
   one is selected, and a macOS location id is a single whitespace-split
@@ -718,13 +779,21 @@ it will start at boot and hit the problem, so this is tomorrow's 2am
 failure reported at noon — **`warn` otherwise** (a parked service, or a dev
 checkout). A check runs only for services that participate in diagnosis
 (config present or unit installed) and declare the relevant catalog
-metadata.
+metadata. The USB bus is the deliberate exception, judged by the scan
+rather than by unit state: a scan that could not run makes
+`hardware.usb-device` **fail** for every service that declares a USB
+identity, and a device that is on the bus but not working only ever
+**warns** — as the host-level `hardware.usb-fault`, and as a service's own
+`hardware.usb-device` when it is that service's device. A dead device is
+information for the operator, never a doctor failure. A device absent from
+the bus keeps the rule above.
 
 | Check | Platforms | Trigger |
 |---|---|---|
 | `hardware.serial-node` | Linux, macOS, Windows | The effective serial device — the config value at the catalog's `serial_pointer`, else the platform's declared default — does not exist, or exists but is not a character device (Unix). On Windows: the configured name is not among the host's present COM ports. A service with a `serial_gate_pointer` participates only while its config holds the gate value (star-adventurer-gti on `kind: "udp"` has no serial device to check — the same pointer is a UDP port number there). |
 | `hardware.serial-access` | Linux (packaged) | The node exists but the `rusty-photon` user cannot open it, judged from the node's owner/group/mode and the identity the kernel actually grants the process: the user's uid/gid, the unit's `SupplementaryGroups=`, **and** the account's own supplementary memberships from the group database — systemd initializes the process group list from the union, so a node openable only via an account-level membership passes, with the granting mechanism named in the detail (the packaged intent is the unit file; account-level grants are host-local state worth seeing). The fail suggestion distinguishes a membership neither source confers (add `SupplementaryGroups=` to the unit) from a mode/ownership problem (udev-rule surgery). |
-| `hardware.usb-device` | Linux, macOS, Windows | No device on the bus matches the service's declared USB identity: `usb_vendor`, plus `usb_product` when declared, plus `usb_model` as a substring of the product descriptor the device publishes on the bus, when declared. The substring is what makes the check honest for devices behind generic bridge chips — the four Pegasus devices all report FTDI's `0403:6015` and the FP2 reports the RP2040's `2e8a:000a`, so VID:PID alone would confuse "the Falcon is plugged in" with "the PPBA is plugged in". The declared value must come from an observed descriptor: a device's serial protocol may name it differently (the UPBv2 answers `P#` with `UPB2_OK` and publishes `UPBv2 revA`), and a model taken from the protocol side matches nothing, which this check can only report as an absent device. **When the USB inventory is unavailable the check reports that instead of an absence**, naming the collector failure: a scan that could not run says nothing about whether the device is plugged in, and reporting "not on the bus" from a failed scan sends the operator to look at a cable when the fault is on the host. |
+| `hardware.usb-device` | Linux, macOS, Windows | No device on the bus matches the service's declared USB identity: `usb_vendor`, plus `usb_product` when declared, plus `usb_model` as a substring of the product descriptor the device publishes on the bus, when declared. The substring is what makes the check honest for devices behind generic bridge chips — the four Pegasus devices all report FTDI's `0403:6015` and the FP2 reports the RP2040's `2e8a:000a`, so VID:PID alone would confuse "the Falcon is plugged in" with "the PPBA is plugged in". The declared value must come from an observed descriptor: a device's serial protocol may name it differently (the UPBv2 answers `P#` with `UPB2_OK` and publishes `UPBv2 revA`), and a model taken from the protocol side matches nothing, which this check can only report as an absent device. The match runs over the **inventory** — working devices only. When no working device matches but a **fault** does (the scan found the device but it is not working — no driver, failed to start, disabled), the detail says so, naming the fault's record and reason instead of the unplugged-cable wording, and the check is **always `warn`**, whatever the unit's state: doctor does not fail because a device is not working, only because the scan failed. A working match takes precedence over a fault, so a dead twin never hides a live device. **When the USB inventory is unavailable the check fails and reports that instead of an absence**, naming the collector failure: a scan that could not run says nothing about whether the device is plugged in, and reporting "not on the bus" from a failed scan sends the operator to look at a cable when the fault is on the host. |
+| `hardware.usb-fault` | Linux, macOS, Windows | Host-level, one `warn` per fault the USB scan reported — a record on the bus that is not a working device (see "USB inventory" above for what makes one on each platform): the record's platform name, plus the ids and location it carries when the name does not already spell them out, and the reason. **Always `warn`, never `fail`**, whatever units are enabled: the fault is left out of the inventory, every working device is still inventoried and judged, and the operator decides whether the dead device matters — a service that needs it is already reported by its own `hardware.usb-device` check. Nothing is reported when there are no faults, or when the scan failed (a failed scan reports no faults). |
 | `hardware.udev-rule` | Linux (packaged) | For each service shipping a udev rule, against the effective installed copy: the file is missing (`fail`/`warn` per the severity rule); a `GROUP=` it names does not resolve in the host's group database — udev **silently drops the entire rule line** on an unresolvable `GROUP=`, so file presence alone proves nothing (`fail`/`warn`); or the content differs from the packaged copy doctor embeds (`warn` always — an operator override in `/etc/udev/rules.d` is legitimate, but worth surfacing). |
 | `hardware.firmware-helper` | Linux (packaged) | qhy-camera's unit is installed but the firmware helper's three artifacts are not all present: `/lib/firmware/qhy/` (directory), `/usr/local/sbin/fxload` (executable), `/etc/udev/rules.d/85-qhyccd.rules` (file). The conjunction is the helper's own idempotency gate — any subset is a partial install that must re-converge — and the suggestion points at `/usr/sbin/rusty-photon-qhy-firmware-install` (ADR-013: proprietary firmware is never packaged, so nothing but this check verifies the operator ran it). |
 

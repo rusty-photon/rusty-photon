@@ -138,6 +138,20 @@ fn no_checks_named(world: &mut DoctorWorld, name: String) {
     );
 }
 
+#[then(expr = "the report contains exactly {int} check(s) named {string}")]
+fn count_checks_named(world: &mut DoctorWorld, expected: usize, name: String) {
+    let matching: Vec<&Value> = world
+        .checks()
+        .iter()
+        .filter(|c| c["name"] == name.as_str())
+        .collect();
+    assert_eq!(
+        matching.len(),
+        expected,
+        "checks named {name}: {matching:?}"
+    );
+}
+
 #[then(expr = "the report has no checks named {string} for service {string}")]
 fn no_checks_named_for_service(world: &mut DoctorWorld, name: String, service: String) {
     let offending: Vec<&Value> = world

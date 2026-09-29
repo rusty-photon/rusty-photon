@@ -60,9 +60,9 @@ pub struct UsbDevice {
     ///
     /// `Option` here is a compatibility shim for staged fixtures written
     /// before this field existed, **not** a runtime state: a gathered
-    /// candidate record without a port is an inventory failure, because a
-    /// port-less candidate is indistinguishable from one whose port simply
-    /// did not match.
+    /// candidate record without a port never becomes a `UsbDevice` — it is
+    /// reported as a [`UsbFault`] — because a port-less device is
+    /// indistinguishable from one whose port simply did not match.
     #[serde(default)]
     pub port: Option<String>,
     /// The serial the device publishes on the bus, when it publishes one.
@@ -71,6 +71,46 @@ pub struct UsbDevice {
     /// vendor SDK may expose one the bus never sees).
     #[serde(default)]
     pub serial: Option<String>,
+}
+
+/// A record the USB scan found but could not count as a working device.
+///
+/// The platform reports it not working (on Windows, a non-zero problem
+/// code — including the placeholder Windows leaves for a device whose
+/// enumeration failed), or its identity or port could not be read.
+///
+/// A fault is information for the operator, never a scan failure: it is
+/// kept out of [`HardwareFacts::usb`], so nothing selects or opens it, and
+/// every working device beside it is inventoried as usual.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsbFault {
+    /// The platform's own name for the record, so an operator can find it:
+    /// the Windows instance id, the sysfs entry, the macOS node name.
+    pub record: String,
+    /// `idVendor`, four lowercase hex digits, when the record names one.
+    #[serde(default)]
+    pub vendor: Option<String>,
+    /// `idProduct`, four lowercase hex digits, when it could be read.
+    #[serde(default)]
+    pub product: Option<String>,
+    /// The product string the device published on the bus, when it did.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Where the record sits, in whatever spelling the platform offered:
+    /// the native port when there is one, otherwise a location hint (the
+    /// `ACPI(…)` chain on Windows).
+    #[serde(default)]
+    pub location: Option<String>,
+    /// Why the record is not a working device.
+    pub reason: String,
+}
+
+/// What a collector read off the bus: the working devices, and the records
+/// it could not count among them.
+#[derive(Debug, Default)]
+struct UsbScan {
+    devices: Vec<UsbDevice>,
+    faults: Vec<UsbFault>,
 }
 
 /// The service user's identity from the host's user database.
@@ -92,14 +132,20 @@ pub struct HardwareFacts {
     /// Present COM port names (Windows).
     #[serde(default)]
     pub com_ports: Vec<String>,
-    /// The host's USB inventory. Empty means an idle bus **only** when
-    /// [`Self::usb_unavailable`] is `None`.
+    /// The host's USB inventory: the devices that are alive and working.
+    /// Empty means an idle bus **only** when [`Self::usb_unavailable`] is
+    /// `None`.
     #[serde(default)]
     pub usb: Vec<UsbDevice>,
-    /// Why the USB scan could not be trusted, when it could not. `Some`
-    /// makes [`Self::usb`] meaningless rather than empty: a collector that
-    /// failed, timed out, or could not parse a candidate device record has
-    /// no opinion about what is on the bus.
+    /// Records the scan found but could not count as working devices —
+    /// reported, never inventoried. Absent from a staged fixture means none.
+    #[serde(default)]
+    pub usb_faults: Vec<UsbFault>,
+    /// Why the USB scan could not run, when it could not. `Some` makes
+    /// [`Self::usb`] meaningless rather than empty: a collector that failed,
+    /// timed out, or returned output it could not parse has no opinion
+    /// about what is on the bus. A single record that is not a working
+    /// device is a [`UsbFault`] instead, and costs nothing else.
     ///
     /// Absent from a staged fixture means the scan succeeded, so every
     /// fixture written before this field existed keeps its meaning.
@@ -150,6 +196,23 @@ impl HardwareFacts {
         }))
     }
 
+    /// The first fault whose identity matches, by the same rules as
+    /// [`Self::usb_present`] — a device that is on the bus but not working.
+    /// A fault that does not name the declared field never matches it.
+    #[must_use]
+    pub fn usb_fault_matching(
+        &self,
+        vendor: &str,
+        product: Option<&str>,
+        model: Option<&str>,
+    ) -> Option<&UsbFault> {
+        self.usb_faults.iter().find(|f| {
+            f.vendor.as_deref() == Some(vendor)
+                && product.is_none_or(|p| f.product.as_deref() == Some(p))
+                && model.is_none_or(|m| f.model.as_deref().is_some_and(|fm| fm.contains(m)))
+        })
+    }
+
     /// The group name behind a gid, when the gid belongs to a gathered
     /// group — for diagnostics ("the node is group-owned by `dialout`").
     #[must_use]
@@ -170,14 +233,18 @@ impl HardwareFacts {
 #[cfg(feature = "mock")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StagedUsbInventory {
-    /// The bus as staged. Every device carries a port, because a gathered
-    /// candidate without one is an inventory failure, not a device.
-    Devices(Vec<UsbDevice>),
+    /// The bus as staged: the working devices, every one carrying a port
+    /// (a gathered candidate without one is a fault, not a device), and the
+    /// records a collector would have reported as faults.
+    Scan {
+        devices: Vec<UsbDevice>,
+        faults: Vec<UsbFault>,
+    },
     /// A scan that failed, carrying the reason a collector would have given.
     Unavailable(String),
 }
 
-/// The wire shape of a staged inventory: the two inventory fields of
+/// The wire shape of a staged inventory: the three inventory fields of
 /// [`HardwareFacts`] under their own names, so the `hardware` object of a
 /// facts file captured from a real rig stages unchanged. Every other key in
 /// that object is ignored.
@@ -195,6 +262,10 @@ struct StagedDocument {
     /// an `Option` where it holds `usb` as a `Vec`.
     #[serde(default, deserialize_with = "devices_or_absent")]
     usb: Option<Vec<UsbDevice>>,
+    /// Absent means none: a scan that found no faults serializes `[]`, and
+    /// a capture from before faults existed meant the same.
+    #[serde(default)]
+    usb_faults: Vec<UsbFault>,
     #[serde(default)]
     usb_unavailable: Option<String>,
 }
@@ -229,7 +300,9 @@ impl TryFrom<StagedDocument> for StagedUsbInventory {
     fn try_from(document: StagedDocument) -> Result<Self, Self::Error> {
         // A document naming neither key states nothing, and the whole point
         // of this type is that nothing and empty are different answers. An
-        // empty bus stays expressible, but has to be said out loud.
+        // empty bus stays expressible, but has to be said out loud — and
+        // faults alone do not say it, because a scan that found only faults
+        // still reports its (empty) device list.
         if document.usb.is_none() && document.usb_unavailable.is_none() {
             return Err(
                 "states neither a device list nor a failure; write `\"usb\": []` for an \
@@ -238,13 +311,15 @@ impl TryFrom<StagedDocument> for StagedUsbInventory {
             );
         }
         let usb = document.usb.unwrap_or_default();
+        let faults = document.usb_faults;
         match document.usb_unavailable {
             // A failed scan has no opinion about what is on the bus, so the
-            // gatherer pairs the marker with an empty list. A document
-            // claiming both would let a scenario assert on devices that a
-            // failed scan could never have reported.
-            Some(_) if !usb.is_empty() => Err(
-                "names both a failure and a device list; a failed scan reports no devices"
+            // gatherer pairs the marker with empty lists. A document
+            // claiming both would let a scenario assert on devices or faults
+            // that a failed scan could never have reported.
+            Some(_) if !usb.is_empty() || !faults.is_empty() => Err(
+                "names both a failure and a device or fault list; a failed scan reports no \
+                 devices and no faults"
                     .to_string(),
             ),
             // A collector that failed always says why — doctor prints the
@@ -256,97 +331,144 @@ impl TryFrom<StagedDocument> for StagedUsbInventory {
             Some(reason) => Ok(Self::Unavailable(reason)),
             None => {
                 for device in &usb {
-                    let identity = format!("{}:{}", device.vendor, device.product);
-                    // Blank is not the same absence as `None`, and it is the
-                    // more dangerous one: an empty field matches nothing and
-                    // reads like a device that simply did not match. No
-                    // collector emits one — a candidate is a candidate
-                    // because it has a vendor id, #1306 made an unreadable
-                    // product fail the scan, and every port spelling has at
-                    // least one component.
-                    if device.vendor.trim().is_empty() || device.product.trim().is_empty() {
-                        return Err(format!(
-                            "device {identity} is missing a vendor or product id; a collector \
-                             reports both for every candidate or fails the scan"
-                        ));
-                    }
-                    if device.port.as_deref().is_none_or(|p| p.trim().is_empty()) {
-                        return Err(format!(
-                            "device {identity} has no port; a candidate without one is an \
-                             inventory failure, so stage `usb_unavailable` to get that outcome"
-                        ));
-                    }
-                    // A descriptor a collector could not read is `None`,
-                    // never `Some("")` — an empty string is the absence of a
-                    // name wearing the shape of one, and it would match a
-                    // `usb_model` substring check no better than `null`
-                    // while looking like a device that reported something.
-                    for (field, value) in [
-                        ("model", device.model.as_deref()),
-                        ("serial", device.serial.as_deref()),
-                    ] {
-                        if let Some(value) = value {
-                            if value.trim().is_empty() {
-                                return Err(format!(
-                                    "device {identity} has a blank `{field}`; a collector omits \
-                                     what it could not read, so write `null` or leave the key out"
-                                ));
-                            }
-                        }
-                    }
-                    // Every collector stores what the platform reported
-                    // with no padding around it: the sysfs read is trimmed,
-                    // each `LocationPaths` element is trimmed before the
-                    // `PCIROOT(` one is selected, and a macOS location id is
-                    // a single whitespace-split token. So a padded value is
-                    // unreachable — and it compares unequal to the same value
-                    // without the padding, which is precisely the silent
-                    // no-match the port key exists to rule out. Rejected
-                    // rather than trimmed: silently rewriting a document
-                    // hides the mistake instead of reporting it.
-                    for (field, value) in [
-                        ("vendor", Some(device.vendor.as_str())),
-                        ("product", Some(device.product.as_str())),
-                        ("port", device.port.as_deref()),
-                        ("model", device.model.as_deref()),
-                        ("serial", device.serial.as_deref()),
-                    ] {
-                        if let Some(value) = value {
-                            if value != value.trim() {
-                                return Err(format!(
-                                    "device {identity} has a padded `{field}` ({value:?}); a \
-                                     collector reports no padding, and a padded value compares \
-                                     unequal to the same one without it"
-                                ));
-                            }
-                        }
-                    }
-                    // `UsbDevice` documents both ids as four lowercase hex
-                    // digits, and all three collectors deliver exactly that:
-                    // sysfs reports it, the Windows instance id is
-                    // lowercased on the way in, and the macOS reader accepts
-                    // nothing else. The mistake this catches is real and
-                    // quiet — an id copied from `Get-PnpDevice` output reads
-                    // `PID_C601`, and `"C601"` compares unequal to `"c601"`
-                    // forever.
-                    for (field, value) in [("vendor", &device.vendor), ("product", &device.product)]
-                    {
-                        let canonical = value.len() == 4
-                            && value
-                                .chars()
-                                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
-                        if !canonical {
-                            return Err(format!(
-                                "device {identity} has a `{field}` of {value:?}, which is not \
-                                 the four lowercase hex digits every collector reports"
-                            ));
-                        }
-                    }
+                    check_staged_device(device)?;
                 }
-                Ok(Self::Devices(usb))
+                for fault in &faults {
+                    check_staged_fault(fault)?;
+                }
+                Ok(Self::Scan {
+                    devices: usb,
+                    faults,
+                })
             }
         }
     }
+}
+
+/// Reject a staged device no collector could have put in the inventory.
+#[cfg(feature = "mock")]
+fn check_staged_device(device: &UsbDevice) -> Result<(), String> {
+    let identity = format!("device {}:{}", device.vendor, device.product);
+    // Blank is not the same absence as `None`, and it is the more dangerous
+    // one: an empty field matches nothing and reads like a device that
+    // simply did not match. No collector emits one — a candidate is a
+    // candidate because it has a vendor id, one with an unreadable product
+    // is reported as a fault, and every port spelling has at least one
+    // component.
+    if device.vendor.trim().is_empty() || device.product.trim().is_empty() {
+        return Err(format!(
+            "{identity} is missing a vendor or product id; a collector reports both for \
+             every device in the inventory, and a record it cannot read is a fault"
+        ));
+    }
+    if device.port.as_deref().is_none_or(|p| p.trim().is_empty()) {
+        return Err(format!(
+            "{identity} has no port; a record without one is a fault, not a device, so \
+             stage it under `usb_faults` to get that outcome"
+        ));
+    }
+    check_staged_text(&identity, "model", device.model.as_deref())?;
+    check_staged_text(&identity, "serial", device.serial.as_deref())?;
+    check_staged_text(&identity, "port", device.port.as_deref())?;
+    check_staged_id(&identity, "vendor", &device.vendor)?;
+    check_staged_id(&identity, "product", &device.product)
+}
+
+/// Reject a staged fault no collector could have reported. A fault is
+/// often exactly the record whose identity or location could not be read,
+/// so only its name and its reason are required — but whatever it does
+/// carry follows the device rules, because a collector fills it the same
+/// way.
+#[cfg(feature = "mock")]
+fn check_staged_fault(fault: &UsbFault) -> Result<(), String> {
+    let identity = format!("fault {:?}", fault.record);
+    // Doctor prints both: the record so the operator can find it, the
+    // reason so they know what is wrong with it.
+    for (field, value) in [("record", &fault.record), ("reason", &fault.reason)] {
+        if value.trim().is_empty() {
+            return Err(format!(
+                "{identity} has a blank `{field}`; a collector names every fault it reports \
+                 and says why"
+            ));
+        }
+        check_staged_text(&identity, field, Some(value))?;
+    }
+    check_staged_text(&identity, "model", fault.model.as_deref())?;
+    check_staged_text(&identity, "location", fault.location.as_deref())?;
+    if let Some(vendor) = &fault.vendor {
+        check_staged_id(&identity, "vendor", vendor)?;
+    }
+    if let Some(product) = &fault.product {
+        check_staged_id(&identity, "product", product)?;
+    }
+    Ok(())
+}
+
+/// An optional descriptor-like field: `None` is how a collector reports
+/// what it could not read, so a present value is neither blank nor padded.
+#[cfg(feature = "mock")]
+fn check_staged_text(identity: &str, field: &str, value: Option<&str>) -> Result<(), String> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    // A descriptor a collector could not read is `None`, never `Some("")`
+    // — an empty string is the absence of a name wearing the shape of one,
+    // and it would match a `usb_model` substring check no better than
+    // `null` while looking like a device that reported something.
+    if value.trim().is_empty() {
+        return Err(format!(
+            "{identity} has a blank `{field}`; a collector omits what it could not read, so \
+             write `null` or leave the key out"
+        ));
+    }
+    // Every collector stores what the platform reported with no padding
+    // around it: the sysfs read is trimmed, each `LocationPaths` element is
+    // trimmed before the `PCIROOT(` one is selected, and a macOS location id
+    // is a single whitespace-split token. So a padded value is unreachable —
+    // and it compares unequal to the same value without the padding, which
+    // is precisely the silent no-match the port key exists to rule out.
+    // Rejected rather than trimmed: silently rewriting a document hides the
+    // mistake instead of reporting it.
+    if value != value.trim() {
+        return Err(format!(
+            "{identity} has a padded `{field}` ({value:?}); a collector reports no padding, \
+             and a padded value compares unequal to the same one without it"
+        ));
+    }
+    Ok(())
+}
+
+/// `UsbDevice` documents both ids as four lowercase hex digits, and all
+/// three collectors deliver exactly that: sysfs reports it, the Windows
+/// instance id is lowercased on the way in, and the macOS reader accepts
+/// nothing else. The mistake this catches is real and quiet — an id copied
+/// from `Get-PnpDevice` output reads `PID_C601`, and `"C601"` compares
+/// unequal to `"c601"` forever.
+#[cfg(feature = "mock")]
+fn check_staged_id(identity: &str, field: &str, value: &str) -> Result<(), String> {
+    if value != value.trim() {
+        return Err(format!(
+            "{identity} has a padded `{field}` ({value:?}); a collector reports no padding, \
+             and a padded value compares unequal to the same one without it"
+        ));
+    }
+    if !is_usb_id(value) {
+        return Err(format!(
+            "{identity} has a `{field}` of {value:?}, which is not the four lowercase hex \
+             digits every collector reports"
+        ));
+    }
+    Ok(())
+}
+
+/// Four lowercase hex digits — the one spelling every collector reports a
+/// vendor or product id in.
+#[cfg(any(feature = "mock", windows, test))]
+fn is_usb_id(value: &str) -> bool {
+    value.len() == 4
+        && value
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
 }
 
 #[cfg(feature = "mock")]
@@ -370,9 +492,9 @@ impl StagedUsbInventory {
     }
 
     /// The collector-shaped result this document stands in for.
-    fn into_scan(self) -> Result<Vec<UsbDevice>, String> {
+    fn into_scan(self) -> Result<UsbScan, String> {
         match self {
-            Self::Devices(devices) => Ok(devices),
+            Self::Scan { devices, faults } => Ok(UsbScan { devices, faults }),
             Self::Unavailable(reason) => Err(reason),
         }
     }
@@ -454,7 +576,7 @@ pub fn gather(req: &ProbeRequest) -> HardwareFacts {
 }
 
 /// The host's own USB inventory, from whichever collector this platform has.
-fn host_usb_scan() -> Result<Vec<UsbDevice>, String> {
+fn host_usb_scan() -> Result<UsbScan, String> {
     #[cfg(target_os = "linux")]
     {
         linux::usb_inventory(Path::new("/sys/bus/usb/devices"))
@@ -469,20 +591,32 @@ fn host_usb_scan() -> Result<Vec<UsbDevice>, String> {
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
-        Ok(Vec::new())
+        Ok(UsbScan::default())
     }
 }
 
 /// Land a collector's result on the facts, keeping "the scan failed"
-/// distinct from "the bus is empty". On failure the inventory is left
-/// empty *and* marked unavailable, so a consumer that ignores the marker
-/// gets no devices rather than a plausible-looking partial list.
-fn record_usb(facts: &mut HardwareFacts, scan: Result<Vec<UsbDevice>, String>) {
+/// distinct from "the bus is empty". On failure the inventory and the fault
+/// list are left empty *and* marked unavailable, so a consumer that ignores
+/// the marker gets no devices rather than a plausible-looking partial list.
+fn record_usb(facts: &mut HardwareFacts, scan: Result<UsbScan, String>) {
     match scan {
-        Ok(devices) => facts.usb = devices,
+        Ok(scan) => {
+            for fault in &scan.faults {
+                debug!(
+                    record = %fault.record,
+                    location = fault.location.as_deref().unwrap_or("unknown"),
+                    reason = %fault.reason,
+                    "USB record is not a working device; left out of the inventory"
+                );
+            }
+            facts.usb = scan.devices;
+            facts.usb_faults = scan.faults;
+        }
         Err(reason) => {
             debug!(%reason, "USB inventory unavailable");
             facts.usb.clear();
+            facts.usb_faults.clear();
             facts.usb_unavailable = Some(reason);
         }
     }
@@ -628,23 +762,25 @@ mod linux {
 
     use tracing::debug;
 
-    use super::UsbDevice;
+    use super::{UsbDevice, UsbFault, UsbScan};
 
     /// Walk sysfs USB devices. An entry with an `idVendor` is a **candidate
-    /// device record**; interfaces and root hubs have none and are skipped
-    /// silently, as they always were. Once an entry is a candidate,
-    /// anything unreadable about it fails the whole scan rather than
-    /// yielding a partial record — a candidate with no port is
-    /// indistinguishable from one whose port did not match a claim.
+    /// device record**; interfaces have none and are skipped silently, as
+    /// they always were (root hubs, `usb1`, do carry one and are listed like
+    /// any device). A candidate that cannot be read in full is reported as a
+    /// fault rather than a partial record — a device with no port is
+    /// indistinguishable from one whose port did not match a claim — and
+    /// the walk carries on. Only an unreadable directory fails the scan.
     ///
     /// The entry's own directory name *is* the port path: `1-4.2` reads as
-    /// bus 1, root port 4, hub port 2.
-    pub fn usb_inventory(devices_dir: &Path) -> Result<Vec<UsbDevice>, String> {
+    /// bus 1, root port 4, hub port 2. A device whose enumeration failed
+    /// never gets an entry, so the kernel log is the only trace of one.
+    pub fn usb_inventory(devices_dir: &Path) -> Result<UsbScan, String> {
         let entries = std::fs::read_dir(devices_dir).map_err(|e| {
             debug!(path = %devices_dir.display(), error = %e, "sysfs USB walk failed");
             format!("sysfs USB walk failed at {}: {e}", devices_dir.display())
         })?;
-        let mut inventory: Vec<UsbDevice> = Vec::new();
+        let mut scan = UsbScan::default();
         for entry in entries {
             let entry = entry.map_err(|e| {
                 debug!(error = %e, "sysfs USB walk could not read an entry");
@@ -657,40 +793,52 @@ mod linux {
             let Some(vendor) = read_attr(&dir, "idVendor") else {
                 continue;
             };
-            let port = dir
-                .file_name()
-                .and_then(|name| name.to_str())
-                .ok_or_else(|| {
-                    format!(
-                        "sysfs USB entry {} has no readable port path",
-                        dir.display()
-                    )
-                })?;
+            let model = read_attr(&dir, "product");
+            let fault =
+                |product: Option<String>, location: Option<String>, reason: &str| UsbFault {
+                    record: dir.display().to_string(),
+                    vendor: Some(vendor.clone()),
+                    product,
+                    model: model.clone(),
+                    location,
+                    reason: reason.to_string(),
+                };
+            let Some(port) = dir.file_name().and_then(|name| name.to_str()) else {
+                scan.faults.push(fault(
+                    None,
+                    None,
+                    "its sysfs entry name is not valid UTF-8, so its port cannot be named",
+                ));
+                continue;
+            };
             // `idProduct` is mandatory in the device descriptor, so a
             // candidate missing it is an unreadable entry rather than a
-            // device without one. Defaulting it to empty would leave a
-            // plausible-looking record that no VID:PID match can hit —
-            // the "scan succeeded, device absent" answer this whole
-            // distinction exists to prevent. `model` and `serial` are
+            // device without one — in practice, one unplugged mid-walk.
+            // Defaulting it to empty would leave a plausible-looking record
+            // that no VID:PID match can hit. `model` and `serial` are
             // genuinely optional and stay that way.
-            let product = read_attr(&dir, "idProduct").ok_or_else(|| {
-                format!(
-                    "sysfs USB entry {} declares a vendor but no readable idProduct",
-                    dir.display()
-                )
-            })?;
-            inventory.push(UsbDevice {
+            let Some(product) = read_attr(&dir, "idProduct") else {
+                scan.faults.push(fault(
+                    None,
+                    Some(port.to_string()),
+                    "it names a vendor but no readable idProduct, which usually means it was \
+                     unplugged during the scan",
+                ));
+                continue;
+            };
+            scan.devices.push(UsbDevice {
                 vendor,
                 product,
-                model: read_attr(&dir, "product"),
+                model,
                 port: Some(port.to_string()),
                 serial: read_attr(&dir, "serial"),
             });
         }
-        inventory.sort_by(|a, b| {
+        scan.devices.sort_by(|a, b| {
             (&a.vendor, &a.product, &a.port).cmp(&(&b.vendor, &b.product, &b.port))
         });
-        Ok(inventory)
+        scan.faults.sort_by(|a, b| a.record.cmp(&b.record));
+        Ok(scan)
     }
 
     fn read_attr(dir: &Path, attr: &str) -> Option<String> {
@@ -818,17 +966,24 @@ mod bounded {
     }
 }
 
-#[cfg(target_os = "macos")]
+/// Gated on `test` as well as macOS so the pure tree walk — where the
+/// device/fault split lives — is exercised by every platform's CI leg; the
+/// `system_profiler` call stays macOS-only.
+#[cfg(any(target_os = "macos", test))]
 mod macos {
+    #[cfg(target_os = "macos")]
     use std::process::Command;
 
+    #[cfg(target_os = "macos")]
     use tracing::debug;
 
-    use super::UsbDevice;
+    use super::{UsbDevice, UsbFault, UsbScan};
 
-    /// `system_profiler -json SPUSBDataType`: hubs nest their devices
-    /// under `_items`, so the walk recurses.
-    pub fn usb_inventory() -> Result<Vec<UsbDevice>, String> {
+    /// `system_profiler -json SPUSBDataType`. Only the query itself
+    /// failing, or returning something other than JSON, fails the scan; a
+    /// device that cannot be placed is reported as a fault.
+    #[cfg(target_os = "macos")]
+    pub fn usb_inventory() -> Result<UsbScan, String> {
         let output = super::bounded::capture(
             Command::new("system_profiler").args(["-json", "SPUSBDataType"]),
             super::bounded::DEADLINE,
@@ -841,16 +996,22 @@ mod macos {
             debug!(error = %e, "system_profiler output is not valid JSON");
             format!("macOS USB inventory returned unparsable JSON: {e}")
         })?;
-        let mut inventory = Vec::new();
-        if let Some(top) = value.get("SPUSBDataType").and_then(|v| v.as_array()) {
-            for item in top {
-                walk(item, &mut inventory)?;
-            }
-        }
-        Ok(inventory)
+        Ok(parse_system_profiler(&value))
     }
 
-    fn walk(item: &serde_json::Value, inventory: &mut Vec<UsbDevice>) -> Result<(), String> {
+    /// Split `system_profiler`'s tree into the working devices and the
+    /// faults. Hubs nest their devices under `_items`, so the walk recurses.
+    pub fn parse_system_profiler(value: &serde_json::Value) -> UsbScan {
+        let mut scan = UsbScan::default();
+        if let Some(top) = value.get("SPUSBDataType").and_then(|v| v.as_array()) {
+            for item in top {
+                walk(item, &mut scan);
+            }
+        }
+        scan
+    }
+
+    fn walk(item: &serde_json::Value, scan: &mut UsbScan) {
         // A candidate device record is one presenting a vendor id; the
         // tree also carries controllers and other non-device nodes, which
         // are skipped silently as they always were.
@@ -858,26 +1019,33 @@ mod macos {
             item.get("vendor_id").and_then(hex_field),
             item.get("product_id").and_then(hex_field),
         ) {
-            let port = item
-                .get("location_id")
-                .and_then(location_id)
-                .ok_or_else(|| {
-                    format!("macOS USB device {vendor}:{product} reports no usable location_id")
-                })?;
-            inventory.push(UsbDevice {
-                vendor,
-                product,
-                model: item.get("_name").and_then(text_field),
-                port: Some(port),
-                serial: item.get("serial_num").and_then(text_field),
-            });
+            let model = item.get("_name").and_then(text_field);
+            match item.get("location_id").and_then(location_id) {
+                Some(port) => scan.devices.push(UsbDevice {
+                    vendor,
+                    product,
+                    model,
+                    port: Some(port),
+                    serial: item.get("serial_num").and_then(text_field),
+                }),
+                None => scan.faults.push(UsbFault {
+                    record: model
+                        .clone()
+                        .unwrap_or_else(|| format!("{vendor}:{product}")),
+                    vendor: Some(vendor),
+                    product: Some(product),
+                    model,
+                    location: None,
+                    reason: "it reports no usable location_id, so its port cannot be named"
+                        .to_string(),
+                }),
+            }
         }
         if let Some(children) = item.get("_items").and_then(|v| v.as_array()) {
             for child in children {
-                walk(child, inventory)?;
+                walk(child, scan);
             }
         }
-        Ok(())
     }
 
     /// `location_id` renders as `0x14200000` or `0x14200000 / 3`. Only the
@@ -924,7 +1092,7 @@ mod windows {
     #[cfg(windows)]
     use tracing::debug;
 
-    use super::UsbDevice;
+    use super::{UsbDevice, UsbFault, UsbScan};
 
     #[cfg(windows)]
     fn powershell(script: &str) -> Result<String, String> {
@@ -962,9 +1130,15 @@ mod windows {
     /// Present USB devices from `PnP`: the instance id carries
     /// `USB\VID_xxxx&PID_xxxx\...`; the bus-reported device description is
     /// the product string the device itself sent; the location path is the
-    /// port chain.
+    /// port chain; the problem code (`ConfigManagerErrorCode`, read off the
+    /// object `Get-PnpDevice` already returned) says whether Windows has
+    /// the device working, and the friendly name is what Windows lists it
+    /// as — for its enumeration-failure placeholder, what went wrong.
+    ///
+    /// A null problem code is printed as an empty field rather than cast:
+    /// `[uint32]$null` is `0`, which would read as a working device.
     #[cfg(windows)]
-    pub fn usb_inventory() -> Result<Vec<UsbDevice>, String> {
+    pub fn usb_inventory() -> Result<UsbScan, String> {
         let script = "Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | \
              Where-Object { $_.InstanceId -like 'USB\\VID_*' } | \
              ForEach-Object { \
@@ -974,50 +1148,161 @@ mod windows {
                  $paths = (Get-PnpDeviceProperty -InstanceId $_.InstanceId \
                      -KeyName DEVPKEY_Device_LocationPaths \
                      -ErrorAction SilentlyContinue).Data; \
-                 \"$($_.InstanceId)`t$desc`t$($paths -join '|')\" }";
+                 $code = if ($null -ne $_.ConfigManagerErrorCode) \
+                     { [uint32]$_.ConfigManagerErrorCode }; \
+                 \"$($_.InstanceId)`t$desc`t$($paths -join '|')`t$code`t$($_.FriendlyName)\" }";
         let listing =
             powershell(script).map_err(|e| format!("Windows USB inventory failed: {e}"))?;
-        parse_pnp_listing(&listing)
+        Ok(parse_pnp_listing(&listing))
     }
 
-    pub fn parse_pnp_listing(listing: &str) -> Result<Vec<UsbDevice>, String> {
-        let mut inventory = Vec::new();
+    /// Split the collector's listing into the working devices and the
+    /// faults. One line per `PnP` instance, tab-separated: instance id,
+    /// bus-reported description, location paths joined by `|`, problem
+    /// code, friendly name.
+    ///
+    /// A line whose instance id is not `USB\VID_…` is not a candidate (root
+    /// hubs among them) and is skipped, as is a composite device's
+    /// per-interface child (`USB\VID_…&PID_…&MI_nn\…`), a function of a
+    /// device already listed under its own record. A candidate that is not
+    /// a working device — Windows reports a problem code, or its ids, its
+    /// problem code or its `PCIROOT(` port cannot be read — is a fault. No
+    /// single record can fail the listing: only the query itself failing
+    /// does that.
+    pub fn parse_pnp_listing(listing: &str) -> UsbScan {
+        let mut scan = UsbScan::default();
         for line in listing.lines() {
             let line = line.trim_end_matches('\r');
             if line.trim().is_empty() {
                 continue;
             }
-            let mut fields = line.splitn(3, '\t');
+            let mut fields = line.splitn(5, '\t');
             let instance = fields.next().unwrap_or_default();
-            let desc = fields.next().unwrap_or_default();
+            let desc = fields.next().unwrap_or_default().trim();
             let paths = fields.next().unwrap_or_default();
+            let problem = fields.next().unwrap_or_default().trim();
+            let friendly = fields.next().unwrap_or_default().trim();
 
             // A candidate device record is a `USB\VID_…` instance id.
             let Some(rest) = instance.strip_prefix("USB\\VID_") else {
                 continue;
             };
-            let (Some(vendor), Some(product)) = (
-                rest.get(..4).map(str::to_lowercase),
-                rest.get(4..)
-                    .and_then(|r| r.strip_prefix("&PID_"))
-                    .and_then(|r| r.get(..4))
-                    .map(str::to_lowercase),
-            ) else {
-                return Err(format!("Windows USB instance id {instance:?} is malformed"));
+            // The Windows counterpart of a Linux interface entry: the
+            // composite parent carries the device's ids and port.
+            if rest
+                .split('\\')
+                .next()
+                .is_some_and(|ids| ids.to_ascii_uppercase().contains("&MI_"))
+            {
+                continue;
+            }
+            let ids = usb_ids(rest);
+            let model = (!desc.is_empty()).then(|| desc.to_string());
+            let location = location_path(paths).or_else(|| first_path(paths));
+            let fault = |reason: String| UsbFault {
+                record: instance.to_string(),
+                vendor: ids.as_ref().map(|(vendor, _)| vendor.clone()),
+                product: ids.as_ref().map(|(_, product)| product.clone()),
+                model: model.clone(),
+                location: location.clone(),
+                reason,
             };
-            let port = location_path(paths).ok_or_else(|| {
-                format!("Windows USB device {instance:?} reports no PCIROOT location path")
-            })?;
-            let model = desc.trim();
-            inventory.push(UsbDevice {
+            let Some((vendor, product)) = ids.clone() else {
+                scan.faults.push(fault(
+                    "its instance id does not name a vendor and product".to_string(),
+                ));
+                continue;
+            };
+            match problem.parse::<u32>() {
+                Ok(0) => {}
+                Ok(code) => {
+                    scan.faults.push(fault(not_working(code, friendly)));
+                    continue;
+                }
+                Err(_) => {
+                    scan.faults.push(fault(format!(
+                        "Windows did not say whether it is working (problem code {problem:?})"
+                    )));
+                    continue;
+                }
+            }
+            let Some(port) = location_path(paths) else {
+                let reason = if paths.trim().is_empty() {
+                    "its location paths could not be read, so its port cannot be named"
+                } else {
+                    "it reports no PCIROOT location path, so its port cannot be named"
+                };
+                scan.faults.push(fault(reason.to_string()));
+                continue;
+            };
+            scan.devices.push(UsbDevice {
                 vendor,
                 product,
-                model: (!model.is_empty()).then(|| model.to_string()),
+                model,
                 port: Some(port),
                 serial: instance_serial(instance),
             });
         }
-        Ok(inventory)
+        scan
+    }
+
+    /// The two ids after `USB\VID_`, lowercased — `None` unless the
+    /// instance id spells both as four hex digits.
+    fn usb_ids(rest: &str) -> Option<(String, String)> {
+        let vendor = rest.get(..4)?.to_lowercase();
+        let product = rest
+            .get(4..)?
+            .strip_prefix("&PID_")?
+            .get(..4)?
+            .to_lowercase();
+        (super::is_usb_id(&vendor) && super::is_usb_id(&product)).then_some((vendor, product))
+    }
+
+    /// Why Windows has the device down: the problem code with Device
+    /// Manager's meaning for it, and what Windows lists the device as —
+    /// which, for the enumeration-failure placeholder, is itself the
+    /// diagnosis (*Unknown USB Device (Device Descriptor Request Failed)*).
+    fn not_working(code: u32, friendly: &str) -> String {
+        let problem = problem_meaning(code).map_or_else(
+            || format!("problem code {code}"),
+            |meaning| format!("problem code {code}: {meaning}"),
+        );
+        if friendly.is_empty() {
+            format!("Windows reports it not working ({problem})")
+        } else {
+            format!("Windows reports it not working ({problem}); Windows lists it as {friendly:?}")
+        }
+    }
+
+    /// Device Manager's meaning for the problem codes a USB device
+    /// realistically shows (`CM_PROB_*`); any other code is reported by
+    /// number alone.
+    const fn problem_meaning(code: u32) -> Option<&'static str> {
+        Some(match code {
+            1 => "it is not configured correctly",
+            10 => "it cannot start",
+            14 => "it cannot work properly until the computer restarts",
+            18 => "its drivers need reinstalling",
+            22 => "it is disabled",
+            24 => "it is not present, not working properly, or missing drivers",
+            28 => "its drivers are not installed",
+            31 => "Windows cannot load the drivers it requires",
+            39 => "Windows cannot load its driver, which may be corrupted or missing",
+            43 => "Windows stopped it because it reported problems",
+            52 => "Windows cannot verify the digital signature of its drivers",
+            _ => return None,
+        })
+    }
+
+    /// Any location path at all, for a record without a `PCIROOT(` one —
+    /// not a port, but enough for an operator to find the socket (the ACPI
+    /// chain ends in the root-hub port name, `ACPI(HS05)`).
+    fn first_path(paths: &str) -> Option<String> {
+        paths
+            .split('|')
+            .map(str::trim)
+            .find(|path| !path.is_empty())
+            .map(str::to_string)
     }
 
     /// `DEVPKEY_Device_LocationPaths` is **multi-valued**: a device
@@ -1105,6 +1390,122 @@ mod tests {
             Some(false),
             "a fixture written before the marker existed still means an empty bus"
         );
+    }
+
+    /// A dead device is not a present one: presence reads only the
+    /// inventory, and the fault is found by the same identity rules.
+    #[test]
+    fn test_a_fault_is_matched_by_identity_but_never_counts_as_present() {
+        let facts: HardwareFacts = serde_json::from_str(
+            r#"{ "usb": [], "usb_faults": [
+                { "record": "USB\\VID_2E8A&PID_000A\\E463B0531F4C3831",
+                  "vendor": "2e8a", "product": "000a", "model": "Deep Sky Dad FP2",
+                  "reason": "Windows reports it not working (problem code 10)" }
+            ] }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            facts.usb_present("2e8a", Some("000a"), Some("FP2")),
+            Some(false)
+        );
+        let fault = facts
+            .usb_fault_matching("2e8a", Some("000a"), Some("FP2"))
+            .unwrap();
+        assert_eq!(
+            fault.reason,
+            "Windows reports it not working (problem code 10)"
+        );
+        assert!(
+            facts
+                .usb_fault_matching("2e8a", Some("000a"), Some("PPBA"))
+                .is_none(),
+            "the model substring discriminates faults too"
+        );
+        assert!(facts.usb_fault_matching("0403", None, None).is_none());
+    }
+
+    /// A fault that could not read an id never matches an identity that
+    /// declares one.
+    #[test]
+    fn test_a_fault_without_ids_matches_no_identity() {
+        let facts: HardwareFacts = serde_json::from_str(
+            r#"{ "usb": [], "usb_faults": [ { "record": "USB\\VID_ZZ", "reason": "unreadable" } ] }"#,
+        )
+        .unwrap();
+        assert!(facts.usb_fault_matching("2e8a", None, None).is_none());
+    }
+
+    /// Same vendor, another product: some other device's fault, not the
+    /// declared one's — and a fault whose product could not be read never
+    /// matches an identity that declares one.
+    #[test]
+    fn test_a_fault_must_match_a_declared_product() {
+        let facts: HardwareFacts = serde_json::from_str(
+            r#"{ "usb": [], "usb_faults": [
+                { "record": "USB\\VID_0483&PID_DF11\\1", "vendor": "0483", "product": "df11",
+                  "reason": "problem code 43" },
+                { "record": "1-9", "vendor": "0483", "reason": "no readable idProduct" }
+            ] }"#,
+        )
+        .unwrap();
+        assert_eq!(facts.usb_fault_matching("0483", Some("5740"), None), None);
+        assert_eq!(
+            facts
+                .usb_fault_matching("0483", None, None)
+                .map(|f| f.record.as_str()),
+            Some("USB\\VID_0483&PID_DF11\\1"),
+            "a vendor-only identity matches the first fault from that vendor"
+        );
+    }
+
+    /// A failed scan has no opinion about the bus — neither devices nor
+    /// faults survive it.
+    #[test]
+    fn test_a_failed_scan_leaves_no_devices_and_no_faults() {
+        let mut facts: HardwareFacts = serde_json::from_str(
+            r#"{ "usb": [ { "vendor": "0403", "product": "6015", "port": "1-1" } ],
+                 "usb_faults": [ { "record": "1-9", "reason": "unplugged mid-scan" } ] }"#,
+        )
+        .unwrap();
+        record_usb(
+            &mut facts,
+            Err("powershell.exe did not finish within 10s".to_string()),
+        );
+        assert_eq!(facts.usb, Vec::<UsbDevice>::new());
+        assert_eq!(facts.usb_faults, Vec::<UsbFault>::new());
+        assert_eq!(
+            facts.usb_unavailable.as_deref(),
+            Some("powershell.exe did not finish within 10s")
+        );
+    }
+
+    /// A successful scan lands its devices and its faults side by side.
+    #[test]
+    fn test_a_scan_lands_devices_and_faults_on_the_facts() {
+        let mut facts = HardwareFacts::default();
+        record_usb(
+            &mut facts,
+            Ok(UsbScan {
+                devices: vec![UsbDevice {
+                    vendor: "0403".to_string(),
+                    product: "6015".to_string(),
+                    model: None,
+                    port: Some("1-1".to_string()),
+                    serial: None,
+                }],
+                faults: vec![UsbFault {
+                    record: "1-9".to_string(),
+                    vendor: Some("03c3".to_string()),
+                    product: None,
+                    model: None,
+                    location: Some("1-9".to_string()),
+                    reason: "unplugged mid-scan".to_string(),
+                }],
+            }),
+        );
+        assert_eq!(facts.usb.len(), 1);
+        assert_eq!(facts.usb_faults.len(), 1);
+        assert!(facts.usb_unavailable.is_none());
     }
 
     #[test]
@@ -1230,7 +1631,9 @@ mod tests {
                 std::fs::write(d.join("serial"), format!("{sn}\n")).unwrap();
             }
         }
-        let inventory = linux::usb_inventory(&devices).unwrap();
+        let scan = linux::usb_inventory(&devices).unwrap();
+        assert_eq!(scan.faults, Vec::<UsbFault>::new());
+        let inventory = scan.devices;
         assert_eq!(inventory.len(), 2, "interfaces are not devices");
         assert_eq!(inventory[0].vendor, "0403");
         assert_eq!(inventory[0].model.as_deref(), Some("Falcon Rotator"));
@@ -1251,20 +1654,6 @@ mod tests {
             inventory[1].serial, None,
             "a device publishing no serial is normal, not a failure"
         );
-
-        // A candidate that declares a vendor but whose product cannot be
-        // read fails the scan rather than yielding an empty product that
-        // no VID:PID match could ever hit.
-        let half_read = devices.join("1-9");
-        std::fs::create_dir_all(&half_read).unwrap();
-        std::fs::write(half_read.join("idVendor"), "03c3\n").unwrap();
-        let error = linux::usb_inventory(&devices)
-            .expect_err("a candidate with no readable idProduct fails the scan");
-        assert!(
-            error.contains("idProduct"),
-            "the error should name what was missing: {error}"
-        );
-        std::fs::remove_dir_all(&half_read).unwrap();
 
         let etc = dir.path().join("etc-rules");
         let lib = dir.path().join("lib-rules");
@@ -1293,70 +1682,435 @@ mod tests {
         assert!(!rules.contains_key("90-c.rules"));
     }
 
+    /// A candidate that names a vendor but whose product cannot be read —
+    /// a device unplugged mid-walk — is a fault: it neither becomes a
+    /// record with an empty product that no VID:PID match could hit, nor
+    /// costs the answer for the device beside it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_sysfs_entry_without_idproduct_is_a_fault_not_a_failed_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let devices = dir.path().join("devices");
+        let healthy = devices.join("1-1");
+        std::fs::create_dir_all(&healthy).unwrap();
+        std::fs::write(healthy.join("idVendor"), "0403\n").unwrap();
+        std::fs::write(healthy.join("idProduct"), "6015\n").unwrap();
+        let half_read = devices.join("1-9");
+        std::fs::create_dir_all(&half_read).unwrap();
+        std::fs::write(half_read.join("idVendor"), "03c3\n").unwrap();
+        std::fs::write(half_read.join("product"), "ASI662MC\n").unwrap();
+
+        let scan = linux::usb_inventory(&devices).unwrap();
+
+        assert_eq!(scan.devices.len(), 1, "the healthy device is still listed");
+        assert_eq!(scan.devices[0].vendor, "0403");
+        assert_eq!(
+            scan.faults,
+            vec![UsbFault {
+                record: half_read.display().to_string(),
+                vendor: Some("03c3".to_string()),
+                product: None,
+                model: Some("ASI662MC".to_string()),
+                location: Some("1-9".to_string()),
+                reason: "it names a vendor but no readable idProduct, which usually means it \
+                         was unplugged during the scan"
+                    .to_string(),
+            }]
+        );
+    }
+
+    /// Only an unreadable devices directory fails the Linux scan.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_unreadable_sysfs_directory_fails_the_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = linux::usb_inventory(&dir.path().join("absent"))
+            .expect_err("a directory that cannot be read is a failed scan");
+        assert!(error.contains("sysfs USB walk failed"), "{error}");
+    }
+
+    /// An entry whose name is not UTF-8 has no port that can be named: a
+    /// fault with no location, and the device beside it is still listed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_sysfs_entry_with_a_non_utf8_name_is_a_fault_without_a_location() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let devices = dir.path().join("devices");
+        let healthy = devices.join("1-1");
+        std::fs::create_dir_all(&healthy).unwrap();
+        std::fs::write(healthy.join("idVendor"), "0403\n").unwrap();
+        std::fs::write(healthy.join("idProduct"), "6015\n").unwrap();
+        let odd = devices.join(std::ffi::OsStr::from_bytes(b"1-\xff"));
+        std::fs::create_dir_all(&odd).unwrap();
+        std::fs::write(odd.join("idVendor"), "03c3\n").unwrap();
+
+        let scan = linux::usb_inventory(&devices).unwrap();
+
+        assert_eq!(scan.devices.len(), 1);
+        assert_eq!(scan.faults.len(), 1);
+        assert_eq!(scan.faults[0].vendor.as_deref(), Some("03c3"));
+        assert_eq!(scan.faults[0].location, None);
+        assert_eq!(
+            scan.faults[0].reason,
+            "its sysfs entry name is not valid UTF-8, so its port cannot be named"
+        );
+    }
+
     /// Lines as the collector's PowerShell emits them: instance id, the
-    /// bus-reported description, and the joined location paths. The values
-    /// are real observations from the Starfront Windows rig.
+    /// bus-reported description, the joined location paths, the problem
+    /// code and the friendly name. The values are real observations from
+    /// the Starfront Windows rig, read on 2026-09-28 with every device
+    /// powered.
+    const RIG2_LISTING: &str = "\
+USB\\VID_0403&PID_6001\\OP2CGIIA\tOptec USB/Serial Cable\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(5)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS02)#USB(5)\t0\tUSB Serial Converter
+USB\\VID_0424&PID_2807\\5&27E528BF&0&2\tUSB2807 Hub\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS02)\t0\tGeneric USB Hub
+USB\\VID_2E8A&PID_000A\\E463B0531F4C3831\tDeep Sky Dad FP2\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS01)\t0\tUSB Serial Device (COM4)
+USB\\VID_0000&PID_0002\\5&27E528BF&0&5\t\tACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS05)\t43\tUnknown USB Device (Device Descriptor Request Failed)
+USB\\VID_03C3&PID_662B\\6&21D0E52E&0&4\tASI662MC\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS02)#USB(4)\t0\tZWO ASI662MC Camera
+USB\\VID_8087&PID_0033\\5&27E528BF&0&10\t\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(10)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS10)\t0\tIntel(R) Wireless Bluetooth(R)
+USB\\VID_1618&PID_0679\\6&4213695&0&3\tQHY678U3G20-20230106\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(3)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(SS02)#USB(3)\t0\tQHY5IIISeries_IO
+USB\\VID_1618&PID_C601\\6&4213695&0&1\tQHY600U3G20-20230614\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(SS02)#USB(1)\t0\tQHY5IIISeries_IO
+USB\\VID_0424&PID_5807\\5&27E528BF&0&14\tUSB5807 Hub\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(SS02)\t0\tGeneric SuperSpeed USB Hub
+USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(7)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS02)#USB(7)\t0\tUSB Serial Converter
+USB\\ROOT_HUB30\\4&29AB4BED&0&0\t\tPCIROOT(0)#PCI(1400)#USBROOT(0)\t0\tUSB Root Hub (USB 3.0)
+";
+
+    /// Windows' placeholder for a device whose descriptor request failed is
+    /// a fault, and every working device beside it is inventoried.
+    #[test]
+    fn test_rig2_enumeration_failure_is_a_fault_beside_nine_working_devices() {
+        let scan = super::windows::parse_pnp_listing(RIG2_LISTING);
+
+        assert_eq!(
+            scan.devices.len(),
+            9,
+            "every working device is inventoried; the root hub is not a candidate"
+        );
+        assert_eq!(
+            scan.faults,
+            vec![UsbFault {
+                record: "USB\\VID_0000&PID_0002\\5&27E528BF&0&5".to_string(),
+                vendor: Some("0000".to_string()),
+                product: Some("0002".to_string()),
+                model: None,
+                location: Some(
+                    "ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS05)".to_string()
+                ),
+                reason: "Windows reports it not working (problem code 43: Windows stopped it \
+                         because it reported problems); Windows lists it as \"Unknown USB \
+                         Device (Device Descriptor Request Failed)\""
+                    .to_string(),
+            }]
+        );
+    }
+
+    /// With that placeholder fault beside them, the rig's services still
+    /// find their devices, matched on the descriptors the devices actually
+    /// publish.
+    #[test]
+    fn test_rig2_services_find_their_devices_despite_the_phantom() {
+        let scan = super::windows::parse_pnp_listing(RIG2_LISTING);
+        let facts = HardwareFacts {
+            usb: scan.devices,
+            usb_faults: scan.faults,
+            ..Default::default()
+        };
+        assert_eq!(
+            facts.usb_present("2e8a", Some("000a"), Some("FP2")),
+            Some(true)
+        );
+        assert_eq!(facts.usb_present("1618", None, None), Some(true));
+        assert_eq!(
+            facts.usb_present("0403", Some("6015"), Some("UPBv2")),
+            Some(true)
+        );
+    }
+
+    /// A device Windows reports with a problem code is not working — no
+    /// driver, failed to start, disabled — so it is a fault even though its
+    /// identity and port are known, and the fault keeps both.
+    #[test]
+    fn test_pnp_device_with_a_problem_code_is_a_fault_that_keeps_its_identity() {
+        let listing = "USB\\VID_1618&PID_C601\\6&4213695&0&1\tQHY600U3G20-20230614\t\
+                       PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)|\
+                       ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(SS02)#USB(1)\t\
+                       28\tQHY5IIISeries_IO\n";
+        let scan = super::windows::parse_pnp_listing(listing);
+
+        assert_eq!(scan.devices, Vec::<UsbDevice>::new());
+        assert_eq!(
+            scan.faults,
+            vec![UsbFault {
+                record: "USB\\VID_1618&PID_C601\\6&4213695&0&1".to_string(),
+                vendor: Some("1618".to_string()),
+                product: Some("c601".to_string()),
+                model: Some("QHY600U3G20-20230614".to_string()),
+                location: Some("PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)".to_string()),
+                reason: "Windows reports it not working (problem code 28: its drivers are not \
+                         installed); Windows lists it as \"QHY5IIISeries_IO\""
+                    .to_string(),
+            }]
+        );
+    }
+
+    /// A working device with no `PCIROOT(` path — a Windows ARM host or a
+    /// USB-over-IP client would publish one — has no port the inventory can
+    /// name, so it is a fault, not a port-less device.
+    #[test]
+    fn test_pnp_device_without_a_pciroot_path_is_a_fault() {
+        let listing = "USB\\VID_03C3&PID_662B\\6&21D0E52E&0&4\tASI662MC\t\
+                       ACPI(_SB_)#ACPI(URS0)#USB(4)\t0\tZWO ASI662MC Camera\n";
+        let scan = super::windows::parse_pnp_listing(listing);
+
+        assert_eq!(scan.devices, Vec::<UsbDevice>::new());
+        assert_eq!(scan.faults.len(), 1);
+        assert_eq!(
+            scan.faults[0].reason,
+            "it reports no PCIROOT location path, so its port cannot be named"
+        );
+        assert_eq!(
+            scan.faults[0].location.as_deref(),
+            Some("ACPI(_SB_)#ACPI(URS0)#USB(4)"),
+            "the only path it has is still where to look"
+        );
+    }
+
+    /// A location-path read that came back empty says so, rather than
+    /// blaming the device for a spelling it may well have.
+    #[test]
+    fn test_pnp_device_with_unreadable_location_paths_is_a_fault_that_says_so() {
+        let listing =
+            "USB\\VID_03C3&PID_662B\\6&21D0E52E&0&4\tASI662MC\t\t0\tZWO ASI662MC Camera\n";
+        let scan = super::windows::parse_pnp_listing(listing);
+
+        assert_eq!(scan.devices, Vec::<UsbDevice>::new());
+        assert_eq!(scan.faults.len(), 1);
+        assert_eq!(
+            scan.faults[0].reason,
+            "its location paths could not be read, so its port cannot be named"
+        );
+        assert_eq!(scan.faults[0].location, None);
+    }
+
+    /// A problem-code field that is not a number is not read as "working".
+    #[test]
+    fn test_pnp_device_with_an_unreadable_problem_code_is_a_fault() {
+        let listing = "USB\\VID_03C3&PID_662B\\6&21D0E52E&0&4\tASI662MC\t\
+                       PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)\t\tZWO ASI662MC Camera\n";
+        let scan = super::windows::parse_pnp_listing(listing);
+
+        assert_eq!(scan.devices, Vec::<UsbDevice>::new());
+        assert_eq!(
+            scan.faults[0].reason,
+            "Windows did not say whether it is working (problem code \"\")"
+        );
+    }
+
     #[test]
     fn test_pnp_listing_parses_vid_pid_model_port_and_serial() {
-        let listing = "USB\\VID_0403&PID_6015\\UPB248E11M\tUSB Serial Converter\t\
-                       PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(7)|\
-                       ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS02)#USB(7)\n\
-                       USB\\VID_1618&PID_C601\\6&4213695&0&1\tQHY5IIISeries_IO\t\
-                       PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)|\
-                       ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(SS02)#USB(1)\n\
-                       USB\\ROOT_HUB30\\4&1\tHub\tPCIROOT(0)#PCI(1400)#USBROOT(0)\n";
-        let devices = super::windows::parse_pnp_listing(listing).unwrap();
-        assert_eq!(devices.len(), 2, "a root hub is not a VID_ candidate");
-
-        assert_eq!(devices[0].vendor, "0403");
-        assert_eq!(devices[0].product, "6015");
-        assert_eq!(devices[0].model.as_deref(), Some("USB Serial Converter"));
+        let devices = super::windows::parse_pnp_listing(RIG2_LISTING).devices;
+        let upb = devices
+            .iter()
+            .find(|d| d.vendor == "0403" && d.product == "6015")
+            .unwrap();
         assert_eq!(
-            devices[0].port.as_deref(),
+            upb.model.as_deref(),
+            Some("UPBv2 revA"),
+            "the model is what the device published on the bus, not the friendly name"
+        );
+        assert_eq!(
+            upb.port.as_deref(),
             Some("PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(7)"),
             "the PCIROOT chain is the port, not the ACPI spelling beside it"
         );
         assert_eq!(
-            devices[0].serial.as_deref(),
+            upb.serial.as_deref(),
             Some("UPB248E11M"),
             "a device that published a serial keeps it in the instance id"
         );
 
+        let qhy600 = devices
+            .iter()
+            .find(|d| d.product == "c601")
+            .expect("instance-id hex normalizes to lowercase");
+        assert_eq!(qhy600.vendor, "1618");
         assert_eq!(
-            devices[1].vendor, "1618",
-            "instance-id hex normalizes to lowercase"
-        );
-        assert_eq!(
-            devices[1].port.as_deref(),
+            qhy600.port.as_deref(),
             Some("PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)")
         );
         assert_eq!(
-            devices[1].serial, None,
+            qhy600.serial, None,
             "a synthesized parent-relative id encodes the port, not a serial"
         );
     }
 
+    /// An instance id that does not spell both ids as four hex digits is a
+    /// record the inventory cannot identify: a fault, not a failed scan, and
+    /// never a device with a made-up id.
     #[test]
-    fn test_location_path_selection_rejects_an_acpi_only_device() {
-        // Observed on the same rig: a device whose descriptor request
-        // failed publishes the ACPI spelling alone. It is a candidate with
-        // no usable port, which fails the scan rather than yielding a
-        // record the claims resolver cannot place.
-        let listing = "USB\\VID_0000&PID_0002\\5&27E528BF&0&5\tUnknown\t\
-                       ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS05)\n";
-        let error = super::windows::parse_pnp_listing(listing)
-            .expect_err("an ACPI-only device has no usable port path");
-        assert!(
-            error.contains("PCIROOT"),
-            "the error should name what was missing: {error}"
+    fn test_pnp_listing_reports_a_malformed_instance_id_as_a_fault() {
+        let listing = "USB\\VID_ZZ\tBroken\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)\t0\tBroken\n\
+                       USB\\VID_03C3&PID_662B\\6&21D0E52E&0&4\tASI662MC\t\
+                       PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)\t0\tZWO ASI662MC Camera\n";
+        let scan = super::windows::parse_pnp_listing(listing);
+
+        assert_eq!(
+            scan.devices.len(),
+            1,
+            "the camera beside it is still listed"
+        );
+        assert_eq!(
+            scan.faults,
+            vec![UsbFault {
+                record: "USB\\VID_ZZ".to_string(),
+                vendor: None,
+                product: None,
+                model: Some("Broken".to_string()),
+                location: Some("PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)".to_string()),
+                reason: "its instance id does not name a vendor and product".to_string(),
+            }]
         );
     }
 
     #[test]
-    fn test_pnp_listing_rejects_a_malformed_instance_id() {
-        let listing = "USB\\VID_ZZ\tBroken\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)\n";
-        super::windows::parse_pnp_listing(listing)
-            .expect_err("a candidate whose vendor cannot be read fails the scan");
+    fn test_pnp_listing_reports_non_hex_ids_as_a_fault() {
+        let listing = "USB\\VID_ZZZZ&PID_0001\\1\t\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)\t0\t\n";
+        let scan = super::windows::parse_pnp_listing(listing);
+        assert_eq!(scan.devices, Vec::<UsbDevice>::new());
+        assert_eq!(scan.faults[0].vendor, None);
+    }
+
+    /// The collector's output as it arrives: CRLF line endings, captured
+    /// verbatim on the rig with the imaging train powered off — the hubs,
+    /// the powerbox and the placeholder are what is left on the bus.
+    #[test]
+    fn test_verbatim_crlf_capture_parses_into_devices_and_the_placeholder_fault() {
+        let listing = "USB\\VID_0424&PID_2807\\5&27E528BF&0&2\tUSB2807 Hub\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS02)\t0\tGeneric USB Hub\r\n\
+USB\\VID_0000&PID_0002\\5&27E528BF&0&5\t\tACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS05)\t43\tUnknown USB Device (Device Descriptor Request Failed)\r\n\
+USB\\VID_8087&PID_0033\\5&27E528BF&0&10\t\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(10)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS10)\t0\tIntel(R) Wireless Bluetooth(R)\r\n\
+USB\\VID_0424&PID_5807\\5&27E528BF&0&14\tUSB5807 Hub\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(SS02)\t0\tGeneric SuperSpeed USB Hub\r\n\
+USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(7)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS02)#USB(7)\t0\tUSB Serial Converter\r\n";
+        let scan = super::windows::parse_pnp_listing(listing);
+
+        assert_eq!(scan.devices.len(), 4);
+        let upb = scan
+            .devices
+            .iter()
+            .find(|d| d.serial.as_deref() == Some("UPB248E11M"))
+            .unwrap();
+        assert_eq!(
+            upb.model.as_deref(),
+            Some("UPBv2 revA"),
+            "no carriage return survives into a field"
+        );
+        assert_eq!(scan.faults.len(), 1);
+        assert_eq!(
+            scan.faults[0].reason,
+            "Windows reports it not working (problem code 43: Windows stopped it because it \
+             reported problems); Windows lists it as \"Unknown USB Device (Device Descriptor \
+             Request Failed)\""
+        );
+    }
+
+    /// A composite device's per-interface children are functions of the
+    /// device listed under its own record, not devices — so a driverless
+    /// interface cannot turn a healthy device into a permanent fault.
+    #[test]
+    fn test_pnp_listing_skips_composite_interface_children() {
+        let listing = "USB\\VID_2E8A&PID_000A\\E463B0531F4C3831\tDeep Sky Dad FP2\t\
+                       PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)\t0\tUSB Composite Device\n\
+                       USB\\VID_2E8A&PID_000A&MI_00\\7&1A2B3C4D&0&0000\t\t\
+                       PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)#USBMI(0)\t0\tUSB Serial Device (COM4)\n\
+                       USB\\VID_2E8A&PID_000A&MI_02\\7&1A2B3C4D&0&0002\t\t\
+                       PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)#USBMI(2)\t28\tReset\n";
+        let scan = super::windows::parse_pnp_listing(listing);
+
+        assert_eq!(scan.faults, Vec::<UsbFault>::new());
+        assert_eq!(scan.devices.len(), 1);
+        assert_eq!(
+            scan.devices[0].port.as_deref(),
+            Some("PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)")
+        );
+    }
+
+    /// A code Device Manager's table does not cover is still a fault, named
+    /// by its number.
+    #[test]
+    fn test_pnp_device_with_an_unlisted_problem_code_is_a_fault_named_by_number() {
+        let listing = "USB\\VID_03C3&PID_662B\\6&21D0E52E&0&4\tASI662MC\t\
+                       PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)\t99\t\n";
+        let scan = super::windows::parse_pnp_listing(listing);
+
+        assert_eq!(scan.devices, Vec::<UsbDevice>::new());
+        assert_eq!(
+            scan.faults[0].reason,
+            "Windows reports it not working (problem code 99)"
+        );
+    }
+
+    fn system_profiler(json: &str) -> UsbScan {
+        super::macos::parse_system_profiler(&serde_json::from_str(json).unwrap())
+    }
+
+    /// A device behind a hub is found by recursing into `_items`, and its
+    /// port is the location id's hex without the attach-order address.
+    #[test]
+    fn test_system_profiler_walk_lists_a_nested_device_with_its_port() {
+        let scan = system_profiler(
+            r#"{ "SPUSBDataType": [ { "_name": "USB31Bus", "_items": [
+                { "_name": "USB2.0 Hub", "vendor_id": "0x05e3", "product_id": "0x0610",
+                  "location_id": "0x14200000 / 2",
+                  "_items": [ { "_name": "ASI662MC", "vendor_id": "0x03c3  (ZWO)",
+                                "product_id": "0x662b", "location_id": "0x14210000 / 3",
+                                "serial_num": "" } ] } ] } ] }"#,
+        );
+
+        assert_eq!(scan.faults, Vec::<UsbFault>::new());
+        assert_eq!(scan.devices.len(), 2, "the controller node is not a device");
+        let camera = scan.devices.iter().find(|d| d.vendor == "03c3").unwrap();
+        assert_eq!(camera.product, "662b");
+        assert_eq!(camera.model.as_deref(), Some("ASI662MC"));
+        assert_eq!(camera.port.as_deref(), Some("0x14210000"));
+        assert_eq!(camera.serial, None, "an empty serial is no serial");
+    }
+
+    /// A device with no usable location id has no port the inventory can
+    /// name: a fault, and the device beside it is still listed.
+    #[test]
+    fn test_system_profiler_device_without_a_location_id_is_a_fault() {
+        let scan = system_profiler(
+            r#"{ "SPUSBDataType": [ { "_name": "USB31Bus", "_items": [
+                { "_name": "UPBv2 revA", "vendor_id": "0x0403", "product_id": "0x6015",
+                  "location_id": "0x14100000 / 1" },
+                { "_name": "ASI662MC", "vendor_id": "0x03c3", "product_id": "0x662b" } ] } ] }"#,
+        );
+
+        assert_eq!(scan.devices.len(), 1);
+        assert_eq!(scan.devices[0].vendor, "0403");
+        assert_eq!(
+            scan.faults,
+            vec![UsbFault {
+                record: "ASI662MC".to_string(),
+                vendor: Some("03c3".to_string()),
+                product: Some("662b".to_string()),
+                model: Some("ASI662MC".to_string()),
+                location: None,
+                reason: "it reports no usable location_id, so its port cannot be named".to_string(),
+            }]
+        );
+    }
+
+    /// A fault with no name to go by is still identifiable by its ids.
+    #[test]
+    fn test_system_profiler_fault_without_a_name_is_recorded_by_its_ids() {
+        let scan = system_profiler(
+            r#"{ "SPUSBDataType": [ { "vendor_id": "0x03c3", "product_id": "0x662b",
+                                      "location_id": "garbage" } ] }"#,
+        );
+        assert_eq!(scan.faults[0].record, "03c3:662b");
+        assert_eq!(scan.faults[0].model, None);
     }
 
     /// The staged USB inventory — docs/services/doctor.md, "USB inventory".
@@ -1364,7 +2118,9 @@ mod tests {
     mod staged_inventory {
         use std::path::{Path, PathBuf};
 
-        use super::super::{gather, HardwareFacts, ProbeRequest, StagedUsbInventory, UsbDevice};
+        use super::super::{
+            gather, HardwareFacts, ProbeRequest, StagedUsbInventory, UsbDevice, UsbFault,
+        };
 
         fn stage(dir: &Path, json: &str) -> PathBuf {
             let path = dir.join("inventory.json");
@@ -1380,6 +2136,162 @@ mod tests {
             }
         }
 
+        /// The rig2 placeholder as the Windows collector reports it.
+        fn phantom() -> UsbFault {
+            UsbFault {
+                record: "USB\\VID_0000&PID_0002\\5&27E528BF&0&5".to_string(),
+                vendor: Some("0000".to_string()),
+                product: Some("0002".to_string()),
+                model: None,
+                location: Some(
+                    "ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS05)".to_string(),
+                ),
+                reason: "Windows reports it not working (problem code 43: Windows stopped it \
+                         because it reported problems); Windows lists it as \"Unknown USB \
+                         Device (Device Descriptor Request Failed)\""
+                    .to_string(),
+            }
+        }
+
+        /// A staged fault lands beside the staged devices, exactly as a
+        /// collector reports one: out of the inventory, and costing nothing
+        /// else.
+        #[test]
+        fn test_a_staged_fault_reaches_the_facts_beside_the_devices() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [ { "vendor": "2e8a", "product": "000a",
+                                "model": "Deep Sky Dad FP2",
+                                "port": "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)" } ],
+                     "usb_faults": [ { "record": "USB\\VID_0000&PID_0002\\5&27E528BF&0&5",
+                                       "vendor": "0000", "product": "0002",
+                                       "location": "ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS05)",
+                                       "reason": "Windows reports it not working (problem code 43: Windows stopped it because it reported problems); Windows lists it as \"Unknown USB Device (Device Descriptor Request Failed)\"" } ] }"#,
+            );
+            let facts = gather(&request(StagedUsbInventory::load(&path).unwrap()));
+            assert_eq!(facts.usb_faults, vec![phantom()]);
+            assert_eq!(
+                facts.usb_present("2e8a", Some("000a"), Some("FP2")),
+                Some(true)
+            );
+            assert!(facts.usb_unavailable.is_none());
+        }
+
+        /// A failed scan reports neither devices nor faults.
+        #[test]
+        fn test_a_document_naming_both_a_failure_and_a_fault_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb_unavailable": "powershell.exe did not finish within 10s",
+                     "usb_faults": [ { "record": "USB\\VID_0000&PID_0002\\1", "reason": "dead" } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("no faults"), "{error}");
+        }
+
+        /// Faults alone do not say what is on the bus: a scan that found
+        /// only faults still reports its empty device list.
+        #[test]
+        fn test_faults_alone_do_not_state_a_bus() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb_faults": [ { "record": "1-9", "reason": "dead" } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("states neither"), "{error}");
+        }
+
+        /// The least a collector reports about a fault is its name and why
+        /// — a record whose identity could not be read has nothing else.
+        #[test]
+        fn test_a_fault_with_only_a_record_and_a_reason_is_stageable() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [], "usb_faults": [ { "record": "USB\\VID_ZZ",
+                     "reason": "its instance id does not name a vendor and product" } ] }"#,
+            );
+            let staged = StagedUsbInventory::load(&path).unwrap();
+            let StagedUsbInventory::Scan { faults, .. } = staged else {
+                panic!("expected a scan, got {staged:?}");
+            };
+            assert_eq!(faults.len(), 1);
+            assert_eq!(faults[0].vendor, None);
+        }
+
+        /// Doctor prints the reason — a fault without one could not tell the
+        /// operator what is wrong.
+        #[test]
+        fn test_a_staged_fault_with_a_blank_reason_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [], "usb_faults": [ { "record": "1-9", "reason": " " } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("blank `reason`"), "{error}");
+        }
+
+        /// A fault's ids follow the device rules: the one spelling every
+        /// collector reports.
+        #[test]
+        fn test_a_staged_fault_with_an_uppercase_id_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [], "usb_faults": [ { "record": "USB\\VID_1618&PID_C601\\1",
+                     "vendor": "1618", "product": "C601", "reason": "dead" } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("four lowercase hex digits"), "{error}");
+        }
+
+        /// So does every text field: a padded location is a spelling no
+        /// collector produces.
+        #[test]
+        fn test_a_staged_fault_with_a_padded_location_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [], "usb_faults": [ { "record": "1-9", "location": "1-9 ",
+                     "reason": "dead" } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("padded `location`"), "{error}");
+        }
+
+        /// The vendor follows the same rule as the product: a fault staged
+        /// with the `Get-PnpDevice` spelling would never match the service
+        /// it names.
+        #[test]
+        fn test_a_staged_fault_with_an_uppercase_vendor_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [], "usb_faults": [ { "record": "USB\\VID_2E8A&PID_000A\\1",
+                     "vendor": "2E8A", "product": "000a", "reason": "dead" } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("`vendor`"), "{error}");
+            assert!(error.contains("four lowercase hex digits"), "{error}");
+        }
+
+        /// Doctor prints the record so the operator can find the device — a
+        /// fault without one could not be found.
+        #[test]
+        fn test_a_staged_fault_with_a_blank_record_is_rejected() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = stage(
+                dir.path(),
+                r#"{ "usb": [], "usb_faults": [ { "record": "", "reason": "dead" } ] }"#,
+            );
+            let error = StagedUsbInventory::load(&path).unwrap_err();
+            assert!(error.contains("blank `record`"), "{error}");
+        }
+
         /// Replaces the scan rather than adding to it: the gathered bus is
         /// exactly what was staged, on a dev box whose own bus is not.
         #[test]
@@ -1388,7 +2300,7 @@ mod tests {
             let path = stage(
                 dir.path(),
                 r#"{ "usb": [ { "vendor": "1618", "product": "c601",
-                     "model": "QHY5IIISeries_IO",
+                     "model": "QHY600U3G20-20230614",
                      "port": "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)" } ] }"#,
             );
             let facts = gather(&request(StagedUsbInventory::load(&path).unwrap()));
@@ -1457,9 +2369,9 @@ mod tests {
             );
         }
 
-        /// A gathered candidate without a port is an inventory failure, so
-        /// staging one would let a scenario assert on a state the runtime
-        /// rejects. The message says what to stage instead.
+        /// A gathered candidate without a port is a fault, never a device,
+        /// so staging one would let a scenario assert on a state the runtime
+        /// cannot produce. The message says what to stage instead.
         #[test]
         fn test_a_staged_device_without_a_port_is_rejected() {
             let dir = tempfile::tempdir().unwrap();
@@ -1469,7 +2381,7 @@ mod tests {
             );
             let error = StagedUsbInventory::load(&path).unwrap_err();
             assert!(error.contains("1618:c601"), "{error}");
-            assert!(error.contains("usb_unavailable"), "{error}");
+            assert!(error.contains("usb_faults"), "{error}");
         }
 
         /// An empty bus is a state every collector can report, so it stays
@@ -1510,7 +2422,13 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let path = stage(dir.path(), r#"{ "usb": [], "usb_unavailable": null }"#);
             let staged = StagedUsbInventory::load(&path).unwrap();
-            assert_eq!(staged, StagedUsbInventory::Devices(Vec::new()));
+            assert_eq!(
+                staged,
+                StagedUsbInventory::Scan {
+                    devices: Vec::new(),
+                    faults: Vec::new()
+                }
+            );
         }
 
         /// But a document that mentions neither key states nothing, and
@@ -1585,6 +2503,7 @@ mod tests {
                     port: Some("1-4.2".to_string()),
                     serial: None,
                 }],
+                usb_faults: vec![phantom()],
                 ..Default::default()
             };
             let document = serde_json::to_string(&facts).unwrap();
@@ -1596,7 +2515,10 @@ mod tests {
             let path = stage(dir.path(), &document);
             assert_eq!(
                 StagedUsbInventory::load(&path).unwrap(),
-                StagedUsbInventory::Devices(facts.usb)
+                StagedUsbInventory::Scan {
+                    devices: facts.usb,
+                    faults: facts.usb_faults
+                }
             );
         }
 
@@ -1673,7 +2595,8 @@ mod tests {
 
         /// `product` defaults to an empty string when the key is absent, so
         /// an omitted one is silent rather than a parse error — and a
-        /// collector reports it for every candidate or fails the scan.
+        /// collector reports it for every device in the inventory, while a
+        /// record whose product it cannot read is a fault.
         #[test]
         fn test_a_staged_device_without_a_product_is_rejected() {
             let dir = tempfile::tempdir().unwrap();
@@ -1711,13 +2634,16 @@ mod tests {
             let staged = StagedUsbInventory::load(&path).unwrap();
             assert_eq!(
                 staged,
-                StagedUsbInventory::Devices(vec![super::super::UsbDevice {
-                    vendor: "03c3".to_string(),
-                    product: "662b".to_string(),
-                    model: Some("ASI662MC".to_string()),
-                    port: Some("1-4.2".to_string()),
-                    serial: None,
-                }])
+                StagedUsbInventory::Scan {
+                    devices: vec![UsbDevice {
+                        vendor: "03c3".to_string(),
+                        product: "662b".to_string(),
+                        model: Some("ASI662MC".to_string()),
+                        port: Some("1-4.2".to_string()),
+                        serial: None,
+                    }],
+                    faults: Vec::new(),
+                }
             );
         }
 

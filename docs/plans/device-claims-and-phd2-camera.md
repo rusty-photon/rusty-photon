@@ -133,7 +133,7 @@ rather than assumed:
 |---|---|---|---|
 | **USB port path** | **Yes** — every device on the bus has one | **Yes**, on every platform | No — one device per port |
 | SDK serial | No — many cameras report none | ZWO: no (needs `ASIOpenCamera`). QHY/SVBony: yes | No, when it exists |
-| Model name | Yes | Yes | Yes — and worse than that on Windows, where two *different* QHY models share one bus-reported name (D2) |
+| Model name | Yes | Yes | Yes — two cameras of one model share it, and on Windows the string is firmware-stamped, so a join reads VID:PID first (D2, spike item 5) |
 
 Per-SDK detail for the serial route, for the record:
 
@@ -211,10 +211,11 @@ signal), and reuses the existing inventory. **No new crate dependency, no
 **`port` is optional only in the serialized shape, never at runtime.** A
 candidate device that reached the claims resolver without a port would be
 indistinguishable from one whose port simply did not match a claim — a
-silent mis-resolution in the one field ownership depends on. So a missing
-`port` on a candidate record **is** an inventory failure (D4.4), caught
-before any SDK open; `Option` survives only as a compatibility shim for
-older serialized fixtures, which the runtime path rejects.
+silent mis-resolution in the one field ownership depends on. So a
+candidate record without a port never enters the inventory: it is
+reported as a **fault** (D4.4) and nothing selects or opens it; `Option`
+survives only as a compatibility shim for older serialized fixtures,
+which the runtime path rejects.
 
 **C1 spike results — `rig2` (Starfront, Windows 11 Pro 26200, Intel
 NUC12WSHi3), 2026-09-21.** Read entirely from the PnP cache with
@@ -247,9 +248,15 @@ ASI662MC      PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)    Port_#0004.Hub_#0
    descriptor request had failed returned **only** the ACPI form. So the
    Windows collector must *select* the `PCIROOT(`-rooted element rather
    than take index `[0]`, and must define what a device with no such
-   element is: a candidate record with no usable port, which D4.4 already
-   classifies as an inventory failure. This shape was not anticipated —
-   the plan described the property as though it held one string.
+   element is: a record with no usable port. C1 first classified that as
+   an inventory failure, and on `rig2` it proved far too coarse — the
+   descriptor-failed record is a permanent placeholder on a root-hub port
+   (`USB\VID_0000&PID_0002`, problem code 43, surviving reboots), and it
+   blanked every presence answer on a host where every real device was
+   working. It is now a **fault** under D4.4: reported, left out of the
+   inventory, and no longer able to cost the answer for anything else.
+   This shape was not anticipated — the plan described the property as
+   though it held one string.
 
 3. **Stable across a port power cycle, and unaffected by a sibling's
    absence.** Switching the UPBv2 USB port feeding the QHY5III678M off
@@ -293,6 +300,16 @@ ASI662MC      PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)    Port_#0004.Hub_#0
    and each driver's normalizer maps its own SDK model names onto the
    product ids it expects. Unit tests over observed pairs get a real
    fixture from this rig.
+
+   **Correction (2026-09-28, re-read on `rig2`):** `QHY5IIISeries_IO` is
+   the Windows *friendly name* both cameras get from QHY's INF, not what
+   they publish on the bus. `DEVPKEY_Device_BusReportedDeviceDesc` — the
+   property the collector reads — is `QHY600U3G20-20230614` and
+   `QHY678U3G20-20230106`, distinct and firmware-stamped. The model
+   strings therefore do not collide; reading VID:PID first is still the
+   right order (the suffix reads as a firmware date, which a firmware
+   update would change where the product id would not), but not because
+   the names are equal.
 
 6. **The UPBv2 presents two hubs, and which one a camera appears under is
    not yet explained.** The box enumerates as a Microchip companion pair
@@ -548,17 +565,35 @@ not carry a second name for the same device that could fall out of date.
      empty `usb` vector, so making the collectors return `Result` changes
      nothing until `gather` and its startup/doctor consumers propagate
      it. Otherwise a failed scan still reads as an empty bus.
-   - **A partial scan is a failure too — but only over *candidate*
-     records.** The collectors legitimately skip a great deal: the Linux
-     walk passes over interface and root-hub entries that have no
-     `idVendor` at all, and the macOS tree contains non-device nodes.
-     Treating every skipped entry as a failure would fail closed on every
-     healthy host, which is worse than the defect it guards against. So
-     C1 defines what a **candidate device record** is (an entry that
-     presents as a USB device: it has a vendor id, or its platform
-     equivalent) and fails only when a *candidate* cannot be read or
-     parsed. Non-candidates are skipped as they are today, silently.
-     `Ok(empty)` still means a genuinely empty bus.
+   - **A record that is not a working device is a fault, not a failed
+     scan.** The collectors legitimately skip a great deal: the Linux
+     walk passes over interface entries that have no `idVendor` at all,
+     Windows lists root hubs and other non-`USB\VID_` instances plus a
+     composite device's per-interface children (`…&MI_nn`), and the
+     macOS tree contains non-device nodes. Those are not **candidate
+     device records** (an entry that presents as a USB device: it has a
+     vendor id, or its platform equivalent) and are skipped silently. A
+     *candidate* that is not a working device — it cannot be read or
+     placed, or the platform reports it not working (a Windows problem
+     code, including the placeholder Windows leaves for a device whose
+     enumeration failed) — is reported as a **fault**: left out of the
+     inventory, surfaced to the operator, and never able to fail the
+     scan. C1 first failed the whole scan over one such record, and on
+     `rig2` a single permanent placeholder then blanked every presence
+     answer on a host where every real device worked (D2, spike item 2).
+     Only the collector itself failing — the source unreadable, the
+     shell-out erroring or timing out, its output unparsable — fails the
+     scan. `Ok(empty)` still means a genuinely empty bus.
+
+     **The consequence for anything that selects devices by port:** the
+     inventory is complete over *working* devices, not over everything on
+     the bus. A device that is absent from it — unplugged or dead — is
+     never selected by a port-keyed claim, and nothing may be concluded
+     from its absence: a port-keyed selection acts only on positive
+     matches between the inventory and what the SDK enumerates, and a
+     device the SDK sees with no matching working record is left alone.
+     `mode: "all"` makes no ownership decision from the inventory
+     (below), so it still opens whatever the SDK enumerates.
 
    **The rule binds only what needs a trustworthy inventory.** Stated
    once, precisely, because three earlier passes left it ambiguous:
@@ -585,12 +620,13 @@ not carry a second name for the same device that could fall out of date.
 
    **C1 built the mechanism; C2–C4 use it.** A JSON document replaces the
    collector's result wholesale under the shared crate's `mock` feature —
-   it is the two inventory fields of `HardwareFacts` under their own
-   names, so a `hardware` object captured from a real rig stages
-   unchanged instead of being invented. It cannot express a state a
-   collector could not produce: a failure paired with devices, or a
-   device with no port, is rejected at the boundary rather than reaching
-   a consumer as a plausible-looking bus. Each driver exposes it as a
+   it is the three inventory fields of `HardwareFacts` (devices, faults,
+   failure) under their own names, so a `hardware` object captured from a
+   real rig stages unchanged instead of being invented. It cannot express
+   a state a collector could not produce: a failure paired with devices or
+   faults, or a device with no port, is rejected at the boundary rather
+   than reaching a consumer as a plausible-looking bus — a record without
+   a port is staged as a fault, exactly as a collector reports it. Each driver exposes it as a
    hidden `--usb-inventory <file>` flag under its own `simulation`
    feature as it gains claims — the same affordance shape as doctor's
    `--platform-facts`, and absent from release builds for the same

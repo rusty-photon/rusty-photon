@@ -6,6 +6,11 @@ Feature: Hardware checks (no SDK)
   start at boot and hit it), and warns otherwise. Hardware facts arrive
   through the platform-facts seam; a scenario that stages none gets no
   hardware checks at all — a staged file is its scenario's whole truth.
+  The USB bus is the exception to the severity rule: a device on the bus
+  that is not working is reported as a warning, never a failure — on its
+  own and when a service needs it — and every working device is still
+  inventoried and judged. A device absent from the bus keeps the
+  severity rule, and a scan that could not run always fails.
 
   Scenario: A missing serial device fails an enabled driver
     Given platform facts with an enabled unit "rusty-photon-ppba-driver"
@@ -104,6 +109,7 @@ Feature: Hardware checks (no SDK)
     And hardware facts with a USB device "0483:5740" reporting product string "STM32 Virtual ComPort"
     When I run doctor with --json
     Then the report contains an "ok" check named "hardware.usb-device" for service "star-adventurer-gti"
+    And the report has no checks named "hardware.usb-fault"
 
   Scenario: A mount whose cable is out is reported by vendor and product, with no model to name
     Given a config file "star-adventurer-gti.json" containing:
@@ -133,6 +139,85 @@ Feature: Hardware checks (no SDK)
     And hardware facts with an empty but readable USB inventory
     When I run doctor with --json
     Then the report contains a "warn" check named "hardware.usb-device" for service "star-adventurer-gti"
+
+  Scenario: A dead device on the bus warns without hiding the working devices
+    Given a config file "dsd-fp2.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB device "2e8a:000a" reporting product string "Deep Sky Dad FP2"
+    And hardware facts with a USB fault "USB\VID_0000&PID_0002\5&27E528BF&0&5" at "ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS05)" because "Windows reports it not working (problem code 43: Windows stopped it because it reported problems)"
+    When I run doctor with --json
+    Then the report contains an "ok" check named "hardware.usb-device" for service "dsd-fp2"
+    And the report contains a "warn" check named "hardware.usb-fault"
+    And that check's detail mentions "USB\VID_0000&PID_0002\5&27E528BF&0&5"
+    And that check's detail mentions "ACPI(HS05)"
+    And that check's detail mentions "problem code 43"
+    And the report has no checks named "hardware.usb-fault" with status "fail"
+
+  Scenario: Each dead device is its own warning
+    Given a config file "dsd-fp2.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB device "2e8a:000a" reporting product string "Deep Sky Dad FP2"
+    And hardware facts with a USB fault "USB\VID_0000&PID_0002\5&27E528BF&0&5" at "ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS05)" because "Windows reports it not working (problem code 43: Windows stopped it because it reported problems)"
+    And hardware facts with a USB fault "/sys/bus/usb/devices/1-9" at "1-9" because "it names a vendor but no readable idProduct, which usually means it was unplugged during the scan"
+    When I run doctor with --json
+    Then the report contains exactly 2 checks named "hardware.usb-fault"
+
+  Scenario: A dead device never fails doctor, even beside an enabled service
+    Given Windows platform facts with an enabled unit "rusty-photon-dsd-fp2"
+    And a config file "dsd-fp2.json" containing:
+      """
+      { "serial": { "port": "COM4" } }
+      """
+    And hardware facts with present COM ports "COM4"
+    And hardware facts with a USB device "2e8a:000a" reporting product string "Deep Sky Dad FP2"
+    And hardware facts with a USB fault "USB\VID_0000&PID_0002\5&27E528BF&0&5" at "ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS05)" because "Windows reports it not working (problem code 43: Windows stopped it because it reported problems)"
+    When I run doctor with --json
+    Then the report contains an "ok" check named "hardware.serial-node" for service "dsd-fp2"
+    And the report contains an "ok" check named "hardware.usb-device" for service "dsd-fp2"
+    And the report contains a "warn" check named "hardware.usb-fault"
+    And doctor exits with code 0
+
+  Scenario: An enabled service whose own device is not working is warned, not failed
+    Given Windows platform facts with an enabled unit "rusty-photon-dsd-fp2"
+    And a config file "dsd-fp2.json" containing:
+      """
+      { "serial": { "port": "COM4" } }
+      """
+    And hardware facts with present COM ports "COM4"
+    And hardware facts with a USB fault for device "2e8a:000a" reporting product string "Deep Sky Dad FP2" because "Windows reports it not working (problem code 10: it cannot start)"
+    When I run doctor with --json
+    Then the report contains a "warn" check named "hardware.usb-device" for service "dsd-fp2"
+    And that check's detail mentions "is not working, so the service cannot use it"
+    And that check's detail mentions "problem code 10"
+    And the report contains a "warn" check named "hardware.usb-fault"
+    And doctor exits with code 0
+
+  Scenario: A working device is found even when a twin of it is dead
+    Given a config file "dsd-fp2.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB device "2e8a:000a" reporting product string "Deep Sky Dad FP2"
+    And hardware facts with a USB fault for device "2e8a:000a" reporting product string "Deep Sky Dad FP2" because "Windows reports it not working (problem code 10: it cannot start)"
+    When I run doctor with --json
+    Then the report contains an "ok" check named "hardware.usb-device" for service "dsd-fp2"
+    And the report contains a "warn" check named "hardware.usb-fault"
+
+  Scenario: A failed scan reports no faults, only the failure
+    Given a config file "star-adventurer-gti.json" containing:
+      """
+      {}
+      """
+    And hardware facts with a USB fault "USB\VID_0000&PID_0002\5&27E528BF&0&5" at "ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS05)" because "Windows reports it not working (problem code 43: Windows stopped it because it reported problems)"
+    And hardware facts where the USB inventory is unavailable because "powershell.exe did not finish within 10s"
+    When I run doctor with --json
+    Then the report contains a "fail" check named "hardware.usb-device" for service "star-adventurer-gti"
+    And that check's detail mentions "powershell.exe did not finish"
+    And the report has no checks named "hardware.usb-fault"
 
   Scenario: The product string discriminates devices behind a shared bridge chip
     Given a config file "ppba-driver.json" containing:

@@ -2,7 +2,7 @@
 //! in the platform-facts file).
 
 use cucumber::given;
-use rusty_photon_doctor_checks::{PathFacts, PathKind, UsbDevice, UserFacts};
+use rusty_photon_doctor_checks::{PathFacts, PathKind, UsbDevice, UsbFault, UserFacts};
 
 use crate::world::DoctorWorld;
 
@@ -114,6 +114,39 @@ fn usb_device_without_model(world: &mut DoctorWorld, id: String) {
         model: None,
         port: None,
         serial: None,
+    });
+}
+
+/// A record the scan found but could not count as a working device, known
+/// only by the platform's name for it and where it sits — Windows'
+/// placeholder for a device whose enumeration failed is exactly this.
+#[given(expr = "hardware facts with a USB fault {string} at {string} because {string}")]
+fn usb_fault_at(world: &mut DoctorWorld, record: String, location: String, reason: String) {
+    world.hardware().usb_faults.push(UsbFault {
+        record,
+        vendor: None,
+        product: None,
+        model: None,
+        location: Some(location),
+        reason,
+    });
+}
+
+/// A device that described itself on the bus but that the platform reports
+/// as not working — its identity is known, so a service expecting it can
+/// be told it is dead rather than unplugged.
+#[given(
+    expr = "hardware facts with a USB fault for device {string} reporting product string {string} because {string}"
+)]
+fn usb_fault_for_device(world: &mut DoctorWorld, id: String, model: String, reason: String) {
+    let (vendor, product) = parse_vid_pid(&id);
+    world.hardware().usb_faults.push(UsbFault {
+        record: id,
+        vendor: Some(vendor),
+        product: Some(product),
+        model: Some(model),
+        location: None,
+        reason,
     });
 }
 
