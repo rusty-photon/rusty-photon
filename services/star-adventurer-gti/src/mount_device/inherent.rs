@@ -756,6 +756,7 @@ impl MountDevice {
         // Issue the motion sequence. Any `?` failure inside drops
         // `reservation`, which clears `slew_in_progress` — the driver
         // can't get stuck reporting Slewing after a failed slew.
+        let mut taken = PulseGuiding::IDLE;
         let result: ASCOMResult<()> = async {
             let snap = self.manager.snapshot_now().await;
             let (ra_delta, dec_delta) =
@@ -766,41 +767,14 @@ impl MountDevice {
             // stray `:I1` between `:I1 6` and `:J1` would set the goto's
             // speed). Not earlier: a slew refused above must leave a pulse
             // to end itself, not strand its axis at the guide rate.
-            {
-                let _axes = self.axis_ownership.lock().await;
-                self.state.write().await.pulse_guiding = PulseGuiding::IDLE;
-            }
-            // Both axes use the INDI wire sequence: `:K` + poll `:f`
-            // (decelerate stop) → `:G goto+fast` → `:I 6` → `:H |delta|`
-            // → `:M breaks` → `:J`. The RA-axis `:K` is also the wire
-            // event that halts any in-progress sidereal tracking;
-            // mirror that into the in-memory `tracking_requested`
-            // flag only after the stop has actually succeeded so the
-            // state never gets ahead of the wire on transport failures.
-            let guard = self.session.read().await;
-            let session = guard
-                .as_ref()
-                .ok_or_else(|| ASCOMError::from(StarAdvError::NotConnected))?;
-            // Stop through the session already borrowed: a second read of
-            // the session lock here would queue behind a waiting
-            // `Connected` write that is itself waiting for this read.
-            stop_axis_and_wait(&self.manager, session, Axis::Ra, AXIS_STOP_TIMEOUT)
+            taken = self.take_pulses().await;
+            self.issue_slew_sequence(ra_delta, dec_delta, &mut taken)
                 .await
-                .map_err(ASCOMError::from)?;
-            self.state.write().await.tracking_requested = false;
-            issue_slew_axis(&self.manager, session, Axis::Ra, ra_delta)
-                .await
-                .map_err(ASCOMError::from)?;
-            stop_axis_and_wait(&self.manager, session, Axis::Dec, AXIS_STOP_TIMEOUT)
-                .await
-                .map_err(ASCOMError::from)?;
-            issue_slew_axis(&self.manager, session, Axis::Dec, dec_delta)
-                .await
-                .map_err(ASCOMError::from)?;
-            drop(guard);
-            Ok(())
         }
         .await;
+        if result.is_err() {
+            self.stop_taken_pulse_axes(taken).await;
+        }
         result?;
 
         // Hand off to the completion watcher. The watcher acquires its
@@ -836,6 +810,46 @@ impl MountDevice {
     /// The per-axis wire deltas for a slew from `snap` to the target
     /// encoder pair, flip-aware. Pure: reads only the snapshot,
     /// parameters, and config.
+    /// The slew's wire sequence. Both axes use the INDI sequence: `:K` +
+    /// poll `:f` (decelerate stop) → `:G goto+fast` → `:I 6` →
+    /// `:H |delta|` → `:M breaks` → `:J`. The RA-axis `:K` is also the
+    /// wire event that halts any in-progress sidereal tracking; mirror
+    /// that into the in-memory `tracking_requested` flag only after the
+    /// stop has actually succeeded so the state never gets ahead of the
+    /// wire on transport failures. Each axis is cleared from `taken`, the
+    /// pulses the slew took over, once it has been stopped.
+    async fn issue_slew_sequence(
+        &self,
+        ra_delta: i32,
+        dec_delta: i32,
+        taken: &mut PulseGuiding,
+    ) -> ASCOMResult<()> {
+        let guard = self.session.read().await;
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| ASCOMError::from(StarAdvError::NotConnected))?;
+        // Stop through the session already borrowed: a second read of
+        // the session lock here would queue behind a waiting
+        // `Connected` write that is itself waiting for this read.
+        stop_axis_and_wait(&self.manager, session, Axis::Ra, AXIS_STOP_TIMEOUT)
+            .await
+            .map_err(ASCOMError::from)?;
+        taken.set(Axis::Ra, None);
+        self.state.write().await.tracking_requested = false;
+        issue_slew_axis(&self.manager, session, Axis::Ra, ra_delta)
+            .await
+            .map_err(ASCOMError::from)?;
+        stop_axis_and_wait(&self.manager, session, Axis::Dec, AXIS_STOP_TIMEOUT)
+            .await
+            .map_err(ASCOMError::from)?;
+        taken.set(Axis::Dec, None);
+        issue_slew_axis(&self.manager, session, Axis::Dec, dec_delta)
+            .await
+            .map_err(ASCOMError::from)?;
+        drop(guard);
+        Ok(())
+    }
+
     fn slew_axis_deltas(
         &self,
         snap: &MountSnapshot,

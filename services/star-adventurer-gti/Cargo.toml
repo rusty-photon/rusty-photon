@@ -55,7 +55,7 @@ tempfile = { workspace = true }
 # full run takes about 11 minutes.
 #
 # Re-add `[package.metadata.conformu]` after one clean full run against
-# the mock on all three CI OSes with a measured duration (issue #1344).
+# the mock on all three CI OSes with a measured duration.
 # Until then, run ConformU manually — see
 # `docs/services/star-adventurer-gti.md` §"Running ConformU manually".
 

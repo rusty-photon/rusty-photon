@@ -1082,7 +1082,7 @@ PulseGuide(direction, duration)
    │
    ├─ start from rest:
    │     :K<axis>, release the lock, poll :f<axis> until stopped (no fixed wait)
-   │     take the lock again; still this pulse's id, nothing slewing? else
+   │     take the lock again; still this pulse's id? else
    │         clear the flag (if still ours); refuse (INVALID_OPERATION)
    │     :G<axis> Tracking/Slow/ccw, :I<axis> <shifted>, t0 = now, :J<axis>
    │
@@ -1092,7 +1092,7 @@ PulseGuide(direction, duration)
          sleep until t0 + duration (+ the edge-step trim, live rate change only)
          ── holding axis_ownership, for each attempt ──
          no longer this pulse's id → bail; the axis has a new owner
-         parked, slewing, or client disconnected → clear the flag, bail
+         parked or client disconnected → clear the flag, bail
          restore:
            RA pulse started with Tracking on → :I1 <sidereal>   ; rate only
            every other pulse                  → :K<axis>, poll :f until stopped
@@ -1175,21 +1175,36 @@ axis' flag while holding the same lock, before its own first frame:
 `Tracking = true` / `false` (RA), a slew, `SetSideOfPier` and the
 auto-flip that uses it, `Park`, `AbortSlew` (both axes), the
 tracking-time safety guard (RA), and `Connected = false` (both). A
-disconnect also sends `:K` to every axis a pulse was driving. The
-cancelled watcher sends nothing, and its own session defers the
-last-disconnect safety stop, so without that stop a client that
-reconnected before the pulse's deadline would find the axis still
-turning at its guide rate. So a restore either lands entirely before the
-operation's frames or not at all. A `Tracking` write holds the lock for
+disconnect also sends `:K` to every axis a pulse was driving, and `:K1`
+when `Tracking` was on. The cancelled watcher sends nothing, and its own
+session defers the last-disconnect safety stop, so without those stops
+a client that reconnected before the pulse's deadline would find the
+axis still turning at its guide rate, or RA still tracking while
+`Tracking` reads false. So a restore either lands entirely before the
+operation's frames or not at all.
+
+Whoever takes a pulse's axis owns stopping it. A slew or park whose
+wire sequence fails before it has stopped an axis it took from a pulse,
+and a `Tracking` write whose RA stop fails, stop that axis on their way
+out: `:K`, then `:L` if the `:K` does not go through, best effort and
+logged. The pulse's watcher will send nothing, so without that the axis
+would run on at its guide rate. A `Tracking` write holds the lock for
 its whole wire sequence, so no new pulse can claim RA against the
 `Tracking` value it is about to replace. A slew takes over only once
 its planning has succeeded, immediately before its first frame: a slew
 refused by its path checks leaves the pulse to end itself instead of
-stranding its axis at the guide rate. Without that, the guard's `:K1` could
+stranding its axis at the guide rate. The slot alone decides ownership,
+not the slew's reservation: a pulse whose deadline, or whose start's
+re-check, falls while a slew is still planning goes ahead, and its
+frames land before the slew's. Without that, the guard's `:K1` could
 be followed by the pulse's restore restarting tracking into the
 counterweight exclusion zone, or a restore could land between a slew's
-`:I1 6` and its `:J1`. The lock is held for a burst, never across a
-sleep or a stop-and-wait. Lock order is `axis_ownership` first, then the
+`:I1 6` and its `:J1`. A pulse holds the lock only for a burst, never
+across its run, a retry backoff or a stop-and-wait. A `Tracking = true`
+write is the exception: it holds the lock through its `:K1`
+stop-and-wait and its restart, so a Dec pulse whose restore falls due
+meanwhile ends late by that much (at least 100 ms), and `AbortSlew`
+queues behind it for up to about 2 s. Lock order is `axis_ownership` first, then the
 session slot: the reverse can deadlock against a queued
 `Connected = false`, because tokio's `RwLock` is write-preferring.
 
@@ -1212,12 +1227,15 @@ guard stays armed on a mount that may still be moving, and the watcher
 logs an `error!`. A pulse started from rest whose `:K` does not stop
 the axis escalates to `:L` the same way.
 
-A pulse's start rolls back the same way. If its live `:I1 <shifted>`
-reply is ambiguous, the pulse sends `:I1 <sidereal>` (up to three
-attempts) before returning the error. If none of those lands either, it
-stops RA through the same `:K1` / `:L1` ladder, and `Tracking` goes false
-only once the stop is confirmed. So RA is never left at a rate no
-watcher will restore. A `!` reply to it means the firmware refused a
+A pulse's start ends the same way when its last frame is ambiguous. If
+its live `:I1 <shifted>` reply is ambiguous, the pulse sends
+`:I1 <sidereal>` before returning the error: up to three attempts, and
+a `!` reply is not retried. An ambiguous `:J` on a start from rest may
+have started the axis: RA the pulse took from sidereal tracking goes
+back to sidereal the same way, and any other axis is stopped. Whatever
+cannot be put back is stopped through the same `:K` / `:L` ladder, and
+`Tracking` goes false only once an RA stop is confirmed. So no start
+leaves an axis at a rate no watcher will restore. A `!` reply to it means the firmware refused a
 live rate change. The pulse falls back to starting from rest. The
 connection stops trying live changes, and logs a single `warn!`: its
 later RA pulses start from rest and end by stopping RA and restarting
@@ -2868,8 +2886,12 @@ scatter on one leg, not a value near the 0.07 s tolerance. With #1299
 fixed the same run reads **0 issues** (2026-09-29): every East/West leg
 at +2.49…+2.52 s / −2.51 s against ±2.51 s (differences 0.00–0.02 s),
 North/South at ±37.5″. The mock adds no edge steps and the test's
-config zeroes the trim to match, so this proves the driver no longer
-stops RA; what the GTi's board does at a rate change is the rig's to
+config zeroes the trim to match, so the clean run shows the pulses no
+longer lose angle to the old fixed stop waits. It cannot show that RA
+is never stopped: the mock stops an axis instantly, so a stop costs no
+angle here. The frame tests pin that
+(`a_tracking_ra_pulse_sends_only_its_two_rate_frames` and the BDD frame
+counts). What the GTi's board does at a rate change is the rig's to
 measure. On hardware the same config
 measured **11** on 2026-09-26: seven of the eight RA offsets (East at
 HA −3 passed, at +2.52 s) plus four cross-axis RA readings of

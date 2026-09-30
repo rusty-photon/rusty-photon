@@ -325,38 +325,55 @@ impl Telescope for MountDevice {
         // restored sidereal — and no new pulse can claim RA against the
         // `Tracking` value this call is about to replace.
         let _axes = self.axis_ownership.lock().await;
-        self.state.write().await.pulse_guiding.set(Axis::Ra, None);
-        if tracking {
-            // Enabling tracking while parked is invalid per ASCOM
-            // ITelescopeV3. Disabling tracking while parked stays
-            // allowed — Park itself leaves tracking off, but a caller
-            // re-asserting that should not error.
-            self.ensure_unparked().await?;
-            let params = self
-                .manager
-                .parameters()
-                .await
-                .ok_or(ASCOMError::NOT_CONNECTED)?;
-            // Per Sky-Watcher spec §2: "Motor must be at full stop
-            // status before setting the motion mode." The RA axis
-            // may already be running — from a prior tracking enable,
-            // or because the firmware auto-engages Speed (Tracking)
-            // Mode after every goto completes. Force a stop and wait
-            // for the running flag to clear before re-issuing the
-            // tracking-mode `:G`/`:I`/`:J` sequence.
-            self.stop_and_wait(Axis::Ra).await?;
-            self.with_session(async |session| {
-                enable_sidereal_tracking_ra(&self.manager, session, &params)
-                    .await
-                    .map_err(ASCOMError::from)
-            })
-            .await?;
-        } else {
-            // Decelerate to stop on RA.
-            self.send(Command::StopMotion(Axis::Ra))
-                .await
-                .map_err(ASCOMError::from)?;
+        // The RA pulse this call takes over, until RA is stopped.
+        let mut taken = PulseGuiding::IDLE;
+        {
+            let mut s = self.state.write().await;
+            taken.set(Axis::Ra, s.pulse_guiding.get(Axis::Ra));
+            s.pulse_guiding.set(Axis::Ra, None);
         }
+        let result: ASCOMResult<()> = async {
+            if tracking {
+                // Enabling tracking while parked is invalid per ASCOM
+                // ITelescopeV3. Disabling tracking while parked stays
+                // allowed — Park itself leaves tracking off, but a caller
+                // re-asserting that should not error.
+                self.ensure_unparked().await?;
+                let params = self
+                    .manager
+                    .parameters()
+                    .await
+                    .ok_or(ASCOMError::NOT_CONNECTED)?;
+                // Per Sky-Watcher spec §2: "Motor must be at full stop
+                // status before setting the motion mode." The RA axis
+                // may already be running — from a prior tracking enable,
+                // or because the firmware auto-engages Speed (Tracking)
+                // Mode after every goto completes. Force a stop and wait
+                // for the running flag to clear before re-issuing the
+                // tracking-mode `:G`/`:I`/`:J` sequence.
+                self.stop_and_wait(Axis::Ra).await?;
+                taken = PulseGuiding::IDLE;
+                self.with_session(async |session| {
+                    enable_sidereal_tracking_ra(&self.manager, session, &params)
+                        .await
+                        .map_err(ASCOMError::from)
+                })
+                .await?;
+            } else {
+                // Decelerate to stop on RA.
+                self.send(Command::StopMotion(Axis::Ra))
+                    .await
+                    .map_err(ASCOMError::from)?;
+            }
+            Ok(())
+        }
+        .await;
+        if result.is_err() {
+            // RA was not stopped, and the pulse's watcher will send
+            // nothing: stop it rather than leave it at a guide rate.
+            self.stop_orphaned_axes(taken.axes()).await;
+        }
+        result?;
         self.state.write().await.tracking_requested = tracking;
         Ok(())
     }
@@ -825,11 +842,17 @@ impl Telescope for MountDevice {
         // it hands to the park watcher.
         // Park takes both axes from any pulse in flight under the same
         // lock, so no pulse restore lands between here and its motion.
+        // `taken` holds those pulses until park has stopped their axes
+        // itself.
+        let mut taken = PulseGuiding::IDLE;
         let reservation = {
             let _axes = self.axis_ownership.lock().await;
             let reservation = SlewReservation::try_acquire(&self.slew_in_progress);
             if reservation.is_some() {
-                self.state.write().await.pulse_guiding = PulseGuiding::IDLE;
+                taken = std::mem::replace(
+                    &mut self.state.write().await.pulse_guiding,
+                    PulseGuiding::IDLE,
+                );
             }
             reservation
         };
@@ -871,7 +894,9 @@ impl Telescope for MountDevice {
             // still moving (tracking, in-flight slew) when Park was
             // called.
             self.stop_and_wait(Axis::Ra).await?;
+            taken.set(Axis::Ra, None);
             self.stop_and_wait(Axis::Dec).await?;
+            taken.set(Axis::Dec, None);
             // Fresh wire read after the stops — the cached background
             // snapshot lags the wire by up to one `polling_interval`.
             let snap = self
@@ -917,6 +942,9 @@ impl Telescope for MountDevice {
             Ok(())
         }
         .await;
+        if result.is_err() {
+            self.stop_taken_pulse_axes(taken).await;
+        }
         result?;
         // Hand off to the park watcher; it owns `slew_in_progress` from
         // here and will clear it on completion. The watcher acquires its
@@ -1055,9 +1083,12 @@ impl Telescope for MountDevice {
         // makes the flag check inside sync sound, so the operation that
         // falsifies the flag has to hold it too.
         //
-        // Blocking here is bounded by a sync's two encoder writes, and
-        // is the right order anyway: an abort arriving mid-sync should
-        // let the position write finish rather than interleave with it.
+        // Blocking here is bounded by the longest holder: a
+        // `Tracking = true` write's RA stop-and-wait and restart, up to
+        // about 2 s; otherwise a sync's two encoder writes or a pulse's
+        // burst. It is the right order anyway: an abort arriving mid-sync
+        // should let the position write finish rather than interleave
+        // with it.
         let _axes = self.axis_ownership.lock().await;
         // Clear slew_in_progress first so the slew/park watchers see the
         // abort and bail before clobbering the snapshot or at_park flag.

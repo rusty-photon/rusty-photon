@@ -173,6 +173,16 @@ impl PulseGuiding {
     const fn is_active(&self) -> bool {
         self.ra.is_some() || self.dec.is_some()
     }
+
+    /// The axes with a pulse in flight, RA first.
+    fn axes(self) -> impl Iterator<Item = skywatcher_motor_protocol::Axis> {
+        [
+            skywatcher_motor_protocol::Axis::Ra,
+            skywatcher_motor_protocol::Axis::Dec,
+        ]
+        .into_iter()
+        .filter(move |axis| self.get(*axis).is_some())
+    }
 }
 
 impl Default for DriverState {

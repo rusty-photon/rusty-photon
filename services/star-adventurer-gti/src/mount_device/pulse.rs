@@ -13,7 +13,7 @@
 //! for the ownership rule, the edge-step trim and the restore's failure
 //! ladder.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -34,7 +34,7 @@ use crate::manager::{MountManager, MountParameters};
 
 use super::slew::AXIS_STOP_TIMEOUT;
 use super::telescope::GuidePulse;
-use super::{DriverState, MountDevice, PulseId};
+use super::{DriverState, MountDevice, PulseGuiding, PulseId};
 
 /// Device session slot, shared with the watcher. `Some` between
 /// `set_connected(true)` and `set_connected(false)`.
@@ -277,7 +277,8 @@ impl MountDevice {
                             Err(e) if is_refusal(&e) => self.note_live_rate_refused(&e),
                             Err(e) => {
                                 drop(lock);
-                                self.roll_back_live_shift(id, sidereal).await;
+                                self.end_failed_start(axis, id, Restore::Rate { period: sidereal })
+                                    .await;
                                 return Err(e.into());
                             }
                         }
@@ -335,14 +336,11 @@ impl MountDevice {
             ))
             .into());
         }
-        let _lock = self.axis_ownership.lock().await;
+        let lock = self.axis_ownership.lock().await;
         {
             let s = self.state.read().await;
             let tracking_changed = restore != Restore::Stop && !s.tracking_requested;
-            if s.pulse_guiding.get(axis) != Some(id)
-                || self.slew_in_progress.load(Ordering::SeqCst)
-                || tracking_changed
-            {
+            if s.pulse_guiding.get(axis) != Some(id) || tracking_changed {
                 debug!(
                     ?axis,
                     "pulse_guide: axis taken over during the stop-and-wait"
@@ -366,10 +364,11 @@ impl MountDevice {
         .map_err(ASCOMError::from)?;
         let t0 = Instant::now();
         if let Err(e) = self.send(Command::StartMotion(axis)).await {
+            drop(lock);
             if !is_refusal(&e) {
                 // The `:J` may have landed: do not leave the axis moving
                 // with no watcher to end it.
-                self.abandon_start(axis, restore).await;
+                self.end_failed_start(axis, id, restore).await;
             }
             return Err(e.into());
         }
@@ -415,74 +414,117 @@ impl MountDevice {
         }
     }
 
-    /// The live `:I1 <shifted>` failed ambiguously: it may have landed.
-    /// Put sidereal back — idempotent, so safe whether or not it did — so
-    /// RA is not left at a rate no watcher will restore.
-    async fn roll_back_live_shift(&self, id: PulseId, sidereal: u32) {
-        for attempt in 1..=RESTORE_ATTEMPTS {
-            let lock = self.axis_ownership.lock().await;
-            if self.state.read().await.pulse_guiding.get(Axis::Ra) != Some(id) {
-                return;
+    /// A pulse's start failed ambiguously: its last frame — the live
+    /// `:I1 <shifted>`, or the `:J` of a start from rest — may have landed
+    /// and left the axis moving with no watcher to end it. RA the pulse
+    /// took from sidereal tracking goes back to sidereal: the frame is
+    /// idempotent, so it is safe whether or not the start landed, and a
+    /// refusal is not retried. Anything else, and a rate that cannot be
+    /// put back, is stopped.
+    async fn end_failed_start(&self, axis: Axis, id: PulseId, restore: Restore) {
+        if let Restore::Rate { period } = restore {
+            for attempt in 1..=RESTORE_ATTEMPTS {
+                let lock = self.axis_ownership.lock().await;
+                if self.state.read().await.pulse_guiding.get(axis) != Some(id) {
+                    return;
+                }
+                match self.send(Command::SetStepPeriod { axis, period }).await {
+                    Ok(_) => return,
+                    Err(e) if is_refusal(&e) => {
+                        debug!(error = %e, "pulse_guide: the mount refused the sidereal rate");
+                        break;
+                    }
+                    Err(e) => {
+                        debug!(attempt, error = %e, "pulse_guide: putting sidereal back failed");
+                    }
+                }
+                drop(lock);
+                tokio::time::sleep(RETRY_BACKOFF).await;
             }
-            match self
-                .send(Command::SetStepPeriod {
-                    axis: Axis::Ra,
-                    period: sidereal,
-                })
-                .await
-            {
-                Ok(_) => return,
-                Err(e) => debug!(attempt, error = %e, "pulse_guide: rolling back the rate failed"),
-            }
-            drop(lock);
-            tokio::time::sleep(RETRY_BACKOFF).await;
+            warn!(
+                ?axis,
+                "pulse_guide: could not put the axis back to sidereal after a failed pulse \
+                 start; stopping it"
+            );
         }
-        warn!("pulse_guide: could not put RA back to sidereal after a failed pulse start; stopping RA");
-        self.stop_ra_owned_by(id).await;
+        self.stop_owned_by(axis, id).await;
     }
 
-    /// Stop RA, still owned by pulse `id`, that is running at a rate the
-    /// driver can no longer vouch for: `:K1`, then `:L1` if the stop does
-    /// not show. `Tracking` goes false only on a confirmed stop, so an
+    /// Stop `axis`, still owned by pulse `id`, whose motion the driver can
+    /// no longer vouch for: `:K`, then `:L` if the stop does not show. On
+    /// RA, `Tracking` goes false only on a confirmed stop, so an
     /// unconfirmed one leaves the tracking-time guard armed.
-    async fn stop_ra_owned_by(&self, id: PulseId) {
-        let owned = async || self.state.read().await.pulse_guiding.get(Axis::Ra) == Some(id);
-        for command in [
-            Command::StopMotion(Axis::Ra),
-            Command::InstantStop(Axis::Ra),
-        ] {
+    async fn stop_owned_by(&self, axis: Axis, id: PulseId) {
+        let owned = async || self.state.read().await.pulse_guiding.get(axis) == Some(id);
+        for command in [Command::StopMotion(axis), Command::InstantStop(axis)] {
             {
                 let _lock = self.axis_ownership.lock().await;
                 if !owned().await {
                     return;
                 }
                 if let Err(e) = self.send(command.clone()).await {
-                    warn!(error = %e, ?command, "pulse_guide: stopping RA failed");
+                    warn!(error = %e, ?command, "pulse_guide: stopping the axis failed");
                 }
             }
-            if self.wait_stopped_now(Axis::Ra).await.unwrap_or(false) {
-                let _lock = self.axis_ownership.lock().await;
-                if owned().await {
-                    self.state.write().await.tracking_requested = false;
-                    warn!(
-                        "pulse_guide: stopped RA after a failed pulse start. Tracking is now off"
-                    );
+            if self.wait_stopped_now(axis).await.unwrap_or(false) {
+                if axis == Axis::Ra {
+                    let _lock = self.axis_ownership.lock().await;
+                    if owned().await
+                        && std::mem::replace(
+                            &mut self.state.write().await.tracking_requested,
+                            false,
+                        )
+                    {
+                        warn!(
+                            "pulse_guide: stopped RA after a failed pulse start. \
+                             Tracking is now off"
+                        );
+                    }
                 }
                 return;
             }
         }
-        error!("pulse_guide: RA still reports running after :K1 and :L1");
+        error!(
+            ?axis,
+            "pulse_guide: the axis still reports running after :K and :L"
+        );
     }
 
-    /// A start from rest failed after its `:J` may have landed. End what
-    /// may be running: sidereal on RA that was tracking, a stop otherwise.
-    async fn abandon_start(&self, axis: Axis, restore: Restore) {
-        let command = match restore {
-            Restore::Rate { period } => Command::SetStepPeriod { axis, period },
-            Restore::Restart { .. } | Restore::Stop => Command::StopMotion(axis),
-        };
-        if let Err(e) = self.send(command).await {
-            warn!(?axis, error = %e, "pulse_guide: could not end a pulse whose start failed");
+    /// Take both axes from any guide pulse in flight, under
+    /// `axis_ownership`, and return the pulses taken. Their watchers will
+    /// send nothing: the caller owns stopping their axes, and hands any it
+    /// has not stopped to [`Self::stop_orphaned_axes`] if it fails.
+    pub(super) async fn take_pulses(&self) -> PulseGuiding {
+        let _axes = self.axis_ownership.lock().await;
+        let mut s = self.state.write().await;
+        std::mem::replace(&mut s.pulse_guiding, PulseGuiding::IDLE)
+    }
+
+    /// A slew or park that took `taken` failed before it stopped those
+    /// axes itself: stop them, under `axis_ownership`.
+    pub(super) async fn stop_taken_pulse_axes(&self, taken: PulseGuiding) {
+        let _axes = self.axis_ownership.lock().await;
+        self.stop_orphaned_axes(taken.axes()).await;
+    }
+
+    /// Stop `axes`, which an operation took from guide pulses and did
+    /// not stop itself: the pulses' watchers will send nothing, so none
+    /// may be left at a guide rate with nothing to end it. `:K`, then `:L`
+    /// if the `:K` does not go through; best effort, and logged. The
+    /// caller holds `axis_ownership`.
+    pub(super) async fn stop_orphaned_axes(&self, axes: impl IntoIterator<Item = Axis>) {
+        for axis in axes {
+            for command in [Command::StopMotion(axis), Command::InstantStop(axis)] {
+                match self.send(command.clone()).await {
+                    Ok(_) => break,
+                    Err(e) => warn!(
+                        ?axis,
+                        ?command,
+                        error = %e,
+                        "stopping an axis taken from a guide pulse failed"
+                    ),
+                }
+            }
         }
     }
 }
@@ -494,8 +536,9 @@ enum Ownership {
     /// Another operation cleared or replaced the pulse: send nothing, and
     /// leave the axis' pulse slot alone.
     Superseded,
-    /// Parked, slewing, or the client disconnected: send nothing, and end
-    /// the pulse.
+    /// Parked, or the client disconnected: send nothing, and end the
+    /// pulse. A backstop: park and disconnect clear the pulse's slot
+    /// before they act.
     Abandoned,
 }
 
@@ -505,7 +548,6 @@ struct PulseWatcher {
     state: Arc<RwLock<DriverState>>,
     manager: Arc<MountManager>,
     session_slot: SessionSlot,
-    slew_in_progress: Arc<AtomicBool>,
     axis_ownership: Arc<Mutex<()>>,
 }
 
@@ -515,7 +557,6 @@ impl PulseWatcher {
             state: Arc::clone(&device.state),
             manager: Arc::clone(&device.manager),
             session_slot: Arc::clone(&device.session),
-            slew_in_progress: Arc::clone(&device.slew_in_progress),
             axis_ownership: Arc::clone(&device.axis_ownership),
         }
     }
@@ -530,6 +571,10 @@ impl PulseWatcher {
         });
     }
 
+    /// A slew is no reason to give the axis up: it clears the pulse's
+    /// slot before its first frame, so a watcher that still finds its id
+    /// restores ahead of the slew's frames — and ends its pulse itself
+    /// if the slew is then refused.
     async fn ownership(&self, plan: PulsePlan) -> Ownership {
         // Copy out and release `state` before touching the session slot:
         // holding one while acquiring the other can deadlock against a
@@ -541,10 +586,7 @@ impl PulseWatcher {
         if !owned {
             return Ownership::Superseded;
         }
-        if parked
-            || self.slew_in_progress.load(Ordering::SeqCst)
-            || self.session_slot.read().await.is_none()
-        {
+        if parked || self.session_slot.read().await.is_none() {
             return Ownership::Abandoned;
         }
         Ownership::Owned
@@ -579,10 +621,7 @@ impl PulseWatcher {
                     return;
                 }
                 Ownership::Abandoned => {
-                    debug!(
-                        ?axis,
-                        "pulse-guide watcher: parked, slewing or disconnected"
-                    );
+                    debug!(?axis, "pulse-guide watcher: parked or disconnected");
                     return;
                 }
             }

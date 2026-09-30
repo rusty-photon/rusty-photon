@@ -12,9 +12,9 @@ use std::sync::atomic::Ordering;
 use ascom_alpaca::api::Device;
 use ascom_alpaca::ASCOMResult;
 use async_trait::async_trait;
-use skywatcher_motor_protocol::{Axis, Command};
+use skywatcher_motor_protocol::Axis;
 use strum::VariantArray;
-use tracing::{debug, warn};
+use tracing::debug;
 
 use super::actions::ApParkAction;
 use super::MountDevice;
@@ -63,17 +63,18 @@ impl Device for MountDevice {
             None
         } else {
             let axes = self.axis_ownership.lock().await;
-            let pulses = std::mem::replace(
-                &mut self.state.write().await.pulse_guiding,
-                super::PulseGuiding::IDLE,
-            );
-            for axis in [Axis::Ra, Axis::Dec] {
-                if pulses.get(axis).is_some() {
-                    if let Err(e) = self.send(Command::StopMotion(axis)).await {
-                        warn!(?axis, error = %e, "disconnect: stopping a guide pulse's axis failed");
-                    }
-                }
+            let (pulses, tracking) = {
+                let mut s = self.state.write().await;
+                let pulses = std::mem::replace(&mut s.pulse_guiding, super::PulseGuiding::IDLE);
+                (pulses, s.tracking_requested)
+            };
+            let mut stop: Vec<Axis> = pulses.axes().collect();
+            // The deferred safety stop would have halted tracking too, and
+            // `Tracking` reads false once disconnected: make the wire agree.
+            if pulses.is_active() && tracking && !stop.contains(&Axis::Ra) {
+                stop.insert(0, Axis::Ra);
             }
+            self.stop_orphaned_axes(stop).await;
             Some(axes)
         };
         let mut slot = self.session.write().await;

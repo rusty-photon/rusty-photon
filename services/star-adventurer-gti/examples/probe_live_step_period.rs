@@ -1290,8 +1290,8 @@ fn spawn_signal_watch(abort: &Arc<AtomicBool>) -> Result<(), ProbeError> {
             let abort = Arc::clone(abort);
             tokio::spawn(async move {
                 while stream.recv().await.is_some() {
-                    eprintln!("signal received: stopping the mount after the current exchange");
                     abort.store(true, Ordering::SeqCst);
+                    report_signal();
                 }
             });
         }
@@ -1301,11 +1301,21 @@ fn spawn_signal_watch(abort: &Arc<AtomicBool>) -> Result<(), ProbeError> {
     #[cfg(not(unix))]
     tokio::spawn(async move {
         while tokio::signal::ctrl_c().await.is_ok() {
-            eprintln!("signal received: stopping the mount after the current exchange");
             abort.store(true, Ordering::SeqCst);
+            report_signal();
         }
     });
     Ok(())
+}
+
+/// Say a signal arrived. After an SSH drop the terminal is already hung
+/// up, and `eprintln!` would panic on the failed write, so the write's
+/// error is ignored; the abort flag is set before this is called.
+fn report_signal() {
+    let _ = writeln!(
+        std::io::stderr(),
+        "signal received: stopping the mount after the current exchange"
+    );
 }
 
 #[tokio::main]
