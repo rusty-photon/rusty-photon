@@ -440,6 +440,19 @@ version with `cargo update -p <crate> --recursive` can move *other* crates
 meant to fix. Take the refresh only when `cargo tree --workspace --target all -d`
 shows the version count actually dropping.
 
+Open-range consumers also make the lock **churn** while a duplicate persists.
+With more than one `windows-sys` in the graph, Cargo re-picks which version each
+open-range consumer (`tempfile`, `rustls-platform-verifier`, `quinn-udp`, …)
+binds to on *any* `cargo update -p <crate>`, so an unrelated dependabot bump
+can move those edges between versions (#1358). That is invisible on Linux, but
+on Windows it invalidates the Bazel cache for everything above those crates, so
+`bazel / windows-latest` rebuilds and re-runs every test while
+`bazel / ubuntu-latest` is fully cached. A `windows-sys` entry in
+`[workspace.dependencies]` does not stop it (it constrains only the naming
+member's own edge — see below); only removing the older version from the graph
+does. `rtoolbox` 0.0.6 dropped `windows-sys` 0.59; `serialport` (still `^0.52`
+as of 4.10.1) and `ring` are the remaining 0.52 holders.
+
 ### Holding a transitive dependency back
 
 A `=x.y.z` requirement in `[workspace.dependencies]` constrains only the crates
