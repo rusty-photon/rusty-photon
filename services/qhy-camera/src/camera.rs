@@ -5751,8 +5751,11 @@ mod tests {
                 .code,
             ASCOMErrorCode::INVALID_VALUE
         );
-        assert!(
-            !mock.calls().iter().any(|c| c == "set_roi"),
+        // Nothing at all: an arm sends its bin first, so a region check
+        // alone would miss one sent before the geometry was refused.
+        assert_eq!(
+            mock.calls(),
+            Vec::<String>::new(),
             "an exposure was armed from withdrawn geometry"
         );
     }

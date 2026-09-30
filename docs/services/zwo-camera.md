@@ -798,7 +798,7 @@ EAF; those belong to the other zwo services.)
   can never disagree. That last clause is this driver's *own* reason, and the
   refusal is its own choice: ASCOM and Alpaca document no error for a setter
   called mid-exposure, so nothing requires it. `qhy-camera` makes the same choice
-  about its geometry writes for a different reason —
+  about its readout-mode change for a different reason —
   [B4](qhy-camera.md#behavioral-contracts) — so the two are parallel decisions,
   not one shared rule.
 - **RM2.** The selected mode is the driver's whole format story: it is what

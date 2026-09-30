@@ -177,9 +177,10 @@ graph TD;
   `CameraXSize` — and once the SDK's bin and resolution disagree it reports an
   empty area instead, which is unrecoverable in-process (only restarting the
   service clears it). Verified on a QHY178M: without the normalization, a
-  camera left at bin 2 (by a bin-2 frame — the bin reaches the camera at
-  `StartExposure`, B1) → disconnect → reconnect yields a 0x0 effective area
-  and every later connect fails. An empty area is refused rather than cached, since caching one makes
+  session that left the SDK's bin and resolution disagreeing — bin 2 sent on
+  its own, with the full-frame resolution still in place — → disconnect →
+  reconnect yields a 0x0 effective area and every later connect fails. The
+  normalization answers whichever of the two states a session leaves. An empty area is refused rather than cached, since caching one makes
   `NumX`/`NumY` report 0 — outside the range ASCOM allows — for the life of the
   process. The area read here is the sensor the driver advertises (G1), and it
   is re-read the same way after a readout-mode change (RM1), which re-runs the
@@ -713,11 +714,13 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   *together* are both taken. A client pairs them routinely: `ascom-alpaca`'s
   `set_bin`, which `rp` calls before every capture, sends the two as
   concurrent requests. A setter that took the device to write the bin would
-  refuse whichever of the pair arrived second: measured against a QHY178M
-  with one that did, 109 of 200 concurrent pairs had one half answered
-  `INVALID_OPERATION` ("an exposure is in flight", with none), redundant pairs
-  as often as real changes, and every such answer fails an `rp` capture.
-  Cached, the same 200 pairs are all taken.
+  refuse whichever of the pair arrived while the other held it: measured
+  against a QHY178M with one that did, 109 of 200 concurrent pairs had one
+  half answered `INVALID_OPERATION` ("an exposure is in flight", with none) —
+  96 of the 99 pairs that changed the bin, whose first half held the device
+  across `SetQHYCCDBinMode`, and 13 of the 101 that repeated it, whose no-op
+  held it only briefly. Either is a failed `rp` capture, and `rp` repeats the
+  bin before every frame. Cached, the same 200 pairs are all taken.
 
   The list is checked in the section that stores the bin, under the lock a
   readout-mode change publishes its list *and* its bin under (RM1). A change
@@ -728,10 +731,12 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   change, and is reset by it, as a sub-frame set at that moment is.
 
   **Measured on a QHY178M** (2026-09-28, Linux, 3 s frames with no light on
-  the sensor): twelve isolated hot pixels found in a bin-1 frame each appear
-  at `(x/2, y/2)` of a bin-2 frame armed this way, and none where an unbinned
-  crop of the same shape would put them; back at bin 1, all twelve are at
-  `(x, y)` again. Twelve concurrent `BinX`/`BinY` pairs, each followed by a
+  the sensor): twelve hot pixels, each at the bin-1 ceiling of 65528, all read
+  65535 at `(x/2, y/2)` of a bin-2 frame armed this way — more than any
+  bin-1 pixel reaches, so only a summed bin gives it — and the four of them
+  that fall inside a top-left crop of the same shape are not at `(x, y)`
+  there (164 to 460, against a median of 28). Back at bin 1, all twelve are
+  at `(x, y)` again. Twelve concurrent `BinX`/`BinY` pairs, each followed by a
   frame, came back at `NumX` by `NumY` every time, and `StartExposure`
   answered in 16 ms at either bin. The QHY600M has not been run with the bin
   armed this way.
