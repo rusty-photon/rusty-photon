@@ -213,6 +213,22 @@ pub struct MountConfig {
     #[serde(default)]
     pub min_altitude_degrees: MinAltitudeDegrees,
 
+    /// Net forward encoder travel, in RA ticks, that the motor board adds
+    /// over one East / West guide pulse on a tracking axis, beyond the
+    /// commanded rate change. The `GTi`'s board steps the encoder a
+    /// little forward every time the rate of a running axis changes, and
+    /// a pulse changes it twice; the live-rate pulse moves its restore by
+    /// `-steps / (r_pulse - r_sidereal)` seconds to cancel the total. See
+    /// the design doc's
+    /// [§"`PulseGuide` lifecycle"](../../../docs/services/star-adventurer-gti.md#pulseguide-lifecycle).
+    ///
+    /// Defaults are the pier1 measurements (firmware 3.48, default
+    /// 0.5 × guide rate). The steps vary with the load on the mount, the
+    /// firmware and the guide rate, so a rig can carry its own. Validated
+    /// at deserialize time by [`RaPulseEdgeSteps`].
+    #[serde(default)]
+    pub ra_pulse_edge_steps: RaPulseEdgeSteps,
+
     /// Persisted park-target encoder positions, written by `SetPark`
     /// and read on every connect. When `None` (default on first run),
     /// the driver falls back to the encoder positions captured during
@@ -714,6 +730,91 @@ impl From<MinAltitudeDegrees> for f64 {
 // Defaults live with the types, so the config fields can use bare
 // `#[serde(default)]` and no `default_*` free functions are needed.
 
+/// Largest `|steps|` [`RaPulseEdgeSteps`] accepts, in encoder ticks. The
+/// `GTi` measures 1.38 / 3.23; 20 ticks (≈ 7″) leaves room for a heavier
+/// rig without admitting a unit mistake such as arcseconds.
+pub const MAX_RA_PULSE_EDGE_STEPS: f64 = 20.0;
+
+/// Net forward encoder ticks the motor board adds over one East and one
+/// West pulse on a tracking RA axis.
+///
+/// Each must be finite in
+/// `[-MAX_RA_PULSE_EDGE_STEPS, MAX_RA_PULSE_EDGE_STEPS]`. JSON form is
+/// `{ "east": .., "west": .. }`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(into = "RaPulseEdgeStepsWire", try_from = "RaPulseEdgeStepsWire")]
+pub struct RaPulseEdgeSteps {
+    east: f64,
+    west: f64,
+}
+
+#[derive(Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RaPulseEdgeStepsWire {
+    east: f64,
+    west: f64,
+}
+
+impl RaPulseEdgeSteps {
+    /// Unchecked `const` constructor — see [`TrackingGuardMarginHours::new`].
+    pub(crate) const fn new(east: f64, west: f64) -> Self {
+        Self { east, west }
+    }
+    /// Validating constructor — see [`TrackingGuardMarginHours::try_new`].
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field unless both values are finite
+    /// and within `±MAX_RA_PULSE_EDGE_STEPS` ticks.
+    pub fn try_new(east: f64, west: f64) -> std::result::Result<Self, String> {
+        for (name, value) in [("east", east), ("west", west)] {
+            if !value.is_finite() || value.abs() > MAX_RA_PULSE_EDGE_STEPS {
+                return Err(format!(
+                    "ra_pulse_edge_steps.{name} must be finite in \
+                     [-{MAX_RA_PULSE_EDGE_STEPS}, {MAX_RA_PULSE_EDGE_STEPS}] encoder ticks, \
+                     got {value}"
+                ));
+            }
+        }
+        Ok(Self { east, west })
+    }
+    /// Ticks one East pulse (the slowed rate) adds.
+    #[must_use]
+    pub const fn east(self) -> f64 {
+        self.east
+    }
+    /// Ticks one West pulse (the sped-up rate) adds.
+    #[must_use]
+    pub const fn west(self) -> f64 {
+        self.west
+    }
+}
+
+impl Default for RaPulseEdgeSteps {
+    /// Measured on the pier1 `GTi` (firmware 3.48) at the default
+    /// 0.5 × guide rate: +1.38 ± 0.40 ticks per East pulse and
+    /// +3.23 ± 0.20 per West one.
+    fn default() -> Self {
+        Self::new(1.38, 3.23)
+    }
+}
+
+impl TryFrom<RaPulseEdgeStepsWire> for RaPulseEdgeSteps {
+    type Error = String;
+    fn try_from(w: RaPulseEdgeStepsWire) -> std::result::Result<Self, String> {
+        Self::try_new(w.east, w.west)
+    }
+}
+
+impl From<RaPulseEdgeSteps> for RaPulseEdgeStepsWire {
+    fn from(v: RaPulseEdgeSteps) -> Self {
+        Self {
+            east: v.east,
+            west: v.west,
+        }
+    }
+}
+
 impl Default for TrackingGuardMarginHours {
     /// `0.05` h (≈ 45 s of sidereal drift).
     fn default() -> Self {
@@ -1165,6 +1266,7 @@ impl Default for MountConfig {
             cw_exclusion_zone: CwExclusionZone::default(),
             tracking_guard_margin_hours: TrackingGuardMarginHours::default(),
             min_altitude_degrees: MinAltitudeDegrees::default(),
+            ra_pulse_edge_steps: RaPulseEdgeSteps::default(),
             park_ra_ticks: None,
             park_dec_ticks: None,
             flip_policy: FlipPolicy::default(),
@@ -2198,6 +2300,64 @@ mod tests {
         let json = r#"{"min_hours": 0.95, "max_hours": 11.05, "margin_hours": 0.1}"#;
         let err = serde_json::from_str::<CwExclusionZone>(json).unwrap_err();
         assert!(err.to_string().contains("margin_hours"), "{err}");
+    }
+
+    #[test]
+    fn ra_pulse_edge_steps_default_to_the_pier1_measurement() {
+        let steps = MountConfig::default().ra_pulse_edge_steps;
+        assert_eq!((steps.east(), steps.west()), (1.38, 3.23));
+    }
+
+    #[test]
+    fn ra_pulse_edge_steps_deserialise_and_default_when_absent() {
+        let steps: RaPulseEdgeSteps =
+            serde_json::from_str(r#"{"east": 0.5, "west": -1.25}"#).unwrap();
+        assert_eq!((steps.east(), steps.west()), (0.5, -1.25));
+        let mount: serde_json::Value = serde_json::to_value(MountConfig::default()).unwrap();
+        let mut mount = mount.as_object().unwrap().clone();
+        mount.remove("ra_pulse_edge_steps");
+        let parsed: MountConfig = serde_json::from_value(mount.into()).unwrap();
+        assert_eq!(parsed.ra_pulse_edge_steps, RaPulseEdgeSteps::default());
+    }
+
+    #[test]
+    fn ra_pulse_edge_steps_reject_out_of_range_and_non_finite_values() {
+        for (east, west) in [
+            (20.5, 0.0),
+            (0.0, -20.5),
+            (f64::NAN, 0.0),
+            (0.0, f64::INFINITY),
+        ] {
+            let err = RaPulseEdgeSteps::try_new(east, west).unwrap_err();
+            assert!(err.contains("ra_pulse_edge_steps"), "{err}");
+        }
+        assert!(RaPulseEdgeSteps::try_new(20.0, -20.0).is_ok());
+        let err =
+            serde_json::from_str::<RaPulseEdgeSteps>(r#"{"east": 1.0, "west": 99.0}"#).unwrap_err();
+        assert!(
+            err.to_string().contains("ra_pulse_edge_steps.west"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn ra_pulse_edge_steps_reject_unknown_and_missing_fields() {
+        let err =
+            serde_json::from_str::<RaPulseEdgeSteps>(r#"{"east": 1.0, "west": 2.0, "north": 0.0}"#)
+                .unwrap_err();
+        assert!(err.to_string().contains("north"), "{err}");
+        assert!(serde_json::from_str::<RaPulseEdgeSteps>(r#"{"east": 1.0}"#).is_err());
+    }
+
+    #[test]
+    fn ra_pulse_edge_steps_round_trip_through_json() {
+        let steps = RaPulseEdgeSteps::try_new(0.75, 2.5).unwrap();
+        let json = serde_json::to_string(&steps).unwrap();
+        assert_eq!(json, r#"{"east":0.75,"west":2.5}"#);
+        assert_eq!(
+            serde_json::from_str::<RaPulseEdgeSteps>(&json).unwrap(),
+            steps
+        );
     }
 }
 

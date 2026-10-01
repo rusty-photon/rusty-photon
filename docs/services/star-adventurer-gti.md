@@ -405,7 +405,7 @@ Mount-side parameters are queried at connect time rather than hard-coded:
 | Counts per revolution (per axis) | `:a1` / `:a2` | RA `0x375F00` = 3,628,800; Dec `0x2C4C00` = 2,903,040 (the axes differ — hardware-measured) | encoder-tick ↔ angle conversion |
 | Timer-interrupt frequency | `:b1` | `0xF42400` ≈ 16 MHz | step-period (T1 preset) calculation |
 | High-speed ratio | `:g1` / `:g2` | mount-specific (e.g. 16, 32, 64) | high-speed-slew step-period scaling |
-| Motor board version | `:e1` | `0x03300C` (mount type 0x03, fw v0x30.0x0C) | mount-family detection (EQ vs AZ), **and identity gate** (see [§Initialisation sequence](#initialisation-sequence)) |
+| Motor board version | `:e1` | wire `=03300C`: firmware 3.48 (`0x03`, `0x30`), mount code `0x0C` = Star Adventurer GTi | **identity gate** (see [§Initialisation sequence](#initialisation-sequence)) |
 
 CPR varies between the GTi's RA and Dec axes and between firmware
 revisions; the driver reads both rather than assuming.
@@ -511,9 +511,15 @@ After opening the transport and before the first motion command:
 
 1. `:e1` → **identity gate**. Decode as
    [`skywatcher_motor_protocol::Response::U24`]; the high byte must be a
-   known Sky-Watcher mount-type ID (see
-   [`MountType::from_motor_board_version`][mount-type]). On any other
-   reply (framing malformed, payload wrong shape, mount-type byte
+   known Sky-Watcher mount code (see
+   [`MountType::from_motor_board_version`][mount-type]). The reply's
+   three wire bytes are firmware major, firmware minor and mount code —
+   the GTi's `=03300C` is firmware 3.48, mount code `0x0C` — so after the
+   codec's low-byte-first decode (`0x0C3003`) the mount code is the
+   **high** byte. INDI eqmod reads it the same way (it swaps the decoded
+   bytes into `MCVersion = 0x03300C`, then takes `MCVersion & 0xFF`), and
+   its mount-code table is the whitelist's source. On any other
+   reply (framing malformed, payload wrong shape, mount code
    outside the whitelist) the driver aborts the handshake with
    [`StarAdvError::WrongDevice`][wrong-device] *before* sending
    anything else — the wrong device sees exactly one frame (`:e1\r`).
@@ -556,14 +562,14 @@ shape).
 | `:H<axis><inc24>` | Set goto-target by increment (magnitude; sign from `:G` CCW) | every slew (INDI-style sequence) |
 | `:M<axis><breaks24>` | Set goto break-point increment | every slew (INDI-style sequence) |
 | `:S<axis><pos24>` | Set goto absolute target | `Park` only (target is encoder 0) |
-| `:I<axis><period24>` | Set step period (T1 preset) | tracking and guide pulses (sidereal period computed from TMR_Freq and the **addressed axis'** CPR — see [§PulseGuide lifecycle](#pulseguide-lifecycle)); slew (fixed period 6, INDI `minperiods` default) |
-| `:J<axis>` | Start motion | every slew, every track start |
-| `:K<axis>` | Stop motion (decelerate) | `Tracking = false` (sidereal RA tracking gracefully decelerates) |
-| `:L<axis>` | Instant stop | `AbortSlew`; preflight stop-and-wait before every `:G` (slew, park, `Tracking = true`); slew watcher's blocked-axis abort path |
+| `:I<axis><period24>` | Set step period (T1 preset) | tracking and guide pulses (sidereal period computed from TMR_Freq and the **addressed axis'** CPR — see [§PulseGuide lifecycle](#pulseguide-lifecycle)). An East/West pulse on an RA axis that is already tracking sends `:I1` to the **running** motor, once to shift the rate and once to restore sidereal, with no `:K` / `:G` / `:J` around it. Slew: fixed period 6, INDI `minperiods` default |
+| `:J<axis>` | Start motion | every slew, every track start, every pulse started from rest |
+| `:K<axis>` | Stop motion (decelerate) | `Tracking = false`; the stop-and-wait before every `:G` (slew, park, `Tracking = true`, a pulse started from rest); the tracking-time safety guard; the end of a pulse started from rest; a pulse restore that could not change the rate |
+| `:L<axis>` | Instant stop | `AbortSlew`; the slew/park watchers' blocked-axis abort; the last-disconnect safety stop; a pulse restore whose `:K` did not stop the axis |
 | `:a<axis>` | Inquire CPR | connect handshake |
 | `:b1` | Inquire TMR_Freq | connect handshake |
 | `:e<axis>` | Inquire motor-board version | connect handshake (logging only) |
-| `:f<axis>` | Inquire status | polled while slewing / tracking |
+| `:f<axis>` | Inquire status | polled while slewing / tracking; read live before an East/West pulse on a tracking axis (the pulse's gate); polled until stopped inside every stop-and-wait |
 | `:g<axis>` | Inquire high-speed ratio | connect handshake |
 | `:j<axis>` | Inquire current position | every position-read |
 
@@ -646,7 +652,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `Tracking = false` | issue `:K<RA>` (decelerate to stop). Allowed while parked — Park already left tracking off and a caller re-asserting that should not error |
 | `FindHome()` | `NOT_IMPLEMENTED` |
 | `MoveAxis(*)` | `NOT_IMPLEMENTED` |
-| `PulseGuide(direction, duration)` | rate-shifted tracking pulse on the targeted axis; returns immediately after spawning the watcher task. Refuses when parked / disconnected / slewing / same-axis pulse already in flight. `duration = 0` is a no-op success. See [§PulseGuide lifecycle](#pulseguide-lifecycle) for the wire path. |
+| `PulseGuide(direction, duration)` | rate change on the targeted axis for `duration`; returns once the new rate is on the wire, with a watcher task left to restore it. An East/West pulse on a tracking RA axis changes the step period of the running motor (`:I1`) and never stops it; every other pulse starts its axis from rest. Refuses when parked / disconnected / slewing / same-axis pulse already in flight / RA running a goto. `duration = 0` is a no-op success. See [§PulseGuide lifecycle](#pulseguide-lifecycle) for the wire paths. |
 | `SetGuideRateRightAscension(deg_per_sec)` | validate `(0, SIDEREAL_DEG_PER_SEC)` exclusive; store as fraction = `deg_per_sec / SIDEREAL_DEG_PER_SEC`. Out-of-range → `INVALID_VALUE`. |
 | `SetGuideRateDeclination(deg_per_sec)` | same shape as RA. |
 | `Action(name, parameters)` | Driver-specific Actions: `SetUnparkFromApPosition`, `SetPreferredApPark`, `UnparkFromApPosition`. See [§Custom Actions for runtime control](#custom-actions-for-runtime-control). All other action names return `ACTION_NOT_IMPLEMENTED`. |
@@ -712,7 +718,8 @@ residual) use the sample **projected to now**:
   high-speed ratio in the fast regime), CW counting up — the rate the
   driver *commanded*, not an assumed sidereal. A guide-shifted pulse,
   and any tracking rate the driver adds later (lunar, solar, custom),
-  is just another `:I` period and needs nothing further here.
+  is just another `:I` period — but one sent to an axis that is
+  already running, so it is also a motion change (below).
 - **Projection.** `position(now) = position + rate × (now − stamp)`.
   A stopped axis has rate 0 and is read as sampled — exact, which is
   why the fix is *not* "take LST at the sample instant": that is only
@@ -732,7 +739,13 @@ residual) use the sample **projected to now**:
   otherwise be projected at the old rate until the next poll, in
   exactly the window a client reads in after starting tracking or
   finishing a pulse. So `:J` re-reads the axis at once (a sample that
-  carries the new motion), and `:K` / `:L` re-read its position and
+  carries the new motion), and so does a **tracking** `:I` (one that
+  follows a tracking-mode `:G`): a guide pulse changes the rate of a
+  running axis with `:I` alone, and without the re-read the last
+  sample would be carried forward at the old rate — up to half a
+  sidereal rate for a poll interval, 0.1 s of RA at 200 ms, which is
+  more than ConformU's 0.07 s tolerance. A goto `:I` (a slew speed) is
+  not re-read. `:K` / `:L` re-read its position and
   mark the rate unknown (the axis is halting; where it stops is for
   the next poll to say) — the rate is marked unknown before the
   re-read, so even a failed re-read leaves it unknown. The stop also
@@ -1008,17 +1021,41 @@ config path now, so it always *does* have somewhere to persist; the
 
 ### PulseGuide lifecycle
 
-A guide pulse is a temporary rate shift on the targeted axis,
-implemented from the existing `:K` / `:G` / `:I` / `:J` tracking
-primitives — no `:P` (that's the ST4 hardware-jack rate setter, not a
-host-driven pulse command). This matches what `indi-eqmod`'s
-`GuideNorth` / `GuideSouth` / `GuideEast` / `GuideWest` do.
+A guide pulse is a temporary rate change on the targeted axis. The
+Sky-Watcher protocol has no host-driven pulse command — `:P` sets the
+rate of the ST-4 hardware jack — so a pulse is built from the tracking
+primitives, in one of two shapes:
+
+- **An East/West pulse on a tracking RA axis changes the step period of
+  the running motor.** `:I1 <shifted>` starts the pulse and
+  `:I1 <sidereal>` ends it. The motor never stops, and nothing but its
+  period changes: an RA guide rate is a fraction in `(0, 1)` of
+  sidereal, so both East (`1 − f`) and West (`1 + f`) keep the axis in
+  the mode sidereal tracking already runs in — Tracking, Slow, CW — and
+  there is no `:G` to send and no `:J`. This is what indi-eqmod's
+  `GuideEast` / `GuideWest` do (and INDI's own Star Adventurer GTi
+  driver, which inherits them), and GSServer on its non-advanced path.
+- **Every other pulse starts its axis from rest**: North/South (Dec is
+  idle between pulses), and East/West while tracking is off. The motion
+  mode has to be set, and the firmware refuses `:G` on a running motor
+  (`!2 MotorNotStopped`), so these stop the axis (`:K`, then `:f` until
+  the running flag clears), set `:G` and `:I`, start it with `:J`, and
+  stop it again with `:K` when the pulse ends.
+
+The first shape is issue #1299. Until it, every East/West pulse took the
+second shape even while tracking, stopping the RA motor twice — before
+the shifted rate and again before the sidereal restore — and each stop
+waited a fixed 100 ms before its first `:f` poll. The sky kept moving
+while RA stood still, so every pulse carried a constant ≈ +0.2 s of RA
+(≈ 3″) whatever its length: more than a whole West pulse shorter than
+about 0.4 s, which therefore moved the mount the wrong way. On the GTi
+the stop itself is not the cost — `:K1` from a tracking rate clears the
+running flag within about 4 ms — the fixed wait was.
 
 ```
 PulseGuide(direction, duration)
    │
-   ├─ validate: !AtPark, !disconnected, !slew_in_progress,
-   │            !pulse_guiding.<targeted_axis>; duration = 0 → return Ok
+   ├─ refuse: not connected, parked, slewing; duration = 0 → return Ok
    ├─ resolve direction → (axis, ccw, rate_factor):
    │     East  → (RA,  ccw=false, 1 - guide_rate_ra_fraction)
    │     West  → (RA,  ccw=false, 1 + guide_rate_ra_fraction)
@@ -1026,48 +1063,209 @@ PulseGuide(direction, duration)
    │     South → (Dec, ccw=true,  guide_rate_dec_fraction)
    │     …then on the counterweight-up side, invert ccw for Dec
    │     (see the Dec sign convention below)
-   ├─ compute shifted period from the *pulsed axis'* sidereal period:
+   ├─ shifted period from the *pulsed axis'* sidereal period:
    │     RA  pulse: period = round(sidereal_step_period(tmr_freq, cpr_ra)  / rate_factor)
    │     Dec pulse: period = round(sidereal_step_period(tmr_freq, cpr_dec) / rate_factor)
-   ├─ capture tracking_was_on = state.tracking_requested (RA pulses only)
-   ├─ set pulse_guiding.<axis> = true                ; synchronous, pre-spawn
+   ├─ acquire the watcher's own transport session           ; before any frame
    │
-   ├─ on the wire (in PulseGuide call thread):
-   │     :K<axis>           stop and wait for running flag clear
-   │     :G<axis> TRACKING + ccw
-   │     :I<axis> period
-   │     :J<axis>
+   ├─ ── holding axis_ownership ─────────────────────────────────────────
+   │   refuse if a slew or park owns the axes, or a same-axis pulse is in flight
+   │   pulse_guiding.<axis> = Some(new pulse id)
+   │   RA pulse, Tracking on, and the driver's own record says RA was last
+   │   set to track at sidereal:
+   │       :f1 (live)
+   │         running ∧ Tracking ∧ Slow ∧ CW ∧ ¬blocked
+   │               → t0 = now; :I1 <shifted>                  ; live rate change
+   │         running a goto → clear the flag; refuse (INVALID_OPERATION)
+   │         anything else  → warn!, start from rest (below)
+   │   every other pulse → start from rest (below)
    │
-   ├─ spawn watcher task:
-   │     tokio::sleep(duration)
-   │     if !pulse_guiding.<axis>      → bail (external cancellation)
-   │     if !transport.is_available()  → clear flag, bail
-   │     if state.at_park || slew_in_progress → clear flag, bail
-   │     ── otherwise restore prior state:
-   │     RA  pulse: :K1 + stop-and-wait, then
-   │                if tracking_was_on:
-   │                    :G1 TRACKING (ccw=false)
-   │                    :I1 sidereal_period
-   │                    :J1
-   │     Dec pulse: :K2 + stop-and-wait (Dec is normally idle; no restore)
-   │     clear pulse_guiding.<axis>
+   ├─ start from rest:
+   │     :K<axis>, release the lock, poll :f<axis> until stopped (no fixed wait)
+   │     take the lock again; still this pulse's id? else
+   │         clear the flag (if still ours); refuse (INVALID_OPERATION)
+   │     :G<axis> Tracking/Slow/ccw, :I<axis> <shifted>, t0 = now, :J<axis>
    │
-   └─ return immediately to the Alpaca caller
+   ├─ spawn the watcher; return to the Alpaca caller
+   │
+   └─ watcher:
+         sleep until t0 + duration (+ the edge-step trim, live rate change only)
+         ── holding axis_ownership, for each attempt ──
+         no longer this pulse's id → bail; the axis has a new owner
+         parked or client disconnected → clear the flag, bail
+         restore:
+           RA pulse started with Tracking on → :I1 <sidereal>   ; rate only
+           every other pulse                  → :K<axis>, poll :f until stopped
+         clear pulse_guiding.<axis> if it still holds this pulse's id
 ```
 
 `IsPulseGuiding` returns `pulse_guiding.ra || pulse_guiding.dec` —
 perpendicular pulses (one RA + one Dec) run concurrently; a same-axis
 re-pulse while one is in flight is rejected with `INVALID_OPERATION`.
+The flag clears only after the restore has landed, and a live-rate
+restore's `:I1` re-reads the axis on its way out (see
+[§Encoder samples and the read instant](#encoder-samples-and-the-read-instant)),
+so a client that reads `RightAscension` the moment `IsPulseGuiding`
+turns false reads it at the rate the axis is really moving.
 
-**Cross-cutting cancellation rule.** Any operation that mutates a given
-axis — `set_tracking`, `slew_to_coordinates_async`, `park`,
-`abort_slew`, `sync_to_coordinates`, `set_connected(false)` — clears
-the corresponding `pulse_guiding.<axis>` flag *before* issuing its own
-wire commands. The watcher's post-sleep restore step checks the flag
-and bails out if cleared, so the new operation owns the axis without
-racing the watcher. Without this, `set_tracking(false)` during an East
-pulse would be silently undone when the watcher re-issued sidereal
-tracking on restore.
+**The gate reads the wire, and the driver's memory can only say no.**
+The live-rate path skips the `:K` / `:G` that every other motion change
+sends, which is what the reverted mode cache did (see
+[§Phase 4 driver-logic changes](#phase-4-driver-logic-changes-that-real-hardware-required)):
+it skipped `stop_and_wait + :G` because the driver remembered issuing
+that mode, and ran ~360° of unwanted Dec after firmware state had
+drifted underneath it. This is not that:
+
+- The decision comes from the firmware's own `:f1` mode bits, read one
+  round trip before the `:I1` — the "re-read the actual `:f` mode bits"
+  that section asks for. `running` is required, not just the mode: a
+  stopped axis reads Tracking on real firmware (the GTi's idle `:f1` is
+  `=101`).
+- What the driver remembers — `Tracking` is on, and the manager's
+  record of the last tracking period it sent RA is the sidereal one —
+  can only veto the fast path. A reconnect clears that record, so the
+  first pulse after one starts from rest and re-arms it.
+- Nothing the mode needs is skipped: the axis is already in the mode
+  the pulse needs, and the only command sent is `:I1`, which cannot
+  start motion or change direction. A stale reading fails safe. A
+  stale "running" (the axis stopped in the round trip, or a UDP reply
+  arrived late) sends an `:I1` to a stopped axis, which the GTi ignores
+  (measured below); a stale "stopped" takes the start-from-rest path.
+- The gate never leaves an operator-started pulse: no connect,
+  handshake, poll-loop or supervisory path probes whether the firmware
+  accepts `:I` on a running motor. That was measured on the rig.
+
+**Timing, and the edge-step trim.** `t0` is taken immediately before
+the frame that changes the rate — the `:I1` on the live path, the `:J`
+when starting from rest — and the restore frame goes out at
+`t0 + duration`, so both edges see the same send latency and the rate
+runs for `duration` from the host's point of view.
+
+What the host cannot see is how the motor board applies a period
+change. Measured on the GTi (below), every rate change on a running
+axis advances the encoder a little **forward**, on top of the rate
+change itself: about +1.4 ticks net over an East pulse and +3.2 over a
+West one at the default guide rate — 0.03 and 0.08 s of RA, the West
+figure over ConformU's 0.07 s tolerance. The live-rate path cancels it
+by moving the restore: it runs the shifted rate for
+`duration − steps / (r_pulse − r_sidereal)` seconds, where `steps` is
+`mount.ra_pulse_edge_steps.east` / `.west` in encoder ticks and the
+rates are in ticks per second. With the defaults (the pier1
+measurements, 1.38 and 3.23 ticks) a West pulse ends 153 ms early and
+an East pulse 66 ms late. A West pulse shorter than its trim is run as
+a shift immediately followed by the restore: it cannot be made shorter
+than that, and delivers the edge steps alone. The trim is clamped to
+±0.5 s: it divides a few ticks by the pulse's rate difference, so a tiny
+guide rate would otherwise stretch a short pulse by minutes. The steps depend on the
+rig — the load on the mount, the firmware, and the guide rate they were
+measured at — so they are per-rig configuration, not constants of the
+driver. The trim applies only to the live-rate path; a pulse started
+from rest is not trimmed.
+
+**Pulse ownership, and the fence.** Each pulse gets its own id, and
+`pulse_guiding.<axis>` holds that id rather than a bare flag. A watcher
+acts only while the flag still holds its pulse's id, so a watcher
+whose pulse was cancelled can never end or restore a newer pulse on
+the same axis.
+
+The pulse's wire bursts — the start, and each restore attempt — run
+under `axis_ownership`, the lock slews, parks, sync and `AbortSlew`
+already serialise on. Any operation that takes over an axis clears that
+axis' flag while holding the same lock, before its own first frame:
+`Tracking = true` / `false` (RA), a slew, `SetSideOfPier` and the
+auto-flip that uses it, `Park`, `AbortSlew` (both axes), the
+tracking-time safety guard (RA), and `Connected = false` (both). A
+disconnect also sends `:K` to every axis a pulse was driving, and `:K1`
+when `Tracking` was on. The cancelled watcher sends nothing, and its own
+session defers the last-disconnect safety stop, so without those stops
+a client that reconnected before the pulse's deadline would find the
+axis still turning at its guide rate, or RA still tracking while
+`Tracking` reads false. So a restore either lands entirely before the
+operation's frames or not at all.
+
+Whoever takes a pulse's axis owns stopping it. A slew or park whose
+wire sequence fails before it has stopped an axis it took from a pulse,
+and a `Tracking` write whose RA stop fails, stop that axis on their way
+out: `:K`, then `:L` if the `:K` does not go through, best effort and
+logged. The pulse's watcher will send nothing, so without that the axis
+would run on at its guide rate. A `Tracking` write holds the lock for
+its whole wire sequence, so no new pulse can claim RA against the
+`Tracking` value it is about to replace. A slew takes over only once
+its planning has succeeded, immediately before its first frame: a slew
+refused by its path checks leaves the pulse to end itself instead of
+stranding its axis at the guide rate. The slot alone decides ownership,
+not the slew's reservation: a pulse whose deadline, or whose start's
+re-check, falls while a slew is still planning goes ahead, and its
+frames land before the slew's. Without that, the guard's `:K1` could
+be followed by the pulse's restore restarting tracking into the
+counterweight exclusion zone, or a restore could land between a slew's
+`:I1 6` and its `:J1`. A pulse holds the lock only for a burst, never
+across its run, a retry backoff or a stop-and-wait. A `Tracking = true`
+write is the exception: it holds the lock through its `:K1`
+stop-and-wait and its restart, so a Dec pulse whose restore falls due
+meanwhile ends late by that much (at least 100 ms), and `AbortSlew`
+queues behind it for up to about 2 s. Lock order is `axis_ownership` first, then the
+session slot: the reverse can deadlock against a queued
+`Connected = false`, because tokio's `RwLock` is write-preferring.
+
+`SyncToCoordinates` is not on the list. A pulse's restore does not
+depend on the encoder position, and sync's `:E` writes hold the same
+lock, so a pulse in flight simply goes on and restores as usual (see
+[§Sync and pier side](#sync-and-pier-side)).
+
+**When a restore fails.** A restore is never retried on a `!` reply: the
+firmware refused it. A timeout or a garbled reply is ambiguous — the
+frame may or may not have landed — and the restore frames are idempotent
+(`:I1 <sidereal>`, `:K`), so the watcher tries again, three attempts in
+all, releasing the lock between them and re-checking that the pulse
+still owns the axis before each. If the live-rate restore still has not
+landed, RA is left at a guide rate the driver can no longer vouch for,
+so the watcher stops it: `:K1`, poll until stopped, escalating to `:L1`
+if the stop does not show. `Tracking` goes false only once a stop is
+confirmed. An unconfirmed stop leaves it set, so the tracking-time
+guard stays armed on a mount that may still be moving, and the watcher
+logs an `error!`. A pulse started from rest whose `:K` does not stop
+the axis escalates to `:L` the same way.
+
+A pulse's start ends the same way when its last frame is ambiguous. If
+its live `:I1 <shifted>` reply is ambiguous, the pulse sends
+`:I1 <sidereal>` before returning the error: up to three attempts, and
+a `!` reply is not retried. An ambiguous `:J` on a start from rest may
+have started the axis: RA the pulse took from sidereal tracking goes
+back to sidereal the same way, and any other axis is stopped. Whatever
+cannot be put back is stopped through the same `:K` / `:L` ladder, and
+`Tracking` goes false only once an RA stop is confirmed. So no start
+leaves an axis at a rate no watcher will restore. A `!` reply to it means the firmware refused a
+live rate change. The pulse falls back to starting from rest. The
+connection stops trying live changes, and logs a single `warn!`: its
+later RA pulses start from rest and end by stopping RA and restarting
+it at sidereal, re-checking under `axis_ownership` that the pulse still
+owns RA and `Tracking` is still on before the restart's `:J1`. A
+restart the mount refuses leaves RA stopped and `Tracking` off. One
+that fails ambiguously may have started RA, so it goes through the stop
+ladder before `Tracking` may read false. A live
+restore on such a mount would only be refused in turn. The GTi has not
+refused one in the rig's 240 trials.
+
+**What the rig measured.** An operator-run probe
+(`examples/probe_live_step_period.rs`) exercised the GTi's motor board
+(`:e1` `=03300C`, firmware 3.48, mount code `0x0C`) directly on 2026-09-28,
+with the service stopped and RA tracking at the park pose. Its results
+are on issue #1299:
+
+- 240 of 240 live `:I1` frames on a running tracking axis were acked
+  `=` and applied; the new rate shows in the encoder within the first
+  step.
+- An `:I1` sent to a stopped axis, or 0–60 ms after a `:K1`, never
+  started it.
+- `:K1` from a tracking rate clears the running flag in 3.7–4.4 ms,
+  with 0–1 tick of coast.
+- Every rate change on a running axis adds counts forward: sidereal →
+  0.5× +0.60, 0.5× → sidereal +0.79, sidereal → 1.5× +1.52, 1.5× →
+  sidereal +1.69 ticks (means). A `:J1` sent to a running axis adds
+  +1.43; one from standstill adds none (−0.25 ± 0.67). The live-rate
+  pulse nets +1.38 ± 0.40 ticks (East) and +3.23 ± 0.20 (West), which
+  is what `ra_pulse_edge_steps` defaults to.
 
 **Dec sign convention.** `PulseGuide(guideNorth)` moves the OTA toward
 `+Dec` on both sides of the pier. The Dec encoder is not a proxy for
@@ -1449,9 +1647,12 @@ the guard adds no extra wire traffic. When `mech_HA` enters the band
 `cw_exclusion_zone` widened by `tracking_guard_margin_hours` on each
 edge — the guard:
 
-1. issues `:K1` to stop the RA axis,
-2. clears the in-memory `Tracking` flag to match the wire, and
-3. emits a `warn!` explaining why.
+1. takes `axis_ownership` and cancels any RA guide pulse in flight, so
+   the pulse's restore cannot restart the motor behind it (see the
+   fence under [§PulseGuide lifecycle](#pulseguide-lifecycle)),
+2. issues `:K1` to stop the RA axis,
+3. clears the in-memory `Tracking` flag to match the wire, and
+4. emits a `warn!` explaining why.
 
 It does **not** pick a pier side or flip. Post-guard state is
 `Tracking = false`, `Slewing = false`, the encoder wherever it was when
@@ -1604,17 +1805,18 @@ The reservation covers slews and `Park` — the operations that own an
 axis for a stretch. **PulseGuide is deliberately outside it**: a pulse
 must not make `Slewing` read `true`, which is why `IsPulseGuiding`
 exists as a separate flag, so putting guiding under the same
-reservation would trade one wrong answer for another. Sync therefore
-cancels in-flight pulses (clearing `pulse_guiding.{ra,dec}`, which the
-pulse watcher observes and bails on) rather than excluding them, and
-the cancel leaves a window: the axis can still be turning at the
-shifted guide rate when the `:E` lands, until the watcher notices and
-restores. Syncing on top of an active guide pulse is therefore not a
-supported sequence — an autoguider that is pulsing is not a client
-that should also be re-anchoring the frame. The
-lock is taken before the in-flight pulse-guide cancel, so a refused
-sync has no side effects, and released when the call returns — unlike
-a slew, a sync has no watcher to hand ownership to.
+reservation would trade one wrong answer for another. Sync neither
+excludes nor cancels an in-flight pulse. A pulse's own wire bursts —
+its start and its restore — take `axis_ownership` too, so they queue
+behind the sync's `:E` writes instead of interleaving with them, and
+what a pulse restores (`:I1 <sidereal>`, or a stop) does not depend on
+the encoder position the sync rewrites. The pulse carries on at its
+guide rate across the sync and restores at its usual time. An earlier
+version cancelled the pulse by clearing its flag, which stranded the
+axis instead: the watcher bailed without a wire command, leaving RA at
+the guide rate or Dec turning with nothing to stop it. A refused sync
+has no side effects, and the lock is released when the call returns —
+unlike a slew, a sync has no watcher to hand ownership to.
 
 Until 2026-09 sync assumed CW-down unconditionally. On a CW-up mount
 that had two consequences: every target in the western sky was
@@ -1876,7 +2078,8 @@ so a bad config fails at startup rather than mid-session.
 `cw_exclusion_zone` must satisfy `-12 ≤ min_hours < max_hours ≤ 12`;
 `min_altitude_degrees` must be finite in `[-90, 90]`;
 `auto_flip_at_meridian_offset_hours` must be a finite hour angle
-(`|offset| ≤ 12`). (This
+(`|offset| ≤ 12`); each of `ra_pulse_edge_steps.east` / `.west` must be
+finite in `[-20, 20]` encoder ticks. (This
 replaced the former runtime `MountConfig::validate` / `FlipPolicy::validate`
 — see [ADR-006](../decisions/006-typed-physical-quantities-for-mount-pointing.md).)
 
@@ -1921,6 +2124,7 @@ loudly at load instead of being silently ignored.
     "cw_exclusion_zone": { "min_hours": 0.95, "max_hours": 11.05 },
     "tracking_guard_margin_hours": 0.05,
     "min_altitude_degrees": 0.0,
+    "ra_pulse_edge_steps": { "east": 1.38, "west": 3.23 },
     "park_ra_ticks": null,
     "park_dec_ticks": null,
     "flip_policy": {
@@ -2005,6 +2209,18 @@ Notes:
   [§Altitude floor](#altitude-floor). (Replaced the rectangular
   `dec_limits` envelope 2026-07-01; a stale `dec_limits` key is now
   rejected loudly at load, per `deny_unknown_fields` (#484).)
+- `ra_pulse_edge_steps` is the net forward encoder travel, in RA ticks,
+  that the motor board adds over one East (`east`) or West (`west`)
+  pulse on a tracking axis, beyond the commanded rate change. The
+  live-rate pulse moves its restore to cancel it; see "Timing, and the
+  edge-step trim" under [§PulseGuide lifecycle](#pulseguide-lifecycle).
+  Defaults `{ "east": 1.38, "west": 3.23 }` were measured on the pier1
+  GTi (firmware 3.48) at the default 0.5 × guide rate. The steps vary
+  with the load on the mount, the firmware and the guide rate, so a rig
+  that guides at another rate, or reads its ConformU East/West legs
+  consistently off, should measure its own (issue #1362 tracks
+  measuring them with `doctor`). Each value must be finite in
+  `[-20, 20]`; `0` disables the trim for that direction.
 - `park_ra_ticks` / `park_dec_ticks` are written by `SetPark` and read
   on every connect; absent (or `null`) at first run, populated once
   `SetPark` is called. Operators may set them by hand to pin a known
@@ -2421,11 +2637,16 @@ src/
                            and flip-aware delta-routing geometry
                            (CW-exclusion-zone path checks,
                             below-horizon-pole avoidance)
-    watchers.rs          — tokio tasks observing slew / park /
-                           pulse-guide completion in the background:
+    watchers.rs          — tokio tasks observing slew / park
+                           completion in the background:
                            EQMOD pickup loop, post-slew tracking
                            restore, settle delay, retrying snapshot
                            poller
+    pulse.rs             — `PulseGuide`: claiming the axis under
+                           `axis_ownership`, the live-`:f1` gate, the
+                           live rate change or the start from rest,
+                           the edge-step trim, and the watcher that
+                           ends the pulse with its failure ladder
     park_persistence.rs  — JSON config-file read/write for `SetPark`
                            (read-as-`Value` + atomic-rename pattern)
                            and the boot-time writability probe
@@ -2433,6 +2654,12 @@ src/
                            for `MountDevice` and the private helpers
   lib.rs                 — ServerBuilder, module declarations
   main.rs                — CLI entry point
+examples/
+  probe_live_step_period.rs — operator-run hardware probe (service
+                           stopped): measures how the motor board
+                           applies a live `:I1` on a tracking RA axis
+                           — ack, rate, edge steps, stop time — from
+                           dense `:j1` samples. Never run by CI.
 tests/
   bdd.rs                 — cucumber harness (harness = false)
   bdd/
@@ -2473,7 +2700,7 @@ ConformU verifies ASCOM compliance.
 | Service unit tests (`#[cfg(test)]` per module) | `coordinates`: encoder ↔ RA/Dec across edge cases (poles, meridian, hemisphere flip); `config`: defaults, JSON round-trips, CLI overrides; `error`: ASCOM mapping |
 | Service BDD (cucumber) | every behaviour table-row above as a scenario, with the mock transport |
 | Service `test_lib.rs` (gated on `mock`) | server starts, binds the configured port, exposes the configured device |
-| `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance via `bdd_infra::run_conformu` — ConformU's URL-argument verbs, so both the `alpacaprotocol` and `conformance` suites run with ConformU's **full** test set; the runner exposes no test selection. **Currently NOT wired into the nightly `conformu` workflow**: the mock run is not green while [#1299](https://github.com/rusty-photon/rusty-photon/issues/1299) (the RA pulse-guide stop-window offset) is open, and re-entry also needs `flip_policy.enabled = true` in the mock config. See [§"Running ConformU manually"](#running-conformu-manually) and [§"Expected ConformU report"](#expected-conformu-report). |
+| `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance via `bdd_infra::run_conformu` — ConformU's URL-argument verbs, so both the `alpacaprotocol` and `conformance` suites run with ConformU's **full** test set; the runner exposes no test selection. **Currently NOT wired into the nightly `conformu` workflow**: its mock config now enables the flip policy and runs clean, and re-entry waits on one clean full run on all three CI OSes with a measured duration ([#1344](https://github.com/rusty-photon/rusty-photon/issues/1344)); the RA pulse-guide offset that kept the mock run red ([#1299](https://github.com/rusty-photon/rusty-photon/issues/1299)) is fixed. See [§"Running ConformU manually"](#running-conformu-manually) and [§"Expected ConformU report"](#expected-conformu-report). |
 
 **The BDD baseline runs the shipped safety config.** Its
 `cw_exclusion_zone` is the default `(0.95, 11.05)`, not `null`, so
@@ -2511,6 +2738,19 @@ The two motion modes are simulated differently, on purpose:
   clock is tokio's, so unit tests run whole pulses under paused time
   (`start_paused`) and measure the angle exactly; ConformU against the
   mock measures it in wall time, as it does on hardware.
+
+  Two firmware behaviours the driver relies on are modelled from the
+  rig, not the spec. `:G` on a running axis is refused with `!2`
+  (`MotorNotStopped`), as on the GTi, so a pulse that skipped the stop
+  but still sent `:G` would fail in the mock as it would on hardware.
+  The forward step a rate change on a running axis adds on the real
+  board is a test knob (`rate_change_step_ticks`, `0` by default), so a
+  test can check the edge-step trim end to end; with the knob at `0` a
+  live `:I` is exact. Neither makes the mock evidence about the
+  firmware. Whether the GTi applies a live `:I` at all was measured on
+  the rig (see [§Real-hardware validation](#real-hardware-validation)).
+  The in-tree ConformU test's mock config sets `ra_pulse_edge_steps` to
+  zero to match the knob's default.
 - **Goto mode is poll-driven.** Each `:j` poll walks the axis a fixed
   chunk toward `goto_target_ticks` and clears `running` on arrival, so
   a slew completes in a handful of polls however fast the test runs.
@@ -2531,10 +2771,14 @@ ConformU's two opt-in ones, both off by default: the performance timing
 checks (`AlpacaConfiguration.ProtocolTestPrimaryUrlStructure`). That is
 the same shape a hardware record uses. The settings that runner can
 write carry only timeouts and delays (`bdd_infra::FullRunSettings`);
-this test passes none, so the run is on ConformU's defaults. The
-`alpacaprotocol` phase completes; the `conformance` phase records three
-findings, of which one still needs driver work before re-adding
-`[package.metadata.conformu]` to the package's `Cargo.toml`:
+this test passes none, so the run is on ConformU's defaults. Its mock
+config enables the flip policy, and with it both phases are clean
+against the mock: `alpacaprotocol` 0 errors / 0 issues,
+`conformance` 0 errors / 0 issues (measured 2026-09-29 with ConformU
+4.5.0, 706 s). What keeps the package out of the nightly rotation is
+issue #1344's one clean run on all three CI OSes with a measured
+duration, not a finding. Other configs show three findings, one of
+them now fixed:
 
 1. **The HA +9 pulse-guide leg aborts CheckMethods.** With
    `TelescopeExtendedPulseGuideTests` forced on, ConformU's
@@ -2546,9 +2790,8 @@ findings, of which one still needs driver work before re-adding
    (`target mech_HA 9.000 h is inside the CW exclusion zone`); the
    `InvalidValueException` is caught by ConformU's "Exception when
    testing device" handler at CheckMethods scope and the rest of the
-   suite is abandoned, so the run ends 0 errors / 3 issues: the two
-   #1299 offsets at HA −9 plus the abandon. That is the safety
-   envelope doing its job. Disabling the zone for the mock config
+   suite is abandoned, so the run ends 0 errors / 1 issue: the
+   abandon. That is the safety envelope doing its job. Disabling the zone for the mock config
    (`"cw_exclusion_zone": null`) or enabling the flip policy (which
    reaches HA +9 through the pole) lets CheckMethods complete and
    exposes the other two findings below.
@@ -2567,18 +2810,22 @@ findings, of which one still needs driver work before re-adding
    (5 s at the default 0.5 × sidereal: 37.6″ in Dec, 2.51 s in
    RA) and ~0 on the other, at HA ±3 and ±9. Dec North/South is
    within tolerance (37.5″) and in the right direction on both
-   sides. One defect remains:
-   - **RA East/West carry a constant offset of ≈ +0.24 s of RA**
-     (East +2.74 s, West −2.26 s against ±2.51 s; tolerance
-     0.07 s). The rate itself is right — the scale solves to
-     0.996. The offset is the pulse's own `:K1` + stop-and-wait
-     (≥ 100 ms), which runs once before the shifted rate is
-     applied and once before sidereal is restored: the RA motor
-     sits stopped for those windows and the sky drifts past at
-     sidereal rate. Hardware shows the same signature, larger
-     (East +2.95 s, West −2.29 s), because a real motor takes
-     longer to decelerate than the mock's instant stop. INDI
-     eqmod changes the tracking rate without stopping the motor.
+   sides. RA East/West was issue #1299:
+   - **RA East/West carried a constant offset of ≈ +0.2 s of RA**
+     (mock: East +2.74 s, West −2.26 s against ±2.51 s; tolerance
+     0.07 s). The rate itself was right — the scale solves to
+     0.996. The offset was the pulse's own `:K1` + stop-and-wait,
+     whose fixed 100 ms sleep ran once before the shifted rate and
+     once before the sidereal restore while the sky drifted past.
+     Hardware showed the same offset: pooled over every
+     post-#1298 rig pulse it is +0.185 ± 0.024 s, two ~100 ms
+     windows. An earlier reading of "larger on hardware, because a
+     real motor decelerates" came from one noisy pair; `:K1` from a
+     tracking rate stops the GTi in about 4 ms. Fixed: a pulse on a
+     tracking RA axis now changes the rate of the running motor and
+     never stops it, and a trim cancels the forward steps the motor
+     board adds at each rate change (see
+     [§PulseGuide lifecycle](#pulseguide-lifecycle)).
    The Dec-direction defect this list used to carry — North
    moving south and South moving north at HA +3 and +9 with
    `flip_policy.enabled = true`, the right distance the wrong
@@ -2607,9 +2854,9 @@ Measured against the mock with ConformU 4.5.0, per mount config
 
 | Config | Issues | What they are |
 |---|---|---|
-| default (`flip_policy.enabled = false`) | 3 | RA East/West offset at HA −9 (2); then failure (1) abandons CheckMethods |
-| `cw_exclusion_zone: null` | 13 | RA East/West offset at HA ±3, ±9 (8); failure (2) `SideofPier` / `DestinationSideofPier` (5) |
-| `flip_policy.enabled = true` | 20 → 7–8 (see below) | RA East/West offset (7–8); ~~Dec direction on the flipped side (4)~~ — fixed; ~~slews / syncs to HA +1…+4 h rejected as inside the CW exclusion zone (8)~~ — fixed |
+| default flip policy (`enabled = false`), trim zeroed | 3 → 1 | ~~RA East/West offset at HA −9 (2)~~ — fixed; failure (1) abandons CheckMethods (1) |
+| `cw_exclusion_zone: null` | 13 | RA East/West offset at HA ±3, ±9 (8), measured before the fix; failure (2) `SideofPier` / `DestinationSideofPier` (5) |
+| `flip_policy.enabled = true` | 20 → 7–8 → **0** (see below) | ~~RA East/West offset (7–8)~~ — fixed; ~~Dec direction on the flipped side (4)~~ — fixed; ~~slews / syncs to HA +1…+4 h rejected as inside the CW exclusion zone (8)~~ — fixed |
 
 Enabling the flip policy clears failures (1) and (2) outright —
 `SideOfPier Write` flips, and `SideofPier` /
@@ -2635,8 +2882,17 @@ counted 7 and a settings-verb run of the same eight legs counted 8:
 the HA +9 East leg read +2.53 s in the first (0.01 s from the
 expected +2.51 s, a pass) and +2.74 s in the second, while the other
 seven legs sat at +2.71…+2.76 s East / −2.24…−2.26 s West in both —
-scatter on one leg, not a value near the 0.07 s tolerance.
-Re-measure when #1299 lands. On hardware the same config
+scatter on one leg, not a value near the 0.07 s tolerance. With #1299
+fixed the same run reads **0 issues** (2026-09-29): every East/West leg
+at +2.49…+2.52 s / −2.51 s against ±2.51 s (differences 0.00–0.02 s),
+North/South at ±37.5″. The mock adds no edge steps and the test's
+config zeroes the trim to match, so the clean run shows the pulses no
+longer lose angle to the old fixed stop waits. It cannot show that RA
+is never stopped: the mock stops an axis instantly, so a stop costs no
+angle here. The frame tests pin that
+(`a_tracking_ra_pulse_sends_only_its_two_rate_frames` and the BDD frame
+counts). What the GTi's board does at a rate change is the rig's to
+measure. On hardware the same config
 measured **11** on 2026-09-26: seven of the eight RA offsets (East at
 HA −3 passed, at +2.52 s) plus four cross-axis RA readings of
 0.07–0.17 s during Dec pulses that the mock never shows — issue
@@ -2673,34 +2929,38 @@ narrowing is expressible from the test. What the test
 does shape is the **device**: its mount config sets
 `site_latitude_deg = 47.6062` so ConformU's
 `SIDE_OF_PIER_INVALID_LATITUDE = 10°` gate does not skip the
-side-of-pier model tests, and it leaves `flip_policy` at the shipped
-default (`enabled = false`), which is why the default-config row above
-abandons `CheckMethods` at HA +9. Measured on 2026-09-27 against the
-mock with ConformU 4.5.0: the default config gives 0 errors / 3 issues
-in 48 s; with `flip_policy.enabled = true` the full run gives 0 errors /
-7–8 issues (all #1299; see the note under the table above) in about
-11 minutes, seven of them ConformU's fixed wait while the mount tracks
-through the meridian for the `SideOfPier Write` test.
+side-of-pier model tests; it sets `flip_policy.enabled = true`, which
+reaches HA +9 through the pole where the shipped default abandons
+`CheckMethods` (the default-config row above); and it sets
+`ra_pulse_edge_steps` to zero, because the mock's board adds no forward
+step at a rate change and the shipped trim would otherwise bend every
+East/West pulse by exactly the trim. Measured on 2026-09-29 against the
+mock with ConformU 4.5.0: 0 errors / 0 issues in 706 s, seven minutes of
+it ConformU's fixed wait while the mount tracks through the meridian for
+the `SideOfPier Write` test. The same config with the flip policy at its
+shipped default (`enabled = false`; the trim still zeroed) gives
+0 errors / 1 issue (the abandon) in 95 s.
 
 ### Expected ConformU report
 
-These are the conformance-phase findings against the current
-driver with the shipped default config. They are *not* a green run —
-(1) and (2) are the non-flipping default's own behaviour and clear
-with `flip_policy.enabled = true`; (3), issue #1299, is what still
-needs driver work before the package is re-added to the nightly
-workflow. The per-config issue counts are in the table under
+With the in-tree test's config (`flip_policy.enabled = true`) the
+report is clean: 0 errors, 0 issues, 0 configuration alerts. The
+findings below belong to the configs that do not flip; (1) and (2) are
+the non-flipping default's own behaviour and clear with
+`flip_policy.enabled = true`, and (3), issue #1299, is fixed. The
+per-config issue counts are in the table under
 [§Running ConformU manually](#running-conformu-manually).
 
 After (1) is worked around by disabling the CW exclusion zone
-for the mock test config (`"cw_exclusion_zone": null`):
+for the mock test config (`"cw_exclusion_zone": null`), the report
+before the #1299 fix read:
 
 - **0 errors** — anything here is a real driver regression.
 - **13 issues**:
   - PulseGuide East / West "Moved {east,west} but outside test
     tolerance" at HA ±3 and ±9 (8 entries) — driver bug (3),
-    the RA stop-window offset. North / South pass, and no pulse
-    moves the axis it is not supposed to.
+    the RA stop-window offset, now fixed. North / South pass, and
+    no pulse moves the axis it is not supposed to.
   - `SideofPier` and `DestinationSideofPier`
     "`pierWest` is returned when the mount is observing at an
     hour angle between 0.0 and +6.0" (2 entries) — driver
@@ -2738,6 +2998,19 @@ Historical baselines (`alpacaprotocol`-only or partial
 
 The evidence trail is [`docs/validation/`](../validation/README.md);
 this service's runs, newest first:
+
+- **2026-09-28 — live step-period probe (P0 for #1299)** on the field
+  rig, service stopped, RA tracking at the park pose, using
+  `examples/probe_live_step_period.rs` over USB. It settled the firmware
+  behaviour the live-rate pulse rests on:
+  - a live `:I1` is accepted and applied at once (240/240);
+  - a stray `:I1` never starts a stopped axis;
+  - `:K1` stops a tracking axis in ~4 ms;
+  - every rate change adds a small forward step, which `ra_pulse_edge_steps` defaults to.
+
+  The measurements are listed under "What the rig measured" in
+  [§PulseGuide lifecycle](#pulseguide-lifecycle), and the full tables
+  are on issue #1299. There is no record: this was not a ConformU run.
 
 - **2026-09-26 — counterweight-up PulseGuide on the field rig**
   ([record](../validation/2026-09-26-star-adventurer-gti-gti-rig/README.md)).
@@ -2981,6 +3254,13 @@ In addition to the codec fixes:
   next confirmed `:G` ack. Without that — or without a different
   approach that doesn't depend on a snapshot of state we don't own —
   the cache is structurally unsound.
+
+  The live-rate guide pulse is not such a cache, and does not reopen
+  this. It skips `:K` / `:G` only on the strength of a live `:f1` read
+  one round trip earlier, and sends nothing but `:I1`, which cannot
+  start motion or change direction. The driver's own memory can only
+  veto it. See "The gate reads the wire, and the driver's memory can
+  only say no" under [§PulseGuide lifecycle](#pulseguide-lifecycle).
 - **INDI-style slew sequence** — Phase A5 reinstated `:I` on the
   slew path and switched the goto from `:S` (absolute target) to
   `:H` (delta target) plus `:M` (break-point increment), matching

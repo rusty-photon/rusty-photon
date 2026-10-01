@@ -21,12 +21,15 @@ use skywatcher_motor_protocol::Axis;
 use tokio::sync::RwLock;
 
 use crate::config::{
-    ActiveZone, Config, CwExclusionZone, FlipPolicy, MinAltitudeDegrees, TrackingGuardMarginHours,
+    ActiveZone, Config, CwExclusionZone, FlipPolicy, MinAltitudeDegrees, RaPulseEdgeSteps,
+    TrackingGuardMarginHours,
 };
 use crate::coordinates::{ra_dec_to_alt_az, SIDEREAL_DEG_PER_SEC};
 use crate::error::StarAdvError;
 use crate::manager::MountManager;
-use crate::transport::mock::{CapturingMockFactory, MockMountState, MockTransportFactory};
+use crate::transport::mock::{
+    CapturingMockFactory, Fault, MockMountState, MockTransportFactory, ScriptedFault,
+};
 use crate::units::{Cpr, Dec, Lst, Ra, RaTicks};
 
 use super::park_persistence::{read_connect_fields, write_park_to_config};
@@ -204,6 +207,7 @@ async fn tracking_guard_tick_stops_tracking_inside_the_zone() {
         &d.manager,
         &d.session,
         &d.slew_in_progress,
+        &d.axis_ownership,
         (0.95, 11.05),
         0.05,
     )
@@ -229,6 +233,7 @@ async fn tracking_guard_tick_is_noop_far_from_the_zone() {
         &d.manager,
         &d.session,
         &d.slew_in_progress,
+        &d.axis_ownership,
         (0.95, 11.05),
         0.05,
     )
@@ -258,6 +263,7 @@ async fn tracking_guard_tick_is_noop_when_not_tracking() {
         &d.manager,
         &d.session,
         &d.slew_in_progress,
+        &d.axis_ownership,
         (0.95, 11.05),
         0.05,
     )
@@ -293,6 +299,7 @@ async fn tracking_guard_tick_is_noop_when_parameters_not_cached() {
         &d.manager,
         &d.session,
         &d.slew_in_progress,
+        &d.axis_ownership,
         (0.95, 11.05),
         0.05,
     )
@@ -333,6 +340,7 @@ async fn tracking_guard_tick_is_noop_when_session_closed_mid_tick() {
         &d.manager,
         &d.session,
         &d.slew_in_progress,
+        &d.axis_ownership,
         (0.95, 11.05),
         0.05,
     )
@@ -362,6 +370,7 @@ async fn tracking_guard_tick_leaves_tracking_set_when_stop_fails() {
         &d.manager,
         &d.session,
         &d.slew_in_progress,
+        &d.axis_ownership,
         (0.95, 11.05),
         0.05,
     )
@@ -1849,8 +1858,10 @@ impl rusty_photon_shared_transport::FrameTransport for StuckAxisFrameTransport {
         let reply: Vec<u8> = match bytes[1] {
             // `:f<axis>` reply with running=1: nibble-1 bit-0 set.
             b'f' => b"=011\r".to_vec(),
-            // Handshake inquiries: 6-hex u24 payload.
-            b'a' | b'b' | b'e' => b"=000080\r".to_vec(),
+            // Handshake inquiries: 6-hex u24 payload. `:e` is the GTi's
+            // own reply, so the mount-code gate lets the handshake through.
+            b'a' | b'b' => b"=000080\r".to_vec(),
+            b'e' => b"=03300C\r".to_vec(),
             // High-speed-ratio: 2-hex u8 payload per real GTi.
             b'g' => b"=01\r".to_vec(),
             // `:j<axis>`: biased position (0x800000 → encoder 0).
@@ -3882,8 +3893,8 @@ async fn pulse_guide_west_runs_ra_at_sidereal_plus_the_guide_rate() {
 #[tokio::test]
 async fn pulse_guide_sets_is_pulse_guiding_synchronously() {
     // The flag must flip to true before `pulse_guide` returns —
-    // see the atomic check-and-set under the write lock in
-    // `MountDevice::pulse_guide`. The 30-second duration here is
+    // see the claim `begin_pulse` makes under `axis_ownership`. The
+    // 30-second duration here is
     // not a "short pulse" test; it just keeps the watcher's
     // `tokio::time::sleep` from completing during the assertion
     // read so the only way `is_pulse_guiding()` can be true is
@@ -4029,10 +4040,9 @@ async fn pulse_guide_ra_with_tracking_off_does_not_restore_tracking() {
     assert!(!d.is_pulse_guiding().await.unwrap());
     // Tracking still off.
     assert!(!d.tracking().await.unwrap());
-    // Exactly one `:G110\r` in the log (the pulse-start; no
-    // restore). `:G110` is RA Tracking-Slow-CW; the watcher would
-    // only emit a second one on the restore branch if
-    // `tracking_was_on` was true at issue.
+    // Exactly one `:G110\r` in the log: the pulse's own start from
+    // rest. With tracking off the pulse ends with a stop, so nothing
+    // sets a tracking mode again.
     let log = mock.lock().await.command_log.clone();
     let g110_count = log.iter().filter(|f| f.as_slice() == b":G110\r").count();
     assert_eq!(
@@ -4726,9 +4736,9 @@ impl FrameTransport for FlakyFrameTransport {
             b'a' | b'b' => b"=005F37\r".to_vec(),
             // `:e` returns the GTi motor-board-version wire reply
             // `=03300C` (measured on the real mount) so the `:e1`-first
-            // handshake's mount-type whitelist (issue #254) accepts it:
-            // little-byte-first hex decode gives `0x000C_3003`, whose low
-            // byte `0x03` is the EQ family.
+            // handshake's mount-code whitelist accepts it: the
+            // low-byte-first hex decode gives `0x000C_3003`, whose high
+            // byte `0x0C` is the Star Adventurer GTi.
             b'e' => b"=03300C\r".to_vec(),
             b'g' => b"=01\r".to_vec(),
             b'j' => {
@@ -4888,9 +4898,10 @@ async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
         guide_rate_ra_fraction: 0.25,
         guide_rate_dec_fraction: 0.75,
         pulse_guiding: PulseGuiding {
-            ra: true,
-            dec: true,
+            ra: Some(PulseId(1)),
+            dec: Some(PulseId(2)),
         },
+        next_pulse_id: 3,
     };
 
     s.reset_for_disconnect();
@@ -4906,8 +4917,8 @@ async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
     // survive disconnect.
     assert!(!s.frame_anchored);
     assert_eq!(s.preferred_ap_park, None);
-    assert!(!s.pulse_guiding.ra);
-    assert!(!s.pulse_guiding.dec);
+    assert_eq!(s.pulse_guiding.ra, None);
+    assert_eq!(s.pulse_guiding.dec, None);
     // Guide rates re-initialise to the default (half-sidereal).
     assert!((s.guide_rate_ra_fraction - 0.5).abs() < 1e-9);
     assert!((s.guide_rate_dec_fraction - 0.5).abs() < 1e-9);
@@ -5123,4 +5134,1021 @@ async fn a_dec_pulse_leaves_a_tracking_mounts_ra_where_it_was() {
         change < RA_READ_SPREAD_BUDGET_S,
         "a Dec pulse must not move the reported RA of a tracking mount; it moved {change:.3} s"
     );
+}
+
+// ---- PulseGuide: live rate change, trim, ownership, failure ladder ----
+
+type SharedMock = Arc<tokio::sync::Mutex<MockMountState>>;
+
+/// A capturing mock device, connected, with the CW zone and altitude
+/// floor open and `ra_pulse_edge_steps` set to `steps`. `setup` runs on
+/// the mock state before connect.
+async fn pulse_device(
+    steps: RaPulseEdgeSteps,
+    setup: impl FnOnce(&mut MockMountState),
+) -> (MountDevice, SharedMock) {
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    setup(&mut *mock.lock().await);
+    let mut cfg = base_config();
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    cfg.mount.ra_pulse_edge_steps = steps;
+    let manager = MountManager::new(&cfg, Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    (d, mock)
+}
+
+const NO_TRIM: RaPulseEdgeSteps = RaPulseEdgeSteps::new(0.0, 0.0);
+
+/// Sleep (paused or real time) until `IsPulseGuiding` clears.
+async fn until_pulse_ends(d: &MountDevice) {
+    for _ in 0..2_000 {
+        if !d.is_pulse_guiding().await.unwrap() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        !d.is_pulse_guiding().await.unwrap(),
+        "the pulse never completed"
+    );
+}
+
+/// RA encoder read at this instant: the `:j1` round trip makes the mock
+/// integrate its tracking motion up to now.
+async fn ra_ticks_now(d: &MountDevice) -> i32 {
+    let session = d.manager.transport().acquire().await.unwrap();
+    let ticks = d
+        .manager
+        .poll_axes_now(&session)
+        .await
+        .unwrap()
+        .ra
+        .position_ticks;
+    session.close().await.unwrap();
+    ticks
+}
+
+/// Run one `duration` pulse in `direction` on a mount tracking at
+/// sidereal and return the RA encoder's travel beyond what continuous
+/// sidereal tracking would have covered over the same interval, in
+/// ticks. Paused time: the mock integrates on tokio's clock, so the
+/// only error is the encoder's one-tick quantum.
+async fn ra_excess_ticks(d: &MountDevice, direction: GuideDirection, duration: Duration) -> f64 {
+    d.set_tracking(true).await.unwrap();
+    let params = d.manager.parameters().await.unwrap();
+    let sidereal_rate = f64::from(params.tmr_freq) / f64::from(params.sidereal_step_period_ra());
+    let t0 = tokio::time::Instant::now();
+    let p0 = ra_ticks_now(d).await;
+    d.pulse_guide(direction, duration).await.unwrap();
+    until_pulse_ends(d).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let p1 = ra_ticks_now(d).await;
+    let elapsed = t0.elapsed().as_secs_f64();
+    f64::from(p1 - p0) - sidereal_rate * elapsed
+}
+
+/// `guide rate × duration` in RA ticks at the default 0.5 × sidereal:
+/// half the sidereal step rate (`16e6 / 379_912` ≈ 42.1 ticks/s) × 5 s.
+fn half_sidereal_ticks(seconds: f64) -> f64 {
+    0.5 * 16_000_000.0 / 379_912.0 * seconds
+}
+
+/// One RA encoder tick of floor quantization at each end, plus slack.
+const EXCESS_TOLERANCE_TICKS: f64 = 1.5;
+
+/// Setter (uppercase) frames the mock received from index `from` on.
+fn setter_frames_since(mock: &MockMountState, from: usize) -> Vec<String> {
+    mock.command_log
+        .iter()
+        .skip(from)
+        .filter(|f| f.get(1).is_some_and(u8::is_ascii_uppercase))
+        .map(|f| String::from_utf8_lossy(f).trim_end().to_string())
+        .collect()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_tracking_east_pulse_slows_ra_by_exactly_the_guide_rate() {
+    // The angle only: the mock stops an axis instantly, so a stop around
+    // the rate change would cost nothing here.
+    // `a_tracking_ra_pulse_sends_only_its_two_rate_frames` pins that RA
+    // is never stopped.
+    let (d, _mock) = pulse_device(NO_TRIM, |_| {}).await;
+    let excess = ra_excess_ticks(&d, GuideDirection::East, Duration::from_secs(5)).await;
+    let expected = -half_sidereal_ticks(5.0);
+    assert!(
+        (excess - expected).abs() < EXCESS_TOLERANCE_TICKS,
+        "East 5 s on a tracking axis must lose {:.1} ticks against sidereal, lost {:.1}",
+        -expected,
+        -excess
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_tracking_west_pulse_speeds_ra_by_exactly_the_guide_rate() {
+    let (d, _mock) = pulse_device(NO_TRIM, |_| {}).await;
+    let excess = ra_excess_ticks(&d, GuideDirection::West, Duration::from_secs(5)).await;
+    let expected = half_sidereal_ticks(5.0);
+    assert!(
+        (excess - expected).abs() < EXCESS_TOLERANCE_TICKS,
+        "West 5 s on a tracking axis must gain {expected:.1} ticks on sidereal, gained {excess:.1}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_edge_step_trim_cancels_the_boards_forward_steps() {
+    // The mock steps RA 3 ticks forward at each rate change, 6 per
+    // pulse; a trim configured for 6 must deliver the commanded angle.
+    for (direction, sign) in [(GuideDirection::East, -1.0), (GuideDirection::West, 1.0)] {
+        let (d, _mock) = pulse_device(RaPulseEdgeSteps::new(6.0, 6.0), |m| {
+            m.rate_change_step_ticks = 3.0;
+        })
+        .await;
+        let excess = ra_excess_ticks(&d, direction, Duration::from_secs(5)).await;
+        let expected = sign * half_sidereal_ticks(5.0);
+        assert!(
+            (excess - expected).abs() < EXCESS_TOLERANCE_TICKS,
+            "{direction:?}: trimmed pulse must deliver {expected:.1} ticks, delivered {excess:.1}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn untrimmed_edge_steps_show_up_in_the_pulse() {
+    // The same forward steps with no trim: the pulse overshoots by them.
+    // Proves the knob the trim test relies on is not inert.
+    let (d, _mock) = pulse_device(NO_TRIM, |m| m.rate_change_step_ticks = 3.0).await;
+    let excess = ra_excess_ticks(&d, GuideDirection::West, Duration::from_secs(5)).await;
+    let expected = half_sidereal_ticks(5.0) + 6.0;
+    assert!(
+        (excess - expected).abs() < EXCESS_TOLERANCE_TICKS,
+        "untrimmed West must carry the 6 edge ticks: expected {expected:.1}, got {excess:.1}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_tracking_ra_pulse_sends_only_its_two_rate_frames() {
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    let from = mock.lock().await.command_log.len();
+    d.pulse_guide(GuideDirection::East, Duration::from_secs(2))
+        .await
+        .unwrap();
+    until_pulse_ends(&d).await;
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from),
+        vec![":I110980B", ":I108CC05"],
+        "a pulse on a tracking axis must never stop or restart RA"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn is_pulse_guiding_clears_only_once_the_restored_rate_is_sampled() {
+    let (d, _mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    let sidereal = d
+        .manager
+        .parameters()
+        .await
+        .unwrap()
+        .sidereal_step_period_ra();
+    d.pulse_guide(GuideDirection::West, Duration::from_secs(1))
+        .await
+        .unwrap();
+    while d.is_pulse_guiding().await.unwrap() {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert_eq!(
+        d.manager.snapshot().await.ra.step_period,
+        sidereal,
+        "a read right after IsPulseGuiding clears must project at sidereal"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stale_tracking_latch_starts_ra_from_rest_and_ends_tracking() {
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    // Stopped outside the driver: Tracking still reads true.
+    mock.lock().await.ra.running = false;
+    let from = mock.lock().await.command_log.len();
+    d.pulse_guide(GuideDirection::East, Duration::from_secs(1))
+        .await
+        .unwrap();
+    until_pulse_ends(&d).await;
+    let m = mock.lock().await;
+    assert_eq!(
+        setter_frames_since(&m, from),
+        vec![":K1", ":G110", ":I110980B", ":J1", ":I108CC05"]
+    );
+    assert!(m.ra.running, "the pulse leaves RA tracking again");
+    assert_eq!(m.ra.step_period, 379_912);
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_drivers_memory_alone_never_takes_the_live_path() {
+    // Tracking reads true and the mount really is tracking at sidereal,
+    // but not because this connection told it to: the manager has no
+    // record of a tracking period it sent, so the pulse starts RA from
+    // rest (re-arming the record) instead of trusting the latch.
+    let (d, mock) = pulse_device(NO_TRIM, |m| {
+        m.ra.running = true;
+        m.ra.step_period = 379_912;
+    })
+    .await;
+    d.state.write().await.tracking_requested = true;
+    let from = mock.lock().await.command_log.len();
+    d.pulse_guide(GuideDirection::West, Duration::from_millis(500))
+        .await
+        .unwrap();
+    until_pulse_ends(&d).await;
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from),
+        vec![":K1", ":G110", ":I15BDD03", ":J1", ":I108CC05"]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_tracking_guard_cancels_an_in_flight_ra_pulse() {
+    let (d, mock) = guard_device(0.05).await;
+    d.set_tracking(true).await.unwrap();
+    d.pulse_guide(GuideDirection::East, Duration::from_secs(5))
+        .await
+        .unwrap();
+    seed_mech_ha(&d, &mock, 6.0).await;
+    let fired = tracking_guard_tick(
+        &d.state,
+        &d.manager,
+        &d.session,
+        &d.slew_in_progress,
+        &d.axis_ownership,
+        (0.95, 11.05),
+        0.05,
+    )
+    .await;
+    assert!(fired, "the guard must stop tracking inside the zone");
+    assert!(
+        !d.is_pulse_guiding().await.unwrap(),
+        "the guard takes RA from the pulse"
+    );
+    let guard_stop = mock.lock().await.command_log.len();
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    let m = mock.lock().await;
+    assert_eq!(
+        setter_frames_since(&m, guard_stop),
+        Vec::<String>::new(),
+        "the cancelled pulse must not restore — its :I1 would re-run RA behind the guard"
+    );
+    assert!(!m.ra.running);
+    drop(m);
+    assert!(!d.tracking().await.unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancelled_pulses_watcher_never_touches_a_newer_pulse() {
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    d.pulse_guide(GuideDirection::East, Duration::from_secs(5))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    // Cancels pulse A and restarts sidereal tracking.
+    d.set_tracking(true).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    d.pulse_guide(GuideDirection::West, Duration::from_secs(10))
+        .await
+        .unwrap();
+    let pulse_b = mock.lock().await.command_log.len();
+    // A's deadline passes with B in flight.
+    tokio::time::sleep(Duration::from_millis(3_500)).await;
+    assert!(
+        d.is_pulse_guiding().await.unwrap(),
+        "pulse A's watcher ended pulse B"
+    );
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, pulse_b),
+        Vec::<String>::new(),
+        "pulse A's watcher sent a restore while pulse B owned RA"
+    );
+    until_pulse_ends(&d).await;
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, pulse_b),
+        vec![":I108CC05"]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn sync_does_not_cancel_a_dec_pulse() {
+    // Cancelling the pulse would leave Dec turning at the guide rate with
+    // nothing to stop it; the pulse carries on and stops on time.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.pulse_guide(GuideDirection::North, Duration::from_secs(3))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    d.sync_to_coordinates(6.0, 20.0).await.unwrap();
+    assert!(
+        d.is_pulse_guiding().await.unwrap(),
+        "sync cancelled the pulse"
+    );
+    until_pulse_ends(&d).await;
+    let m = mock.lock().await;
+    let sync = m
+        .command_log
+        .iter()
+        .rposition(|f| f.starts_with(b":E2"))
+        .unwrap();
+    assert!(
+        setter_frames_since(&m, sync + 1).contains(&":K2".to_string()),
+        "the Dec pulse must stop the axis after the sync"
+    );
+    assert!(!m.dec.running);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_ambiguous_restore_is_retried() {
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    d.pulse_guide(GuideDirection::East, Duration::from_secs(1))
+        .await
+        .unwrap();
+    let from = {
+        let mut m = mock.lock().await;
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'I',
+            fault: Fault::Garbled,
+        });
+        m.command_log.len()
+    };
+    until_pulse_ends(&d).await;
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from),
+        vec![":I108CC05", ":I108CC05"]
+    );
+    assert!(d.tracking().await.unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_restore_stops_ra_and_turns_tracking_off() {
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    d.pulse_guide(GuideDirection::West, Duration::from_secs(1))
+        .await
+        .unwrap();
+    let from = {
+        let mut m = mock.lock().await;
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'I',
+            fault: Fault::MountError(2),
+        });
+        m.command_log.len()
+    };
+    until_pulse_ends(&d).await;
+    let m = mock.lock().await;
+    assert_eq!(setter_frames_since(&m, from), vec![":I108CC05", ":K1"]);
+    assert!(!m.ra.running);
+    drop(m);
+    assert!(
+        !d.tracking().await.unwrap(),
+        "RA stopped for real, so Tracking must read false"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_live_rate_change_falls_back_to_stop_and_restart() {
+    let (d, mock) = pulse_device(NO_TRIM, |m| m.reject_live_step_period = true).await;
+    d.set_tracking(true).await.unwrap();
+    let from = mock.lock().await.command_log.len();
+    d.pulse_guide(GuideDirection::East, Duration::from_secs(1))
+        .await
+        .unwrap();
+    until_pulse_ends(&d).await;
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from),
+        vec![
+            ":I110980B",
+            ":K1",
+            ":G110",
+            ":I110980B",
+            ":J1",
+            ":K1",
+            ":G110",
+            ":I108CC05",
+            ":J1"
+        ]
+    );
+    assert!(d.tracking().await.unwrap());
+    // The connection has learnt: the next pulse does not try live.
+    let from = mock.lock().await.command_log.len();
+    d.pulse_guide(GuideDirection::West, Duration::from_millis(500))
+        .await
+        .unwrap();
+    until_pulse_ends(&d).await;
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from)
+            .first()
+            .map(String::as_str),
+        Some(":K1")
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_ambiguous_live_shift_is_rolled_back_to_sidereal() {
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    let from = {
+        let mut m = mock.lock().await;
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'I',
+            fault: Fault::Garbled,
+        });
+        m.command_log.len()
+    };
+    d.pulse_guide(GuideDirection::West, Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert!(!d.is_pulse_guiding().await.unwrap());
+    let m = mock.lock().await;
+    assert_eq!(
+        setter_frames_since(&m, from),
+        vec![":I15BDD03", ":I108CC05"]
+    );
+    assert_eq!(m.ra.step_period, 379_912, "RA must be back at sidereal");
+}
+
+#[tokio::test(start_paused = true)]
+async fn disconnect_stops_the_axis_a_pulse_was_driving() {
+    // The cancelled pulse's watcher sends nothing, and its own session
+    // defers the last-disconnect safety stop, so the disconnect itself
+    // has to stop the axis — or a quick reconnect finds Dec still
+    // turning at its guide rate.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.pulse_guide(GuideDirection::North, Duration::from_secs(10))
+        .await
+        .unwrap();
+    assert!(mock.lock().await.dec.running);
+    d.set_connected(false).await.unwrap();
+    assert!(
+        !mock.lock().await.dec.running,
+        "disconnect left Dec running"
+    );
+    d.set_connected(true).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    assert!(!mock.lock().await.dec.running);
+    assert!(!d.is_pulse_guiding().await.unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_rollback_that_never_lands_stops_ra_and_turns_tracking_off() {
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    {
+        let mut m = mock.lock().await;
+        // The shift itself is ambiguous; the sidereal rollback is refused,
+        // so RA stays at the guide rate until the ladder stops it.
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'I',
+            fault: Fault::Garbled,
+        });
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'I',
+            fault: Fault::MountError(2),
+        });
+    }
+    d.pulse_guide(GuideDirection::West, Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert!(!mock.lock().await.ra.running, "RA left at the guide rate");
+    assert!(!d.tracking().await.unwrap());
+    assert!(!d.is_pulse_guiding().await.unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_ambiguous_restart_is_stopped_before_tracking_reads_false() {
+    // After the mount refused a live rate change, pulses end with a
+    // stop-and-restart. If the restart's `:J1` may have landed, RA may be
+    // tracking: it has to be stopped before `Tracking` may read false,
+    // or the tracking guard would stop watching a moving axis.
+    let (d, mock) = pulse_device(NO_TRIM, |m| m.reject_live_step_period = true).await;
+    d.set_tracking(true).await.unwrap();
+    d.pulse_guide(GuideDirection::East, Duration::from_secs(1))
+        .await
+        .unwrap();
+    mock.lock().await.fault_script.push_back(ScriptedFault {
+        letter: b'J',
+        fault: Fault::Garbled,
+    });
+    until_pulse_ends(&d).await;
+    assert!(
+        !mock.lock().await.ra.running,
+        "Tracking went false over a running RA"
+    );
+    assert!(!d.tracking().await.unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_slew_leaves_an_in_flight_pulse_to_end_itself() {
+    // A slew refused by its path check after winning the reservation
+    // must not have taken the axes from a pulse: the pulse's watcher
+    // still ends it, rather than Dec turning on at the guide rate.
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let mut cfg = base_config();
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Active(ActiveZone::new(0.95, 11.05));
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    cfg.mount.ra_pulse_edge_steps = NO_TRIM;
+    let manager = MountManager::new(&cfg, Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    d.pulse_guide(GuideDirection::North, Duration::from_secs(3))
+        .await
+        .unwrap();
+    // mech_HA 11.5 h is outside the zone, but the only way there from
+    // mech_HA 0 on this side crosses it.
+    let lst = d.sidereal_time().await.unwrap();
+    let target_ra = (lst - 11.5).rem_euclid(24.0);
+    d.slew_to_coordinates_async(target_ra, 0.0)
+        .await
+        .unwrap_err();
+    assert!(
+        d.is_pulse_guiding().await.unwrap(),
+        "a refused slew took the axis from the pulse"
+    );
+    until_pulse_ends(&d).await;
+    assert!(
+        !mock.lock().await.dec.running,
+        "the pulse never stopped Dec"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pulse_refuses_when_the_live_gate_finds_ra_running_a_goto() {
+    // The background snapshot has not seen the goto yet, so only the
+    // pulse's own live `:f1` does: it must refuse rather than change the
+    // speed of someone else's slew.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    {
+        let mut m = mock.lock().await;
+        m.ra.mode = skywatcher_motor_protocol::ModeKind::Goto;
+        m.ra.running = true;
+    }
+    let from = mock.lock().await.command_log.len();
+    let err = d
+        .pulse_guide(GuideDirection::East, Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(!d.is_pulse_guiding().await.unwrap());
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from),
+        Vec::<String>::new()
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pulse_whose_stop_does_not_take_escalates_to_an_instant_stop() {
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.pulse_guide(GuideDirection::North, Duration::from_secs(1))
+        .await
+        .unwrap();
+    let from = {
+        let mut m = mock.lock().await;
+        m.ignore_decelerating_stop = true;
+        m.command_log.len()
+    };
+    until_pulse_ends(&d).await;
+    let m = mock.lock().await;
+    assert_eq!(setter_frames_since(&m, from), vec![":K2", ":L2"]);
+    assert!(!m.dec.running);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_refused_restart_leaves_ra_stopped_and_tracking_off() {
+    let (d, mock) = pulse_device(NO_TRIM, |m| m.reject_live_step_period = true).await;
+    d.set_tracking(true).await.unwrap();
+    d.pulse_guide(GuideDirection::West, Duration::from_secs(1))
+        .await
+        .unwrap();
+    mock.lock().await.fault_script.push_back(ScriptedFault {
+        letter: b'J',
+        fault: Fault::MountError(4),
+    });
+    until_pulse_ends(&d).await;
+    assert!(!mock.lock().await.ra.running);
+    assert!(!d.tracking().await.unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_restore_escalates_to_an_instant_stop_when_the_stop_does_not_take() {
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    d.pulse_guide(GuideDirection::East, Duration::from_secs(1))
+        .await
+        .unwrap();
+    let from = {
+        let mut m = mock.lock().await;
+        m.ignore_decelerating_stop = true;
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'I',
+            fault: Fault::MountError(2),
+        });
+        m.command_log.len()
+    };
+    until_pulse_ends(&d).await;
+    let m = mock.lock().await;
+    assert_eq!(
+        setter_frames_since(&m, from),
+        vec![":I108CC05", ":K1", ":L1"]
+    );
+    assert!(!m.ra.running);
+    drop(m);
+    assert!(!d.tracking().await.unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_ambiguous_start_from_rest_stops_the_axis_it_may_have_started() {
+    // The `:J2` reply is lost, so Dec may be turning at the guide rate
+    // with no watcher to end it: the failed start has to stop it.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    let from = {
+        let mut m = mock.lock().await;
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'J',
+            fault: Fault::Garbled,
+        });
+        m.command_log.len()
+    };
+    d.pulse_guide(GuideDirection::North, Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert!(!d.is_pulse_guiding().await.unwrap());
+    let m = mock.lock().await;
+    assert_eq!(
+        setter_frames_since(&m, from),
+        vec![":K2", ":G210", ":I2147E0E", ":J2", ":K2"]
+    );
+    assert!(!m.dec.running, "the failed start left Dec running");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_ambiguous_start_from_rest_puts_a_tracking_ra_back_at_sidereal() {
+    // Tracking is on but RA is stopped, so the pulse starts RA from rest.
+    // Its `:J1` may have landed at the guide rate: RA goes back to the
+    // sidereal rate Tracking promises.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    let from = {
+        let mut m = mock.lock().await;
+        m.ra.running = false;
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'J',
+            fault: Fault::Garbled,
+        });
+        m.command_log.len()
+    };
+    d.pulse_guide(GuideDirection::East, Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert!(!d.is_pulse_guiding().await.unwrap());
+    let m = mock.lock().await;
+    assert_eq!(
+        setter_frames_since(&m, from),
+        vec![":K1", ":G110", ":I110980B", ":J1", ":I108CC05"]
+    );
+    assert!(m.ra.running);
+    assert_eq!(m.ra.step_period, 379_912, "RA must be back at sidereal");
+    drop(m);
+    assert!(d.tracking().await.unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pulse_whose_axis_is_taken_during_the_stop_never_starts_it() {
+    // A pulse starting Dec from rest waits for its stop with the axes
+    // released. An abort in that window owns Dec from then on: the pulse
+    // must give up rather than start Dec again after the abort stopped it.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    let from = {
+        let mut m = mock.lock().await;
+        m.dec.running = true;
+        m.ignore_decelerating_stop = true;
+        m.command_log.len()
+    };
+    let pulse = d.pulse_guide(GuideDirection::North, Duration::from_secs(1));
+    let abort = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        d.abort_slew().await.unwrap();
+    };
+    let (started, ()) = tokio::join!(pulse, abort);
+    assert_eq!(started.unwrap_err().code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(!d.is_pulse_guiding().await.unwrap());
+    let m = mock.lock().await;
+    assert_eq!(setter_frames_since(&m, from), vec![":K2", ":L1", ":L2"]);
+    assert!(!m.dec.running);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_restore_that_no_stop_confirms_leaves_tracking_on() {
+    // RA may still be moving, so the tracking-time guard has to keep
+    // watching it: Tracking must not read false.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    d.pulse_guide(GuideDirection::East, Duration::from_secs(1))
+        .await
+        .unwrap();
+    let from = {
+        let mut m = mock.lock().await;
+        m.ignore_decelerating_stop = true;
+        m.ignore_instant_stop = true;
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'I',
+            fault: Fault::MountError(2),
+        });
+        m.command_log.len()
+    };
+    until_pulse_ends(&d).await;
+    let m = mock.lock().await;
+    assert_eq!(
+        setter_frames_since(&m, from),
+        vec![":I108CC05", ":K1", ":L1"]
+    );
+    assert!(m.ra.running);
+    drop(m);
+    assert!(
+        d.tracking().await.unwrap(),
+        "Tracking read false over an RA no stop was confirmed on"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_rollback_that_no_stop_confirms_leaves_tracking_on() {
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    let from = {
+        let mut m = mock.lock().await;
+        m.ignore_decelerating_stop = true;
+        m.ignore_instant_stop = true;
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'I',
+            fault: Fault::Garbled,
+        });
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'I',
+            fault: Fault::MountError(2),
+        });
+        m.command_log.len()
+    };
+    d.pulse_guide(GuideDirection::West, Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert!(!d.is_pulse_guiding().await.unwrap());
+    let m = mock.lock().await;
+    assert_eq!(
+        setter_frames_since(&m, from),
+        vec![":I15BDD03", ":I108CC05", ":K1", ":L1"]
+    );
+    assert!(m.ra.running);
+    drop(m);
+    assert!(
+        d.tracking().await.unwrap(),
+        "Tracking read false over an RA no stop was confirmed on"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_ambiguous_rollback_is_retried() {
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    let from = {
+        let mut m = mock.lock().await;
+        for _ in 0..2 {
+            m.fault_script.push_back(ScriptedFault {
+                letter: b'I',
+                fault: Fault::Garbled,
+            });
+        }
+        m.command_log.len()
+    };
+    d.pulse_guide(GuideDirection::West, Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    let m = mock.lock().await;
+    assert_eq!(
+        setter_frames_since(&m, from),
+        vec![":I15BDD03", ":I108CC05", ":I108CC05"]
+    );
+    assert!(m.ra.running);
+    assert_eq!(m.ra.step_period, 379_912);
+    drop(m);
+    assert!(d.tracking().await.unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_ambiguous_start_whose_stop_does_not_take_escalates_to_an_instant_stop() {
+    // Dec starts at rest, so the start's own ignored `:K2` changes
+    // nothing; the one that ends the failed start does not take either.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    let from = {
+        let mut m = mock.lock().await;
+        m.ignore_decelerating_stop = true;
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'J',
+            fault: Fault::Garbled,
+        });
+        m.command_log.len()
+    };
+    d.pulse_guide(GuideDirection::North, Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    assert!(!d.is_pulse_guiding().await.unwrap());
+    let m = mock.lock().await;
+    assert_eq!(
+        setter_frames_since(&m, from),
+        vec![":K2", ":G210", ":I2147E0E", ":J2", ":K2", ":L2"]
+    );
+    assert!(!m.dec.running, "the failed start left Dec running");
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_ambiguous_restart_start_stops_ra_and_turns_tracking_off() {
+    // The mount refuses live rate changes, so this RA pulse starts RA from
+    // rest. Its `:J1` may have landed at the guide rate: RA is stopped, and
+    // only then may Tracking read false.
+    let (d, mock) = pulse_device(NO_TRIM, |m| m.reject_live_step_period = true).await;
+    d.set_tracking(true).await.unwrap();
+    d.pulse_guide(GuideDirection::East, Duration::from_millis(200))
+        .await
+        .unwrap();
+    until_pulse_ends(&d).await;
+    let from = {
+        let mut m = mock.lock().await;
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'J',
+            fault: Fault::Garbled,
+        });
+        m.command_log.len()
+    };
+    d.pulse_guide(GuideDirection::West, Duration::from_secs(1))
+        .await
+        .unwrap_err();
+    let m = mock.lock().await;
+    assert_eq!(
+        setter_frames_since(&m, from).last().map(String::as_str),
+        Some(":K1")
+    );
+    assert!(!m.ra.running);
+    drop(m);
+    assert!(!d.tracking().await.unwrap());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pulse_ending_while_a_slew_plans_still_ends_itself() {
+    // A slew holds its reservation from before planning, but takes the
+    // pulse's axis only once planning succeeds. A pulse whose deadline
+    // falls in between must still end itself: the slew may yet be
+    // refused, and then nothing else would stop Dec.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.pulse_guide(GuideDirection::North, Duration::from_millis(500))
+        .await
+        .unwrap();
+    let from = mock.lock().await.command_log.len();
+    {
+        let _planning = d.axis_ownership.lock().await;
+        d.slew_in_progress.store(true, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    until_pulse_ends(&d).await;
+    // The slew is refused by its path checks.
+    d.slew_in_progress.store(false, Ordering::SeqCst);
+    let m = mock.lock().await;
+    assert_eq!(setter_frames_since(&m, from), vec![":K2"]);
+    assert!(!m.dec.running, "the pulse left Dec running");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pulse_starting_while_a_slew_plans_still_starts() {
+    // A pulse re-checks its claim after its stop-and-wait. A slew that has
+    // reserved the axes but not yet taken them may still be refused, so
+    // the pulse goes ahead; a slew that goes on to move takes the axis
+    // and stops it itself.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    let from = {
+        let mut m = mock.lock().await;
+        m.dec.running = true;
+        m.ignore_decelerating_stop = true;
+        m.command_log.len()
+    };
+    let pulse = d.pulse_guide(GuideDirection::North, Duration::from_secs(1));
+    let plan_a_slew = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        d.slew_in_progress.store(true, Ordering::SeqCst);
+        let mut m = mock.lock().await;
+        m.dec.running = false;
+        m.ignore_decelerating_stop = false;
+    };
+    let (started, ()) = tokio::join!(pulse, plan_a_slew);
+    started.unwrap();
+    d.slew_in_progress.store(false, Ordering::SeqCst);
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from),
+        vec![":K2", ":G210", ":I2147E0E", ":J2"]
+    );
+    until_pulse_ends(&d).await;
+    assert!(!mock.lock().await.dec.running);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slew_that_fails_before_stopping_dec_stops_the_dec_pulse_it_took() {
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.pulse_guide(GuideDirection::North, Duration::from_secs(10))
+        .await
+        .unwrap();
+    let from = {
+        let mut m = mock.lock().await;
+        // The slew's RA stop is refused, before it reaches Dec.
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'K',
+            fault: Fault::MountError(2),
+        });
+        m.command_log.len()
+    };
+    let lst = d.sidereal_time().await.unwrap();
+    d.slew_to_coordinates_async((lst - 1.0).rem_euclid(24.0), 10.0)
+        .await
+        .unwrap_err();
+    assert!(!d.is_pulse_guiding().await.unwrap());
+    let m = mock.lock().await;
+    assert_eq!(setter_frames_since(&m, from), vec![":K1", ":K2"]);
+    assert!(!m.dec.running, "the failed slew left Dec at the guide rate");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_park_that_fails_before_stopping_dec_stops_the_dec_pulse_it_took() {
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.pulse_guide(GuideDirection::North, Duration::from_secs(10))
+        .await
+        .unwrap();
+    let from = {
+        let mut m = mock.lock().await;
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'K',
+            fault: Fault::MountError(2),
+        });
+        m.command_log.len()
+    };
+    d.park().await.unwrap_err();
+    assert!(!d.is_pulse_guiding().await.unwrap());
+    let m = mock.lock().await;
+    assert_eq!(setter_frames_since(&m, from), vec![":K1", ":K2"]);
+    assert!(!m.dec.running, "the failed park left Dec at the guide rate");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_tracking_write_that_fails_to_stop_ra_stops_the_ra_pulse_it_took() {
+    // Tracking is off, so this East pulse runs RA from rest at the guide
+    // rate; the tracking guard does not watch RA while Tracking is off.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.pulse_guide(GuideDirection::East, Duration::from_secs(10))
+        .await
+        .unwrap();
+    let from = {
+        let mut m = mock.lock().await;
+        m.fault_script.push_back(ScriptedFault {
+            letter: b'K',
+            fault: Fault::MountError(2),
+        });
+        m.command_log.len()
+    };
+    d.set_tracking(true).await.unwrap_err();
+    assert!(!d.is_pulse_guiding().await.unwrap());
+    assert!(!d.tracking().await.unwrap());
+    let m = mock.lock().await;
+    assert_eq!(setter_frames_since(&m, from), vec![":K1", ":K1"]);
+    assert!(
+        !m.ra.running,
+        "the failed Tracking write left RA at the guide rate"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn disconnect_during_a_pulse_halts_tracking_too() {
+    // The cancelled pulse's watcher holds a session that defers the
+    // last-disconnect safety stop; Tracking reads false after the
+    // disconnect, so RA must not be left tracking.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    d.pulse_guide(GuideDirection::North, Duration::from_secs(10))
+        .await
+        .unwrap();
+    d.set_connected(false).await.unwrap();
+    {
+        let m = mock.lock().await;
+        assert!(!m.ra.running, "disconnect left RA tracking");
+        assert!(!m.dec.running, "disconnect left Dec running");
+    }
+    d.set_connected(true).await.unwrap();
+    assert!(!d.tracking().await.unwrap());
+    assert!(!mock.lock().await.ra.running);
 }

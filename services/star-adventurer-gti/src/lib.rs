@@ -50,8 +50,8 @@ pub mod units;
 
 pub use config::{
     load_config, ActiveZone, AlpacaServerConfig, ApPark, Config, CwExclusionZone, FlipPolicy,
-    MinAltitudeDegrees, MountConfig, TrackingGuardMarginHours, TrackingRateName, TransportConfig,
-    UdpConfig, UsbConfig,
+    MinAltitudeDegrees, MountConfig, RaPulseEdgeSteps, TrackingGuardMarginHours, TrackingRateName,
+    TransportConfig, UdpConfig, UsbConfig,
 };
 pub use error::{Result, StarAdvError};
 pub use manager::{MountManager, MountParameters, MountSnapshot, PollPauseGuard};

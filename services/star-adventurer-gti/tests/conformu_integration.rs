@@ -66,8 +66,19 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     // 200 ms (25 polls per pulse) the RA reads before and after a pulse
     // landed on the same poll phase, and any read that paired a stale
     // encoder sample with a live LST cancelled out — the mock could not
-    // see the ±0.2 s cross-axis readings the hardware showed (issue
-    // #1334). 300 ms leaves the two reads a third of a poll apart.
+    // see the ±0.2 s cross-axis readings the hardware showed. 300 ms
+    // leaves the two reads a third of a poll apart.
+    //
+    // `flip_policy.enabled` lets ConformU reach its HA +9 pulse-guide leg
+    // through the pole: under the shipped default that leg lies inside the
+    // counterweight exclusion zone, the driver refuses the slew, and
+    // ConformU abandons `CheckMethods`. It is the config the hardware
+    // record ran, and it switches on ConformU's meridian-flip test.
+    //
+    // `ra_pulse_edge_steps` is zero because the mock's motor board adds no
+    // forward step at a rate change (its `rate_change_step_ticks` defaults
+    // to 0); the shipped trim is a measurement of the real GTi and would
+    // bend every East/West pulse against the mock by exactly the trim.
     let config = serde_json::json!({
         "transport": {
             "kind": "usb",
@@ -88,7 +99,9 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
             "site_longitude_deg": -122.3321,
             "site_elevation_m": 56.0,
             "settle_after_slew": "200ms",
-            "tracking_rate": "sidereal"
+            "tracking_rate": "sidereal",
+            "flip_policy": { "enabled": true },
+            "ra_pulse_edge_steps": { "east": 0.0, "west": 0.0 }
         }
     });
 
