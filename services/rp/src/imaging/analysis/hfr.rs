@@ -18,6 +18,10 @@ use super::stars::Star;
 /// Per-star half-flux radius in pixels. `None` if the star's total
 /// background-subtracted flux is non-positive.
 #[must_use]
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "prev + t·(dist − prev) is the canonical lerp shape for the half-flux crossing; analysis math feeding autofocus stays unfused"
+)]
 pub fn star_hfr<T: Pixel>(view: &ArrayView2<T>, star: &Star, background_mean: f64) -> Option<f64> {
     let mut samples: Vec<(f64, f64)> = Vec::with_capacity(star.pixels.len());
     let mut total_flux = 0.0_f64;

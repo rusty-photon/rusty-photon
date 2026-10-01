@@ -206,7 +206,7 @@ impl AxisSimState {
         };
         let steps_per_second = f64::from(tmr_freq) / f64::from(self.step_period) * gearing;
         let elapsed = now.saturating_duration_since(last).as_secs_f64();
-        let ticks = steps_per_second * elapsed + self.tracking_tick_remainder;
+        let ticks = steps_per_second.mul_add(elapsed, self.tracking_tick_remainder);
         let whole = ticks.floor();
         self.tracking_tick_remainder = ticks - whole;
         self.position_ticks = clamp_to_wire_range(

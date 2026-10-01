@@ -18,6 +18,16 @@
 | Docker | [docs.docker.com](https://docs.docker.com/get-docker/) | act-based workflow execution |
 | act | `curl -s https://raw.githubusercontent.com/nektos/act/master/install.sh \| sudo bash` | Local CI runner |
 
+**Keep stable current: the clippy gate requires clippy ≥ 1.99.** CI installs
+whatever stable is current (`dtolnay/rust-toolchain@stable`), and the
+workspace's lint attributes track it: an older clippy rejects the tree under
+`-D warnings` — 1.97 does not know `clippy::unused_async_trait_impl`, and 1.98
+reports the `#[expect(clippy::suboptimal_flops)]`s that only 1.99's widened
+detection fulfils as unfulfilled. Run `rustup update stable` when a new stable
+ships, before the clippy passes below. Each stable bump can add newly-denied
+lints; the `beta / clippy` census files them as `beta-clippy` issues ~6 weeks
+ahead (docs/plans/archive/workspace-lints.md, "Standing consequences").
+
 ### Optional tools
 
 | Tool | Install | Used by |
