@@ -6,9 +6,11 @@ Feature: Binning and region-of-interest
   (B1). The cached ROI is held in unbinned sensor pixels, so a bin change
   changes only the divisor the binned members are read through: a sub-frame
   walked away from its bin and back is the frame the client set, not a
-  truncated remainder of it (B3). Setting a bin writes to the camera, so it
-  takes the same claim a capture does and is rejected with INVALID_OPERATION
-  while an exposure is in flight (B4). The ROI setters (StartX / StartY / NumX
+  truncated remainder of it (B3). A bin is cached like the sub-frame and
+  reaches the camera when StartExposure arms it, so setting one needs no
+  device of its own: BinX and BinY sent together are both accepted, and a bin
+  set while an exposure is in flight is taken for the next exposure rather
+  than refused. The ROI setters (StartX / StartY / NumX
   / NumY) accept any u32 (R1) — geometry is
   not validated at the setter but at StartExposure, which rejects a zero or
   out-of-bounds sub-frame with INVALID_VALUE (R2), and likewise an odd NumX
@@ -93,10 +95,20 @@ Feature: Binning and region-of-interest
       | 101   | 100   |
       | 100   | 101   |
 
-  Scenario: A binning change while an exposure is in flight is rejected
+  Scenario: BinX and BinY sent together are both accepted
+    When I set BinX and BinY to 2 together on camera device 0
+    And I set BinX and BinY to 1 together on camera device 0
+    And I set BinX and BinY to 2 together on camera device 0
+    Then camera device 0 reports BinX as 2 and BinY as 2
+
+  Scenario: A binning change while an exposure is in flight is taken for the next exposure
     Given an exposure is in flight on camera device 0
-    When I try to set BinX 2 and BinY 2 on camera device 0
-    Then the set is rejected with ASCOM INVALID_OPERATION
+    When I set BinX 2 and BinY 2 on camera device 0
+    Then camera device 0 reports BinX as 2 and BinY as 2
+    When I abort the exposure on camera device 0
+    And I StartExposure on camera device 0 with the current sub-frame and Duration 0.01 Light true
+    And the exposure on camera device 0 completes
+    Then camera device 0 returns an ImageArray of 1524 by 1022
 
   Scenario: The ROI setters accept any value
     When I set StartX 5000 NumX 5000 StartY 5000 NumY 5000 on camera device 0

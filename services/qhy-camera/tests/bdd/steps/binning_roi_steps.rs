@@ -11,6 +11,13 @@ async fn set_bin(world: &mut CameraWorld, bin_x: u8, bin_y: u8, _device: u32) {
     camera.set_bin_y(bin_y).await.unwrap();
 }
 
+/// `BinX` and `BinY` as two concurrent requests — the paired `set_bin` rp
+/// calls, which `ascom-alpaca` sends with `try_join!`.
+#[when(regex = r"^I set BinX and BinY to (\d+) together on camera device (\d+)$")]
+async fn set_bin_together(world: &mut CameraWorld, bin: u8, _device: u32) {
+    world.camera().set_bin([bin, bin]).await.unwrap();
+}
+
 #[when(regex = r"^I try to set BinX (\d+) and BinY (\d+) on camera device (\d+)$")]
 async fn try_set_bin(world: &mut CameraWorld, bin_x: u8, bin_y: u8, _device: u32) {
     let camera = world.camera();
