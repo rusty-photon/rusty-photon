@@ -1271,6 +1271,13 @@ fn open_mock() -> std::future::Ready<Result<Box<dyn FrameTransport>, ProbeError>
 /// `SIGQUIT` into the abort flag instead of their default termination, so
 /// every one of them ends with the safety stop. Installed before the port
 /// opens; later signals repeat the notice and change nothing.
+#[cfg_attr(
+    not(unix),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "only the cfg(unix) signal registration can fail; one signature serves both cfgs"
+    )
+)]
 fn spawn_signal_watch(abort: &Arc<AtomicBool>) -> Result<(), ProbeError> {
     #[cfg(unix)]
     {
