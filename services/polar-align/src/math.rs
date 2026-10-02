@@ -748,10 +748,10 @@ mod tests {
         ] {
             let a = attitude_from_wcs(&frame).unwrap();
             let at_a = a.transpose().mul_mat(a);
-            for i in 0..3 {
-                for j in 0..3 {
+            for (i, row) in at_a.rows.iter().enumerate() {
+                for (j, &value) in row.iter().enumerate() {
                     let expected = if i == j { 1.0 } else { 0.0 };
-                    assert_close(at_a.rows[i][j], expected, 1e-9, "AᵀA = I");
+                    assert_close(value, expected, 1e-9, "AᵀA = I");
                 }
             }
         }

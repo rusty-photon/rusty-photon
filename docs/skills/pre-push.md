@@ -27,6 +27,13 @@ detection fulfils as unfulfilled. Run `rustup update stable` when a new stable
 ships, before the clippy passes below. Each stable bump can add newly-denied
 lints; the `beta / clippy` census files them as `beta-clippy` issues ~6 weeks
 ahead (docs/plans/archive/workspace-lints.md, "Standing consequences").
+Absorb them before the release with a change that is clean on **both**
+channels: an `#[expect]` for a site only beta flags is unfulfilled on stable
+and fails the gate, and a site left alone turns `main` red the day CI picks up
+the new stable. Check it with `cargo +beta clippy` on the touched packages
+alongside the stable passes. Widened detection can hinge on the item's shape:
+clippy 1.99 does not lint `suboptimal_flops` inside a `const fn` body, and
+1.100 does (gated on the workspace `rust-version`).
 
 ### Optional tools
 

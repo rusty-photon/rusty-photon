@@ -1598,7 +1598,7 @@ mod tests {
                             "webhook_url": "http://127.0.0.1:11140/webhook",
                             "subscribes_to": ["exposure_complete"],
                         },
-                        entry.clone(),
+                        entry,
                     ],
                     "server": {"port": 0},
                 })
