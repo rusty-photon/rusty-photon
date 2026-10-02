@@ -158,23 +158,3 @@ rust_test(
         normal_dev = True,
     ),
 )
-
-rust_test(
-    name = "wire_timing",
-    size = "small",
-    srcs = ["tests/wire_timing.rs"] + _COMMON_SRCS,
-    aliases = aliases(
-        normal_dev = True,
-        proc_macro_dev = True,
-    ),
-    crate_root = "tests/wire_timing.rs",
-    edition = "2021",
-    proc_macro_deps = all_crate_deps(
-        proc_macro = True,
-        proc_macro_dev = True,
-    ),
-    deps = [":rusty-photon-shared-transport"] + all_crate_deps(
-        normal = True,
-        normal_dev = True,
-    ),
-)

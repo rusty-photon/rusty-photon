@@ -90,41 +90,68 @@ impl fmt::Display for DisplayWire<'_> {
 
 /// When one request's frames crossed the host's side of the wire.
 ///
-/// Both instants are on tokio's clock and are taken inside the command
-/// lock, so time spent queued behind other callers is in neither:
+/// All three instants are on tokio's clock and are taken inside the
+/// command lock, so time spent queued behind other callers is in none
+/// of them:
 ///
 /// * `sent_at` — immediately before the command frame is handed to
-///   [`FrameTransport::send_frame`]. The task is running when it is
-///   taken and nothing yields between it and the write, so a busy host
-///   can delay *when* a command goes out but not how well this records
-///   it.
+///   [`FrameTransport::send_frame`]. Nothing in this layer runs between
+///   the stamp and the write, so a busy host can delay *when* a command
+///   goes out without moving this away from it. What can still come
+///   between them only makes the stamp early, never late: the runtime
+///   may make the task wait for writability or for its cooperative
+///   budget before the write, and the OS may preempt the thread.
+/// * `written_at` — immediately after `send_frame` returned: the frame
+///   had been handed to the OS. [`Self::send_gap`] is normally
+///   microseconds; a larger one says the task was held up on the way
+///   to the write, and by how much.
 /// * `received_at` — immediately after the `recv_frame` that returned
 ///   the answering frame. The reply reached the host earlier than this
-///   by however long the host took to notice it: the runtime has to
-///   dispatch the read readiness and then run the task, and on a loaded
-///   host either can wait tens of milliseconds.
+///   by however long the host took to notice it: the kernel has to
+///   complete the transfer and wake the reader, the runtime has to
+///   dispatch the readiness and run the task, and on a loaded host each
+///   can wait tens of milliseconds.
 ///
-/// The device therefore handled the command somewhere in
-/// `[sent_at, received_at]`, whatever the host was doing, and
-/// [`Self::round_trip`] bounds how far either stamp can be from that
-/// instant. Where inside the interval the device acts is a property of
-/// the device and the link, not of this layer: a caller that needs the
-/// instant a device-side value was latched picks its convention from
-/// the protocol it speaks.
+/// So the device handled the command somewhere in
+/// `[sent_at, received_at]`, whatever the host was doing — provided the
+/// answering frame really is this command's reply. A protocol whose
+/// replies carry no tag (the default [`Codec::matches`]) can be handed a
+/// frame left over from an earlier exchange, such as one that arrived
+/// after its request timed out; then the reply predates `sent_at`, and
+/// [`Self::round_trip`] comes out shorter than the link can physically
+/// manage.
+///
+/// Where inside the interval the device acts is a property of the
+/// device and the link, not of this layer: a caller that has to date a
+/// value the device latched picks its convention from the protocol it
+/// speaks. The asymmetry above is what usually decides it — host load
+/// lands on the reply's side of the exchange, so a device that latches
+/// on receipt of the command is dated better by `sent_at` than by
+/// `received_at` or by their midpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WireTiming {
-    /// Taken just before the command frame was written.
+    /// Taken just before the command frame was handed to the transport.
     pub sent_at: Instant,
+    /// Taken just after the transport accepted the command frame.
+    pub written_at: Instant,
     /// Taken just after the answering frame was read.
     pub received_at: Instant,
 }
 
 impl WireTiming {
-    /// `received_at − sent_at`: an upper bound on how far either stamp
-    /// can be from the instant the device handled the command.
+    /// `received_at − sent_at`: an upper bound on how far either end of
+    /// the exchange can be from the instant the device handled the
+    /// command.
     #[must_use]
     pub fn round_trip(&self) -> Duration {
         self.received_at.saturating_duration_since(self.sent_at)
+    }
+
+    /// `written_at − sent_at`: how long the task took to get the frame
+    /// to the OS once it held the wire. Normally microseconds.
+    #[must_use]
+    pub fn send_gap(&self) -> Duration {
+        self.written_at.saturating_duration_since(self.sent_at)
     }
 }
 
@@ -300,9 +327,10 @@ impl<C: Codec> Connection<C> {
     /// [`Self::request`], plus when the exchange crossed the wire.
     ///
     /// The [`WireTiming`] is that of the one command frame and of the
-    /// frame that answered it; frames skipped under
-    /// [`Codec::max_skip`](crate::Codec::max_skip) are not counted. The
-    /// `wire recv` trace event carries the elapsed `rtt` the same way.
+    /// frame that answered it; it ends at the answer, not at any frame
+    /// skipped under [`Codec::max_skip`]. Each `wire recv` trace event,
+    /// a skipped frame's included, carries the `rtt` since the command
+    /// frame went out.
     ///
     /// # Errors
     ///
@@ -342,6 +370,7 @@ impl<C: Codec> Connection<C> {
                 return Err(SessionError::Transport(e));
             }
         }
+        let written_at = Instant::now();
 
         let mut buf = Vec::new();
         let budget = self.codec.max_skip();
@@ -352,12 +381,14 @@ impl<C: Codec> Connection<C> {
             }
             let timing = WireTiming {
                 sent_at,
+                written_at,
                 received_at: Instant::now(),
             };
+            let rtt = timing.round_trip();
             trace!(
                 len = buf.len(),
                 skipped,
-                rtt = ?timing.round_trip(),
+                rtt = ?rtt,
                 bytes = %DisplayWire(&buf),
                 "wire recv"
             );
@@ -560,49 +591,76 @@ mod tests {
     /// host took to notice a reply on the rig in issue #1371.
     const REPLY_DELAY: Duration = Duration::from_millis(41);
 
-    /// [`EchoTransport`] whose echo takes `delay` to come back, the way
-    /// a reply does when the device is slow or the host is slow to
-    /// notice it.
+    /// How long the write takes in the test that holds one up.
+    const SEND_DELAY: Duration = Duration::from_millis(3);
+
+    /// [`EchoTransport`] whose write takes `send_delay` and whose echo
+    /// takes `reply_delay` to come back, the way they do when the host
+    /// is slow to get the frame out or to notice the reply.
     struct SlowEchoTransport {
         inner: EchoTransport,
-        delay: Duration,
+        send_delay: Duration,
+        reply_delay: Duration,
     }
 
     #[async_trait::async_trait]
     impl FrameTransport for SlowEchoTransport {
         async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+            tokio::time::sleep(self.send_delay).await;
             self.inner.send_frame(bytes).await
         }
 
         async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
-            tokio::time::sleep(self.delay).await;
+            tokio::time::sleep(self.reply_delay).await;
             self.inner.recv_frame(buf).await
         }
     }
 
-    fn slow_echo_connection(delay: Duration) -> Connection<StubCodec<true>> {
+    fn slow_echo_connection(
+        send_delay: Duration,
+        reply_delay: Duration,
+    ) -> Connection<StubCodec<true>> {
         let transport = SlowEchoTransport {
             inner: EchoTransport(None),
-            delay,
+            send_delay,
+            reply_delay,
         };
         Connection::new(Box::new(transport), StubCodec::<true>)
     }
 
     #[tokio::test(start_paused = true)]
-    async fn the_timing_runs_from_the_write_to_the_answer() {
-        let conn = slow_echo_connection(REPLY_DELAY);
+    async fn received_at_is_taken_when_the_answer_is_read() {
+        let conn = slow_echo_connection(Duration::ZERO, REPLY_DELAY);
         let before = Instant::now();
 
         let (resp, timing) = conn.request_timed(b"ping".to_vec()).await.unwrap();
 
         assert_eq!(resp, b"ping");
-        assert_eq!(timing.sent_at, before, "nothing ran before the write");
         assert_eq!(
             timing.received_at,
             before.checked_add(REPLY_DELAY).unwrap(),
-            "stamped when the answer was read"
+            "a reply the host is slow to notice is late in received_at"
         );
         assert_eq!(timing.round_trip(), REPLY_DELAY);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sent_at_is_taken_before_the_write_and_written_at_after_it() {
+        let conn = slow_echo_connection(SEND_DELAY, Duration::ZERO);
+        let before = Instant::now();
+
+        let (_, timing) = conn.request_timed(b"ping".to_vec()).await.unwrap();
+
+        assert_eq!(
+            timing.sent_at, before,
+            "sent_at precedes the write, so a slow write cannot make it late"
+        );
+        assert_eq!(
+            timing.written_at,
+            before.checked_add(SEND_DELAY).unwrap(),
+            "written_at follows the write"
+        );
+        assert_eq!(timing.send_gap(), SEND_DELAY);
     }
 
     #[tokio::test(start_paused = true)]
@@ -611,7 +669,7 @@ mod tests {
         // command lock. That wait is not wire time: its stamp has to
         // say when its own frame went out, or a sample it carries
         // would be dated an exchange too early.
-        let conn = slow_echo_connection(REPLY_DELAY);
+        let conn = slow_echo_connection(Duration::ZERO, REPLY_DELAY);
         let before = Instant::now();
 
         let (one, two) = tokio::join!(
@@ -627,7 +685,11 @@ mod tests {
             queued.sent_at, first.received_at,
             "the lock wait is not in the stamp"
         );
-        assert_eq!(queued.round_trip(), REPLY_DELAY);
+        assert_eq!(
+            queued.round_trip(),
+            REPLY_DELAY,
+            "the queued request's round trip is its own exchange"
+        );
     }
 
     /// Replies with `frames` in order, each `delay` after the last, and
@@ -691,7 +753,11 @@ mod tests {
 
         assert_eq!(resp, b"ok");
         assert_eq!(timing.sent_at, before);
-        assert_eq!(timing.round_trip(), REPLY_DELAY.saturating_mul(2));
+        assert_eq!(
+            timing.round_trip(),
+            REPLY_DELAY.saturating_mul(2),
+            "the timing ends at the answering frame, not at the skipped one"
+        );
     }
 
     #[tokio::test]
