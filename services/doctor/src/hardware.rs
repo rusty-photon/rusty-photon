@@ -5,7 +5,9 @@
 //! [`HardwareFacts`](rusty_photon_doctor_checks::HardwareFacts) — staged
 //! by the test seam, gathered read-only otherwise. One severity rule for
 //! the family: `fail` when the unit will start at boot and hit the
-//! problem, `warn` otherwise.
+//! problem, `warn` otherwise. The USB bus is judged by the scan instead: a
+//! scan that could not run always fails, and a device that is not working
+//! only ever warns.
 
 use std::path::PathBuf;
 
@@ -102,6 +104,7 @@ pub fn checks(ctx: &Context) -> Vec<Check> {
             firmware_helper(ctx, hw, scan, &mut checks);
         }
     }
+    usb_faults(hw, &mut checks);
     checks
 }
 
@@ -381,6 +384,22 @@ fn usb_device(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks: &mu
             Some(svc(scan)),
             format!("a USB device matching {identity} is present"),
         ));
+    } else if let Some(fault) =
+        hw.usb_fault_matching(&usb.vendor, usb.product.as_deref(), usb.model.as_deref())
+    {
+        // Seen by the scan, so the unplugged-cable wording would be wrong.
+        // Always a warning, whatever the unit's state: a device that is not
+        // working never fails doctor — only a scan that could not run does.
+        checks.push(Check::warn(
+            "hardware.usb-device",
+            Some(svc(scan)),
+            format!(
+                "the USB scan found a device matching {identity}, but it is not working, so \
+                 the service cannot use it: {} — {}",
+                fault.record, fault.reason
+            ),
+            Some(USB_FAULT_REMEDY.to_string()),
+        ));
     } else {
         checks.push(fail_or_warn(
             ctx,
@@ -393,6 +412,61 @@ fn usb_device(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks: &mu
             Some("check the cable, power, and hub; then re-run doctor".to_string()),
         ));
     }
+}
+
+// ---- hardware.usb-fault ----
+
+/// What to do about a device the scan found but that is not working,
+/// whatever made it a fault: an unplug race, a missing or broken driver, a
+/// disabled device, or a failed enumeration.
+const USB_FAULT_REMEDY: &str = "act on the reason: a device unplugged during the scan needs \
+     only a re-run; otherwise reseat it or try another cable or port, and on Windows check \
+     it in Device Manager (driver installed, device enabled) — then re-run doctor";
+
+/// One warning per record the USB scan found but could not count as a
+/// working device. Never a failure, whatever units are enabled: the dead
+/// device is left out of the inventory, everything else was inventoried
+/// and judged, and a service that needs it is already reported by its own
+/// `hardware.usb-device` check. A failed scan reports no faults.
+fn usb_faults(hw: &HardwareFacts, checks: &mut Vec<Check>) {
+    if hw.usb_unavailable.is_some() {
+        return;
+    }
+    for fault in &hw.usb_faults {
+        checks.push(Check::warn(
+            "hardware.usb-fault",
+            None,
+            format!(
+                "USB device {} was left out of the inventory: {}",
+                describe_fault(fault),
+                fault.reason
+            ),
+            Some(format!(
+                "{USB_FAULT_REMEDY}. Every working device was inventoried normally"
+            )),
+        ));
+    }
+}
+
+/// The fault's record, plus whatever it carries that the record does not
+/// already spell out: a Windows instance id names its ids and a sysfs path
+/// its port, but not the other way round.
+fn describe_fault(fault: &rusty_photon_doctor_checks::UsbFault) -> String {
+    use std::fmt::Write as _;
+    let mut described = fault.record.clone();
+    let record = fault.record.to_ascii_lowercase();
+    if let Some(vendor) = fault.vendor.as_deref().filter(|v| !record.contains(*v)) {
+        let product = fault.product.as_deref().unwrap_or("????");
+        let _ = write!(described, " ({vendor}:{product})");
+    }
+    if let Some(location) = fault
+        .location
+        .as_deref()
+        .filter(|l| !fault.record.contains(*l))
+    {
+        let _ = write!(described, " at {location}");
+    }
+    described
 }
 
 fn describe_identity(usb: &rusty_photon_server_config::doctor_toml::UsbMeta) -> String {
@@ -659,5 +733,51 @@ mod tests {
             !req.paths.iter().any(|p| p.to_str() == Some("/dev/ttyACM0")),
             "services with neither config nor unit are not probed"
         );
+    }
+
+    fn fault(
+        record: &str,
+        vendor: Option<&str>,
+        product: Option<&str>,
+        location: Option<&str>,
+    ) -> rusty_photon_doctor_checks::UsbFault {
+        rusty_photon_doctor_checks::UsbFault {
+            record: record.to_string(),
+            vendor: vendor.map(str::to_string),
+            product: product.map(str::to_string),
+            model: None,
+            location: location.map(str::to_string),
+            reason: "dead".to_string(),
+        }
+    }
+
+    /// A Windows instance id already names the ids, so only the location
+    /// it does not carry is added.
+    #[test]
+    fn test_describe_fault_adds_the_location_a_windows_record_lacks() {
+        let described = describe_fault(&fault(
+            "USB\\VID_0000&PID_0002\\5&27E528BF&0&5",
+            Some("0000"),
+            Some("0002"),
+            Some("ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS05)"),
+        ));
+        assert_eq!(
+            described,
+            "USB\\VID_0000&PID_0002\\5&27E528BF&0&5 at \
+             ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS05)"
+        );
+    }
+
+    /// A sysfs path already names the port, so only the ids it does not
+    /// carry are added — an unread product shown as such.
+    #[test]
+    fn test_describe_fault_adds_the_ids_a_sysfs_record_lacks() {
+        let described = describe_fault(&fault(
+            "/sys/bus/usb/devices/1-9",
+            Some("03c3"),
+            None,
+            Some("1-9"),
+        ));
+        assert_eq!(described, "/sys/bus/usb/devices/1-9 (03c3:????)");
     }
 }

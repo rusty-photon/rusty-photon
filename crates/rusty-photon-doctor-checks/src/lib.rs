@@ -44,4 +44,6 @@ pub mod service;
 pub mod udev;
 
 pub use access::Identity;
-pub use facts::{gather, HardwareFacts, PathFacts, PathKind, ProbeRequest, UsbDevice, UserFacts};
+pub use facts::{
+    gather, HardwareFacts, PathFacts, PathKind, ProbeRequest, UsbDevice, UsbFault, UserFacts,
+};
