@@ -980,8 +980,8 @@ mod macos {
     use super::{UsbDevice, UsbFault, UsbScan};
 
     /// `system_profiler -json SPUSBDataType`. Only the query itself
-    /// failing, or returning something other than JSON, fails the scan; a
-    /// device that cannot be placed is reported as a fault.
+    /// failing, or returning something other than its report, fails the
+    /// scan; a device that cannot be placed is reported as a fault.
     #[cfg(target_os = "macos")]
     pub fn usb_inventory() -> Result<UsbScan, String> {
         let output = super::bounded::capture(
@@ -996,19 +996,29 @@ mod macos {
             debug!(error = %e, "system_profiler output is not valid JSON");
             format!("macOS USB inventory returned unparsable JSON: {e}")
         })?;
-        Ok(parse_system_profiler(&value))
+        parse_system_profiler(&value).map_err(|e| {
+            debug!(error = %e, "system_profiler output is not a USB report");
+            format!("macOS USB inventory returned an unparsable report: {e}")
+        })
     }
 
     /// Split `system_profiler`'s tree into the working devices and the
     /// faults. Hubs nest their devices under `_items`, so the walk recurses.
-    pub fn parse_system_profiler(value: &serde_json::Value) -> UsbScan {
+    ///
+    /// A report with no `SPUSBDataType` list is not an empty bus: it is a
+    /// `system_profiler` that did not answer for that data type (reported
+    /// for macOS 26, unverified), so it fails the scan rather than reading as one with
+    /// no devices. An empty list is an empty bus.
+    pub fn parse_system_profiler(value: &serde_json::Value) -> Result<UsbScan, String> {
+        let top = value
+            .get("SPUSBDataType")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| "it has no SPUSBDataType list".to_string())?;
         let mut scan = UsbScan::default();
-        if let Some(top) = value.get("SPUSBDataType").and_then(|v| v.as_array()) {
-            for item in top {
-                walk(item, &mut scan);
-            }
+        for item in top {
+            walk(item, &mut scan);
         }
-        scan
+        Ok(scan)
     }
 
     fn walk(item: &serde_json::Value, scan: &mut UsbScan) {
@@ -1137,23 +1147,39 @@ mod windows {
     ///
     /// A null problem code is printed as an empty field rather than cast:
     /// `[uint32]$null` is `0`, which would read as a working device.
+    ///
+    /// The description and the friendly name are text a device (or its
+    /// driver) supplies, so their control characters become spaces before
+    /// they are printed: a tab or a line break in a product string must
+    /// not add a field or a line, or one odd device would fail the whole
+    /// listing (`parse_pnp_listing`). The instance id, the location paths
+    /// and the problem code are Windows' own and need no cleaning. In this
+    /// Rust literal the regex's backslash is doubled; a single `\x00`-style
+    /// escape would put a real NUL into the argument, which `Command`
+    /// refuses.
+    pub(super) const USB_QUERY: &str =
+        "Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | \
+         Where-Object { $_.InstanceId -like 'USB\\VID_*' } | \
+         ForEach-Object { \
+             $desc = [string](Get-PnpDeviceProperty -InstanceId $_.InstanceId \
+                 -KeyName DEVPKEY_Device_BusReportedDeviceDesc \
+                 -ErrorAction SilentlyContinue).Data -replace '\\p{Cc}', ' '; \
+             $paths = (Get-PnpDeviceProperty -InstanceId $_.InstanceId \
+                 -KeyName DEVPKEY_Device_LocationPaths \
+                 -ErrorAction SilentlyContinue).Data; \
+             $code = if ($null -ne $_.ConfigManagerErrorCode) \
+                 { [uint32]$_.ConfigManagerErrorCode }; \
+             $name = [string]$_.FriendlyName -replace '\\p{Cc}', ' '; \
+             \"$($_.InstanceId)`t$desc`t$($paths -join '|')`t$code`t$name\" }";
+
     #[cfg(windows)]
     pub fn usb_inventory() -> Result<UsbScan, String> {
-        let script = "Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | \
-             Where-Object { $_.InstanceId -like 'USB\\VID_*' } | \
-             ForEach-Object { \
-                 $desc = (Get-PnpDeviceProperty -InstanceId $_.InstanceId \
-                     -KeyName DEVPKEY_Device_BusReportedDeviceDesc \
-                     -ErrorAction SilentlyContinue).Data; \
-                 $paths = (Get-PnpDeviceProperty -InstanceId $_.InstanceId \
-                     -KeyName DEVPKEY_Device_LocationPaths \
-                     -ErrorAction SilentlyContinue).Data; \
-                 $code = if ($null -ne $_.ConfigManagerErrorCode) \
-                     { [uint32]$_.ConfigManagerErrorCode }; \
-                 \"$($_.InstanceId)`t$desc`t$($paths -join '|')`t$code`t$($_.FriendlyName)\" }";
         let listing =
-            powershell(script).map_err(|e| format!("Windows USB inventory failed: {e}"))?;
-        Ok(parse_pnp_listing(&listing))
+            powershell(USB_QUERY).map_err(|e| format!("Windows USB inventory failed: {e}"))?;
+        parse_pnp_listing(&listing).map_err(|e| {
+            debug!(error = %e, "PnP listing is not the query's output");
+            format!("Windows USB inventory returned an unparsable listing: {e}")
+        })
     }
 
     /// Split the collector's listing into the working devices and the
@@ -1161,32 +1187,47 @@ mod windows {
     /// bus-reported description, location paths joined by `|`, problem
     /// code, friendly name.
     ///
-    /// A line whose instance id is not `USB\VID_…` is not a candidate (root
-    /// hubs among them) and is skipped, as is a composite device's
-    /// per-interface child (`USB\VID_…&PID_…&MI_nn\…`), a function of a
-    /// device already listed under its own record. A candidate that is not
-    /// a working device — Windows reports a problem code, or its ids, its
-    /// problem code or its `PCIROOT(` port cannot be read — is a fault. No
-    /// single record can fail the listing: only the query itself failing
-    /// does that.
-    pub fn parse_pnp_listing(listing: &str) -> UsbScan {
+    /// The query keeps only `USB\VID_…` instances — root hubs and other
+    /// non-device instances never reach this parser — and prints all five
+    /// fields for each, blank or not, with the control characters in the
+    /// device-supplied text replaced (`USB_QUERY`), so no device's strings
+    /// can add a field or a line. A composite device's per-interface child
+    /// (`USB\VID_…&PID_…&MI_nn\…`), a function of a device already listed
+    /// under its own record, is skipped. A record that is not a working
+    /// device — Windows reports a problem code or none, or its ids or its
+    /// `PCIROOT(` port cannot be read — is a fault, and no such record can
+    /// fail the listing.
+    ///
+    /// A line the query cannot have produced does: one that is not a
+    /// `USB\VID_…` record or has fewer than the five fields, and, for a
+    /// record the parser reads (not an interface child, ids readable), a
+    /// problem code that is neither blank nor a number. That is output the
+    /// parser does not understand, not a device it understood to be broken,
+    /// and reading it as an empty or thinner bus would turn a collector
+    /// failure into absence and cable diagnoses.
+    pub fn parse_pnp_listing(listing: &str) -> Result<UsbScan, String> {
         let mut scan = UsbScan::default();
-        for line in listing.lines() {
+        for (line, number) in listing.lines().zip(1_usize..) {
             let line = line.trim_end_matches('\r');
             if line.trim().is_empty() {
                 continue;
             }
-            let mut fields = line.splitn(5, '\t');
-            let instance = fields.next().unwrap_or_default();
-            let desc = fields.next().unwrap_or_default().trim();
-            let paths = fields.next().unwrap_or_default();
-            let problem = fields.next().unwrap_or_default().trim();
-            let friendly = fields.next().unwrap_or_default().trim();
-
-            // A candidate device record is a `USB\VID_…` instance id.
-            let Some(rest) = instance.strip_prefix("USB\\VID_") else {
-                continue;
+            let fields: Vec<&str> = line.splitn(5, '\t').collect();
+            // The query's `-like 'USB\VID_*'` is case-insensitive.
+            let Some(rest) = fields.first().and_then(|instance| vid_rest(instance)) else {
+                return Err(format!(
+                    "line {number} is not a USB\\VID_ record: {}",
+                    excerpt(line)
+                ));
             };
+            let [instance, desc, paths, problem, friendly] = fields[..] else {
+                return Err(format!(
+                    "line {number} has {} of the 5 tab-separated fields: {}",
+                    fields.len(),
+                    excerpt(line)
+                ));
+            };
+            let (desc, problem, friendly) = (desc.trim(), problem.trim(), friendly.trim());
             // The Windows counterpart of a Linux interface entry: the
             // composite parent carries the device's ids and port.
             if rest
@@ -1213,6 +1254,12 @@ mod windows {
                 ));
                 continue;
             };
+            if problem.is_empty() {
+                scan.faults.push(fault(
+                    "Windows did not say whether it is working (no problem code)".to_string(),
+                ));
+                continue;
+            }
             match problem.parse::<u32>() {
                 Ok(0) => {}
                 Ok(code) => {
@@ -1220,10 +1267,9 @@ mod windows {
                     continue;
                 }
                 Err(_) => {
-                    scan.faults.push(fault(format!(
-                        "Windows did not say whether it is working (problem code {problem:?})"
-                    )));
-                    continue;
+                    return Err(format!(
+                        "line {number} has a problem code that is not a number ({problem:?})"
+                    ));
                 }
             }
             let Some(port) = location_path(paths) else {
@@ -1243,18 +1289,38 @@ mod windows {
                 serial: instance_serial(instance),
             });
         }
-        scan
+        Ok(scan)
+    }
+
+    /// What follows `USB\VID_` in an instance id, matched without regard to
+    /// case as the query's `-like` matches it; `None` for any other id.
+    fn vid_rest(instance: &str) -> Option<&str> {
+        const PREFIX: &str = "USB\\VID_";
+        instance
+            .get(..PREFIX.len())
+            .filter(|start| start.eq_ignore_ascii_case(PREFIX))
+            .and_then(|_| instance.get(PREFIX.len()..))
+    }
+
+    /// At most the first 120 characters of a line, quoted, for an error
+    /// message: a line the query did not produce could be anything, of any
+    /// length.
+    fn excerpt(line: &str) -> String {
+        let mut short: String = line.chars().take(120).collect();
+        if short.len() < line.len() {
+            short.push('…');
+        }
+        format!("{short:?}")
     }
 
     /// The two ids after `USB\VID_`, lowercased — `None` unless the
     /// instance id spells both as four hex digits.
     fn usb_ids(rest: &str) -> Option<(String, String)> {
         let vendor = rest.get(..4)?.to_lowercase();
-        let product = rest
-            .get(4..)?
-            .strip_prefix("&PID_")?
-            .get(..4)?
-            .to_lowercase();
+        if !rest.get(4..9)?.eq_ignore_ascii_case("&PID_") {
+            return None;
+        }
+        let product = rest.get(9..13)?.to_lowercase();
         (super::is_usb_id(&vendor) && super::is_usb_id(&product)).then_some((vendor, product))
     }
 
@@ -1774,20 +1840,15 @@ USB\\VID_1618&PID_0679\\6&4213695&0&3\tQHY678U3G20-20230106\tPCIROOT(0)#PCI(1400
 USB\\VID_1618&PID_C601\\6&4213695&0&1\tQHY600U3G20-20230614\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(SS02)#USB(1)\t0\tQHY5IIISeries_IO
 USB\\VID_0424&PID_5807\\5&27E528BF&0&14\tUSB5807 Hub\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(SS02)\t0\tGeneric SuperSpeed USB Hub
 USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(7)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS02)#USB(7)\t0\tUSB Serial Converter
-USB\\ROOT_HUB30\\4&29AB4BED&0&0\t\tPCIROOT(0)#PCI(1400)#USBROOT(0)\t0\tUSB Root Hub (USB 3.0)
 ";
 
     /// Windows' placeholder for a device whose descriptor request failed is
     /// a fault, and every working device beside it is inventoried.
     #[test]
     fn test_rig2_enumeration_failure_is_a_fault_beside_nine_working_devices() {
-        let scan = super::windows::parse_pnp_listing(RIG2_LISTING);
+        let scan = super::windows::parse_pnp_listing(RIG2_LISTING).unwrap();
 
-        assert_eq!(
-            scan.devices.len(),
-            9,
-            "every working device is inventoried; the root hub is not a candidate"
-        );
+        assert_eq!(scan.devices.len(), 9, "every working device is inventoried");
         assert_eq!(
             scan.faults,
             vec![UsbFault {
@@ -1811,7 +1872,7 @@ USB\\ROOT_HUB30\\4&29AB4BED&0&0\t\tPCIROOT(0)#PCI(1400)#USBROOT(0)\t0\tUSB Root 
     /// publish.
     #[test]
     fn test_rig2_services_find_their_devices_despite_the_phantom() {
-        let scan = super::windows::parse_pnp_listing(RIG2_LISTING);
+        let scan = super::windows::parse_pnp_listing(RIG2_LISTING).unwrap();
         let facts = HardwareFacts {
             usb: scan.devices,
             usb_faults: scan.faults,
@@ -1837,7 +1898,7 @@ USB\\ROOT_HUB30\\4&29AB4BED&0&0\t\tPCIROOT(0)#PCI(1400)#USBROOT(0)\t0\tUSB Root 
                        PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)|\
                        ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(SS02)#USB(1)\t\
                        28\tQHY5IIISeries_IO\n";
-        let scan = super::windows::parse_pnp_listing(listing);
+        let scan = super::windows::parse_pnp_listing(listing).unwrap();
 
         assert_eq!(scan.devices, Vec::<UsbDevice>::new());
         assert_eq!(
@@ -1862,7 +1923,7 @@ USB\\ROOT_HUB30\\4&29AB4BED&0&0\t\tPCIROOT(0)#PCI(1400)#USBROOT(0)\t0\tUSB Root 
     fn test_pnp_device_without_a_pciroot_path_is_a_fault() {
         let listing = "USB\\VID_03C3&PID_662B\\6&21D0E52E&0&4\tASI662MC\t\
                        ACPI(_SB_)#ACPI(URS0)#USB(4)\t0\tZWO ASI662MC Camera\n";
-        let scan = super::windows::parse_pnp_listing(listing);
+        let scan = super::windows::parse_pnp_listing(listing).unwrap();
 
         assert_eq!(scan.devices, Vec::<UsbDevice>::new());
         assert_eq!(scan.faults.len(), 1);
@@ -1883,7 +1944,7 @@ USB\\ROOT_HUB30\\4&29AB4BED&0&0\t\tPCIROOT(0)#PCI(1400)#USBROOT(0)\t0\tUSB Root 
     fn test_pnp_device_with_unreadable_location_paths_is_a_fault_that_says_so() {
         let listing =
             "USB\\VID_03C3&PID_662B\\6&21D0E52E&0&4\tASI662MC\t\t0\tZWO ASI662MC Camera\n";
-        let scan = super::windows::parse_pnp_listing(listing);
+        let scan = super::windows::parse_pnp_listing(listing).unwrap();
 
         assert_eq!(scan.devices, Vec::<UsbDevice>::new());
         assert_eq!(scan.faults.len(), 1);
@@ -1894,23 +1955,149 @@ USB\\ROOT_HUB30\\4&29AB4BED&0&0\t\tPCIROOT(0)#PCI(1400)#USBROOT(0)\t0\tUSB Root 
         assert_eq!(scan.faults[0].location, None);
     }
 
-    /// A problem-code field that is not a number is not read as "working".
+    /// A blank problem code — Windows reported none — is not read as
+    /// "working": the record is a fault.
     #[test]
-    fn test_pnp_device_with_an_unreadable_problem_code_is_a_fault() {
+    fn test_pnp_device_without_a_problem_code_is_a_fault() {
         let listing = "USB\\VID_03C3&PID_662B\\6&21D0E52E&0&4\tASI662MC\t\
                        PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)\t\tZWO ASI662MC Camera\n";
-        let scan = super::windows::parse_pnp_listing(listing);
+        let scan = super::windows::parse_pnp_listing(listing).unwrap();
 
         assert_eq!(scan.devices, Vec::<UsbDevice>::new());
         assert_eq!(
             scan.faults[0].reason,
-            "Windows did not say whether it is working (problem code \"\")"
+            "Windows did not say whether it is working (no problem code)"
         );
+    }
+
+    /// The query prints a problem code as a number or not at all, so a
+    /// field that is neither is output the parser does not understand: a
+    /// failed scan, not a fault and never a working device.
+    #[test]
+    fn test_pnp_listing_with_a_non_numeric_problem_code_fails_the_scan() {
+        let listing = "USB\\VID_03C3&PID_662B\\6&21D0E52E&0&4\tASI662MC\t\
+                       PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)\tOK\tZWO ASI662MC Camera\n";
+        let error = super::windows::parse_pnp_listing(listing).unwrap_err();
+        assert_eq!(
+            error,
+            "line 1 has a problem code that is not a number (\"OK\")"
+        );
+    }
+
+    /// The parser's rule that a short or foreign line is a failed scan rests
+    /// on the query cleaning the two device-supplied fields: without that, a
+    /// tab or line break in one device's product string would fail the
+    /// whole listing. The parser tests cannot run `PowerShell`, so this pins
+    /// the cleaning in the query text itself — and that its regex reaches
+    /// `PowerShell` as `\p{Cc}`, not as a NUL `Command` would refuse.
+    #[test]
+    fn test_usb_query_cleans_control_characters_from_device_supplied_text() {
+        let query = super::windows::USB_QUERY;
+        assert!(
+            query.contains("$desc = [string](Get-PnpDeviceProperty"),
+            "{query}"
+        );
+        assert!(
+            query.contains("$name = [string]$_.FriendlyName -replace '\\p{Cc}', ' '"),
+            "{query}"
+        );
+        assert_eq!(
+            query.matches(".Data -replace '\\p{Cc}', ' '").count(),
+            1,
+            "the description is cleaned: {query}"
+        );
+        assert!(query.ends_with("`t$code`t$name\" }"), "{query}");
+        assert!(!query.contains('\0'), "no NUL reaches the argument");
+    }
+
+    /// A per-interface child is skipped whatever its problem field holds:
+    /// one composite child must not fail the listing.
+    #[test]
+    fn test_pnp_listing_skips_an_interface_child_whatever_its_problem_field() {
+        let listing = "USB\\VID_2E8A&PID_000A\\E463B0531F4C3831\tDeep Sky Dad FP2\t\
+                       PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)\t0\tUSB Composite Device\n\
+                       USB\\VID_2E8A&PID_000A&MI_00\\7&1A2B3C4D&0&0000\t\t\
+                       PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)#USBMI(0)\tOK\tx\n";
+        let scan = super::windows::parse_pnp_listing(listing).unwrap();
+        assert_eq!(scan.faults, Vec::<UsbFault>::new());
+        assert_eq!(scan.devices.len(), 1);
+    }
+
+    /// A record whose ids cannot be read is a fault whatever its problem
+    /// field holds: it is a record the inventory could not identify, not
+    /// output it could not read.
+    #[test]
+    fn test_pnp_listing_reports_unreadable_ids_as_a_fault_whatever_its_problem_field() {
+        let listing = "USB\\VID_ZZZZ&PID_0001\\1\t\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)\tOK\t\n";
+        let scan = super::windows::parse_pnp_listing(listing).unwrap();
+        assert_eq!(scan.devices, Vec::<UsbDevice>::new());
+        assert_eq!(scan.faults.len(), 1);
+        assert_eq!(
+            scan.faults[0].reason,
+            "its instance id does not name a vendor and product"
+        );
+    }
+
+    /// Every line the query prints is a `USB\VID_` record, so anything else
+    /// — here after two good records — fails the scan, naming the line,
+    /// instead of reading as a thinner bus.
+    #[test]
+    fn test_pnp_listing_with_a_line_the_query_cannot_produce_fails_the_scan() {
+        let mut listing = RIG2_LISTING.lines().take(2).collect::<Vec<_>>().join("\n");
+        listing.push_str("\ngarbage\n");
+        let error = super::windows::parse_pnp_listing(&listing).unwrap_err();
+        assert_eq!(error, "line 3 is not a USB\\VID_ record: \"garbage\"");
+    }
+
+    /// The query prints all five fields for every record, so a record with
+    /// fewer is truncated or foreign output: a failed scan, not a fault.
+    #[test]
+    fn test_pnp_listing_with_a_record_missing_fields_fails_the_scan() {
+        let listing = "USB\\VID_03C3&PID_662B\\6&21D0E52E&0&4\tASI662MC\t\
+                       PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)\n";
+        let error = super::windows::parse_pnp_listing(listing).unwrap_err();
+        assert!(
+            error.starts_with("line 1 has 3 of the 5 tab-separated fields: \"USB\\\\VID_03C3"),
+            "{error}"
+        );
+    }
+
+    /// A line too long to quote whole is cut short in the error.
+    #[test]
+    fn test_pnp_listing_error_quotes_a_long_line_only_in_part() {
+        let listing = "x".repeat(500);
+        let error = super::windows::parse_pnp_listing(&listing).unwrap_err();
+        assert_eq!(
+            error,
+            format!("line 1 is not a USB\\VID_ record: \"{}…\"", "x".repeat(120))
+        );
+    }
+
+    /// An empty listing is an empty bus, which is not an error.
+    #[test]
+    fn test_pnp_listing_that_is_empty_is_an_empty_bus() {
+        let scan = super::windows::parse_pnp_listing("\r\n").unwrap();
+        assert_eq!(scan.devices, Vec::<UsbDevice>::new());
+        assert_eq!(scan.faults, Vec::<UsbFault>::new());
+    }
+
+    /// The query's `-like 'USB\VID_*'` ignores case, so the parser does too.
+    #[test]
+    fn test_pnp_listing_accepts_a_lowercase_instance_id() {
+        let listing = "usb\\vid_03c3&pid_662b\\6&21d0e52e&0&4\tASI662MC\t\
+                       PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)\t0\tZWO ASI662MC Camera\n";
+        let scan = super::windows::parse_pnp_listing(listing).unwrap();
+        assert_eq!(scan.faults, Vec::<UsbFault>::new());
+        assert_eq!(scan.devices.len(), 1);
+        assert_eq!(scan.devices[0].vendor, "03c3");
+        assert_eq!(scan.devices[0].product, "662b");
     }
 
     #[test]
     fn test_pnp_listing_parses_vid_pid_model_port_and_serial() {
-        let devices = super::windows::parse_pnp_listing(RIG2_LISTING).devices;
+        let devices = super::windows::parse_pnp_listing(RIG2_LISTING)
+            .unwrap()
+            .devices;
         let upb = devices
             .iter()
             .find(|d| d.vendor == "0403" && d.product == "6015")
@@ -1954,7 +2141,7 @@ USB\\ROOT_HUB30\\4&29AB4BED&0&0\t\tPCIROOT(0)#PCI(1400)#USBROOT(0)\t0\tUSB Root 
         let listing = "USB\\VID_ZZ\tBroken\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)\t0\tBroken\n\
                        USB\\VID_03C3&PID_662B\\6&21D0E52E&0&4\tASI662MC\t\
                        PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)\t0\tZWO ASI662MC Camera\n";
-        let scan = super::windows::parse_pnp_listing(listing);
+        let scan = super::windows::parse_pnp_listing(listing).unwrap();
 
         assert_eq!(
             scan.devices.len(),
@@ -1977,7 +2164,7 @@ USB\\ROOT_HUB30\\4&29AB4BED&0&0\t\tPCIROOT(0)#PCI(1400)#USBROOT(0)\t0\tUSB Root 
     #[test]
     fn test_pnp_listing_reports_non_hex_ids_as_a_fault() {
         let listing = "USB\\VID_ZZZZ&PID_0001\\1\t\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)\t0\t\n";
-        let scan = super::windows::parse_pnp_listing(listing);
+        let scan = super::windows::parse_pnp_listing(listing).unwrap();
         assert_eq!(scan.devices, Vec::<UsbDevice>::new());
         assert_eq!(scan.faults[0].vendor, None);
     }
@@ -1992,7 +2179,7 @@ USB\\VID_0000&PID_0002\\5&27E528BF&0&5\t\tACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(
 USB\\VID_8087&PID_0033\\5&27E528BF&0&10\t\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(10)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS10)\t0\tIntel(R) Wireless Bluetooth(R)\r\n\
 USB\\VID_0424&PID_5807\\5&27E528BF&0&14\tUSB5807 Hub\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(SS02)\t0\tGeneric SuperSpeed USB Hub\r\n\
 USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(7)|ACPI(_SB_)#ACPI(PC00)#ACPI(XHCI)#ACPI(RHUB)#ACPI(HS02)#USB(7)\t0\tUSB Serial Converter\r\n";
-        let scan = super::windows::parse_pnp_listing(listing);
+        let scan = super::windows::parse_pnp_listing(listing).unwrap();
 
         assert_eq!(scan.devices.len(), 4);
         let upb = scan
@@ -2025,7 +2212,7 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
                        PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)#USBMI(0)\t0\tUSB Serial Device (COM4)\n\
                        USB\\VID_2E8A&PID_000A&MI_02\\7&1A2B3C4D&0&0002\t\t\
                        PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(1)#USBMI(2)\t28\tReset\n";
-        let scan = super::windows::parse_pnp_listing(listing);
+        let scan = super::windows::parse_pnp_listing(listing).unwrap();
 
         assert_eq!(scan.faults, Vec::<UsbFault>::new());
         assert_eq!(scan.devices.len(), 1);
@@ -2041,7 +2228,7 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
     fn test_pnp_device_with_an_unlisted_problem_code_is_a_fault_named_by_number() {
         let listing = "USB\\VID_03C3&PID_662B\\6&21D0E52E&0&4\tASI662MC\t\
                        PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)\t99\t\n";
-        let scan = super::windows::parse_pnp_listing(listing);
+        let scan = super::windows::parse_pnp_listing(listing).unwrap();
 
         assert_eq!(scan.devices, Vec::<UsbDevice>::new());
         assert_eq!(
@@ -2050,8 +2237,33 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
         );
     }
 
-    fn system_profiler(json: &str) -> UsbScan {
+    fn system_profiler(json: &str) -> Result<UsbScan, String> {
         super::macos::parse_system_profiler(&serde_json::from_str(json).unwrap())
+    }
+
+    /// A report without the `SPUSBDataType` list — the shape expected
+    /// (unverified) from a `system_profiler` that no longer answers for the
+    /// data type — fails the scan instead of reading as a bus with no
+    /// devices.
+    #[test]
+    fn test_system_profiler_report_without_the_usb_list_fails_the_scan() {
+        assert_eq!(
+            system_profiler("{}").unwrap_err(),
+            "it has no SPUSBDataType list"
+        );
+        assert_eq!(
+            system_profiler(r#"{ "SPUSBDataType": {} }"#).unwrap_err(),
+            "it has no SPUSBDataType list",
+            "the data type must be a list"
+        );
+    }
+
+    /// An empty list is a genuinely empty bus, which is not an error.
+    #[test]
+    fn test_system_profiler_empty_usb_list_is_an_empty_bus() {
+        let scan = system_profiler(r#"{ "SPUSBDataType": [] }"#).unwrap();
+        assert_eq!(scan.devices, Vec::<UsbDevice>::new());
+        assert_eq!(scan.faults, Vec::<UsbFault>::new());
     }
 
     /// A device behind a hub is found by recursing into `_items`, and its
@@ -2065,7 +2277,8 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
                   "_items": [ { "_name": "ASI662MC", "vendor_id": "0x03c3  (ZWO)",
                                 "product_id": "0x662b", "location_id": "0x14210000 / 3",
                                 "serial_num": "" } ] } ] } ] }"#,
-        );
+        )
+        .unwrap();
 
         assert_eq!(scan.faults, Vec::<UsbFault>::new());
         assert_eq!(scan.devices.len(), 2, "the controller node is not a device");
@@ -2085,7 +2298,8 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
                 { "_name": "UPBv2 revA", "vendor_id": "0x0403", "product_id": "0x6015",
                   "location_id": "0x14100000 / 1" },
                 { "_name": "ASI662MC", "vendor_id": "0x03c3", "product_id": "0x662b" } ] } ] }"#,
-        );
+        )
+        .unwrap();
 
         assert_eq!(scan.devices.len(), 1);
         assert_eq!(scan.devices[0].vendor, "0403");
@@ -2108,7 +2322,8 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
         let scan = system_profiler(
             r#"{ "SPUSBDataType": [ { "vendor_id": "0x03c3", "product_id": "0x662b",
                                       "location_id": "garbage" } ] }"#,
-        );
+        )
+        .unwrap();
         assert_eq!(scan.faults[0].record, "03c3:662b");
         assert_eq!(scan.faults[0].model, None);
     }

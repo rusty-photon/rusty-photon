@@ -326,7 +326,23 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
     faults like any other record the inventory cannot place.
   - **A failed scan** — the collector itself could not run: sysfs
     unreadable, `system_profiler` or `powershell.exe` erroring, timing out
-    or returning output that cannot be parsed. Every collector used to
+    or returning output that cannot be parsed. Output that cannot be
+    parsed is output the query cannot have produced, which is the
+    collector's failure rather than a device's. On Windows that is a line
+    that is not a `USB\VID_…` record or has fewer than the five
+    tab-separated fields the query prints for every record, or — for a
+    record the parser reads (not an interface child, ids readable) — a
+    problem code that is neither blank nor a number; the error names the
+    line. The query replaces control characters in the two fields a
+    device or its driver supplies (the bus-reported description and the
+    friendly name) with spaces, so a tab or line break in a product
+    string cannot add a field or a line and fail the listing. On macOS it
+    is a report that is not JSON or has no `SPUSBDataType` list — the
+    shape expected from a `system_profiler` that no longer answers for
+    the data type (reported for macOS 26, unverified; an empty list
+    instead would still read as an empty bus). Reading either as a bus
+    with fewer devices would turn a collector failure into absence and
+    cable diagnoses. Every collector used to
     fold this into an empty `Vec`, which reads as "no devices" —
     indistinguishable from a genuinely idle bus, and the wrong answer for
     any consumer deciding what hardware it may touch. So the scan reports
@@ -338,8 +354,9 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   their platform equivalent — are considered at all. The collectors pass
   over a great deal that is not a device, silently, as before: Linux
   interface entries (`1-4.2:1.0`) have no `idVendor`, Windows instance ids
-  that are not `USB\VID_…` (root hubs among them) are not candidates, nor
-  are a Windows composite device's per-interface children
+  that are not `USB\VID_…` (root hubs among them) are filtered out by the
+  query itself and never reach the parser, the parser skips a Windows
+  composite device's per-interface children
   (`USB\VID_…&PID_…&MI_nn\…` — the counterpart of the Linux interface
   entries; the composite parent carries the device's ids and port, and a
   driverless interface must not turn a healthy device into a fault), and

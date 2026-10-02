@@ -654,13 +654,19 @@ date. (`name` is display text, never a key.)
      Reported, left out of the inventory, never a failed scan.
    - **A failed scan** — the collector itself could not run: the source
      unreadable, the shell-out erroring or timing out, its output
-     unparsable.
+     unparsable — output the query cannot have produced, such as a
+     Windows line that is not a five-field `USB\VID_` record (the query
+     replaces control characters in device-supplied text, so a device's
+     own strings cannot produce one), or a macOS report with no
+     `SPUSBDataType` list. That is the collector's failure, not a
+     device's, and reading it as a thinner bus would hide it.
 
    **Not every entry is a candidate device record.** The collectors
    legitimately skip a great deal: the Linux walk passes over interface
-   entries that have no `idVendor` at all, Windows lists root hubs and
-   other non-`USB\VID_` instances plus a composite device's
-   per-interface children (`…&MI_nn`), and the macOS tree contains
+   entries that have no `idVendor` at all, the Windows query filters out
+   root hubs and other non-`USB\VID_` instances and the parser skips a
+   composite device's per-interface children (`…&MI_nn`), and the macOS
+   tree contains
    non-device nodes. Those are skipped silently. A *candidate* that is
    not a working device is a fault. C1 first failed the whole scan over
    one such record, and on `rig2` a single permanent Windows placeholder
@@ -743,10 +749,11 @@ date. (`name` is display text, never a key.)
      includes Windows on ARM and USB-over-IP clients (their devices
      publish no `PCIROOT(` path, so they are faults — deferred, outside
      the supported deployment), and macOS if `system_profiler` stops
-     providing `SPUSBDataType` (reported for macOS 26, unverified). The
-     last one would turn a collector problem into "no cameras on
-     macOS", so it is checked before C5 flips the no-list default (see
-     the waiting list) rather than discovered in the field.
+     providing `SPUSBDataType` (reported for macOS 26, unverified). A
+     report without that list is a failed scan, not an empty bus, so the
+     cause would at least be named — but it would still mean "no
+     cameras on macOS", so it is checked before C5 flips the no-list
+     default (see the waiting list) rather than discovered in the field.
 
    **A collector that never returns is a fourth state.** The macOS and
    Windows collectors shell out; C1 bounds both invocations with a
