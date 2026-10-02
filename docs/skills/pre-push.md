@@ -18,6 +18,16 @@
 | Docker | [docs.docker.com](https://docs.docker.com/get-docker/) | act-based workflow execution |
 | act | `curl -s https://raw.githubusercontent.com/nektos/act/master/install.sh \| sudo bash` | Local CI runner |
 
+**Keep stable current: the clippy gate requires clippy ≥ 1.99.** CI installs
+whatever stable is current (`dtolnay/rust-toolchain@stable`), and the
+workspace's lint attributes track it: an older clippy rejects the tree under
+`-D warnings` — 1.97 does not know `clippy::unused_async_trait_impl`, and 1.98
+reports the `#[expect(clippy::suboptimal_flops)]`s that only 1.99's widened
+detection fulfils as unfulfilled. Run `rustup update stable` when a new stable
+ships, before the clippy passes below. Each stable bump can add newly-denied
+lints; the `beta / clippy` census files them as `beta-clippy` issues ~6 weeks
+ahead (docs/plans/archive/workspace-lints.md, "Standing consequences").
+
 ### Optional tools
 
 | Tool | Install | Used by |
@@ -538,10 +548,10 @@ ppba-driver, qhy-camera, qhy-focuser, sky-survey-camera, svbony-camera,
 upbv2-driver, zwo-camera, zwo-focuser. The tests self-skip unless
 `CONFORMU_PATH` is set, which is what keeps them inert in the ordinary
 suites. star-adventurer-gti carries the test (and the Bazel `conformu`
-tag, so `bazel test --config=conformu //...` runs it — expected red until
-#1299 lands) but deliberately no `[package.metadata.conformu]`, so the
-nightly rotation never discovers it — see its design doc §"Running
-ConformU manually". The runner
+tag, so `bazel test --config=conformu //...` runs it — clean against the
+mock, about 12 minutes) but no `[package.metadata.conformu]` yet, so the
+nightly rotation never discovers it until #1344 adds it after a measured
+three-OS run — see its design doc §"Running ConformU manually". The runner
 contract (full test set through `bdd_infra::run_conformu`, selection only
 through `run_conformu_from_settings`) is in
 [testing.md §1.4](testing.md#14-conformu-integration-tests).

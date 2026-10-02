@@ -666,9 +666,9 @@ EAF; those belong to the other zwo services.)
   downstream reports it. Nothing in the setter reaches the SDK (the bin is pushed at arm
   time, from the capture request), so a bin change during a capture is *pinned*
   rather than refused: it describes the next frame, which a client may
-  legitimately set up while this one downloads. `qhy-camera`'s B4 refuses its
-  own bin setter instead, because there the bin is written to the camera
-  immediately and the write cannot be allowed beside a capture.
+  legitimately set up while this one downloads. `qhy-camera` does the same:
+  its bin is cached and pushed by `StartExposure`
+  ([B1](qhy-camera.md#behavioral-contracts)).
 - **R1.** `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry is validated at
   `StartExposure` (R2/R3), not at the setter.
 - **R2.** `StartExposure` with `StartX + NumX > CameraXSize / BinX` (or the Y
@@ -798,7 +798,7 @@ EAF; those belong to the other zwo services.)
   can never disagree. That last clause is this driver's *own* reason, and the
   refusal is its own choice: ASCOM and Alpaca document no error for a setter
   called mid-exposure, so nothing requires it. `qhy-camera` makes the same choice
-  about its geometry writes for a different reason —
+  about its readout-mode change for a different reason —
   [B4](qhy-camera.md#behavioral-contracts) — so the two are parallel decisions,
   not one shared rule.
 - **RM2.** The selected mode is the driver's whole format story: it is what

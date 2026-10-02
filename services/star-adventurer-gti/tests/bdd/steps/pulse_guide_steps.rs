@@ -1,7 +1,7 @@
 //! Steps for `pulse_guide.feature`.
 
 use crate::world::StarAdventurerWorld;
-use cucumber::{then, when};
+use cucumber::{given, then, when};
 use std::time::{Duration, Instant};
 
 fn parse_direction(s: &str) -> ascom_alpaca::api::telescope::GuideDirection {
@@ -122,17 +122,26 @@ async fn guide_rate_dec_approx(world: &mut StarAdventurerWorld, expected: f64, t
     );
 }
 
-#[then(expr = "the RA tracking-mode :G110 frame count should be exactly {int}")]
-async fn ra_g110_count(world: &mut StarAdventurerWorld, expected: usize) {
-    // Each pulse start emits one `:G110\r`. A restored sidereal-tracking
-    // re-issue (the watcher's post-sleep branch when `tracking_was_on`)
-    // emits a second `:G110\r`. Counting frames in the log lets a
-    // scenario assert whether the restore step fired without trying to
-    // identify which frame came from which call site.
+#[then(expr = "the mount should have received exactly {int} {word} frame(s)")]
+async fn frame_count(world: &mut StarAdventurerWorld, expected: usize, frame: String) {
+    // Counting one exact frame across the whole post-startup log lets a
+    // scenario pin how often a wire command went out without having to
+    // say which call site sent each copy: `:K1` exactly once means the
+    // pulse itself never stopped RA, a second `:I108CC05` means a
+    // restore fired.
+    let want = format!("{frame}\r");
     let log = world.command_log().await;
-    let count = log.iter().filter(|c| c.as_str() == ":G110\r").count();
+    let count = log.iter().filter(|c| **c == want).count();
     assert_eq!(
         count, expected,
-        "expected exactly {expected} :G110 frames, saw {count} in log {log:?}"
+        "expected exactly {expected} {frame} frames, saw {count} in log {log:?}"
     );
+}
+
+#[given("the mount stops the RA axis on its own")]
+#[when("the mount stops the RA axis on its own")]
+async fn mount_stops_ra(world: &mut StarAdventurerWorld) {
+    // A stop the driver did not issue — a hand controller, a power
+    // glitch — leaves `Tracking` reading true over a stopped motor.
+    world.queue_seed("ra_running", false.into()).await;
 }

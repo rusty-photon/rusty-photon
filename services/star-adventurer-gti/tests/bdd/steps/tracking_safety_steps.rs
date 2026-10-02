@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use crate::world::StarAdventurerWorld;
-use cucumber::{given, then};
+use cucumber::{given, then, when};
 use star_adventurer_gti::{ActiveZone, CwExclusionZone, TrackingGuardMarginHours};
 
 /// `GTi` RA-axis counts-per-revolution (`0x375F00`) — the value the mock
@@ -41,6 +41,7 @@ async fn configured_margin(world: &mut StarAdventurerWorld, margin_hours: f64) {
 }
 
 #[given(expr = "the RA encoder is at mechanical HA {float} hours")]
+#[when(expr = "the RA encoder is at mechanical HA {float} hours")]
 async fn ra_encoder_at_mech_ha(world: &mut StarAdventurerWorld, mech_ha: f64) {
     let ticks = (mech_ha * GTI_CPR / 24.0).round() as i32;
     world.queue_seed("ra_ticks", ticks.into()).await;

@@ -129,6 +129,18 @@ fn cert_carries_san(world: &mut DoctorWorld, name: String, san: String) {
 const PROBE_ATTEMPTS: usize = 3;
 const PROBE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// The most one probe attempt may take, end to end. The server's own bounds
+/// cover a connection that stalls *on its side*, but nothing covered one
+/// that stalled on the client's: an unanswered connect, a handshake, or a
+/// response read with no end. A CI run once sat silent in this probe until
+/// Bazel killed the suite at 300 s, leaving no clue which stage it was in.
+/// With the deadline that becomes a `TimedOut` naming the stage — retried
+/// like any other transport abort, and reported if every attempt stalls.
+///
+/// 15 s is past the server's 10 s handshake bound, so a server-side drop
+/// still reaches the client as the abort it is rather than as our timeout.
+const PROBE_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Handshake against `addr` trusting `ca_path`, returning the HTTP status
 /// of a `/health` GET plus the peer's leaf certificate DER — reqwest hides
 /// the peer certificate, so this speaks rustls directly.
@@ -184,9 +196,15 @@ async fn probe_once(
 ) -> std::io::Result<(u16, Vec<u8>)> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let tcp = tokio::net::TcpStream::connect(addr).await?;
+    let deadline = tokio::time::Instant::now() + PROBE_ATTEMPT_TIMEOUT;
+    let tcp = within(
+        deadline,
+        "TCP connect",
+        tokio::net::TcpStream::connect(addr),
+    )
+    .await?;
     let name = rustls::pki_types::ServerName::try_from("localhost").expect("server name");
-    let mut tls = connector.connect(name, tcp).await?;
+    let mut tls = within(deadline, "TLS handshake", connector.connect(name, tcp)).await?;
     let peer_der = tls
         .get_ref()
         .1
@@ -194,12 +212,21 @@ async fn probe_once(
         .expect("peer certificates")[0]
         .to_vec();
 
-    tls.write_all(b"GET /health HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n")
-        .await?;
+    within(
+        deadline,
+        "request write",
+        tls.write_all(b"GET /health HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n"),
+    )
+    .await?;
     let mut response = Vec::new();
     // The server may close without a TLS close_notify; the bytes read so
-    // far still carry the status line.
-    tls.read_to_end(&mut response).await.ok();
+    // far still carry the status line. A read that never ends is still an
+    // error, though: that is the stall the deadline exists to name.
+    if let Err(e) = within(deadline, "response read", tls.read_to_end(&mut response)).await {
+        if e.kind() == std::io::ErrorKind::TimedOut {
+            return Err(e);
+        }
+    }
     std::str::from_utf8(&response)
         .ok()
         .and_then(|text| text.split_whitespace().nth(1))
@@ -215,6 +242,25 @@ async fn probe_once(
                     String::from_utf8_lossy(&response)
                 ),
             )
+        })
+}
+
+/// Run one stage of [`probe_once`] against the attempt's shared deadline,
+/// turning an expiry into a `TimedOut` error that says which stage stalled.
+async fn within<T>(
+    deadline: tokio::time::Instant,
+    stage: &str,
+    fut: impl std::future::Future<Output = std::io::Result<T>>,
+) -> std::io::Result<T> {
+    tokio::time::timeout_at(deadline, fut)
+        .await
+        .unwrap_or_else(|_| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "{stage} did not finish within the {PROBE_ATTEMPT_TIMEOUT:?} attempt deadline"
+                ),
+            ))
         })
 }
 

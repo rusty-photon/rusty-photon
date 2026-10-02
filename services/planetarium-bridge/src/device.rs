@@ -263,6 +263,10 @@ fn slew_fraction(elapsed_secs: f64, duration_secs: f64) -> f64 {
 }
 
 /// RA interpolation along the shortest arc, wrap-aware at 0h/24h.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "from + Δ·frac is the canonical lerp shape, the RA twin of fold_position's Dec lerp; the simulated slew gains nothing observable from fusing"
+)]
 fn interp_ra(from: f64, to: f64, frac: f64) -> f64 {
     let mut delta = (to - from).rem_euclid(24.0);
     if delta > 12.0 {

@@ -1,11 +1,30 @@
-Feature: PulseGuide as rate-shifted tracking
-  PulseGuide implements ASCOM autoguiding as a temporary rate shift on the
-  targeted axis built from the standard tracking primitives — no `:P`
+Feature: PulseGuide as a temporary rate change
+  PulseGuide implements ASCOM autoguiding as a temporary rate change on
+  the targeted axis, built from the tracking primitives — no `:P`
   command (that's the external ST4-jack rate setter, not a host-driven
-  pulse). For each direction the call emits
-  `:K<axis>` → `:G<axis>` (Tracking + ccw) → `:I<axis>` (shifted period) →
-  `:J<axis>`, sets `IsPulseGuiding`, and spawns a watcher task that
-  restores prior state after the requested duration.
+  pulse). A pulse takes one of two wire shapes:
+
+  An East/West pulse while RA is tracking changes the step period of the
+  running motor. After a live `:f1` read shows RA running in Tracking /
+  Slow / CW, the pulse sends `:I1` with the shifted period, and when it
+  ends, `:I1` with the sidereal period. It never sends `:K1`, `:G1` or
+  `:J1`, so the RA motor never stops. The restore is moved by the
+  configured edge-step trim (`mount.ra_pulse_edge_steps`), which cancels
+  the forward steps the GTi's motor board adds at each rate change.
+
+  Every other pulse starts its axis from rest: North/South, East/West
+  while tracking is off, and an East/West pulse whose RA axis is not
+  running as the driver believes. It emits `:K<axis>` → `:G<axis>`
+  (Tracking + ccw) → `:I<axis>` (shifted period) → `:J<axis>`. When it
+  ends, `:K<axis>` stops the axis — or, if Tracking was on, `:I1`
+  restores sidereal on the running motor.
+
+  Either way the call sets `IsPulseGuiding` and returns once the new
+  rate is on the wire, leaving a watcher task to end the pulse after
+  the requested duration. A pulse is cancelled — its watcher then sends
+  nothing — by `Tracking` writes, slews, `Park`, `AbortSlew`, the
+  tracking-time safety guard and disconnect. `SyncToCoordinates` does
+  not cancel a pulse: the pulse restores at its usual time.
 
   Direction → (axis, ccw, rate factor of sidereal), counterweight-down:
   | Direction | Axis | ccw   | rate factor      |
@@ -26,7 +45,7 @@ Feature: PulseGuide as rate-shifted tracking
   flip policy planned, so a mount placed past the pole by hand guides
   correctly with the policy disabled.
 
-  Wire mode bytes (Tracking-Slow):
+  Wire mode bytes (Tracking-Slow), for pulses that start from rest:
   | Direction | :G frame, counterweight-down | :G frame, counterweight-up |
   | East/West | :G110                        | :G110                      |
   | North     | :G210                        | :G211                      |
@@ -184,10 +203,11 @@ Feature: PulseGuide as rate-shifted tracking
       | :J2       |
     And IsPulseGuiding should become false within 20000 ms
 
-  Scenario: PulseGuide East while tracking shifts the rate and restores sidereal
-    # East slows tracking (period grows); after the pulse the watcher
-    # re-issues sidereal tracking on RA so the user-observable
-    # `Tracking` state is unchanged.
+  Scenario: PulseGuide East while tracking changes the rate of the running motor
+    # East slows tracking (period grows) and the restore brings back
+    # sidereal, both as `:I1` on the running motor. The only `:K1`,
+    # `:G110` and `:J1` in the log are the ones `I enable tracking` sent:
+    # the pulse never stops the RA motor, so it loses no sidereal motion.
     Given a running star-adventurer service
     When I connect the device
     And I enable tracking
@@ -195,17 +215,18 @@ Feature: PulseGuide as rate-shifted tracking
     Then IsPulseGuiding should become false within 20000 ms
     And the mount should have received commands matching:
       | pattern   |
-      | :K1       |
-      | :G110     |
-      | :I110980B |
-      | :J1       |
-      | :K1       |
       | :G110     |
       | :I108CC05 |
       | :J1       |
+      | :I110980B |
+      | :I108CC05 |
+    And the mount should have received exactly 1 :K1 frame
+    And the mount should have received exactly 1 :G110 frame
+    And the mount should have received exactly 1 :J1 frame
+    And Tracking should be true
 
-  Scenario: PulseGuide West while tracking shifts the rate and restores sidereal
-    # West speeds tracking (period shrinks); same restore shape as East.
+  Scenario: PulseGuide West while tracking changes the rate of the running motor
+    # West speeds tracking (period shrinks); same shape as East.
     Given a running star-adventurer service
     When I connect the device
     And I enable tracking
@@ -213,23 +234,59 @@ Feature: PulseGuide as rate-shifted tracking
     Then IsPulseGuiding should become false within 20000 ms
     And the mount should have received commands matching:
       | pattern   |
-      | :K1       |
-      | :G110     |
-      | :I15BDD03 |
-      | :J1       |
-      | :K1       |
       | :G110     |
       | :I108CC05 |
       | :J1       |
+      | :I15BDD03 |
+      | :I108CC05 |
+    And the mount should have received exactly 1 :K1 frame
+    And the mount should have received exactly 1 :G110 frame
+    And the mount should have received exactly 1 :J1 frame
+    And Tracking should be true
 
-  Scenario: PulseGuide East while not tracking does not restore tracking
-    # Without prior tracking, the watcher's RA restore branch is skipped
-    # — only a final `:K1` (stop) is emitted. Tracking stays off.
+  Scenario: PulseGuide East while tracking, with RA stopped behind the driver's back, restarts tracking
+    # The live `:f1` gate reads the wire, not the driver's memory:
+    # Tracking reads true but the motor was stopped outside the driver.
+    # The pulse starts the axis from rest at the shifted rate instead of
+    # sending a live `:I1` to a stopped motor, and ends by restoring
+    # sidereal on the running motor, so the mount is tracking again.
+    Given a running star-adventurer service
+    When I connect the device
+    And I enable tracking
+    And the mount stops the RA axis on its own
+    And I pulse guide East for 2000 ms
+    Then IsPulseGuiding should become false within 20000 ms
+    And the mount should have received commands matching:
+      | pattern   |
+      | :G110     |
+      | :I108CC05 |
+      | :J1       |
+      | :K1       |
+      | :G110     |
+      | :I110980B |
+      | :J1       |
+      | :I108CC05 |
+    And the mount should have received exactly 2 :G110 frames
+    And Tracking should be true
+
+  Scenario: PulseGuide East while not tracking starts RA from rest and stops it again
+    # Without tracking there is no running motor to change the rate of:
+    # the pulse starts RA from rest and ends with a `:K1`. Nothing
+    # restores tracking, so the RA :G110 is the pulse's own and the
+    # restore period never goes out.
     Given a running star-adventurer service
     When I connect the device
     And I pulse guide East for 200 ms
     Then IsPulseGuiding should become false within 10000 ms
-    And the RA tracking-mode :G110 frame count should be exactly 1
+    And the mount should have received commands matching:
+      | pattern   |
+      | :K1       |
+      | :G110     |
+      | :I110980B |
+      | :J1       |
+      | :K1       |
+    And the mount should have received exactly 1 :G110 frame
+    And the mount should have received exactly 0 :I108CC05 frames
     And Tracking should be false
 
   Scenario: PulseGuide fails while parked
@@ -305,22 +362,22 @@ Feature: PulseGuide as rate-shifted tracking
     Then IsPulseGuiding should become false within 20000 ms
 
   Scenario: set_tracking(false) during an RA pulse cancels the pulse restore
-    # Cancellation rule: any axis-mutating call clears the pulse flag
-    # before issuing its own wire commands, so the watcher's post-sleep
-    # restore step bails out. The user-observable invariant is that
-    # tracking stays off after the pulse — the watcher MUST NOT
-    # re-issue tracking. The on-the-wire :G110 count after this
-    # scenario is exactly 2: one from `enable tracking` (sidereal
-    # start) and one from `pulse guide East` (rate-shifted start).
-    # A third :G110 would indicate the watcher restored tracking
-    # despite the cancellation.
+    # Cancellation rule: an operation that takes over an axis clears its
+    # pulse's ownership before its own wire commands, so the watcher sends
+    # nothing when the pulse would have ended. The user-observable
+    # invariant is that tracking stays off after the pulse. The single
+    # `:I108CC05` is the one `I enable tracking` sent: disabling
+    # tracking itself sends no restore period. That the watcher sends
+    # nothing when the 30 s pulse ends is pinned by the driver's unit
+    # tests, since the pulse outlives this scenario.
     #
     # Pulse duration of 30 s guarantees the pulse is still in flight
     # when `I disable tracking` lands, however slowly CI schedules the
     # HTTP round-trip — a tight duration here would race the watcher's
     # restore decision. The long pulse costs no runtime: cancellation
     # clears the flag immediately, and scenario teardown stops the
-    # service, aborting the detached watcher.
+    # service, aborting the detached watcher. That the watcher sends
+    # nothing when its time comes is pinned by the driver's unit tests.
     Given a running star-adventurer service
     When I connect the device
     And I enable tracking
@@ -328,7 +385,45 @@ Feature: PulseGuide as rate-shifted tracking
     And I disable tracking
     Then IsPulseGuiding should become false within 10000 ms
     And Tracking should be false
-    And the RA tracking-mode :G110 frame count should be exactly 2
+    And the mount should have received exactly 1 :I108CC05 frame
+
+  Scenario: SyncToCoordinates during an RA pulse lets the pulse restore sidereal
+    # Sync rewrites the encoder but does not take over the axis' motion:
+    # what the pulse restores does not depend on the position. The
+    # pulse carries on across the sync and restores sidereal at its
+    # usual time — the second `:I108CC05`, after the sync's `:E1`. The
+    # 20 s pulse keeps the sync inside it however slowly CI schedules
+    # the HTTP round trip.
+    Given a running star-adventurer service
+    When I connect the device
+    And I enable tracking
+    And I pulse guide East for 20000 ms
+    And I sync to RA 6.0 hours and Dec 20.0 degrees
+    Then IsPulseGuiding should become false within 60000 ms
+    And the mount should have received commands matching:
+      | pattern   |
+      | :I110980B |
+      | :E1.*     |
+      | :I108CC05 |
+    And the mount should have received exactly 2 :I108CC05 frames
+    And Tracking should be true
+
+  Scenario: The tracking-time safety guard cancels an in-flight RA pulse
+    # The guard stops RA when tracking drifts into the CW exclusion
+    # zone's margin. It takes the axis from any RA pulse in flight, so
+    # the pulse's restore cannot restart the motor behind it:
+    # IsPulseGuiding clears when the guard fires, long before the 30 s
+    # pulse would have ended. The single `:I108CC05` is the one
+    # `I enable tracking` sent; that the cancelled pulse's watcher never
+    # restores is pinned by the driver's unit tests.
+    Given a running star-adventurer service
+    When I connect the device
+    And I enable tracking
+    And I pulse guide East for 30000 ms
+    And the RA encoder is at mechanical HA 0.93 hours
+    Then the mount should stop tracking within 5000 ms
+    And IsPulseGuiding should become false within 5000 ms
+    And the mount should have received exactly 1 :I108CC05 frame
 
   Scenario: AbortSlew during an in-flight pulse clears IsPulseGuiding
     # 30 s pulse: the abort must genuinely interrupt an in-flight pulse —

@@ -378,6 +378,7 @@ jobs:
             --test_tag_filters=-requires-cargo,-bdd,-conformu //...
 
       - name: bazel test (BDD)
+        id: bdd
         # BDD cucumber tests spawn service binaries and take 30-150s each;
         # run them explicitly in their own step. They need OMNISIM_PATH (the
         # install-omnisim action's pinned binary path, consumed by
@@ -445,6 +446,26 @@ jobs:
           bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd,-requires-cargo \
             --test_output=all \
             //...
+
+      # --test_output=all makes this job's log ~46k lines, and tail-limited
+      # readers (the GitHub MCP job-log tool returns the last 5,000) miss a
+      # suite that failed early in the step — a shard, a timeout — entirely.
+      # Keep each suite's own log, per shard, so a red
+      # BDD step can be read as files. `bazel-out/*/testlogs` rather than the
+      # `bazel-testlogs` convenience link: the glob covers every OS's config
+      # dir (k8-, x64_windows-, darwin_arm64-fastbuild) through one pattern.
+      # Suffixed with the attempt so a re-run's upload never collides with the
+      # first attempt's.
+      - name: Upload BDD test logs
+        if: failure() && steps.bdd.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: bdd-testlogs-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: |
+            bazel-out/*/testlogs/**/test.log
+            bazel-out/*/testlogs/**/test.xml
+          if-no-files-found: warn
+          retention-days: 14
 
       # Where a doc test's dependency paths actually live decides whether the
       # runfiles-manifest resolver can reach them at all: argv elements go

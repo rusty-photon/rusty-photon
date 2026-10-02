@@ -32,8 +32,8 @@ use crate::units::{Cpr, Dec, DecTicks, Ra, RaTicks};
 use super::inherent::validate_guide_rate;
 use super::park_persistence::write_park_to_config;
 use super::slew::enable_sidereal_tracking_ra;
-use super::watchers::{clear_pulse_flag, spawn_park_completion_watcher, spawn_pulse_guide_watcher};
-use super::{pre_flip_side_for_latitude, MountDevice, SlewReservation};
+use super::watchers::spawn_park_completion_watcher;
+use super::{pre_flip_side_for_latitude, MountDevice, PulseGuiding, SlewReservation};
 
 /// What a guide pulse in one direction does on the wire: which axis it
 /// drives, which way, at what multiple of sidereal, and that axis'
@@ -317,44 +317,63 @@ impl Telescope for MountDevice {
 
     async fn set_tracking(&self, tracking: bool) -> ASCOMResult<()> {
         self.ensure_connected().await?;
-        // Cancel any in-flight RA pulse before mutating the RA axis.
-        // The pulse-guide watcher's post-sleep restore step checks
-        // `pulse_guiding.ra` and bails if cleared. Without this,
-        // `set_tracking(false)` during an East/West pulse would be
-        // silently undone when the watcher re-issued sidereal tracking
-        // on restore.
-        self.state.write().await.pulse_guiding.ra = false;
-        if tracking {
-            // Enabling tracking while parked is invalid per ASCOM
-            // ITelescopeV3. Disabling tracking while parked stays
-            // allowed — Park itself leaves tracking off, but a caller
-            // re-asserting that should not error.
-            self.ensure_unparked().await?;
-            let params = self
-                .manager
-                .parameters()
-                .await
-                .ok_or(ASCOMError::NOT_CONNECTED)?;
-            // Per Sky-Watcher spec §2: "Motor must be at full stop
-            // status before setting the motion mode." The RA axis
-            // may already be running — from a prior tracking enable,
-            // or because the firmware auto-engages Speed (Tracking)
-            // Mode after every goto completes. Force a stop and wait
-            // for the running flag to clear before re-issuing the
-            // tracking-mode `:G`/`:I`/`:J` sequence.
-            self.stop_and_wait(Axis::Ra).await?;
-            self.with_session(async |session| {
-                enable_sidereal_tracking_ra(&self.manager, session, &params)
-                    .await
-                    .map_err(ASCOMError::from)
-            })
-            .await?;
-        } else {
-            // Decelerate to stop on RA.
-            self.send(Command::StopMotion(Axis::Ra))
-                .await
-                .map_err(ASCOMError::from)?;
+        // Take RA from any pulse in flight before mutating it, and keep
+        // `axis_ownership` until `Tracking` matches the wire. A restore
+        // already on the wire finishes first and a later one sees the
+        // pulse gone and sends nothing — without this, `set_tracking(false)`
+        // during an East/West pulse would be undone when the pulse
+        // restored sidereal — and no new pulse can claim RA against the
+        // `Tracking` value this call is about to replace.
+        let _axes = self.axis_ownership.lock().await;
+        // The RA pulse this call takes over, until RA is stopped.
+        let mut taken = PulseGuiding::IDLE;
+        {
+            let mut s = self.state.write().await;
+            taken.set(Axis::Ra, s.pulse_guiding.get(Axis::Ra));
+            s.pulse_guiding.set(Axis::Ra, None);
         }
+        let result: ASCOMResult<()> = async {
+            if tracking {
+                // Enabling tracking while parked is invalid per ASCOM
+                // ITelescopeV3. Disabling tracking while parked stays
+                // allowed — Park itself leaves tracking off, but a caller
+                // re-asserting that should not error.
+                self.ensure_unparked().await?;
+                let params = self
+                    .manager
+                    .parameters()
+                    .await
+                    .ok_or(ASCOMError::NOT_CONNECTED)?;
+                // Per Sky-Watcher spec §2: "Motor must be at full stop
+                // status before setting the motion mode." The RA axis
+                // may already be running — from a prior tracking enable,
+                // or because the firmware auto-engages Speed (Tracking)
+                // Mode after every goto completes. Force a stop and wait
+                // for the running flag to clear before re-issuing the
+                // tracking-mode `:G`/`:I`/`:J` sequence.
+                self.stop_and_wait(Axis::Ra).await?;
+                taken = PulseGuiding::IDLE;
+                self.with_session(async |session| {
+                    enable_sidereal_tracking_ra(&self.manager, session, &params)
+                        .await
+                        .map_err(ASCOMError::from)
+                })
+                .await?;
+            } else {
+                // Decelerate to stop on RA.
+                self.send(Command::StopMotion(Axis::Ra))
+                    .await
+                    .map_err(ASCOMError::from)?;
+            }
+            Ok(())
+        }
+        .await;
+        if result.is_err() {
+            // RA was not stopped, and the pulse's watcher will send
+            // nothing: stop it rather than leave it at a guide rate.
+            self.stop_orphaned_axes(taken.axes()).await;
+        }
+        result?;
         self.state.write().await.tracking_requested = tracking;
         Ok(())
     }
@@ -612,22 +631,15 @@ impl Telescope for MountDevice {
         // stale. A sync is not motion, so it deliberately does not set
         // the flag — `Slewing` stays honest.
         //
-        // Both are taken before the pulse-guide cancel, so a refused
-        // sync has no side effects at all.
+        // A guide pulse in flight is left alone: what it restores does
+        // not depend on the encoder position, and its wire bursts take
+        // this same lock, so they queue behind the `:E` writes below.
         let _axes = self.axis_ownership.lock().await;
         if self.slew_in_progress.load(Ordering::SeqCst) {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "sync refused: slew already in progress",
             ));
-        }
-        // Cancel any in-flight pulse-guide on either axis — sync is
-        // an axis-position mutation and we don't want the watcher
-        // restoring tracking against the freshly-set encoder position.
-        {
-            let mut s = self.state.write().await;
-            s.pulse_guiding.ra = false;
-            s.pulse_guiding.dec = false;
         }
         let params = self
             .manager
@@ -828,9 +840,21 @@ impl Telescope for MountDevice {
         // claiming the axes; see `axis_ownership`. Held only across the
         // acquisition — park's own ownership is the reservation, which
         // it hands to the park watcher.
+        // Park takes both axes from any pulse in flight under the same
+        // lock, so no pulse restore lands between here and its motion.
+        // `taken` holds those pulses until park has stopped their axes
+        // itself.
+        let mut taken = PulseGuiding::IDLE;
         let reservation = {
             let _axes = self.axis_ownership.lock().await;
-            SlewReservation::try_acquire(&self.slew_in_progress)
+            let reservation = SlewReservation::try_acquire(&self.slew_in_progress);
+            if reservation.is_some() {
+                taken = std::mem::replace(
+                    &mut self.state.write().await.pulse_guiding,
+                    PulseGuiding::IDLE,
+                );
+            }
+            reservation
         };
         let Some(reservation) = reservation else {
             return Err(ASCOMError::new(
@@ -838,13 +862,6 @@ impl Telescope for MountDevice {
                 "park refused: slew already in progress",
             ));
         };
-        // Cancel any in-flight pulse-guide — park takes ownership of
-        // both axes from this point.
-        {
-            let mut s = self.state.write().await;
-            s.pulse_guiding.ra = false;
-            s.pulse_guiding.dec = false;
-        }
         // Issue the motion sequence in an inner future. Any `?` failure
         // drops `reservation`, which clears `slew_in_progress` — no
         // explicit rollback needed.
@@ -877,7 +894,9 @@ impl Telescope for MountDevice {
             // still moving (tracking, in-flight slew) when Park was
             // called.
             self.stop_and_wait(Axis::Ra).await?;
+            taken.set(Axis::Ra, None);
             self.stop_and_wait(Axis::Dec).await?;
+            taken.set(Axis::Dec, None);
             // Fresh wire read after the stops — the cached background
             // snapshot lags the wire by up to one `polling_interval`.
             let snap = self
@@ -923,6 +942,9 @@ impl Telescope for MountDevice {
             Ok(())
         }
         .await;
+        if result.is_err() {
+            self.stop_taken_pulse_axes(taken).await;
+        }
         result?;
         // Hand off to the park watcher; it owns `slew_in_progress` from
         // here and will clear it on completion. The watcher acquires its
@@ -1061,9 +1083,12 @@ impl Telescope for MountDevice {
         // makes the flag check inside sync sound, so the operation that
         // falsifies the flag has to hold it too.
         //
-        // Blocking here is bounded by a sync's two encoder writes, and
-        // is the right order anyway: an abort arriving mid-sync should
-        // let the position write finish rather than interleave with it.
+        // Blocking here is bounded by the longest holder: a
+        // `Tracking = true` write's RA stop-and-wait and restart, up to
+        // about 2 s; otherwise a sync's two encoder writes or a pulse's
+        // burst. It is the right order anyway: an abort arriving mid-sync
+        // should let the position write finish rather than interleave
+        // with it.
         let _axes = self.axis_ownership.lock().await;
         // Clear slew_in_progress first so the slew/park watchers see the
         // abort and bail before clobbering the snapshot or at_park flag.
@@ -1076,13 +1101,10 @@ impl Telescope for MountDevice {
         {
             let mut s = self.state.write().await;
             s.tracking_requested = false;
-            // Cancel any in-flight pulse-guide on either axis. The
-            // watcher's post-sleep restore step bails when it sees the
-            // flag cleared; `:L1`/`:L2` below already halt any
-            // rate-shifted motion, so there's nothing for the watcher
-            // to restore.
-            s.pulse_guiding.ra = false;
-            s.pulse_guiding.dec = false;
+            // Cancel any pulse in flight on either axis. Its watcher
+            // sends nothing when it wakes; `:L1`/`:L2` below already
+            // halt any rate-shifted motion.
+            s.pulse_guiding = PulseGuiding::IDLE;
         }
         // Issue :L on both axes (instant stop). Log the underlying
         // transport error if either send fails — silent failure here
@@ -1117,8 +1139,7 @@ impl Telescope for MountDevice {
     // ---- PulseGuide ----
 
     async fn is_pulse_guiding(&self) -> ASCOMResult<bool> {
-        let s = self.state.read().await;
-        Ok(s.pulse_guiding.ra || s.pulse_guiding.dec)
+        Ok(self.state.read().await.pulse_guiding.is_active())
     }
 
     async fn guide_rate_right_ascension(&self) -> ASCOMResult<f64> {
@@ -1172,16 +1193,12 @@ impl Telescope for MountDevice {
         // classification `SideOfPier` reports, read from the same
         // background-poll snapshot.
         //
-        // Sampled once, at pulse start, and not pinned: the `slewing()`
-        // gate above is a plain read, and `PulseGuide` claims no
-        // `axis_ownership`, so a slew or auto-flip starting in the
-        // window between that check and the `:G2` below can move the
-        // Dec axis under this pulse — and its own wire commands would
-        // interleave with ours regardless of which side we sampled.
-        // That window is issue #1311 (the lock serializes the commit,
-        // not the operation); `PulseGuide` is one of the operations it
-        // covers. It is not specific to the side read, which only
-        // inherits it.
+        // Sampled once, at pulse start. A slew or auto-flip that starts
+        // before the pulse claims its axis is refused by the claim, which
+        // re-checks for one under `axis_ownership`; one that starts later
+        // takes the axis from the pulse under the same lock before it
+        // moves. So the side a pulse resolved is never applied to an axis
+        // a slew has since moved.
         //
         // The sample also cannot straddle a pole crossing *within* one
         // pulse. That needs the OTA to start within the pulse's own
@@ -1194,103 +1211,21 @@ impl Telescope for MountDevice {
             Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );
-        // Resolve the pulse under a read lock. The in-flight check +
-        // flag-set happens later under a write lock so it's atomic
-        // against concurrent same-axis calls (the rate /
-        // tracking_was_on snapshots taken here are stable: rates can
-        // be updated concurrently, but the worst case is a
-        // one-tick-late read which ASCOM tolerates).
-        let (pulse, tracking_was_on) = {
+        let pulse = {
             let s = self.state.read().await;
-            let pulse = GuidePulse::resolve(
+            GuidePulse::resolve(
                 direction,
                 s.guide_rate_ra_fraction,
                 s.guide_rate_dec_fraction,
                 &params,
                 current_side,
                 self.config.site_latitude_deg,
-            );
-            let tracking_was_on = pulse.axis == Axis::Ra && s.tracking_requested;
-            drop(s);
-            (pulse, tracking_was_on)
+            )
         };
-        let GuidePulse { axis, ccw, .. } = pulse;
-        let shifted_period = pulse.step_period()?;
-        // Atomically check `pulse_guiding_<axis>` and set it to true
-        // under a single write lock. This closes the TOCTOU window: a
-        // concurrent same-axis `pulse_guide` either acquires the
-        // write lock first (and we see the flag set on the next read),
-        // or acquires it later (and sees our flag). Without the
-        // atomic set, the previous flow let a concurrent caller pass
-        // the in-flight check while we were still awaiting the
-        // `:K`/`:G`/`:I`/`:J` sends. `axis` is always `Ra` or `Dec`
-        // here — `GuideDirection` only resolves to those two — so the
-        // boolean dispatch is exhaustive without a third branch.
-        let is_ra = axis == Axis::Ra;
-        {
-            let mut s = self.state.write().await;
-            let already_in_flight = if is_ra {
-                s.pulse_guiding.ra
-            } else {
-                s.pulse_guiding.dec
-            };
-            if already_in_flight {
-                return Err(ASCOMError::new(
-                    ASCOMErrorCode::INVALID_OPERATION,
-                    "PulseGuide refused while a same-axis pulse is in flight",
-                ));
-            }
-            if is_ra {
-                s.pulse_guiding.ra = true;
-            } else {
-                s.pulse_guiding.dec = true;
-            }
-        }
-        // Wire path: `:K<axis>` (decelerate and wait for the running
-        // flag to clear so `:G` doesn't return `!2 MotorNotStopped`),
-        // `:G<axis>` (Tracking + ccw), `:I<axis>` (shifted period),
-        // `:J<axis>`. Any failure on the wire rolls back the
-        // `pulse_guiding_<axis>` flag so the next caller isn't blocked
-        // by a half-applied pulse, and so `IsPulseGuiding` reports
-        // false consistent with the lack of actual motion.
-        let mode = MotionMode {
-            kind: ModeKind::Tracking,
-            speed: Speed::Slow,
-            ccw,
-        };
-        let wire_result: ASCOMResult<()> = async {
-            self.stop_and_wait(axis).await?;
-            self.send(Command::SetMotionMode { axis, mode })
-                .await
-                .map_err(ASCOMError::from)?;
-            self.send(Command::SetStepPeriod {
-                axis,
-                period: shifted_period,
-            })
-            .await
-            .map_err(ASCOMError::from)?;
-            self.send(Command::StartMotion(axis))
-                .await
-                .map_err(ASCOMError::from)?;
-            Ok(())
-        }
-        .await;
-        if let Err(e) = wire_result {
-            clear_pulse_flag(&self.state, axis).await;
-            return Err(e);
-        }
-        spawn_pulse_guide_watcher(
-            Arc::clone(&self.state),
-            Arc::clone(&self.manager),
-            Arc::clone(&self.session),
-            Arc::clone(&self.slew_in_progress),
-            axis,
-            duration,
-            tracking_was_on,
-        )
-        .await
-        .map_err(ASCOMError::from)?;
-        debug!(?direction, ?duration, axis = ?axis, "pulse_guide spawned");
-        Ok(())
+        // Claiming the axis, choosing the wire shape (a live rate change
+        // on a tracking RA axis, or a start from rest) and handing the
+        // pulse to its watcher all happen in `start_pulse`; see the
+        // `pulse` module.
+        self.start_pulse(direction, pulse, duration, &params).await
     }
 }

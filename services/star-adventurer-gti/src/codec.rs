@@ -86,10 +86,11 @@ pub enum SkywatcherCodecError {
     ///   structurally-valid `!X\r` error frame. A real Sky-Watcher
     ///   controller supports `:e` per the protocol spec, so a mount-side
     ///   error to `:e1` indicates an incompatible device.
-    /// - Mount-type byte outside the
+    /// - Mount code outside the
     ///   [`skywatcher_motor_protocol::MountType`] whitelist (post-decode
-    ///   check; reply was structurally valid but the type byte — the low
-    ///   byte of the U24 — isn't a known Sky-Watcher mount family).
+    ///   check; reply was structurally valid but the mount code — the high
+    ///   byte of the decoded U24, the reply's third wire byte — isn't a
+    ///   known Sky-Watcher mount family).
     ///
     /// Carried through this error type so the handshake hook can stop
     /// the connect sequence before issuing any device-specific command

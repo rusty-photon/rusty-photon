@@ -314,6 +314,23 @@ The same drift runs the other way for hardware validation, where the
 version gate is owned by
 [hardware-validation.md](hardware-validation.md).
 
+### When a BDD suite goes red
+
+The `bazel test (BDD)` step runs with `--test_output=all`, so its job log
+is tens of thousands of lines, and tail-limited reads of it (the GitHub MCP
+`get_job_logs` returns only the last 5,000 lines) miss most of it. A suite that
+failed or timed out before the others finished has its failing scenario
+above that window. Don't guess from the tail: when that step fails, the
+job uploads every suite's own `test.log` / `test.xml` (per shard) as the
+`bdd-testlogs-<os>-attempt-<n>` artifact. Download it and read the failing
+target's log (`services/<svc>/bdd/[shard_N_of_M/]test.log`) directly.
+
+A `TIMEOUT` with no failed step means a scenario stopped making progress.
+The last scenario printed is the one that stalled: cucumber's output is
+normalised, so every scenario before it has already finished
+([testing.md §5.7](testing.md#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop)
+explains why one blocked step can freeze all of them).
+
 ## Triage guidance
 
 Copilot is often right about edge cases (silent fall-throughs, masked

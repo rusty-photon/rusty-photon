@@ -109,7 +109,7 @@ for the mock transport:
 
 | Command | Wire reply | Decoded |
 |---|---|---|
-| `:e1\r` (motor-board version) | `=03300C\r` | mount-type byte `0x03`, fw `0x30`/`0x0C` |
+| `:e1\r` (motor-board version) | `=03300C\r` | firmware 3.48 (`0x03`, `0x30`), mount code `0x0C` = Star Adventurer GTi — the wire bytes are firmware major, firmware minor, mount code; decoded low-byte-first the value is `0x0C3003`, mount code in the high byte (INDI eqmod's `MountCode`) |
 | `:a1\r` (CPR axis 1, RA) | `=005F37\r` | `0x375F00` = 3,628,800 counts/revolution |
 | `:a2\r` (CPR axis 2, Dec) | `=004C2C\r` | `0x2C4C00` = 2,903,040 counts/revolution |
 | `:b1\r` (TMR_Freq) | `=0024F4\r` | `0xF42400` ≈ 16 MHz |
@@ -129,9 +129,9 @@ on coincidentally identical values.
 
 After opening the transport, before the first motion command:
 
-1. `:e1` — identity gate (mount-type whitelist; see the
+1. `:e1` — identity gate (mount-code whitelist; see the
    `skywatcher_motor_protocol::MountType` enum). On a wrong-device
-   handshake (frame malformed, payload wrong shape, mount-type byte
+   handshake (frame malformed, payload wrong shape, mount code
    outside the whitelist) the driver stops here and surfaces
    `StarAdvError::WrongDevice` — bounding the wrong-device blast radius
    to a single inquiry. Motivated by the 2026-05-17 hardware session
@@ -145,6 +145,45 @@ After opening the transport, before the first motion command:
 
 Steps 2–6 seed the in-memory parameter cache used by the coordinate
 module and the slew planner.
+
+### Changing the step period of a running axis
+
+The spec restricts `:I` only while the motor slews in high-speed mode,
+and marks `:G`, `:E` and `:S` "motor must be full stopped". What `:I`
+does on a motor that is running at a slow (tracking) rate was measured
+on this mount (firmware 3.48) on 2026-09-28. This was not inferred from
+the spec. The service was stopped, and
+`services/star-adventurer-gti/examples/probe_live_step_period.rs`
+sampled `:j1` every 4 ms, since `:f` does not report the period:
+
+- **Accepted and applied.** 240 of 240 `:I1` frames sent to an RA axis
+  tracking at sidereal, 0.5× or 1.5× were answered `=`. The encoder
+  took the new rate from the first step after the frame.
+- **Inert on a stopped axis.** An `:I1` sent to a stopped axis, or 0 to
+  60 ms after a `:K1`, never started it.
+- **`:K1` from a tracking rate stops fast.** The running flag clears
+  within 3.7–4.4 ms of the `:K1` reply, with 0–1 tick of coast.
+- **Every rate change on a running axis steps the encoder forward.**
+  On top of the rate change, the count advances by a small amount at
+  each edge. The means, in ticks, were:
+
+  | Edge | Step |
+  |---|---|
+  | sidereal → 0.5× | +0.60 |
+  | 0.5× → sidereal | +0.79 |
+  | sidereal → 1.5× | +1.52 |
+  | 1.5× → sidereal | +1.69 |
+  | `:J1` on a running axis | +1.43 |
+  | `:J1` from standstill | −0.25 ± 0.67 (none) |
+
+  The rates between edges match `TMR_Freq / period` to within a few
+  tenths of a percent. The steps are therefore extra counts at the
+  edges, not a rate error.
+- **`:i1` (inquire step period) is implemented.** It reads `=FFFFFF`
+  before any `:I` has been sent.
+- **The `:j` count is not a clean step clock.** It advances in short
+  bursts at higher rates and can drift ±2 ticks for a second after a
+  stop. Fit rates over hundreds of milliseconds, not single intervals.
 
 ## See also
 

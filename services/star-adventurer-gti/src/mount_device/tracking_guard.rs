@@ -43,7 +43,7 @@ use std::time::Duration;
 use ascom_alpaca::api::telescope::Telescope;
 use rusty_photon_shared_transport::Session;
 use skywatcher_motor_protocol::{Axis, Command};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::interval;
 use tracing::{debug, info, warn};
 
@@ -105,11 +105,16 @@ pub(super) fn tracking_guard_breached(mech_ha: f64, zone: (f64, f64), margin: f6
 /// `false`) when the client has not engaged tracking, a slew is in
 /// flight, the zone is disabled, the snapshot `mech_HA` is clear of the
 /// band, parameters aren't cached yet, or the session closed mid-tick.
+///
+/// A stop also cancels any RA guide pulse in flight, under
+/// `axis_ownership`, so the pulse's restore cannot restart the motor
+/// behind the guard.
 pub(super) async fn tracking_guard_tick(
     state: &Arc<RwLock<DriverState>>,
     manager: &MountManager,
     session_slot: &SessionSlot,
     slew_in_progress: &AtomicBool,
+    axis_ownership: &Mutex<()>,
     zone: (f64, f64),
     margin: f64,
 ) -> bool {
@@ -134,11 +139,20 @@ pub(super) async fn tracking_guard_tick(
         return false;
     }
 
-    // Breached. Stop RA tracking on the wire FIRST, mirroring
-    // `set_tracking(false)` (`:K1`, then clear the flag), so the
-    // in-memory `Tracking` state never reports "off" while the motor is
-    // still commutating. Read the device's own session slot the same
-    // way `MountDevice::send` does.
+    // Breached. Take the axes first — before the session slot, the lock
+    // order every axis user follows — and re-check the gate: a slew or a
+    // `Tracking = false` may have landed while this tick waited. Then take
+    // RA from any guide pulse in flight, so its restore cannot restart
+    // the motor behind the stop.
+    let _axes = axis_ownership.lock().await;
+    if !state.read().await.tracking_requested || slew_in_progress.load(Ordering::SeqCst) {
+        return false;
+    }
+    state.write().await.pulse_guiding.set(Axis::Ra, None);
+    // Stop RA tracking on the wire FIRST, mirroring `set_tracking(false)`
+    // (`:K1`, then clear the flag), so the in-memory `Tracking` state
+    // never reports "off" while the motor is still commutating. Read the
+    // device's own session slot the same way `MountDevice::send` does.
     let guard = session_slot.read().await;
     let Some(session) = guard.as_ref() else {
         // Disconnected between the gate and here — nothing to stop.
@@ -284,6 +298,7 @@ pub(super) async fn guard_loop_tick(
         &device.manager,
         &device.session,
         &device.slew_in_progress,
+        &device.axis_ownership,
         zone,
         margin,
     )

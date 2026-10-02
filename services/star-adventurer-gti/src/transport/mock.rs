@@ -206,7 +206,7 @@ impl AxisSimState {
         };
         let steps_per_second = f64::from(tmr_freq) / f64::from(self.step_period) * gearing;
         let elapsed = now.saturating_duration_since(last).as_secs_f64();
-        let ticks = steps_per_second * elapsed + self.tracking_tick_remainder;
+        let ticks = steps_per_second.mul_add(elapsed, self.tracking_tick_remainder);
         let whole = ticks.floor();
         self.tracking_tick_remainder = ticks - whole;
         self.position_ticks = clamp_to_wire_range(
@@ -260,8 +260,8 @@ pub struct MockMountState {
     pub high_speed_ratio_ra: u32,
     pub high_speed_ratio_dec: u32,
     /// Motor-board version. Defaults to `0x000C_3003` — the decode of the
-    /// `GTi` probe table's wire reply `=03300C\r` (mount-type byte `0x03` in
-    /// the low byte, fw `0x30`/`0x0C` above it).
+    /// `GTi`'s wire reply `=03300C\r`: firmware 3.48 in the two low bytes,
+    /// mount code `0x0C` (Star Adventurer `GTi`) in the high byte.
     pub motor_board_version: u32,
     /// Every command frame received, in arrival order. Tests assert against
     /// this to verify the driver issued the expected wire commands.
@@ -272,10 +272,57 @@ pub struct MockMountState {
     /// exercise wire-failure branches (e.g. the tracking guard's
     /// `:K1`-failed path). The request is still recorded in `command_log`.
     pub fail_command: Option<u8>,
+    /// Test-only, one-shot fault injection, consumed front to back: the
+    /// next command whose letter matches the front entry gets that
+    /// entry's fault instead of its normal handling, and the entry is
+    /// removed. Other commands pass through untouched. Lets a test fail
+    /// the second `:I` of a pulse (its restore) without failing the
+    /// first, or fail one attempt and let the retry through.
+    pub fault_script: std::collections::VecDeque<ScriptedFault>,
+    /// Forward encoder ticks a step-period change adds to a running
+    /// tracking axis, in the direction of motion, on top of the rate
+    /// change. The `GTi`'s motor board does this (≈ 0.6–1.7 ticks per
+    /// edge, measured on the rig); the mock does not by default (`0.0`),
+    /// so a live `:I` is exact unless a test asks for the step. Fractional
+    /// values accumulate through the axis' tick remainder.
+    pub rate_change_step_ticks: f64,
+    /// Refuse an `:I` sent to a running tracking axis with `!2`
+    /// (`MotorNotStopped`), as firmware that does not support changing the
+    /// period of a running motor would. `false` by default: the `GTi`
+    /// accepts it (measured on the rig).
+    pub reject_live_step_period: bool,
+    /// Ack `:K` without stopping the axis, as a motor that will not
+    /// decelerate would; `:L` still stops it. `false` by default. Drives
+    /// the driver's escalation from `:K` to `:L`.
+    pub ignore_decelerating_stop: bool,
+    /// Ack `:L` without stopping the axis. `false` by default. With
+    /// [`ignore_decelerating_stop`](Self::ignore_decelerating_stop), no
+    /// stop the driver sends takes: drives the paths where a stop is
+    /// never confirmed.
+    pub ignore_instant_stop: bool,
     /// Pending replies the next `recv_frame` call should drain. Every
     /// processed command appends one frame; the [`FrameTransport`] impl
     /// pulls from the front to deliver replies in order.
     pending_replies: std::collections::VecDeque<Vec<u8>>,
+}
+
+/// One entry of [`MockMountState::fault_script`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScriptedFault {
+    /// Command letter the fault applies to (e.g. `b'I'`).
+    pub letter: u8,
+    pub fault: Fault,
+}
+
+/// What a [`ScriptedFault`] does to the command it catches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fault {
+    /// Refuse the command with `!<code>`; it has no effect — a definite
+    /// refusal, like the firmware's own error replies.
+    MountError(u8),
+    /// Apply the command, then answer with a reply that does not decode —
+    /// an ambiguous failure: the caller cannot tell whether it landed.
+    Garbled,
 }
 
 impl Default for MockMountState {
@@ -296,6 +343,11 @@ impl Default for MockMountState {
             motor_board_version: 0x000C_3003,
             command_log: Vec::new(),
             fail_command: None,
+            fault_script: std::collections::VecDeque::new(),
+            rate_change_step_ticks: 0.0,
+            reject_live_step_period: false,
+            ignore_decelerating_stop: false,
+            ignore_instant_stop: false,
             pending_replies: std::collections::VecDeque::new(),
         }
     }
@@ -370,6 +422,18 @@ impl MockMountState {
             self.pending_replies.push_back(err_reply(0));
             return;
         }
+        let scripted = match self.fault_script.front() {
+            Some(entry) if entry.letter == cmd => self.fault_script.pop_front(),
+            _ => None,
+        };
+        if let Some(ScriptedFault {
+            fault: Fault::MountError(code),
+            ..
+        }) = scripted
+        {
+            self.pending_replies.push_back(err_reply(code));
+            return;
+        }
 
         // The protocol's own taxonomy: inquiries are lowercase command
         // letters, setters uppercase. Unknown letters of either case
@@ -378,6 +442,12 @@ impl MockMountState {
             self.inquiry_reply(cmd, axis)
         } else {
             self.setter_reply(cmd, axis, payload)
+        };
+        let reply = if scripted.is_some() {
+            // `Fault::Garbled`: the command ran, the reply is noise.
+            b"=GARBLED\r".to_vec()
+        } else {
+            reply
         };
         self.pending_replies.push_back(reply);
     }
@@ -450,6 +520,12 @@ impl MockMountState {
         let db1 = (mode_byte >> 4) & 0x0F;
         let db2 = mode_byte & 0x0F;
         if let Some(ax) = self.axis_mut(axis) {
+            // The firmware refuses a mode change on a moving motor
+            // (`!2 MotorNotStopped`, measured on the GTi); every driver
+            // path stops the axis and waits before its `:G`.
+            if ax.running {
+                return err_reply(2);
+            }
             // DB1 bit 0: 1=Tracking, 0=Goto.
             ax.mode = if (db1 & 0x1) == 0 {
                 ModeKind::Goto
@@ -477,6 +553,36 @@ impl MockMountState {
         } else {
             err_reply(0)
         }
+    }
+
+    /// `:I` — set step period: 6-byte u24 payload. On an axis already
+    /// running in tracking mode this changes its rate from this instant
+    /// (see [`Self::process_command`]), adds the configured
+    /// [`rate_change_step_ticks`](Self::rate_change_step_ticks), or is
+    /// refused when [`reject_live_step_period`](Self::reject_live_step_period)
+    /// is set.
+    fn set_step_period_reply(&mut self, axis: u8, payload: &[u8]) -> Vec<u8> {
+        let period = match payload_u24(payload) {
+            Ok(period) => period,
+            Err(reply) => return reply,
+        };
+        let reject_live = self.reject_live_step_period;
+        let step = self.rate_change_step_ticks;
+        let Some(ax) = self.axis_mut(axis) else {
+            return err_reply(0);
+        };
+        let live = ax.running && ax.mode == ModeKind::Tracking;
+        if live && reject_live {
+            return err_reply(2);
+        }
+        if live && period != ax.step_period {
+            // The board's forward step at a rate change, in the direction
+            // of motion; the tick remainder carries the fraction to the
+            // next integration.
+            ax.tracking_tick_remainder += step;
+        }
+        ax.step_period = period;
+        ack_with(&[])
     }
 
     /// Setters (uppercase letters): writes that decode their payload
@@ -544,19 +650,7 @@ impl MockMountState {
                     err_reply(0)
                 }
             }
-            b'I' => {
-                // Set step period: 6-byte u24 payload.
-                let period = match payload_u24(payload) {
-                    Ok(period) => period,
-                    Err(reply) => return reply,
-                };
-                if let Some(ax) = self.axis_mut(axis) {
-                    ax.step_period = period;
-                    ack_with(&[])
-                } else {
-                    err_reply(0)
-                }
-            }
+            b'I' => self.set_step_period_reply(axis, payload),
             b'E' => {
                 // Sync: write encoder position. 6-byte signed/biased payload.
                 let ticks = match payload_position(payload) {
@@ -585,8 +679,14 @@ impl MockMountState {
             // deceleration on real hardware; the mock stops instantly
             // either way.
             b'K' | b'L' => {
+                let ignore = match cmd {
+                    b'K' => self.ignore_decelerating_stop,
+                    _ => self.ignore_instant_stop,
+                };
                 if let Some(ax) = self.axis_mut(axis) {
-                    ax.running = false;
+                    if !ignore {
+                        ax.running = false;
+                    }
                     ack_with(&[])
                 } else {
                     err_reply(0)
@@ -1105,5 +1205,110 @@ mod tests {
         // `=101\r`.
         let reply = round_trip(&mut t2, b":f1\r").await;
         assert_eq!(reply, b"=101\r");
+    }
+
+    /// A mock RA axis tracking at sidereal (`:F1 :G110 :I1 :J1`), on a
+    /// capturing factory so the test can read and seed its state.
+    async fn tracking_ra() -> (Box<dyn FrameTransport>, Arc<Mutex<MockMountState>>) {
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        let mut t = factory.open().await.unwrap();
+        for frame in [&b":F1\r"[..], b":G110\r", b":I108CC05\r", b":J1\r"] {
+            assert_eq!(round_trip(&mut t, frame).await, b"=\r");
+        }
+        (t, state)
+    }
+
+    #[tokio::test]
+    async fn g_on_a_running_axis_is_refused_with_motor_not_stopped() {
+        let (mut t, state) = tracking_ra().await;
+        assert_eq!(round_trip(&mut t, b":G100\r").await, b"!02\r");
+        assert_eq!(state.lock().await.ra.mode, ModeKind::Tracking);
+        assert_eq!(round_trip(&mut t, b":K1\r").await, b"=\r");
+        assert_eq!(round_trip(&mut t, b":G100\r").await, b"=\r");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_live_step_period_change_changes_the_rate_from_that_instant() {
+        // 1 s at sidereal, then 1 s at half: the old rate up to the `:I`,
+        // the new one after it, never applied backwards.
+        let (mut t, state) = tracking_ra().await;
+        let start = state.lock().await.ra.position_ticks;
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        assert_eq!(round_trip(&mut t, b":I110980B\r").await, b"=\r");
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        round_trip(&mut t, b":j1\r").await;
+        let moved = state.lock().await.ra.position_ticks - start;
+        let sidereal_rate = 16_000_000.0 / 379_912.0;
+        let expected = 1.5 * sidereal_rate;
+        assert!(
+            (f64::from(moved) - expected).abs() < 1.0,
+            "expected {expected:.1} ticks, moved {moved}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_live_step_period_change_adds_the_configured_forward_step() {
+        let (mut t, state) = tracking_ra().await;
+        state.lock().await.rate_change_step_ticks = 5.0;
+        let before = state.lock().await.ra.position_ticks;
+        assert_eq!(round_trip(&mut t, b":I110980B\r").await, b"=\r");
+        assert_eq!(state.lock().await.ra.position_ticks - before, 5);
+        // Re-sending the period in force is not a rate change.
+        assert_eq!(round_trip(&mut t, b":I110980B\r").await, b"=\r");
+        assert_eq!(state.lock().await.ra.position_ticks - before, 5);
+    }
+
+    #[tokio::test]
+    async fn a_live_step_period_change_can_be_refused() {
+        let (mut t, state) = tracking_ra().await;
+        state.lock().await.reject_live_step_period = true;
+        assert_eq!(round_trip(&mut t, b":I110980B\r").await, b"!02\r");
+        assert_eq!(state.lock().await.ra.step_period, 379_912);
+        // A stopped axis takes a period as usual.
+        assert_eq!(round_trip(&mut t, b":K1\r").await, b"=\r");
+        assert_eq!(round_trip(&mut t, b":I110980B\r").await, b"=\r");
+    }
+
+    #[tokio::test]
+    async fn an_ignored_stop_is_acked_and_leaves_the_axis_running() {
+        let (mut t, state) = tracking_ra().await;
+        {
+            let mut s = state.lock().await;
+            s.ignore_decelerating_stop = true;
+            s.ignore_instant_stop = true;
+        }
+        assert_eq!(round_trip(&mut t, b":K1\r").await, b"=\r");
+        assert_eq!(round_trip(&mut t, b":L1\r").await, b"=\r");
+        assert!(state.lock().await.ra.running);
+        state.lock().await.ignore_instant_stop = false;
+        assert_eq!(round_trip(&mut t, b":L1\r").await, b"=\r");
+        assert!(!state.lock().await.ra.running);
+    }
+
+    #[tokio::test]
+    async fn a_scripted_mount_error_refuses_one_matching_command_without_applying_it() {
+        let (mut t, state) = tracking_ra().await;
+        state.lock().await.fault_script.push_back(ScriptedFault {
+            letter: b'I',
+            fault: Fault::MountError(2),
+        });
+        // Other letters pass through without consuming the entry.
+        assert_eq!(round_trip(&mut t, b":f1\r").await, b"=111\r");
+        assert_eq!(round_trip(&mut t, b":I110980B\r").await, b"!02\r");
+        assert_eq!(state.lock().await.ra.step_period, 379_912);
+        assert_eq!(round_trip(&mut t, b":I110980B\r").await, b"=\r");
+        assert_eq!(state.lock().await.ra.step_period, 759_824);
+    }
+
+    #[tokio::test]
+    async fn a_garbled_scripted_fault_applies_the_command_and_garbles_the_reply() {
+        let (mut t, state) = tracking_ra().await;
+        state.lock().await.fault_script.push_back(ScriptedFault {
+            letter: b'I',
+            fault: Fault::Garbled,
+        });
+        assert_eq!(round_trip(&mut t, b":I110980B\r").await, b"=GARBLED\r");
+        assert_eq!(state.lock().await.ra.step_period, 759_824);
     }
 }
