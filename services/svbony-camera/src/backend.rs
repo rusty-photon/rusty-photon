@@ -995,6 +995,36 @@ mod handle_tests {
         handle.close().unwrap();
     }
 
+    /// The region before the controls: an exposure whose region the SDK
+    /// refuses fails there, before it arms a gain or an offset, so the camera
+    /// keeps the values the last frame was armed with.
+    #[test]
+    fn production_handle_capture_refused_at_its_region_arms_no_gain_or_offset() {
+        let handle = sim_handle();
+        handle.open().unwrap();
+        handle.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        handle.start_video_capture().unwrap();
+        handle
+            .set_control_value(ControlType::Exposure, 1_000_000)
+            .unwrap();
+        handle.set_control_value(ControlType::Gain, 100).unwrap();
+        handle
+            .set_control_value(ControlType::BlackLevel, 5)
+            .unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let request = CaptureRequest {
+            width: 0,
+            gain: Some(222),
+            offset: Some(30),
+            ..sim_request(Duration::ZERO, &cancel)
+        };
+        handle.capture(request).unwrap_err();
+        assert_eq!(handle.control_value(ControlType::Gain).unwrap(), 100);
+        assert_eq!(handle.control_value(ControlType::BlackLevel).unwrap(), 5);
+        handle.close().unwrap();
+    }
+
     /// A pre-cancelled capture drains immediately with the aborted error and
     /// leaves the trigger camera re-armed (stop + start), never waiting out
     /// the simulated integration.

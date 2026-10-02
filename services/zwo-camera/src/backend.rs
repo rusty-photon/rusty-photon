@@ -975,11 +975,16 @@ pub(crate) mod mock {
         /// Put the gain or offset register at `value` without a write — where
         /// another application, or an earlier session, leaves a camera.
         pub fn preset_control(&self, control: ControlType, value: i64) {
-            match control {
-                ControlType::Gain => *self.gain.lock() = value,
-                ControlType::Offset => *self.offset.lock() = value,
-                other => panic!("the mock has no {other:?} register to preset"),
-            }
+            assert!(
+                matches!(control, ControlType::Gain | ControlType::Offset),
+                "the mock has no {control:?} register to preset"
+            );
+            let register = if control == ControlType::Gain {
+                &self.gain
+            } else {
+                &self.offset
+            };
+            *register.lock() = value;
         }
 
         /// Present a model with no ST4 port (PG2's `NOT_IMPLEMENTED` branch).
