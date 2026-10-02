@@ -31,6 +31,14 @@ bench it saturates at 0.1 s at gain 0.
 | `alpacaprotocol` | *"no errors, issues or information alerts"* — [log](alpacaprotocol.log) |
 | `conformance` | *"no errors, warnings or issues found"*; every member within its target response time — [log](conformance.log), [results](conformance-results.json) |
 
+**Re-run on [`d2896cde`](https://github.com/rusty-photon/rusty-photon/commit/d2896cde)**,
+the review fix that keeps a handshake from overwriting a set or filling a
+closed camera's gain and offset (GO4) — a change to the connect path, so run
+on the camera rather than taken on the mock's word: both suites clean again,
+all four counts 0 ([`alpacaprotocol`](alpacaprotocol-d2896cde.log),
+[`conformance`](conformance-d2896cde.log),
+[results](conformance-results-d2896cde.json)).
+
 `ErrorCount` / `IssueCount` / `ConfigurationAlertCount` / `TimingIssuesCount`
 are all **0**. ConformU reads `ElectronsPerADU` once, before any gain write —
 0.00496 e⁻/ADU, the figure at the seeded gain of 600 — and its gain and offset

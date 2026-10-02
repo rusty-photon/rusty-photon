@@ -34,6 +34,16 @@ port and no credential. The packaged service was started again afterwards.
 | `alpacaprotocol` | *"no errors, issues or information alerts"* — [log](alpacaprotocol.log) |
 | `conformance` | *"no errors, warnings or issues found"*; every member within its target response time — [log](conformance.log), [results](conformance-results.json) |
 
+**Re-run on [`d2896cde`](https://github.com/rusty-photon/rusty-photon/commit/d2896cde)**,
+the review fix that publishes the gain and offset last in the handshake and
+keeps a handshake a disconnect overtook from filling them (GO4) — a change to
+the connect path, so run on the camera rather than taken on the mock's word:
+built and run the same way, both suites clean again, all four counts 0
+([`alpacaprotocol`](alpacaprotocol-d2896cde.log),
+[`conformance`](conformance-d2896cde.log),
+[results](conformance-results-d2896cde.json)). The packaged service was
+stopped for about 3 minutes for it.
+
 `ErrorCount` / `IssueCount` / `ConfigurationAlertCount` / `TimingIssuesCount`
 are all **0**. ConformU's gain and offset checks read the seeded values, write
 each minimum and maximum, and are refused `InvalidValue` one beyond each
