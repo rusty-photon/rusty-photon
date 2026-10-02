@@ -184,8 +184,7 @@ impl ServerBuilder {
             debug!(camera = %id, "registered Camera device");
 
             if cfw_ids.contains(&id) {
-                let handle: Arc<dyn FilterWheelHandle> =
-                    Arc::new(QhyFilterWheelHandle::new(conn.clone()));
+                let handle: Arc<dyn FilterWheelHandle> = Arc::new(QhyFilterWheelHandle::new(conn));
                 let override_ = self.config.devices.get(&id);
                 // The CFW shares the camera's SDK id, so the per-serial override's
                 // `name`/`description` belong to the camera, not the wheel — only

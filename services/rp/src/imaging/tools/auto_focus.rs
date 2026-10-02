@@ -606,11 +606,15 @@ impl ParabolaFit {
     }
 }
 
-/// Determinant of a 3×3 matrix given by rows (first-row cofactor
-/// expansion).
+/// Determinant of a 3×3 matrix given by rows: the first-row cofactor
+/// expansion with every multiply-add fused. Fusing leaves a rank-deficient
+/// matrix a rounding-level residual rather than an exact zero, which is why
+/// `fit_parabola` tests singularity against a relative scale, never `== 0`.
 const fn det3(r0: [f64; 3], r1: [f64; 3], r2: [f64; 3]) -> f64 {
-    r0[0] * (r1[1] * r2[2] - r1[2] * r2[1]) - r0[1] * (r1[0] * r2[2] - r1[2] * r2[0])
-        + r0[2] * (r1[0] * r2[1] - r1[1] * r2[0])
+    let minor0 = r1[2].mul_add(-r2[1], r1[1] * r2[2]);
+    let minor1 = r1[2].mul_add(-r2[0], r1[0] * r2[2]);
+    let minor2 = r1[1].mul_add(-r2[0], r1[0] * r2[1]);
+    r0[2].mul_add(minor2, r0[1].mul_add(-minor1, r0[0] * minor0))
 }
 
 /// Weighted least-squares fit of a parabola to `(position, hfr, weight)`
