@@ -844,9 +844,20 @@ EAF; those belong to the other zwo services.)
   releases the camera lock for the integration (see `backend.rs`), so a write
   made at the setter would reach a camera that is integrating, and no ASI
   document says whether the camera takes a gain or offset at exposure start
-  or at readout — QHY's vendor manual says its own are applied at readout. On
-  ASI it has not been measured, so this closes a class of defect rather than a
-  reproduced one.
+  or at readout — QHY's vendor manual says its own are applied at readout.
+
+  **Measured on hardware** (ASI1600MM-Cool, Linux —
+  [record](../validation/2026-10-01-zwo-camera-asi1600mm-cool-gain-offset-linux/README.md)).
+  The two differ. With the setter writing the SDK, as before this rule, an
+  **offset** set 1.2 s into a 3 s exposure landed in that exposure's frame
+  whole — its median went from 224 to 592, the same as the next frame at the
+  new offset — so the offset is taken at readout. A **gain** set the same way
+  did not: the frame stayed at 1664 and only the next one moved (4256), so
+  the gain is taken when the exposure starts. With the value cached the frame
+  in flight keeps both (offset 160 → 160, next frame 528; gain 1600 → 1600,
+  next frame 2208). The arm's two extra `ASISetControlValue` writes do not
+  show in the time from `StartExposure` to `ImageReady` (705 against 708 ms
+  for a 0.01 s frame).
 - **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max,
   converted **once at the open handshake** from the SDK's `long` to ASCOM's
   `i32`. A bound with no `i32` spelling leaves the control **unadvertised**
@@ -971,7 +982,10 @@ EAF; those belong to the other zwo services.)
   or from a formula, which the ASI120MC-S rules out by fitting none. Nothing
   depends on the figure being immediate: ASCOM treats `ElectronsPerADU` as
   static for a session, ConformU reads it once, and no client in this
-  repository reads it.
+  repository reads it. On the ASI1600MM-Cool
+  ([record](../validation/2026-10-01-zwo-camera-asi1600mm-cool-gain-offset-linux/README.md))
+  it read 4.96 at gain 0, still 4.96 straight after `Gain` was set to 200, and
+  0.496 once an exposure had armed it — 4.96 / 10^(200/200).
 - **ST3.** `MaxADU` = **a saturation threshold chosen to be reachable** by the
   delivered data in the selected readout mode (RM2) — not `(2^BitDepth) - 1`,
   and deliberately *not* an exact upper bound on the pixel values (see *the

@@ -1268,6 +1268,20 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   of a live exposure's way — and what the SDK does with a gain written
   between the trigger and the frame is undocumented. Cached, the value
   lands where the frame it describes is armed, and nowhere else.
+
+  **Measured on hardware** (SV605CC, field rig —
+  [record](../validation/2026-10-01-svbony-camera-sv605cc-rig-gain-offset/README.md)).
+  With the setter writing the SDK, as before this rule, both a gain and an
+  offset set 1.2 s into a 3 s exposure landed in that exposure's frame whole:
+  its mean went from 529.5 to 1743.1 against 1743.0 for the next frame at the
+  new offset, and from 5.5 to 169.7 against 169.2 for the gain. With the value
+  cached the frame in flight keeps both (530.9 and 6.7) and the next frame
+  takes the new ones (1740.4 and 94.3). A set made during the exposure now
+  answers in 7–8 ms, where the setter used to wait 77–79 ms for the camera
+  behind the capture. Arming adds nothing measurable to `StartExposure` →
+  `ImageReady` (644 against 635 ms for a 0.01 s frame), and with auto-save
+  off (C1a) it persists nothing: the SDK's parameter files are written at
+  connect and not by any exposure after it.
 - **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max,
   converted **once at the open handshake** from the SDK's `long` to ASCOM's
   `i32`. A bound with no `i32` spelling leaves the control **unadvertised**

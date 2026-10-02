@@ -1106,6 +1106,20 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   validates against the new mode's range, or wholly after the store, and
   carries the value over or replaces it (RM4). The set is bound to the session
   it was made in, like every cache write (C6).
+
+  **Measured on hardware** (QHY178M, Linux —
+  [record](../validation/2026-10-01-qhy-camera-qhy178m-gain-offset-linux/README.md)).
+  With the setter writing the SDK, as before this rule, an offset or a gain
+  set 1.2 s into a 3 s exposure landed in that exposure's frame whole: its
+  bias median went from 164 to 1128 against 1116 for the next frame at the new
+  offset, and its mean from 5.4 to 25.7 against 24.3 for the gain. The
+  manual's reading is what the camera does. With the value cached, the frame
+  in flight keeps what it was armed with — its offset median, 220, sits inside
+  the 132–220 that identical frames spread over, and its gain statistics match
+  the frame before it exactly — and the next frame takes the new values. The
+  two `SetQHYCCDParam` writes add about 11 ms to `StartExposure` (12.5 to
+  23.9 ms, median), against a 2.5 s single-frame readout. The QHY600M has not
+  been run with the gain and offset armed this way.
 - **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max,
   converted **once per mode** — at connect, and again at every readout-mode
   change (RM1) — to ASCOM's `i32` by rounding to nearest — the
