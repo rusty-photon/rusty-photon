@@ -696,8 +696,10 @@ date. (`name` is display text, never a key.)
    numbers that change with the next scan. The driver logs the scan
    error at `error!`, and doctor's USB checks fail and name the host
    fault: central doctor's `hardware.usb-device` and the per-service
-   `usb-devices.resolve` / `usb-devices.implicit` (D5). A failed scan is
-   the only USB outcome that fails doctor.
+   `usb-devices.resolve` / `usb-devices.implicit` (D5). Nothing else in
+   this plan makes doctor fail over USB; a device absent from the bus
+   keeps central doctor's existing severity (`fail` for an installed,
+   enabled unit, [doctor.md](../services/doctor.md) "Hardware").
 
    **A failed scan is not final.** The collector's 10 s deadline is sized
    to tell a wedged child from a working one, but a healthy host under
@@ -1132,14 +1134,16 @@ free to read.
 Three checks join the per-service set in C5, alongside
 `config.full-shape` and `hardware.sdk-devices`. They follow the rule
 central doctor applies to USB ([doctor.md](../services/doctor.md),
-"Hardware"): **doctor fails over USB only when the scan fails.** A
-camera that is not working, a listed port with no working camera, a
-look-alike or an unrecognised model is information for the operator —
-`warn` — never a failure. (Central doctor still fails an *absent*
-device for an installed, enabled unit through `hardware.usb-device`; a
-per-service binary cannot see unit state, the same reason
-`hardware.sdk-devices` only warns on zero devices.) A list that cannot
-load fails `config.full-shape`, as any invalid config does.
+"Hardware"): **a device that is on the bus but not working never fails
+doctor, and a scan that could not run does.** These three checks
+therefore fail only on a failed scan: a camera that is not working, a
+listed port with no working camera, a look-alike or an unrecognised
+model is information for the operator — `warn`. Central doctor keeps its
+own rule for a device *absent* from the bus — `fail` through
+`hardware.usb-device` for an installed, enabled unit — which a
+per-service binary cannot apply, because it cannot see unit state (the
+same reason `hardware.sdk-devices` only warns on zero devices). A list
+that cannot load fails `config.full-shape`, as any invalid config does.
 
 | Check | Trigger |
 |---|---|
@@ -2104,7 +2108,7 @@ review.
 | 9 | **Look-alikes are refused, never guessed** (D4.3) — 2026-09-29 | No SDK reports a port, the observed cameras publish no USB serial, and ZWO's SDK serial needs an open, so two cameras of one SDK on one host that are identical on the bus cannot be told apart passively. That covers two of one model and, for QHY, very likely the mono and colour variants of one sensor family. A model the normalizer does not know is paired by elimination when nothing else is left, and refused the same way when it cannot be. Resolving them by opening each and reading the OS-side handle is possible for cameras the driver owns, and is recorded but not built until a rig needs it. |
 | 10 | **A changed list applies through the ordinary reload** (D4.1) — 2026-09-29 | An operator changing cameras is not mid-session, so closing and re-opening every camera on the service (its clients reconnect) is fine; no restart-only or per-path disposition is needed. Tenet 3 still binds every reload (C4). |
 | 11 | **A listed camera's overrides live in its `usb_devices` entry** (D3) — 2026-09-29, extended 2026-10-01 | One place per listed camera: `name`, `description` and, in `qhy-camera`, the declared wheel's `filter_names` (row 13). The serial-keyed `devices` map remains only for the no-list default, and a non-empty map next to a list is rejected at load rather than silently ignored. |
-| 12 | **A USB record that is not a working device is a fault, never a failed scan** (D4.4) — 2026-09-29, #1322 | One permanent Windows enumeration-failure placeholder blanked every presence answer on `rig2`. Faults are reported and left out of the inventory; only the collector itself failing fails the scan. Doctor fails over USB only when the scan fails: a fault, an empty listed port, a look-alike or an unrecognised model only warns (D5). |
+| 12 | **A USB record that is not a working device is a fault, never a failed scan** (D4.4) — 2026-09-29, #1322 | One permanent Windows enumeration-failure placeholder blanked every presence answer on `rig2`. Faults are reported and left out of the inventory; only the collector itself failing fails the scan. A fault never fails doctor, and a failed scan always does. The per-service `usb-devices.*` checks fail only on a failed scan — a fault, an empty listed port, a look-alike or an unrecognised model only warns (D5) — while central `hardware.usb-device` keeps failing a device absent from the bus for an installed, enabled unit. |
 | 13 | **A `qhy-camera` entry declares its camera's filter wheel** (D3, D4.7) — 2026-10-01 | rp binds filter wheels by position, so a wheel numbered in camera order would shift behind a placeholder camera and rp would move another camera's filters without error. `filter_wheel_number` pins the wheel as `device_number` pins the camera, a placeholder camera's wheel is a placeholder too, and a declared wheel needs no startup `InitQHYCCD` probe. |
 | 14 | **A failed scan is retried in the background and the driver reloads itself on the first success** (D4.4) — 2026-10-01 | The Windows collector's 10 s deadline can run out on a healthy host at boot, and a failed scan is never a startup failure, so nothing else would retry it before morning. Safe because the failed-scan outcome has opened nothing; not hot-plug, because it stops at the first success. |
 | 15 | **A camera on a port's USB 2.0 twin is on a different port, and the placeholder says why** (D4.8) — 2026-10-01 | The native spelling is the key, and one socket answering to two entries would undo the list. Where a passive pairing signal exists the reason points at the cable instead of the generic one. |

@@ -165,6 +165,9 @@ Feature: Hardware checks (no SDK)
     And hardware facts with a USB fault "/sys/bus/usb/devices/1-9" at "1-9" because "it names a vendor but no readable idProduct, which usually means it was unplugged during the scan"
     When I run doctor with --json
     Then the report contains exactly 2 checks named "hardware.usb-fault"
+    And the report has exactly one "warn" check named "hardware.usb-fault" whose detail mentions "USB\VID_0000&PID_0002\5&27E528BF&0&5"
+    And the report has exactly one "warn" check named "hardware.usb-fault" whose detail mentions "/sys/bus/usb/devices/1-9"
+    And that check's detail mentions "unplugged during the scan"
 
   Scenario: A dead device never fails doctor, even beside an enabled service
     Given Windows platform facts with an enabled unit "rusty-photon-dsd-fp2"
