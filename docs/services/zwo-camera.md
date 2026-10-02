@@ -867,34 +867,50 @@ EAF; those belong to the other zwo services.)
   only a download format (RM1), so no mode change can leave a cached value
   outside its range — unlike `qhy-camera`, whose ranges are per mode.
 - **GO4.** The cell is the sole gate on all six members, so each connect
-  **overwrites** it — range and value, including with "unavailable". Here that
-  falls out of the handshake assigning it unconditionally (`seeded_setting`,
-  which yields `None` when the control is absent), so a control missing on
-  this connect cannot leave a previous session's bounds standing to be
-  advertised. The value is re-read from the camera too, so a value a client
-  set and no exposure armed does not survive a reconnect: the camera never
-  received it, and the new session starts from what the camera holds.
-  Identical in `svbony-camera` and `qhy-camera`, which reaches it differently —
-  see its GO4.
+  **republishes** it — range and value, including with "unavailable" — into
+  the cells the last close emptied (below). `seeded_setting` yields `None`
+  when the control is absent, so a control missing on this connect cannot
+  leave a previous session's bounds standing to be advertised. The value is
+  re-read from the camera too, so a value a client set and no exposure armed
+  does not survive a reconnect: the camera never received it, and the new
+  session starts from what the camera holds. Identical in `svbony-camera`
+  and `qhy-camera`, which reaches it differently — see its GO4.
 
   `Connected`, and the connected check every member makes, turn true when the
-  camera opens, before the handshake publishes. So a disconnect **empties**
-  both cells just before it closes the camera, as does a connect whose
-  handshake fails (C2, C3), and through the next connect's handshake all six
-  members answer as on a first connect, for an unadvertised control
-  (`NOT_IMPLEMENTED`), until the new session's cells are published. A set
-  landing in that window is refused, never answered and then overwritten by
-  the reseed, and no read reports the last session's value or bounds. The
-  cells are emptied before the close, not after it: once the camera is closed
-  a racing connect can open it and publish its own cells, which a later clear
-  would wipe. The bin and ROI, which the handshake also resets, are not
-  emptied: through a reconnect's handshake they still answer from the
-  previous session. That is an older gap in this driver's connect, not in the
-  gain cache; a connecting gate like `qhy-camera`'s
+  camera opens, while the cells describe a session only once its handshake
+  has published them. Three rules keep a set from being taken against cells
+  that are not this session's:
+
+  - **A close empties them.** A disconnect empties both cells just before it
+    closes the camera, as does a connect whose handshake fails (C2, C3).
+    Through the next connect's handshake all six members therefore answer as
+    on a first connect, for an unadvertised control (`NOT_IMPLEMENTED`), and
+    a set landing then is refused, never answered and then overwritten by
+    the reseed; no read reports the last session's value or bounds. The
+    cells are emptied before the close, not after it: once the camera is
+    closed a racing connect can open it and publish its own cells, which a
+    later clear would wipe.
+  - **A close overtakes a handshake.** The close bumps an epoch in the same
+    section that empties the cells; a handshake reads the epoch before its
+    first SDK call and publishes only if it has not moved. A disconnect
+    landing while a handshake runs therefore leaves the closed camera's
+    cells empty, whatever point the handshake had reached.
+  - **The first handshake to publish wins.** Two concurrent connects can
+    each run a handshake — the open is idempotent, so nothing stops the
+    second — and a handshake publishes only into a cell that is still
+    empty, so the later one cannot replace the first one's seed, or a set a
+    client has made since, with its own older reading.
+
+  The bin and ROI, which the handshake also resets, are not emptied: through
+  a reconnect's handshake they still answer from the previous session. That
+  is an older gap in this driver's connect, not in the gain cache; a
+  connecting gate like `qhy-camera`'s
   ([C7/C8](qhy-camera.md#behavioral-contracts)) would close it for all of
   them. Pinned by
-  `a_gain_set_while_a_reconnect_handshakes_is_refused_rather_than_lost` and
-  `a_reconnect_handshaking_reports_no_gain_or_offset_from_the_last_session`.
+  `a_gain_set_while_a_reconnect_handshakes_is_refused_rather_than_lost`,
+  `a_reconnect_handshaking_reports_no_gain_or_offset_from_the_last_session`,
+  `a_late_handshake_keeps_a_set_made_since_the_first_one_published` and
+  `a_handshake_a_close_overtook_publishes_no_gain_or_offset`.
 - **RM1.** `ReadoutModes` is the camera's **download-format** list: at
   enumeration the driver intersects `ASI_CAMERA_INFO.SupportedVideoFormat` with
   the formats it can deliver, in preference order `Raw16` then `Raw8`, and
@@ -1263,7 +1279,7 @@ else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md). Phase E landed **45 unit tests**
 and **57 BDD scenarios** (all green), plus a full **ConformU** pass; the suite
-now stands at **119 unit tests** (with `--all-features`; 109 without, since the
+now stands at **121 unit tests** (with `--all-features`; 111 without, since the
 `simulation` feature gates `lib.rs`'s three `simulation_tests` and the seven
 `backend::handle_tests` that drive the production handle against the `zwo-rs`
 simulation) and **79 BDD scenarios**.

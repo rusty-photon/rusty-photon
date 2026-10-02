@@ -230,6 +230,15 @@ struct DeviceState {
     /// `SVB_BLACK_LEVEL` (ASCOM's `Offset`), on the same terms as
     /// [`DeviceState::gain`].
     offset: Mutex<Option<ControlSetting>>,
+    /// Bumped by every close, under this lock, as it empties [`Self::gain`]
+    /// and [`Self::offset`] (GO4). A handshake reads it before its first SDK
+    /// call and publishes its gain and offset only if it has not moved since,
+    /// so a handshake a disconnect overtook cannot fill the cells of a camera
+    /// that has been closed.
+    ///
+    /// **Lock order:** taken before [`Self::gain`] and [`Self::offset`],
+    /// never while either is held.
+    controls_epoch: Mutex<u64>,
     target_temperature: Mutex<Option<f64>>,
 
     /// The in-flight capture's cancel flag ([`CaptureRequest::cancel`]) and,
@@ -325,6 +334,7 @@ impl DeviceState {
             exposure_range_us: Mutex::new(None),
             gain: Mutex::new(None),
             offset: Mutex::new(None),
+            controls_epoch: Mutex::new(0),
             target_temperature: Mutex::new(None),
             in_flight_capture: Mutex::new(None),
             image_ready: AtomicBool::new(false),
@@ -531,6 +541,9 @@ impl SvbonyCamera {
     /// parameter restore, a software flag, and the exposure register on a
     /// camera whose capture is trigger-gated or not yet started).
     fn open_handshake(&self) -> ASCOMResult<()> {
+        // Before any SDK call, so a close that lands anywhere in this
+        // handshake is one its publish of the gain and offset sees (GO4).
+        let epoch = *self.state.controls_epoch.lock();
         // A session starts from the SDK's device defaults, never from the
         // parameter block a previous session left behind. The SDK reports
         // a general error here when it cannot re-persist the block to
@@ -602,7 +615,8 @@ impl SvbonyCamera {
         // holds now — the device defaults the restore put it at — read, never
         // written (tenet 3). Each control's bounds and value are published in
         // one store, so a set cannot be checked against one connect's bounds
-        // and stored beside another's.
+        // and stored beside another's — and published last, below, once
+        // nothing left in this handshake can fail it.
         let gain = gain_range.map(|(min, max)| ControlSetting {
             min,
             max,
@@ -613,8 +627,6 @@ impl SvbonyCamera {
             max,
             value: self.seed(ControlType::BlackLevel, min, max),
         });
-        *self.state.gain.lock() = gain;
-        *self.state.offset.lock() = offset;
 
         let readout_formats = Self::negotiated_readout_formats(&property.supported_video_formats)?;
 
@@ -680,7 +692,42 @@ impl SvbonyCamera {
                 .map_err(handshake_err("video-capture arm"))?;
         }
 
+        // Last, so a set cannot be taken against cells a later step of this
+        // handshake then fails and empties (C2).
+        self.publish_controls(epoch, gain, offset);
         Ok(())
+    }
+
+    /// Publish a handshake's gain and offset (GO4): only if no close has come
+    /// since the handshake began at `epoch`, and only into a cell that is
+    /// still empty. The first keeps a handshake a disconnect overtook from
+    /// filling the cells of a closed camera. The second makes the publish one
+    /// that never replaces a value — only one handshake runs per open here
+    /// (the winner of the atomic open), but a value already in the cell is a
+    /// session's, and no handshake's reading should replace it.
+    fn publish_controls(
+        &self,
+        epoch: u64,
+        gain: Option<ControlSetting>,
+        offset: Option<ControlSetting>,
+    ) {
+        let current = self.state.controls_epoch.lock();
+        if *current != epoch {
+            debug!(
+                camera = %self.unique_id,
+                "a close overtook this handshake; its gain and offset are not published"
+            );
+            return;
+        }
+        for (cell, setting) in [(&self.state.gain, gain), (&self.state.offset, offset)] {
+            let mut slot = cell.lock();
+            if slot.is_none() {
+                *slot = setting;
+            }
+        }
+        // Held to here: a close between the check and the stores would empty
+        // the cells, and these would then fill them.
+        drop(current);
     }
 
     fn disconnect(&self) -> ASCOMResult<()> {
@@ -697,10 +744,15 @@ impl SvbonyCamera {
     /// cells not yet published — answers for them as a first connect's does,
     /// rather than taking a set against the last session's cell for the
     /// reseed to overwrite. Emptied before the close, never after it: once the
-    /// handle is closed a racing connect can open it and publish its own.
+    /// handle is closed a racing connect can open it and publish its own. The
+    /// epoch moves in the same section, so a handshake still running from
+    /// before this close publishes nothing (see [`Self::publish_controls`]).
     fn close_handle(&self) -> BackendResult<()> {
+        let mut epoch = self.state.controls_epoch.lock();
+        *epoch = epoch.wrapping_add(1);
         *self.state.gain.lock() = None;
         *self.state.offset.lock() = None;
+        drop(epoch);
         self.handle.close()
     }
 
@@ -2667,13 +2719,13 @@ mod tests {
         }
     }
 
-    /// GO4: a connect whose handshake fails after publishing the gain and
-    /// offset forgets them as it closes, so the next connect's handshake does
-    /// not take a set against them either.
+    /// GO4: a connect whose handshake fails after reading the gain and offset
+    /// leaves neither behind — they are published only once nothing in the
+    /// handshake can fail — so the next connect's handshake does not take a
+    /// set against them either.
     #[tokio::test]
-    async fn a_failed_handshake_forgets_the_gain_and_offset_it_published() {
-        // No raw format fails the handshake (RM3) after the cells are
-        // published.
+    async fn a_failed_handshake_leaves_no_gain_or_offset_behind() {
+        // No raw format fails the handshake (RM3) after the seed reads.
         let handle =
             Arc::new(MockCameraHandle::default().with_video_formats(vec![ImageType::Rgb24]));
         let cam = SvbonyCamera::new(handle.clone(), None);
@@ -2684,6 +2736,65 @@ mod tests {
         assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
         let err = cam.set_offset(7).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
+    }
+
+    /// GO4: the handshake publishes the gain and offset last, after every
+    /// step that can fail it — a set made while a later step is still to
+    /// fail is refused, never taken against cells the failure then empties.
+    /// The handshake alone, without the close a connect follows it with.
+    #[tokio::test]
+    async fn a_handshake_publishes_its_gain_and_offset_only_once_nothing_can_fail_it() {
+        // No raw format fails the handshake (RM3) after the seed reads.
+        let handle =
+            Arc::new(MockCameraHandle::default().with_video_formats(vec![ImageType::Rgb24]));
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        assert!(handle.open().unwrap());
+
+        cam.open_handshake().unwrap_err();
+        let err = cam.set_gain(50).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
+    }
+
+    /// GO4: a handshake that runs when the cells already hold a session's
+    /// values leaves them as they are, so a set made since they were
+    /// published is not replaced by the handshake's own reading.
+    #[tokio::test]
+    async fn a_late_handshake_keeps_a_set_made_since_the_first_one_published() {
+        let cam = connected_device(MockCameraHandle::default());
+        cam.set_gain(50).await.unwrap();
+        cam.set_offset(7).await.unwrap();
+
+        cam.open_handshake().unwrap();
+        assert_eq!(cam.gain().await.unwrap(), 50);
+        assert_eq!(cam.offset().await.unwrap(), 7);
+    }
+
+    /// GO4: a handshake a disconnect overtook publishes no gain or offset —
+    /// the cells of the closed camera stay empty, as a first connect's are.
+    #[tokio::test]
+    async fn a_handshake_a_close_overtook_publishes_no_gain_or_offset() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        // The handshake's epoch is read before the close it is overtaken by.
+        let epoch = *cam.state.controls_epoch.lock();
+        cam.disconnect().unwrap();
+        let setting = Some(ControlSetting {
+            min: 0,
+            max: 400,
+            value: Some(100),
+        });
+        cam.publish_controls(epoch, setting, setting);
+
+        assert!(handle.open().unwrap());
+        assert_eq!(
+            cam.gain().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_IMPLEMENTED
+        );
+        assert_eq!(
+            cam.offset().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_IMPLEMENTED
+        );
     }
 
     // --- offset (the ASCOM Offset == SVBony BlackLevel control, GO1) ------------------

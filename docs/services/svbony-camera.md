@@ -918,7 +918,8 @@ one core at load average 65, see "Real-hardware validation").
   range, `bAuto = false`) — the SDK's only path that clears its
   auto-exposure state, which gates `SVB_GAIN` (GO5) — and last a *read*
   of `SVB_GAIN` and `SVB_BLACK_LEVEL`, which seeds the values the first
-  exposure arms (GO1). Restore and auto-save failures are logged at
+  exposure arms (GO1) — published only at the very end of the handshake,
+  once nothing left in it can fail (GO4). Restore and auto-save failures are logged at
   `warn!` and do **not** fail the connect: `SVBRestoreDefaultParam`
   reports `SVB_ERROR_GENERAL_ERROR` when its own follow-up write of
   `<model>_Cfg_A.bin` fails on a read-only working directory even though
@@ -1296,35 +1297,45 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   reseeds the value from the camera (GO1). Identical in `zwo-camera` and
   `qhy-camera`, which reaches it differently — see its GO4.
 
-  The handshake publishes the cells late — after the restore, the property
-  and caps reads, the clearing exposure write and both seed reads — while
-  `Connected` is true from the moment the handle opens. So a disconnect
-  **empties** both cells just before it closes the handle, as does a
-  connect whose handshake fails (C2, C3). Through the next connect's
-  handshake all six members therefore answer as on a first connect, for an
-  unadvertised control (`NOT_IMPLEMENTED`), until the new session's cells
-  are published. A set landing in that window is refused, never answered
-  and then overwritten by the reseed, and no read reports the last
-  session's value or bounds. The cells are emptied before the close, not
-  after it: once the handle is closed a racing connect can open it and
-  publish its own cells, which a later clear would wipe. A set that passed
-  `ensure_connected` before a disconnect and stores only after a whole
-  reconnect is checked against the new session's bounds in the same
-  critical section that stores it, so it is a set in the new session — its
-  call spanned the reconnect. This driver does not serialize a disconnect
-  against the handshake it ends: one landing after a non-trigger camera's
-  handshake has passed its last call that can fail it (the caps read)
-  leaves the cells that handshake then publishes standing while the handle
-  is closed. Nor are the bin and the
-  sub-frame emptied: through a reconnect's handshake they still answer from
-  the previous session until the handshake resets them. Both are older
-  gaps in this driver's connect, not in the gain cache; a connect-readiness
-  gate like `qhy-camera`'s ([C6](qhy-camera.md#behavioral-contracts))
-  would close them together. Pinned by
+  `Connected` is true from the moment the handle opens, while the cells
+  describe a session only once its handshake has finished. Three rules keep
+  a set from being taken against cells that are not this session's:
+
+  - **A close empties them.** A disconnect empties both cells just before
+    it closes the handle, as does a connect whose handshake fails (C2, C3).
+    Through the next connect's handshake all six members therefore answer
+    as on a first connect, for an unadvertised control (`NOT_IMPLEMENTED`),
+    and a set landing then is refused, never answered and then overwritten
+    by the reseed; no read reports the last session's value or bounds. The
+    cells are emptied before the close, not after it: once the handle is
+    closed a racing connect can open it and publish its own cells, which a
+    later clear would wipe.
+  - **The handshake publishes last,** after every step that can fail it —
+    the format negotiation and, on a trigger camera, the mode select and
+    the video-capture arm — so no set is taken against cells a later step
+    then fails and empties.
+  - **A close overtakes a handshake.** The close bumps an epoch in the same
+    section that empties the cells; a handshake reads the epoch before its
+    first SDK call and publishes only if it has not moved, and only into a
+    cell that is still empty. A disconnect landing while a handshake runs
+    therefore leaves the closed camera's cells empty, whatever point the
+    handshake had reached.
+
+  A set that passed `ensure_connected` before a disconnect and stores only
+  after a whole reconnect is checked against the new session's bounds in
+  the same critical section that stores it, so it is a set in the new
+  session — its call spanned the reconnect. The bin and the sub-frame are
+  not emptied: through a reconnect's handshake they still answer from the
+  previous session until the handshake resets them. That is an older gap in
+  this driver's connect, not in the gain cache; a connect-readiness gate
+  like `qhy-camera`'s ([C6](qhy-camera.md#behavioral-contracts)) would
+  close it. Pinned by
   `a_gain_set_while_a_reconnect_handshakes_is_refused_rather_than_lost`,
-  `a_reconnect_handshaking_reports_no_gain_or_offset_from_the_last_session`
-  and `a_failed_handshake_forgets_the_gain_and_offset_it_published`, which
-  open the handle and run the handshake as two separate steps.
+  `a_reconnect_handshaking_reports_no_gain_or_offset_from_the_last_session`,
+  `a_failed_handshake_leaves_no_gain_or_offset_behind`,
+  `a_handshake_publishes_its_gain_and_offset_only_once_nothing_can_fail_it`,
+  `a_late_handshake_keeps_a_set_made_since_the_first_one_published` and
+  `a_handshake_a_close_overtook_publishes_no_gain_or_offset`.
 - **GO5 (the SDK's auto-exposure gate orders the arm).** The SDK refuses
   `SVBSetControlValue(SVB_GAIN, …, bAuto = false)` while its
   **auto-exposure state** is on (surfacing as `SVB_ERROR_GENERAL_ERROR` —

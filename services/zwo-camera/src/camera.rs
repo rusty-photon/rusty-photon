@@ -156,6 +156,15 @@ struct DeviceState {
     gain: Mutex<Option<ControlSetting>>,
     /// The offset, on the same terms as [`DeviceState::gain`].
     offset: Mutex<Option<ControlSetting>>,
+    /// Bumped by every close, under this lock, as it empties [`Self::gain`]
+    /// and [`Self::offset`] (GO4). A handshake reads it before its first SDK
+    /// call and publishes its gain and offset only if it has not moved since,
+    /// so a handshake a disconnect overtook cannot fill the cells of a camera
+    /// that has been closed.
+    ///
+    /// **Lock order:** taken before [`Self::gain`] and [`Self::offset`],
+    /// never while either is held.
+    controls_epoch: Mutex<u64>,
     /// Whether the camera advertises an `ASI_TEMPERATURE` control (cached at the
     /// open handshake). Decoupled from cooling: most ASI cameras — cooled or not —
     /// expose a readable sensor temperature, so `CCDTemperature` is reported
@@ -239,6 +248,7 @@ impl DeviceState {
             exposure_range_us: Mutex::new(None),
             gain: Mutex::new(None),
             offset: Mutex::new(None),
+            controls_epoch: Mutex::new(0),
             temperature_available: Mutex::new(false),
             target_temperature: Mutex::new(None),
             in_flight_capture: Mutex::new(None),
@@ -383,7 +393,10 @@ impl ZwoCamera {
         // `open_handshake` only reads SDK state and (re)writes the same
         // locally-cached values — nothing on this path is non-idempotent,
         // unlike svbony-camera's trigger-arm handshake, which must instead
-        // gate its handshake on winning the atomic open.
+        // gate its handshake on winning the atomic open. The gain and offset
+        // are the one exception to "(re)writes": the later of two handshakes
+        // leaves them as the first published them, so it cannot replace a
+        // set made in between with its older reading (GO4).
         self.handle.open().map_err(|_| ASCOMError::NOT_CONNECTED)?;
         // A failed post-open handshake must leave the device disconnected (C2),
         // not opened-but-unusable, so close before propagating.
@@ -405,6 +418,9 @@ impl ZwoCamera {
     /// the value the camera holds (GO1). Also resets the ROI to the full frame
     /// at bin 1.
     fn open_handshake(&self) -> ASCOMResult<()> {
+        // Before any SDK call, so a close that lands anywhere in this
+        // handshake is one its publish of the gain and offset sees (GO4).
+        let epoch = *self.state.controls_epoch.lock();
         // RM3: a camera advertising no raw format has nothing this driver's
         // single-plane ImageArray contract can describe. Fail loudly rather
         // than download a debayered RGB24 frame we would then misreport.
@@ -431,9 +447,7 @@ impl ZwoCamera {
         // Read before the cell is taken: the SDK call is no part of the
         // publish, which is one store of range and value together (GO4).
         let gain = self.seeded_setting(find(ControlType::Gain), ControlType::Gain, "gain");
-        *self.state.gain.lock() = gain;
         let offset = self.seeded_setting(find(ControlType::Offset), ControlType::Offset, "offset");
-        *self.state.offset.lock() = offset;
         // `CCDTemperature` is reported whenever the sensor-temperature control is
         // present — independent of cooling (an uncooled ASI still reads its sensor
         // temperature). The cooler-setpoint members remain gated on `is_cooler_cam`.
@@ -444,7 +458,40 @@ impl ZwoCamera {
         let (width, height) = self.reported_sensor();
         *self.state.intended_roi.lock() = Some(UnbinnedRoi::full_frame(width, height));
         *self.state.target_temperature.lock() = None;
+        self.publish_controls(epoch, gain, offset);
         Ok(())
+    }
+
+    /// Publish a handshake's gain and offset (GO4): only if no close has come
+    /// since the handshake began at `epoch`, and only into a cell that is
+    /// still empty. The first keeps a handshake a disconnect overtook from
+    /// filling the cells of a closed camera. The second keeps a handshake
+    /// that raced another — two concurrent connects each run one — from
+    /// replacing the first one's seed, or a set a client has made since,
+    /// with its own older reading.
+    fn publish_controls(
+        &self,
+        epoch: u64,
+        gain: Option<ControlSetting>,
+        offset: Option<ControlSetting>,
+    ) {
+        let current = self.state.controls_epoch.lock();
+        if *current != epoch {
+            debug!(
+                camera = %self.unique_id,
+                "a close overtook this handshake; its gain and offset are not published"
+            );
+            return;
+        }
+        for (cell, setting) in [(&self.state.gain, gain), (&self.state.offset, offset)] {
+            let mut slot = cell.lock();
+            if slot.is_none() {
+                *slot = setting;
+            }
+        }
+        // Held to here: a close between the check and the stores would empty
+        // the cells, and these would then fill them.
+        drop(current);
     }
 
     fn disconnect(&self) -> ASCOMResult<()> {
@@ -461,10 +508,15 @@ impl ZwoCamera {
     /// cells not yet published — answers for them as a first connect's does,
     /// rather than taking a set against the last session's cell for the
     /// reseed to overwrite. Emptied before the close, never after it: once the
-    /// handle is closed a racing connect can open it and publish its own.
+    /// handle is closed a racing connect can open it and publish its own. The
+    /// epoch moves in the same section, so a handshake still running from
+    /// before this close publishes nothing (see [`Self::publish_controls`]).
     fn close_handle(&self) -> BackendResult<()> {
+        let mut epoch = self.state.controls_epoch.lock();
+        *epoch = epoch.wrapping_add(1);
         *self.state.gain.lock() = None;
         *self.state.offset.lock() = None;
+        drop(epoch);
         self.handle.close()
     }
 
@@ -2805,6 +2857,46 @@ mod tests {
         ] {
             assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED, "{member}");
         }
+    }
+
+    /// GO4: two concurrent connects each run a handshake. The later one
+    /// leaves the gain and offset as the first published them, so a set made
+    /// in between is not replaced by its older reading.
+    #[tokio::test]
+    async fn a_late_handshake_keeps_a_set_made_since_the_first_one_published() {
+        let device = connected_device(MockCameraHandle::default());
+        device.set_gain(200).await.unwrap();
+        device.set_offset(80).await.unwrap();
+
+        device.open_handshake().unwrap();
+        assert_eq!(device.gain().await.unwrap(), 200);
+        assert_eq!(device.offset().await.unwrap(), 80);
+    }
+
+    /// GO4: a handshake a disconnect overtook publishes no gain or offset —
+    /// the cells of the closed camera stay empty, as a first connect's are.
+    #[tokio::test]
+    async fn a_handshake_a_close_overtook_publishes_no_gain_or_offset() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
+        // The handshake's epoch is read before the close it is overtaken by.
+        let epoch = *device.state.controls_epoch.lock();
+        device.set_connected(false).await.unwrap();
+        let setting = Some(ControlSetting {
+            min: 0,
+            max: 500,
+            value: Some(100),
+        });
+        device.publish_controls(epoch, setting, setting);
+
+        handle.open().unwrap();
+        assert_eq!(
+            device.gain().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_IMPLEMENTED
+        );
+        assert_eq!(
+            device.offset().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_IMPLEMENTED
+        );
     }
 
     #[tokio::test]
