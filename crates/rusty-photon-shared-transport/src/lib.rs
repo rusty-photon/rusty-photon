@@ -21,7 +21,9 @@
 //!
 //! [`SharedTransport`] holds the refcount, the slot, and the open-state
 //! lock. [`Session`] is the handle a service hands to its ASCOM device
-//! types; one device = one session.
+//! types; one device = one session. A caller that needs to know *when*
+//! the device answered — to date a position it latched, say — uses
+//! `request_timed`, which also returns the exchange's [`WireTiming`].
 //!
 //! There are two lifecycles. In `LazyAcquire` the conduit follows the
 //! clients: the first `acquire` opens it and runs the handshake, the
@@ -78,7 +80,7 @@ pub mod shared;
 pub mod transport;
 
 pub use codec::Codec;
-pub use connection::Connection;
+pub use connection::{Connection, WireTiming};
 pub use error::{SessionError, TransportError};
 pub use session::{Hooks, Session, StateAssertion, WhileOpen};
 pub use shared::SharedTransport;

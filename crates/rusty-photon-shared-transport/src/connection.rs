@@ -23,13 +23,18 @@
 //! that counter is about requests that never reached the device, and a
 //! codec error or an exhausted skip budget means one did reach it and
 //! answered.
+//!
+//! [`Connection::request_timed`] also reports *when* the exchange
+//! crossed the host's side of the wire — see [`WireTiming`].
 
 use std::fmt;
 use std::io;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::{Mutex, Notify};
+use tokio::time::Instant;
 use tracing::trace;
 
 use crate::codec::Codec;
@@ -80,6 +85,46 @@ impl fmt::Display for DisplayWire<'_> {
             )?;
         }
         Ok(())
+    }
+}
+
+/// When one request's frames crossed the host's side of the wire.
+///
+/// Both instants are on tokio's clock and are taken inside the command
+/// lock, so time spent queued behind other callers is in neither:
+///
+/// * `sent_at` — immediately before the command frame is handed to
+///   [`FrameTransport::send_frame`]. The task is running when it is
+///   taken and nothing yields between it and the write, so a busy host
+///   can delay *when* a command goes out but not how well this records
+///   it.
+/// * `received_at` — immediately after the `recv_frame` that returned
+///   the answering frame. The reply reached the host earlier than this
+///   by however long the host took to notice it: the runtime has to
+///   dispatch the read readiness and then run the task, and on a loaded
+///   host either can wait tens of milliseconds.
+///
+/// The device therefore handled the command somewhere in
+/// `[sent_at, received_at]`, whatever the host was doing, and
+/// [`Self::round_trip`] bounds how far either stamp can be from that
+/// instant. Where inside the interval the device acts is a property of
+/// the device and the link, not of this layer: a caller that needs the
+/// instant a device-side value was latched picks its convention from
+/// the protocol it speaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WireTiming {
+    /// Taken just before the command frame was written.
+    pub sent_at: Instant,
+    /// Taken just after the answering frame was read.
+    pub received_at: Instant,
+}
+
+impl WireTiming {
+    /// `received_at − sent_at`: an upper bound on how far either stamp
+    /// can be from the instant the device handled the command.
+    #[must_use]
+    pub fn round_trip(&self) -> Duration {
+        self.received_at.saturating_duration_since(self.sent_at)
     }
 }
 
@@ -223,7 +268,8 @@ impl<C: Codec> Connection<C> {
     ///
     /// Each `send_frame` / `recv_frame` round emits a `trace!` event
     /// with the wire bytes (escaped + length-capped via [`DisplayWire`])
-    /// and the full byte count as a structured field. Disabled by
+    /// and the full byte count as a structured field; `wire recv` also
+    /// carries the `rtt` since the command frame went out. Disabled by
     /// default — enable per-target with
     /// `RUST_LOG=rusty_photon_shared_transport=trace` (or a finer
     /// filter) when debugging.
@@ -248,6 +294,23 @@ impl<C: Codec> Connection<C> {
     /// [`SessionError::SkipExhausted`] when too many non-matching
     /// frames arrive.
     pub async fn request(&self, cmd: C::Command) -> Result<C::Response, SessionError<C::Error>> {
+        self.request_timed(cmd).await.map(|(resp, _)| resp)
+    }
+
+    /// [`Self::request`], plus when the exchange crossed the wire.
+    ///
+    /// The [`WireTiming`] is that of the one command frame and of the
+    /// frame that answered it; frames skipped under
+    /// [`Codec::max_skip`](crate::Codec::max_skip) are not counted. The
+    /// `wire recv` trace event carries the elapsed `rtt` the same way.
+    ///
+    /// # Errors
+    ///
+    /// The [`Self::request`] failures, unchanged.
+    pub async fn request_timed(
+        &self,
+        cmd: C::Command,
+    ) -> Result<(C::Response, WireTiming), SessionError<C::Error>> {
         let bytes = self.codec.encode(&cmd);
         let mut guard = self.transport.lock().await;
         // Reached only by a caller that raced `close` — the reconnect
@@ -268,6 +331,10 @@ impl<C: Codec> Connection<C> {
             bytes = %DisplayWire(&bytes),
             "wire send"
         );
+        // After the trace event, not before it: with wire tracing on,
+        // emitting the event is synchronous I/O that would otherwise
+        // sit between the stamp and the write.
+        let sent_at = Instant::now();
         match transport.send_frame(&bytes).await {
             Ok(()) => {}
             Err(e) => {
@@ -283,15 +350,20 @@ impl<C: Codec> Connection<C> {
                 self.signal_reconnect();
                 return Err(SessionError::Transport(e));
             }
+            let timing = WireTiming {
+                sent_at,
+                received_at: Instant::now(),
+            };
             trace!(
                 len = buf.len(),
                 skipped,
+                rtt = ?timing.round_trip(),
                 bytes = %DisplayWire(&buf),
                 "wire recv"
             );
             let resp = self.codec.decode(&buf).map_err(SessionError::Codec)?;
             if self.codec.matches(&cmd, &resp) {
-                return Ok(resp);
+                return Ok((resp, timing));
             }
         }
         drop(guard);
@@ -478,6 +550,148 @@ mod tests {
         conn.close().await;
         conn.close().await;
         conn.request(b"ping".to_vec()).await.unwrap_err();
+    }
+
+    // -----------------------------------------------------------------
+    // request_timed(): when the exchange crossed the wire
+    // -----------------------------------------------------------------
+
+    /// How long a reply takes in the timing tests — the 41 ms a stalled
+    /// host took to notice a reply on the rig in issue #1371.
+    const REPLY_DELAY: Duration = Duration::from_millis(41);
+
+    /// [`EchoTransport`] whose echo takes `delay` to come back, the way
+    /// a reply does when the device is slow or the host is slow to
+    /// notice it.
+    struct SlowEchoTransport {
+        inner: EchoTransport,
+        delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl FrameTransport for SlowEchoTransport {
+        async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+            self.inner.send_frame(bytes).await
+        }
+
+        async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
+            tokio::time::sleep(self.delay).await;
+            self.inner.recv_frame(buf).await
+        }
+    }
+
+    fn slow_echo_connection(delay: Duration) -> Connection<StubCodec<true>> {
+        let transport = SlowEchoTransport {
+            inner: EchoTransport(None),
+            delay,
+        };
+        Connection::new(Box::new(transport), StubCodec::<true>)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_timing_runs_from_the_write_to_the_answer() {
+        let conn = slow_echo_connection(REPLY_DELAY);
+        let before = Instant::now();
+
+        let (resp, timing) = conn.request_timed(b"ping".to_vec()).await.unwrap();
+
+        assert_eq!(resp, b"ping");
+        assert_eq!(timing.sent_at, before, "nothing ran before the write");
+        assert_eq!(
+            timing.received_at,
+            before.checked_add(REPLY_DELAY).unwrap(),
+            "stamped when the answer was read"
+        );
+        assert_eq!(timing.round_trip(), REPLY_DELAY);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_queued_behind_another_is_stamped_when_it_reaches_the_wire() {
+        // The second caller spends a whole exchange waiting for the
+        // command lock. That wait is not wire time: its stamp has to
+        // say when its own frame went out, or a sample it carries
+        // would be dated an exchange too early.
+        let conn = slow_echo_connection(REPLY_DELAY);
+        let before = Instant::now();
+
+        let (one, two) = tokio::join!(
+            conn.request_timed(b"one".to_vec()),
+            conn.request_timed(b"two".to_vec()),
+        );
+        let mut timings = [one.unwrap().1, two.unwrap().1];
+        timings.sort_by_key(|t| t.sent_at);
+        let [first, queued] = timings;
+
+        assert_eq!(first.sent_at, before);
+        assert_eq!(
+            queued.sent_at, first.received_at,
+            "the lock wait is not in the stamp"
+        );
+        assert_eq!(queued.round_trip(), REPLY_DELAY);
+    }
+
+    /// Replies with `frames` in order, each `delay` after the last, and
+    /// ignores what is sent.
+    struct ScriptedReplies {
+        frames: std::collections::VecDeque<Vec<u8>>,
+        delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl FrameTransport for ScriptedReplies {
+        async fn send_frame(&mut self, _bytes: &[u8]) -> Result<(), TransportError> {
+            Ok(())
+        }
+
+        async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
+            tokio::time::sleep(self.delay).await;
+            buf.clear();
+            buf.extend(self.frames.pop_front().ok_or(TransportError::Eof)?);
+            Ok(())
+        }
+    }
+
+    /// Takes only an `ok` frame as the answer, skipping up to one other
+    /// — the shape of a protocol that pushes unsolicited frames.
+    #[derive(Clone)]
+    struct AnswerIsOk;
+
+    impl Codec for AnswerIsOk {
+        type Command = Vec<u8>;
+        type Response = Vec<u8>;
+        type Error = StubCodecError;
+
+        fn encode(&self, cmd: &Self::Command) -> Vec<u8> {
+            cmd.clone()
+        }
+
+        fn decode(&self, bytes: &[u8]) -> Result<Self::Response, Self::Error> {
+            Ok(bytes.to_vec())
+        }
+
+        fn matches(&self, _cmd: &Self::Command, resp: &Self::Response) -> bool {
+            resp == b"ok"
+        }
+
+        fn max_skip(&self) -> usize {
+            1
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_timing_ends_at_the_answer_not_at_a_skipped_frame() {
+        let transport = ScriptedReplies {
+            frames: [b"unsolicited".to_vec(), b"ok".to_vec()].into(),
+            delay: REPLY_DELAY,
+        };
+        let conn = Connection::new(Box::new(transport), AnswerIsOk);
+        let before = Instant::now();
+
+        let (resp, timing) = conn.request_timed(b"ask".to_vec()).await.unwrap();
+
+        assert_eq!(resp, b"ok");
+        assert_eq!(timing.sent_at, before);
+        assert_eq!(timing.round_trip(), REPLY_DELAY.saturating_mul(2));
     }
 
     #[tokio::test]

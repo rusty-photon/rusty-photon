@@ -18,7 +18,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 
 use crate::codec::Codec;
-use crate::connection::Connection;
+use crate::connection::{Connection, WireTiming};
 use crate::error::{SessionError, TransportError};
 use crate::shared::SharedTransport;
 use crate::BoxFuture;
@@ -76,6 +76,19 @@ impl<C: Codec> Session<C> {
     /// wire-level transport error, a codec decode failure, or an
     /// exhausted skip budget.
     pub async fn request(&self, cmd: C::Command) -> Result<C::Response, SessionError<C::Error>> {
+        self.request_timed(cmd).await.map(|(resp, _)| resp)
+    }
+
+    /// [`Self::request`], plus when the exchange crossed the wire — see
+    /// [`WireTiming`] and [`Connection::request_timed`].
+    ///
+    /// # Errors
+    ///
+    /// The [`Self::request`] failures, unchanged.
+    pub async fn request_timed(
+        &self,
+        cmd: C::Command,
+    ) -> Result<(C::Response, WireTiming), SessionError<C::Error>> {
         // `cell` only becomes `None` inside `close` (which consumes
         // `self`) or `drop` (which destructs `self`). Neither path can
         // race a live `&self` call to `request`, so this branch is
@@ -176,7 +189,7 @@ impl<C: Codec> Session<C> {
             }
         }
 
-        connection.request(cmd).await
+        connection.request_timed(cmd).await
     }
 
     /// Primary teardown path.
@@ -259,6 +272,19 @@ impl<C: Codec> WhileOpen<C> {
     /// exhausted skip budget.
     pub async fn request(&self, cmd: C::Command) -> Result<C::Response, SessionError<C::Error>> {
         self.connection.request(cmd).await
+    }
+
+    /// [`Self::request`], plus when the exchange crossed the wire — see
+    /// [`WireTiming`] and [`Connection::request_timed`].
+    ///
+    /// # Errors
+    ///
+    /// The [`Self::request`] failures, unchanged.
+    pub async fn request_timed(
+        &self,
+        cmd: C::Command,
+    ) -> Result<(C::Response, WireTiming), SessionError<C::Error>> {
+        self.connection.request_timed(cmd).await
     }
 
     /// Future that resolves when the surrounding [`SharedTransport`]
