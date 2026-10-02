@@ -1,5 +1,5 @@
-//! Gain, offset, and readout-mode steps (`@wip` — Phase E,
-//! docs/plans/archive/svbony-camera.md; `Offset` maps to `SVB_BLACK_LEVEL`).
+//! Gain, offset, and readout-mode steps (`Offset` maps to `SVB_BLACK_LEVEL`;
+//! see docs/services/svbony-camera.md "Gain / offset / readout").
 
 use cucumber::{then, when};
 
@@ -36,6 +36,13 @@ async fn gain_equals_max(world: &mut CameraWorld, _device: u32) {
     );
 }
 
+#[then(regex = r"^camera device (\d+) reports Gain as (\d+) and Offset as (\d+)$")]
+async fn gain_and_offset_are(world: &mut CameraWorld, _device: u32, gain: i32, offset: i32) {
+    let camera = world.camera();
+    assert_eq!(camera.gain().await.unwrap(), gain, "Gain");
+    assert_eq!(camera.offset().await.unwrap(), offset, "Offset");
+}
+
 #[when(regex = r"^I try to set Gain to one above GainMax on camera device (\d+)$")]
 async fn try_gain_above_max(world: &mut CameraWorld, _device: u32) {
     let camera = world.camera();
@@ -56,6 +63,22 @@ async fn offset_within(world: &mut CameraWorld, _device: u32) {
     let min = camera.offset_min().await.unwrap();
     let max = camera.offset_max().await.unwrap();
     assert!(min <= offset && offset <= max, "{min} <= {offset} <= {max}");
+}
+
+#[when(regex = r"^I set Offset to OffsetMax on camera device (\d+)$")]
+async fn set_offset_to_max(world: &mut CameraWorld, _device: u32) {
+    let camera = world.camera();
+    let max = camera.offset_max().await.unwrap();
+    camera.set_offset(max).await.unwrap();
+}
+
+#[then(regex = r"^camera device (\d+) reports Offset equal to OffsetMax$")]
+async fn offset_equals_max(world: &mut CameraWorld, _device: u32) {
+    let camera = world.camera();
+    assert_eq!(
+        camera.offset().await.unwrap(),
+        camera.offset_max().await.unwrap()
+    );
 }
 
 #[when(regex = r"^I try to set Offset to one below OffsetMin on camera device (\d+)$")]

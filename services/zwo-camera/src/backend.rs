@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
+use tracing::debug;
 use zwo_rs::{CameraInfo, ControlCaps, ControlType, GuideDirection, ImageType};
 
 /// A `zwo-rs` SDK call failed. Carries the underlying message; the ASCOM device
@@ -61,6 +62,12 @@ pub struct CaptureRequest {
     /// Sizes the download buffer and tells `camera.rs` which unpack the bytes
     /// need.
     pub image_type: ImageType,
+    /// The gain to arm this frame with (GO2), pinned by `StartExposure` with
+    /// the geometry. `None` when the camera does not advertise the control, or
+    /// has no gain to arm yet (GO1): nothing is sent.
+    pub gain: Option<i32>,
+    /// The offset to arm this frame with, on [`Self::gain`]'s terms.
+    pub offset: Option<i32>,
     /// Wall-clock integration time the capture honours so an in-flight exposure
     /// is observable (the `zwo-rs` simulation completes after one poll regardless).
     pub duration: Duration,
@@ -138,6 +145,27 @@ impl StopSignal {
 /// fixed nap count) so it cannot drift under blocking-pool oversubscription.
 const READOUT_TIMEOUT: Duration = Duration::from_millis(2500);
 
+/// Send a frame's gain, then its offset, through `write` (GO2).
+///
+/// The one arm sequence both handles run, so a mock capture arms exactly what
+/// the production one would: a control the request carries no value for is
+/// not sent, and a refusal names the control ahead of the SDK's own text.
+fn arm_gain_and_offset(
+    request: &CaptureRequest,
+    mut write: impl FnMut(ControlType, i64) -> BackendResult<()>,
+) -> BackendResult<()> {
+    if let Some(gain) = request.gain {
+        write(ControlType::Gain, i64::from(gain))
+            .map_err(|e| BackendError(format!("failed to set gain: {e}")))?;
+    }
+    if let Some(offset) = request.offset {
+        write(ControlType::Offset, i64::from(offset))
+            .map_err(|e| BackendError(format!("failed to set offset: {e}")))?;
+    }
+    debug!(gain = ?request.gain, offset = ?request.offset, "exposure armed its gain and offset");
+    Ok(())
+}
+
 /// The blocking camera operations the ASCOM `Camera` device drives.
 ///
 /// Every method is synchronous (the SDK is blocking C FFI); the device offloads
@@ -183,7 +211,8 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     fn control_value(&self, control: ControlType) -> BackendResult<i64>;
 
     /// Electrons per ADU at the camera's **current gain** — a live read, since
-    /// the SDK scales this field by the gain register (ST2).
+    /// the SDK scales this field by the gain register (ST2). That register is
+    /// the gain the last capture armed, not one a client has set since.
     ///
     /// # Errors
     ///
@@ -203,11 +232,12 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// Returns `camera not open` if the handle is closed, or the SDK's error.
     fn temperature_celsius(&self) -> BackendResult<f64>;
 
-    /// Run a single-frame capture under one SDK lock: set ROI + exposure, start,
-    /// integrate (honouring [`CaptureRequest::stop`]), poll to completion,
-    /// download. Returns `Ok(Some(frame))` for a completed or gracefully-stopped
-    /// exposure, `Ok(None)` for an aborted one (frame discarded), or `Err` on an
-    /// SDK error.
+    /// Run a single-frame capture under one SDK lock: set the ROI, the gain and
+    /// offset, and the exposure, start, integrate (honouring
+    /// [`CaptureRequest::stop`]), poll to completion, download. Returns
+    /// `Ok(Some(frame))` for a completed or gracefully-stopped exposure,
+    /// `Ok(None)` for an aborted one (frame discarded), or `Err` on an SDK
+    /// error.
     ///
     /// Stopping is signalled through the request's own [`StopSignal`], not a
     /// handle-wide cell, so one capture can never clear another's abort.
@@ -218,9 +248,10 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// configured (a close *during* integration is reported as `Ok(None)`
     /// instead, as is a close-and-reopen); the SDK's error if the ROI,
     /// start-position, or exposure write, the start, a status poll, the ROI
-    /// read-back, or the download fails; `exposure failed` when the SDK reports
-    /// the exposure as failed; or a message when the frame is too large to
-    /// address on this target.
+    /// read-back, or the download fails, or prefixed `failed to set gain: ` /
+    /// `failed to set offset: ` if the gain or offset write does; `exposure
+    /// failed` when the SDK reports the exposure as failed; or a message when
+    /// the frame is too large to address on this target.
     fn capture(&self, request: CaptureRequest) -> BackendResult<Option<Vec<u8>>>;
 
     /// Start an ST4 pulse in `direction` (`ASIPulseGuideOn`).
@@ -371,7 +402,8 @@ impl CameraHandle for ZwoCameraHandle {
         // the full duration. A second exposure is already barred by the device's
         // in-flight CAS, and ASI control/status reads are safe concurrently with
         // an integrating exposure (only ROI/format changes are not, and those
-        // happen only here, at the start of a capture).
+        // happen only here, at the start of a capture — as do the gain and
+        // offset writes, which no ASI document says are safe beside one).
         let epoch = self.with_camera(|camera| {
             // The device negotiated this format against the camera's
             // `SupportedVideoFormat` and publishes it as the ASCOM readout mode
@@ -383,6 +415,13 @@ impl CameraHandle for ZwoCameraHandle {
                 request.image_type,
             )?;
             camera.set_start_pos(request.start_x, request.start_y)?;
+            // The gain and offset this frame was accepted with, ahead of the
+            // exposure time and the start, so the frame integrates at them
+            // (GO2). Sent on every exposure, changed or not: there is no record
+            // of the camera's own values to fall out of step with them.
+            arm_gain_and_offset(&request, |control, value| {
+                Ok(camera.set_control_value(control, value, false)?)
+            })?;
             // `ASI_EXPOSURE` is a writable control on every ASI camera, and the
             // `zwo-rs` simulation models it too, so a failure here is a genuine
             // error: fail the capture rather than silently integrate for the
@@ -537,6 +576,8 @@ mod handle_tests {
             start_y: 0,
             exposure_us: 1_000,
             image_type: ImageType::Raw16,
+            gain: None,
+            offset: None,
             duration,
             is_dark: false,
             stop: Arc::clone(stop),
@@ -585,6 +626,56 @@ mod handle_tests {
         handle.pulse_guide_off(GuideDirection::North).unwrap();
         handle.close().unwrap();
         assert!(!handle.is_open());
+    }
+
+    /// GO2/E5, on the production handle: the gain and offset a request
+    /// carries are on the camera while its frame integrates. The mock seam
+    /// arms through the same sequence but into its own registers, so it cannot
+    /// speak for this half; and `wait_until_exposing` takes the camera lock, so
+    /// it sees the exposure only once the section that armed and started it
+    /// has ended. The values are read before the abort and asserted after the
+    /// join, so a failure does not leave a 30 s capture running.
+    #[test]
+    fn production_handle_capture_arms_gain_and_offset_before_the_frame_integrates() {
+        let handle = Arc::new(sim_handle());
+        handle.open().unwrap();
+        let stop = Arc::new(StopSignal::new());
+        let request = CaptureRequest {
+            gain: Some(222),
+            offset: Some(77),
+            ..sim_request(Duration::from_secs(30), &stop)
+        };
+        let capturing = {
+            let handle = Arc::clone(&handle);
+            std::thread::spawn(move || handle.capture(request))
+        };
+        wait_until_exposing(&handle);
+        let integrating_at = (
+            handle.control_value(ControlType::Gain).unwrap(),
+            handle.control_value(ControlType::Offset).unwrap(),
+        );
+        stop.request(false);
+        capturing.join().expect("capture thread").unwrap();
+        assert_eq!(integrating_at, (222, 77));
+        handle.close().unwrap();
+    }
+
+    /// GO1/GO2: a control the request carries no value for is not written, so
+    /// the camera keeps whatever it holds.
+    #[test]
+    fn production_handle_capture_leaves_a_control_with_no_value_alone() {
+        let handle = sim_handle();
+        handle.open().unwrap();
+        handle.set_control_value(ControlType::Gain, 300).unwrap();
+        handle.set_control_value(ControlType::Offset, 90).unwrap();
+        let stop = Arc::new(StopSignal::new());
+        handle
+            .capture(sim_request(Duration::from_millis(10), &stop))
+            .unwrap()
+            .expect("a completed frame");
+        assert_eq!(handle.control_value(ControlType::Gain).unwrap(), 300);
+        assert_eq!(handle.control_value(ControlType::Offset).unwrap(), 90);
+        handle.close().unwrap();
     }
 
     #[test]
@@ -766,6 +857,16 @@ pub(crate) mod mock {
         /// assert what the device configured — e.g. the negotiated download
         /// format (RM2).
         last_capture_request: Mutex<Option<CaptureRequest>>,
+        /// Every control write the camera has taken, in call order, so a test
+        /// can assert what reached the camera, in which order — and that
+        /// nothing did.
+        control_writes: Mutex<Vec<(ControlType, i64)>>,
+        /// Controls whose writes the camera refuses, so an exposure arming one
+        /// fails at the arm (GO2, E9).
+        refused_writes: Mutex<Vec<ControlType>>,
+        /// Controls whose reads the camera refuses, so a connect seeding one
+        /// (GO1), and a getter that must not read one, can be exercised.
+        refused_reads: Mutex<Vec<ControlType>>,
     }
 
     /// How one mock [`capture`](CameraHandle::capture) call ended.
@@ -794,6 +895,9 @@ pub(crate) mod mock {
                 capture_gate: AtomicBool::new(false),
                 capture_outcomes: Mutex::new(Vec::new()),
                 last_capture_request: Mutex::new(None),
+                control_writes: Mutex::new(Vec::new()),
+                refused_writes: Mutex::new(Vec::new()),
+                refused_reads: Mutex::new(Vec::new()),
             }
         }
     }
@@ -843,6 +947,44 @@ pub(crate) mod mock {
         /// still running (parked at the gate, say).
         pub fn capture_outcomes(&self) -> Vec<Option<CaptureOutcome>> {
             self.capture_outcomes.lock().clone()
+        }
+
+        /// Every control write the camera has taken so far, in call order.
+        pub fn control_writes(&self) -> Vec<(ControlType, i64)> {
+            self.control_writes.lock().clone()
+        }
+
+        /// Make the camera refuse writes to `control`, or take them again.
+        pub fn refuse_writes(&self, control: ControlType, refused: bool) {
+            Self::mark(&self.refused_writes, control, refused);
+        }
+
+        /// Make the camera refuse reads of `control`, or answer them again.
+        pub fn refuse_reads(&self, control: ControlType, refused: bool) {
+            Self::mark(&self.refused_reads, control, refused);
+        }
+
+        fn mark(list: &Mutex<Vec<ControlType>>, control: ControlType, on: bool) {
+            let mut list = list.lock();
+            list.retain(|c| *c != control);
+            if on {
+                list.push(control);
+            }
+        }
+
+        /// Put the gain or offset register at `value` without a write — where
+        /// another application, or an earlier session, leaves a camera.
+        pub fn preset_control(&self, control: ControlType, value: i64) {
+            assert!(
+                matches!(control, ControlType::Gain | ControlType::Offset),
+                "the mock has no {control:?} register to preset"
+            );
+            let register = if control == ControlType::Gain {
+                &self.gain
+            } else {
+                &self.offset
+            };
+            *register.lock() = value;
         }
 
         /// Present a model with no ST4 port (PG2's `NOT_IMPLEMENTED` branch).
@@ -896,6 +1038,13 @@ pub(crate) mod mock {
             while self.capture_gate.load(Ordering::SeqCst) && gate_start.elapsed() < GATE_TIMEOUT {
                 std::thread::sleep(Duration::from_millis(1));
             }
+            // Arm the frame's gain and offset where the production handle does
+            // — before the integration — and through the same sequence, so the
+            // registers (and the ElectronsPerADU derived from the gain) hold
+            // what a real arm would have left there.
+            arm_gain_and_offset(&request, |control, value| {
+                self.set_control_value(control, value)
+            })?;
             let delay = *self.capture_delay.lock();
             // Mirror the production handle: sleep against a real-clock DEADLINE,
             // not accumulated *intended* nap time, so the simulated capture can't
@@ -963,6 +1112,9 @@ pub(crate) mod mock {
         }
 
         fn control_value(&self, control: ControlType) -> BackendResult<i64> {
+            if self.refused_reads.lock().contains(&control) {
+                return Err(BackendError("simulated read refusal".to_string()));
+            }
             let value = match control {
                 ControlType::Gain => *self.gain.lock(),
                 ControlType::Offset => *self.offset.lock(),
@@ -989,6 +1141,9 @@ pub(crate) mod mock {
         }
 
         fn set_control_value(&self, control: ControlType, value: i64) -> BackendResult<()> {
+            if self.refused_writes.lock().contains(&control) {
+                return Err(BackendError("simulated write refusal".to_string()));
+            }
             match control {
                 ControlType::Gain => *self.gain.lock() = value,
                 ControlType::Offset => *self.offset.lock() = value,
@@ -997,6 +1152,7 @@ pub(crate) mod mock {
                 ControlType::Exposure => {}
                 _ => return Err(BackendError("invalid control type".to_string())),
             }
+            self.control_writes.lock().push((control, value));
             Ok(())
         }
 

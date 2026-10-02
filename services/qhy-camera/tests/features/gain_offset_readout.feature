@@ -1,10 +1,20 @@
 @serial
 Feature: Gain, offset, and readout modes
-  Gain and Offset return the current SDK value, or NOT_IMPLEMENTED when the
-  model lacks the control (GO1). Setters validate against the cached
-  [min, max] and reject an out-of-range value with INVALID_VALUE (GO2);
-  GainMin / GainMax and OffsetMin / OffsetMax reflect the cached SDK limits
-  (GO3).
+  Gain and Offset report the value the next exposure arms, not a live read of
+  the camera: a connect seeds each one by reading the value the camera holds,
+  writing neither (GO1). A model that lacks the control answers
+  NOT_IMPLEMENTED. Setters validate against the cached [min, max], reject an
+  out-of-range value with INVALID_VALUE, and otherwise store the value without
+  sending the camera anything. StartExposure sends the cached gain and then the
+  cached offset on every exposure, under the claim the exposure holds, so a set
+  needs no device of its own and is never refused as busy: one made while an
+  exposure is in flight is taken for the next exposure (GO2). GainMin /
+  GainMax and OffsetMin / OffsetMax reflect the cached SDK limits, which on the
+  simulated camera are 0 to 100 for gain and 0 to 255 for offset (GO3). The
+  simulated camera's frames do not depend on gain or offset, so these
+  scenarios pin which values are accepted and what is reported; what an
+  exposure sends the camera, and in what order, is pinned by the driver's
+  unit tests.
 
   ReadoutModes is the SDK's named mode list, read at connect; ReadoutMode is
   the mode the camera was last switched into, and every connect leaves it at
@@ -40,9 +50,31 @@ Feature: Gain, offset, and readout modes
     Then camera device 0 reports OffsetMin not greater than OffsetMax
     And camera device 0 reports an Offset within OffsetMin and OffsetMax
 
+  Scenario: Setting offset to the maximum is accepted
+    When I set Offset to OffsetMax on camera device 0
+    Then camera device 0 reports Offset equal to OffsetMax
+
   Scenario: Setting offset below the minimum is rejected
     When I try to set Offset to one below OffsetMin on camera device 0
     Then the set is rejected with ASCOM INVALID_VALUE
+
+  Scenario: A gain set while an exposure is in flight is accepted and still reported after the next exposure
+    Given an exposure is in flight on camera device 0
+    When I set Gain to 42 on camera device 0
+    Then camera device 0 reports Gain as 42
+    When I abort the exposure on camera device 0
+    And I StartExposure on camera device 0 with the current sub-frame and Duration 0.01 Light true
+    And the exposure on camera device 0 completes
+    Then camera device 0 reports Gain as 42
+
+  Scenario: An offset set while an exposure is in flight is accepted and still reported after the next exposure
+    Given an exposure is in flight on camera device 0
+    When I set Offset to 30 on camera device 0
+    Then camera device 0 reports Offset as 30
+    When I abort the exposure on camera device 0
+    And I StartExposure on camera device 0 with the current sub-frame and Duration 0.01 Light true
+    And the exposure on camera device 0 completes
+    Then camera device 0 reports Offset as 30
 
   Scenario: A connected camera is in readout mode 0 of a non-empty list
     Then camera device 0 reports at least one ReadoutMode

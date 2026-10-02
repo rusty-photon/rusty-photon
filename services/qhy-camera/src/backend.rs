@@ -806,7 +806,7 @@ pub(crate) mod mock {
         /// The mode the last init applied — the one the camera is in.
         applied_mode: AtomicU32,
         /// Make `init` reset gain and offset to 0, as some models' init does
-        /// (qhy-camera.md RM4), so the driver's restore has something to undo.
+        /// (qhy-camera.md RM4), so the next exposure has something to put back.
         pub init_resets_gain_offset: AtomicBool,
         /// Make `init` switch the cooler off, as the SDK does inside every init
         /// when `qhyccd.ini` sets `disable_auto_cooler` (RM4).
@@ -817,11 +817,12 @@ pub(crate) mod mock {
         pub ignore_readout_mode_writes: AtomicBool,
         /// Make the best-effort 16-bit transfer write fail.
         pub fail_transfer_bit: AtomicBool,
-        /// Controls whose `get_parameter` fails, so a read the driver makes
-        /// before it changes anything can be made to fail.
+        /// Controls whose `get_parameter` fails — a gain or offset the camera
+        /// will not report when a connect or a mode change reads it, say.
         fail_reads: Mutex<HashSet<ControlType>>,
-        /// Controls whose `set_parameter` fails — the gain, offset or cooler
-        /// write a readout-mode change makes after its init, say.
+        /// Controls whose `set_parameter` fails — the gain or offset an
+        /// exposure arms, or the cooler target a readout-mode change
+        /// re-asserts after its init, say.
         fail_writes: Mutex<HashSet<ControlType>>,
         /// Every configuration call the driver makes, in order — the mode,
         /// stream mode, init, transfer depth, parameter, bin and ROI writes —
@@ -934,18 +935,13 @@ pub(crate) mod mock {
         /// partner mock with `with_lifecycle` to put both on one physical
         /// connection the way `build()` does.
         lifecycle: Arc<tokio::sync::Mutex<()>>,
-        /// Holds a gain write open, before it lands, until a test releases it —
-        /// a client's `Gain` write parked inside the SDK.
-        gain_write_held: AtomicBool,
-        /// Set while such a held gain write is executing.
-        in_gain_write: AtomicBool,
         /// Holds the **offset** range read open until a test releases it.
-        /// `open_handshake` asks for the exposure range, then gain, then offset,
-        /// so this is its last question to the device: it parks a connect that
-        /// has read everything and published nothing, the one window in which an
-        /// early publish is visible. Holding the gain read instead would park it
-        /// one question short, and a publish placed between the two would slip
-        /// through.
+        /// `open_handshake` asks for the exposure range, then the gain and its
+        /// range, then the offset and its range, so this is its last question to
+        /// the device: it parks a connect that has read everything and published
+        /// nothing, the one window in which an early publish is visible. Holding
+        /// an earlier read instead would park it a question or more short, and a
+        /// publish placed between the two would slip through.
         offset_range_held: AtomicBool,
         /// Set while a held offset range read is executing, so a test can wait
         /// for it to be *in* the SDK instead of guessing.
@@ -1065,8 +1061,6 @@ pub(crate) mod mock {
                 open_held: AtomicBool::new(false),
                 in_open: AtomicBool::new(false),
                 lifecycle: Arc::new(tokio::sync::Mutex::new(())),
-                gain_write_held: AtomicBool::new(false),
-                in_gain_write: AtomicBool::new(false),
                 offset_range_held: AtomicBool::new(false),
                 in_offset_range: AtomicBool::new(false),
                 single_frame_calls: AtomicU32::new(0),
@@ -1170,6 +1164,13 @@ pub(crate) mod mock {
         pub fn bin(&self) -> (u32, u32) {
             *self.bin.lock()
         }
+        /// Leave a parameter where something other than the driver put it — a
+        /// previous session, another client, an init on the models that reset
+        /// gain and offset — without recording a call. [`param`](Self::param)
+        /// then tells what the driver sent from what it found.
+        pub fn preset_param(&self, control: ControlType, value: f64) {
+            self.params.lock().insert(control, value);
+        }
         /// Make the SDK report `area` as the effective area — an empty one is how
         /// a wedged camera reports. It is the area of the mode in force, so the
         /// next init into that mode reports it too.
@@ -1213,6 +1214,11 @@ pub(crate) mod mock {
         /// Make every write of `control` fail.
         pub fn fail_writes_of(&self, control: ControlType) {
             self.fail_writes.lock().insert(control);
+        }
+        /// Let writes of `control` through again, after
+        /// [`fail_writes_of`](Self::fail_writes_of).
+        pub fn allow_writes_of(&self, control: ControlType) {
+            self.fail_writes.lock().remove(&control);
         }
         /// Every configuration call so far, in order.
         pub fn calls(&self) -> Vec<String> {
@@ -1300,21 +1306,6 @@ pub(crate) mod mock {
         /// Whether `init` is executing right now.
         pub fn is_in_init(&self) -> bool {
             self.in_init.load(Ordering::SeqCst)
-        }
-        /// Hold a gain write open once it starts, before the gain lands, until
-        /// [`release_gain_write`](Self::release_gain_write). Pair it with
-        /// [`is_in_gain_write`](Self::is_in_gain_write) to drop a `Gain` write
-        /// while it is demonstrably inside the SDK.
-        pub fn hold_gain_write(&self) {
-            self.gain_write_held.store(true, Ordering::SeqCst);
-        }
-        /// Let a held gain write finish.
-        pub fn release_gain_write(&self) {
-            self.gain_write_held.store(false, Ordering::SeqCst);
-        }
-        /// Whether a held gain write is executing right now.
-        pub fn is_in_gain_write(&self) -> bool {
-            self.in_gain_write.load(Ordering::SeqCst)
         }
         /// Hold the offset range read open once the handshake reaches it, until
         /// [`release_offset_range`](Self::release_offset_range). Pair it with
@@ -1531,17 +1522,6 @@ pub(crate) mod mock {
             self.record(format!("set_parameter({control:?})"));
             if self.fail_writes.lock().contains(&control) {
                 return Err(BackendError(format!("simulated {control:?} write failure")));
-            }
-            if control == ControlType::Gain && self.gain_write_held.load(Ordering::SeqCst) {
-                self.in_gain_write.store(true, Ordering::SeqCst);
-                // Same shape (and same runaway backstop) as the held close above.
-                let deadline = std::time::Instant::now() + Duration::from_mins(1);
-                while self.gain_write_held.load(Ordering::SeqCst)
-                    && std::time::Instant::now() < deadline
-                {
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                self.in_gain_write.store(false, Ordering::SeqCst);
             }
             // Mirror the simulation's cooler routing so device-level cooling tests
             // observe the same coupling as the live backend.

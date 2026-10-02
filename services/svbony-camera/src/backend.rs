@@ -20,9 +20,9 @@
 //! trigger cameras only — by `camera.rs`'s open handshake — see
 //! `docs/services/svbony-camera.md` "Behavioral contracts → Exposure"
 //! step 1), the soft-trigger [`CameraHandle::capture`] composite (ROI +
-//! output format + exposure control + trigger + the `SVBGetVideoData` read
-//! deadline (see [`exposure_timeout_ms`]), state-machine step 2), and
-//! pulse-guide.
+//! output format + exposure control + the armed gain and offset + trigger +
+//! the `SVBGetVideoData` read deadline (see [`exposure_timeout_ms`]),
+//! state-machine step 2), and pulse-guide.
 //!
 //! **The download format is the caller's choice, not this seam's.**
 //! `capture` applies whatever [`CaptureRequest::image_type`] carries and
@@ -73,13 +73,15 @@
 //! polls**: a `SvbError::Timeout` from a short slice just means "no frame
 //! yet," not a real failure, so the poll loop retries until either a frame
 //! arrives or the overall deadline elapses. This bounds how long any other
-//! `Camera` trait method (`Disconnect`, `Gain`, `CoolerOn`, `CCDTemperature`,
-//! …) can be blocked waiting for the mutex to one poll slice, not the whole
-//! exposure — `is_open` goes further still and is backed by its own atomic
-//! (`SvbonyCameraHandle`'s `open` field) so connection-state reads never
-//! contend the capture lock at all — every `Camera` trait method calls
-//! `ensure_connected` first and must stay responsive during an in-flight
-//! exposure.
+//! `Camera` trait method that reaches the SDK (`Disconnect`, `CoolerOn`,
+//! `CCDTemperature`, …) can be blocked waiting for the mutex to one poll
+//! slice, not the whole exposure — `is_open` goes further still and is
+//! backed by its own atomic (`SvbonyCameraHandle`'s `open` field) so
+//! connection-state reads never contend the capture lock at all — every
+//! `Camera` trait method calls `ensure_connected` first and must stay
+//! responsive during an in-flight exposure. `Gain` and `Offset`, and their
+//! setters, never take the mutex either: the device answers them from its
+//! cache, and an exposure's `capture` is what sends them.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -147,6 +149,14 @@ pub struct CaptureRequest {
     /// `SupportedVideoFormat` (RM1/RM2). Sizes the `SVBGetVideoData` buffer
     /// and tells `camera.rs` which unpack the bytes need.
     pub image_type: ImageType,
+    /// The gain (`SVB_GAIN`) to arm this frame with: written after the
+    /// exposure, never before it (GO5), on every exposure whether or not a
+    /// client changed it. `None` when the camera advertises no gain or has no
+    /// value to arm (GO1), and then nothing is sent.
+    pub gain: Option<i64>,
+    /// The offset (`SVB_BLACK_LEVEL`) to arm this frame with, after the gain,
+    /// on the same terms as [`Self::gain`].
+    pub offset: Option<i64>,
     /// Wall-clock integration time the capture honours **under the
     /// `simulation` feature only** — `svbony-rs`'s simulated
     /// `get_video_data` never literally waits (see its doc comment), unlike
@@ -179,6 +189,37 @@ impl CaptureRequest {
             .checked_mul(height)?
             .checked_mul(self.image_type.bytes_per_pixel())
     }
+}
+
+/// Arm `request`'s exposure, then its gain, then its offset, through
+/// `set_control_value` — the production handle's SDK call, or the mock's model
+/// of it, so both run this one sequence.
+///
+/// The gain after the exposure write, never before it: the SDK refuses
+/// `SVB_GAIN` while its auto-exposure state is on, and a manual exposure write
+/// is the only thing that clears it (GO5). Both are sent on every exposure,
+/// changed or not, so the camera is at the values this frame was accepted
+/// with, whatever the SDK did to them since the last one. A refusal stops the
+/// arm there; a refused gain or offset says which it was.
+fn arm_controls(
+    request: &CaptureRequest,
+    mut set_control_value: impl FnMut(ControlType, i64) -> BackendResult<()>,
+) -> BackendResult<()> {
+    set_control_value(ControlType::Exposure, request.exposure_us)?;
+    if let Some(gain) = request.gain {
+        set_control_value(ControlType::Gain, gain)
+            .map_err(|e| BackendError(format!("failed to set gain: {e}")))?;
+    }
+    if let Some(offset) = request.offset {
+        set_control_value(ControlType::BlackLevel, offset)
+            .map_err(|e| BackendError(format!("failed to set offset: {e}")))?;
+    }
+    tracing::debug!(
+        gain = ?request.gain,
+        offset = ?request.offset,
+        "gain and offset armed for this exposure"
+    );
+    Ok(())
 }
 
 /// The SDK's own `SVBGetVideoData` timeout recommendation, before
@@ -335,8 +376,7 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// # Errors
     ///
     /// Returns `camera not open` if the handle is closed, or the SDK's error
-    /// if it refuses the write — a `Gain` write while its auto-exposure state
-    /// is still on (GO5), or a control the model lacks.
+    /// if it refuses the write — a control the model lacks included.
     fn set_control_value(&self, control: ControlType, value: i64) -> BackendResult<()>;
 
     /// Select the camera acquisition mode (`SVBSetCameraMode`) — called once
@@ -369,7 +409,9 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     fn stop_video_capture(&self) -> BackendResult<()>;
 
     /// Run one exposure under a single SDK lock: set ROI + output format +
-    /// `SVB_EXPOSURE`, trigger a frame (soft trigger, or a free-running
+    /// `SVB_EXPOSURE`, then arm [`CaptureRequest::gain`] and
+    /// [`CaptureRequest::offset`] in that order (the gain strictly after the
+    /// exposure write, GO5), trigger a frame (soft trigger, or a free-running
     /// restart for a non-trigger camera), then `SVBGetVideoData` under the
     /// read deadline [`exposure_timeout_ms`] computes. Returns the raw frame
     /// bytes in [`CaptureRequest::image_type`]'s layout.
@@ -382,9 +424,10 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// `camera not open` when the handle is closed at a step this capture
     /// reaches before its next cancel check, and when a reconnect has replaced
     /// the camera it started on; the SDK's error if a setup write, the trigger
-    /// or restart, or a `SVBGetVideoData` read fails — its timeout once the
-    /// deadline passes with no frame included; or a message when the frame is
-    /// too large to address on this target.
+    /// or restart, or a `SVBGetVideoData` read fails — a refused gain or
+    /// offset prefixed `failed to set gain: ` or `failed to set offset: `, and
+    /// the read's timeout once the deadline passes with no frame included; or
+    /// a message when the frame is too large to address on this target.
     fn capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>>;
 
     /// Issue an ST4 guide pulse (`SVBPulseGuide`) — blocks at the SDK level
@@ -504,6 +547,35 @@ impl SvbonyCameraHandle {
         self.open_epoch.load(Ordering::SeqCst) == epoch
     }
 
+    /// Configure the camera for `request`'s frame in one lock acquisition —
+    /// the ROI, the download format, then [`arm_controls`]'s exposure, gain
+    /// and offset — and return the epoch of the camera instance it
+    /// configured.
+    fn configure(&self, request: &CaptureRequest) -> BackendResult<u64> {
+        self.with_camera(|camera| {
+            camera.set_roi_format(
+                request.start_x,
+                request.start_y,
+                request.width,
+                request.height,
+                request.bin,
+            )?;
+            // The device negotiated this format against the camera's
+            // `SupportedVideoFormat` at connect and publishes it as the
+            // ASCOM readout mode (RM1). Re-applied per exposure rather
+            // than once at connect so a mode change between exposures
+            // needs no separate SDK call.
+            camera.set_output_image_type(request.image_type)?;
+            arm_controls(request, |control, value| {
+                Ok(camera.set_control_value(control, value, false)?)
+            })?;
+            // Read under the same lock acquisition that configured the frame,
+            // so this epoch names exactly the camera instance the frame
+            // belongs to.
+            Ok(self.open_epoch.load(Ordering::SeqCst))
+        })
+    }
+
     /// Drain an aborted capture: stop video capture (discarding the
     /// in-flight frame — the SDK has no data-preserving stop, and a frame
     /// left in its buffer would surface as a stale frame on the next
@@ -621,26 +693,7 @@ impl CameraHandle for SvbonyCameraHandle {
         // re-acquired below for the trigger + `SVBGetVideoData` call, which
         // — on real hardware — is unavoidably the long-held SDK operation
         // (see the module docs on why `capture` has no interrupt path).
-        let epoch = self.with_camera(|camera| {
-            camera.set_roi_format(
-                request.start_x,
-                request.start_y,
-                request.width,
-                request.height,
-                request.bin,
-            )?;
-            // The device negotiated this format against the camera's
-            // `SupportedVideoFormat` at connect and publishes it as the
-            // ASCOM readout mode (RM1). Re-applied per exposure rather
-            // than once at connect so a mode change between exposures
-            // needs no separate SDK call.
-            camera.set_output_image_type(request.image_type)?;
-            camera.set_control_value(ControlType::Exposure, request.exposure_us, false)?;
-            // Read under the same lock acquisition that configured the frame,
-            // so this epoch names exactly the camera instance the frame
-            // belongs to.
-            Ok(self.open_epoch.load(Ordering::SeqCst))
-        })?;
+        let epoch = self.configure(&request)?;
 
         // See `CaptureRequest::duration`'s doc comment: only the simulation
         // needs an artificial wait, since its `get_video_data` never really
@@ -841,6 +894,8 @@ mod handle_tests {
             exposure_us: 1_000,
             is_trigger_cam: true,
             image_type: ImageType::Raw16,
+            gain: None,
+            offset: None,
             duration: Duration::from_millis(1),
             cancel: Arc::new(AtomicBool::new(false)),
         };
@@ -870,6 +925,8 @@ mod handle_tests {
             exposure_us: 1_000,
             is_trigger_cam: true,
             image_type: ImageType::Raw16,
+            gain: None,
+            offset: None,
             duration: Duration::from_millis(1),
             cancel: Arc::new(AtomicBool::new(false)),
         };
@@ -896,11 +953,75 @@ mod handle_tests {
             exposure_us: 1_000,
             is_trigger_cam: true,
             image_type: ImageType::Raw8,
+            gain: None,
+            offset: None,
             duration: Duration::from_millis(1),
             cancel: Arc::new(AtomicBool::new(false)),
         };
         let frame = handle.capture(request).unwrap();
         assert_eq!(frame.len(), 64 * 64);
+        handle.close().unwrap();
+    }
+
+    /// GO5 at the arm: an exposure that meets the SDK's auto-exposure state
+    /// still on — a connect whose clearing write was refused, or a parameter
+    /// restore nobody recorded — arms its gain all the same, because its own
+    /// exposure write goes first and is what clears that state. Armed the
+    /// other way round, the SDK refuses the gain and the frame fails.
+    #[test]
+    fn production_handle_capture_arms_gain_after_its_exposure_write() {
+        let handle = sim_handle();
+        handle.open().unwrap();
+        handle.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        handle.start_video_capture().unwrap();
+        // The state a restore leaves, as an open does: auto-exposure on. The
+        // precondition is checked, not assumed — with the state already off
+        // this test would pass whatever order the arm wrote in.
+        handle.restore_default_param().unwrap();
+        handle
+            .set_control_value(ControlType::Gain, 1)
+            .expect_err("the SDK took a gain with auto-exposure on, so nothing here is tested");
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let request = CaptureRequest {
+            gain: Some(222),
+            offset: Some(30),
+            ..sim_request(Duration::ZERO, &cancel)
+        };
+        let frame = handle.capture(request).unwrap();
+        assert_eq!(frame.len(), 64 * 64 * 2);
+        assert_eq!(handle.control_value(ControlType::Gain).unwrap(), 222);
+        assert_eq!(handle.control_value(ControlType::BlackLevel).unwrap(), 30);
+        handle.close().unwrap();
+    }
+
+    /// The region before the controls: an exposure whose region the SDK
+    /// refuses fails there, before it arms a gain or an offset, so the camera
+    /// keeps the values the last frame was armed with.
+    #[test]
+    fn production_handle_capture_refused_at_its_region_arms_no_gain_or_offset() {
+        let handle = sim_handle();
+        handle.open().unwrap();
+        handle.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        handle.start_video_capture().unwrap();
+        handle
+            .set_control_value(ControlType::Exposure, 1_000_000)
+            .unwrap();
+        handle.set_control_value(ControlType::Gain, 100).unwrap();
+        handle
+            .set_control_value(ControlType::BlackLevel, 5)
+            .unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let request = CaptureRequest {
+            width: 0,
+            gain: Some(222),
+            offset: Some(30),
+            ..sim_request(Duration::ZERO, &cancel)
+        };
+        handle.capture(request).unwrap_err();
+        assert_eq!(handle.control_value(ControlType::Gain).unwrap(), 100);
+        assert_eq!(handle.control_value(ControlType::BlackLevel).unwrap(), 5);
         handle.close().unwrap();
     }
 
@@ -922,6 +1043,8 @@ mod handle_tests {
             exposure_us: 30_000_000,
             is_trigger_cam: true,
             image_type: ImageType::Raw16,
+            gain: None,
+            offset: None,
             duration: Duration::from_secs(30),
             cancel: Arc::new(AtomicBool::new(true)),
         };
@@ -964,6 +1087,8 @@ mod handle_tests {
             exposure_us: 1_000,
             is_trigger_cam: true,
             image_type: ImageType::Raw16,
+            gain: None,
+            offset: None,
             duration,
             cancel: Arc::clone(cancel),
         }
@@ -1349,21 +1474,39 @@ pub(crate) mod mock {
         /// Force `set_auto_save_param` to fail (C1a: warn, do not fail the
         /// connect).
         pub fail_set_auto_save_param: AtomicBool,
+        /// Refuse the next `Exposure` write, leaving the auto-exposure state
+        /// as it was — the connect handshake's clearing write (C1a) refused,
+        /// so the first exposure's arm meets the SDK's gain gate (GO5).
+        pub fail_next_exposure_write: AtomicBool,
+        /// Refuse every read and write of this one control, every other
+        /// control working — a gain or offset the SDK refuses at arm time
+        /// (E9), or a connect's seed read failing (GO1). Set through
+        /// [`refuse_control`](Self::refuse_control).
+        refused_control: Mutex<Option<ControlType>>,
 
         /// The SDK's auto-exposure state, mirrored from `svbony-rs`'s
         /// simulation: on after `open()` and after `restore_default_param`,
         /// cleared by an `Exposure` write, and refusing `Gain` writes while
-        /// on — so a test can pin that the connect handshake clears it
-        /// (C1a/GO5) and in the right order.
+        /// on — so a test can pin that the connect handshake clears it (C1a)
+        /// and that an exposure arms its gain only after its own exposure
+        /// write (GO5).
         auto_exposure: AtomicBool,
-        /// Ordered log of the C1a handshake steps as they reach the SDK
-        /// seam (`"restore_default_param"`, `"set_auto_save_param(false)"`,
-        /// `"set_control_value(Exposure, <us>)"`, …), so a test can assert
-        /// the sequence, not just the counts.
+        /// Ordered log of the SDK calls whose order is contract, as they
+        /// reach the seam, refused or not: the C1a handshake steps
+        /// (`"restore_default_param"`, `"set_auto_save_param(false)"`) and
+        /// every `Exposure`, `Gain` and `BlackLevel` write
+        /// (`"set_control_value(Gain, <value>)"`), the connect's and each
+        /// exposure's arm alike — so a test can assert the sequence, not just
+        /// the counts.
         sdk_call_log: Mutex<Vec<String>>,
 
         gain: Mutex<i64>,
         black_level: Mutex<i64>,
+        /// The gain and black level `restore_default_param` puts the camera
+        /// at: the device's own default block, which a test can set apart from
+        /// the caps' `default` to tell a connect that reads the camera from one
+        /// that reads the caps (GO1).
+        device_defaults: Mutex<(i64, i64)>,
         cooler_enable: AtomicBool,
         target_temp_tenths: Mutex<i64>,
         current_temp_tenths: Mutex<i64>,
@@ -1422,10 +1565,13 @@ pub(crate) mod mock {
                 fail_controls: AtomicBool::new(false),
                 fail_restore_default_param: AtomicBool::new(false),
                 fail_set_auto_save_param: AtomicBool::new(false),
+                fail_next_exposure_write: AtomicBool::new(false),
+                refused_control: Mutex::new(None),
                 auto_exposure: AtomicBool::new(true),
                 sdk_call_log: Mutex::new(Vec::new()),
                 gain: Mutex::new(100),
                 black_level: Mutex::new(0),
+                device_defaults: Mutex::new((100, 0)),
                 cooler_enable: AtomicBool::new(false),
                 target_temp_tenths: Mutex::new(0),
                 current_temp_tenths: Mutex::new(200),
@@ -1550,10 +1696,28 @@ pub(crate) mod mock {
             self.auto_exposure.load(Ordering::SeqCst)
         }
 
+        /// Refuse every read and write of `control` from now on, or of none.
+        pub fn refuse_control(&self, control: Option<ControlType>) {
+            *self.refused_control.lock() = control;
+        }
+
+        /// The gain and black level the next `restore_default_param` — so the
+        /// next connect — puts the camera at.
+        pub fn set_device_defaults(&self, gain: i64, black_level: i64) {
+            *self.device_defaults.lock() = (gain, black_level);
+        }
+
         /// The capture proper; [`CameraHandle::capture`] wraps it to record
         /// how it ended.
         fn run_capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>> {
             *self.last_capture_request.lock() = Some(request.clone());
+            // The production handle's own arm, run through this mock's model
+            // of the SDK — its auto-exposure gate, its refusals and its call
+            // log — so a test of the arm tests the sequence production runs,
+            // not a copy of it.
+            super::arm_controls(&request, |control, value| {
+                self.set_control_value(control, value)
+            })?;
             // The gate is read BEFORE the cancel flag, so a capture held here
             // has not yet had the chance to observe an abort — exactly the
             // state a reconnect plus a second exposure has to race against.
@@ -1648,8 +1812,9 @@ pub(crate) mod mock {
             // auto-exposure on — and only then can the SDK's follow-up
             // cfg-file write fail, which is the failure shape the injection
             // models: an error reported for a restore that did happen.
-            *self.gain.lock() = 100;
-            *self.black_level.lock() = 0;
+            let (gain, black_level) = *self.device_defaults.lock();
+            *self.gain.lock() = gain;
+            *self.black_level.lock() = black_level;
             self.auto_exposure.store(true, Ordering::SeqCst);
             if self.fail_restore_default_param.load(Ordering::SeqCst) {
                 return Err(BackendError(
@@ -1695,7 +1860,9 @@ pub(crate) mod mock {
         }
 
         fn control_value(&self, control: ControlType) -> BackendResult<i64> {
-            if self.fail_controls.load(Ordering::SeqCst) {
+            if self.fail_controls.load(Ordering::SeqCst)
+                || *self.refused_control.lock() == Some(control)
+            {
                 return Err(BackendError("injected SDK failure".to_string()));
             }
             let value = match control {
@@ -1717,7 +1884,17 @@ pub(crate) mod mock {
         }
 
         fn set_control_value(&self, control: ControlType, value: i64) -> BackendResult<()> {
-            if self.fail_controls.load(Ordering::SeqCst) {
+            if matches!(
+                control,
+                ControlType::Exposure | ControlType::Gain | ControlType::BlackLevel
+            ) {
+                self.sdk_call_log
+                    .lock()
+                    .push(format!("set_control_value({control:?}, {value})"));
+            }
+            if self.fail_controls.load(Ordering::SeqCst)
+                || *self.refused_control.lock() == Some(control)
+            {
                 return Err(BackendError("injected SDK failure".to_string()));
             }
             match control {
@@ -1736,11 +1913,11 @@ pub(crate) mod mock {
                 }
                 ControlType::TargetTemperature => *self.target_temp_tenths.lock() = value,
                 ControlType::Exposure => {
+                    if self.fail_next_exposure_write.swap(false, Ordering::SeqCst) {
+                        return Err(BackendError("injected SDK failure".to_string()));
+                    }
                     // This seam only ever writes manual (`bAuto = false`)
                     // values, which is the SDK's one auto-exposure-off path.
-                    self.sdk_call_log
-                        .lock()
-                        .push(format!("set_control_value(Exposure, {value})"));
                     self.auto_exposure.store(false, Ordering::SeqCst);
                 }
                 _ => return Err(BackendError("invalid control type".to_string())),

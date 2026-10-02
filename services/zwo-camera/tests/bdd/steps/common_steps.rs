@@ -42,7 +42,10 @@ async fn disconnect_camera(world: &mut CameraWorld, _device: u32) {
     world.camera().set_connected(false).await.unwrap();
 }
 
+// Also When-typed, so a scenario can put an exposure in flight after its own
+// earlier steps have set the camera up for it.
 #[given(regex = r"^an exposure is in flight on camera device (\d+)$")]
+#[when(regex = r"^an exposure is in flight on camera device (\d+)$")]
 async fn exposure_in_flight(world: &mut CameraWorld, _device: u32) {
     world.start_in_flight().await;
 }
