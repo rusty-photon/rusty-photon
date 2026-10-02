@@ -423,7 +423,7 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
     faults alone do not count, because a scan that found only faults still
     reports its (empty) device list. An empty bus stays stageable —
     `"usb": []` is a state every collector can report, and it is how a
-    claimed port with nothing in it gets exercised — but it has to be said
+    listed port with nothing in it gets exercised — but it has to be said
     out loud, so that a staging file which failed to be written cannot read
     as an idle bus and let a scenario pass for the wrong reason.
     `usb_faults` may be omitted: a scan that found none serializes `[]`,
