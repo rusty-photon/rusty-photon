@@ -35,6 +35,23 @@
 > CI provisioning ([#720](https://github.com/rusty-photon/rusty-photon/issues/720)
 > Part 2) remains open.
 >
+> **Follow-up landed (issue #1336): `Gain` and `Offset` are cached at the
+> setter and armed by `StartExposure`.** The setters used to write
+> `SVB_GAIN`/`SVB_BLACK_LEVEL` to the camera at once, with nothing keeping a
+> live exposure out of their way: a capture gives the SDK mutex up between
+> its 250 ms `SVBGetVideoData` slices, so a gain or offset set mid-exposure
+> reached the camera under the frame it was integrating. Now a set is
+> checked against the advertised range and stored, and nothing reaches the
+> camera until the next `StartExposure` arms it — on every exposure, changed
+> or not, after that exposure's own `SVB_EXPOSURE` write (GO2/GO5).
+> `Gain`/`Offset` report the value the next exposure arms, seeded at connect
+> by *reading* what the camera holds (GO1) — the bargain `BinX` and `NumX`
+> already make. A set made while an exposure is in flight is taken for the
+> next frame, and the frame in flight keeps the values it was armed with;
+> `ReadoutMode` is now the one frame setting still refused mid-exposure
+> (RM1). A value the SDK refuses at arm time fails that exposure (E9). See
+> "Gain / offset / readout" (GO1-GO5).
+>
 > **Follow-up landed (issue #891): the connect handshake now mirrors
 > `indi_svbony_ccd`'s post-open sequence — `SVBRestoreDefaultParam`,
 > `SVBSetAutoSaveParam(false)`, then a manual `SVB_EXPOSURE` write — so
@@ -52,8 +69,11 @@
 > reloads it at the next open, so a writable cwd merely carried the last
 > session's "auto-exposure off" forward. Auto-save is now disabled at
 > connect, defaults are restored explicitly, and the simulation reproduces
-> the SDK's gate so the BDD gain scenarios (connected, no exposure taken)
-> pin the fix. The mechanism was established from the SDK binary and
+> the SDK's gate. (Since issue #1336 a gain set never reaches the SDK at the
+> setter — the next exposure arms it, after its own exposure write — so the
+> gate now constrains the arm's order rather than the setter, and the tests
+> that pin it are arm-time ones; see GO5.) The mechanism was established
+> from the SDK binary and
 > `indi_svbony_ccd`'s `Connect()` and **confirmed on the physical SV605CC
 > on the rig on 2026-08-16**: the packaged binary started from a working
 > directory holding no `U3SM900C-AST_Cfg_SAVE.bin` accepts `PUT Gain`
@@ -458,8 +478,11 @@ itself took effect.
 **This driver disables auto-save at connect (C1a)**, so the shipped service
 neither writes nor reloads session state through the working directory: a
 camera starts every session from the SDK's device defaults plus the
-handshake's manual `SVB_EXPOSURE` write, and `Gain` is settable immediately
-(GO5) regardless of where the process was launched from. The one remaining
+handshake's manual `SVB_EXPOSURE` write — the gain and offset those defaults
+leave are what the connect reads as the first exposure's values (GO1) — and
+`Gain` is settable immediately regardless of where the process was launched
+from: a set reaches the SDK only when an exposure arms it, after that
+exposure's own exposure write (GO5). The one remaining
 write is `SVBRestoreDefaultParam`'s cfg-file pair, written once at connect
 and never rewritten at close (verified on the rig: mtimes and hashes
 unchanged across a disconnect), whose failure on a read-only working
@@ -533,8 +556,9 @@ graph TD;
   tests. Covers the full blocking SDK surface `Camera` needs: property/
   property-ex fetch, control get/set, camera-mode select + video-capture
   start/stop, the soft-trigger `capture` composite (ROI + output format +
-  exposure control + trigger + the `SVBGetVideoData` read deadline of step
-  2d), and pulse-guide. `is_open` is backed by its own atomic,
+  exposure control + the armed gain and offset + trigger + the
+  `SVBGetVideoData` read deadline of step 2d), and pulse-guide. `is_open`
+  is backed by its own atomic,
   independent of the mutex `capture` holds, so connection-state reads stay
   responsive during an in-flight exposure — the mutex is released between
   `capture`'s ROI/control setup and its trigger + `SVBGetVideoData` call,
@@ -636,8 +660,8 @@ Together these are contract E10 below. `zwo-camera` carries the same three
 properties, under the same contract number.
 
 A consequence worth flagging explicitly: property/control reads that need
-the open `Camera` handle (gain, offset, temperature, …) can still block
-behind the same mutex `capture` holds for its `SVBGetVideoData` wait — this
+the open `Camera` handle (temperature, cooler state and power, …) can still
+block behind the same mutex `capture` holds for its `SVBGetVideoData` wait — this
 is a hardware-forced consequence of SVBony having no separate "start" and
 "poll status" pair the way ASI does, not an oversight — but `capture` bounds
 that stall to at most one poll slice (`backend::VIDEO_DATA_POLL_MS`, 250ms):
@@ -646,7 +670,9 @@ the whole deadline, releasing the mutex between polls (a `SvbError::Timeout`
 from a short slice just means "no frame yet," not a real failure). `is_open`/
 `Connected` do not share even that bounded stall — they are backed by an
 independent atomic specifically so basic connection-state polling stays
-responsive during an in-flight exposure.
+responsive during an in-flight exposure. `Gain` and `Offset` do not share it
+either: both members answer from the cache and both setters only store
+(GO1/GO2), so none of the four waits on a capture.
 
 ---
 
@@ -684,8 +710,10 @@ responsive during an in-flight exposure.
   `CanAbortExposure = true` (to confirm/revise after real-hardware
   validation).
 - **Gain / Offset** — `SVB_GAIN` / `SVB_BLACK_LEVEL` (SVBony's ASCOM
-  *Offset*-equivalent control); current value + `Min`/`Max` from
-  `SVBGetControlCaps`; `NOT_IMPLEMENTED` if the control is absent.
+  *Offset*-equivalent control); `Min`/`Max` from `SVBGetControlCaps`; the
+  value is cached at the setter, seeded at connect by reading the camera,
+  and armed by every `StartExposure` (GO1-GO5); `NOT_IMPLEMENTED` if the
+  control is absent.
 - **Readout modes = the negotiated download formats** — the camera's
   `SupportedVideoFormat` intersected with the formats this driver can
   deliver (`Raw16` first, then `Raw8`), published as `ReadoutModes` and
@@ -848,7 +876,7 @@ scenario.
 Named, testable behaviours. ASCOM error names per
 [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md). Every
 contract below is real as of Phase E; the BDD feature files under
-`tests/features/` (60 scenarios, 242 steps) and the unit tests in
+`tests/features/` (83 scenarios, 391 steps) and the unit tests in
 `src/camera.rs`/`src/backend.rs` exercise them — see "Testing" below for
 which layer covers which contract (E9's two branches, the
 generation-counter abort race and E10 are unit-test-only, per the design's
@@ -876,7 +904,8 @@ one core at load average 65, see "Real-hardware validation").
   "video mode active". The losing duplicate returns success immediately
   without waiting for the winner's handshake; until that handshake
   completes, cached-property reads report `NOT_CONNECTED` (their existing
-  unpopulated-cache fallback). Pinned by the
+  unpopulated-cache fallback) — the gain and offset members excepted,
+  which answer as for a control the camera does not advertise (GO4). Pinned by the
   `concurrent_connect_requests_arm_video_capture_exactly_once` unit test.
 - **C1a (post-open handshake, mirrors `indi_svbony_ccd::Connect`).** The
   winning connect runs, in this order: `SVBRestoreDefaultParam` (the
@@ -887,27 +916,38 @@ one core at load average 65, see "Real-hardware validation").
   see "Working directory"), the property/capability reads, then one
   **manual** `SVB_EXPOSURE` write (1 s, clamped into the advertised
   range, `bAuto = false`) — the SDK's only path that clears its
-  auto-exposure state, which gates `SVB_GAIN` (GO5). Restore and
-  auto-save failures are logged at `warn!` and do **not** fail the
-  connect: `SVBRestoreDefaultParam` reports `SVB_ERROR_GENERAL_ERROR`
-  when its own follow-up write of `<model>_Cfg_A.bin` fails on a
-  read-only working directory even though the restore itself took
-  effect, and a camera whose auto-exposure could not be cleared still
-  exposes correctly (its gain simply stays refused until the first
-  exposure clears it, the pre-fix behaviour). Tenet 3: none of these
-  writes actuates anything — a parameter restore, a software flag, and
-  the exposure *register* on a camera whose video capture is either
-  trigger-gated (armed but idle until an operator's soft trigger) or, for
-  a non-trigger model, not yet started. Pinned by the
-  `connect_restores_defaults_then_disables_auto_save_then_clears_auto_exposure`
-  and `gain_is_settable_immediately_after_connect` unit tests and, end to
-  end against the simulation's SDK gate, by every gain scenario in
-  `gain_offset_readout.feature` (all run connected, before any exposure).
+  auto-exposure state, which gates `SVB_GAIN` (GO5) — and last a *read*
+  of `SVB_GAIN` and `SVB_BLACK_LEVEL`, which seeds the values the first
+  exposure arms (GO1). Restore and auto-save failures are logged at
+  `warn!` and do **not** fail the connect: `SVBRestoreDefaultParam`
+  reports `SVB_ERROR_GENERAL_ERROR` when its own follow-up write of
+  `<model>_Cfg_A.bin` fails on a read-only working directory even though
+  the restore itself took effect. Nothing depends on the exposure write
+  any more — a gain set reaches the camera only when an exposure arms it,
+  and every arm writes its exposure before its gain (GO5) — so it stays
+  for what `indi_svbony_ccd` issues it for, keeping the SDK out of
+  auto-exposure from connect on, and a camera that refuses it is logged at
+  `warn!` and connects all the same: its first exposure's own exposure
+  write clears the state before that exposure arms its gain. A seed read
+  that fails, or reports a value the camera does not advertise, does not
+  fail the connect either (GO1). Tenet 3: none of these writes actuates
+  anything — a parameter restore, a software flag, and the exposure
+  *register* on a camera whose video capture is either trigger-gated
+  (armed but idle until an operator's soft trigger) or, for a non-trigger
+  model, not yet started — and gain and offset are only read. Pinned by
+  the `connect_restores_defaults_then_disables_auto_save_then_clears_auto_exposure`
+  unit test, whose exact call log also shows a connect writing no gain or
+  offset, by `a_connect_seeds_gain_and_offset_from_what_the_camera_holds`,
+  and, for a clearing write that fails, by
+  `auto_exposure_left_on_by_the_connect_is_cleared_before_gain_is_armed`.
 - **C2.** `set_connected(true)` with the camera unreachable / SDK open
   failure returns the mapped driver error and `Connected` stays `false`.
 - **C3.** `set_connected(false)` closes the device. An exposure in flight
   is cancelled first, and the capture draining across a reconnect is E10's
-  subject — see the Exposure contract below.
+  subject — see the Exposure contract below. The gain and offset this
+  session would arm are forgotten just before the handle closes, here and
+  when a failed handshake closes it (C2), so the next connect's handshake
+  cannot take a set against them (GO4).
 - **C5 (tenet 3, verified).** No code path in this service pushes cooler
   state or any other actuation on startup, connect, or `config.apply`
   (workspace tenet [*no actuation on connect*](../workspace.md#project-tenets));
@@ -959,7 +999,14 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
       (µs) — hardware-confirmed** (was an assumption by analogy with ZWO's
       `ASI_EXPOSURE`): a 3 s request integrates for ~3.2 s wall-clock, and
       the SDK's own value quantization reads back at µs scale (200 000 →
-      199 997).
+      199 997). Then, in the same lock acquisition, it arms the frame's
+      gain and offset: the `SVB_GAIN` the exposure read from the cache
+      with the rest of its description, strictly *after* the exposure
+      write — that write is what clears the SDK's auto-exposure state,
+      which refuses a gain (GO5) — then `SVB_BLACK_LEVEL`. Both are sent
+      on every exposure, changed or not; a control the camera does not
+      advertise, or that has no armable value, is skipped (GO1/GO2). A
+      write the SDK refuses fails the exposure as step 7 describes.
    c. Calls `SVBSendSoftTrigger` to request one frame.
    d. Polls/awaits `SVBGetVideoData` under a **read deadline of twice the
       exposure plus 500 ms, floored at 5 s**: the SDK's own documented
@@ -1047,7 +1094,14 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
    transitions `CameraState = Error`, sets `last_error`, leaves
    `ImageReady = false` — covered by unit tests against the mock backend
    seam (mirrors `zwo-camera`'s E9), not BDD (the simulation cannot force
-   an SDK error).
+   an SDK error). A gain or offset the SDK refuses at arm time (step 2b)
+   lands here too, its message `failed to set gain: ` or
+   `failed to set offset: ` followed by the SDK's own text. The arm runs
+   in the capture task, after `StartExposure` has already answered, so —
+   unlike `qhy-camera`, whose `StartExposure` arms synchronously and
+   returns a refused write as `INVALID_OPERATION` — the client learns of
+   it from `CameraState` and `ImageArray`, and the next exposure arms
+   again from the cache.
 8. **A reconnect during an exposure (E10).** `set_connected(false)` cancels
    the in-flight capture and closes the camera but deliberately leaves the
    in-flight claim with the still-draining capture, which keeps the device;
@@ -1150,7 +1204,8 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   rather than refused: it describes the next frame, which a client may
   legitimately set up while this one downloads. Identical in `zwo-camera`,
   and in `qhy-camera`, whose bin is likewise cached and pushed by
-  `StartExposure` ([B1](qhy-camera.md#behavioral-contracts)).
+  `StartExposure` ([B1](qhy-camera.md#behavioral-contracts)). `Gain` and
+  `Offset` make the same bargain here (GO2).
 - **R1.** ROI setters accept any `u32`; geometry validated at
   `StartExposure`.
 - **R2.** Out-of-bounds/zero sub-frame → `INVALID_VALUE`.
@@ -1168,34 +1223,126 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 
 ### Gain / offset / readout
 
-- **GO1.** `Gain`/`Offset` (`SVB_GAIN`/`SVB_BLACK_LEVEL`) return the
-  current SDK value, or `NOT_IMPLEMENTED` if the control is absent. The SDK
-  reports it as a `long`; a value outside ASCOM's `i32` returns
-  `INVALID_OPERATION` rather than a truncated number.
-- **GO2.** Setters validate against cached `[min, max]`; out-of-range →
-  `INVALID_VALUE`.
+- **GO1 (`Gain`/`Offset` report the value the next exposure arms).**
+  `Gain`/`Offset` (`SVB_GAIN`/`SVB_BLACK_LEVEL`) answer from the cache,
+  never from a read of the camera: the value a client last set, or before
+  that the one the connect seeded. That is the bargain `BinX` and `NumX`
+  already make (B3, R1) — between exposures the camera can still be at the
+  last frame's value, and nothing reads it there. The connect seeds the
+  cache by **reading** what the camera holds once the handshake's restore
+  has put it at the device defaults (C1a): a read only, nothing is written
+  at connect (tenet 3). A reading that fails, has no `i32` spelling (the
+  SDK reports a `long`) or lies outside the advertised `[min, max]` is not
+  armed: `Gain` then answers `INVALID_OPERATION` — *"the camera reported no
+  gain in [{min}, {max}]; set Gain to choose one"*, and *"… no offset …;
+  set Offset to choose one"* for `Offset` — until a client sets one, and
+  no exposure sends the control. A failed seed read never fails the
+  connect. A control the camera does not advertise is `NOT_IMPLEMENTED`
+  from all four of its members (GO3).
+- **GO2 (a set is cached, and `StartExposure` arms it).**
+  `set_gain`/`set_offset` validate against the cached `[min, max]` — out
+  of range → `INVALID_VALUE` (*"gain {gain} outside [{min}, {max}]"*), an
+  unadvertised control → `NOT_IMPLEMENTED` — and store the value. **Nothing
+  reaches the camera at the setter,** and the setter takes no device
+  claim, so a set is never refused as busy: one made while an exposure is
+  in flight is taken for the next frame, and the frame in flight keeps the
+  values it was armed with. Each control's bounds and value are one cache
+  cell, checked and stored in one critical section under the lock a
+  connect publishes them under, so a value can never be checked against
+  one session's bounds and stored beside another's. Every `StartExposure`
+  reads the gain and offset with the rest of the frame's description — the
+  bin, the sub-frame and the download format, in its `frame_setup_lock`
+  section — so the frame it accepted is the frame that is armed, and its
+  capture pushes them, gain first, then offset, under the claim the
+  exposure holds (state-machine step 2b), **on every exposure, changed or
+  not**: there is no second record of the camera's own values to drift
+  from the cache, and a reset the SDK makes that nobody records is undone
+  at the next frame. A control with no armable value (GO1), or none
+  advertised, is skipped. Neither member nor either setter touches the
+  SDK, so none of them waits behind a capture. A value the SDK refuses at
+  arm time fails that exposure (step 7).
+
+  Why cache rather than write: a setter that wrote the camera reached it
+  under whatever frame was being integrated — a capture gives the SDK mutex
+  up between its `SVBGetVideoData` slices, and nothing else kept a set out
+  of a live exposure's way — and what the SDK does with a gain written
+  between the trigger and the frame is undocumented. Cached, the value
+  lands where the frame it describes is armed, and nowhere else.
 - **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max,
   converted **once at the open handshake** from the SDK's `long` to ASCOM's
   `i32`. A bound with no `i32` spelling leaves the control **unadvertised**
   (`NOT_IMPLEMENTED` from all four members) rather than advertising a clamped
   bound the camera would then reject.
 - **GO4.** The cache is the sole gate on all six members, so each connect
-  **overwrites** it — including with "unavailable". Here that falls out of the
-  handshake assigning it unconditionally (`find(ControlType::Gain).and_then(…)`,
-  which yields `None` when the control is absent), so a control missing on this
-  connect cannot leave a previous session's bounds standing to be advertised.
-  Identical in `zwo-camera` and `qhy-camera`, which reaches it differently — see
-  its GO4.
-- **GO5.** `Gain` is settable from the moment `Connected` turns true — no
-  exposure has to be taken first. The SDK refuses `SVBSetControlValue
-  (SVB_GAIN, …, bAuto = false)` while its **auto-exposure state** is on
-  (surfacing as `SVB_ERROR_GENERAL_ERROR`, which the driver maps to
-  `INVALID_OPERATION` — the SDK folds every internal failure into that one
-  code, so nothing more specific is recoverable), that state is on after
-  `SVBOpenCamera` and after `SVBRestoreDefaultParam`, and the SDK's only
-  path that turns it off is a manual `SVB_EXPOSURE` write. The connect
-  handshake issues that write (C1a), so the operator never sees the gate.
-  `Offset` (`SVB_BLACK_LEVEL`) is not gated and never was.
+  **overwrites** it — bounds and value, including with "unavailable". Here
+  that falls out of the handshake assigning it unconditionally
+  (`find(ControlType::Gain).and_then(…)`, which yields `None` when the
+  control is absent), so a control missing on this connect cannot leave a
+  previous session's bounds standing to be advertised, and the reconnect
+  reseeds the value from the camera (GO1). Identical in `zwo-camera` and
+  `qhy-camera`, which reaches it differently — see its GO4.
+
+  The handshake publishes the cells late — after the restore, the property
+  and caps reads, the clearing exposure write and both seed reads — while
+  `Connected` is true from the moment the handle opens. So a disconnect
+  **empties** both cells just before it closes the handle, as does a
+  connect whose handshake fails (C2, C3). Through the next connect's
+  handshake all six members therefore answer as on a first connect, for an
+  unadvertised control (`NOT_IMPLEMENTED`), until the new session's cells
+  are published. A set landing in that window is refused, never answered
+  and then overwritten by the reseed, and no read reports the last
+  session's value or bounds. The cells are emptied before the close, not
+  after it: once the handle is closed a racing connect can open it and
+  publish its own cells, which a later clear would wipe. A set that passed
+  `ensure_connected` before a disconnect and stores only after a whole
+  reconnect is checked against the new session's bounds in the same
+  critical section that stores it, so it is a set in the new session — its
+  call spanned the reconnect. This driver does not serialize a disconnect
+  against the handshake it ends: one landing after a non-trigger camera's
+  handshake has passed its last call that can fail it (the caps read)
+  leaves the cells that handshake then publishes standing while the handle
+  is closed. Nor are the bin and the
+  sub-frame emptied: through a reconnect's handshake they still answer from
+  the previous session until the handshake resets them. Both are older
+  gaps in this driver's connect, not in the gain cache; a connect-readiness
+  gate like `qhy-camera`'s ([C6](qhy-camera.md#behavioral-contracts))
+  would close them together. Pinned by
+  `a_gain_set_while_a_reconnect_handshakes_is_refused_rather_than_lost`,
+  `a_reconnect_handshaking_reports_no_gain_or_offset_from_the_last_session`
+  and `a_failed_handshake_forgets_the_gain_and_offset_it_published`, which
+  open the handle and run the handshake as two separate steps.
+- **GO5 (the SDK's auto-exposure gate orders the arm).** The SDK refuses
+  `SVBSetControlValue(SVB_GAIN, …, bAuto = false)` while its
+  **auto-exposure state** is on (surfacing as `SVB_ERROR_GENERAL_ERROR` —
+  the SDK folds every internal failure into that one code, so nothing more
+  specific is recoverable); that state is on after `SVBOpenCamera` and
+  after `SVBRestoreDefaultParam`, and the SDK's only path that turns it off
+  is a manual `SVB_EXPOSURE` write. A gain set never meets the gate — the
+  setter does not reach the SDK (GO2) — so `Gain` is settable from the
+  moment the connect returns, with no exposure taken first. What the
+  gate constrains is the **arm**: each exposure writes its `SVB_EXPOSURE`
+  before its `SVB_GAIN`, in the same lock acquisition, so its gain is never
+  sent with the state on, whatever cleared it or did not — the connect's
+  own clearing write (C1a) can be refused, and a restore nobody recorded
+  would turn the state back on. `Offset` (`SVB_BLACK_LEVEL`) is not gated
+  and never was. The arm is one function, `backend.rs`'s `arm_controls`:
+  the production handle runs it against the SDK, and the mock's `capture`
+  runs the same function against the mock's model of the gate, so the
+  order and the refusal messages the device tests see are production's,
+  not a copy of them. Pinned against the `svbony-rs` simulation's gate,
+  starting with the state on, by
+  `backend::handle_tests::production_handle_capture_arms_gain_after_its_exposure_write`,
+  which fails if the production handle writes its gain before its
+  exposure, skips the arm, or writes an auto (`bAuto = true`) value; and
+  through the device by
+  `an_exposure_arms_its_gain_then_its_offset_after_its_exposure_write` (the
+  exact order) and
+  `auto_exposure_left_on_by_the_connect_is_cleared_before_gain_is_armed`.
+  The simulation never refuses `SVB_BLACK_LEVEL`, and refuses `SVB_GAIN`
+  only with the state on, which the arm has just cleared, so the refusal
+  messages are pinned through the mock alone, by
+  `a_gain_the_sdk_refuses_fails_the_exposure_and_the_next_one_arms_it` and
+  `an_offset_the_sdk_refuses_fails_the_exposure_with_the_sdk_detail`.
 - **RM1.** `ReadoutModes` is the camera's **download-format** list: at
   connect the driver intersects `SVB_CAMERA_PROPERTY.SupportedVideoFormat`
   with the formats it can deliver, in preference order `Raw16` then
@@ -1210,7 +1357,11 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
   requires it. `qhy-camera` makes the same choice about its
   readout-mode change for a different reason —
   [B4](qhy-camera.md#behavioral-contracts) — so the two are parallel
-  decisions, not one shared rule.
+  decisions, not one shared rule. The readout mode is the one frame
+  setting this driver still refuses mid-exposure: a bin, a sub-frame, a
+  gain or an offset set then is taken for the next frame (B3, R1, GO2),
+  but the mode also decides what `MaxADU` reports, and a client reads that
+  about the frame being delivered.
 - **RM2.** The selected mode is the driver's whole format story: it is
   what `SVBSetOutputImageType` receives before each soft trigger, what
   sizes the `SVBGetVideoData` buffer (`w × h × bytes_per_pixel`), which
@@ -1340,8 +1491,8 @@ device is there at all, so they answer throughout.
 | `MaxADU` | The selected readout format's full scale — 65535 (Raw16, hardware-verified) / 255 (Raw8); NOT `2^MaxBitDepth - 1` | **Real** |
 | `ElectronsPerADU` | `NOT_IMPLEMENTED` (no SDK surface, hardware-confirmed) | **Permanent stub (ST2)** |
 | `ExposureMin` / `Max` / `Resolution` | From `SVBGetControlCaps(SVB_EXPOSURE)` (µs, hardware-confirmed) | **Real** |
-| `Gain` / `GainMin` / `GainMax` | `SVB_GAIN` control | **Real** |
-| `Offset` / `OffsetMin` / `OffsetMax` | `SVB_BLACK_LEVEL` control | **Real** |
+| `Gain` / `GainMin` / `GainMax` | `SVB_GAIN`: the cached gain the next exposure arms, seeded at connect by reading the camera, pushed by every `StartExposure` after its `SVB_EXPOSURE` write (GO1/GO2/GO5); limits from `SVBGetControlCaps` | **Real** |
+| `Offset` / `OffsetMin` / `OffsetMax` | `SVB_BLACK_LEVEL`: the cached offset the next exposure arms, on the same terms as `Gain` (GO1/GO2) | **Real** |
 | `ReadoutMode` / `ReadoutModes` | The camera's download formats from `SupportedVideoFormat`, `Raw16` before `Raw8` (RM1); drives the download format and `MaxADU` | **Real** |
 | `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from `IsColorCam` / `BayerPattern` | **Real** |
 | `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `bSupportControlTemp` | **Real** |
@@ -1409,7 +1560,7 @@ everything else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 96 no-features / 106 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 122 no-features / 135 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
@@ -1422,8 +1573,18 @@ Layered per [`testing.md`](../skills/testing.md).
   (connection lifecycle incl. connect-time property caching and C1a's
   restore-defaults / auto-save-off / manual-exposure sequence — its order,
   its clamping, and that a failing restore or auto-save call is survived —
-  sensor geometry/type, gain/offset incl. GO5's gain-settable-right-after-
-  connect against the mock's mirror of the SDK's auto-exposure gate,
+  sensor geometry/type, gain/offset (GO1-GO5: the connect's seed read from
+  the camera and the readings it leaves unarmed, the setters storing without
+  reaching the camera, a set mid-exposure or after `StartExposure` has
+  answered taken for the next frame, the arm's exposure → gain → offset
+  order and its re-send of unchanged values, an exposure armed with the
+  auto-exposure state a refused connect write left on, a gain or offset
+  the SDK refuses failing that exposure with the SDK's detail, and a
+  disconnect or failed handshake emptying both cells so a reconnect's
+  handshake takes no set against the last session's — all against the
+  mock's mirror of the SDK's auto-exposure gate, whose `capture` runs the
+  production handle's own arm, `arm_controls`, through that model and logs
+  each write),
   binning/ROI validation, cooling incl. K5's
   no-actuation-on-connect assertion, the exposure state machine incl. E9's
   two branches — mid-exposure SDK failure and an exceeded
@@ -1436,17 +1597,18 @@ Layered per [`testing.md`](../skills/testing.md).
   an SDK error, and never runs a non-trigger camera). The production
   `SvbonyCameraHandle` itself is also unit-tested against the real
   `svbony-rs` simulation backend (`backend::handle_tests`), which since
-  #891 reproduces the SDK's auto-exposure gain gate — so the
-  `gain_offset_readout` BDD scenarios below (all connected, no exposure
-  taken) fail without C1a's handshake and pass with it; that layer also
+  #891 reproduces the SDK's auto-exposure gain gate — so
+  `production_handle_capture_arms_gain_after_its_exposure_write`, which
+  starts a capture with that state on, fails if the arm writes its gain
+  before its exposure (GO5); that layer also
   covers E10's camera-instance half, closing and reopening the simulated
   camera under a running capture, and the abort that interrupts a
   `SVBGetVideoData` poll — sequenced off `svbony-rs`'s simulation-only
   `Camera::video_capture_starts`, a read-only count that tells the test the
   capture's own capture restart has run, so "the cancel landed in the poll
   loop" is a fact rather than a nap.
-- **BDD** (`bdd-infra::ServiceHandle`, nine feature files, 69 scenarios /
-  295 steps) — all genuinely green, including `enumeration_connection`'s
+- **BDD** (`bdd-infra::ServiceHandle`, nine feature files, 83 scenarios /
+  391 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
   behavioural feature (`exposure`, `binning_and_roi`, `cooling`,
   `gain_offset_readout`, `sensor_properties`) — see each file's header
@@ -1454,7 +1616,14 @@ Layered per [`testing.md`](../skills/testing.md).
   generation-counter abort race are deliberately **not** BDD-covered — the
   design doc calls this out explicitly, since the `svbony-rs` simulation
   cannot force an SDK error — and live in the unit-test layer above
-  instead.
+  instead. The `gain_offset_readout` scenarios check GO1-GO5 only as far
+  as a client can see them through the simulation — a set accepted and
+  reported while an exposure carries on, an exposure at the maximum gain
+  and offset completing, a reconnect reporting the camera's own values
+  again — and are titled for that. The simulation's frames do not depend
+  on gain or offset, and a set that wrote the camera at once would answer
+  them the same way, so which frame a value lands on is pinned in the
+  unit-test layer only.
 - **ConformU** — `tests/conformu_integration.rs` (Phase F), mirroring
   `zwo-camera`'s: starts the `--features conformu` binary (real SDK link
   required, per "Native dependency & build gating" above — `conformu`

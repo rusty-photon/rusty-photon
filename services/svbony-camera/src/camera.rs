@@ -45,7 +45,7 @@ use rusty_photon_camera_core::{
 use svbony_rs::{BayerPattern, CameraInfo, ControlCaps, ControlType, ImageType};
 use tracing::{debug, warn};
 
-use crate::backend::{CameraHandle, CaptureRequest};
+use crate::backend::{BackendResult, CameraHandle, CaptureRequest};
 use crate::config::DeviceOverride;
 use crate::config_actions::SvbonyCameraDriver;
 use rusty_photon_driver::ConfigActionCtx;
@@ -60,10 +60,13 @@ const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
 const EXPOSURE_RESOLUTION: Duration = Duration::from_micros(1);
 
 /// The manual `SVB_EXPOSURE` the connect handshake writes (C1a) — the
-/// SDK's only path that clears its auto-exposure state, which otherwise
-/// refuses every gain write (GO5). One second, as `indi_svbony_ccd`'s
-/// `Connect()` uses; the value itself is immaterial (every exposure sets
-/// its own), so it is clamped into whatever range the camera advertises.
+/// SDK's only path that clears its auto-exposure state, so the camera is
+/// out of auto-exposure from connect on, as `indi_svbony_ccd`'s `Connect()`
+/// leaves it. No gain write depends on it: a gain reaches the camera only
+/// when an exposure arms it, after that exposure's own exposure write
+/// (GO5). One second, as `Connect()` uses; the value itself is immaterial
+/// (every exposure sets its own), so it is clamped into whatever range the
+/// camera advertises.
 const CONNECT_EXPOSURE_US: i64 = 1_000_000;
 
 /// One selectable download format: what the SDK is told to produce, the
@@ -145,6 +148,47 @@ struct SensorInfo {
     caps: Capabilities,
 }
 
+/// One value control's cache (GO1-GO3): the bounds `SVBGetControlCaps`
+/// advertised at connect, in ASCOM's own width (see [`ascom_range`]), and the
+/// value the next exposure arms. Bounds and value share one cell, so a set is
+/// checked against the bounds of the session it is stored into — never
+/// against one connect's and stored beside another's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ControlSetting {
+    min: i32,
+    max: i32,
+    /// `None` when the connect read nothing the camera advertises (GO1), until
+    /// a client sets a value: no exposure sends the control in between.
+    value: Option<i32>,
+}
+
+impl ControlSetting {
+    /// The value the next exposure arms (GO1) — or, when the connect seeded
+    /// none and no client has set one, `INVALID_OPERATION` naming the range a
+    /// client can choose from.
+    fn armed(self, name: &str, member: &str) -> ASCOMResult<i32> {
+        self.value.ok_or_else(|| {
+            ASCOMError::invalid_operation(format!(
+                "the camera reported no {name} in [{}, {}]; set {member} to choose one",
+                self.min, self.max
+            ))
+        })
+    }
+
+    /// Take `value` for the next exposure (GO2), if it lies in the advertised
+    /// range.
+    fn set(&mut self, name: &str, value: i32) -> ASCOMResult<()> {
+        if value < self.min || value > self.max {
+            return Err(ASCOMError::invalid_value(format!(
+                "{name} {value} outside [{}, {}]",
+                self.min, self.max
+            )));
+        }
+        self.value = Some(value);
+        Ok(())
+    }
+}
+
 /// Per-model capability flags from `SVB_CAMERA_PROPERTY`/`_EX`: whether
 /// the camera is trigger-gated (soft-trigger capture path) and whether
 /// it advertises cooler control and `ST4` pulse-guide support.
@@ -174,13 +218,18 @@ struct DeviceState {
     intended_roi: Mutex<Option<UnbinnedRoi>>,
     /// `(min, max)` exposure microseconds from `SVBGetControlCaps(SVB_EXPOSURE)`.
     exposure_range_us: Mutex<Option<(i64, i64)>>,
-    /// Gain range in ASCOM's own width, converted once at the open handshake
-    /// (see [`ascom_range`]). `None` means the control is not advertised —
-    /// either the model lacks it, or its range has no `i32` spelling.
-    gain_min_max: Mutex<Option<(i32, i32)>>,
-    /// Offset (`SVB_BLACK_LEVEL`) range, on the same terms as
-    /// [`DeviceState::gain_min_max`].
-    offset_min_max: Mutex<Option<(i32, i32)>>,
+    /// `SVB_GAIN`'s range and the gain the next exposure arms (GO1-GO4),
+    /// published whole by each connect. `None` means the control is not
+    /// advertised — either the model lacks it, or its range has no `i32`
+    /// spelling.
+    ///
+    /// **Lock order:** a leaf. `start_exposure` reads it under
+    /// [`Self::frame_setup_lock`]; the setter and the connect handshake take
+    /// it on its own, and nothing is acquired while it is held.
+    gain: Mutex<Option<ControlSetting>>,
+    /// `SVB_BLACK_LEVEL` (ASCOM's `Offset`), on the same terms as
+    /// [`DeviceState::gain`].
+    offset: Mutex<Option<ControlSetting>>,
     target_temperature: Mutex<Option<f64>>,
 
     /// The in-flight capture's cancel flag ([`CaptureRequest::cancel`]) and,
@@ -235,6 +284,9 @@ struct DeviceState {
     /// Holds everything that describes the next frame still while
     /// `start_exposure` reads it and claims the device: the download format
     /// (RM1), and the bin and the sub-frame that are one fact between them (B3).
+    /// The gain and offset it arms (GO2) are read inside the same section, from
+    /// their own cells, which their setters write without taking this lock — a
+    /// set landing after that read is the next frame's.
     ///
     /// Two writers take it. `set_readout_mode` rejects-if-exposing and stores
     /// under it; without that, either order of the two unsynchronised halves
@@ -247,13 +299,15 @@ struct DeviceState {
     /// asked for, and inside the bounds R2 checks.
     ///
     /// **Lock order:** this one first, then [`Self::sensor`],
-    /// [`Self::intended_roi`] and [`Self::in_flight_capture`] — never the
-    /// reverse of any. `start_exposure` holds it across `validated_geometry`'s
-    /// `intended_roi` read, `selected_format`'s `sensor` read and the claim;
-    /// both setters match. `in_flight_capture` is a leaf. Most `sensor` reads
-    /// need no lock at all and take none, and nothing ever holds `sensor` while
-    /// waiting (its accessor clones and releases), so that part of the order is
-    /// discipline for future edits rather than a live hazard.
+    /// [`Self::intended_roi`], [`Self::gain`], [`Self::offset`] and
+    /// [`Self::in_flight_capture`] — never the reverse of any. `start_exposure`
+    /// holds it across `validated_geometry`'s `intended_roi` read,
+    /// `selected_format`'s `sensor` read, the gain and offset reads and the
+    /// claim; both setters match. `gain`, `offset` and `in_flight_capture` are
+    /// leaves. Most `sensor` reads need no lock at all and take none, and
+    /// nothing ever holds `sensor` while waiting (its accessor clones and
+    /// releases), so that part of the order is discipline for future edits
+    /// rather than a live hazard.
     frame_setup_lock: Mutex<()>,
 
     /// True only for the duration of a blocking `PulseGuide` SDK call (v0
@@ -269,8 +323,8 @@ impl DeviceState {
             readout_mode: AtomicU8::new(0),
             intended_roi: Mutex::new(None),
             exposure_range_us: Mutex::new(None),
-            gain_min_max: Mutex::new(None),
-            offset_min_max: Mutex::new(None),
+            gain: Mutex::new(None),
+            offset: Mutex::new(None),
             target_temperature: Mutex::new(None),
             in_flight_capture: Mutex::new(None),
             image_ready: AtomicBool::new(false),
@@ -397,7 +451,8 @@ impl SvbonyCamera {
         // return Ok immediately, without waiting for the winner's
         // handshake; until it completes, cached properties may still be
         // unpopulated, which every cache read already treats as
-        // NOT_CONNECTED (see `sensor()`'s fallback).
+        // NOT_CONNECTED (see `sensor()`'s fallback) — or, for the gain and
+        // offset, as a control the camera does not advertise (GO4).
         let opened = self.handle.open().map_err(|e| {
             warn!(camera = %self.unique_id, error = %e, "SDK open failed");
             ASCOMError::NOT_CONNECTED
@@ -408,7 +463,7 @@ impl SvbonyCamera {
         // A failed post-open handshake must leave the device disconnected
         // (C2), not opened-but-unusable, so close before propagating.
         if let Err(e) = self.open_handshake() {
-            if let Err(close_err) = self.handle.close() {
+            if let Err(close_err) = self.close_handle() {
                 debug!(error = %close_err, "close after a failed connect handshake also failed");
             }
             return Err(e);
@@ -462,8 +517,9 @@ impl SvbonyCamera {
     /// restore the SDK's default parameters and turn its parameter
     /// auto-save off (both advisory — a failure is logged, not fatal),
     /// read and cache the camera's properties/controls, write one manual
-    /// `SVB_EXPOSURE` (the SDK's only auto-exposure-off path, without which
-    /// every gain write is refused until the first exposure — GO5), then
+    /// `SVB_EXPOSURE` (the SDK's only auto-exposure-off path, advisory too),
+    /// read the gain and offset the camera now holds as the values the first
+    /// exposure arms (GO1 — a read; nothing is written), then
     /// run the exposure state machine's connect-time step for trigger
     /// cameras (mode selection + video-capture start — never for a
     /// non-trigger camera, see this method's body — per
@@ -520,14 +576,16 @@ impl SvbonyCamera {
         let (exposure_min_us, exposure_max_us) =
             Self::normalized_exposure_range(exposure.min, exposure.max);
         *self.state.exposure_range_us.lock() = Some((exposure_min_us, exposure_max_us));
-        *self.state.gain_min_max.lock() = find(ControlType::Gain).and_then(ascom_range);
-        *self.state.offset_min_max.lock() = find(ControlType::BlackLevel).and_then(ascom_range);
+        let gain_range = find(ControlType::Gain).and_then(ascom_range);
+        let offset_range = find(ControlType::BlackLevel).and_then(ascom_range);
 
         // One manual `SVB_EXPOSURE` write clears the SDK's auto-exposure
-        // state, which is on after open (and after the restore above) and
-        // refuses every gain write while on (GO5). Advisory like the two
-        // steps above: a camera that keeps refusing it still exposes — its
-        // gain simply stays refused until the first exposure's own write.
+        // state, which is on after open (and after the restore above), so the
+        // camera is out of auto-exposure from connect on, as `Connect()`
+        // leaves it. Nothing waits on it: the state refuses a gain write
+        // (GO5), but a gain reaches the camera only when an exposure arms it,
+        // and every arm writes its own exposure first. Advisory like the two
+        // steps above.
         let connect_exposure_us = CONNECT_EXPOSURE_US.clamp(exposure_min_us, exposure_max_us);
         if let Err(e) = self
             .handle
@@ -535,10 +593,28 @@ impl SvbonyCamera {
         {
             warn!(
                 error = %e,
-                "clearing the SDK's auto-exposure state at connect failed; gain \
-                 will be refused until the first exposure"
+                "clearing the SDK's auto-exposure state at connect failed; the \
+                 first exposure's own exposure write clears it before arming gain"
             );
         }
+
+        // GO1/GO4: this session starts from the gain and offset the camera
+        // holds now — the device defaults the restore put it at — read, never
+        // written (tenet 3). Each control's bounds and value are published in
+        // one store, so a set cannot be checked against one connect's bounds
+        // and stored beside another's.
+        let gain = gain_range.map(|(min, max)| ControlSetting {
+            min,
+            max,
+            value: self.seed(ControlType::Gain, min, max),
+        });
+        let offset = offset_range.map(|(min, max)| ControlSetting {
+            min,
+            max,
+            value: self.seed(ControlType::BlackLevel, min, max),
+        });
+        *self.state.gain.lock() = gain;
+        *self.state.offset.lock() = offset;
 
         let readout_formats = Self::negotiated_readout_formats(&property.supported_video_formats)?;
 
@@ -610,9 +686,22 @@ impl SvbonyCamera {
     fn disconnect(&self) -> ASCOMResult<()> {
         // An in-flight exposure is cancelled (C3) before the handle closes.
         self.cancel_exposure();
-        self.handle.close().map_err(|_| ASCOMError::NOT_CONNECTED)?;
+        self.close_handle().map_err(|_| ASCOMError::NOT_CONNECTED)?;
         debug!(camera = %self.unique_id, "camera disconnected");
         Ok(())
+    }
+
+    /// Close the handle, first forgetting the gain and offset this session
+    /// would arm (GO4). The cells stay empty while the handle is closed, so a
+    /// reconnect's handshake — the handle already open, the new session's
+    /// cells not yet published — answers for them as a first connect's does,
+    /// rather than taking a set against the last session's cell for the
+    /// reseed to overwrite. Emptied before the close, never after it: once the
+    /// handle is closed a racing connect can open it and publish its own.
+    fn close_handle(&self) -> BackendResult<()> {
+        *self.state.gain.lock() = None;
+        *self.state.offset.lock() = None;
+        self.handle.close()
     }
 
     /// Cancel any in-flight exposure (abort): bump the generation so the
@@ -702,12 +791,46 @@ impl SvbonyCamera {
             .ok_or_else(|| ASCOMError::invalid_value("readout mode index out of range"))
     }
 
-    fn gain_available(&self) -> bool {
-        self.state.gain_min_max.lock().is_some()
-    }
-
-    fn offset_available(&self) -> bool {
-        self.state.offset_min_max.lock().is_some()
+    /// The value a connect arms `control` with (GO1): what the camera reports
+    /// holding — a read; nothing is written at connect — when that is a value
+    /// it advertises. A reading that fails, has no `i32` spelling or lies
+    /// outside `[min, max]` seeds nothing, and never fails the connect: the
+    /// control then has no value until a client sets one, and no exposure
+    /// sends it.
+    fn seed(&self, control: ControlType, min: i32, max: i32) -> Option<i32> {
+        let reading = match self.handle.control_value(control) {
+            Ok(reading) => reading,
+            Err(e) => {
+                debug!(
+                    camera = %self.unique_id,
+                    ?control,
+                    error = %e,
+                    "reading the camera's value at connect failed; nothing is armed \
+                     until a client sets one"
+                );
+                return None;
+            }
+        };
+        let seeded = armable(reading, min, max);
+        if let Some(value) = seeded {
+            debug!(
+                camera = %self.unique_id,
+                ?control,
+                value,
+                "seeded from the camera for the next exposure"
+            );
+        } else {
+            debug!(
+                camera = %self.unique_id,
+                ?control,
+                reading,
+                min,
+                max,
+                "the camera reported a value it does not advertise; nothing is \
+                 armed until a client sets one"
+            );
+        }
+        seeded
     }
 
     /// Run a blocking SDK-seam call off the async executor. The `SVBony` FFI
@@ -757,6 +880,23 @@ fn check_geometry(roi: Roi, sensor_w: u32, sensor_h: u32, bin: u32) -> ASCOMResu
 /// would advertise a maximum the camera then rejects.
 fn ascom_range(caps: &ControlCaps) -> Option<(i32, i32)> {
     Some((i32::try_from(caps.min).ok()?, i32::try_from(caps.max).ok()?))
+}
+
+/// A reading the next exposure can arm (GO1): one that has an `i32` spelling
+/// and lies inside the advertised `[min, max]`. Anything else would report a
+/// value ASCOM cannot carry, or arm one the camera does not advertise.
+fn armable(reading: i64, min: i32, max: i32) -> Option<i32> {
+    i32::try_from(reading)
+        .ok()
+        .filter(|value| (min..=max).contains(value))
+}
+
+/// What an exposure sends for one control: the value it arms, or nothing when
+/// the camera does not advertise the control or it has no value (GO1/GO2).
+fn armed_value(cell: &Mutex<Option<ControlSetting>>) -> Option<i64> {
+    (*cell.lock())
+        .and_then(|setting| setting.value)
+        .map(i64::from)
 }
 
 /// Bayer pattern → ASCOM `BayerOffsetX/Y` (ST1).
@@ -862,7 +1002,11 @@ async fn run_exposure(
                     *state.last_error.lock() = Some(format!("image transform failed: {e}"));
                 }
                 Ok(Err(e)) => {
-                    warn!(error = %e.0, "mid-exposure SDK error or SVBGetVideoData deadline exceeded");
+                    warn!(
+                        error = %e.0,
+                        "exposure failed: the SDK refused arming, triggering or reading it, \
+                         or SVBGetVideoData's deadline passed"
+                    );
                     *state.last_error.lock() = Some(e.0);
                 }
                 Err(join_err) => {
@@ -1135,90 +1279,77 @@ impl Camera for SvbonyCamera {
 
     async fn gain(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        if !self.gain_available() {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
-        self.on_handle(|h| {
-            let raw = h
-                .control_value(ControlType::Gain)
-                .map_err(|e| ASCOMError::invalid_operation(format!("failed to read gain: {e}")))?;
-            i32::try_from(raw)
-                .map_err(|_| ASCOMError::invalid_operation(format!("camera reported gain {raw}")))
-        })
-        .await
+        // GO1: the gain the next exposure arms, from the cache. Never a read
+        // of the camera, which until then can still be at the last frame's.
+        (*self.state.gain.lock())
+            .ok_or(ASCOMError::NOT_IMPLEMENTED)?
+            .armed("gain", "Gain")
     }
 
     async fn gain_min(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        (*self.state.gain_min_max.lock())
-            .map(|(min, _)| min)
+        (*self.state.gain.lock())
+            .map(|setting| setting.min)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn gain_max(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        (*self.state.gain_min_max.lock())
-            .map(|(_, max)| max)
+        (*self.state.gain.lock())
+            .map(|setting| setting.max)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_gain(&self, gain: i32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let (min, max) = (*self.state.gain_min_max.lock()).ok_or(ASCOMError::NOT_IMPLEMENTED)?;
-        if gain < min || gain > max {
-            return Err(ASCOMError::invalid_value(format!(
-                "gain {gain} outside [{min}, {max}]"
-            )));
-        }
-        self.on_handle(move |h| {
-            h.set_control_value(ControlType::Gain, i64::from(gain))
-                .map_err(|e| ASCOMError::invalid_operation(format!("failed to set gain: {e}")))
-        })
-        .await
+        // GO2: checked and stored in one section, under the cell a connect
+        // publishes the range in. Nothing reaches the camera here — the next
+        // exposure arms it, after its own exposure write (GO5) — so a set
+        // needs no device and is never refused as busy: one made mid-exposure
+        // describes the next frame.
+        self.state
+            .gain
+            .lock()
+            .as_mut()
+            .ok_or(ASCOMError::NOT_IMPLEMENTED)?
+            .set("gain", gain)?;
+        debug!(camera = %self.unique_id, gain, "gain cached for the next exposure");
+        Ok(())
     }
 
     async fn offset(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        if !self.offset_available() {
-            return Err(ASCOMError::NOT_IMPLEMENTED);
-        }
-        self.on_handle(|h| {
-            let raw = h.control_value(ControlType::BlackLevel).map_err(|e| {
-                ASCOMError::invalid_operation(format!("failed to read offset: {e}"))
-            })?;
-            i32::try_from(raw)
-                .map_err(|_| ASCOMError::invalid_operation(format!("camera reported offset {raw}")))
-        })
-        .await
+        // GO1, as for the gain.
+        (*self.state.offset.lock())
+            .ok_or(ASCOMError::NOT_IMPLEMENTED)?
+            .armed("offset", "Offset")
     }
 
     async fn offset_min(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        (*self.state.offset_min_max.lock())
-            .map(|(min, _)| min)
+        (*self.state.offset.lock())
+            .map(|setting| setting.min)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn offset_max(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        (*self.state.offset_min_max.lock())
-            .map(|(_, max)| max)
+        (*self.state.offset.lock())
+            .map(|setting| setting.max)
             .ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 
     async fn set_offset(&self, offset: i32) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        let (min, max) = (*self.state.offset_min_max.lock()).ok_or(ASCOMError::NOT_IMPLEMENTED)?;
-        if offset < min || offset > max {
-            return Err(ASCOMError::invalid_value(format!(
-                "offset {offset} outside [{min}, {max}]"
-            )));
-        }
-        self.on_handle(move |h| {
-            h.set_control_value(ControlType::BlackLevel, i64::from(offset))
-                .map_err(|e| ASCOMError::invalid_operation(format!("failed to set offset: {e}")))
-        })
-        .await
+        // GO2, as for the gain: cached, and sent by the next exposure.
+        self.state
+            .offset
+            .lock()
+            .as_mut()
+            .ok_or(ASCOMError::NOT_IMPLEMENTED)?
+            .set("offset", offset)?;
+        debug!(camera = %self.unique_id, offset, "offset cached for the next exposure");
+        Ok(())
     }
 
     // --- readout modes ------------------------------------------------------------
@@ -1626,7 +1757,8 @@ impl Camera for SvbonyCamera {
         }
 
         // Pin everything that describes this frame — the bin, the sub-frame
-        // bounded against it, and the download format — and claim the device in
+        // bounded against it, the download format, and the gain and offset it
+        // is armed with — and claim the device in
         // ONE critical section, against `set_bin_x` (B3) and `set_readout_mode`
         // (RM1/RM2). Read outside the lock, either writer can land between two
         // halves of one frame's description: a mode change either side of the
@@ -1644,7 +1776,7 @@ impl Camera for SvbonyCamera {
         // section, so a concurrent `cancel_exposure` lands wholly before this
         // exposure exists — and is the no-op it should be — or wholly after it,
         // with full effect.
-        let (bin, roi, format, cancel, generation) = {
+        let (bin, roi, format, gain, offset, cancel, generation) = {
             let _setup_guard = self.state.frame_setup_lock.lock();
             let bin_x = self.state.bin.load(Ordering::Acquire);
             let bin = u32::from(bin_x).max(1);
@@ -1654,6 +1786,12 @@ impl Camera for SvbonyCamera {
             // claim they took.
             let roi = self.validated_geometry(&sensor, bin_x)?;
             let format = self.selected_format()?;
+            // GO2: the values this frame is armed with, read with the rest of
+            // its description. Their setters take only the cells, so a set
+            // landing after these reads is the next frame's, and the frame in
+            // flight keeps what it was accepted with.
+            let gain = armed_value(&self.state.gain);
+            let offset = armed_value(&self.state.offset);
             let mut slot = self.state.in_flight_capture.lock();
             if slot.is_some() {
                 return Err(ASCOMError::invalid_operation(
@@ -1672,7 +1810,7 @@ impl Camera for SvbonyCamera {
             // The claim is taken and the cell is installed: everything an
             // abort needs is in place, so the critical section ends here.
             drop(slot);
-            (bin, roi, format, cancel, generation)
+            (bin, roi, format, gain, offset, cancel, generation)
         };
 
         *self.state.last_error.lock() = None;
@@ -1688,6 +1826,8 @@ impl Camera for SvbonyCamera {
             exposure_us,
             is_trigger_cam: sensor.caps.is_trigger_cam,
             image_type: format.image_type,
+            gain,
+            offset,
             duration,
             cancel,
         };
@@ -1812,6 +1952,41 @@ mod tests {
         })
         .await
         .unwrap_or_else(|_| panic!("camera did not reach {want:?}"));
+    }
+
+    /// Deadline-bounded wait for `entry` to reach the mock's SDK call log —
+    /// for a capture running on the blocking pool to have armed its frame.
+    async fn wait_logged(handle: &MockCameraHandle, entry: &str) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !handle.sdk_call_log().iter().any(|c| c == entry) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{entry} never reached the SDK: {:?}", handle.sdk_call_log()));
+    }
+
+    /// Take one exposure of a small sub-frame through to `ImageReady`.
+    async fn take_exposure(device: &SvbonyCamera) {
+        device.set_num_x(64).await.unwrap();
+        device.set_num_y(48).await.unwrap();
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        wait_image_ready(device).await;
+    }
+
+    /// The mock's SDK call log from entry `from` on — what one stretch of a
+    /// test sent the camera.
+    fn logged_since(handle: &MockCameraHandle, from: usize) -> Vec<String> {
+        handle.sdk_call_log().split_off(from)
+    }
+
+    /// Whether `log` holds a write of `control`.
+    fn writes(log: &[String], control: &str) -> bool {
+        let prefix = format!("set_control_value({control}, ");
+        log.iter().any(|c| c.starts_with(&prefix))
     }
 
     // --- pure helpers -------------------------------------------------------------
@@ -2014,7 +2189,7 @@ mod tests {
         );
     }
 
-    // --- gain / offset (GO1/GO2/GO3) ---------------------------------------------------
+    // --- gain / offset (GO1-GO5) -----------------------------------------------------
 
     #[tokio::test]
     async fn gain_is_not_implemented_when_the_control_is_absent() {
@@ -2035,11 +2210,23 @@ mod tests {
         );
     }
 
+    /// GO2: a set is cached, not written. `Gain` reports it at once, and the
+    /// camera stays at the gain the connect read until an exposure arms it.
     #[tokio::test]
-    async fn set_gain_round_trips_a_valid_value() {
-        let cam = connected_device(MockCameraHandle::default());
+    async fn set_gain_caches_without_reaching_the_camera() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        let from = handle.sdk_call_log().len();
         cam.set_gain(50).await.unwrap();
         assert_eq!(cam.gain().await.unwrap(), 50);
+        assert_eq!(
+            handle.control_value(ControlType::Gain).unwrap(),
+            100,
+            "the set reached the camera"
+        );
+        let sent = logged_since(&handle, from);
+        assert!(!writes(&sent, "Gain"), "the setter wrote the SDK: {sent:?}");
     }
 
     #[test]
@@ -2063,6 +2250,24 @@ mod tests {
         assert_eq!(ascom_range(&cap(i64::from(i32::MIN) - 1, 0)), None);
     }
 
+    /// GO1: a reading is armable only as a value the camera advertises — one
+    /// with an `i32` spelling, inside the advertised range. An inverted range
+    /// advertises nothing, and has nothing to clamp into either.
+    #[test]
+    fn a_reading_is_armable_only_inside_the_advertised_range() {
+        assert_eq!(armable(100, 0, 400), Some(100));
+        assert_eq!(armable(0, 0, 400), Some(0));
+        assert_eq!(armable(400, 0, 400), Some(400));
+        assert_eq!(armable(401, 0, 400), None);
+        assert_eq!(armable(-1, 0, 400), None);
+        assert_eq!(
+            armable(i64::from(i32::MAX) + 1, 0, i32::MAX),
+            None,
+            "a reading with no i32 spelling must not saturate into one"
+        );
+        assert_eq!(armable(100, 400, 0), None);
+    }
+
     #[tokio::test]
     async fn a_gain_range_outside_i32_leaves_the_control_unadvertised() {
         // Degrade rather than lie: a clamped bound would advertise a maximum the
@@ -2082,6 +2287,403 @@ mod tests {
         }
         // Offset is cached independently and is unaffected.
         cam.offset_max().await.unwrap();
+    }
+
+    /// GO1: a connect seeds the gain and offset from what the camera reports
+    /// holding. The device defaults here differ from the caps' `default`, so a
+    /// seed taken from the caps would show.
+    #[tokio::test]
+    async fn a_connect_seeds_gain_and_offset_from_what_the_camera_holds() {
+        let handle = Arc::new(MockCameraHandle::default());
+        handle.set_device_defaults(250, 30);
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        assert_eq!(cam.gain().await.unwrap(), 250);
+        assert_eq!(cam.offset().await.unwrap(), 30);
+    }
+
+    /// GO1: a reading the camera does not advertise is not armed, and each
+    /// member says so, naming the range a client can choose from.
+    #[tokio::test]
+    async fn readings_outside_the_advertised_range_leave_gain_and_offset_unset() {
+        let handle = Arc::new(MockCameraHandle::default());
+        // The caps advertise gain in [0, 400] and offset in [0, 255].
+        handle.set_device_defaults(500, 300);
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        let err = cam.gain().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(
+            err.message,
+            "the camera reported no gain in [0, 400]; set Gain to choose one"
+        );
+        let err = cam.offset().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(
+            err.message,
+            "the camera reported no offset in [0, 255]; set Offset to choose one"
+        );
+    }
+
+    /// GO1: a seed read that fails never fails the connect. The control keeps
+    /// its range and has no value until a client sets one — which needs
+    /// nothing from the camera, so it is taken though the camera still
+    /// refuses the control.
+    #[tokio::test]
+    async fn a_failed_gain_read_at_connect_leaves_gain_unset_until_a_client_sets_one() {
+        let handle = Arc::new(MockCameraHandle::default());
+        handle.refuse_control(Some(ControlType::Gain));
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        assert!(cam.connected().await.unwrap());
+        let err = cam.gain().await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(
+            err.message,
+            "the camera reported no gain in [0, 400]; set Gain to choose one"
+        );
+        assert_eq!(
+            cam.offset().await.unwrap(),
+            0,
+            "the offset seeds on its own"
+        );
+
+        cam.set_gain(250).await.unwrap();
+        assert_eq!(cam.gain().await.unwrap(), 250);
+    }
+
+    /// GO1: no exposure sends a control that has no value — that would arm a
+    /// value nobody chose — until a client sets one, which the next exposure
+    /// then arms.
+    #[tokio::test]
+    async fn an_unset_gain_is_not_armed_until_a_client_sets_one() {
+        let handle = Arc::new(MockCameraHandle::default());
+        handle.set_device_defaults(500, 0);
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        let from = handle.sdk_call_log().len();
+        take_exposure(&cam).await;
+        let sent = logged_since(&handle, from);
+        assert!(!writes(&sent, "Gain"), "an unset gain was armed: {sent:?}");
+        assert!(writes(&sent, "BlackLevel"), "{sent:?}");
+
+        cam.set_gain(250).await.unwrap();
+        take_exposure(&cam).await;
+        assert_eq!(handle.control_value(ControlType::Gain).unwrap(), 250);
+    }
+
+    /// GO1/GO3: a gain the camera does not advertise is never armed, and the
+    /// offset beside it still is.
+    #[tokio::test]
+    async fn an_unadvertised_gain_is_not_armed() {
+        let handle = Arc::new(MockCameraHandle::default().without_control(ControlType::Gain));
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        let from = handle.sdk_call_log().len();
+        take_exposure(&cam).await;
+        assert_eq!(handle.last_capture_request().unwrap().gain, None);
+        let sent = logged_since(&handle, from);
+        assert!(
+            !writes(&sent, "Gain"),
+            "an unadvertised gain was armed: {sent:?}"
+        );
+        assert!(writes(&sent, "BlackLevel"), "{sent:?}");
+    }
+
+    /// GO2/GO5: an exposure arms its gain after its own exposure write — the
+    /// one that clears the SDK's auto-exposure state — and its offset after
+    /// the gain, and sends the camera nothing else of its own.
+    #[tokio::test]
+    async fn an_exposure_arms_its_gain_then_its_offset_after_its_exposure_write() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        cam.set_gain(50).await.unwrap();
+        cam.set_offset(7).await.unwrap();
+        let from = handle.sdk_call_log().len();
+        take_exposure(&cam).await;
+        assert_eq!(
+            logged_since(&handle, from),
+            [
+                "set_control_value(Exposure, 10000)",
+                "set_control_value(Gain, 50)",
+                "set_control_value(BlackLevel, 7)",
+            ]
+        );
+    }
+
+    /// GO2: every exposure sends its gain and offset, not only ones a client
+    /// changed. The camera can be at other values than the cache — the SDK
+    /// changed them, and nothing recorded it — and an arm that skipped
+    /// unchanged values would take the frame there.
+    #[tokio::test]
+    async fn an_exposure_sends_its_gain_and_offset_even_when_the_client_left_them_alone() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        cam.set_gain(50).await.unwrap();
+        cam.set_offset(7).await.unwrap();
+        take_exposure(&cam).await;
+        // The SDK moves both behind the driver's back.
+        handle.set_control_value(ControlType::Gain, 300).unwrap();
+        handle
+            .set_control_value(ControlType::BlackLevel, 90)
+            .unwrap();
+
+        take_exposure(&cam).await;
+        assert_eq!(handle.control_value(ControlType::Gain).unwrap(), 50);
+        assert_eq!(handle.control_value(ControlType::BlackLevel).unwrap(), 7);
+    }
+
+    /// GO5: a connect whose clearing exposure write was refused leaves the
+    /// SDK's auto-exposure state on, and the first exposure still arms its
+    /// gain — its own exposure write clears the state first.
+    #[tokio::test]
+    async fn auto_exposure_left_on_by_the_connect_is_cleared_before_gain_is_armed() {
+        let handle = Arc::new(MockCameraHandle::default());
+        handle
+            .fail_next_exposure_write
+            .store(true, AtomicOrdering::SeqCst);
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        assert!(
+            handle.auto_exposure(),
+            "the connect cleared auto-exposure, so nothing here is tested"
+        );
+        cam.set_gain(50).await.unwrap();
+
+        take_exposure(&cam).await;
+        assert_eq!(handle.control_value(ControlType::Gain).unwrap(), 50);
+        assert!(!handle.auto_exposure());
+    }
+
+    /// GO2/E9: a gain the SDK refuses at arm time fails that exposure, with
+    /// the SDK's own detail, and arms no offset after it. The device is handed
+    /// back, and the next exposure arms the cached gain again.
+    #[tokio::test]
+    async fn a_gain_the_sdk_refuses_fails_the_exposure_and_the_next_one_arms_it() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        cam.set_gain(50).await.unwrap();
+        handle.refuse_control(Some(ControlType::Gain));
+        cam.set_num_x(64).await.unwrap();
+        cam.set_num_y(48).await.unwrap();
+        let from = handle.sdk_call_log().len();
+        cam.start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        wait_camera_state(&cam, CameraState::Error).await;
+        assert!(!cam.image_ready().await.unwrap());
+        let err = cam.image_array().await.unwrap_err();
+        assert_eq!(err.code, UNSPECIFIED_ERROR);
+        assert_eq!(err.message, "failed to set gain: injected SDK failure");
+        let sent = logged_since(&handle, from);
+        assert!(
+            !writes(&sent, "BlackLevel"),
+            "an offset was armed after a refused gain: {sent:?}"
+        );
+
+        handle.refuse_control(None);
+        take_exposure(&cam).await;
+        assert_eq!(handle.control_value(ControlType::Gain).unwrap(), 50);
+    }
+
+    /// GO2/E9: the same for an offset the SDK refuses.
+    #[tokio::test]
+    async fn an_offset_the_sdk_refuses_fails_the_exposure_with_the_sdk_detail() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        handle.refuse_control(Some(ControlType::BlackLevel));
+        cam.set_num_x(64).await.unwrap();
+        cam.set_num_y(48).await.unwrap();
+        cam.start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        wait_camera_state(&cam, CameraState::Error).await;
+        let err = cam.image_array().await.unwrap_err();
+        assert_eq!(err.code, UNSPECIFIED_ERROR);
+        assert_eq!(err.message, "failed to set offset: injected SDK failure");
+    }
+
+    /// GO2: a gain set while an exposure is in flight is taken, not refused,
+    /// and describes the next frame. It never reaches the camera under the
+    /// frame being taken, which keeps the gain it was armed with.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_gain_set_during_an_exposure_is_taken_for_the_next_one() {
+        let handle = Arc::new(MockCameraHandle::default());
+        handle.set_capture_gate(true);
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        cam.set_num_x(64).await.unwrap();
+        cam.set_num_y(48).await.unwrap();
+        cam.start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        // The frame in flight has armed the connect's gain, and is held before
+        // it can deliver.
+        wait_logged(&handle, "set_control_value(Gain, 100)").await;
+
+        cam.set_gain(50).await.unwrap();
+        assert_eq!(
+            cam.gain().await.unwrap(),
+            50,
+            "Gain reports the gain the next exposure arms"
+        );
+        // Watched across a window rather than sampled once: a write deferred
+        // past the setter's return would land inside it.
+        for _ in 0..20 {
+            assert_eq!(
+                handle.control_value(ControlType::Gain).unwrap(),
+                100,
+                "a gain reached the camera under the frame in flight"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        handle.set_capture_gate(false);
+        wait_image_ready(&cam).await;
+        assert_eq!(handle.last_capture_request().unwrap().gain, Some(100));
+
+        take_exposure(&cam).await;
+        assert_eq!(handle.last_capture_request().unwrap().gain, Some(50));
+        assert_eq!(handle.control_value(ControlType::Gain).unwrap(), 50);
+    }
+
+    /// GO2: the frame `StartExposure` accepted is the frame that is armed. A
+    /// set landing once `StartExposure` has answered, before its capture has
+    /// reached the camera, is the next frame's.
+    #[tokio::test]
+    async fn a_gain_set_after_start_exposure_answers_is_the_next_frames() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        cam.set_num_x(64).await.unwrap();
+        cam.set_num_y(48).await.unwrap();
+        cam.start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        // On this single-threaded runtime the capture task cannot have run
+        // yet, and nothing below yields to it before the set.
+        assert!(
+            handle.last_capture_request().is_none(),
+            "the capture ran before the set, so nothing here is tested"
+        );
+        cam.set_gain(50).await.unwrap();
+
+        wait_image_ready(&cam).await;
+        assert_eq!(handle.last_capture_request().unwrap().gain, Some(100));
+        assert_eq!(handle.control_value(ControlType::Gain).unwrap(), 100);
+    }
+
+    /// GO2: the same for an offset set while an exposure is in flight.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_offset_set_during_an_exposure_is_taken_for_the_next_one() {
+        let handle = Arc::new(MockCameraHandle::default());
+        handle.set_capture_gate(true);
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        cam.set_num_x(64).await.unwrap();
+        cam.set_num_y(48).await.unwrap();
+        cam.start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        wait_logged(&handle, "set_control_value(BlackLevel, 0)").await;
+
+        cam.set_offset(7).await.unwrap();
+        assert_eq!(cam.offset().await.unwrap(), 7);
+        for _ in 0..20 {
+            assert_eq!(
+                handle.control_value(ControlType::BlackLevel).unwrap(),
+                0,
+                "an offset reached the camera under the frame in flight"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        handle.set_capture_gate(false);
+        wait_image_ready(&cam).await;
+        assert_eq!(handle.last_capture_request().unwrap().offset, Some(0));
+
+        take_exposure(&cam).await;
+        assert_eq!(handle.last_capture_request().unwrap().offset, Some(7));
+        assert_eq!(handle.control_value(ControlType::BlackLevel).unwrap(), 7);
+    }
+
+    /// GO4: each connect reseeds the gain and offset from the camera, so a
+    /// value a client set in one session is not armed in the next.
+    #[tokio::test]
+    async fn a_reconnect_reseeds_gain_and_offset_from_the_camera() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        cam.set_gain(50).await.unwrap();
+        cam.set_offset(7).await.unwrap();
+        cam.disconnect().unwrap();
+        handle.set_device_defaults(250, 30);
+        cam.connect().unwrap();
+        assert_eq!(cam.gain().await.unwrap(), 250);
+        assert_eq!(cam.offset().await.unwrap(), 30);
+    }
+
+    /// GO4: a gain set while a reconnect is still handshaking — the handle
+    /// open, so the device reads as connected, but the new session's cells
+    /// not yet published — is refused as on a first connect, never answered
+    /// and then overwritten by the reseed.
+    #[tokio::test]
+    async fn a_gain_set_while_a_reconnect_handshakes_is_refused_rather_than_lost() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        cam.disconnect().unwrap();
+        // A connect's two halves, taken apart: the open, then the handshake.
+        assert!(handle.open().unwrap());
+
+        let err = cam.set_gain(50).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
+
+        cam.open_handshake().unwrap();
+        assert_eq!(cam.gain().await.unwrap(), 100);
+    }
+
+    /// GO4: through a reconnect's handshake the gain and offset report
+    /// nothing of the last session's — not its values, not its bounds.
+    #[tokio::test]
+    async fn a_reconnect_handshaking_reports_no_gain_or_offset_from_the_last_session() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        cam.set_gain(50).await.unwrap();
+        cam.set_offset(7).await.unwrap();
+        cam.disconnect().unwrap();
+        assert!(handle.open().unwrap());
+
+        for (member, err) in [
+            ("Gain", cam.gain().await.unwrap_err()),
+            ("GainMax", cam.gain_max().await.unwrap_err()),
+            ("Offset", cam.offset().await.unwrap_err()),
+            ("OffsetMax", cam.offset_max().await.unwrap_err()),
+        ] {
+            assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED, "{member}");
+        }
+    }
+
+    /// GO4: a connect whose handshake fails after publishing the gain and
+    /// offset forgets them as it closes, so the next connect's handshake does
+    /// not take a set against them either.
+    #[tokio::test]
+    async fn a_failed_handshake_forgets_the_gain_and_offset_it_published() {
+        // No raw format fails the handshake (RM3) after the cells are
+        // published.
+        let handle =
+            Arc::new(MockCameraHandle::default().with_video_formats(vec![ImageType::Rgb24]));
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap_err();
+        assert!(handle.open().unwrap());
+
+        let err = cam.set_gain(50).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
+        let err = cam.set_offset(7).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
     }
 
     // --- offset (the ASCOM Offset == SVBony BlackLevel control, GO1) ------------------
@@ -2118,16 +2720,26 @@ mod tests {
         );
     }
 
+    /// GO2, as for the gain: `Offset` reports the set at once, and the camera
+    /// stays at the offset the connect read until an exposure arms it.
     #[tokio::test]
-    async fn set_offset_round_trips_a_valid_value() {
-        let cam = connected_device(MockCameraHandle::default());
-        assert_ne!(
-            cam.offset().await.unwrap(),
-            42,
-            "picked a non-default value"
-        );
+    async fn set_offset_caches_without_reaching_the_camera() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let cam = SvbonyCamera::new(handle.clone(), None);
+        cam.connect().unwrap();
+        let from = handle.sdk_call_log().len();
         cam.set_offset(42).await.unwrap();
         assert_eq!(cam.offset().await.unwrap(), 42);
+        assert_eq!(
+            handle.control_value(ControlType::BlackLevel).unwrap(),
+            0,
+            "the set reached the camera"
+        );
+        let sent = logged_since(&handle, from);
+        assert!(
+            !writes(&sent, "BlackLevel"),
+            "the setter wrote the SDK: {sent:?}"
+        );
     }
 
     // --- readout mode -------------------------------------------------------------------
@@ -2394,16 +3006,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gain_is_settable_immediately_after_connect() {
-        // GO5: the SDK refuses gain while its auto-exposure state is on,
-        // which it is after every open; the connect handshake clears it, so
-        // no exposure has to be taken first.
+    async fn connect_takes_the_sdk_out_of_auto_exposure() {
+        // C1a: the SDK's auto-exposure state is on after every open; the
+        // connect handshake's manual exposure write clears it, as
+        // `indi_svbony_ccd`'s `Connect()` does.
         let handle = Arc::new(MockCameraHandle::default());
         let cam = SvbonyCamera::new(handle.clone(), None);
         cam.connect().unwrap();
         assert!(!handle.auto_exposure());
-        cam.set_gain(50).await.unwrap();
-        assert_eq!(cam.gain().await.unwrap(), 50);
     }
 
     #[tokio::test]
@@ -2439,7 +3049,7 @@ mod tests {
         assert!(handle
             .sdk_call_log()
             .contains(&"set_control_value(Exposure, 500000)".to_string()));
-        cam.set_gain(50).await.unwrap();
+        assert!(!handle.auto_exposure());
     }
 
     #[tokio::test]
@@ -2461,7 +3071,7 @@ mod tests {
             cam.exposure_max().await.unwrap(),
             Duration::from_millis(500)
         );
-        cam.set_gain(50).await.unwrap();
+        assert!(!handle.auto_exposure());
     }
 
     #[tokio::test]
@@ -2483,7 +3093,6 @@ mod tests {
         // The restore did take effect (auto-exposure back on), so the
         // handshake's exposure write still had to clear it.
         assert!(!handle.auto_exposure());
-        cam.set_gain(50).await.unwrap();
     }
 
     #[tokio::test]
@@ -2495,7 +3104,7 @@ mod tests {
         let cam = SvbonyCamera::new(handle.clone(), None);
         cam.connect().unwrap();
         assert!(cam.connected().await.unwrap());
-        cam.set_gain(50).await.unwrap();
+        assert!(!handle.auto_exposure());
     }
 
     #[tokio::test]
@@ -2516,7 +3125,6 @@ mod tests {
                 .count(),
             2
         );
-        cam.set_gain(50).await.unwrap();
     }
 
     #[tokio::test]
@@ -2818,18 +3426,15 @@ mod tests {
     /// Every SDK-error mapping carries the SDK's own error detail in the
     /// ASCOM error message — a bare error code is undiagnosable from a
     /// client or the service log (a real-hardware gain-write transient
-    /// motivated this contract).
+    /// motivated this contract). Gain and offset reach the SDK only when an
+    /// exposure arms them, so their mapping is pinned there instead.
     #[tokio::test]
     async fn sdk_control_failures_surface_the_sdk_detail() {
         let handle = Arc::new(MockCameraHandle::default().with_pulse_guide());
         let cam = SvbonyCamera::new(Arc::<MockCameraHandle>::clone(&handle), None);
         cam.connect().unwrap();
         handle.fail_controls.store(true, AtomicOrdering::SeqCst);
-        let cases: [(ASCOMError, &str); 11] = [
-            (cam.gain().await.unwrap_err(), "failed to read gain"),
-            (cam.set_gain(50).await.unwrap_err(), "failed to set gain"),
-            (cam.offset().await.unwrap_err(), "failed to read offset"),
-            (cam.set_offset(5).await.unwrap_err(), "failed to set offset"),
+        let cases: [(ASCOMError, &str); 7] = [
             (
                 cam.ccd_temperature().await.unwrap_err(),
                 "failed to read sensor temperature",

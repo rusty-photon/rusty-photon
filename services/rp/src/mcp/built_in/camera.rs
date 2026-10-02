@@ -183,9 +183,10 @@ impl McpHandler {
             }
         };
 
-        // Gain and offset are read live from the device — they are
-        // operator-mutable, and a record of flat timing is only valid
-        // at the gain it was trained at (calibrator-flats plan, D4/D5).
+        // Gain and offset are read from the driver on every call, never
+        // cached here — they are operator-mutable, and a record of flat
+        // timing is only valid at the gain it was trained at
+        // (calibrator-flats plan, D4/D5).
         // `null` means exactly one thing: the driver has no such
         // property (ASCOM `NotImplemented`, the common case for CCDs).
         // Any other read failure is a tool error, so a transport blip

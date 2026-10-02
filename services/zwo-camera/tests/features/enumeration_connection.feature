@@ -8,7 +8,8 @@ Feature: Camera enumeration and connection lifecycle
   identical-model cameras are distinguished by serial. Connect is per-device
   (C4): connecting or disconnecting one camera does not affect the others.
   Opening a device (C1) caches its ASI_CAMERA_INFO, supported binning modes,
-  and exposure / gain / offset control caps. An open failure leaves the
+  and exposure / gain / offset control caps, and reads the camera's current
+  gain and offset without writing either. An open failure leaves the
   device not connected (C2). Disconnect closes the device and cancels any
   in-flight exposure (C3) — proven by the next session taking a frame of its
   own, which a capture still holding the device would refuse; the exposure

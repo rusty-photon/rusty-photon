@@ -641,10 +641,11 @@ impl Camera {
     /// while that state is on; it is on after open and after
     /// [`Camera::restore_default_param`], and the SDK's only path that
     /// clears it is an `Exposure` write with `auto = false` (an `Exposure`
-    /// write with `auto = true` turns it back on). Drivers therefore issue
-    /// one manual `Exposure` write in their connect handshake before any
-    /// gain write — `indi_svbony_ccd` does exactly this ("fix for SDK gain
-    /// error issue"). The simulation reproduces the gate.
+    /// write with `auto = true` turns it back on). A driver therefore makes
+    /// a manual `Exposure` write before any gain write: `indi_svbony_ccd`
+    /// issues one in its connect handshake ("fix for SDK gain error
+    /// issue"), and `svbony-camera` also writes each exposure's own ahead
+    /// of the gain it arms. The simulation reproduces the gate.
     ///
     /// # Errors
     /// Returns [`Error::Svb`] if the control type is invalid, read-only, or

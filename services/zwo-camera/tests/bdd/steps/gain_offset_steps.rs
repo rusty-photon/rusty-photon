@@ -35,6 +35,11 @@ async fn gain_equals_max(world: &mut CameraWorld, _device: u32) {
     );
 }
 
+#[then(regex = r"^camera device (\d+) reports Gain as (\d+)$")]
+async fn gain_is(world: &mut CameraWorld, _device: u32, expected: i32) {
+    assert_eq!(world.camera().gain().await.unwrap(), expected);
+}
+
 #[when(regex = r"^I try to set Gain to one above GainMax on camera device (\d+)$")]
 async fn try_gain_above_max(world: &mut CameraWorld, _device: u32) {
     let camera = world.camera();
@@ -55,6 +60,32 @@ async fn offset_within(world: &mut CameraWorld, _device: u32) {
     let min = camera.offset_min().await.unwrap();
     let max = camera.offset_max().await.unwrap();
     assert!(min <= offset && offset <= max, "{min} <= {offset} <= {max}");
+}
+
+#[when(regex = r"^I set Offset to OffsetMax on camera device (\d+)$")]
+async fn set_offset_to_max(world: &mut CameraWorld, _device: u32) {
+    let camera = world.camera();
+    let max = camera.offset_max().await.unwrap();
+    camera.set_offset(max).await.unwrap();
+}
+
+#[then(regex = r"^camera device (\d+) reports Offset equal to OffsetMax$")]
+async fn offset_equals_max(world: &mut CameraWorld, _device: u32) {
+    let camera = world.camera();
+    assert_eq!(
+        camera.offset().await.unwrap(),
+        camera.offset_max().await.unwrap()
+    );
+}
+
+#[when(regex = r"^I set Offset to (\d+) on camera device (\d+)$")]
+async fn set_offset(world: &mut CameraWorld, offset: i32, _device: u32) {
+    world.camera().set_offset(offset).await.unwrap();
+}
+
+#[then(regex = r"^camera device (\d+) reports Offset as (\d+)$")]
+async fn offset_is(world: &mut CameraWorld, _device: u32, expected: i32) {
+    assert_eq!(world.camera().offset().await.unwrap(), expected);
 }
 
 #[when(regex = r"^I try to set Offset to one below OffsetMin on camera device (\d+)$")]

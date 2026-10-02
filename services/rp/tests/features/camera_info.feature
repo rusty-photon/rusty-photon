@@ -5,12 +5,11 @@ Feature: Camera info tool
   exposure time limits, sensor dimensions, the current binning, the
   binning envelope a capture may ask for (max_bin_x, max_bin_y and
   can_asymmetric_bin, cached at connect time and null when that read
-  failed), and the gain and
-  offset the sensor currently runs at (read live from the device; null
-  only when the driver does not implement the property — any other
-  read failure is a tool error). Workflow plugins use this to
-  compute target ADU levels for flat calibration and to pin the gain a
-  flat-timing record was trained at.
+  failed), and the gain and offset the camera's next exposure is taken at
+  (read from the driver on every call, never cached; null only when the
+  driver does not implement the property — any other read failure is a
+  tool error). Workflow plugins use this to compute target ADU levels for
+  flat calibration and to pin the gain a flat-timing record was trained at.
 
   Scenario: Returns max_adu and sensor dimensions for connected camera
     Given a running Alpaca simulator

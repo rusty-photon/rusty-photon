@@ -22,9 +22,12 @@ snap-mode exposure state
 machine (start; abort *discards* / graceful stop *preserves*; `ImageArray`,
 `CameraState`, `PercentCompleted`, mid-exposure `Error` — all of which report
 the **running** session and answer `NOT_CONNECTED` outside one), plus serial-derived
-identity and the `config.get`/`apply`/`schema` actions. Validated by **45 unit
-tests** (against the in-crate mock seam), **57 BDD scenarios**, and a full
-**ConformU** pass (both `alpacaprotocol` and `conformance` suites). Roadmap:
+identity and the `config.get`/`apply`/`schema` actions. Phase E landed
+validated by **45 unit tests** (against the in-crate mock seam), **57 BDD
+scenarios**, and a full **ConformU** pass (both `alpacaprotocol` and
+`conformance` suites); the suite now stands at **119 unit tests** (the mock
+seam, and the production handle against the `zwo-rs` simulation) and **79 BDD
+scenarios** — see the design doc's *Testing* section. Roadmap:
 
 - **Phase F** — re-scoped by ADR-014 to a future separate `zwo-filterwheel`
   service (not part of this crate).

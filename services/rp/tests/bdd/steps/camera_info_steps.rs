@@ -89,8 +89,8 @@ fn result_contains_boolean_or_null(world: &mut RpWorld, field: String) {
     );
 }
 
-/// Gain and offset are read live from the device and are `null` when
-/// the driver does not expose them, so the contract is "present, and
+/// Gain and offset are read from the driver on every call and are `null`
+/// when the driver does not expose them, so the contract is "present, and
 /// an integer or null" — the simulator's own support decides which.
 #[then(expr = "the tool result should contain {string} as an integer or null")]
 fn result_contains_integer_or_null(world: &mut RpWorld, field: String) {

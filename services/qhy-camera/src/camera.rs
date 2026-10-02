@@ -115,9 +115,10 @@ struct DeviceState {
     ///
     /// **Lock order:** outermost of the synchronous locks — taken before
     /// [`Self::valid_bins`], [`Self::ccd_info`], [`Self::intended_roi`],
-    /// [`Self::result_lock`] and [`Self::in_flight_capture`], never after. A
-    /// readout-mode change commits under it while holding
-    /// [`Self::control_lock`]. Nothing awaits while it is held.
+    /// [`Self::gain`], [`Self::offset`], [`Self::result_lock`] and
+    /// [`Self::in_flight_capture`], never after. A readout-mode change commits
+    /// under it while holding [`Self::control_lock`]. Nothing awaits while it
+    /// is held.
     cache_commit_lock: Mutex<()>,
     valid_bins: Mutex<Vec<u8>>,
     ccd_info: Mutex<Option<CachedCcdInfo>>,
@@ -126,12 +127,17 @@ struct DeviceState {
     /// ASCOM exposes are a view of it at the bin in force.
     intended_roi: Mutex<Option<UnbinnedRoi>>,
     exposure_range_us: Mutex<Option<(f64, f64, f64)>>,
-    /// Gain range in ASCOM's own width, converted once at connect (see
-    /// [`cache_range`]). `None` until a connect has asked; see [`CachedRange`]
-    /// for the two answers it can then hold.
-    gain_min_max: Mutex<Option<CachedRange>>,
-    /// Offset range, on the same terms as [`DeviceState::gain_min_max`].
-    offset_min_max: Mutex<Option<CachedRange>>,
+    /// The gain range in ASCOM's own width, converted once per mode (see
+    /// [`cache_control`]), and beside it the gain the next exposure arms
+    /// (GO1/GO2). `None` until a connect has asked; see [`CachedControl`] for
+    /// the two answers it can then hold.
+    ///
+    /// One cell, so a value is always checked against the range it is stored
+    /// beside: written only under [`Self::cache_commit_lock`], by a publish, a
+    /// withdrawal and a client's set alike.
+    gain: Mutex<Option<CachedControl>>,
+    /// The offset, on the same terms as [`DeviceState::gain`].
+    offset: Mutex<Option<CachedControl>>,
     /// The SDK's named readout modes (RM1), read once per connect. `None` until
     /// a connect's handshake has read them (C6). A mode change that fails
     /// part-way leaves it standing (RM3): no mode changes it, and it is what a
@@ -141,14 +147,18 @@ struct DeviceState {
     /// selected it. `None` before that, and after a mode change that failed
     /// part-way (RM3), when the camera may be in either mode or in neither.
     readout_mode: Mutex<Option<u32>>,
-    /// Held by a readout-mode change from its read of the gain and offset until
-    /// the new mode is published, and for their whole length by the `Gain` and
-    /// `Offset` reads and writes and the `CoolerOn` and `SetCCDTemperature`
-    /// writes. Each of those therefore lands wholly before a mode change or
-    /// wholly after it — never between the switch's read of a value and its
-    /// restore, where the init would reset it or the restore overwrite it, and
-    /// never validated against the bounds of a mode the camera is leaving
-    /// (RM4).
+    /// The cooler's lock. Held by a readout-mode change from its read of the
+    /// engaged cooler's target until the new mode is published, and for their
+    /// whole length by the `CoolerOn` and `SetCCDTemperature` writes. Each of
+    /// those therefore lands wholly before a mode change or wholly after it —
+    /// never between the switch's read of the target and its re-assertion after
+    /// the init, where a switch-off would be undone, an engagement stopped by
+    /// the init, or a new target overwritten by the old one (RM4).
+    ///
+    /// Gain and offset take no part in it: their members read and write
+    /// [`Self::gain`] and [`Self::offset`], never the SDK, and a set is ordered
+    /// against a mode change by [`Self::cache_commit_lock`], which the change
+    /// publishes the new mode's bounds under (GO2).
     ///
     /// Async because it is held across SDK hops. **Lock order:** a mode change
     /// takes it after the connection's lifecycle lock and the device claim, and
@@ -236,7 +246,8 @@ struct DeviceState {
     exposure_drained: tokio::sync::Notify,
 }
 
-/// What a connect was able to find out about a control's range.
+/// What a connect was able to find out about a gain-like control: its range,
+/// and the value the next exposure arms (GO1/GO2).
 ///
 /// The cell holding one is `None` until a connect's handshake has asked, which
 /// is a different answer from either of these: a control nothing has asked
@@ -244,12 +255,41 @@ struct DeviceState {
 /// A client told `NOT_IMPLEMENTED` has been told a capability is absent, and may
 /// never ask again.
 #[derive(Debug, Clone, Copy)]
-enum CachedRange {
-    /// The control is there and its bounds have an `i32` spelling.
-    Advertised(i32, i32),
+enum CachedControl {
+    /// The control is there and its bounds have an `i32` spelling. `value` is
+    /// what `StartExposure` sends: the camera's own reading when a connect
+    /// cached the bounds, or the value a readout-mode change carried over (else
+    /// that change's reading), then whatever a client last set. `None` while
+    /// nothing armable is known — the reading failed, had no `i32` spelling, or
+    /// lay outside `[min, max]` — and then nothing is sent until a client sets
+    /// one.
+    Advertised {
+        min: i32,
+        max: i32,
+        value: Option<i32>,
+    },
     /// The connect asked and the answer was no: the model lacks the control, or
     /// its range has no `i32` spelling.
     Unavailable,
+}
+
+impl CachedControl {
+    /// The value an exposure sends for this control, if there is one to send.
+    const fn armed(self) -> Option<i32> {
+        match self {
+            Self::Advertised { value, .. } => value,
+            Self::Unavailable => None,
+        }
+    }
+}
+
+/// The gain and offset one exposure sends the camera (GO2), each `None` for a
+/// control it leaves alone. Read together, under the lock their setters store
+/// under, so they are one moment's values.
+#[derive(Debug, Clone, Copy, Default)]
+struct ArmedControls {
+    gain: Option<i32>,
+    offset: Option<i32>,
 }
 
 /// Cached sensor geometry for the active readout mode: the pixel size and
@@ -298,8 +338,8 @@ impl DeviceState {
             ccd_info: Mutex::new(None),
             intended_roi: Mutex::new(None),
             exposure_range_us: Mutex::new(None),
-            gain_min_max: Mutex::new(None),
-            offset_min_max: Mutex::new(None),
+            gain: Mutex::new(None),
+            offset: Mutex::new(None),
             readout_modes: Mutex::new(None),
             readout_mode: Mutex::new(None),
             control_lock: tokio::sync::Mutex::new(()),
@@ -400,7 +440,9 @@ impl DeviceState {
     /// which `validated_geometry` requires before it will arm anything, and the
     /// bin list `set_bin_x` validates against — the mirror of [`Self::publish_mode`],
     /// which writes them last. The mode list is not among them: no mode changes
-    /// it. Call it holding [`Self::cache_commit_lock`].
+    /// it. A client's gain and offset go with the bounds they were checked
+    /// against, as its bin and sub-frame go with the geometry. Call it holding
+    /// [`Self::cache_commit_lock`].
     fn withdraw_mode_caches(&self) {
         self.bin.store(BIN_UNPUBLISHED, Ordering::Release);
         self.valid_bins.lock().clear();
@@ -408,8 +450,8 @@ impl DeviceState {
         *self.ccd_info.lock() = None;
         *self.intended_roi.lock() = None;
         *self.exposure_range_us.lock() = None;
-        *self.gain_min_max.lock() = None;
-        *self.offset_min_max.lock() = None;
+        *self.gain.lock() = None;
+        *self.offset.lock() = None;
     }
 
     /// Make `readings` live as the caches of readout `mode`, in one section —
@@ -431,23 +473,39 @@ impl DeviceState {
     /// The reduced size travels *inside* the geometry snapshot, so a reader can
     /// never pair a live geometry with a bin list that has not been written yet
     /// and be told the unreduced extent (R4).
-    fn publish_mode(&self, readings: ModeReadings, mode: u32) {
+    ///
+    /// `carried` is the gain and offset armed when a mode change committed — a
+    /// client's, or an earlier seed — kept where the new mode's bounds admit
+    /// them (RM4); a connect carries nothing, and seeds both from the camera's
+    /// readings (GO1).
+    fn publish_mode(&self, readings: ModeReadings, mode: u32, carried: ArmedControls) {
         let ModeReadings {
             ccd,
             exposure,
-            gain_range,
-            offset_range,
+            gain,
+            offset,
             bins,
         } = readings;
         let (width, height) = ccd.reported;
         *self.ccd_info.lock() = Some(ccd);
         *self.intended_roi.lock() = Some(UnbinnedRoi::full_frame(width, height));
         *self.exposure_range_us.lock() = Some(exposure);
-        cache_range(&self.gain_min_max, "gain", gain_range);
-        cache_range(&self.offset_min_max, "offset", offset_range);
+        cache_control(&self.gain, "gain", gain, carried.gain);
+        cache_control(&self.offset, "offset", offset, carried.offset);
         *self.readout_mode.lock() = Some(mode);
         self.bin.store(1, Ordering::Release);
         *self.valid_bins.lock() = bins;
+    }
+
+    /// The gain and offset an exposure would send now (GO2). Call it holding
+    /// [`Self::cache_commit_lock`], so the two are one moment's values — and,
+    /// in [`QhyCameraDevice::arm_and_launch`], the same moment's as the
+    /// geometry read beside them.
+    fn armed_controls(&self) -> ArmedControls {
+        ArmedControls {
+            gain: (*self.gain.lock()).and_then(CachedControl::armed),
+            offset: (*self.offset.lock()).and_then(CachedControl::armed),
+        }
     }
 
     /// End `session`, if it is still the running one, so a request that read it
@@ -769,12 +827,12 @@ impl QhyCameraDevice {
     /// and is a check, not a guard, so a disconnect can land between it and the
     /// closure and turn an ordinary read into whichever error that call site
     /// spells a dead handle as — `INVALID_VALUE` for a temperature,
-    /// `INVALID_OPERATION` for a gain. Reporting the disconnect instead makes
-    /// the answer the same one the client would have got a moment earlier or
-    /// later, rather than one that depends on where in the race it landed. Only
-    /// *failures* are rewritten: a call that succeeded answers for itself. A
-    /// probe that reports absence as an `Option` rather than an error never
-    /// reaches that rewrite — see [`Self::probe_handle`].
+    /// `INVALID_OPERATION` for a cooler command. Reporting the disconnect
+    /// instead makes the answer the same one the client would have got a moment
+    /// earlier or later, rather than one that depends on where in the race it
+    /// landed. Only *failures* are rewritten: a call that succeeded answers for
+    /// itself. A probe that reports absence as an `Option` rather than an error
+    /// never reaches that rewrite — see [`Self::probe_handle`].
     async fn on_handle<T, F>(&self, f: F) -> ASCOMResult<T>
     where
         F: FnOnce(&dyn CameraHandle) -> ASCOMResult<T> + Send + 'static,
@@ -835,9 +893,9 @@ impl QhyCameraDevice {
             .map_err(|e| ASCOMError::invalid_operation(format!("device task failed: {e}")))?
     }
 
-    /// Validate the geometry, push the bin, ROI and exposure time, record the
-    /// exposure, and launch the capture task. Runs only with the device already
-    /// claimed.
+    /// Validate the geometry, push the bin, ROI, gain, offset and exposure
+    /// time, record the exposure, and launch the capture task. Runs only with
+    /// the device already claimed.
     async fn arm_and_launch(
         &self,
         claim: Arc<CaptureCancel>,
@@ -858,13 +916,17 @@ impl QhyCameraDevice {
         // A bin set takes no device, but it writes only the cached bin, under
         // the lock held for this read — so the bin and the region below are
         // one client's geometry, whichever side of this read a set lands on.
-        // Under `commit_guard` for the second half of the same question: a
-        // connect signals a claim rather than taking it, so it is the session
-        // check that keeps the ended session's geometry from arming the new
-        // session's frame (C6).
-        let (bin, roi) = {
+        // The gain and offset are read in the same section for the same
+        // reason: their setters store under this lock too (GO2), so a set
+        // made while this exposure arms is wholly this frame's or wholly the
+        // next one's. Under `commit_guard` for the second half of the same
+        // question: a connect signals a claim rather than taking it, so it is
+        // the session check that keeps the ended session's geometry from
+        // arming the new session's frame (C6).
+        let (bin, roi, controls) = {
             let _commit = self.commit_guard(session)?;
-            self.validated_geometry()?
+            let (bin, roi) = self.validated_geometry()?;
+            (bin, roi, self.state.armed_controls())
         };
         self.on_handle(move |h| {
             // The bin first and the region second, the order the SDK takes
@@ -894,6 +956,23 @@ impl QhyCameraDevice {
                     Err(e) => debug!(error = %e, "ROI armed; current ROI read failed"),
                 }
             }
+            // The gain, then the offset, between the region and the exposure
+            // time: the order of the vendor's single-frame sample (R2). Pushed
+            // on every exposure, as the bin is, so the frame is taken at the
+            // values it was armed with whatever the camera held before — an
+            // init can reset them on some models (RM4). A control the camera
+            // lacks, or has no value for yet (GO1), is left alone.
+            if let Some(gain) = controls.gain {
+                h.set_gain(f64::from(gain)).map_err(|e| {
+                    ASCOMError::invalid_operation(format!("failed to set gain: {e}"))
+                })?;
+            }
+            if let Some(offset) = controls.offset {
+                h.set_offset(f64::from(offset)).map_err(|e| {
+                    ASCOMError::invalid_operation(format!("failed to set offset: {e}"))
+                })?;
+            }
+            debug!(gain = ?controls.gain, offset = ?controls.offset, "gain and offset armed");
             h.set_exposure_us(exposure_us).map_err(|e| {
                 ASCOMError::invalid_operation(format!("failed to set exposure time: {e}"))
             })
@@ -967,8 +1046,9 @@ impl QhyCameraDevice {
 
     /// The open → single-frame → readout-mode-0 → init → 16-bit → cache handshake,
     /// run after `open()`. Caches the readout-mode list and everything mode 0
-    /// decides: CCD info, effective area, valid binning modes, and the
-    /// exposure/gain/offset limits.
+    /// decides: CCD info, effective area, valid binning modes, the
+    /// exposure/gain/offset limits, and the gain and offset the camera holds as
+    /// the values the first exposure arms — read, never written (GO1, C5).
     fn open_handshake(&self, session: u64) -> ASCOMResult<()> {
         let h = self.handle.as_ref();
         let nc = |_e: BackendError| ASCOMError::NOT_CONNECTED;
@@ -1007,7 +1087,10 @@ impl QhyCameraDevice {
         // `Connected == false`.
         let commit = self.commit_guard(session)?;
         *self.state.readout_modes.lock() = Some(modes);
-        self.state.publish_mode(readings, 0);
+        // Nothing to carry: the session's caches were emptied as it began, and
+        // the gain and offset are seeded from what the camera reported.
+        self.state
+            .publish_mode(readings, 0, ArmedControls::default());
         drop(commit);
         Ok(())
     }
@@ -1340,6 +1423,65 @@ impl QhyCameraDevice {
         Ok(())
     }
 
+    /// Cache `gain` as the one the next exposure arms (GO2), on behalf of a
+    /// request made in `session`. See [`Self::store_control`].
+    fn store_gain(&self, session: u64, gain: i32) -> ASCOMResult<()> {
+        self.store_control(session, &self.state.gain, "gain", gain)
+    }
+
+    /// Cache `offset` as the one the next exposure arms (GO2), on behalf of a
+    /// request made in `session`. See [`Self::store_control`].
+    fn store_offset(&self, session: u64, offset: i32) -> ASCOMResult<()> {
+        self.store_control(session, &self.state.offset, "offset", offset)
+    }
+
+    /// Validate `value` against the range cached in `cell` and store it as
+    /// the `control` the next exposure arms (GO2).
+    ///
+    /// Nothing reaches the camera here: [`Self::arm_and_launch`] pushes the
+    /// value with the geometry, under the claim the exposure already holds, so
+    /// a set needs no device of its own and cannot be refused for another
+    /// owner having it — not a capture, and not a readout-mode change.
+    ///
+    /// The range is checked and the value stored in one section, in the cell a
+    /// connect or a readout-mode change publishes the range in, under the lock
+    /// it publishes under — so a value is never checked against one mode's
+    /// bounds and stored beside another's: a change lands wholly before the
+    /// check, and is checked against, or wholly after the store, and carries
+    /// the value over or replaces it (RM4). Behind [`Self::commit_guard`] like
+    /// every other cache write, so a request made in a session that has ended
+    /// stores nothing (C6).
+    fn store_control(
+        &self,
+        session: u64,
+        cell: &Mutex<Option<CachedControl>>,
+        control: &str,
+        value: i32,
+    ) -> ASCOMResult<()> {
+        let commit = self.commit_guard(session)?;
+        let mut cached = cell.lock();
+        match cached.as_mut() {
+            Some(CachedControl::Advertised {
+                min,
+                max,
+                value: armed,
+            }) => {
+                if value < *min || value > *max {
+                    return Err(ASCOMError::invalid_value(format!(
+                        "{control} {value} outside [{min}, {max}]"
+                    )));
+                }
+                *armed = Some(value);
+            }
+            Some(CachedControl::Unavailable) => return Err(ASCOMError::NOT_IMPLEMENTED),
+            None => return Err(ASCOMError::VALUE_NOT_SET),
+        }
+        drop(cached);
+        drop(commit);
+        debug!(control, value, "cached for the next exposure");
+        Ok(())
+    }
+
     /// Re-initialize the camera in readout `mode` and commit everything the mode
     /// decides, holding the physical connection's lifecycle lock and the device
     /// across the lot (RM1, B4, C8).
@@ -1357,8 +1499,13 @@ impl QhyCameraDevice {
     /// Locks, in the order taken: the connection's lifecycle lock (C8) and the
     /// device claim (B4), held throughout; [`DeviceState::cache_commit_lock`],
     /// briefly, for the session and no-op checks; [`DeviceState::control_lock`]
-    /// (RM4), held to the end; and `cache_commit_lock` again, inside it, for the
-    /// commit.
+    /// (RM4), held to the end for the cooler; and `cache_commit_lock` again,
+    /// inside it, for the commit.
+    ///
+    /// The change writes no gain and no offset. Its commit decides what the
+    /// next exposure arms instead: a client's value the new mode's range
+    /// admits, else the camera's post-init reading (RM4) — and the next
+    /// `StartExposure` sends it, whatever the init left in the camera (GO2).
     async fn switch_readout_mode(&self, session: u64, mode: u32) -> ASCOMResult<()> {
         // The lock first and the claim second — the order a disconnect takes
         // them in, so neither can wait on the other (C8). `InitQHYCCD` is the
@@ -1389,10 +1536,9 @@ impl QhyCameraDevice {
                 return Ok(());
             }
         }
-        // Gain, offset and the cooler hold still from here until the new mode is
-        // published: a client's command for any of them lands wholly before
-        // this change, and is what gets restored, or wholly after it, against
-        // the new mode's bounds (RM4).
+        // The cooler holds still from here until the new mode is published: a
+        // client's command for it lands wholly before this change, and is what
+        // gets re-asserted, or wholly after it (RM4).
         let _controls = self.state.control_lock.lock().await;
         // Only a cooler a client engaged in this session is put back: one
         // engaged before a reconnect was a command to a session that has ended.
@@ -1401,22 +1547,21 @@ impl QhyCameraDevice {
             .then(|| *self.state.target_temperature.lock())
             .flatten();
         let switched = self
-            .on_handle(move |h| {
-                // Read before anything is written, so a failure here has changed
-                // nothing on the camera (RM3).
-                let gain = read_to_restore(h, ControlType::Gain, "gain")?;
-                let offset = read_to_restore(h, ControlType::Offset, "offset")?;
-                Ok(reinitialize_in_mode(h, mode, gain, offset, cooler_target))
-            })
+            .on_handle(move |h| Ok(reinitialize_in_mode(h, mode, cooler_target)))
             .await?;
         let commit = self.commit_guard(session)?;
         match switched {
             Ok(readings) => {
+                // The gain and offset to carry are read here, at the commit, and
+                // not before the init: a client's set does not wait for the
+                // change (GO2), so one made while the init ran is the one the
+                // new mode inherits, rather than a value from before it.
+                let carried = self.state.armed_controls();
                 // Withdrawn first so that, as on a connect, a reader in the
                 // middle of this section sees `VALUE_NOT_SET` rather than one
                 // mode's values beside the other's (see `publish_mode`).
                 self.state.withdraw_mode_caches();
-                self.state.publish_mode(readings, mode);
+                self.state.publish_mode(readings, mode, carried);
                 drop(commit);
                 debug!(camera = %self.unique_id, mode, "readout mode changed");
                 Ok(())
@@ -1541,9 +1686,20 @@ impl QhyCameraDevice {
 struct ModeReadings {
     ccd: CachedCcdInfo,
     exposure: (f64, f64, f64),
-    gain_range: Option<(f64, f64)>,
-    offset_range: Option<(f64, f64)>,
+    /// `None` for a model without the control.
+    gain: Option<ControlReading>,
+    /// On the same terms as `gain`.
+    offset: Option<ControlReading>,
     bins: Vec<u8>,
+}
+
+/// What the camera said about a gain-like control in the mode it is in: its
+/// `(min, max)`, and the value it holds — `None` when it would not say, which
+/// leaves nothing to seed (GO1) but is no reason to fail a connect.
+#[derive(Debug, Clone, Copy)]
+struct ControlReading {
+    range: (f64, f64),
+    value: Option<f64>,
 }
 
 /// Put the camera into single-frame capture in readout `mode`, initialized
@@ -1580,7 +1736,8 @@ fn read_readout_modes(h: &dyn CameraHandle) -> Result<Vec<String>, BackendError>
 
 /// Read everything the mode the camera is in decides: the chip, the geometry
 /// normalized and its effective area (G1), the bins, the size reported from
-/// them (R4), and the exposure, gain and offset ranges.
+/// them (R4), the exposure, gain and offset ranges, and the gain and offset the
+/// camera holds.
 ///
 /// The chip is read after the init that applied the mode, never looked up by
 /// index: `GetQHYCCDReadModeResolution` answers for a mode the camera is not in,
@@ -1592,15 +1749,25 @@ fn read_mode(h: &dyn CameraHandle) -> Result<ModeReadings, BackendError> {
     let bins = valid_binning_modes(h);
     let reported = reported_sensor(effective, &bins);
     let exposure = h.exposure_range_us()?;
-    let gain_range = if h.is_control_available(ControlType::Gain).is_some() {
+    // Each value just ahead of its range, so the offset range stays the last
+    // question a connect asks the device (C6). Read, never written (C5).
+    let gain = if h.is_control_available(ControlType::Gain).is_some() {
+        let value = reported_value("gain", h.gain());
         let (min, max, _) = h.gain_range()?;
-        Some((min, max))
+        Some(ControlReading {
+            range: (min, max),
+            value,
+        })
     } else {
         None
     };
-    let offset_range = if h.is_control_available(ControlType::Offset).is_some() {
+    let offset = if h.is_control_available(ControlType::Offset).is_some() {
+        let value = reported_value("offset", h.offset());
         let (min, max, _) = h.offset_range()?;
-        Some((min, max))
+        Some(ControlReading {
+            range: (min, max),
+            value,
+        })
     } else {
         None
     };
@@ -1613,41 +1780,34 @@ fn read_mode(h: &dyn CameraHandle) -> Result<ModeReadings, BackendError> {
             reported,
         },
         exposure,
-        gain_range,
-        offset_range,
+        gain,
+        offset,
         bins,
     })
 }
 
-/// The value of `control` the SDK holds now, for a mode change to put back once
-/// the init is over (RM4); `None` for a control the model lacks.
-fn read_to_restore(
-    h: &dyn CameraHandle,
-    control: ControlType,
-    name: &str,
-) -> ASCOMResult<Option<f64>> {
-    if h.is_control_available(control).is_none() {
-        return Ok(None);
-    }
-    h.get_parameter(control).map(Some).map_err(|e| {
-        ASCOMError::invalid_operation(format!(
-            "failed to read the {name} before changing the readout mode: {e}"
-        ))
-    })
+/// A gain or offset the camera reported, or `None` when it would not say.
+///
+/// Not an error, here or anywhere: it leaves nothing armed (GO1), and a connect
+/// or a mode change goes on without it — failing them for it would refuse a
+/// camera that is otherwise usable.
+fn reported_value(control: &str, reading: Result<f64, BackendError>) -> Option<f64> {
+    reading
+        .inspect_err(|e| debug!(control, error = %e, "the camera did not report its value"))
+        .ok()
 }
 
 /// The camera side of a readout-mode change (RM1, RM3, RM4): initialize the
 /// camera in `mode`, put back an engaged cooler the init may have stopped,
-/// check the SDK recorded the mode, read back everything the mode decides, and
-/// restore the `gain` and `offset` read before the init.
+/// check the SDK recorded the mode, and read back everything the mode decides.
+/// No gain or offset is written: the next exposure sends the ones the change
+/// commits (GO2).
 ///
 /// Every error means the switch began and did not finish, which the caller
 /// answers by withdrawing the mode's caches (RM3); each names the step.
 fn reinitialize_in_mode(
     h: &dyn CameraHandle,
     mode: u32,
-    gain: Option<f64>,
-    offset: Option<f64>,
     cooler_target: Option<f64>,
 ) -> ASCOMResult<ModeReadings> {
     let failed = |step: &str, e: BackendError| {
@@ -1681,33 +1841,7 @@ fn reinitialize_in_mode(
             "readout mode {mode}: the SDK reports mode {held} after the switch"
         )));
     }
-    let readings = read_mode(h).map_err(|e| failed("reading the mode's geometry", e))?;
-    // A value the new mode's range no longer admits is left as the SDK set it:
-    // writing it would be refused, and clamping it would be a gain nobody asked
-    // for.
-    if let (Some(value), Some((min, max))) = (gain, readings.gain_range) {
-        if (min..=max).contains(&value) {
-            h.set_gain(value)
-                .map_err(|e| failed("restoring the gain", e))?;
-        } else {
-            debug!(
-                gain = value,
-                min, max, "gain outside the new mode's range; not restored"
-            );
-        }
-    }
-    if let (Some(value), Some((min, max))) = (offset, readings.offset_range) {
-        if (min..=max).contains(&value) {
-            h.set_offset(value)
-                .map_err(|e| failed("restoring the offset", e))?;
-        } else {
-            debug!(
-                offset = value,
-                min, max, "offset outside the new mode's range; not restored"
-            );
-        }
-    }
-    Ok(readings)
+    read_mode(h).map_err(|e| failed("reading the mode's geometry", e))
 }
 
 /// The bins this camera offers, asked of the device rather than of a cache.
@@ -1906,10 +2040,11 @@ fn check_geometry(roi: CCDChipArea, ccd_w: u32, ccd_h: u32, bin: u32) -> ASCOMRe
     )?)
 }
 
-/// The ASCOM spelling of a gain or offset bound the SDK reports as `f64`.
+/// The ASCOM spelling of a gain or offset — a bound, or the value the camera
+/// holds — that the SDK reports as `f64`.
 ///
 /// The QHY SDK carries every control through one `f64` parameter, but a gain
-/// bound is an integer underneath and ASCOM's `Gain`/`GainMin`/`GainMax` are
+/// is an integer underneath and ASCOM's `Gain`/`GainMin`/`GainMax` are
 /// `i32`. Rounding to nearest recovers the integer the SDK meant whichever side
 /// the float representation lands on; truncating would turn a 100 that arrives
 /// as 99.999… into 99 and advertise a maximum one below the one the camera
@@ -1932,51 +2067,149 @@ fn ascom_bound(value: f64) -> Option<i32> {
     }
 }
 
-/// Cache what this connect found out about a control's range.
+/// Cache what a connect or a mode change found out about a control: its range,
+/// and the value the next exposure arms (GO1).
 ///
-/// `range` is `None` when the control is not advertised at all. Either way this
-/// **always writes**, because the cache is what the accessors gate on: it has to
-/// describe the camera on *this* connect, not the last one. A control that has
-/// gone away, or whose bounds this connect cannot name, is written as
-/// [`CachedRange::Unavailable`] rather than left holding a previous session's
+/// `reading` is `None` when the control is not advertised at all. Either way
+/// this **always writes**, because the cache is what the accessors gate on: it
+/// has to describe the camera on *this* connect, not the last one. A control
+/// that has gone away, or whose bounds this connect cannot name, is written as
+/// [`CachedControl::Unavailable`] rather than left holding a previous session's
 /// bounds — the same reconnect hygiene as C3.
 ///
 /// It writes `Some` on every path, and that is the point: the cell is left
-/// empty only by [`DeviceState::begin_session`], for a connect that has not
-/// asked yet. `Unavailable` reports `NOT_IMPLEMENTED` — the control is absent,
-/// or its bounds have no `i32` spelling and a clamped one would be a maximum the
-/// camera then rejects — while the empty cell reports `VALUE_NOT_SET` (C6).
-/// Collapsing those two tells a client a camera cannot do something it can.
-fn cache_range(cell: &Mutex<Option<CachedRange>>, control: &str, range: Option<(f64, f64)>) {
-    let cached = if let Some((min, max)) = range {
+/// empty only by [`DeviceState::withdraw_mode_caches`], for a connect that has
+/// not asked yet or a mode change that failed (RM3). `Unavailable` reports
+/// `NOT_IMPLEMENTED` — the control is absent, or its bounds have no `i32`
+/// spelling and a clamped one would be a maximum the camera then rejects —
+/// while the empty cell reports `VALUE_NOT_SET` (C6). Collapsing those two tells
+/// a client a camera cannot do something it can.
+///
+/// `carried` is the value armed before a mode change — a client's, or an
+/// earlier seed; [`armable_value`] decides whether the new range keeps it.
+fn cache_control(
+    cell: &Mutex<Option<CachedControl>>,
+    control: &str,
+    reading: Option<ControlReading>,
+    carried: Option<i32>,
+) {
+    let cached = if let Some(ControlReading {
+        range: (min, max),
+        value,
+    }) = reading
+    {
         if let (Some(min), Some(max)) = (ascom_bound(min), ascom_bound(max)) {
-            debug!(control, min, max, "cached control range");
-            CachedRange::Advertised(min, max)
+            let value = armable_value(control, (min, max), carried, value);
+            debug!(control, min, max, value = ?value, "cached control range and armed value");
+            CachedControl::Advertised { min, max, value }
         } else {
             warn!(
                 control,
                 min, max, "range has no i32 spelling; not advertised"
             );
-            CachedRange::Unavailable
+            CachedControl::Unavailable
         }
     } else {
         debug!(control, "control not available; not advertised");
-        CachedRange::Unavailable
+        CachedControl::Unavailable
     };
     *cell.lock() = Some(cached);
 }
 
-/// The bounds a connect cached for a control, or the reason there are none.
+/// The value a newly cached `[min, max]` arms (GO1, RM4): `carried`, the
+/// value armed before a mode change, if the range admits it;
+/// otherwise the camera's own `reading`, if that has an `i32` spelling inside
+/// the range; otherwise nothing, and the control is not sent until a client
+/// sets one.
+///
+/// Never a clamp — a value moved to the nearest bound would be a gain nobody
+/// asked for — and never a reading outside the range: sent on every exposure,
+/// a value the SDK refuses would fail every `StartExposure` of a client that
+/// never touched the control.
+fn armable_value(
+    control: &str,
+    (min, max): (i32, i32),
+    carried: Option<i32>,
+    reading: Option<f64>,
+) -> Option<i32> {
+    let admitted = |value: i32| (min..=max).contains(&value);
+    if let Some(value) = carried {
+        if admitted(value) {
+            return Some(value);
+        }
+        debug!(
+            control,
+            value, min, max, "outside the new mode's range; replaced by the camera's reading"
+        );
+    }
+    let Some(raw) = reading else {
+        debug!(
+            control,
+            "no reading to seed from; nothing armed until a client sets one"
+        );
+        return None;
+    };
+    match ascom_bound(raw) {
+        Some(value) if admitted(value) => Some(value),
+        Some(value) => {
+            debug!(
+                control,
+                value,
+                min,
+                max,
+                "the camera's reading is outside its range; nothing armed until a client sets one"
+            );
+            None
+        }
+        None => {
+            debug!(
+                control,
+                raw,
+                "the camera's reading has no i32 spelling; nothing armed until a client sets one"
+            );
+            None
+        }
+    }
+}
+
+/// The bounds cached for a control, or the reason there are none.
 ///
 /// `NOT_IMPLEMENTED` where a connect asked and the answer was no, and
 /// `VALUE_NOT_SET` where no connect has asked yet (C6). Two different things: a
 /// client told the first has been told this camera cannot do something it can,
 /// and it may never ask again.
-fn cached_range(cell: &Mutex<Option<CachedRange>>) -> ASCOMResult<(i32, i32)> {
+fn cached_range(cell: &Mutex<Option<CachedControl>>) -> ASCOMResult<(i32, i32)> {
     let cached = *cell.lock();
     match cached {
-        Some(CachedRange::Advertised(min, max)) => Ok((min, max)),
-        Some(CachedRange::Unavailable) => Err(ASCOMError::NOT_IMPLEMENTED),
+        Some(CachedControl::Advertised { min, max, .. }) => Ok((min, max)),
+        Some(CachedControl::Unavailable) => Err(ASCOMError::NOT_IMPLEMENTED),
+        None => Err(ASCOMError::VALUE_NOT_SET),
+    }
+}
+
+/// The value cached for a control — the one the next exposure arms (GO1) —
+/// answered as [`cached_range`] answers for the bounds, and
+/// `INVALID_OPERATION` for an advertised control the camera reported no
+/// armable value for, until a client sets one. `member` is the ASCOM name the
+/// client sets it through.
+fn cached_value(
+    cell: &Mutex<Option<CachedControl>>,
+    control: &str,
+    member: &str,
+) -> ASCOMResult<i32> {
+    let cached = *cell.lock();
+    match cached {
+        Some(CachedControl::Advertised {
+            value: Some(value), ..
+        }) => Ok(value),
+        Some(CachedControl::Advertised {
+            min,
+            max,
+            value: None,
+        }) => Err(ASCOMError::invalid_operation(format!(
+            "the camera reported no {control} in [{min}, {max}]; set {member} to choose one"
+        ))),
+        Some(CachedControl::Unavailable) => Err(ASCOMError::NOT_IMPLEMENTED),
         None => Err(ASCOMError::VALUE_NOT_SET),
     }
 }
@@ -2521,112 +2754,52 @@ impl Camera for QhyCameraDevice {
 
     async fn gain(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        // Behind a readout-mode change rather than inside it, where the init may
-        // have reset the gain the switch is about to restore (RM4).
-        let _controls = self.state.control_lock.lock().await;
-        // The cache holds a range only for a control that is both available and
-        // describable in ASCOM's width, so it answers both questions at once —
-        // and without an SDK round-trip on every read.
-        cached_range(&self.state.gain_min_max)?;
-        let raw = self
-            .on_handle(|h| h.gain().map_err(|_| ASCOMError::INVALID_OPERATION))
-            .await?;
-        ascom_bound(raw)
-            .ok_or_else(|| ASCOMError::invalid_operation(format!("camera reported gain {raw}")))
+        // The gain the next exposure arms, from the cache rather than the
+        // camera (GO1) — the bargain `BinX` makes — so a read never waits on
+        // the SDK behind a capture's readout.
+        cached_value(&self.state.gain, "gain", "Gain")
     }
 
     async fn gain_min(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        cached_range(&self.state.gain_min_max).map(|(min, _)| min)
+        cached_range(&self.state.gain).map(|(min, _)| min)
     }
 
     async fn gain_max(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        cached_range(&self.state.gain_min_max).map(|(_, max)| max)
+        cached_range(&self.state.gain).map(|(_, max)| max)
     }
 
     async fn set_gain(&self, gain: i32) -> ASCOMResult<()> {
         // Before the connected check (see `set_bin_x`).
         let session = self.state.session();
         self.ensure_connected()?;
-        // Behind a readout-mode change, never between its read of the gain and
-        // its restore, where this write would be reset or overwritten — and
-        // validated against the bounds of the mode in force once any change has
-        // published, not those of a mode the camera is leaving (RM4).
-        // Detached, so a dropped request cannot let the lock go while its write
-        // is still inside the SDK (see [`Self::detached`]).
-        let device = self.clone();
-        Self::detached(tokio::spawn(async move {
-            let _controls = device.state.control_lock.lock().await;
-            // A request queued behind the lock can outlive its session — a
-            // disconnect and a reconnect fit in the wait — and must not reach
-            // the camera the reconnect opened (C6).
-            let (min, max) = {
-                let _session = device.commit_guard(session)?;
-                cached_range(&device.state.gain_min_max)?
-            };
-            if gain < min || gain > max {
-                return Err(ASCOMError::invalid_value(format!(
-                    "gain {gain} outside [{min}, {max}]"
-                )));
-            }
-            device
-                .on_handle(move |h| {
-                    h.set_gain(f64::from(gain))
-                        .map_err(|_| ASCOMError::INVALID_OPERATION)
-                })
-                .await
-        }))
-        .await
+        // Cached, not written: the next exposure arms it (GO2, R2).
+        self.store_gain(session, gain)
     }
 
     async fn offset(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        // As `gain`: behind a readout-mode change, never inside it (RM4).
-        let _controls = self.state.control_lock.lock().await;
-        cached_range(&self.state.offset_min_max)?;
-        let raw = self
-            .on_handle(|h| h.offset().map_err(|_| ASCOMError::INVALID_OPERATION))
-            .await?;
-        ascom_bound(raw)
-            .ok_or_else(|| ASCOMError::invalid_operation(format!("camera reported offset {raw}")))
+        // As `gain`: the offset the next exposure arms (GO1).
+        cached_value(&self.state.offset, "offset", "Offset")
     }
 
     async fn offset_min(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        cached_range(&self.state.offset_min_max).map(|(min, _)| min)
+        cached_range(&self.state.offset).map(|(min, _)| min)
     }
 
     async fn offset_max(&self) -> ASCOMResult<i32> {
         self.ensure_connected()?;
-        cached_range(&self.state.offset_min_max).map(|(_, max)| max)
+        cached_range(&self.state.offset).map(|(_, max)| max)
     }
 
     async fn set_offset(&self, offset: i32) -> ASCOMResult<()> {
+        // Before the connected check (see `set_bin_x`).
         let session = self.state.session();
         self.ensure_connected()?;
-        // As `set_gain`: behind a readout-mode change, against the bounds of the
-        // mode in force (RM4), and only in the session it was made in (C6).
-        let device = self.clone();
-        Self::detached(tokio::spawn(async move {
-            let _controls = device.state.control_lock.lock().await;
-            let (min, max) = {
-                let _session = device.commit_guard(session)?;
-                cached_range(&device.state.offset_min_max)?
-            };
-            if offset < min || offset > max {
-                return Err(ASCOMError::invalid_value(format!(
-                    "offset {offset} outside [{min}, {max}]"
-                )));
-            }
-            device
-                .on_handle(move |h| {
-                    h.set_offset(f64::from(offset))
-                        .map_err(|_| ASCOMError::INVALID_OPERATION)
-                })
-                .await
-        }))
-        .await
+        // As `set_gain`: cached, not written (GO2, R2).
+        self.store_offset(session, offset)
     }
 
     // --- readout modes ----------------------------------------------------------
@@ -2763,11 +2936,15 @@ impl Camera for QhyCameraDevice {
         self.ensure_connected()?;
         // Behind a readout-mode change, which re-asserts the target in force
         // once its init is over: landing inside one, this target would be
-        // overwritten by the one it replaced (RM4). Only in the session it was
-        // made in, as `set_gain` (C6).
+        // overwritten by the one it replaced (RM4). Detached, so a dropped
+        // request cannot let the lock go while its write is still inside the
+        // SDK (see [`Self::detached`]).
         let device = self.clone();
         Self::detached(tokio::spawn(async move {
             let _controls = device.state.control_lock.lock().await;
+            // A request queued behind the lock can outlive its session — a
+            // disconnect and a reconnect fit in the wait — and must not reach
+            // the camera the reconnect opened (C6).
             drop(device.commit_guard(session)?);
             device
                 .on_handle(move |h| {
@@ -2807,9 +2984,9 @@ impl Camera for QhyCameraDevice {
             // re-assertion, or an engagement stopped by its init with nothing
             // to put it back (RM4).
             let _controls = device.state.control_lock.lock().await;
-            // Only in the session it was made in, as `set_gain` (C6) — which
-            // makes that session the one this write runs in, and the one a
-            // readout-mode change will re-assert the cooler for.
+            // Only in the session it was made in, as `set_set_ccd_temperature`
+            // (C6) — which makes that session the one this write runs in, and
+            // the one a readout-mode change will re-assert the cooler for.
             drop(device.commit_guard(session)?);
             let cached_target = *device.state.target_temperature.lock();
             let engaged_at = device
@@ -3237,8 +3414,9 @@ mod tests {
 
     /// Blocks until the mock is executing the handshake's offset range read, on
     /// the same terms as [`await_close`]. It is the connect's last question to
-    /// the device — exposure range, then gain, then offset — so the connect has
-    /// read everything and published nothing.
+    /// the device — exposure range, then the gain and its range, then the
+    /// offset and its range — so the connect has read everything and published
+    /// nothing.
     async fn await_offset_range(handle: &MockCameraHandle) {
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while !handle.is_in_offset_range() {
@@ -3275,6 +3453,19 @@ mod tests {
             );
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
+    }
+
+    /// Takes one frame and waits for it to land, for a test asking what an
+    /// exposure sent the camera.
+    async fn take_a_frame(device: &QhyCameraDevice) {
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
     }
 
     /// Blocks until `claim` has been asked to stop. `what` names it, so a test
@@ -4317,6 +4508,12 @@ mod tests {
             device.camera_x_size().await.unwrap_err().code,
             ASCOMErrorCode::VALUE_NOT_SET
         );
+        // The gain has been read too, ahead of its range, and is no more
+        // answerable than the geometry.
+        assert_eq!(
+            device.gain().await.unwrap_err().code,
+            ASCOMErrorCode::VALUE_NOT_SET
+        );
         assert_eq!(
             device
                 .start_exposure(Duration::from_millis(10), true)
@@ -4330,6 +4527,52 @@ mod tests {
         connecting.await.unwrap().unwrap();
         assert_eq!(device.camera_x_size().await.unwrap(), 3072);
         assert_eq!(device.bin_x().await.unwrap(), 1);
+        assert_eq!(device.gain().await.unwrap(), 10);
+    }
+
+    /// C6: the offset range is the last thing a connect asks the device — the
+    /// premise of the tests that park a connect there to catch a publish made
+    /// too early. Everything read ahead of it — the exposure range, the gain
+    /// and its range, the offset — is moved behind the driver while it is
+    /// asked, so a read made after it would seed the moved value.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_offset_range_is_the_last_thing_a_connect_asks_the_device() {
+        let handle = Arc::new(MockCameraHandle::default());
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
+
+        handle.hold_offset_range();
+        let connecting = {
+            let device = device.clone();
+            tokio::spawn(async move { device.connect().await })
+        };
+        await_offset_range(&handle).await;
+        handle.set_range(ControlType::Exposure, (1.0, 60_000_000.0, 1.0));
+        handle.preset_param(ControlType::Gain, 40.0);
+        handle.set_range(ControlType::Gain, (0.0, 50.0, 1.0));
+        handle.preset_param(ControlType::Offset, 77.0);
+
+        handle.release_offset_range();
+        connecting.await.unwrap().unwrap();
+        assert_eq!(
+            device.exposure_max().await.unwrap(),
+            Duration::from_secs(3600),
+            "the exposure range was read after the offset range"
+        );
+        assert_eq!(
+            device.gain().await.unwrap(),
+            10,
+            "the gain was read after the offset range"
+        );
+        assert_eq!(
+            device.gain_max().await.unwrap(),
+            100,
+            "the gain range was read after the offset range"
+        );
+        assert_eq!(
+            device.offset().await.unwrap(),
+            10,
+            "the offset was read after its range"
+        );
     }
 
     /// C6: a sub-frame read in one session is not written into the next. The
@@ -4551,6 +4794,8 @@ mod tests {
             device.set_gain(10).await.unwrap_err().code,
             device.offset_min().await.unwrap_err().code,
             device.offset_max().await.unwrap_err().code,
+            device.offset().await.unwrap_err().code,
+            device.set_offset(10).await.unwrap_err().code,
         ] {
             assert_eq!(
                 code,
@@ -4680,6 +4925,12 @@ mod tests {
         assert_eq!(device.gain().await.unwrap(), max);
         let err = device.set_gain(max + 1).await.unwrap_err();
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        assert_eq!(err.message, "gain 101 outside [0, 100]");
+        assert_eq!(
+            device.gain().await.unwrap(),
+            max,
+            "a refused gain replaced the one cached"
+        );
     }
 
     #[tokio::test]
@@ -4861,6 +5112,11 @@ mod tests {
             device.gain_max().await.unwrap_err().code,
             ASCOMErrorCode::NOT_IMPLEMENTED
         );
+        // The value lives in the same cell as the range, and went with it.
+        assert_eq!(
+            device.gain().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_IMPLEMENTED
+        );
         // The sibling control, still present, is untouched.
         assert_eq!(device.offset_max().await.unwrap(), 255);
     }
@@ -4914,16 +5170,129 @@ mod tests {
         assert_eq!(device.offset_max().await.unwrap(), 255);
     }
 
+    /// GO1/C5: a connect seeds the gain and offset by asking the camera what it
+    /// holds, and sends it neither — the value is the camera's until a client
+    /// sets another.
     #[tokio::test]
-    async fn a_gain_the_camera_cannot_name_is_an_error_not_a_number() {
-        let device = connected_device(
+    async fn a_connect_seeds_gain_and_offset_from_the_camera_without_writing_them() {
+        let (device, mock) = connected_device_with_handle(
+            MockCameraHandle::default()
+                .with_param(ControlType::Gain, 33.0)
+                .with_param(ControlType::Offset, 44.0),
+        )
+        .await;
+
+        assert_eq!(device.gain().await.unwrap(), 33);
+        assert_eq!(device.offset().await.unwrap(), 44);
+        let calls = mock.calls();
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c == "set_parameter(Gain)" || c == "set_parameter(Offset)"),
+            "a connect wrote the gain or offset: {calls:?}"
+        );
+    }
+
+    /// GO1: `Gain` and `Offset` report the values the next exposure arms, not
+    /// the camera's registers — the bargain `BinX` makes. Something that moves
+    /// the camera behind the driver is undone by the next exposure, not
+    /// reported.
+    #[tokio::test]
+    async fn gain_and_offset_report_what_the_next_exposure_arms_not_what_the_camera_holds() {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        mock.preset_param(ControlType::Gain, 70.0);
+        mock.preset_param(ControlType::Offset, 70.0);
+
+        assert_eq!(device.gain().await.unwrap(), 10);
+        assert_eq!(device.offset().await.unwrap(), 10);
+    }
+
+    /// Asserts a `control` whose seed could not be armed (GO1): its member
+    /// answers `INVALID_OPERATION` naming the range, an exposure leaves the
+    /// control alone, and a value a client then sets is cached without
+    /// reaching the camera and armed by the next exposure.
+    async fn assert_not_armed_until_set(
+        device: &QhyCameraDevice,
+        mock: &MockCameraHandle,
+        control: ControlType,
+    ) {
+        let (read, refusal) = if control == ControlType::Gain {
+            (
+                device.gain().await,
+                "the camera reported no gain in [0, 100]; set Gain to choose one",
+            )
+        } else {
+            (
+                device.offset().await,
+                "the camera reported no offset in [0, 255]; set Offset to choose one",
+            )
+        };
+        let err = read.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(err.message, refusal);
+
+        let write = format!("set_parameter({control:?})");
+        mock.clear_calls();
+        take_a_frame(device).await;
+        assert!(
+            !mock.calls().contains(&write),
+            "an exposure sent a {control:?} nobody chose: {:?}",
+            mock.calls()
+        );
+
+        let found = mock.param(control);
+        if control == ControlType::Gain {
+            device.set_gain(5).await.unwrap();
+            assert_eq!(device.gain().await.unwrap(), 5);
+        } else {
+            device.set_offset(5).await.unwrap();
+            assert_eq!(device.offset().await.unwrap(), 5);
+        }
+        assert_eq!(
+            mock.param(control),
+            found,
+            "a {control:?} reached the camera at its setter"
+        );
+        take_a_frame(device).await;
+        assert_eq!(mock.param(control), Some(5.0));
+    }
+
+    /// GO1: a gain the camera will not report leaves nothing to seed, and is
+    /// no reason to refuse a camera that is otherwise usable.
+    #[tokio::test]
+    async fn a_gain_the_camera_will_not_report_does_not_fail_the_connect() {
+        let handle = MockCameraHandle::default();
+        handle.fail_reads_of(ControlType::Gain);
+        let (device, mock) = connected_device_with_handle(handle).await;
+
+        assert_eq!(device.offset().await.unwrap(), 10);
+        assert_not_armed_until_set(&device, &mock, ControlType::Gain).await;
+    }
+
+    /// GO1: a gain reading with no `i32` spelling is not narrowed into one. A
+    /// saturated number would be a plausible gain the camera is not set to, and
+    /// armed, it would be sent on every exposure.
+    #[tokio::test]
+    async fn a_gain_the_camera_reports_beyond_i32_is_not_armed() {
+        let (device, mock) = connected_device_with_handle(
             MockCameraHandle::default().with_param(ControlType::Gain, f64::from(i32::MAX) + 1.0),
         )
         .await;
-        assert_eq!(
-            device.gain().await.unwrap_err().code,
-            ASCOMErrorCode::INVALID_OPERATION
-        );
+
+        assert_not_armed_until_set(&device, &mock, ControlType::Gain).await;
+    }
+
+    /// GO1: a gain reading outside the camera's own advertised range is not
+    /// armed. Sent on every exposure, a value the SDK refuses would fail every
+    /// `StartExposure` of a client that never touched the gain.
+    #[tokio::test]
+    async fn a_gain_the_camera_reports_outside_its_range_is_not_armed() {
+        let (device, mock) = connected_device_with_handle(
+            MockCameraHandle::default().with_param(ControlType::Gain, 150.0),
+        )
+        .await;
+
+        assert_not_armed_until_set(&device, &mock, ControlType::Gain).await;
     }
 
     #[tokio::test]
@@ -4934,25 +5303,24 @@ mod tests {
         assert_eq!(max, 255);
         device.set_offset(max).await.unwrap();
         assert_eq!(device.offset().await.unwrap(), max);
-        assert_eq!(
-            device.set_offset(max + 1).await.unwrap_err().code,
-            ASCOMErrorCode::INVALID_VALUE
-        );
+        let err = device.set_offset(max + 1).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
+        assert_eq!(err.message, "offset 256 outside [0, 255]");
     }
 
-    /// The control is advertised — its range fits ASCOM's `i32` — but the value
-    /// the camera reports back does not. Answering with a wrapped or saturated
+    /// GO1: the control is advertised — its range fits ASCOM's `i32` — but the
+    /// value the camera reports does not. Answering with a wrapped or saturated
     /// number would be worse than refusing: a client would read a plausible
-    /// offset the camera is not actually set to.
+    /// offset the camera is not actually set to, and every exposure would send
+    /// it.
     #[tokio::test]
-    async fn an_offset_reading_outside_i32_is_refused_not_narrowed() {
-        let device =
-            connected_device(MockCameraHandle::default().with_param(ControlType::Offset, 3e9))
-                .await;
-        assert_eq!(
-            device.offset().await.unwrap_err().code,
-            ASCOMErrorCode::INVALID_OPERATION
-        );
+    async fn an_offset_the_camera_reports_beyond_i32_is_not_armed() {
+        let (device, mock) = connected_device_with_handle(
+            MockCameraHandle::default().with_param(ControlType::Offset, 3e9),
+        )
+        .await;
+
+        assert_not_armed_until_set(&device, &mock, ControlType::Offset).await;
     }
 
     #[tokio::test]
@@ -4968,6 +5336,245 @@ mod tests {
             device.set_offset(5).await.unwrap_err().code,
             ASCOMErrorCode::NOT_IMPLEMENTED
         );
+    }
+
+    /// GO2: a control the camera does not have is never sent, so a model
+    /// without one takes its frames without being asked for it.
+    #[tokio::test]
+    async fn an_exposure_sends_no_gain_or_offset_to_a_camera_without_them() {
+        let (device, mock) = connected_device_with_handle(
+            MockCameraHandle::default()
+                .without_control(ControlType::Gain)
+                .without_control(ControlType::Offset),
+        )
+        .await;
+        mock.clear_calls();
+
+        take_a_frame(&device).await;
+
+        let calls = mock.calls();
+        assert!(
+            !calls
+                .iter()
+                .any(|c| c == "set_parameter(Gain)" || c == "set_parameter(Offset)"),
+            "an exposure sent a control the camera does not have: {calls:?}"
+        );
+    }
+
+    /// R2/GO2: the gain and offset reach the camera as the exposure arms, under
+    /// the claim the exposure holds, in the vendor's single-frame order: after
+    /// the region, the gain before the offset, and both ahead of the exposure
+    /// time.
+    #[tokio::test]
+    async fn an_exposure_arms_its_gain_and_offset_after_its_region_and_before_its_exposure_time() {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        device.set_gain(33).await.unwrap();
+        device.set_offset(44).await.unwrap();
+        mock.clear_calls();
+
+        take_a_frame(&device).await;
+
+        let calls = mock.calls();
+        let at = |call: &str| {
+            calls
+                .iter()
+                .position(|c| c == call)
+                .unwrap_or_else(|| panic!("the exposure did not send {call}: {calls:?}"))
+        };
+        let (region, gain, offset, exposure) = (
+            at("set_roi"),
+            at("set_parameter(Gain)"),
+            at("set_parameter(Offset)"),
+            at("set_parameter(Exposure)"),
+        );
+        assert!(
+            region < gain && gain < offset && offset < exposure,
+            "armed out of the single-frame sample's order: {calls:?}"
+        );
+        assert_eq!(mock.param(ControlType::Gain), Some(33.0));
+        assert_eq!(mock.param(ControlType::Offset), Some(44.0));
+    }
+
+    /// GO2: every exposure sends its gain and offset, not only ones a client
+    /// changed or ones the last exposure did not send. The camera can hold
+    /// something else than the cache — an init resets them on some models
+    /// (RM4) — and an arm that skipped unchanged values would take the frame
+    /// there.
+    #[tokio::test]
+    async fn an_exposure_sends_its_gain_and_offset_even_when_the_client_left_them_alone() {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        // Seeded at 10 by the connect and armed by one frame, with the camera
+        // since moved behind the driver.
+        take_a_frame(&device).await;
+        mock.preset_param(ControlType::Gain, 0.0);
+        mock.preset_param(ControlType::Offset, 0.0);
+
+        take_a_frame(&device).await;
+
+        assert_eq!(
+            mock.param(ControlType::Gain),
+            Some(10.0),
+            "the exposure did not send a gain the client had not changed"
+        );
+        assert_eq!(
+            mock.param(ControlType::Offset),
+            Some(10.0),
+            "the exposure did not send an offset the client had not changed"
+        );
+    }
+
+    /// GO2: a gain or offset set while an exposure owns the device is taken,
+    /// as a bin set then is, and applies from the next exposure. It never
+    /// reaches the camera under the frame being read out — which, by the
+    /// vendor's account, is when the camera applies them.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_gain_and_offset_set_during_an_exposure_are_taken_for_the_next_one() {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        mock.hold_readout();
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        await_readout(&mock).await;
+
+        device.set_gain(55).await.unwrap();
+        device.set_offset(40).await.unwrap();
+        assert_eq!(
+            device.gain().await.unwrap(),
+            55,
+            "Gain reports the gain the next exposure arms"
+        );
+        assert_eq!(device.offset().await.unwrap(), 40);
+        for _ in 0..50 {
+            assert_eq!(
+                mock.param(ControlType::Gain),
+                Some(10.0),
+                "a gain reached a camera that was reading out"
+            );
+            assert_eq!(
+                mock.param(ControlType::Offset),
+                Some(10.0),
+                "an offset reached a camera that was reading out"
+            );
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+
+        mock.release_readout();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        take_a_frame(&device).await;
+        assert_eq!(
+            mock.param(ControlType::Gain),
+            Some(55.0),
+            "the next exposure did not arm the gain"
+        );
+        assert_eq!(
+            mock.param(ControlType::Offset),
+            Some(40.0),
+            "the next exposure did not arm the offset"
+        );
+    }
+
+    /// R2/GO2: an exposure arms the gain and offset it read with its geometry,
+    /// not whatever is cached by the time it reaches them. A set landing while
+    /// the exposure is arming its region is the next frame's — the frame
+    /// `StartExposure` accepted is the frame that is armed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_gain_and_offset_set_while_an_exposure_arms_are_taken_for_the_next_one() {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        mock.hold_set_roi();
+        let exposing = {
+            let device = device.clone();
+            tokio::spawn(
+                async move { device.start_exposure(Duration::from_millis(10), true).await },
+            )
+        };
+        await_set_roi(&mock).await;
+
+        device.set_gain(55).await.unwrap();
+        device.set_offset(40).await.unwrap();
+
+        mock.release_set_roi();
+        exposing.await.unwrap().unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert_eq!(
+            mock.param(ControlType::Gain),
+            Some(10.0),
+            "a gain set after the exposure read its geometry was armed into its frame"
+        );
+        assert_eq!(
+            mock.param(ControlType::Offset),
+            Some(10.0),
+            "an offset set after the exposure read its geometry was armed into its frame"
+        );
+        take_a_frame(&device).await;
+        assert_eq!(mock.param(ControlType::Gain), Some(55.0));
+        assert_eq!(mock.param(ControlType::Offset), Some(40.0));
+    }
+
+    /// R2/GO2: a gain the camera refuses as the exposure arms fails the
+    /// `StartExposure` as `INVALID_OPERATION` with the SDK's own words, before
+    /// any exposure time is armed, and the device is handed back — so the next
+    /// exposure arms it once the camera takes it.
+    #[tokio::test]
+    async fn a_gain_the_sdk_refuses_fails_the_exposure_and_hands_the_device_back() {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        device.set_gain(33).await.unwrap();
+        mock.fail_writes_of(ControlType::Gain);
+        mock.clear_calls();
+
+        let err = device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(
+            err.message,
+            "failed to set gain: simulated Gain write failure"
+        );
+        assert!(
+            !mock.calls().iter().any(|c| c == "set_parameter(Exposure)"),
+            "an exposure time was armed beside a gain the camera refused"
+        );
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
+
+        mock.allow_writes_of(ControlType::Gain);
+        take_a_frame(&device).await;
+        assert_eq!(mock.param(ControlType::Gain), Some(33.0));
+    }
+
+    /// R2/GO2: the offset is held to the gain's rule — refused as the exposure
+    /// arms, it fails the `StartExposure` and hands the device back.
+    #[tokio::test]
+    async fn an_offset_the_sdk_refuses_fails_the_exposure_and_hands_the_device_back() {
+        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        device.set_offset(44).await.unwrap();
+        mock.fail_writes_of(ControlType::Offset);
+        mock.clear_calls();
+
+        let err = device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(
+            err.message,
+            "failed to set offset: simulated Offset write failure"
+        );
+        assert!(
+            !mock.calls().iter().any(|c| c == "set_parameter(Exposure)"),
+            "an exposure time was armed beside an offset the camera refused"
+        );
+        assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
+
+        mock.allow_writes_of(ControlType::Offset);
+        take_a_frame(&device).await;
+        assert_eq!(mock.param(ControlType::Offset), Some(44.0));
     }
 
     #[tokio::test]
@@ -5508,6 +6115,15 @@ mod tests {
         );
         assert_eq!(device.gain_max().await.unwrap(), 50);
         assert_eq!(device.offset_max().await.unwrap(), 100);
+        assert_eq!(
+            device.set_gain(51).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_VALUE,
+            "a gain is still checked against the previous mode's range"
+        );
+        // The gain and offset the connect seeded fit the new ranges, so they
+        // are carried over (RM4).
+        assert_eq!(device.gain().await.unwrap(), 10);
+        assert_eq!(device.offset().await.unwrap(), 10);
         assert_eq!(device.exposure_max().await.unwrap(), Duration::from_secs(1));
 
         assert_eq!(mock.bin(), (1, 1), "the SDK was left binned");
@@ -5590,10 +6206,12 @@ mod tests {
         assert_eq!(device.camera_x_size().await.unwrap(), 3072);
     }
 
-    /// RM4: the init resets gain and offset on some models, so the change puts
-    /// back the values the SDK held before it — after the init, not before it.
+    /// RM4: a mode change writes no gain and no offset — not even on a model
+    /// whose init resets them. Putting them back is the next exposure's work
+    /// (GO2), so nothing here can land a value on a camera the change has
+    /// just re-initialized.
     #[tokio::test]
-    async fn a_readout_mode_change_restores_the_gain_and_offset_the_init_reset() {
+    async fn a_readout_mode_change_sends_the_camera_no_gain_or_offset() {
         let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
         mock.init_resets_gain_offset.store(true, Ordering::SeqCst);
         device.set_gain(42).await.unwrap();
@@ -5602,25 +6220,46 @@ mod tests {
 
         device.set_readout_mode(1).await.unwrap();
 
-        assert_eq!(device.gain().await.unwrap(), 42);
-        assert_eq!(device.offset().await.unwrap(), 17);
         let calls = mock.calls();
-        let init = calls.iter().position(|c| c == "init").unwrap();
-        let gain = calls
-            .iter()
-            .rposition(|c| c == "set_parameter(Gain)")
-            .unwrap();
         assert!(
-            gain > init,
-            "the gain was restored before the init reset it"
+            !calls
+                .iter()
+                .any(|c| c == "set_parameter(Gain)" || c == "set_parameter(Offset)"),
+            "a mode change wrote the gain or offset: {calls:?}"
         );
     }
 
-    /// RM4: a gain the new mode's range does not admit is left as the SDK set
-    /// it — writing it would be refused, and clamping it would be a gain nobody
-    /// asked for — and the change still succeeds.
+    /// RM4/GO2: on a model whose init resets the gain and offset, the values a
+    /// client set are carried over in the cache and put back by the next
+    /// exposure, before its frame — the re-set the vendor's switch procedure
+    /// asks for.
     #[tokio::test]
-    async fn a_gain_the_new_mode_does_not_admit_is_left_as_the_sdk_set_it() {
+    async fn a_gain_and_offset_the_init_reset_are_put_back_by_the_next_exposure() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        mock.init_resets_gain_offset.store(true, Ordering::SeqCst);
+        device.set_gain(42).await.unwrap();
+        device.set_offset(17).await.unwrap();
+
+        device.set_readout_mode(1).await.unwrap();
+
+        assert_eq!(device.gain().await.unwrap(), 42);
+        assert_eq!(device.offset().await.unwrap(), 17);
+        assert_eq!(
+            mock.param(ControlType::Gain),
+            Some(0.0),
+            "the mode change put back a gain the init had reset"
+        );
+        take_a_frame(&device).await;
+        assert_eq!(mock.param(ControlType::Gain), Some(42.0));
+        assert_eq!(mock.param(ControlType::Offset), Some(17.0));
+    }
+
+    /// RM4: a gain the new mode's range does not admit is replaced by the
+    /// camera's own reading after the init — the value a connect would seed —
+    /// rather than clamped, which would be a gain nobody asked for. The change
+    /// still succeeds, and the next exposure arms the replacement.
+    #[tokio::test]
+    async fn a_gain_the_new_mode_does_not_admit_is_replaced_by_the_cameras_reading() {
         let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
         mock.init_resets_gain_offset.store(true, Ordering::SeqCst);
         device.set_gain(80).await.unwrap();
@@ -5630,16 +6269,20 @@ mod tests {
         device.set_readout_mode(1).await.unwrap();
 
         assert_eq!(device.gain().await.unwrap(), 0);
+        take_a_frame(&device).await;
         assert!(
-            !mock.calls().iter().any(|c| c == "set_parameter(Gain)"),
-            "a gain outside the new range was written"
+            mock.calls().iter().any(|c| c == "set_parameter(Gain)"),
+            "the next exposure did not arm the replacement: {:?}",
+            mock.calls()
         );
+        assert_eq!(mock.param(ControlType::Gain), Some(0.0));
     }
 
-    /// RM4: the offset is held to the gain's rule — one the new mode's range does
-    /// not admit is left as the SDK set it, and the change still succeeds.
+    /// RM4: the offset is held to the gain's rule — one the new mode's range
+    /// does not admit is replaced by the camera's reading, and the change still
+    /// succeeds.
     #[tokio::test]
-    async fn an_offset_the_new_mode_does_not_admit_is_left_as_the_sdk_set_it() {
+    async fn an_offset_the_new_mode_does_not_admit_is_replaced_by_the_cameras_reading() {
         let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
         mock.init_resets_gain_offset.store(true, Ordering::SeqCst);
         device.set_offset(80).await.unwrap();
@@ -5649,10 +6292,13 @@ mod tests {
         device.set_readout_mode(1).await.unwrap();
 
         assert_eq!(device.offset().await.unwrap(), 0);
+        take_a_frame(&device).await;
         assert!(
-            !mock.calls().iter().any(|c| c == "set_parameter(Offset)"),
-            "an offset outside the new range was written"
+            mock.calls().iter().any(|c| c == "set_parameter(Offset)"),
+            "the next exposure did not arm the replacement: {:?}",
+            mock.calls()
         );
+        assert_eq!(mock.param(ControlType::Offset), Some(0.0));
     }
 
     /// RM4: with `disable_auto_cooler` set, the SDK switches the TEC off inside
@@ -5716,7 +6362,9 @@ mod tests {
             ("MaxADU", device.max_adu().await.map(|_| ()).err()),
             ("BinX", device.bin_x().await.map(|_| ()).err()),
             ("NumX", device.num_x().await.map(|_| ()).err()),
+            ("Gain", device.gain().await.map(|_| ()).err()),
             ("GainMin", device.gain_min().await.map(|_| ()).err()),
+            ("Offset", device.offset().await.map(|_| ()).err()),
             ("OffsetMin", device.offset_min().await.map(|_| ()).err()),
             ("ReadoutMode", device.readout_mode().await.map(|_| ()).err()),
         ]
@@ -5853,21 +6501,44 @@ mod tests {
         assert_mode_withdrawn(&device, &mock).await;
     }
 
-    /// RM3: what is read before the first write is read before anything has
-    /// changed, so a failure there leaves the camera and every cache as they
-    /// were.
+    /// RM3/GO1: the gain the camera holds is read after the init with the rest
+    /// of the mode, but a reading the camera will not give is no failed step:
+    /// the change succeeds, and a client's gain the new mode admits is kept —
+    /// it never depended on the camera's reading.
     #[tokio::test]
-    async fn a_gain_that_cannot_be_read_before_the_change_leaves_everything_as_it_was() {
+    async fn a_gain_the_camera_will_not_report_after_the_init_does_not_fail_a_readout_mode_change()
+    {
         let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        device.set_gain(42).await.unwrap();
         mock.fail_reads_of(ControlType::Gain);
-        mock.clear_calls();
 
-        let err = device.set_readout_mode(1).await.unwrap_err();
+        device.set_readout_mode(1).await.unwrap();
 
-        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-        assert_eq!(mock.calls(), Vec::<String>::new());
-        assert_eq!(device.readout_mode().await.unwrap(), 0);
-        assert_eq!(device.camera_x_size().await.unwrap(), 3072);
+        assert_eq!(device.readout_mode().await.unwrap(), 1);
+        assert_eq!(device.gain().await.unwrap(), 42);
+    }
+
+    /// RM3: a failed change withdraws a client's gain and offset with the
+    /// bounds they were checked against, as it does the bin and the sub-frame,
+    /// and the change that recovers seeds them from the camera's reading after
+    /// its own init, as a connect would (GO1).
+    #[tokio::test]
+    async fn a_failed_readout_mode_change_takes_the_clients_gain_and_offset_with_it() {
+        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        device.set_gain(42).await.unwrap();
+        device.set_offset(17).await.unwrap();
+        mock.fail_handshake.store(true, Ordering::SeqCst);
+        device.set_readout_mode(1).await.unwrap_err();
+        mock.fail_handshake.store(false, Ordering::SeqCst);
+
+        device.set_readout_mode(1).await.unwrap();
+
+        assert_eq!(
+            device.gain().await.unwrap(),
+            10,
+            "a gain withdrawn with its mode came back with the next one"
+        );
+        assert_eq!(device.offset().await.unwrap(), 10);
     }
 
     /// C6: a mode change asks for its session before its first write, not only
@@ -6011,16 +6682,16 @@ mod tests {
         assert!(wheel.connected().await.unwrap());
     }
 
-    /// RM4: a gain set while a mode change is inside the SDK waits for the
-    /// change to finish. Landing in the middle, it would be reset by the init or
-    /// overwritten by the restore of the value read before it, and the client
-    /// told `Ok` for a gain the camera does not have.
+    /// RM4/GO2: a gain set while a mode change is inside its init does not wait
+    /// for the change, reaches nothing, and is the one the change carries over
+    /// — the change reads the client's gain at its commit, not before the
+    /// init, so a set made while the init ran is not lost to a value from
+    /// before it.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_gain_set_during_a_readout_mode_change_is_not_lost() {
         let handle = Arc::new(two_mode_mock());
         let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
         device.connect().await.unwrap();
-        device.set_gain(10).await.unwrap();
 
         handle.hold_init();
         let switching = {
@@ -6028,10 +6699,10 @@ mod tests {
             tokio::spawn(async move { device.set_readout_mode(1).await })
         };
         await_init(&handle).await;
-        let setting = {
-            let device = device.clone();
-            tokio::spawn(async move { device.set_gain(55).await })
-        };
+        tokio::time::timeout(Duration::from_secs(5), device.set_gain(55))
+            .await
+            .expect("a gain set waited for the mode change")
+            .unwrap();
         for _ in 0..50 {
             assert_eq!(
                 handle.param(ControlType::Gain),
@@ -6043,8 +6714,9 @@ mod tests {
 
         handle.release_init();
         switching.await.unwrap().unwrap();
-        setting.await.unwrap().unwrap();
         assert_eq!(device.gain().await.unwrap(), 55);
+        take_a_frame(&device).await;
+        assert_eq!(handle.param(ControlType::Gain), Some(55.0));
     }
 
     /// RM4: a `CoolerOn(false)` issued while a mode change is inside its init
@@ -6307,12 +6979,15 @@ mod tests {
         assert_mode_withdrawn(&device, &mock).await;
     }
 
-    /// RM4: a gain set during a mode change is validated against the bounds of
-    /// the mode the change leaves the camera in, not those of the mode it is
-    /// leaving — a gain only the old range admits is refused, and never
-    /// written.
+    /// RM4/GO2: a gain set while a mode change is inside its init lands before
+    /// the change's publish, as a bin set does, so it is checked against the
+    /// range of the mode the camera is leaving. One the new mode does not
+    /// admit is then replaced at the commit by the camera's reading — the
+    /// same outcome as a set made just before the change — and never reaches
+    /// the camera.
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_gain_set_during_a_readout_mode_change_is_checked_against_the_new_mode() {
+    async fn a_gain_set_during_a_readout_mode_change_that_the_new_mode_does_not_admit_is_replaced()
+    {
         let handle = Arc::new(two_mode_mock());
         let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
         device.connect().await.unwrap();
@@ -6323,82 +6998,27 @@ mod tests {
             tokio::spawn(async move { device.set_readout_mode(1).await })
         };
         await_init(&handle).await;
-        let setting = {
-            let device = device.clone();
-            tokio::spawn(async move { device.set_gain(80).await })
-        };
-        // Still inside the change the old range admits 80, so a gain that did
-        // not wait would be validated and written here.
-        for _ in 0..50 {
-            assert!(
-                !setting.is_finished(),
-                "a gain was answered from inside the mode change"
-            );
-            assert_eq!(
-                handle.param(ControlType::Gain),
-                Some(10.0),
-                "a gain landed inside the mode change"
-            );
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
+        // Still inside the change, the old range admits 80.
+        tokio::time::timeout(Duration::from_secs(5), device.set_gain(80))
+            .await
+            .expect("a gain set waited for the mode change")
+            .unwrap();
         // The mode the camera is being switched into offers less gain.
         handle.set_range(ControlType::Gain, (0.0, 50.0, 1.0));
 
         handle.release_init();
         switching.await.unwrap().unwrap();
+        assert_eq!(device.gain_max().await.unwrap(), 50);
         assert_eq!(
-            setting.await.unwrap().unwrap_err().code,
-            ASCOMErrorCode::INVALID_VALUE
+            device.gain().await.unwrap(),
+            10,
+            "a gain outside the new mode's range outlived the change"
         );
         assert_eq!(
             handle.param(ControlType::Gain),
             Some(10.0),
             "a gain outside the new mode's range reached the camera"
         );
-        assert_eq!(device.gain_max().await.unwrap(), 50);
-    }
-
-    /// RM4: a gain write runs where dropping the request cannot cut it short. A
-    /// client that gives up while the write is inside the SDK leaves it holding
-    /// the controls until it returns, so a mode change behind it can neither
-    /// read the gain under the write nor re-initialize the camera beneath it.
-    #[tokio::test(flavor = "multi_thread")]
-    async fn a_dropped_gain_write_finishes_before_a_readout_mode_change_starts() {
-        let handle = Arc::new(two_mode_mock());
-        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
-        device.connect().await.unwrap();
-
-        handle.hold_gain_write();
-        let setting = {
-            let device = device.clone();
-            tokio::spawn(async move { device.set_gain(55).await })
-        };
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while !handle.is_in_gain_write() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the gain write never started"
-            );
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-        setting.abort();
-        let switching = {
-            let device = device.clone();
-            tokio::spawn(async move { device.set_readout_mode(1).await })
-        };
-        for _ in 0..50 {
-            assert_eq!(
-                handle.init_calls.load(Ordering::SeqCst),
-                1,
-                "a mode change re-initialized the camera under a gain write"
-            );
-            tokio::time::sleep(Duration::from_millis(2)).await;
-        }
-
-        handle.release_gain_write();
-        switching.await.unwrap().unwrap();
-        assert_eq!(device.readout_mode().await.unwrap(), 1);
-        assert_eq!(device.gain().await.unwrap(), 55);
     }
 
     /// Queue `request` behind [`DeviceState::control_lock`], held as a
@@ -6440,17 +7060,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_gain_queued_across_a_reconnect_is_refused() {
-        assert_refused_across_a_reconnect(|device| async move { device.set_gain(55).await }).await;
-    }
-
-    #[tokio::test]
-    async fn an_offset_queued_across_a_reconnect_is_refused() {
-        assert_refused_across_a_reconnect(|device| async move { device.set_offset(40).await })
-            .await;
-    }
-
-    #[tokio::test]
     async fn a_setpoint_queued_across_a_reconnect_is_refused() {
         assert_refused_across_a_reconnect(|device| async move {
             device.set_set_ccd_temperature(-10.0).await
@@ -6464,14 +7073,14 @@ mod tests {
             .await;
     }
 
-    /// RM4: the offset is held to the same rule as the gain — set during a mode
-    /// change, it lands after the change, not inside it to be overwritten.
+    /// RM4/GO2: the offset is held to the gain's rule — set while a mode change
+    /// is inside its init, it does not wait, reaches nothing, and is the one
+    /// the change carries over.
     #[tokio::test(flavor = "multi_thread")]
     async fn an_offset_set_during_a_readout_mode_change_is_not_lost() {
         let handle = Arc::new(two_mode_mock());
         let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&handle), None);
         device.connect().await.unwrap();
-        device.set_offset(10).await.unwrap();
 
         handle.hold_init();
         let switching = {
@@ -6479,10 +7088,10 @@ mod tests {
             tokio::spawn(async move { device.set_readout_mode(1).await })
         };
         await_init(&handle).await;
-        let setting = {
-            let device = device.clone();
-            tokio::spawn(async move { device.set_offset(40).await })
-        };
+        tokio::time::timeout(Duration::from_secs(5), device.set_offset(40))
+            .await
+            .expect("an offset set waited for the mode change")
+            .unwrap();
         for _ in 0..50 {
             assert_eq!(
                 handle.param(ControlType::Offset),
@@ -6494,14 +7103,15 @@ mod tests {
 
         handle.release_init();
         switching.await.unwrap().unwrap();
-        setting.await.unwrap().unwrap();
         assert_eq!(device.offset().await.unwrap(), 40);
+        take_a_frame(&device).await;
+        assert_eq!(handle.param(ControlType::Offset), Some(40.0));
     }
 
     /// B4: a mode change owns the device for its whole SDK sequence. While it is
-    /// inside its init, a `StartExposure` is refused as busy, a bin set is
-    /// taken for a later exposure (B1), and an abort finds no exposure to abort
-    /// — and none of them sends the camera anything.
+    /// inside its init, a `StartExposure` is refused as busy, a bin, a gain and
+    /// an offset set are taken for a later exposure (B1, GO2), and an abort
+    /// finds no exposure to abort — and none of them sends the camera anything.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_readout_mode_change_holds_the_device_while_it_is_inside_the_sdk() {
         let handle = Arc::new(two_mode_mock());
@@ -6525,6 +7135,8 @@ mod tests {
             ASCOMErrorCode::INVALID_OPERATION
         );
         device.set_bin_x(2).await.unwrap();
+        device.set_gain(20).await.unwrap();
+        device.set_offset(20).await.unwrap();
         device.abort_exposure().await.unwrap();
         assert!(
             !handle.aborted.load(Ordering::SeqCst),
@@ -6637,6 +7249,53 @@ mod tests {
         // The same set, made in the session that is running, lands.
         device.set_bin_x(2).await.unwrap();
         assert_eq!(device.bin_x().await.unwrap(), 2);
+    }
+
+    /// C6: a gain set in one session is not stored into the next, where it
+    /// would arm the new session's frames at a gain nobody set in it.
+    #[tokio::test]
+    async fn a_gain_set_from_an_ended_session_is_refused() {
+        let (device, _mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        let ended = device.state.session();
+        device.disconnect().await.unwrap();
+        device.connect().await.unwrap();
+
+        assert_eq!(
+            device.store_gain(ended, 55).unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.gain().await.unwrap(),
+            10,
+            "the ended session's gain reached the new session"
+        );
+
+        // The same set, made in the session that is running, lands.
+        device.set_gain(55).await.unwrap();
+        assert_eq!(device.gain().await.unwrap(), 55);
+    }
+
+    /// C6: the offset is held to the gain's rule.
+    #[tokio::test]
+    async fn an_offset_set_from_an_ended_session_is_refused() {
+        let (device, _mock) = connected_device_with_handle(MockCameraHandle::default()).await;
+        let ended = device.state.session();
+        device.disconnect().await.unwrap();
+        device.connect().await.unwrap();
+
+        assert_eq!(
+            device.store_offset(ended, 40).unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.offset().await.unwrap(),
+            10,
+            "the ended session's offset reached the new session"
+        );
+
+        // The same set, made in the session that is running, lands.
+        device.set_offset(40).await.unwrap();
+        assert_eq!(device.offset().await.unwrap(), 40);
     }
 
     #[tokio::test]

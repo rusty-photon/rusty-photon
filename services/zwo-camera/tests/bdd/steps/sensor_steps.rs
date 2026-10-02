@@ -1,6 +1,8 @@
 //! Sensor geometry, type, and signal steps.
 
-use ascom_alpaca::api::camera::SensorType;
+use std::time::Duration;
+
+use ascom_alpaca::api::camera::{CameraState, SensorType};
 use cucumber::gherkin::Step;
 use cucumber::{then, when};
 
@@ -73,6 +75,34 @@ async fn electrons_per_adu_is(world: &mut CameraWorld, _device: u32, expected: f
         (actual - expected).abs() < 1e-9,
         "expected {expected}, got {actual}"
     );
+}
+
+/// What the camera holds must not move while a frame is in flight, whatever a
+/// client sets meanwhile — a negative, so it is watched across a window of
+/// reads rather than sampled once (testing.md §6.9). Each read also confirms the
+/// exposure is still in flight, so the window cannot quietly fall after it.
+#[then(
+    regex = r"^camera device (\d+) keeps reporting ElectronsPerADU as ([0-9.]+) while the exposure is in flight$"
+)]
+async fn electrons_per_adu_holds_while_exposing(
+    world: &mut CameraWorld,
+    _device: u32,
+    expected: f64,
+) {
+    let camera = world.camera();
+    for _ in 0..20 {
+        assert_eq!(
+            camera.camera_state().await.unwrap(),
+            CameraState::Exposing,
+            "the exposure ended before the window did"
+        );
+        let actual = camera.electrons_per_adu().await.unwrap();
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "a gain set mid-exposure reached the camera: expected {expected}, got {actual}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }
 
 #[then(regex = r"^camera device (\d+) reports a non-empty SensorName$")]

@@ -248,11 +248,14 @@ graph TD;
   for unit tests).
 
 **Concurrency.** The ASI/EFW SDKs are blocking C FFI and are **not** safe to call
-from arbitrary threads concurrently for a single device. Device state (current
-ROI, binning, gain, offset, target temp, exposure state machine, filter position)
-is held under `parking_lot::RwLock`; all SDK calls funnel through
-`spawn_blocking` and a single logical owner per device. EFW enumeration
-(`EFWGetNum`) is serialized for the macOS thread-safety caveat.
+from arbitrary threads concurrently for a single device. Device state (the ROI,
+bin and readout mode, the gain and offset the next exposure arms, the target
+temperature, the exposure state machine) is cached in atomics and
+`parking_lot::Mutex` cells, none held across an `await`; `StartExposure` pins
+everything that describes its frame, gain and offset included, in one critical
+section (B3, GO2). All SDK calls funnel through `spawn_blocking` and a single
+logical owner per device. EFW enumeration (`EFWGetNum`) is serialized for the
+macOS thread-safety caveat.
 
 The capture's integration wait (`backend.rs`) sleeps against a **real-clock
 deadline** (`Instant::now() + duration`), not accumulated intended sleep time.
@@ -377,9 +380,10 @@ ASI C API exposes and what `zwo-rs` will wrap.
   `CanStopExposure = false`.)*
 - **PulseGuide** — native `ASIPulseGuideOn/Off` (ST4), gated on the `ST4Port`
   capability → `CanPulseGuide = true` when present. *(A ZWO win — QHY defers it.)*
-- **Gain / Offset** — current value + `Min`/`Max` from `ASIGetControlCaps`
-  (`ASI_GAIN`, `ASI_OFFSET`/brightness); `NOT_IMPLEMENTED` if the control is
-  absent on the model.
+- **Gain / Offset** — the value the next exposure arms, seeded at connect by
+  reading the camera's own and sent by every `StartExposure`, + `Min`/`Max`
+  from `ASIGetControlCaps` (`ASI_GAIN`, `ASI_OFFSET`/brightness);
+  `NOT_IMPLEMENTED` if the control is absent on the model (GO1/GO2).
 - **Readout modes = the negotiated download formats** — the camera's
   `SupportedVideoFormat` intersected with the formats this driver can deliver
   (`Raw16` first, then `Raw8`), published as `ReadoutModes` and defaulting to
@@ -582,7 +586,9 @@ EAF; those belong to the other zwo services.)
   downgraded to the `noserial-{index}` fallback (see *Device identity*).
 - **C1.** `set_connected(true)` on a device opens *that* camera, `ASIInitCamera`,
   selects RAW16, snap mode, and caches `ASI_CAMERA_INFO`, supported binning modes,
-  and exposure/gain/offset control caps. On success `Connected = true`.
+  and exposure/gain/offset control caps, and reads the camera's current gain and
+  offset as the values the first exposure arms (GO1) — reads only. On success
+  `Connected = true`.
 - **C2.** `set_connected(true)` with the device's camera unreachable / SDK open
   failure returns the mapped driver error and `Connected` stays `false`.
 - **C3.** `set_connected(false)` closes that device and returns `NOT_CONNECTED`
@@ -603,7 +609,9 @@ EAF; those belong to the other zwo services.)
   e.g. the cooler, to SDK defaults); that call is reserved for the per-device
   `set_connected(true)` handshake (C1), so startup and reload touch no camera
   state. (Resolved issue #637; previously this path ran `ASIInitCamera` on
-  every enumerated camera at startup.)
+  every enumerated camera at startup.) Gain and offset hold to the same rule:
+  the connect handshake only *reads* them (GO1), and they are written only by
+  the arm of an operator-started `StartExposure` (GO2).
 
 ### Geometry, binning, ROI
 
@@ -668,7 +676,8 @@ EAF; those belong to the other zwo services.)
   rather than refused: it describes the next frame, which a client may
   legitimately set up while this one downloads. `qhy-camera` does the same:
   its bin is cached and pushed by `StartExposure`
-  ([B1](qhy-camera.md#behavioral-contracts)).
+  ([B1](qhy-camera.md#behavioral-contracts)). Gain and offset take the same
+  path here: pinned with the bin, pushed at arm time (GO2).
 - **R1.** `StartX/Y`/`NumX/Y` setters accept any `u32`; geometry is validated at
   `StartExposure` (R2/R3), not at the setter.
 - **R2.** `StartExposure` with `StartX + NumX > CameraXSize / BinX` (or the Y
@@ -694,9 +703,13 @@ EAF; those belong to the other zwo services.)
 - **E4.** `StartExposure` with `Light = false` (dark/bias) is **accepted** on
   every model: ASI cameras have no mechanical shutter, so the frame is captured
   identically and differs only in client-applied metadata. `HasShutter = false`.
-- **E5.** A successful `StartExposure` sets exposure µs, runs the ASI single-frame
-  capture on the blocking bridge, and on completion produces an `ImageArray` of
-  the binned sub-frame, `ImageReady = true`,
+- **E5.** A successful `StartExposure` pins the frame — bin, sub-frame, download
+  format, gain and offset — and claims the device in one critical section, then
+  runs the ASI single-frame capture on the blocking bridge. The capture arms the
+  camera in one acquisition of the camera lock, in this order:
+  `ASISetROIFormat`, `ASISetStartPos`, `ASI_GAIN`, `ASI_OFFSET` (GO2),
+  `ASI_EXPOSURE`, `ASIStartExposure`. On completion it produces an `ImageArray`
+  of the binned sub-frame, `ImageReady = true`,
   `LastExposureStartTime`/`LastExposureDuration` set, `CameraState = Idle`.
 - **E6.** `CameraState` is `Exposing` during capture; `PercentCompleted` is
   derived from remaining-exposure µs (clamped to ≤ 100), `100` once ready.
@@ -716,7 +729,11 @@ EAF; those belong to the other zwo services.)
   true`. *(The ZWO inversion of `qhy-camera` E8.)* Reaches the in-flight capture
   on E7's terms, through the same cell.
 - **E9.** A mid-exposure SDK error transitions `CameraState = Error`, sets
-  `last_error`, leaves `ImageReady = false`, logged at `warn!`.
+  `last_error`, leaves `ImageReady = false`, logged at `warn!`; `ImageArray`
+  then answers `0x500` carrying the message. The arm (E5) runs inside the
+  capture, after `StartExposure` has answered `Ok`, so a write the camera
+  refuses there — a gain or offset included (GO2) — surfaces this way rather
+  than as a `StartExposure` error. The next `StartExposure` clears it.
 - **E10.** A disconnect and reconnect *during* an exposure aborts that capture
   and leaves the reconnected device `Idle`; the next `StartExposure` is accepted
   and returns its own frame. The superseded capture — which may still be draining
@@ -769,24 +786,104 @@ EAF; those belong to the other zwo services.)
 
 ### Gain / offset / readout
 
-- **GO1.** `Gain`/`Offset` return the current SDK value, or `NOT_IMPLEMENTED` if
-  the control is unavailable on the model. The SDK reports it as a `long`; a
-  value outside ASCOM's `i32` returns `INVALID_OPERATION` rather than a
-  truncated number.
-- **GO2.** `set_gain`/`set_offset` validate against cached `[min, max]` and apply
-  via the SDK; out-of-range returns `INVALID_VALUE`.
+- **GO1 (`Gain`/`Offset` report the value the next exposure arms).** Each
+  control is cached as one cell holding its range and its value, and both
+  getters answer from the cell, never from the camera: the value is the one the
+  next `StartExposure` sends (GO2) — the bargain `BinX` and `NumX` already make
+  (B3, R1), and between exposures the camera can still hold the last frame's
+  values. A connect seeds the value by **reading** the camera's own
+  (`ASIGetControlValue`); nothing is written at connect (C5). A reading that
+  fails, has no `i32` spelling (the SDK reports a `long`), or lies outside the
+  advertised `[min, max]` is not armed: the getter then answers
+  `INVALID_OPERATION` — *"the camera reported no gain in [{min}, {max}]; set
+  Gain to choose one"*, and the same for the offset — until a client sets one,
+  and no exposure sends that control meanwhile. A failed seed read never fails
+  the connect. A control the model does not advertise answers `NOT_IMPLEMENTED`
+  from all four of its members, as before (GO3); `GainMin/Max` and
+  `OffsetMin/Max` are unchanged by any of this.
+- **GO2 (a gain or offset is cached, and `StartExposure` arms it).**
+  `set_gain`/`set_offset` validate against the cached `[min, max]` — out of
+  range is `INVALID_VALUE` (*"gain {gain} outside [{min}, {max}]"*), an
+  unadvertised control `NOT_IMPLEMENTED` — and store the value. **Nothing
+  reaches the camera at the setter**, and the setter takes no device claim, so a
+  set is never refused as busy. The check and the store are one critical
+  section on the cell the connect publishes the range under (GO4), so a value
+  can never be checked against one session's range and stored beside
+  another's.
+
+  Every `StartExposure` reads the cached gain and offset in the critical section
+  that pins the frame's bin, sub-frame and format and claims the device (B3,
+  RM1), so the frame it accepted is the frame that is armed. The capture then
+  sends the gain, then the offset, under the claim the exposure holds — after
+  the ROI and start position, ahead of the exposure time and `ASIStartExposure`
+  (E5). It sends both on **every** exposure, not only when a client changed one:
+  the camera is at the values its frame was accepted with, there is no second
+  record of the camera's state to fall out of step with the first, and a change
+  to the registers that nobody recorded is undone by the next frame. A control
+  that is unadvertised, or has no value to arm (GO1), is not sent. A set made
+  while an exposure is in flight is taken for the **next** frame — the frame in
+  flight keeps the values it was armed with, so nothing reaches a camera that is
+  integrating or reading out. `Gain` read after such a set therefore describes
+  the next frame, not the one being delivered, as `BinX` and `NumX` do after
+  theirs (B3); a client recording the gain a frame was taken at reads it before
+  setting a new one. A value the camera refuses at arm time fails that
+  exposure as E9, with the message `failed to set gain: ` or `failed to set
+  offset: ` followed by the SDK's own text. That refusal is lazy: the arm runs
+  in the detached capture, after `StartExposure` has answered `Ok`, where
+  `qhy-camera`'s arm runs before `StartExposure` returns and refuses the
+  `StartExposure` itself.
+
+  Neither getters nor setters touch the SDK, so neither waits out an
+  integration or is refused as busy. They are not free of the capture
+  entirely: like every member they pass the connected check, whose
+  `is_open()` takes the camera lock a capture holds through its arm and
+  through its readout and download, so a call landing then waits for that to
+  end, as any member's would.
+
+  The reason for arming rather than writing at the setter: the capture
+  releases the camera lock for the integration (see `backend.rs`), so a write
+  made at the setter would reach a camera that is integrating, and no ASI
+  document says whether the camera takes a gain or offset at exposure start
+  or at readout — QHY's vendor manual says its own are applied at readout. On
+  ASI it has not been measured, so this closes a class of defect rather than a
+  reproduced one.
 - **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max,
   converted **once at the open handshake** from the SDK's `long` to ASCOM's
   `i32`. A bound with no `i32` spelling leaves the control **unadvertised**
   (`NOT_IMPLEMENTED` from all four members) rather than advertising a clamped
-  bound the camera would then reject.
-- **GO4.** The cache is the sole gate on all six members, so each connect
-  **overwrites** it — including with "unavailable". Here that falls out of the
-  handshake assigning it unconditionally (`find(ControlType::Gain).and_then(…)`,
-  which yields `None` when the control is absent), so a control missing on this
-  connect cannot leave a previous session's bounds standing to be advertised.
+  bound the camera would then reject. The ranges come from `ASIGetControlCaps`
+  once per connect and do not depend on the readout mode, which here selects
+  only a download format (RM1), so no mode change can leave a cached value
+  outside its range — unlike `qhy-camera`, whose ranges are per mode.
+- **GO4.** The cell is the sole gate on all six members, so each connect
+  **overwrites** it — range and value, including with "unavailable". Here that
+  falls out of the handshake assigning it unconditionally (`seeded_setting`,
+  which yields `None` when the control is absent), so a control missing on
+  this connect cannot leave a previous session's bounds standing to be
+  advertised. The value is re-read from the camera too, so a value a client
+  set and no exposure armed does not survive a reconnect: the camera never
+  received it, and the new session starts from what the camera holds.
   Identical in `svbony-camera` and `qhy-camera`, which reaches it differently —
   see its GO4.
+
+  `Connected`, and the connected check every member makes, turn true when the
+  camera opens, before the handshake publishes. So a disconnect **empties**
+  both cells just before it closes the camera, as does a connect whose
+  handshake fails (C2, C3), and through the next connect's handshake all six
+  members answer as on a first connect, for an unadvertised control
+  (`NOT_IMPLEMENTED`), until the new session's cells are published. A set
+  landing in that window is refused, never answered and then overwritten by
+  the reseed, and no read reports the last session's value or bounds. The
+  cells are emptied before the close, not after it: once the camera is closed
+  a racing connect can open it and publish its own cells, which a later clear
+  would wipe. The bin and ROI, which the handshake also resets, are not
+  emptied: through a reconnect's handshake they still answer from the
+  previous session. That is an older gap in this driver's connect, not in the
+  gain cache; a connecting gate like `qhy-camera`'s
+  ([C7/C8](qhy-camera.md#behavioral-contracts)) would close it for all of
+  them. Pinned by
+  `a_gain_set_while_a_reconnect_handshakes_is_refused_rather_than_lost` and
+  `a_reconnect_handshaking_reports_no_gain_or_offset_from_the_last_session`.
 - **RM1.** `ReadoutModes` is the camera's **download-format** list: at
   enumeration the driver intersects `ASI_CAMERA_INFO.SupportedVideoFormat` with
   the formats it can deliver, in preference order `Raw16` then `Raw8`, and
@@ -858,11 +955,23 @@ EAF; those belong to the other zwo services.)
   (a finite positive value), **not** `NOT_IMPLEMENTED` — read **live on every
   call**, never from the `CameraInfo` cached at enumeration and never computed.
   The SDK scales this field by the gain register, by a law that **differs per
-  model** (see *`ElecPerADU` is gain-scaled* below). A cached value would freeze
-  the property at whatever gain the camera happened to hold when the service
-  enumerated it and would not move when a client changes `Gain` — which is
-  precisely what a client reading `ElectronsPerADU` for SNR or exposure math
-  needs it to do.
+  model** (see *`ElecPerADU` is gain-scaled* below), so the property describes
+  **the gain the camera holds**: the gain the last exposure armed (GO2), or,
+  before any exposure this session, the gain read at connect (GO1). After a
+  `Gain` set it catches up when the next `StartExposure` arms the new gain; a
+  client that needs the figure for a new gain takes one exposure first (an
+  `ExposureMin` frame will do). A value cached at enumeration would be worse
+  than that interval: it would freeze the property at whatever gain the camera
+  held when the service started, and never move at all.
+
+  It does not follow the cached `Gain` at once because nothing can answer for a
+  gain the camera does not hold. No SDK call reports `ElecPerADU` for any gain
+  but the register's, so the figure for a pending gain could come only from
+  writing the register outside an exposure — exactly what GO2 exists to stop —
+  or from a formula, which the ASI120MC-S rules out by fitting none. Nothing
+  depends on the figure being immediate: ASCOM treats `ElectronsPerADU` as
+  static for a session, ConformU reads it once, and no client in this
+  repository reads it.
 - **ST3.** `MaxADU` = **a saturation threshold chosen to be reachable** by the
   delivered data in the selected readout mode (RM2) — not `(2^BitDepth) - 1`,
   and deliberately *not* an exact upper bound on the pixel values (see *the
@@ -1070,11 +1179,11 @@ how a client asks whether a device is there at all.
 | `CanAsymmetricBin` | `false`; never implemented, so answered at any time (E12) |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters relaxed; validated at `StartExposure` (incl. %8 / %2) |
 | `MaxADU` | A saturation threshold chosen to be reachable, not an exact upper bound (ST3): 255 in Raw8; in Raw16 the ADC scale shifted into the container, one quantization step below full scale — 65528 for 14-bit, 65504 for 12-bit, 65535 for 16-bit/unknown. Where the margin applies, a sensor reaching its top code delivers one step above this; the 65535 cases are the container maximum and cannot be exceeded |
-| `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU`, read live per call — the SDK scales it by the gain register, so it tracks `Gain` (ST2) |
+| `ElectronsPerADU` | **Native** `ASI_CAMERA_INFO.ElecPerADU`, read live per call — the SDK scales it by the gain register, so it describes the gain the camera holds: the last exposure's, or the one read at connect, catching up with a `Gain` set when the next `StartExposure` arms it (ST2) |
 | `FullWellCapacity` | `NOT_IMPLEMENTED` (no native field; placeholder only if ConformU demands) |
 | `ExposureMin` / `Max` / `Resolution` | From `ASIGetControlCaps(ASI_EXPOSURE)` (µs) |
-| `Gain` / `GainMin` / `GainMax` | `ASI_GAIN` control; `NOT_IMPLEMENTED` if absent |
-| `Offset` / `OffsetMin` / `OffsetMax` | `ASI_OFFSET`/brightness control; `NOT_IMPLEMENTED` if absent |
+| `Gain` / `GainMin` / `GainMax` | `ASI_GAIN` control. `Gain` is the cached value the next exposure arms: seeded by a read at connect, set without reaching the camera, sent by every `StartExposure` (GO1/GO2); `INVALID_OPERATION` until a client sets one if the connect read none in range; `NOT_IMPLEMENTED` if absent |
+| `Offset` / `OffsetMin` / `OffsetMax` | `ASI_OFFSET`/brightness control, on `Gain`'s terms (GO1/GO2); `NOT_IMPLEMENTED` if absent |
 | `ReadoutMode` / `ReadoutModes` | The camera's download formats from `SupportedVideoFormat`, `Raw16` before `Raw8` (RM1); drives the download format and `MaxADU` |
 | `SensorType` / `BayerOffsetX/Y` | Mono vs RGGB from `IsColorCam` / `BayerPattern` |
 | `CoolerOn` / `CCDTemperature` / `SetCCDTemperature` / `CoolerPower` | Gated on `IsCoolerCam` |
@@ -1140,7 +1249,10 @@ else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md). Phase E landed **45 unit tests**
 and **57 BDD scenarios** (all green), plus a full **ConformU** pass; the suite
-now stands at **87 unit tests** and **65 BDD scenarios**.
+now stands at **119 unit tests** (with `--all-features`; 109 without, since the
+`simulation` feature gates `lib.rs`'s three `simulation_tests` and the seven
+`backend::handle_tests` that drive the production handle against the `zwo-rs`
+simulation) and **79 BDD scenarios**.
 
 - **Unit** (`src/*.rs` `#[cfg(test)]`) — config parse/newtype validation, ROI/
   binning geometry math (including the %8 / %2 alignment rules), the `Camera`
@@ -1149,7 +1261,8 @@ now stands at **87 unit tests** and **65 BDD scenarios**.
   `MaxADU` (ST3, incl. the shift, the one-step margin, and the no-shift
   depths that take none), the readout-format
   negotiation and its `to_image_array` unpacks, the gain scaling of
-  `ElectronsPerADU` (ST2), and the paths the `zwo-rs` simulation can't force
+  `ElectronsPerADU` (ST2) — following the gain an exposure armed, not a set
+  alone — and the paths the `zwo-rs` simulation can't force
   (mid-exposure SDK error E9; a model without an ST4 port PG2; an uncooled
   model K1; a camera advertising no raw format at all, RM3) — against the
   in-crate `backend.rs` mock seam over the SDK. The reconnect-during-an-exposure
@@ -1158,11 +1271,34 @@ now stands at **87 unit tests** and **65 BDD scenarios**.
   `StartExposure` interleaving is forced rather than raced, and the production
   `ZwoCameraHandle` is driven against the `zwo-rs` simulation with its camera
   closed and reopened mid-capture.
+- **Gain and offset (GO1/GO2)** are unit-tested against the mock seam's log of
+  the control writes the camera took: the connect seeds by reading and writes
+  nothing; the getters answer with the camera refusing reads; a set sends
+  nothing; a set refused as out of range leaves the cached value, and so the
+  next exposure's, where it was; an exposure sends the gain, then the offset,
+  on every exposure, with the values pinned when `StartExposure` accepted the
+  frame (a set made after it returns, before the capture arms, is not armed
+  into it); a set mid-exposure is taken for the next frame; a refused write
+  fails the exposure as E9 with its `failed to set …` message; a reading that
+  is unreadable, beyond `i32` or out of range does not fail the connect and is
+  not armed until set; an unadvertised control is never sent; a reconnect
+  re-seeds. The mock arms through the production handle's own arm sequence,
+  and the production half is pinned against the `zwo-rs` simulation in
+  `backend::handle_tests`: a capture's gain and offset are on the camera while
+  its frame integrates — read once the exposure is running, which the test can
+  see only after the lock section that armed and started it has ended — and a
+  control with no value is not written. What no test reaches is the order
+  *inside* that section: that the writes precede `ASIStartExposure` rather
+  than follow it under the same lock. Neither double can observe it, so it
+  rests on the code's order (E5).
 - **BDD** (`bdd-infra::ServiceHandle`, the six live camera feature files) —
   connection lifecycle (C0–C4), ROI/bin validation (R1–R3, B1–B3), exposure
   happy-path + error paths (E1–E8, incl. the graceful-stop / abort split; E9's
-  mid-exposure Error transition is unit-tested), gain/offset/readout (GO1–RM1),
-  cooling (K1–K4), sensor type & signal (ST1–ST3), pulse-guiding (PG1–PG2), the
+  mid-exposure Error transition is unit-tested), gain/offset/readout (GO1–RM1,
+  including a gain set mid-exposure that leaves `ElectronsPerADU` at the
+  in-flight frame's gain until the next exposure arms it, the only Alpaca-side
+  view of which gain a frame armed), cooling (K1–K4), sensor type & signal
+  (ST1–ST3), pulse-guiding (PG1–PG2), the
   capability surface a disconnected driver may not describe (E12), and
   config actions, driven against the `zwo-rs` `simulation` backend.
   (FilterWheel FW1–FW3 moved to the future `zwo-filterwheel` service — ADR-014.)
@@ -1475,7 +1611,9 @@ ASI120MC-S does not: its gain scale is 0–100 and the mapping is something else
 entirely (the 0.1 dB law would predict ÷1.33, ÷1.78, ÷3.16 at those gains).
 
 **Checked at every gain each camera advertises** (601 / 511 / 101 values, read
-through the driver over Alpaca):
+through the driver over Alpaca, when a `Gain` set still reached the camera at
+the setter; the driver now arms a gain only with an exposure, so repeating the
+sweep through it takes one exposure between each set and its read — ST2):
 
 | Camera | vs `10^(gain/200)` | monotonic | distinct values |
 |---|---|---|---|
@@ -1507,6 +1645,9 @@ changed `Gain`. A client that sets gain and then reads `ElectronsPerADU` — the
 normal sequence for SNR or exposure math — got a stale number. ST2 now reads it
 live, through `Camera::electrons_per_adu` (`ASIGetCameraPropertyByID`, an
 open-camera call, rather than the enumeration-index `ASIGetCameraProperty`).
+Since a gain set reaches the camera only when an exposure arms it (GO2), the
+live value follows `Gain` from the next exposure on, not from the set: that
+client now takes one exposure between setting the gain and reading the figure.
 
 **It also explains a stale piece of validation folklore.** The 2026-06-20 and
 2026-07-27 hardware runs recorded `ElectronsPerADU` figures — 0.00496 for the
@@ -1526,7 +1667,7 @@ be one**: at high gain a genuinely tiny `ElectronsPerADU` is correct, and
 `MaxADU × ElectronsPerADU` is *supposed* to shrink — that is what gain means.
 
 Reproducer (needs the SDK + a camera; reads properties and writes the gain
-control, no exposure):
+control directly, as the driver's arm does, so it needs no exposure):
 
 ```c
 ASI_CAMERA_INFO info;
