@@ -299,9 +299,21 @@ rather than device semantics:
   answer as an error, while the conformance suite requires exactly
   that answer. The settings deselect the PulseGuide test
   (`TelescopeTests`), which only the `*-settings` commands honor.
+  That is the only deselection: every other Telescope selection flag
+  is written out at the value `SetFullTest()` forces, because
+  ConformU's own defaults leave the two side-of-pier flags
+  (`TestSideOfPierRead`, `TestSideOfPierWrite`) off. With them on,
+  ConformU still runs neither of the tests they select: the
+  side-of-pier model tests, and the `SideOfPier` write test nested
+  inside them, run only when `SideOfPier` can be read, and this device
+  answers `NOT_IMPLEMENTED`, so ConformU logs an `INFO` skip.
 - Deliberately deselected tests surface as ConformU "configuration
   alerts", which count into its exit code like errors; the runner
-  accepts a run whose summary shows zero errors and zero issues.
+  accepts a run whose summary shows zero errors and zero issues. A
+  clean conformance run ends `0 issues, 0 errors and 1 configuration
+  alert` — "Pulse guide tests were omitted due to Conform
+  configuration" — and the protocol suite reports `0 errors, 0
+  issues`.
 - The harness config sets `slew_duration: "5s"`: ConformU's AbortSlew
   test validates `Slewing == true` a fixed 1.5 s after starting an
   async slew, so the convergence window must comfortably exceed that.

@@ -95,13 +95,16 @@ raising any alert.) The forced-on keys that
 ConformU ships *off* are the ones that move hardware, so plan for them:
 on a Switch, `SwitchEnableSet` is forced on and ConformU **will write**
 the switches (a powerbox's outputs included); on a German-equatorial
-mount at a site latitude beyond ±10°, `TestSideOfPierRead` is forced on
-and ConformU slews to hour angles −3, −9, +3 and +9 to check
-`SideOfPier`, whatever `CanSetPierSide` says; and on one that reports
-`CanSetPierSide = true`, `TestSideOfPierWrite` is forced on too and
-ConformU slews to HA −3 at Dec 0, then to HA −0.03 h (two minutes east
-of the meridian), lets the mount track across it for seven minutes and
-sets `SideOfPier` to the opposite pointing state — a meridian flip.
+mount at a site latitude beyond ±10° whose `SideOfPier` read succeeds,
+`TestSideOfPierRead` is forced on and ConformU slews to hour angles −3,
+−9, +3 and +9 to check `SideOfPier`, whatever `CanSetPierSide` says;
+and on one that also reports `CanSetPierSide = true`, the forced-on
+`TestSideOfPierWrite` makes ConformU slew to HA −3 at Dec 0, then to
+HA −0.03 h (two minutes east of the meridian), let the mount track
+across it for seven minutes and set `SideOfPier` to the opposite
+pointing state — a meridian flip. The write test runs inside the read
+test's gate, so a mount whose `SideOfPier` read answers
+`NOT_IMPLEMENTED` gets neither, only an `INFO` skip.
 Tolerances (`TelescopePulseGuideTolerance`, `TelescopeSlewTolerance`,
 `FocuserMoveTolerance`, …) *are* honoured, and a loosened one raises no
 configuration alert and appears nowhere in the results file; the only

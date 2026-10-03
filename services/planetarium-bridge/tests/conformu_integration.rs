@@ -172,10 +172,21 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
             "SyncToTarget": true,
             "SyncToAltAz": true
         },
+        // Each flag below carries the value SetFullTest() forces, spelled
+        // out rather than left to ConformU's defaults, which ship the two
+        // side-of-pier flags `false` (a deselection and a configuration
+        // alert). Those two cost nothing here: ConformU runs the
+        // side-of-pier model tests, and the SideOfPier write test nested
+        // inside them, only when SideOfPier can be read, and this device
+        // answers NOT_IMPLEMENTED, so the run logs an INFO skip instead of
+        // slewing.
         "TelescopeExtendedRateOffsetTests": true,
         "TelescopeFirstUseTests": true,
-        "TestSideOfPierRead": false,
-        "TestSideOfPierWrite": false,
+        "TelescopeExtendedPulseGuideTests": true,
+        "TelescopeExtendedMoveAxisTests": true,
+        "TelescopeExtendedSiteTests": true,
+        "TestSideOfPierRead": true,
+        "TestSideOfPierWrite": true,
         "CameraFirstUseTests": true,
         "CameraTestImageArrayVariant": true,
         "FocuserTimeout": 30
