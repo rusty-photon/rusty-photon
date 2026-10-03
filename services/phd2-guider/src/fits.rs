@@ -191,6 +191,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // the atomic write fsyncs the parent directory, which Miri cannot open
     async fn test_write_grayscale_u16_fits_success() {
         let pixels = vec![1u16, 2, 3, 4];
         let dir = tempfile::tempdir().unwrap();
@@ -203,6 +204,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // the atomic write fsyncs the parent directory, which Miri cannot open
     async fn test_write_grayscale_u16_fits_with_headers() {
         let pixels = vec![100u16, 200, 300, 400, 500, 600, 700, 800, 900];
         let dir = tempfile::tempdir().unwrap();
@@ -216,6 +218,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // the atomic write fsyncs the parent directory, which Miri cannot open
     async fn test_write_grayscale_u16_fits_single_pixel() {
         let pixels = vec![42u16];
         let dir = tempfile::tempdir().unwrap();
@@ -227,6 +230,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // the atomic write fsyncs the parent directory, which Miri cannot open
     async fn test_write_grayscale_u16_fits_larger_image() {
         let pixels: Vec<u16> = (0..1024).map(|i| i as u16).collect();
         let dir = tempfile::tempdir().unwrap();
@@ -241,6 +245,7 @@ mod tests {
     /// outcome of ADR-001 Amendment A for phd2-guider. Verify the
     /// on-disk file matches that encoding by reading it back.
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // the atomic write fsyncs the parent directory, which Miri cannot open
     async fn writes_native_u16_with_bzero_convention() {
         use rp_fits::reader::read_primary;
         use rp_fits::reader::Pixels;
