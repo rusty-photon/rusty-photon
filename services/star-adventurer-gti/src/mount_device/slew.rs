@@ -28,11 +28,11 @@ use crate::manager::{MountManager, MountParameters};
 use crate::units::{Cpr, RaTicks};
 
 /// Upper bound on how long [`stop_axis_and_wait`] will poll `:f<axis>`
-/// after a `:K` (decelerate stop) before giving up. The firmware
-/// finishes deceleration within ~1 s for typical Goto-Fast slew
-/// rates on the `GTi`; 2 s is a comfortable margin for the slow
-/// case, and bounding the wait prevents a stuck axis from wedging
-/// a slew indefinitely.
+/// after a `:K` (decelerate stop) before giving up. From the driver's
+/// own goto speed the `GTi` (firmware 3.48) reads Dec stopped 1.50 s
+/// after the stop and RA after 1.27 s, so 2 s leaves about half a
+/// second. Bounding the wait keeps a stuck axis from wedging a slew
+/// indefinitely.
 pub(super) const AXIS_STOP_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// EQMOD `minperiods[axis]` default — see
@@ -101,10 +101,10 @@ pub(super) async fn issue_slew_axis(
 
 /// Issue `:K<axis>` (decelerate) and poll `:f<axis>` until the
 /// running flag clears or `timeout` elapses. `:K` is the spec's
-/// recommended stop and is gentler on the gearbox than `:L`; `:L`
-/// remains the right choice only for genuine emergency stops
-/// (`AbortSlew`, slew/park watcher abort on `blocked`). Matches INDI
-/// eqmod's `StopWaitMotor` (`indi-eqmod/skywatcher.cpp:1741-1765`).
+/// recommended stop; `:L` is kept for genuine emergency stops
+/// (`AbortSlew`, slew/park watcher abort on `blocked`). From goto speed
+/// the `GTi` decelerates identically under both. Matches INDI eqmod's
+/// `StopWaitMotor` (`indi-eqmod/skywatcher.cpp:1741-1765`).
 ///
 /// Production callers pass [`AXIS_STOP_TIMEOUT`]; the parameter is
 /// only an indirection for tests that want a much shorter bound to

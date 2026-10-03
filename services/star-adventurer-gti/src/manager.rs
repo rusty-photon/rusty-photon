@@ -1059,9 +1059,11 @@ async fn handshake(
 /// exactly wrong.
 async fn safety_stop(conn: &Connection<SkywatcherCodec>) -> StateAssertion {
     let mut verdict = StateAssertion::Asserted;
-    // Order matters: `:L` is the hammer (instant stop), `:K` is
-    // graceful — issue the hammer first to guarantee motion stops
-    // even if the graceful stop fails.
+    // `:L` (instant stop) goes first and `:K` after it, so the axes are
+    // told to stop even if the second command fails. Neither is faster
+    // than the other from goto speed: the GTi decelerates identically
+    // under both, and an axis keeps moving for up to 1.5 s after
+    // either is acknowledged.
     for cmd in [
         Command::InstantStop(Axis::Ra),
         Command::InstantStop(Axis::Dec),

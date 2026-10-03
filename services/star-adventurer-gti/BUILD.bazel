@@ -46,12 +46,21 @@ rust_binary(
     deps = [":star-adventurer-gti_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
-# The operator-run hardware probe in examples/, built by `cargo build
+# The operator-run hardware probes in examples/, built by `cargo build
 # --all-targets` and never executed in CI. Mirrored here for `bazel build
-# //...` parity; it needs only the lib and its normal deps.
+# //...` parity; they need only the lib and its normal deps.
 rust_binary(
     name = "probe_live_step_period",
     srcs = ["examples/probe_live_step_period.rs"],
+    aliases = aliases(),
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = [":star-adventurer-gti_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+)
+
+rust_binary(
+    name = "probe_stop_coast",
+    srcs = ["examples/probe_stop_coast.rs"],
     aliases = aliases(),
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
