@@ -168,9 +168,32 @@ SharpCap, MaxIm DL and CCDAutoPilot
   zones per step. Only MaxIm DL runs coarse-then-fine as its normal
   path.
 - **Adaptive when the minimum is not bracketed.** N.I.N.A. and Hocus
-  Focus keep stepping until enough valid points flank the minimum; SGP
-  Smart Focus shifts the range; Ekos restarts from a shifted start, at
-  most three times.
+  Focus keep stepping, one frame at a time, until enough points flank
+  the lowest one, with no test of the curve's shape; SGP Smart Focus
+  extends the points or rewinds its start when the curve slopes the
+  wrong way, capped ("too many range shifts"); Ekos restarts from a
+  shifted start once three successive fits have put the minimum
+  beyond where the pass began, the start moved by at most half a sweep.
+  Rechecked against the source and the vendors' own posts on
+  2026-10-02 ([#1330](https://github.com/rusty-photon/rusty-photon/issues/1330)),
+  which corrected this line: Ekos's "three" counts the confirming
+  fits, not the restarts, and the reruns it bounds at three
+  (`MAXIMUM_RESET_ITERATIONS`) follow a failed run and start from the
+  last good position, not a shifted one.
+- **A sweep short of stars is retried, not read for direction.** Ekos
+  reruns a sweep that lost its stars from the same start, Voyager and
+  FocusMax retry and then return the focuser, TheSkyX's @Focus3
+  lengthens the exposure. No package in the survey infers which way
+  focus lies from where the stars ran out in its routine autofocus —
+  only Ekos's experimental Focus Advisor and a 2026 Hocus Focus
+  reversal do, and both act on star presence alone. Of the two that
+  shifted a whole range on loose evidence, SGP's developers describe
+  runaway shifts and SharpCap removed its backward jump after it fired
+  on a wing whose HFR dipped and landed far worse ("went wrong more
+  often than it helped",
+  [forum](https://forums.sharpcap.co.uk/viewtopic.php?t=7340)). D13's
+  shift after a one-sided starvation is the one place this provider
+  goes past the packages, and why it is strict.
 - **Restore and retry with the same parameters on failure.** N.I.N.A. up
   to a configured number of attempts, Ekos one rerun on low R², Voyager
   and FocusMax bounded retries. No package halves or doubles the step
@@ -287,9 +310,12 @@ unit's `StateDirectory=`).
 - **A run is the whole measurement.** `{at, filter, outcome, error,
   position, hfr, best_position, best_hfr, fit_r_squared, samples_used,
   attempts, wing_slope, temperature_c, step_size, half_width,
-  sweep_source, prediction, curve_points}`, the curve points being
-  `{position, hfr, star_count, document_id, rejected}` exactly as the
-  sweep measured them. The points are the measurement; the slope and
+  sweep_source, prediction, attempts_log, curve_points}`, the curve
+  points being `{position, hfr, star_count, document_id, rejected}`
+  exactly as the sweep measured them, every attempt's, and
+  `attempts_log` one entry per attempt that failed to fit — why, where
+  its grid was centred, how many points it measured and the gate kept,
+  and what the sweep did next (D13 step 5). The points are the measurement; the slope and
   the fit are derived from them. Neither the hyperbolic model nor the
   blur constant is *chosen* from these records: G2's model is analytic
   and validated across generated curves, with recorded sweeps kept as
@@ -662,12 +688,49 @@ semantics `rp`'s capture sweep has today:
 4. Move to the vertex and take a confirmation frame; accept it within
    `confirmation_tolerance` of the lowest accepted sample, else fall
    back to that sample's position (`confirmed: false`).
-5. On `not_enough_stars`, retry the same grid; on `monotonic_curve`,
-   retry with the centre shifted by `half_width` toward the lowest
-   accepted sample, clamped to the focuser's bounds; at most
-   `max_attempts` (default 2). Report `attempts` and the wing slope
-   (S1's definition: the steeper wing's least-squares slope, px per 100
-   steps).
+5. On `monotonic_curve`, retry with the centre shifted by
+   `half_width` toward the lowest accepted sample, clamped to the
+   focuser's bounds. On `not_enough_stars`, retry the same grid —
+   unless the stars ran out on one side only: at least two accepted
+   points and at least one that is not, every sparse or starless point
+   beyond all the accepted ones on one side, and the accepted HFRs
+   rising strictly toward that side. That sweep has said where focus
+   is, past the end holding the lowest sample, and it gets the
+   `monotonic_curve` shift. At most `max_attempts` (default 2). Report
+   `attempts`, the wing slope (S1's definition: the steeper wing's
+   least-squares slope, px per 100 steps) and an attempts log naming,
+   for every attempt that failed to fit, why, and what came next — the
+   same grid, a shift, a shift the bounds absorbed, a shifted grid too
+   small to walk, or no attempts left — in the result, in the error of
+   a run that failed to fit, in every recorded run, and in a `warn`
+   line per failed attempt.
+
+   *Amended for [#1330](https://github.com/rusty-photon/rusty-photon/issues/1330)
+   (2026-10-02).* S4 ported `rp`'s rule, which kept the grid after
+   every `not_enough_stars`. On rig2 that threw away a sweep that had
+   already said where focus was: grid 29800–30600 with focus near
+   29750, three accepted samples rising 2.17 → 5.98 → 6.97 px, four
+   sparse and two starless points all above them — and the identical
+   retry failed identically. The one-sided case is decided from HFR,
+   the direction signal every package in the survey uses, and never
+   from star counts, which only say where the detector lost the field.
+   The test is strict — no tie, no dip, no rejection on the near side
+   — because a shift costs a whole grid where N.I.N.A.'s and Ekos's
+   loose rules cost a frame, and of the two packages that shifted a
+   whole range on loose evidence one reports runaways and the other
+   removed the feature (*What the packages do*). Strict refusing a good
+   shift costs today's same-grid retry; a loose rule shifting the wrong
+   way spends the attempt a same-grid retry could have won — and
+   #1249's roster sweep won exactly that way, on its second, identical
+   grid. Replaying every
+   five-point-or-wider window of the six complete sweeps recorded on
+   the rigs, the strict test and the looser "lowest sample at the outer
+   end" never disagree at the shipped 10 % gate; they part only below
+   9 %, on the coarse 300-step grids. The narrow relaxation that data
+   would support — a far-wing point reading low, as the area filter's
+   fragments do, if every accepted point stays clear of the minimum —
+   waits on per-attempt data, which the attempts log now records.
+   `rp`'s capture sweep keeps the old rule until S7 retires it.
 6. Guiding: when `get_refocus_plan` says the focuser is guide-coupled
    and `get_guiding_stats` reports active guiding, `pause_guiding`
    before the first move and `resume_guiding` after the confirmation
@@ -837,7 +900,7 @@ the filter-change question with `focus-model`'s offsets.
   "position": 29771, "hfr": 1.04,
   "best_position": 29769, "best_hfr": 1.02,
   "confirmed": true, "fit_r_squared": 0.97, "samples_used": 8,
-  "attempts": 1, "wing_slope": 3.9,
+  "attempts": 1, "wing_slope": 3.9, "attempts_log": [],
   "curve_points": [ { "position": 29663, "hfr": 4.1, "star_count": 240, "rejected": null } ],
   "temperature_c": 12.4,
   "recorded": { "last_good_updated": true, "runs": 12 },
@@ -852,8 +915,8 @@ focuser_id changed from f1 to f2`, `reset: focuser_id changed from f1
 to f2` (this run started the fresh record) or `empty`. Errors: the train has no terminal focuser; `filter`
 is not on the wheel; incomplete optics with no configured block, naming
 the fact; the sweep's own errors — `not_enough_stars`,
-`monotonic_curve` — with `attempts`, `curve_points` and `prediction`
-attached and the focuser put back (D6).
+`monotonic_curve` — with `attempts`, `attempts_log`, `curve_points`
+and `prediction` attached and the focuser put back (D6).
 
 `determine_filter_offsets {train_id, filters?, reference?, rounds?}`.
 Result: `reference`, `rounds`, `offsets` (name → steps, the reference

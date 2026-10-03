@@ -39,9 +39,12 @@ anything except through `rp`'s tools. The decision record is the
    cannot supply is omitted and named. The prediction is an
    optimisation: focus is reached without it.
 3. **Retry with the same parameters; shift, never widen.** A failed fit
-   is repeated up to `max_attempts` times, the grid shifted toward the
-   lowest sample after a monotonic curve, the way N.I.N.A. and Ekos
-   retry. No attempt halves or doubles the step.
+   is repeated up to `max_attempts` times, the way N.I.N.A. and Ekos
+   retry, the grid shifted toward the lowest sample whenever the sweep
+   says focus lies past one end of it — a monotonic curve, or stars
+   that ran out on one side only while the samples that kept them fall
+   strictly toward the other ([The sweep](#the-sweep)). No attempt
+   halves or doubles the step.
 4. **Put things back.** A sweep that fails after every attempt, a
    cancelled sweep and an equipment error all end with the focuser
    moved back to where it was before the call — the position read at
@@ -244,6 +247,7 @@ Result:
   "best_position": 29769, "best_hfr": 1.02,
   "confirmed": true, "fit_r_squared": 0.97, "samples_used": 8,
   "attempts": 1, "wing_slope": 3.9,
+  "attempts_log": [],                      // one entry per attempt that failed before this one
   "confirmation": { "document_id": "…", "hfr": 1.04, "star_count": 231, "accepted": true },
   "curve_points": [ { "position": 29663, "hfr": 4.1, "star_count": 240,
                       "document_id": "…", "rejected": null } ],
@@ -265,7 +269,12 @@ predicted nothing), `reset: camera_id changed from a to b` (this run
 replaced it) or `unrecorded` — the sweep found focus and the store
 would not take the run, which is reported in `recorded.error` rather
 than raised as a failure, because the focuser is at focus and a
-document that retried it would sweep a train that is already there. `steps` appears with `shared: true`, one
+document that retried it would sweep a train that is already there.
+`attempts_log` is the account of the attempts that failed before the
+one that produced the result ([The sweep](#the-sweep), the attempts
+log), empty when the first fit held; `curve_points` carries every
+attempt's samples, and each entry's `points` says how many of them are
+its own. `steps` appears with `shared: true`, one
 `{focuser_id, run_train_id, metric, position, hfr, confirmed}` per
 completed step. `rp` reads the seven event fields off the top level.
 
@@ -620,7 +629,7 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `filter` on a train without a wheel | `train 'x' has no filter wheel; do not pass filter` |
 | Unknown filter name | `filter 'Ha' is not on train 'x' (wheel 'main-fw' has: Luminance, Red, Green, Blue)` |
 | Incomplete optics and no configured sweep | `train 'x' has no derived sweep: aperture_mm is unknown; set trains.x.step_size and half_width in focus-model.json or the fact in rp's config` |
-| The sweep failed after every attempt | `not enough stars: …; attempts: 2; prediction: {…}; curve_points: [{…}]` |
+| The sweep failed after every attempt | `not enough stars: …; attempts: 2; attempts_log: [{…}]; prediction: {…}; curve_points: [{…}]` — `curve_points` is the last field the sweep writes: a put-back, record or guiding note below may follow it after `; `, so a reader takes one JSON array from the start of what follows `curve_points: ` |
 | The put-back itself failed | the sweep's error, then `; the focuser could not be restored to 29740: …` |
 | An `rp` tool failed mid-run (device error, aborted exposure) | the `rp` message, after the put-back |
 | The caller cancelled | `cancelled: <reason>`, after the put-back |
@@ -775,7 +784,9 @@ the current position.
 
 The V-curve with the semantics `rp`'s capture sweep has today
 ([rp.md § `auto_focus` Contract](rp.md#auto_focus-contract)), through
-`rp`'s primitives:
+`rp`'s primitives — except the shift after a sweep whose stars ran out
+on one side (step 6), which `rp`'s sweep does not make: the capture
+sweep retires at the plan's S7, and the rule lives here:
 
 1. The grid is `centre ± half_width` in `step_size` increments, clamped
    to the focuser's bounds (points outside are dropped, not coerced),
@@ -815,13 +826,74 @@ The V-curve with the semantics `rp`'s capture sweep has today
    there fails the run rather than reporting another position's focus
    quality.
 6. Retry: a failed fit is repeated while attempts remain, up to
-   `max_attempts` — the same grid after `not_enough_stars`, the centre
-   moved by `half_width` toward the lowest accepted sample after
-   `monotonic_curve`, clamped to the bounds. Only the last failure puts
-   the focuser back. The result reports `attempts` and `wing_slope`,
-   the steeper wing's least-squares slope in pixels per 100 steps,
-   fitted on the attempt that produced the result; `curve_points`
-   carries every attempt's samples, in the order they were measured.
+   `max_attempts`, and where the next grid sits depends on what the
+   failed one said about focus:
+   - After `monotonic_curve` the centre moves by `half_width` toward
+     the lowest accepted sample (unchanged when that sample sits at
+     the centre): the curve fell toward one end, so focus lies past it.
+   - After `not_enough_stars` the grid is the same one, unless the
+     attempt's points — ordered by position, sparse and starless
+     points alike counted as not accepted — say focus lies past one
+     end. They do when at least two points are accepted and at least
+     one is not, every point that is not accepted lies beyond all the
+     accepted ones on one side, and the accepted HFRs rise strictly
+     toward that side, each above the one before it. Stars running
+     out on one side only is the far wing leaving the detector's band,
+     and HFR falling away from it is focus lying past the other end,
+     so the centre moves by `half_width` away from the starved side,
+     toward the lowest accepted sample, as after `monotonic_curve`. The
+     side is read from the samples alone: a grid the focuser's bounds
+     clipped can hold every sample on one side of a centre it was never
+     walked around, and the side the samples name is still the one
+     focus lies on. Anything else keeps the grid:
+     points that are not accepted on both sides or among the accepted
+     ones, accepted HFRs that tie or turn, a single accepted point.
+     The samples do not agree on a side then, and the same grid is
+     the retry every mainstream package makes when a sweep runs short
+     of stars — a sky that thinned for a frame or two recovers on it.
+     The test is strict on purpose: a shift costs a whole grid of
+     exposures, and the one that went the wrong way would have spent
+     the attempt a same-grid retry could have won (the plan's D13
+     records the survey behind it).
+   - The shift is clamped to the focuser's bounds. A shift the bounds
+     absorb whole repeats the grid, and a retry whose shifted grid
+     would hold fewer than `min_fit_points` positions is not made: the
+     run ends on the attempt that just failed.
+
+   Only the last failure puts the focuser back. The result reports
+   `attempts` and `wing_slope`, the steeper wing's least-squares slope
+   in pixels per 100 steps, fitted on the attempt that produced the
+   result; `curve_points` carries every attempt's samples, in the
+   order they were measured.
+7. The attempts log: every attempt that fails to fit is logged at
+   `warn` — its outcome, the grid it walked and the one that comes
+   next or why none does, and its accepted, sparse and starless
+   counts — and becomes one `attempts_log` entry. The result carries
+   the log, the error of a run that failed to fit carries it, and the
+   recorded run carries it whatever ended the run — a device error or a
+   cancellation keeps its log in the record only, its error being the
+   failure that stopped it:
+
+   ```jsonc
+   { "attempt": 1, "outcome": "not_enough_stars",
+     "error": "not enough stars: only 3 of 5 required samples are accepted (non-null HFR, past the sparse gate)",
+     "centre": 30200, "points": 9, "accepted": 3, "sparse": 4, "starless": 2,
+     "retry": "shift", "next_centre": 29800 }
+   ```
+
+   `outcome` is `not_enough_stars` or `monotonic_curve`, and `error`
+   the failure in words. `points` is how many of the run's
+   `curve_points` the attempt measured: the run's array holds every
+   attempt's in order, so the entries' counts split it. `retry` is what
+   the run did next — `same_grid`; `shift`, to `next_centre`;
+   `shift_absorbed`, a shift the focuser's bounds took back whole, so
+   the same grid again; `grid_too_small`, the shifted grid could not be
+   walked, `next_centre` naming where it would have been, and the run
+   ended; or `no_attempts_left`, with `next_centre` null. A successful
+   run's log holds the attempts before the one that fitted, a failed
+   run's every attempt, the last one ending the run, and a run a
+   device error or a cancellation stopped the attempts that failed to
+   fit before it.
 
 Cancellation is checked between primitive calls. The provider's BDD
 runs the sweep against the OmniSim focuser and camera, whose frames
@@ -862,9 +934,13 @@ file written by a newer build.
 - **A run.** `{at, filter, outcome, error, position, hfr, best_position,
   best_hfr, fit_r_squared, samples_used, attempts, wing_slope,
   temperature_c, step_size, half_width, sweep_source, prediction,
-  curve_points}`. `outcome` is `confirmed`, `fallback`,
+  attempts_log, curve_points}`. `outcome` is `confirmed`, `fallback`,
   `not_enough_stars`, `monotonic_curve`, `cancelled` or `error` (the
   text in `error`); a failed run is null where it measured nothing.
+  `outcome` and `error` name how the run ended; `attempts_log` names,
+  for every attempt that failed to fit, why it failed and what the
+  sweep did next ([The sweep](#the-sweep), step 7) — empty for a run
+  whose first fit held, and on a run recorded before the log existed.
   The curve points are `{position, hfr, star_count, document_id,
   rejected}` as the sweep measured them — every attempt's, and the
   partial walk of a run a device error or a cancellation stopped; the
@@ -1056,8 +1132,10 @@ tools appear in the catalog ungated; `get_sweep_plan` derives the
 worked example's numbers from the optics, takes the focuser's `StepSize`
 when the config sets none, reports `mixed` and `configured` for
 overrides, and names the missing fact; `focus_train` walks the grid,
-persists a frame per point, retries once, restores the starting
-position, records the run with its curve points and prediction, and is
+persists a frame per point, retries once on the same grid — a starless
+sweep says nothing about a side — restores the starting position,
+records the run with its curve points, its prediction and an attempts
+log naming why each attempt failed and what came next, and is
 bracketed by `focus_started` and `focus_failed`; a filter argument
 moves the wheel and an unknown one is refused; a seeded record predicts
 the start and a stale one is reported, predicts nothing and is reset by
@@ -1093,7 +1171,10 @@ credential — and that `tools/list` answers with no `rp` running.
   the half-CFZ and bounds skips, rounding.
 - Sweep, over synthetic and recorded curves: the grid and its clamp,
   the gate, the fit and its three failure modes, the confirmation
-  verdict, the retry centre, the wing slope.
+  verdict, the retry centre — the shift after a sweep starved on one
+  side, and each way the samples can fail to agree on a side — the
+  attempts log of a run that shifted, repeated, ran out of attempts or
+  of grid, the wing slope.
 - Workflow, against a `mockall` rig: the resolution errors, the filter
   switch, the guard on failure and cancellation, the guiding
   handshake and its skips, the record written for each outcome, the

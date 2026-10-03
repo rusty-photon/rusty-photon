@@ -118,33 +118,115 @@ pub enum FitError {
 impl FitError {
     /// The name this failure is recorded under.
     #[must_use]
-    pub const fn outcome(&self) -> &'static str {
+    pub const fn outcome(&self) -> FitOutcome {
         match self {
-            Self::NotEnoughStars { .. } => "not_enough_stars",
-            Self::MonotonicCurve(_) => "monotonic_curve",
+            Self::NotEnoughStars { .. } => FitOutcome::NotEnoughStars,
+            Self::MonotonicCurve(_) => FitOutcome::MonotonicCurve,
         }
     }
+}
+
+/// The name a failed fit is recorded under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FitOutcome {
+    /// Too few samples survived the sparse gate.
+    NotEnoughStars,
+    /// No minimum inside the sampled range.
+    MonotonicCurve,
+}
+
+impl FitOutcome {
+    /// The name the record and the log carry.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotEnoughStars => "not_enough_stars",
+            Self::MonotonicCurve => "monotonic_curve",
+        }
+    }
+}
+
+/// What a run did after an attempt that failed to fit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Retry {
+    /// The next attempt walked the same grid.
+    SameGrid,
+    /// The next attempt's grid was centred `half_width` (or as far as
+    /// the bounds allowed) toward the lowest accepted sample.
+    Shift,
+    /// The attempt called for a shift and the focuser's bounds took it
+    /// back whole, so the next attempt walked the same grid.
+    ShiftAbsorbed,
+    /// The shifted grid would have held too few positions to fit, so
+    /// no retry was made and the run ended.
+    GridTooSmall,
+    /// The attempt was the last the run was allowed.
+    NoAttemptsLeft,
+}
+
+impl Retry {
+    /// The name the record and the log carry.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SameGrid => "same_grid",
+            Self::Shift => "shift",
+            Self::ShiftAbsorbed => "shift_absorbed",
+            Self::GridTooSmall => "grid_too_small",
+            Self::NoAttemptsLeft => "no_attempts_left",
+        }
+    }
+}
+
+/// One attempt that failed to fit, as the run records it: why, where
+/// its grid was centred, what the gate left of it, and what the run did
+/// next.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailedAttempt {
+    pub attempt: u32,
+    pub outcome: FitOutcome,
+    /// The failure in words.
+    pub error: String,
+    pub centre: i32,
+    /// How many of the run's curve points this attempt measured: the
+    /// run keeps every attempt's, in order, so the counts split them.
+    pub points: usize,
+    pub accepted: usize,
+    pub sparse: usize,
+    pub starless: usize,
+    pub retry: Retry,
+    /// Where the next grid was centred — or, after
+    /// [`Retry::GridTooSmall`], would have been; `None` when no
+    /// attempts were left.
+    pub next_centre: Option<i32>,
 }
 
 /// How a sweep ended when it did not end in a curve.
 #[derive(Debug, thiserror::Error)]
 pub enum SweepFailure {
-    /// Every permitted attempt failed to fit; the run's curve rides
-    /// along so it is diagnosable without re-measuring.
+    /// Every permitted attempt failed to fit; the run's curve and the
+    /// account of each attempt ride along so it is diagnosable without
+    /// re-measuring.
     #[error("{error}")]
     Fit {
         error: FitError,
         attempts: u32,
+        attempts_log: Vec<FailedAttempt>,
         curve_points: Vec<CurvePoint>,
     },
     /// A grid that cannot be walked, before any motion.
     #[error("{0}")]
     Grid(String),
     /// A primitive call failed or the caller cancelled, with whatever
-    /// the run had measured by then.
+    /// the run had measured by then and the attempts that had already
+    /// failed to fit. The error is boxed to keep the failure small
+    /// (`clippy::result_large_err`).
     #[error("{error}")]
     Rig {
-        error: FocusModelError,
+        error: Box<FocusModelError>,
+        attempts_log: Vec<FailedAttempt>,
         curve_points: Vec<CurvePoint>,
     },
 }
@@ -160,6 +242,9 @@ pub struct SweepOutcome {
     pub fit_r_squared: f64,
     pub samples_used: usize,
     pub attempts: u32,
+    /// The attempts that failed to fit before the one that produced
+    /// this outcome.
+    pub attempts_log: Vec<FailedAttempt>,
     pub wing_slope: Option<f64>,
     pub confirmed: bool,
     pub confirmation: Confirmation,
@@ -303,11 +388,85 @@ pub fn wing_slope(points: &[CurvePoint]) -> Option<f64> {
     }
 }
 
+/// Which way focus lies from a sweep whose stars ran out on one side
+/// only: [`Ordering::Less`] below the accepted samples, [`Ordering::Greater`]
+/// above them, `None` when the samples do not agree on a side.
+///
+/// Ordered by position, with sparse and starless points alike counted
+/// as not accepted, they agree when at least two points are accepted and
+/// at least one is not, every point that is not accepted lies beyond all
+/// the accepted ones on one side, and the accepted HFRs rise strictly
+/// toward that side, each above the one before it. Focus then lies the
+/// other way, past the lowest accepted sample. A tie, a dip, a point
+/// that is not accepted on the near side or among the accepted ones,
+/// and two accepted points at one position all leave the side
+/// undecided: a shift costs a whole grid, so the test is strict.
+#[must_use]
+pub fn one_sided_starvation(curve_points: &[CurvePoint]) -> Option<Ordering> {
+    let mut ordered: Vec<&CurvePoint> = curve_points.iter().collect();
+    ordered.sort_by_key(|point| point.position);
+    let accepted: Vec<(i32, f64)> = ordered
+        .iter()
+        .filter_map(|point| point.accepted_sample())
+        .map(|(position, hfr, _)| (position, hfr))
+        .collect();
+    if accepted.len() < 2 || accepted.len() == ordered.len() {
+        return None;
+    }
+    let (Some(&(lowest_accepted, _)), Some(&(highest_accepted, _))) =
+        (accepted.first(), accepted.last())
+    else {
+        return None;
+    };
+    let mut not_accepted = ordered
+        .iter()
+        .filter(|point| point.accepted_sample().is_none())
+        .map(|point| point.position);
+    let rises_with =
+        |pair: &[(i32, f64)]| matches!(pair, [(x0, hfr0), (x1, hfr1)] if x0 < x1 && hfr0 < hfr1);
+    let falls_with =
+        |pair: &[(i32, f64)]| matches!(pair, [(x0, hfr0), (x1, hfr1)] if x0 < x1 && hfr0 > hfr1);
+    if not_accepted
+        .clone()
+        .all(|position| position > highest_accepted)
+    {
+        // Starved above: focus lies below when HFR rises toward the
+        // starved end.
+        accepted
+            .windows(2)
+            .all(rises_with)
+            .then_some(Ordering::Less)
+    } else if not_accepted.all(|position| position < lowest_accepted) {
+        accepted
+            .windows(2)
+            .all(falls_with)
+            .then_some(Ordering::Greater)
+    } else {
+        None
+    }
+}
+
+/// Where a failed attempt sends the next grid, before the run checks
+/// that the grid can be walked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryPlan {
+    /// [`Retry::SameGrid`], [`Retry::Shift`] or [`Retry::ShiftAbsorbed`].
+    pub retry: Retry,
+    pub centre: i32,
+}
+
 /// Where the next attempt's grid is centred after a failed fit.
 ///
-/// The same place after `not_enough_stars`; after `monotonic_curve`,
-/// moved by `half_width` toward the lowest accepted sample, clamped to
-/// the focuser's bounds.
+/// Moved by `half_width` when the attempt says focus lies past one end
+/// of its grid — after `monotonic_curve` toward the lowest accepted
+/// sample (unchanged when that sample sits at the centre), after
+/// `not_enough_stars` toward the side [`one_sided_starvation`] finds —
+/// clamped to the focuser's bounds; the same place otherwise.
+///
+/// The starved sweep's side is read from its samples alone, never
+/// against the centre: a grid a bound clipped can hold every sample on
+/// one side of a centre it was never walked around, and the side the
+/// samples name is still the one focus lies on.
 #[must_use]
 pub fn retry_centre(
     centre: i32,
@@ -315,24 +474,66 @@ pub fn retry_centre(
     curve_points: &[CurvePoint],
     half_width: i32,
     bounds: (Option<i32>, Option<i32>),
-) -> i32 {
-    let FitError::MonotonicCurve(_) = error else {
-        return centre;
+) -> RetryPlan {
+    let same_grid = RetryPlan {
+        retry: Retry::SameGrid,
+        centre,
     };
     let accepted: Vec<(i32, f64, u32)> = curve_points
         .iter()
         .filter_map(CurvePoint::accepted_sample)
         .collect();
     let Some((lowest_position, _, _)) = lowest_sample(&accepted) else {
-        return centre;
+        return same_grid;
     };
-    let shifted = match lowest_position.cmp(&centre) {
+    let direction = match error {
+        FitError::MonotonicCurve(_) => lowest_position.cmp(&centre),
+        FitError::NotEnoughStars { .. } => {
+            one_sided_starvation(curve_points).unwrap_or(Ordering::Equal)
+        }
+    };
+    let shifted = match direction {
         Ordering::Less => centre.saturating_sub(half_width),
         Ordering::Greater => centre.saturating_add(half_width),
-        Ordering::Equal => centre,
+        Ordering::Equal => return same_grid,
     };
     let shifted = bounds.0.map_or(shifted, |min| shifted.max(min));
-    bounds.1.map_or(shifted, |max| shifted.min(max))
+    let shifted = bounds.1.map_or(shifted, |max| shifted.min(max));
+    if shifted == centre {
+        RetryPlan {
+            retry: Retry::ShiftAbsorbed,
+            centre,
+        }
+    } else {
+        RetryPlan {
+            retry: Retry::Shift,
+            centre: shifted,
+        }
+    }
+}
+
+/// The accepted, sparse and starless points of one attempt, after the
+/// gate has marked them.
+fn gate_counts(curve_points: &[CurvePoint]) -> (usize, usize, usize) {
+    let accepted = curve_points
+        .iter()
+        .filter(|point| point.accepted_sample().is_some())
+        .count();
+    let sparse = curve_points
+        .iter()
+        .filter(|point| point.hfr.is_some() && point.rejected.is_some())
+        .count();
+    let starless = curve_points
+        .iter()
+        .filter(|point| point.hfr.is_none())
+        .count();
+    (accepted, sparse, starless)
+}
+
+/// The lowest and highest positions of a grid, whatever order it is
+/// walked in.
+fn grid_span(grid: &[i32]) -> (Option<i32>, Option<i32>) {
+    (grid.iter().min().copied(), grid.iter().max().copied())
 }
 
 /// Build the grid `[centre − half_width, centre + half_width]` in
@@ -788,6 +989,7 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
     let mut centre = centre;
     let mut attempts: u32 = 0;
     let mut measured: Vec<CurvePoint> = Vec::new();
+    let mut attempts_log: Vec<FailedAttempt> = Vec::new();
     loop {
         attempts = attempts.saturating_add(1);
         debug!(
@@ -801,7 +1003,8 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
         if let Err(error) = walk(ops, &grid, &mut curve_points).await {
             measured.append(&mut curve_points);
             return Err(SweepFailure::Rig {
-                error,
+                error: Box::new(error),
+                attempts_log,
                 curve_points: measured,
             });
         }
@@ -815,7 +1018,8 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
                     Ok(confirmed) => confirmed,
                     Err(error) => {
                         return Err(SweepFailure::Rig {
-                            error,
+                            error: Box::new(error),
+                            attempts_log,
                             curve_points: measured,
                         })
                     }
@@ -828,6 +1032,7 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
                     fit_r_squared: stage.r_squared,
                     samples_used: stage.samples_used,
                     attempts,
+                    attempts_log,
                     wing_slope,
                     confirmed: confirmation.accepted,
                     confirmation,
@@ -839,7 +1044,7 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
 
         // The retry reads the attempt that just failed, before its
         // points join the run's.
-        let next_centre = (attempts < params.max_attempts).then(|| {
+        let plan = (attempts < params.max_attempts).then(|| {
             retry_centre(
                 centre,
                 &error,
@@ -848,34 +1053,70 @@ pub async fn run_sweep<O: SweepOps + ?Sized>(
                 params.bounds(),
             )
         });
+        let (retry, next_centre, next_grid) =
+            match plan.map(|plan| (plan, sweep_grid(plan.centre, params))) {
+                Some((plan, Ok(next_grid))) => (plan.retry, Some(plan.centre), Some(next_grid)),
+                Some((plan, Err(_))) => (Retry::GridTooSmall, Some(plan.centre), None),
+                None => (Retry::NoAttemptsLeft, None, None),
+            };
+        let (accepted, sparse, starless) = gate_counts(&curve_points);
+        let failed = FailedAttempt {
+            attempt: attempts,
+            outcome: error.outcome(),
+            error: error.to_string(),
+            centre,
+            points: curve_points.len(),
+            accepted,
+            sparse,
+            starless,
+            retry,
+            next_centre,
+        };
+        log_failed_attempt(&failed, params.max_attempts, &grid, next_grid.as_deref());
+        attempts_log.push(failed);
         measured.append(&mut curve_points);
-        if let Some(next_centre) = next_centre {
-            match sweep_grid(next_centre, params) {
-                Ok(next_grid) => {
-                    warn!(
-                        error = %error,
-                        attempt = attempts,
-                        from_centre = centre,
-                        to_centre = next_centre,
-                        "fit failed; repeating the sweep"
-                    );
-                    centre = next_centre;
-                    grid = next_grid;
-                    continue;
-                }
-                Err(too_small) => debug!(
-                    error = %too_small,
-                    to_centre = next_centre,
-                    "retry abandoned: the shifted grid cannot be walked"
-                ),
-            }
+        if let (Some(next_centre), Some(next_grid)) = (next_centre, next_grid) {
+            centre = next_centre;
+            grid = next_grid;
+            continue;
         }
         return Err(SweepFailure::Fit {
             error,
             attempts,
+            attempts_log,
             curve_points: measured,
         });
     }
+}
+
+/// The `warn` line an attempt that failed to fit leaves: why, the grid
+/// it walked, what the gate left of it, and the grid that comes next or
+/// why none does.
+fn log_failed_attempt(
+    failed: &FailedAttempt,
+    max_attempts: u32,
+    grid: &[i32],
+    next_grid: Option<&[i32]>,
+) {
+    let (grid_min, grid_max) = grid_span(grid);
+    let (next_grid_min, next_grid_max) = next_grid.map_or((None, None), grid_span);
+    warn!(
+        attempt = failed.attempt,
+        max_attempts,
+        outcome = failed.outcome.as_str(),
+        error = %failed.error,
+        centre = failed.centre,
+        grid_min = ?grid_min,
+        grid_max = ?grid_max,
+        accepted = failed.accepted,
+        sparse = failed.sparse,
+        starless = failed.starless,
+        retry = failed.retry.as_str(),
+        next_centre = ?failed.next_centre,
+        next_grid_min = ?next_grid_min,
+        next_grid_max = ?next_grid_max,
+        "sweep attempt failed to fit"
+    );
 }
 
 #[cfg(test)]
@@ -1139,12 +1380,31 @@ mod tests {
     }
 
     #[test]
-    fn the_retry_shifts_toward_the_lowest_sample_only_after_a_monotonic_curve() {
+    fn a_monotonic_curve_shifts_toward_the_lowest_sample() {
         let points = vec![point(80, Some(1.0), 100), point(120, Some(4.0), 100)];
         let monotonic = FitError::MonotonicCurve("no minimum".to_owned());
-        assert_eq!(retry_centre(100, &monotonic, &points, 40, (None, None)), 60);
-        let sparse = FitError::NotEnoughStars { got: 1, needed: 5 };
-        assert_eq!(retry_centre(100, &sparse, &points, 40, (None, None)), 100);
+        assert_eq!(
+            retry_centre(100, &monotonic, &points, 40, (None, None)),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 60
+            }
+        );
+    }
+
+    /// Two accepted points with nothing rejected say nothing about
+    /// where the stars ran out.
+    #[test]
+    fn a_short_sweep_with_nothing_rejected_repeats_the_grid() {
+        let points = vec![point(80, Some(1.0), 100), point(120, Some(4.0), 100)];
+        let sparse = FitError::NotEnoughStars { got: 2, needed: 5 };
+        assert_eq!(
+            retry_centre(100, &sparse, &points, 40, (None, None)),
+            RetryPlan {
+                retry: Retry::SameGrid,
+                centre: 100
+            }
+        );
     }
 
     #[test]
@@ -1153,8 +1413,239 @@ mod tests {
         let monotonic = FitError::MonotonicCurve("no minimum".to_owned());
         assert_eq!(
             retry_centre(100, &monotonic, &points, 40, (Some(100), None)),
-            100
+            RetryPlan {
+                retry: Retry::ShiftAbsorbed,
+                centre: 100
+            }
         );
+    }
+
+    #[test]
+    fn a_shift_the_bounds_absorb_in_part_still_moves() {
+        let points = vec![point(80, Some(1.0), 100), point(120, Some(4.0), 100)];
+        let monotonic = FitError::MonotonicCurve("no minimum".to_owned());
+        assert_eq!(
+            retry_centre(100, &monotonic, &points, 40, (Some(90), None)),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 90
+            }
+        );
+    }
+
+    // --- the retry after a sweep starved on one side ---
+
+    /// The rig2 sweep of 2026-09-26, gated as the sweep gates it:
+    /// three accepted samples rising toward four sparse ones and two
+    /// starless ones, focus near 29750 below the grid.
+    fn starved_above() -> Vec<CurvePoint> {
+        let mut points = vec![
+            point(29800, Some(2.17), 88),
+            point(29900, Some(5.98), 46),
+            point(30000, Some(6.97), 16),
+            point(30100, Some(10.71), 6),
+            point(30200, Some(20.91), 1),
+            point(30300, Some(25.10), 1),
+            point(30400, Some(29.30), 1),
+            point(30500, None, 0),
+            point(30600, None, 0),
+        ];
+        apply_sparse_gate(&mut points, 0.1);
+        points
+    }
+
+    fn not_enough_stars() -> FitError {
+        FitError::NotEnoughStars { got: 3, needed: 5 }
+    }
+
+    #[test]
+    fn a_sweep_starved_above_points_below() {
+        assert_eq!(one_sided_starvation(&starved_above()), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn a_sweep_starved_above_shifts_down_by_half_width() {
+        assert_eq!(
+            retry_centre(
+                30200,
+                &not_enough_stars(),
+                &starved_above(),
+                400,
+                (None, None)
+            ),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 29800
+            }
+        );
+    }
+
+    #[test]
+    fn a_sweep_starved_below_points_above() {
+        let points = vec![
+            point(100, None, 0),
+            point(110, Some(9.0), 5),
+            point(120, Some(7.0), 100),
+            point(130, Some(4.0), 100),
+        ];
+        assert_eq!(one_sided_starvation(&points), Some(Ordering::Greater));
+        assert_eq!(
+            retry_centre(120, &not_enough_stars(), &points, 40, (None, None)),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 160
+            }
+        );
+    }
+
+    /// The side is read from positions, so the walk order — ascending
+    /// or descending with the backlash approach — does not change it.
+    #[test]
+    fn the_walk_order_does_not_change_the_side() {
+        let mut points = starved_above();
+        points.reverse();
+        assert_eq!(one_sided_starvation(&points), Some(Ordering::Less));
+    }
+
+    /// A ±1200 sweep recorded on rig2: one accepted sample each side of
+    /// focus and starless frames beyond both, so the samples name no
+    /// side.
+    #[test]
+    fn a_sweep_starved_on_both_sides_repeats_the_grid() {
+        let mut points = vec![
+            point(28537, None, 0),
+            point(28837, None, 0),
+            point(29137, None, 0),
+            point(29437, Some(14.4), 1),
+            point(29737, Some(1.12), 8),
+            point(30037, Some(14.0), 1),
+            point(30337, None, 0),
+            point(30637, None, 0),
+            point(30937, None, 0),
+        ];
+        apply_sparse_gate(&mut points, 0.1);
+        assert_eq!(one_sided_starvation(&points), None);
+        assert_eq!(
+            retry_centre(29737, &not_enough_stars(), &points, 1200, (None, None)),
+            RetryPlan {
+                retry: Retry::SameGrid,
+                centre: 29737
+            }
+        );
+    }
+
+    #[test]
+    fn a_dip_in_the_accepted_samples_names_no_side() {
+        let points = vec![
+            point(100, Some(2.0), 100),
+            point(110, Some(5.0), 100),
+            point(120, Some(4.0), 100),
+            point(130, None, 0),
+        ];
+        assert_eq!(one_sided_starvation(&points), None);
+    }
+
+    #[test]
+    fn a_tie_in_the_accepted_samples_names_no_side() {
+        let points = vec![
+            point(100, Some(2.0), 100),
+            point(110, Some(5.0), 100),
+            point(120, Some(5.0), 100),
+            point(130, None, 0),
+        ];
+        assert_eq!(one_sided_starvation(&points), None);
+    }
+
+    /// HFR falling toward the side the stars left is not the far wing
+    /// leaving the detector's band — a cloud, a donut the detector lost
+    /// — and focus does not lie the other way.
+    #[test]
+    fn samples_falling_toward_the_starved_side_name_no_side() {
+        let points = vec![
+            point(100, Some(8.0), 100),
+            point(110, Some(6.0), 100),
+            point(120, Some(4.0), 100),
+            point(130, None, 0),
+        ];
+        assert_eq!(one_sided_starvation(&points), None);
+    }
+
+    #[test]
+    fn a_starless_point_among_the_accepted_ones_names_no_side() {
+        let points = vec![
+            point(100, Some(2.0), 100),
+            point(110, None, 0),
+            point(120, Some(5.0), 100),
+            point(130, None, 0),
+        ];
+        assert_eq!(one_sided_starvation(&points), None);
+    }
+
+    /// The near-side point reads below every accepted one, so only its
+    /// rejection — sparse counted as not accepted, like starless —
+    /// keeps the samples from naming a side.
+    #[test]
+    fn a_rejection_on_the_near_side_names_no_side() {
+        let mut points = vec![
+            point(90, Some(1.5), 5),
+            point(100, Some(2.0), 100),
+            point(110, Some(5.0), 100),
+            point(120, None, 0),
+        ];
+        apply_sparse_gate(&mut points, 0.1);
+        assert_eq!(points.first().unwrap().rejected, Some(Rejection::Sparse));
+        assert_eq!(one_sided_starvation(&points), None);
+    }
+
+    #[test]
+    fn a_single_accepted_sample_names_no_side() {
+        let points = vec![
+            point(100, Some(2.0), 100),
+            point(110, None, 0),
+            point(120, None, 0),
+        ];
+        assert_eq!(one_sided_starvation(&points), None);
+    }
+
+    /// A focuser that settles short can report one position twice; two
+    /// samples at one position have no order to agree on.
+    #[test]
+    fn two_samples_at_one_position_name_no_side() {
+        let points = vec![
+            point(100, Some(2.0), 100),
+            point(100, Some(3.0), 100),
+            point(110, Some(5.0), 100),
+            point(120, None, 0),
+        ];
+        assert_eq!(one_sided_starvation(&points), None);
+    }
+
+    /// A bound that clipped every grid point below the centre leaves
+    /// all the samples above it; the side they name is still the side
+    /// focus lies on, and a bound sitting at the centre absorbs the
+    /// shift rather than hiding that it was asked for.
+    #[test]
+    fn a_grid_clipped_at_its_centre_reports_the_shift_the_bound_absorbs() {
+        let grid = build_grid(100, 10, 55, (Some(100), None));
+        assert_eq!(grid.first(), Some(&105), "nothing walked below the centre");
+        let points = vec![
+            point(105, Some(2.0), 100),
+            point(115, Some(3.0), 100),
+            point(125, None, 0),
+            point(135, None, 0),
+        ];
+        assert_eq!(
+            retry_centre(100, &not_enough_stars(), &points, 55, (Some(100), None)),
+            RetryPlan {
+                retry: Retry::ShiftAbsorbed,
+                centre: 100
+            }
+        );
+    }
+
+    #[test]
+    fn the_gate_counts_split_accepted_sparse_and_starless() {
+        assert_eq!(gate_counts(&starved_above()), (3, 4, 2));
     }
 
     #[test]
@@ -1228,17 +1719,48 @@ mod tests {
         let SweepFailure::Fit {
             error,
             attempts,
+            attempts_log,
             curve_points,
         } = failure
         else {
             panic!("expected a fit failure, got {failure:?}");
         };
         assert_eq!(attempts, 2, "max_attempts is 2");
-        assert_eq!(error.outcome(), "not_enough_stars");
+        assert_eq!(error.outcome(), FitOutcome::NotEnoughStars);
         assert_eq!(curve_points.len(), 18, "both attempts, nine points each");
         assert!(curve_points.iter().all(|p| p.hfr.is_none()));
         // Two full walks, and no move to a vertex that never fitted.
         assert_eq!(rig.moves().len(), 18);
+        assert_eq!(
+            attempts_log,
+            [
+                FailedAttempt {
+                    attempt: 1,
+                    outcome: FitOutcome::NotEnoughStars,
+                    error: error.to_string(),
+                    centre: 100,
+                    points: 9,
+                    accepted: 0,
+                    sparse: 0,
+                    starless: 9,
+                    retry: Retry::SameGrid,
+                    next_centre: Some(100),
+                },
+                FailedAttempt {
+                    attempt: 2,
+                    outcome: FitOutcome::NotEnoughStars,
+                    error: error.to_string(),
+                    centre: 100,
+                    points: 9,
+                    accepted: 0,
+                    sparse: 0,
+                    starless: 9,
+                    retry: Retry::NoAttemptsLeft,
+                    next_centre: None,
+                },
+            ],
+            "a starless sweep names no side, so the retry walked the same grid"
+        );
     }
 
     #[tokio::test]
@@ -1264,6 +1786,7 @@ mod tests {
         let SweepFailure::Rig {
             error,
             curve_points,
+            ..
         } = &failure
         else {
             panic!("expected a rig failure, got {failure:?}");
@@ -1350,12 +1873,152 @@ mod tests {
         let SweepFailure::Rig {
             error,
             curve_points,
+            ..
         } = &failure
         else {
             panic!("expected a rig failure, got {failure:?}");
         };
         assert!(error.tool_message().contains("jammed"), "{error}");
         assert_eq!(curve_points.len(), 9, "the whole walk is recorded");
+    }
+
+    /// A rig whose stars run out at and above `edge`: the far wing of a
+    /// V centred on `vertex` leaving the detector's band.
+    fn starless_from(vertex: i32, edge: i32) -> ScriptedRig {
+        let rig = ScriptedRig::parabola(vertex);
+        ScriptedRig {
+            curve: Box::new(move |position| {
+                let dx = f64::from(position - vertex);
+                (position < edge).then_some(1.0 + dx * dx / 400.0)
+            }),
+            ..rig
+        }
+    }
+
+    /// A sweep starved on one side, end to end: the first grid holds
+    /// four accepted samples rising toward the starless ones above them,
+    /// so the retry moves half a width down, brackets the vertex and
+    /// fits.
+    #[tokio::test]
+    async fn a_sweep_starved_on_one_side_shifts_and_fits_on_the_retry() {
+        let rig = starless_from(40, 100);
+        let outcome = run_sweep(&rig, 100, params()).await.unwrap();
+        assert_eq!(outcome.attempts, 2);
+        assert_eq!(outcome.best_position, 40);
+        assert!(outcome.confirmed);
+        assert_eq!(
+            outcome.attempts_log,
+            [FailedAttempt {
+                attempt: 1,
+                outcome: FitOutcome::NotEnoughStars,
+                error: FitError::NotEnoughStars { got: 4, needed: 5 }.to_string(),
+                centre: 100,
+                points: 9,
+                accepted: 4,
+                sparse: 0,
+                starless: 5,
+                retry: Retry::Shift,
+                next_centre: Some(60),
+            }]
+        );
+        assert_eq!(
+            outcome.curve_points.len(),
+            18,
+            "both walks, split by the log's nine"
+        );
+        assert_eq!(
+            rig.moves().get(9),
+            Some(&20),
+            "the second walk starts half a width lower"
+        );
+    }
+
+    /// A shift whose clamped grid holds fewer positions than a fit needs
+    /// is not made: the run ends on the attempt that asked for it.
+    #[tokio::test]
+    async fn a_shift_into_a_grid_too_small_ends_the_run() {
+        let rig = starless_from(40, 100);
+        let tight = SweepParams {
+            min_fit_points: 7,
+            min_position: Some(70),
+            ..params()
+        };
+        let failure = run_sweep(&rig, 100, tight).await.unwrap_err();
+        let SweepFailure::Fit {
+            attempts,
+            attempts_log,
+            ..
+        } = &failure
+        else {
+            panic!("expected a fit failure, got {failure:?}");
+        };
+        assert_eq!(*attempts, 1, "no second walk was made");
+        assert_eq!(attempts_log.len(), 1);
+        let only = attempts_log.first().unwrap();
+        assert_eq!(only.retry, Retry::GridTooSmall);
+        assert_eq!(
+            only.next_centre,
+            Some(70),
+            "where the shift would have gone"
+        );
+        assert_eq!(rig.moves().len(), 8, "one walk of 70..140");
+    }
+
+    #[tokio::test]
+    async fn a_shift_the_bounds_absorb_walks_the_same_grid_again() {
+        let rig = starless_from(40, 120);
+        let pinned = SweepParams {
+            min_position: Some(100),
+            ..params()
+        };
+        let failure = run_sweep(&rig, 100, pinned).await.unwrap_err();
+        let SweepFailure::Fit { attempts_log, .. } = &failure else {
+            panic!("expected a fit failure, got {failure:?}");
+        };
+        let retries: Vec<(Retry, Option<i32>)> = attempts_log
+            .iter()
+            .map(|attempt| (attempt.retry, attempt.next_centre))
+            .collect();
+        assert_eq!(
+            retries,
+            [
+                (Retry::ShiftAbsorbed, Some(100)),
+                (Retry::NoAttemptsLeft, None)
+            ]
+        );
+        assert_eq!(rig.moves().len(), 10, "two walks of 100..140");
+    }
+
+    /// A device failure on a later attempt keeps the account of the
+    /// attempts that failed to fit before it.
+    #[tokio::test]
+    async fn a_rig_failure_keeps_the_attempts_that_failed_before_it() {
+        let rig = ScriptedRig::starless();
+        // The first walk's nine moves and two of the second's land.
+        *rig.fail_move_after.lock().unwrap() = Some(11);
+        let failure = run_sweep(&rig, 100, params()).await.unwrap_err();
+        let SweepFailure::Rig {
+            attempts_log,
+            curve_points,
+            ..
+        } = &failure
+        else {
+            panic!("expected a rig failure, got {failure:?}");
+        };
+        assert_eq!(attempts_log.len(), 1);
+        assert_eq!(attempts_log.first().unwrap().retry, Retry::SameGrid);
+        assert_eq!(curve_points.len(), 11, "nine, then two of the retry");
+    }
+
+    #[tokio::test]
+    async fn a_first_attempt_that_fits_logs_no_failed_attempt() {
+        let rig = ScriptedRig::parabola(100);
+        let outcome = run_sweep(&rig, 100, params()).await.unwrap();
+        assert!(
+            outcome.attempts_log.is_empty(),
+            "{:?}",
+            outcome.attempts_log
+        );
     }
 
     #[test]
