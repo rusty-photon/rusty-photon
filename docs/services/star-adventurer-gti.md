@@ -706,9 +706,10 @@ residual) use the sample **projected to now**:
   taken inside the command lock just before the frame is written — not
   when the reply was read. The firmware latches the count as the
   command arrives, and a loaded host delays the other side of the
-  exchange: it can be tens of milliseconds late noticing a reply, while
-  it cannot be late writing a frame it is already in the middle of
-  sending. A `SyncToCoordinates` / connect-time seed is dated at the
+  exchange: it can be tens of milliseconds late noticing a reply, but
+  whatever delays the write after the stamp can only make the stamp
+  early, never late (`WireTiming::send_gap`, normally microseconds,
+  says by how much). A `SyncToCoordinates` / connect-time seed is dated at the
   send of the `:E` that wrote it, and the handshake's samples at the
   send of their `:j`. See *Why the send instant* below.
 - **Rate.** The sample also keeps the axis' decoded `:f` status reply
@@ -790,9 +791,9 @@ compromise: it carries half of every host stall. The round trip
 (`WireTiming::round_trip`) still bounds how far the latch can be from
 the send, and is logged with every reply at `trace` level.
 
-The residual is the time from the `:j` leaving the host to the firmware
-latching the count — about a millisecond over USB, more over Wi-Fi —
-plus half a tick of rounding (one RA tick is 0.024 s), against
+The residual is the time from the stamp to the firmware latching the
+count — the send gap plus the link, about a millisecond over USB and
+more over Wi-Fi — plus half a tick of rounding (one RA tick is 0.024 s), against
 ConformU's 0.07 s tolerance; and on top of both, the step count's own
 jitter (about a tick, with occasional larger lumps), which a single
 sample cannot average out (issue #1371 tracks that). The raw sample is

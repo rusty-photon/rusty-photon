@@ -1249,9 +1249,9 @@ async fn poll_axis_via_session(
 /// is the end of the round trip to date it by. Receipt is not: a busy
 /// host can notice the reply tens of milliseconds late — 40–61 ms on
 /// the rig in issue #1371, which made a tracking `RightAscension` read
-/// about 0.042 s high — while it cannot be late sending a frame it is
-/// in the middle of writing. The midpoint would carry half of every
-/// such stall. See [`WireTiming`] for what each stamp guarantees.
+/// about 0.042 s high — while anything that holds up the write after
+/// the stamp can only make it early. The midpoint would carry half of
+/// every such stall. See [`WireTiming`] for what each stamp guarantees.
 const fn record_position(out: &mut AxisSnapshot, ticks: i32, timing: WireTiming) {
     out.position_ticks = ticks;
     out.sampled_at = Some(timing.sent_at);
@@ -2767,10 +2767,13 @@ mod tests {
         session.close().await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn seeding_a_position_dates_it_when_its_write_went_out() {
         let m = manager();
         let written = Instant::now();
+        // The seed lands later than the write it records, as it does
+        // after a reply the host was slow to read.
+        tokio::time::advance(REPLY_DELAY).await;
         m.seed_ra_position(12_345, written).await;
         m.seed_dec_position(-6_789, written).await;
         let snap = m.snapshot().await;
@@ -2786,20 +2789,10 @@ mod tests {
     /// 41 ms a busy host took to notice a reply on the rig in #1371.
     const REPLY_DELAY: Duration = Duration::from_millis(41);
 
-    /// When the mock received each frame equal to `frame` — the instants
-    /// it latched what those frames read.
-    fn arrivals(state: &MockMountState, frame: &[u8]) -> Vec<Instant> {
-        state
-            .command_log
-            .iter()
-            .zip(&state.command_times)
-            .filter(|(f, _)| f.as_slice() == frame)
-            .map(|(_, at)| *at)
-            .collect()
-    }
-
+    /// When the mock last received `frame` — the instant it latched
+    /// what that frame read.
     fn last_arrival(state: &MockMountState, frame: &[u8]) -> Option<Instant> {
-        arrivals(state, frame).last().copied()
+        state.arrivals(frame).last().copied()
     }
 
     #[tokio::test(start_paused = true)]
@@ -2850,7 +2843,7 @@ mod tests {
         .await
         .expect("the poll loop never published an RA sample");
 
-        let sent = arrivals(&*state.lock().await, b":j1\r");
+        let sent = state.lock().await.arrivals(b":j1\r");
         assert!(
             sent.contains(&polled.sampled_at.unwrap()),
             "the poll's RA sample is dated {:?}, which is not when any :j1 reached the mount ({sent:?})",

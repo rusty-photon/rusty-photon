@@ -1714,17 +1714,9 @@ async fn a_sync_dates_the_positions_it_wrote_when_its_writes_went_out() {
 
     let snap = d.manager.snapshot().await;
     let st = mock.lock().await;
-    let written = |prefix: &[u8]| {
-        st.command_log
-            .iter()
-            .zip(&st.command_times)
-            .filter(|(f, _)| f.starts_with(prefix))
-            .map(|(_, at)| *at)
-            .next_back()
-            .expect("the sync wrote no position on this axis")
-    };
-    assert_eq!(snap.ra.sampled_at, Some(written(b":E1")));
-    assert_eq!(snap.dec.sampled_at, Some(written(b":E2")));
+    assert_eq!(snap.ra.sampled_at, st.arrivals(b":E1").last().copied());
+    assert_eq!(snap.dec.sampled_at, st.arrivals(b":E2").last().copied());
+    assert!(snap.ra.sampled_at.is_some() && snap.dec.sampled_at.is_some());
 }
 
 #[tokio::test]
@@ -2754,6 +2746,28 @@ async fn reset_mount_encoders_writes_encoder_and_clears_state() {
     assert_eq!(s.target_ra_hours, None);
     assert_eq!(s.target_dec_degrees, None);
     assert!(!s.tracking_requested);
+}
+
+#[tokio::test(start_paused = true)]
+async fn reset_mount_encoders_dates_the_positions_it_wrote_when_its_writes_went_out() {
+    // The connect-time / UnparkFromApPosition seed follows the same
+    // convention as a sync's (issue #1371).
+    let (d, mock) = capturing_connected_device().await;
+    let _paused = d.manager.pause_background_polling();
+    mock.lock().await.reply_delay = Duration::from_millis(41);
+    {
+        let guard = d.session.read().await;
+        let session = guard.as_ref().expect("connected device holds a session");
+        d.reset_mount_encoders(session, 12_345, -6_789)
+            .await
+            .unwrap();
+    }
+
+    let snap = d.manager.snapshot().await;
+    let st = mock.lock().await;
+    assert_eq!(snap.ra.sampled_at, st.arrivals(b":E1").last().copied());
+    assert_eq!(snap.dec.sampled_at, st.arrivals(b":E2").last().copied());
+    assert!(snap.ra.sampled_at.is_some() && snap.dec.sampled_at.is_some());
 }
 
 #[tokio::test]

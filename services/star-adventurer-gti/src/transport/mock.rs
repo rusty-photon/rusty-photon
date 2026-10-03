@@ -367,6 +367,24 @@ impl Default for MockMountState {
 }
 
 impl MockMountState {
+    /// When each logged frame starting with `prefix` arrived, oldest
+    /// first — the instants they acted, so for a `:j` the instants its
+    /// count was latched.
+    #[must_use]
+    pub fn arrivals(&self, prefix: &[u8]) -> Vec<Instant> {
+        debug_assert_eq!(
+            self.command_log.len(),
+            self.command_times.len(),
+            "a frame was logged without its arrival time"
+        );
+        self.command_log
+            .iter()
+            .zip(&self.command_times)
+            .filter(|(frame, _)| frame.starts_with(prefix))
+            .map(|(_, at)| *at)
+            .collect()
+    }
+
     const fn axis_mut(&mut self, axis: u8) -> Option<&mut AxisSimState> {
         match axis {
             b'1' => Some(&mut self.ra),
@@ -401,6 +419,7 @@ impl MockMountState {
         // starts the clock for an axis this frame just set running
         // (for every other axis no time has elapsed since the first).
         let now = Instant::now();
+        self.command_log.push(request.to_vec());
         self.command_times.push(now);
         self.advance_tracking(now);
         self.dispatch_command(request);
@@ -417,7 +436,6 @@ impl MockMountState {
     }
 
     fn dispatch_command(&mut self, request: &[u8]) {
-        self.command_log.push(request.to_vec());
         debug_assert!(request.len() >= 3, "send_frame admits only :...\\r frames");
         let (Some(&cmd), Some(&axis)) = (request.get(1), request.get(2)) else {
             self.pending_replies.push_back(err_reply(0));
@@ -1242,11 +1260,17 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_reply_delay_holds_the_reply_back_but_not_the_count() {
         let (mut t, state) = tracking_ra().await;
+        tokio::time::advance(Duration::from_millis(500)).await;
         let delay = Duration::from_millis(41);
         state.lock().await.reply_delay = delay;
         let sent = Instant::now();
 
         t.send_frame(b":j1\r").await.unwrap();
+        assert_eq!(
+            state.lock().await.command_times.last(),
+            Some(&sent),
+            "the command acts as it arrives; only the reply is late"
+        );
         let latched = state.lock().await.ra.position_ticks;
         let mut reply = Vec::new();
         t.recv_frame(&mut reply).await.unwrap();
