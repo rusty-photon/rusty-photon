@@ -133,6 +133,59 @@ search this run cannot tell the camera's own binning registration from a
 second hot pixel nearby. The frames were not kept, so settling it needs a
 run that keeps them.
 
+### Follow-up: the scatter is how this camera and its SDK bin
+
+That run was made later the same day, 07:00–07:09 UTC, with the camera dark
+and every frame kept. It used the same build, again the installed binary in
+console mode, and the same SDK. Two sets of 5 s full frames were taken:
+
+- **Through the driver, in readout mode 0:** bins 1, 2, 3, 4, then bin 1
+  again.
+- **Through `qhyccd.dll` directly, with no driver involved:** bins 1 and 2, from
+  a small C# program that follows the vendor's order:
+  1. open, select mode 0, `InitQHYCCD`;
+  2. 16-bit transfer, gain 30, offset 30;
+  3. `SetQHYCCDBinMode`, then `SetQHYCCDResolution` over the effective area
+     divided by the bin.
+
+In readout mode 0, the only mode measured, the QHY600M bins the way a colour
+sensor bins its Bayer mosaic: each binned pixel sums pixels **two apart**, not
+neighbours. Per axis, at bin *n* the frame
+column *x* (counted from the frame's first column) lands in binned column
+`2·⌊x / 2n⌋ + (x mod 2)`, not in `⌊x / n⌋`. Rows behave the same way.
+
+At bin 2 that puts a pixel exactly at `(x/2, y/2)` only when `x mod 4` and
+`y mod 4` are each 0 or 3, which is a quarter of all pixels. Every other pixel
+lands one pixel away, in a direction that `x mod 4` and `y mod 4` decide. All
+sixteen pixels above follow this rule, including the four exact ones.
+
+| | bin 2 | bin 3 | bin 4 |
+|---|---|---|---|
+| Median, as a multiple of bin 1's (496) | 4.00 | 9.00 | 16.01 |
+| r, camera's frame vs bin-1 frames summed two apart | 0.986 | 0.985 | 0.984 |
+| r, camera's frame vs bin-1 frames summed from neighbours, best alignment | 0.29 | 0.42 | 0.24 |
+| Warm pixels (of 1087) exactly where summing two apart puts them | 1082 | 1079 | 1074 |
+| Warm pixels (of 1087) exactly where summing neighbours puts them | 283 | 479 | 277 |
+
+**How this was measured:**
+
+- **Warm pixels:** isolated bin-1 pixels more than 1500 ADU above bin 1's
+  median in both bin-1 frames, and less than 6000 above it in the dimmer of
+  the two, so none of their binned sums clip.
+- **The neighbour-model counts** are the chance rates of the two-apart rule:
+  ¼, 4/9 and ¼.
+- **The bin-1 reference** is the mean of the two bin-1 frames.
+- **The correlation** leaves out binned pixels that clipped.
+
+The SDK's own bin-2 frame shows the same layout: r = 0.985 against its own
+bin-1 frame, against 0.28 for the neighbour model. So the layout comes from
+the camera or the SDK, not from this driver.
+
+The same session also found that the SDK gives two answers for the effective
+area's origin, `(24, 34)` or `(24, 0)`, depending on when it is asked. That is
+covered in the design doc's
+[G1](../../services/qhy-camera.md#geometry-binning-roi).
+
 ## After the run
 
 ConformU leaves `Gain` and `Offset` at their maxima, 200 and 255; both were

@@ -713,6 +713,27 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   simulated camera carries a 24-column margin and two unread rows (3072x2048
   chip, effective area `(24, 0, 3048x2046)`, reported size 3048x2044) so the
   BDD and ConformU suites exercise both distinctions on every run.
+
+  **The QHY600M's starting row depends on when the SDK is asked.**
+  `GetQHYCCDEffectiveArea` answers `(24, 34)` straight after `InitQHYCCD`.
+  It answers `(24, 0)` before the init, and again once the chip info has been
+  read, the 16-bit transfer set and a bin mode set; the probe did not separate
+  those three steps. `SetQHYCCDResolution` does not change that second answer.
+  The connect handshake reads the area after all three, so this driver uses
+  `(24, 0)`. Measured on rig2, 2026-10-03, SDK 24.1.9.12.
+
+  `(24, 34)` would trade the top 34 rows for the bottom 34. A dark frame of the
+  whole chip leans towards `(24, 0)`, but only through the bottom rows:
+  - **The last 34 rows, 6388–6421,** hold one hot pixel where the rest of the
+    sensor's rate (47 per megapixel) predicts about 15. They do not look like
+    imaging pixels.
+  - **Rows 0–33** carry hot pixels at the sensor's rate, 49 per megapixel. So
+    do columns 10–23, which lie outside the effective area (46 per megapixel).
+    A dark frame cannot tell imaging pixels from shielded ones, so this does
+    not show that the top rows image.
+
+  A frame with light on the sensor would settle the question; none has been
+  taken yet.
 - **B1 (a bin is cached, and `StartExposure` arms it).** `set_bin_x`/`set_bin_y`
   validate against the SDK's valid binning modes and cache symmetric binning;
   an unsupported bin returns `INVALID_VALUE`, whoever owns the device — the
@@ -765,10 +786,39 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   one pixel of `(x/2, y/2)` in it — four exactly there, twelve one pixel
   away — while the three inside a top-left crop of its shape read 1995 to
   2019 there, against the median of 1988; back at bin 1, all sixteen are
-  bright within a pixel of `(x, y)`. The frame is binned, not cropped. The
-  one-pixel scatter, which the QHY178M does not show, is not explained, but
-  the bin-2 frame was armed at exactly half of bin 1's effective-area origin,
-  so it is not this driver's translation (the record has the detail).
+  bright within a pixel of `(x, y)`. The frame is binned, not cropped.
+
+  The one-pixel scatter, which the QHY178M does not show, comes from the
+  camera or its SDK, not from this driver. **In readout mode 0, the QHY600M
+  bins the way a colour sensor bins its Bayer mosaic**, summing pixels two
+  apart, not neighbours. Per axis, at bin *n* the frame
+  column *x* lands in binned column `2·⌊x / 2n⌋ + (x mod 2)`, not in
+  `⌊x / n⌋`, and rows behave the same way. A pixel is therefore exactly at
+  `(x/2, y/2)` only when `x mod 4` and `y mod 4` are each 0 or 3, which is a
+  quarter of pixels and matches the four in sixteen above.
+
+  It was measured the same day with the frames kept: 5 s dark full frames in
+  mode 0 at bins 1–4, plus bins 1 and 2 taken through `qhyccd.dll` directly,
+  without this driver. The other readout modes were not measured.
+  - **Where warm pixels land:** of 1087 unsaturated warm pixels, the two-apart
+    rule places 1082, 1079 and 1074 exactly at bins 2, 3 and 4. Neighbour
+    binning places 26%, 44% and 25% of them, which is just the two-apart
+    rule's chance rate.
+  - **Whole frames:** the bin-1 frames, summed two apart in software, match
+    the camera's frames at r = 0.986, 0.985 and 0.984. Summed from
+    neighbours, they match at 0.29, 0.42 and 0.24.
+  - **Sums, not averages:** the binned medians are 4.00, 9.00 and 16.01 times
+    bin 1's.
+  - **Not this driver:** the SDK's own bin-2 frame shows the same layout.
+
+  This driver does not cause it: it passes the bin to the SDK, which returns
+  this layout. For a client, a 600M binned pixel in mode 0 is still a true sum
+  of *n*² pixels, but with two differences from neighbour binning:
+  - it spans 2*n* − 1 unbinned pixels per axis instead of *n*;
+  - its centre alternates (*n* − 1)/2 unbinned pixels either side of where
+    neighbour binning would put it.
+
+  The record's follow-up section has the detail.
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from the valid
   modes (typically 1–4, up to 8).
 - **B3.** The cached ROI is held in **unbinned** sensor pixels: the region the
