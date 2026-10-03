@@ -689,8 +689,10 @@ semantics `rp`'s capture sweep has today:
    `confirmation_tolerance` of the lowest accepted sample, else fall
    back to that sample's position (`confirmed: false`).
 5. On `monotonic_curve`, retry with the centre shifted by
-   `half_width` toward the lowest accepted sample, clamped to the
-   focuser's bounds. On `not_enough_stars`, retry the same grid —
+   `half_width` toward whichever end of the accepted samples the lowest
+   one sits nearer, clamped to the focuser's bounds — unless a sparse
+   or starless point lies past that end, which keeps the grid. On
+   `not_enough_stars`, retry the same grid —
    unless the stars ran out on one side only: at least two accepted
    points and at least one that is not, every sparse or starless point
    beyond all the accepted ones on one side, and the accepted HFRs
@@ -731,6 +733,35 @@ semantics `rp`'s capture sweep has today:
    fragments do, if every accepted point stays clear of the minimum —
    waits on per-attempt data, which the attempts log now records.
    `rp`'s capture sweep keeps the old rule until S7 retires it.
+
+   *Amended (2026-10-03).* S4 also ported `rp`'s `monotonic_curve`
+   side, which compared the lowest accepted sample with the grid's
+   centre. The accepted samples need not straddle it. A bound that
+   clips the grid leaves them all on one side, the lowest the one
+   nearest the centre, and that test sent the shift away from focus;
+   the side is now the end of the accepted samples the lowest one sits
+   nearer. A cloud that blanks every frame past the lowest sample
+   leaves the same shape, and there the sky, not the curve, decides:
+   HFR falling toward the lost frames puts them nearer focus than any
+   accepted sample — the reasoning that keeps the grid after
+   `not_enough_stars` when HFR falls toward the starved side — so the
+   grid stays. Shifting instead was tried and replayed against a
+   hyperbolic V on the roster grid (±400 in steps of 100, a cloud over
+   the four frames above a centre at focus): the shifted grid starts at
+   focus, the parabola through its one wing puts the vertex outside it
+   again, and the run fails where the same grid, under a cleared sky,
+   fits; the shift wins only with focus about three steps or more past
+   the lowest sample. For the ordinary monotonic curve — accepted
+   samples straddling the centre, the lowest at one end, nothing lost
+   past it — nothing changes. Where they straddle it and frames past
+   the lowest are lost, the old test shifted toward the lost frames and
+   the rule now keeps the grid: the same trade, decided the same way.
+   Only a grid with five or more positions on one side of its centre
+   (`half_width` over `step_size` above four, which a derived
+   nine-point sweep never is) let the old test shift the wrong way; on
+   the default sweep the cloud case always leaves accepted samples
+   reaching the centre. `rp`'s capture sweep keeps the old test until
+   S7.
 6. Guiding: when `get_refocus_plan` says the focuser is guide-coupled
    and `get_guiding_stats` reports active guiding, `pause_guiding`
    before the first move and `resume_guiding` after the confirmation

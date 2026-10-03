@@ -154,7 +154,8 @@ pub enum Retry {
     /// The next attempt walked the same grid.
     SameGrid,
     /// The next attempt's grid was centred `half_width` (or as far as
-    /// the bounds allowed) toward the lowest accepted sample.
+    /// the bounds allowed) toward the end of the accepted samples their
+    /// lowest one sits nearer.
     Shift,
     /// The attempt called for a shift and the focuser's bounds took it
     /// back whole, so the next attempt walked the same grid.
@@ -458,15 +459,16 @@ pub struct RetryPlan {
 /// Where the next attempt's grid is centred after a failed fit.
 ///
 /// Moved by `half_width` when the attempt says focus lies past one end
-/// of its grid — after `monotonic_curve` toward the lowest accepted
-/// sample (unchanged when that sample sits at the centre), after
-/// `not_enough_stars` toward the side [`one_sided_starvation`] finds —
-/// clamped to the focuser's bounds; the same place otherwise.
+/// of its accepted samples — after `monotonic_curve` the end
+/// [`monotonic_side`] finds, after `not_enough_stars` the side
+/// [`one_sided_starvation`] finds — clamped to the focuser's bounds;
+/// the same place otherwise.
 ///
-/// The starved sweep's side is read from its samples alone, never
-/// against the centre: a grid a bound clipped can hold every sample on
-/// one side of a centre it was never walked around, and the side the
-/// samples name is still the one focus lies on.
+/// Either side is read from the samples alone, never against the
+/// centre: a grid a bound clipped, or one whose frames on one side of
+/// the centre all lost their stars, can hold every accepted sample on
+/// one side of a centre they were never measured around, and a
+/// comparison with that centre names the wrong side.
 #[must_use]
 pub fn retry_centre(
     centre: i32,
@@ -487,7 +489,7 @@ pub fn retry_centre(
         return same_grid;
     };
     let direction = match error {
-        FitError::MonotonicCurve(_) => lowest_position.cmp(&centre),
+        FitError::MonotonicCurve(_) => monotonic_side(lowest_position, &accepted, curve_points),
         FitError::NotEnoughStars { .. } => {
             one_sided_starvation(curve_points).unwrap_or(Ordering::Equal)
         }
@@ -509,6 +511,43 @@ pub fn retry_centre(
             retry: Retry::Shift,
             centre: shifted,
         }
+    }
+}
+
+/// Which way focus lies from a sweep whose curve fell toward one end:
+/// toward the end of the accepted samples the lowest one sits nearer —
+/// [`Ordering::Less`] the low end, [`Ordering::Greater`] the high end —
+/// or [`Ordering::Equal`], the same grid, when it sits midway between
+/// them or a point that is not accepted lies past that end.
+///
+/// HFR falling toward such a point puts it nearer focus than any
+/// accepted sample, so the sky took its stars, not the far wing leaving
+/// the detector's band: the frames that would place focus are ones the
+/// grid already walks, and the same grid is the retry that recovers
+/// them once the sky does.
+fn monotonic_side(
+    lowest: i32,
+    accepted: &[(i32, f64, u32)],
+    curve_points: &[CurvePoint],
+) -> Ordering {
+    let (low_end, high_end) = accepted
+        .iter()
+        .fold((lowest, lowest), |(low_end, high_end), (sample, _, _)| {
+            (low_end.min(*sample), high_end.max(*sample))
+        });
+    let side = lowest.abs_diff(low_end).cmp(&high_end.abs_diff(lowest));
+    let past_end = |position: i32| match side {
+        Ordering::Less => position < low_end,
+        Ordering::Greater => position > high_end,
+        Ordering::Equal => false,
+    };
+    let lost_past_end = curve_points
+        .iter()
+        .any(|point| point.accepted_sample().is_none() && past_end(point.position));
+    if lost_past_end {
+        Ordering::Equal
+    } else {
+        side
     }
 }
 
@@ -1394,6 +1433,224 @@ mod tests {
         );
     }
 
+    /// Frames past the lowest sample that lost their stars sit nearer
+    /// focus than any accepted one: the sky took them, and the same grid
+    /// recovers them. The centre, above every accepted sample, would
+    /// have sent the shift down, away from focus.
+    #[test]
+    fn a_monotonic_curve_that_lost_the_frames_past_its_lowest_sample_repeats_the_grid() {
+        let points = vec![
+            point(60, Some(5.0), 100),
+            point(70, Some(4.0), 100),
+            point(80, Some(3.0), 100),
+            point(90, Some(2.0), 100),
+            point(100, None, 0),
+            point(110, None, 0),
+            point(120, None, 0),
+        ];
+        let monotonic = FitError::MonotonicCurve("no minimum".to_owned());
+        assert_eq!(
+            retry_centre(100, &monotonic, &points, 40, (None, None)),
+            RetryPlan {
+                retry: Retry::SameGrid,
+                centre: 100
+            }
+        );
+    }
+
+    /// A thinner cloud: frames the gate rejected past a lowest sample on
+    /// the centre are lost frames too, and they stay out of the span the
+    /// end is measured on.
+    #[test]
+    fn a_monotonic_curve_that_lost_the_frames_past_its_lowest_sample_to_the_gate_repeats_the_grid()
+    {
+        let sparse = |position, hfr| CurvePoint {
+            rejected: Some(Rejection::Sparse),
+            ..point(position, Some(hfr), 5)
+        };
+        let points = vec![
+            point(50, Some(6.0), 100),
+            point(60, Some(5.0), 100),
+            point(70, Some(4.0), 100),
+            point(80, Some(3.0), 100),
+            point(90, Some(2.0), 100),
+            point(100, Some(1.5), 100),
+            sparse(110, 1.2),
+            sparse(120, 1.4),
+        ];
+        let monotonic = FitError::MonotonicCurve("no minimum".to_owned());
+        assert_eq!(
+            retry_centre(100, &monotonic, &points, 40, (None, None)),
+            RetryPlan {
+                retry: Retry::SameGrid,
+                centre: 100
+            }
+        );
+    }
+
+    /// Frames lost past the far end are the far wing leaving the
+    /// detector's band, not the sky; they leave the shift alone.
+    #[test]
+    fn a_monotonic_curve_that_lost_its_far_wing_still_shifts() {
+        let points = vec![
+            point(60, Some(2.0), 100),
+            point(70, Some(3.0), 100),
+            point(80, Some(4.0), 100),
+            point(90, Some(5.0), 100),
+            point(100, None, 0),
+            point(110, None, 0),
+        ];
+        let monotonic = FitError::MonotonicCurve("no minimum".to_owned());
+        assert_eq!(
+            retry_centre(100, &monotonic, &points, 40, (None, None)),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 60
+            }
+        );
+    }
+
+    /// The mirror: frames lost below a lowest sample at the bottom of the
+    /// accepted ones keep the grid, though the centre sits above it.
+    #[test]
+    fn a_monotonic_curve_that_lost_the_frames_below_its_lowest_sample_repeats_the_grid() {
+        let points = vec![
+            point(80, None, 0),
+            point(90, None, 0),
+            point(100, Some(2.0), 100),
+            point(110, Some(3.0), 100),
+            point(120, Some(4.0), 100),
+            point(130, Some(5.0), 100),
+            point(140, Some(6.0), 100),
+        ];
+        let monotonic = FitError::MonotonicCurve("no minimum".to_owned());
+        assert_eq!(
+            retry_centre(110, &monotonic, &points, 40, (None, None)),
+            RetryPlan {
+                retry: Retry::SameGrid,
+                centre: 110
+            }
+        );
+    }
+
+    /// The mirror of the far wing: frames lost below a curve falling
+    /// toward the top leave the shift up alone.
+    #[test]
+    fn a_monotonic_curve_that_lost_its_far_wing_below_still_shifts() {
+        let points = vec![
+            point(50, None, 0),
+            point(60, None, 0),
+            point(70, Some(6.0), 100),
+            point(80, Some(5.0), 100),
+            point(90, Some(4.0), 100),
+            point(100, Some(3.0), 100),
+            point(110, Some(2.0), 100),
+        ];
+        let monotonic = FitError::MonotonicCurve("no minimum".to_owned());
+        assert_eq!(
+            retry_centre(100, &monotonic, &points, 40, (None, None)),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 140
+            }
+        );
+    }
+
+    /// A frame lost between the lowest sample and the end it sits
+    /// nearer is inside the samples, not past them: an accepted sample
+    /// beyond it already says where the curve turns, and the shift
+    /// stands.
+    #[test]
+    fn a_monotonic_curve_that_lost_a_frame_inside_its_samples_still_shifts() {
+        let points = vec![
+            point(60, Some(6.0), 100),
+            point(70, Some(5.0), 100),
+            point(80, Some(4.0), 100),
+            point(90, Some(3.0), 100),
+            point(100, Some(2.0), 100),
+            point(110, None, 0),
+            point(120, Some(2.05), 100),
+        ];
+        let monotonic = FitError::MonotonicCurve("no minimum".to_owned());
+        assert_eq!(
+            retry_centre(90, &monotonic, &points, 40, (None, None)),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 130
+            }
+        );
+    }
+
+    /// The mirror: a frame lost inside the samples below the lowest one.
+    #[test]
+    fn a_monotonic_curve_that_lost_a_frame_inside_its_samples_below_still_shifts() {
+        let points = vec![
+            point(80, Some(2.05), 100),
+            point(90, None, 0),
+            point(100, Some(2.0), 100),
+            point(110, Some(3.0), 100),
+            point(120, Some(4.0), 100),
+            point(130, Some(5.0), 100),
+            point(140, Some(6.0), 100),
+        ];
+        let monotonic = FitError::MonotonicCurve("no minimum".to_owned());
+        assert_eq!(
+            retry_centre(110, &monotonic, &points, 40, (None, None)),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 70
+            }
+        );
+    }
+
+    /// A bound that clipped every grid point below the centre leaves the
+    /// lowest sample at the bottom of the walk, above the centre; focus
+    /// lies below it, toward the bound.
+    #[test]
+    fn a_monotonic_curve_a_bound_clipped_above_its_centre_shifts_toward_the_bound() {
+        let bounds = (Some(98), None);
+        let grid = build_grid(100, 10, 45, bounds);
+        assert_eq!(
+            grid,
+            [105, 115, 125, 135, 145],
+            "nothing walked below the centre"
+        );
+        let points: Vec<CurvePoint> = grid
+            .iter()
+            .zip([2.0, 3.0, 4.0, 5.0, 6.0])
+            .map(|(position, hfr)| point(*position, Some(hfr), 100))
+            .collect();
+        let monotonic = FitError::MonotonicCurve("no minimum".to_owned());
+        assert_eq!(
+            retry_centre(100, &monotonic, &points, 45, bounds),
+            RetryPlan {
+                retry: Retry::Shift,
+                centre: 98
+            }
+        );
+    }
+
+    /// A lowest sample midway between the accepted samples' ends names
+    /// neither of them, wherever the centre sits and whatever was lost
+    /// past them.
+    #[test]
+    fn a_monotonic_curve_lowest_midway_between_its_ends_repeats_the_grid() {
+        let points = vec![
+            point(110, Some(3.0), 100),
+            point(130, Some(1.0), 100),
+            point(150, Some(3.5), 100),
+            point(160, None, 0),
+        ];
+        let monotonic = FitError::MonotonicCurve("no minimum".to_owned());
+        assert_eq!(
+            retry_centre(100, &monotonic, &points, 40, (None, None)),
+            RetryPlan {
+                retry: Retry::SameGrid,
+                centre: 100
+            }
+        );
+    }
+
     /// Two accepted points with nothing rejected say nothing about
     /// where the stars ran out.
     #[test]
@@ -1956,6 +2213,116 @@ mod tests {
             rig.moves().get(9),
             Some(&20),
             "the second walk starts half a width lower"
+        );
+    }
+
+    /// A rig under a cloud that blanks every frame at a position `under`
+    /// covers, for the first `frames` frames, over the V `hfr` draws.
+    fn clouded(
+        hfr: impl Fn(i32) -> f64 + Send + Sync + 'static,
+        under: impl Fn(i32) -> bool + Send + Sync + 'static,
+        frames: usize,
+    ) -> ScriptedRig {
+        let taken = std::sync::atomic::AtomicUsize::new(0);
+        ScriptedRig {
+            curve: Box::new(move |position| {
+                let frame = taken.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                (frame >= frames || !under(position)).then(|| hfr(position))
+            }),
+            ..ScriptedRig::parabola(0)
+        }
+    }
+
+    /// A hyperbolic V focused at 30000: 2 px there, 6 px 400 steps out.
+    fn roster_v(position: i32) -> f64 {
+        let dx = f64::from(position - 30_000) / 400.0;
+        32.0_f64.mul_add(dx * dx, 4.0).sqrt()
+    }
+
+    /// A cloud over the half of the first walk nearest focus, end to
+    /// end: the accepted samples all sit below the centre, falling
+    /// toward focus above them, so the retry walks the same grid, which
+    /// the cleared sky lets bracket the vertex.
+    #[tokio::test]
+    async fn a_monotonic_curve_a_cloud_cut_short_walks_the_same_grid_and_fits() {
+        let rig = clouded(
+            |position| {
+                let dx = f64::from(position - 115);
+                1.0 + dx * dx / 400.0
+            },
+            |position| position >= 100,
+            17,
+        );
+        let wide = SweepParams {
+            half_width: 80,
+            ..params()
+        };
+        let outcome = run_sweep(&rig, 100, wide).await.unwrap();
+        assert_eq!(outcome.attempts, 2);
+        assert_eq!(outcome.best_position, 115);
+        assert!(outcome.confirmed);
+        let first = outcome.attempts_log.first().unwrap();
+        assert_eq!(
+            (
+                first.outcome,
+                first.accepted,
+                first.starless,
+                first.retry,
+                first.next_centre
+            ),
+            (FitOutcome::MonotonicCurve, 8, 9, Retry::SameGrid, Some(100))
+        );
+        assert_eq!(
+            rig.moves().get(17),
+            Some(&20),
+            "the second walk is the first one again"
+        );
+    }
+
+    /// Focus where the prediction put it, on the centre, and a cloud
+    /// over the frames above it: a parabola through the one wing left
+    /// puts its vertex past the samples, so the attempt fails as a
+    /// monotonic curve. A shift would start the next grid at focus and
+    /// fail the same way; the same grid, under a cleared sky, fits.
+    #[tokio::test]
+    async fn a_monotonic_curve_a_cloud_cut_short_at_focus_fits_on_the_same_grid() {
+        let rig = clouded(roster_v, |position| position >= 30_100, 9);
+        let roster = SweepParams {
+            step_size: 100,
+            half_width: 400,
+            ..params()
+        };
+        let outcome = run_sweep(&rig, 30_000, roster).await.unwrap();
+        assert_eq!(outcome.attempts, 2);
+        assert_eq!(outcome.best_position, 30_000);
+        assert!(outcome.confirmed);
+        let first = outcome.attempts_log.first().unwrap();
+        assert_eq!(
+            (first.outcome, first.accepted, first.retry),
+            (FitOutcome::MonotonicCurve, 5, Retry::SameGrid)
+        );
+    }
+
+    /// The same sweep walked downward, as an inward backlash approach
+    /// walks it: the cloud takes the frames below focus, the curve falls
+    /// toward the bottom of what is left, and the same grid fits.
+    #[tokio::test]
+    async fn a_descending_monotonic_curve_a_cloud_cut_short_at_focus_fits_on_the_same_grid() {
+        let rig = clouded(roster_v, |position| position <= 29_900, 9);
+        let roster = SweepParams {
+            step_size: 100,
+            half_width: 400,
+            direction: Direction::Descending,
+            ..params()
+        };
+        let outcome = run_sweep(&rig, 30_000, roster).await.unwrap();
+        assert_eq!(outcome.attempts, 2);
+        assert_eq!(outcome.best_position, 30_000);
+        assert!(outcome.confirmed);
+        let first = outcome.attempts_log.first().unwrap();
+        assert_eq!(
+            (first.outcome, first.accepted, first.retry),
+            (FitOutcome::MonotonicCurve, 5, Retry::SameGrid)
         );
     }
 
