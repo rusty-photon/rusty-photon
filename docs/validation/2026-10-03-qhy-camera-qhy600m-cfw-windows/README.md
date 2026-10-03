@@ -137,8 +137,11 @@ run that keeps them.
 
 ConformU leaves `Gain` and `Offset` at their maxima, 200 and 255; both were
 set back to the connect-time 30 and 30 and one frame armed them. The cooler
-was off when the run began and reads off after it (ConformU writes `CoolerOn`
-and `SetCCDTemperature` in its own checks); the sensor ran uncooled throughout,
-reading 12.0 °C before the first check and 21.7 °C after ConformU. The filter
+was off when the run began and is off after it. ConformU's `CoolerOn` check
+switched it on and straight back off — the two writes 1 ms apart in the
+driver's log — and its `SetCCDTemperature` checks then walked the setpoint
+from 0 down to −273.25 °C and up to 85 °C with the cooler off; it ended by
+restoring the 14.8 °C setpoint it found and `CoolerOn = false`. The sensor
+read 12.0 °C before the first check and 21.7 °C after ConformU. The filter
 wheel ended at slot 0, where it was found. The mode, bin and sub-frame were
 left at mode 0, bin 1 and the full frame.
