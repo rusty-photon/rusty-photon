@@ -124,7 +124,7 @@ Every row was decided with the operator on 2026-10-03, on the recommended option
 |---|----------|----------------|--------|
 | D1 | Sign of the rate | **Mechanical on both axes, with the Dec sign fixed per hemisphere** — the ASCOM simulator's rule, which rp's BDD already runs against. **Primary**: positive turns the RA motor CW, the direction sidereal tracking turns, so the OTA moves west (`mech_HA` increases). **Secondary**: positive moves the OTA toward +Dec in the normal (counterweight-down) pointing state at the configured site latitude, and that motor direction is kept through the pole, so `−r` always retraces `+r` (ConformU's "move back" legs, and every paddle); with a southern site latitude the Secondary sense is inverted once, exactly as OmniSim does. There is **no** pointing-state inversion: a sign resolved against the pier side would stop retracing the moment a leg crosses the pole, which ConformU's legs can do from where they start (near the pole, where the AbortSlew test leaves the mount). The Alpaca API says only "the rate of motion (deg/sec) about the specified axis"; the ASCOM definition leaves the sign "purposely undefined" and calls the axes mechanical. The pulse's celestial inversion is a guiding contract, and a paddle maps buttons to signs itself (TPPA measures the direction it gets, N.I.N.A. has reverse toggles). The design doc records the client-visible consequence: past the pole, positive Secondary moves the OTA toward −Dec | Decided 2026-10-03 |
 | D2 | Shape of `AxisRates` | One contiguous range per axis, `[min, max]` in deg/s, both axes advertised; Tertiary stays empty with `CanMoveAxis = false`. The pair is **one `f64` pair computed once** per axis; `AxisRates` returns it, `MoveAxis` validates `\|rate\|` inclusively against the same pair, and the rounded period is clamped to 24 bits after rounding in the `MoveAxis` caller only, so the exact values ConformU reads back are the exact values it may send. `min` is a per-axis constant M0 decides: the 24-bit `:I` floor (period `0xFFFFFF`, ≈ 0.023 × sidereal on RA, ≈ 0.028 × on Dec, about one step per second) times a floor multiplier that is `1.0` if the floor rung runs and stops cleanly and the lowest clean rung's factor otherwise. The refusal of `min / 2` comes from the inclusive range check against the advertised pair; when `min` is the floor it is also unexpressible, since no 24-bit period exists below it. `max` is the D3 ceiling constant — M0's firmware ceiling for the mount code times its safety factor — clamped at connect by the D9 margin cap, so the pair is computed once from the connect-time cap and never from a config key. One range cannot overlap or duplicate, which is what ConformU checks, and a client gets every rate in between rather than a preset ladder | Decided 2026-10-03 |
-| D3 | Rate limits live where | **Nowhere new.** `MoveAxis` is always enabled on RA and Dec, and the ceiling is a driver constant: M0's firmware ceiling for the GTi mount code (which the identity gate already reads at connect) times a safety factor set from the record, measured on a loaded rig. At connect the constant is clamped by the guard-margin cap (D9) computed from the existing `command_timeout` and `polling_interval` keys, so a rig with a long timeout gets a lower ceiling without a new key — about 4.4°/s on a default config with the 3.77° coast prior — and `AxisRates` reports the clamped value. Nothing on the wire can derive the ceiling (the high-speed ratio reads 1, there is no encoder, a stall is invisible), so a typed-in per-rig ceiling would be one the operator cannot verify; a `move_axis` config block (a lower ceiling for an unusual payload, or a switch to refuse paddle clients on an unattended rig) is added only if M3's rig run shows the need | Decided 2026-10-03 |
+| D3 | Rate limits live where | **Nowhere new.** `MoveAxis` is enabled on RA and Dec whenever the connect-time range is non-empty, which every realistic config gives, and the ceiling is a driver constant: M0's firmware ceiling for the GTi mount code (which the identity gate already reads at connect) times a safety factor set from the record, measured on a loaded rig. At connect the constant is clamped by the guard-margin cap (D9) computed from the existing `command_timeout` and `polling_interval` keys, so a rig with a long timeout gets a lower ceiling without a new key — about 4.4°/s on a default config with the 3.77° coast prior — and `AxisRates` reports the clamped value. The two keys are unconstrained `Duration`s, so a config can push the cap below D2's `min` — it takes a `command_timeout` or `polling_interval` of tens of thousands of seconds — and then the range is empty and the feature degrades rather than the config failing: `CanMoveAxis` reads `false` on both axes, `AxisRates` is empty, `MoveAxis` is `NOT_IMPLEMENTED`, and connect `warn!`s naming the keys and the cap. A config that loaded before this plan still loads. Nothing on the wire can derive the ceiling (the high-speed ratio reads 1, there is no encoder, a stall is invisible), so a typed-in per-rig ceiling would be one the operator cannot verify; a `move_axis` config block (a lower ceiling for an unusual payload, or a switch to refuse paddle clients on an unattended rig) is added only if M3's rig run shows the need | Decided 2026-10-03 |
 | D4 | A new rate on an axis already overridden | Replace it. `OverrideId` is per call. A live `:I` is used only for the shapes M0 measured (same direction, same regime, within the jump M0 showed the motor follows) **and** only after a live `:f` read under `axis_ownership` shows the axis running in the claim's mode — the pulse's `admits_live_rate` gate, never the claim's recorded mode alone, because a claim whose start is still in its stop-and-wait describes a stopped motor. Anything else → stop-and-wait, `:G`, `:I`, `:J`. A call whose start or change is superseded by a later `MoveAxis` on the same axis returns `INVALID_OPERATION` ("superseded") and touches the wire no further; the later call owns the axis. The connection's `live_rate_refused` latch applies: once the mount has refused a live change, every change stops first | Decided 2026-10-03 |
 | D5 | Rate `0` | On RA with `Tracking = true`: if a live `:f1` shows RA running in Tracking/Slow/CW and the latch is clear → a live `:I1 <sidereal>`, exactly the pulse restore; otherwise → `:K1`, wait stopped, `:G110`, `:I1 <sidereal>`, `:J1`, the `Tracking = true` sequence, as the pulse's `Restore::Restart` does. With `Tracking = false`, or on Dec → `:K`, wait stopped. The ambiguous-reply retry and the `:K` → `:L` stop ladder are the pulse's, reused; a restore that cannot be made to land stops the axis and, on RA, sets `Tracking = false`, as the pulse does. The claim is released only after the restore lands or its ladder ends, so `Slewing` reads `true` through the restore and no pulse or slew can claim the axis during the stop-and-wait. Rate `0` on an axis with no override is a no-op success — ConformU's first call — but only **after** the connected, implemented and parked checks: ConformU sends rate `0` to a parked mount and requires `INVALID_WHILE_PARKED`. The override's stop-and-wait budget is a named constant set from M0's stop latency at the ceiling, not the slew's 2 s. Rate `0` is synchronous: it returns once the stop is confirmed and the restore has landed, because a paddle client's next read is `Slewing`. ConformU times only the first rate `0` (no override) and the `+min` / `+max` starts from rest or sidereal, never a stop from speed, so its 1 s target does not constrain the shape | Decided 2026-10-03 |
 | D6 | `Tracking` written while an override runs | **Refused** with `INVALID_OPERATION` ("MoveAxis in progress; send rate 0 first") while any override claim is held, on either axis. Deferring the write instead was considered and rejected on two counts: the tracking-guard and auto-flip ticks key on `tracking_requested`, so a value that changes mid-override hands RA to two guards with different margins; and a `Tracking = true` write holds `axis_ownership` through a 2 s stop-and-wait, which at 5°/s is 10° the override guard cannot interrupt. The spec's own FAQ says clients should not rely on the `Tracking` value while `MoveAxis` is in effect and lists no exception for the write, so any policy is within it; OmniSim accepts the write and applies it when the move ends; ConformU writes `Tracking` only between overrides, after `Slewing` has read false, so the refusal is never reached by its sequence. The error names the way out | Decided 2026-10-03 |
@@ -198,10 +198,20 @@ Experiments, per axis:
    (3°/s), because a hidden gearing of 32 would turn the 128× rung into
    34° in two seconds, and the ladder stops at the first cut rung. A
    cut hold returns to the mark in Slow mode at 8×, never at the Fast
-   period. The preflight's travel bound covers this experiment because
-   a cut hold travels at most the cap times the fit window plus the
-   coast from the cap, which is under one Slow ceiling hold; the record
-   states both numbers. Outcomes: identical to Slow (the ratio really is
+   period. The preflight budgets each Fast rung at its **worst case**,
+   not at the cap, because the cap bounds what the cut rule reacts to
+   and not what the motor does before it reacts: the rung's rate times
+   `G_max`, a probe parameter defaulting to 32 (the hidden gearing the
+   cut rule's own example assumes), for the fit window plus the
+   Slow-mode stop latency, plus the coast at that worst-case rate —
+   taken from experiment 4, which runs on the Slow ladder before this
+   one, scaled linearly above the Slow ceiling and never below the
+   3.77° prior. A rung whose worst-case travel would leave the bound is
+   not run and the ladder ends there, with the fact in the record;
+   starting at the floor keeps the first rungs inside any bound, since
+   the floor at `G_max` is still sub-sidereal. A gearing above `G_max`
+   is outside what the probe can bound, and the record says so.
+   Outcomes: identical to Slow (the ratio really is
    1), geared (the gearing is measured, and M4 exists), or a different
    ceiling. INDI eqmod drives this family in Fast at its 600–800×
    presets with `period = sidereal / rate`, which is the prior art for
@@ -213,7 +223,8 @@ Experiments, per axis:
    This decides D4's live-change rule and the largest jump it allows.
    If M4 is taken, one Fast-mode live `:I` trial, or D4 decides that
    Fast overrides always stop first, as INDI does.
-4. **Stop latency and coast per rate.** `:K` from each rung: time to
+4. **Stop latency and coast per rate**, taken as each Slow rung's stop
+   in (1), so it exists before (2) runs. `:K` from each rung: time to
    `running = 0`, ticks of coast; the same for `:L`. The coast at the
    ceiling is D9's `coast(rate)` and the probe's own travel margin; the
    latency is D5's stop-and-wait budget, which Park inherits when it
@@ -241,15 +252,16 @@ watchdog task — the tool holds the transport alone and runs
 sequentially — so the operator's hand on the switch is the last
 resort, and the record says so. The probe never issues a goto and
 never touches the axis it is not measuring. Tracking-Fast is the mode
-of the Phase 4 runaway; experiment 2 runs it under the cut rule above
-and from the lowest rung.
+of the Phase 4 runaway; experiment 2 runs it under the cut rule above,
+from the lowest rung, each rung budgeted at its `G_max` worst case.
 
 ## Phase M1 — design and scenarios
 
 ### Design doc additions (`docs/services/star-adventurer-gti.md`)
 
-- **Capability flags**: `CanMoveAxis(Primary)` / `(Secondary)` → `true`,
-  unconditionally; `(Tertiary)` → `false`. `AxisRates` per D2.
+- **Capability flags**: `CanMoveAxis(Primary)` / `(Secondary)` → `true`
+  whenever the connect-time range is non-empty (D3); `(Tertiary)` →
+  `false`. `AxisRates` per D2.
 - **Writes / methods**: `MoveAxis(axis, rate)` row with the refusals in
   order: `NOT_CONNECTED`; `NOT_IMPLEMENTED` for Tertiary;
   `INVALID_WHILE_PARKED`; then the rate-`0` no-op; then
@@ -334,7 +346,10 @@ list, grouped as the design doc sections are:
 - **Capabilities.** CanMoveAxis Primary and Secondary read true;
   Tertiary reads false. AxisRates for each axis is the pinned
   `[min, max]`; Tertiary is empty. With a `command_timeout` long enough
-  for the margin cap to bite, AxisRates reports the clamped ceiling.
+  for the margin cap to bite, AxisRates reports the clamped ceiling;
+  with one long enough to push the cap below `min`, CanMoveAxis reads
+  false on both axes, AxisRates is empty and MoveAxis is
+  `NOT_IMPLEMENTED`.
 - **Validation.** Rate above max, below min (`min / 2`), NaN →
   `INVALID_VALUE` and no wire frame. Exactly the advertised min and
   exactly the advertised max are accepted, both signs, both axes, and
