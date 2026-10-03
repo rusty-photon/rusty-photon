@@ -153,6 +153,16 @@ const RETURN_TOLERANCE_TICKS: i32 = 10;
 const RETURN_ABORT_TICKS: i32 = 200;
 /// Wait for both axes to report stopped in the final safety stop.
 const FINAL_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+/// Most late replies a drain swallows before giving up on the link.
+const DRAIN_MAX_FRAMES: u8 = 8;
+
+/// What `:f` said when a wait for a stop ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopState {
+    Stopped,
+    Blocked,
+    Running,
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -268,6 +278,11 @@ impl Op {
         }
     }
 
+    /// `:K` or `:L`.
+    const fn is_stop(self) -> bool {
+        matches!(self, Self::Stop(_) | Self::Halt(_))
+    }
+
     /// Whether the op may run after an abort: stop-class and read-only.
     const fn stop_class(self) -> bool {
         matches!(
@@ -376,6 +391,9 @@ struct Link {
     tag: String,
     armed_ra: bool,
     armed_dec: bool,
+    /// A stop's exchange failed without a drain; drain before the next
+    /// exchange whose reply matters.
+    resync: bool,
     rtts: Vec<f64>,
     abort: Arc<AtomicBool>,
 }
@@ -422,6 +440,10 @@ impl Link {
                 )));
             }
         }
+        if self.resync && !op.is_stop() {
+            self.drain("a stop's transport error").await;
+            self.resync = false;
+        }
         let command = op.command();
         let frame = command
             .encode()
@@ -457,8 +479,12 @@ impl Link {
                     &format!("<transport error: {e}>"),
                 );
                 // A stop must not wait on a drain: the next axis' halt goes
-                // out first. A late ack shifted onto it is harmless.
-                if !matches!(op, Op::Halt(_) | Op::Stop(_)) {
+                // out first, and its late ack only shifts onto another
+                // stop. The link is drained before the next exchange
+                // whose reply is read for its content.
+                if op.is_stop() {
+                    self.resync = true;
+                } else {
                     self.drain(&cmd_text).await;
                 }
                 Err(ProbeError::Transport(format!("{cmd_text}: {e}")))
@@ -466,20 +492,27 @@ impl Link {
         }
     }
 
-    /// After a failed exchange, swallow a reply that may still arrive for
-    /// it, so it cannot be read as the answer to the next command.
+    /// After failed exchanges, swallow every reply that may still arrive
+    /// for them, until a read times out, so none can be read as the
+    /// answer to the next command.
     async fn drain(&mut self, after: &str) {
-        let t = self.now();
-        let mut buf = Vec::new();
-        let drained = match self.transport.recv_frame(&mut buf).await {
-            Ok(()) => format!(
-                "<drained late reply: {}>",
-                String::from_utf8_lossy(&buf).trim_end()
-            ),
-            Err(e) => format!("<nothing to drain: {e}>"),
-        };
-        let now = self.now();
-        self.log_line(&format!("drain after {after}"), t, now, &drained);
+        for _ in 0..DRAIN_MAX_FRAMES {
+            let t = self.now();
+            let mut buf = Vec::new();
+            let result = self.transport.recv_frame(&mut buf).await;
+            let now = self.now();
+            let what = match &result {
+                Ok(()) => format!(
+                    "<drained late reply: {}>",
+                    String::from_utf8_lossy(&buf).trim_end()
+                ),
+                Err(e) => format!("<drain ended: {e}>"),
+            };
+            self.log_line(&format!("drain after {after}"), t, now, &what);
+            if result.is_err() {
+                return;
+            }
+        }
     }
 
     /// [`Self::ask`], treating an error reply as a failure.
@@ -555,16 +588,24 @@ impl Link {
         }
     }
 
-    /// Poll `:f` on `axis` until it reports stopped; `false` on timeout.
-    async fn wait_stopped(&mut self, axis: Axis, timeout: Duration) -> Result<bool, ProbeError> {
+    /// Poll `:f` on `axis` until it reports stopped, or blocked (which
+    /// is never a clean stop), or `timeout` passes.
+    async fn wait_stopped(
+        &mut self,
+        axis: Axis,
+        timeout: Duration,
+    ) -> Result<StopState, ProbeError> {
         let end = deadline(timeout)?;
         loop {
             let (status, _) = self.status(axis).await?;
+            if status.blocked {
+                return Ok(StopState::Blocked);
+            }
             if !status.running {
-                return Ok(true);
+                return Ok(StopState::Stopped);
             }
             if Instant::now() >= end {
-                return Ok(false);
+                return Ok(StopState::Running);
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -1409,9 +1450,9 @@ async fn final_stop(link: &mut Link) -> String {
         }
         let mut stopped = true;
         for axis in [Axis::Ra, Axis::Dec] {
-            let ok = matches!(link.wait_stopped(axis, FINAL_STOP_TIMEOUT).await, Ok(true));
-            report.push(format!("{axis:?} stopped: {ok} (round {round})"));
-            stopped &= ok;
+            let state = link.wait_stopped(axis, FINAL_STOP_TIMEOUT).await;
+            report.push(format!("{axis:?}: {state:?} (round {round})"));
+            stopped &= matches!(state, Ok(StopState::Stopped));
         }
         if stopped {
             report.push("both axes stopped".into());
@@ -1627,6 +1668,7 @@ async fn probe(args: &Args) -> Result<bool, ProbeError> {
         tag: String::new(),
         armed_ra: false,
         armed_dec: false,
+        resync: false,
         rtts: Vec::new(),
         abort,
     };
