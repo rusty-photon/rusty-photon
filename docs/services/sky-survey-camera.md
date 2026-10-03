@@ -330,13 +330,13 @@ would require teaching `POST /sky-survey/position` to "fall back" or
 ### `StartExposure` Pipeline
 
 1. Validate parameters against the rules in *Behavioral Contracts*.
-2. Read `Duration`, `Light`, `BinX/Y`, `NumX/Y`, `StartX/Y` and
-   snapshot the current `PointingState`.
+2. Read `Duration`, `Light`, the bin (`BinX` and `BinY` are one value,
+   E8), `NumX/Y`, `StartX/Y` and snapshot the current `PointingState`.
 3. If `Light = false`, synthesise a zero-filled `i32` array of size
    `NumX * NumY` and skip to step 7.
 4. Compute the SkyView request geometry for the **full sensor at the
    requested binning**, not just the requested sub-frame:
-   - `pixels = (sensor_width_px / BinX, sensor_height_px / BinY)`
+   - `pixels = (sensor_width_px / Bin, sensor_height_px / Bin)`
    - `size_deg = (plate_scale_x_arcsec * sensor_width_px / 3600,
                   plate_scale_y_arcsec * sensor_height_px / 3600)`
    `StartX/Y` and `NumX/Y` do **not** influence the SkyView request —
@@ -585,7 +585,7 @@ setter because the spec defines a hard `[1, MaxBin]` range.
   (`ImageReady = false` and not yet aborted) returns
   `INVALID_OPERATION`.
 - **E3.** `BinX` or `BinY` outside `[1, MaxBinX/Y]` is rejected at
-  the property setter with `INVALID_VALUE`.
+  the property setter with `INVALID_VALUE`, and the bin is unchanged.
 - **E4.** `StartExposure` with `NumX = 0` or `NumY = 0` returns
   `INVALID_VALUE`.
 - **E5.** `StartExposure` with `StartX + NumX > CameraXSize / BinX`,
@@ -605,6 +605,16 @@ setter because the spec defines a hard `[1, MaxBin]` range.
   exposure unvalidated. The `NumX` / `NumY` **getters** report the
   new value immediately, as ASCOM requires; it is the frame in
   flight that keeps the old one.
+- **E8.** Binning is symmetric: `CanAsymmetricBin` is `false`, so
+  `BinX` and `BinY` are **one value**. A write to either sets both,
+  and both getters read it back. A client that sets only `BinX = 2`
+  therefore gets a frame binned 2×2 — the cutout is
+  `sensor_width_px / 2 × sensor_height_px / 2`, and E5 bounds both
+  axes by that bin — never a 2×1 frame from a camera that has said
+  it cannot bin 2×1. Writing the two members different values leaves
+  the later one on both axes. The SDK siblings store their bin the
+  same way, as one value behind both members (`qhy-camera`,
+  `zwo-camera`, `svbony-camera`).
 
 ### `StartExposure` survey path
 
@@ -775,9 +785,9 @@ exposure state (C5) and its settings (C6) — and those rows say so.
 |---|---|
 | `CameraXSize` / `CameraYSize` | From `optics.sensor_width_px` / `sensor_height_px` |
 | `PixelSizeX` / `PixelSizeY` | From `optics.pixel_size_*_um` |
-| `BinX` / `BinY` | Settable, integer, capped by `MaxBinX` / `MaxBinY` at the setter; getters and setters `NOT_CONNECTED` while disconnected, and back to `1` at the start of a connect (C6) |
+| `BinX` / `BinY` | One settable value behind both members: a write to either sets both (E8); integer, capped by `MaxBinX` / `MaxBinY` at the setter (E3); getters and setters `NOT_CONNECTED` while disconnected, and back to `1` at the start of a connect (C6) |
 | `MaxBinX` / `MaxBinY` | `4` (configurable later) |
-| `CanAsymmetricBin` | `false` |
+| `CanAsymmetricBin` | `false` — `BinX` and `BinY` are one value (E8) |
 | `NumX` / `NumY` / `StartX` / `StartY` | Setters accept any `u32`; geometry checked at `StartExposure` (E4/E5); getters and setters `NOT_CONNECTED` while disconnected, and back to the configured full frame at the start of a connect (C6) |
 | `MaxADU` | `65535` (16-bit equivalent) |
 | `ElectronsPerADU` | `1.0` placeholder (no signal model in v0) |

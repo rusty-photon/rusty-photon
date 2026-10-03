@@ -30,12 +30,13 @@ const EXPOSURE_MAX: Duration = Duration::from_hours(1);
 /// state: the cutout is always sized to the binned full sensor (the
 /// design doc crops sub-frames out client-side after the FITS comes
 /// back).
+///
+/// One `bin` divides both axes, because binning is symmetric (E8).
 #[must_use]
 pub fn build_full_sensor_request(
     config: &Config,
     pointing: PointingState,
-    bin_x: u8,
-    bin_y: u8,
+    bin: u8,
 ) -> SurveyRequest {
     let arcsec_per_pixel_x =
         206.265 * config.optics.pixel_size_x_um / config.optics.focal_length_mm;
@@ -43,15 +44,14 @@ pub fn build_full_sensor_request(
         206.265 * config.optics.pixel_size_y_um / config.optics.focal_length_mm;
     // `new(..).unwrap_or(MIN)` is `.max(1)` shaped as a `NonZero`, so
     // the divisions below cannot hit zero.
-    let bx = NonZeroU32::from(NonZeroU8::new(bin_x).unwrap_or(NonZeroU8::MIN));
-    let by = NonZeroU32::from(NonZeroU8::new(bin_y).unwrap_or(NonZeroU8::MIN));
+    let divisor = NonZeroU32::from(NonZeroU8::new(bin).unwrap_or(NonZeroU8::MIN));
     SurveyRequest {
         survey: config.survey.name.clone(),
         ra_deg: pointing.ra_deg,
         dec_deg: pointing.dec_deg,
         rotation_deg: pointing.rotation_deg,
-        pixels_x: config.optics.sensor_width_px / bx,
-        pixels_y: config.optics.sensor_height_px / by,
+        pixels_x: config.optics.sensor_width_px / divisor,
+        pixels_y: config.optics.sensor_height_px / divisor,
         size_x_deg: arcsec_per_pixel_x * f64::from(config.optics.sensor_width_px) / 3600.0,
         size_y_deg: arcsec_per_pixel_y * f64::from(config.optics.sensor_height_px) / 3600.0,
     }
@@ -139,8 +139,9 @@ pub struct DeviceState {
     /// mount thinks it is" on a single capture (F7); the standard
     /// follow-mode read path is otherwise unchanged.
     pub next_pointing_override: Mutex<Option<PointingState>>,
-    pub bin_x: AtomicU8,
-    pub bin_y: AtomicU8,
+    /// The bin, one value behind both `BinX` and `BinY`: `CanAsymmetricBin`
+    /// is `false`, so a write to either member sets both (E8).
+    pub bin: AtomicU8,
     pub num_x: AtomicU32,
     pub num_y: AtomicU32,
     pub start_x: AtomicU32,
@@ -241,8 +242,7 @@ impl SkySurveyCamera {
             connected: AtomicBool::new(false),
             pointing_source,
             last_snapshot,
-            bin_x: AtomicU8::new(1),
-            bin_y: AtomicU8::new(1),
+            bin: AtomicU8::new(1),
             num_x: AtomicU32::new(sensor_w),
             num_y: AtomicU32::new(sensor_h),
             start_x: AtomicU32::new(0),
@@ -345,8 +345,7 @@ impl SkySurveyCamera {
     /// the values [`Self::from_parts`] starts from (C6). Called at the start of
     /// a connect.
     fn reset_session_settings(&self) {
-        self.state.bin_x.store(1, Ordering::Release);
-        self.state.bin_y.store(1, Ordering::Release);
+        self.state.bin.store(1, Ordering::Release);
         self.state
             .num_x
             .store(self.state.config.optics.sensor_width_px, Ordering::Release);
@@ -371,8 +370,7 @@ impl SkySurveyCamera {
 /// spawn rather than inside the task (F7/P7).
 #[derive(Debug, Clone, Copy)]
 struct ExposureGeometry {
-    bin_x: u8,
-    bin_y: u8,
+    bin: u8,
     num_x: u32,
     num_y: u32,
     start_x: u32,
@@ -437,8 +435,7 @@ async fn run_exposure_inner(
     // device — see [`ExposureGeometry`]. A setter that lands while this task
     // is running belongs to the next exposure.
     let ExposureGeometry {
-        bin_x: bx,
-        bin_y: by,
+        bin,
         num_x: nx,
         num_y: ny,
         start_x: sx,
@@ -502,7 +499,7 @@ async fn run_exposure_inner(
     if state.pointing_source.is_follow_mode() {
         state.last_snapshot.store(pointing).await;
     }
-    let request = build_full_sensor_request(&state.config, pointing, bx, by);
+    let request = build_full_sensor_request(&state.config, pointing, bin);
     let cache_dir = state.config.survey.cache_dir.clone();
     let cache_key = request.cache_key();
     let (bytes, from_cache) =
@@ -777,34 +774,29 @@ impl Camera for SkySurveyCamera {
     /// the SDK-backed siblings' do.
     async fn bin_x(&self) -> ASCOMResult<u8> {
         self.ensure_connected()?;
-        Ok(self.state.bin_x.load(Ordering::Acquire))
+        Ok(self.state.bin.load(Ordering::Acquire))
     }
 
+    /// E8: `BinX` and `BinY` are one value, so this sets both — a client that
+    /// sets only `BinX` must not take a frame binned on one axis from a camera
+    /// that reports `CanAsymmetricBin = false`. `set_bin_y` forwards here.
     async fn set_bin_x(&self, bin_x: u8) -> ASCOMResult<()> {
         self.ensure_connected()?;
         if !(1..=MAX_BIN).contains(&bin_x) {
             return Err(ASCOMError::invalid_value(format!(
-                "BinX {bin_x} outside [1, {MAX_BIN}]"
+                "bin {bin_x} outside [1, {MAX_BIN}]"
             )));
         }
-        self.state.bin_x.store(bin_x, Ordering::Release);
+        self.state.bin.store(bin_x, Ordering::Release);
         Ok(())
     }
 
     async fn bin_y(&self) -> ASCOMResult<u8> {
-        self.ensure_connected()?;
-        Ok(self.state.bin_y.load(Ordering::Acquire))
+        self.bin_x().await
     }
 
     async fn set_bin_y(&self, bin_y: u8) -> ASCOMResult<()> {
-        self.ensure_connected()?;
-        if !(1..=MAX_BIN).contains(&bin_y) {
-            return Err(ASCOMError::invalid_value(format!(
-                "BinY {bin_y} outside [1, {MAX_BIN}]"
-            )));
-        }
-        self.state.bin_y.store(bin_y, Ordering::Release);
-        Ok(())
+        self.set_bin_x(bin_y).await
     }
 
     async fn num_x(&self) -> ASCOMResult<u32> {
@@ -869,17 +861,16 @@ impl Camera for SkySurveyCamera {
         }
         // Kept in both widths: `u8` is what the device stores and what the
         // survey request takes, `u32` is what the sensor arithmetic below
-        // needs. Loaded once either way, so the two cannot disagree.
-        let bin_x = self.state.bin_x.load(Ordering::Acquire);
-        let bin_y = self.state.bin_y.load(Ordering::Acquire);
-        let bx = u32::from(bin_x);
-        let by = u32::from(bin_y);
+        // needs. Loaded once either way, so the two cannot disagree — and one
+        // load bins both axes, so E5 bounds them by the same bin (E8).
+        let bin = self.state.bin.load(Ordering::Acquire);
+        let divisor = u32::from(bin).max(1);
         let nx = self.state.num_x.load(Ordering::Acquire);
         let ny = self.state.num_y.load(Ordering::Acquire);
         let sx = self.state.start_x.load(Ordering::Acquire);
         let sy = self.state.start_y.load(Ordering::Acquire);
-        let binned_sensor_width = self.state.config.optics.sensor_width_px / bx.max(1);
-        let binned_sensor_height = self.state.config.optics.sensor_height_px / by.max(1);
+        let binned_sensor_width = self.state.config.optics.sensor_width_px / divisor;
+        let binned_sensor_height = self.state.config.optics.sensor_height_px / divisor;
         // E4: NumX/NumY must be > 0. The setters now accept any u32
         // per ASCOM convention; we enforce E4/E5 here at the moment
         // the geometry is actually used.
@@ -962,8 +953,7 @@ impl Camera for SkySurveyCamera {
         // The values E3/E4/E5 were judged against, not a fresh read: between
         // here and the task's first use, a setter can change any of them.
         let geometry = ExposureGeometry {
-            bin_x,
-            bin_y,
+            bin,
             num_x: nx,
             num_y: ny,
             start_x: sx,
@@ -1239,7 +1229,7 @@ mod tests {
     fn build_full_sensor_request_uses_full_sensor_fov() {
         let cfg = fake_config();
         let pointing = PointingState::new(10.0, 20.0, 0.0);
-        let req = build_full_sensor_request(&cfg, pointing, 1, 1);
+        let req = build_full_sensor_request(&cfg, pointing, 1);
         assert_eq!(req.pixels_x, 640);
         assert_eq!(req.pixels_y, 480);
         assert!(req.size_x_deg > 0.1 && req.size_x_deg < 1.0);
@@ -1249,7 +1239,7 @@ mod tests {
     fn build_full_sensor_request_halves_pixels_when_binned() {
         let cfg = fake_config();
         let pointing = PointingState::new(0.0, 0.0, 0.0);
-        let req = build_full_sensor_request(&cfg, pointing, 2, 2);
+        let req = build_full_sensor_request(&cfg, pointing, 2);
         assert_eq!(req.pixels_x, 320);
         assert_eq!(req.pixels_y, 240);
     }
@@ -1348,8 +1338,7 @@ mod tests {
     /// `StartExposure` with untouched geometry would have validated and handed
     /// to the task.
     const FULL_FRAME: ExposureGeometry = ExposureGeometry {
-        bin_x: 1,
-        bin_y: 1,
+        bin: 1,
         num_x: 640,
         num_y: 480,
         start_x: 0,
@@ -1411,6 +1400,69 @@ mod tests {
         assert_eq!(cam.max_adu().await.unwrap(), 65535);
         assert_eq!(cam.max_bin_x().await.unwrap(), 4);
         assert_eq!(cam.max_bin_y().await.unwrap(), 4);
+    }
+
+    /// E8: one bin behind both members, written through either of them.
+    #[tokio::test]
+    async fn bin_x_and_bin_y_are_one_value() {
+        let cam = connected_camera();
+        assert!(!cam.can_asymmetric_bin().await.unwrap());
+        cam.set_bin_x(3).await.unwrap();
+        assert_eq!(cam.bin_y().await.unwrap(), 3);
+        cam.set_bin_y(2).await.unwrap();
+        assert_eq!(cam.bin_x().await.unwrap(), 2);
+        assert_eq!(cam.bin_y().await.unwrap(), 2);
+    }
+
+    /// E3: a refused bin, through either member, changes neither.
+    #[tokio::test]
+    async fn a_refused_bin_leaves_the_bin_unchanged() {
+        let cam = connected_camera();
+        cam.set_bin_x(2).await.unwrap();
+        for refused in [
+            cam.set_bin_y(0).await.unwrap_err().code,
+            cam.set_bin_y(MAX_BIN + 1).await.unwrap_err().code,
+            cam.set_bin_x(0).await.unwrap_err().code,
+        ] {
+            assert_eq!(refused, ASCOMErrorCode::INVALID_VALUE);
+        }
+        assert_eq!(cam.bin_x().await.unwrap(), 2);
+        assert_eq!(cam.bin_y().await.unwrap(), 2);
+    }
+
+    /// E8 through E5, the other way round: setting only `BinY` bins the X axis
+    /// too, so a sub-frame as wide as the unbinned sensor no longer fits.
+    #[tokio::test]
+    async fn setting_bin_y_alone_bounds_the_x_axis_by_the_bin() {
+        let cam = connected_camera();
+        cam.set_bin_y(2).await.unwrap();
+        cam.set_num_x(640).await.unwrap();
+        cam.set_num_y(240).await.unwrap();
+        assert_eq!(
+            cam.start_exposure(Duration::from_millis(100), true)
+                .await
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+    }
+
+    /// E8 through E5: setting only `BinX` bins the Y axis too, so a sub-frame
+    /// as tall as the unbinned sensor no longer fits. Refused before the task
+    /// is spawned, so no survey client is reached.
+    #[tokio::test]
+    async fn setting_bin_x_alone_bounds_the_y_axis_by_the_bin() {
+        let cam = connected_camera();
+        cam.set_bin_x(2).await.unwrap();
+        cam.set_num_x(320).await.unwrap();
+        cam.set_num_y(480).await.unwrap();
+        assert_eq!(
+            cam.start_exposure(Duration::from_millis(100), true)
+                .await
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
     }
 
     #[tokio::test]

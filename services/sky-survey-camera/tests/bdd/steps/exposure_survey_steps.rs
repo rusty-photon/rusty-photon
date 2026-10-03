@@ -71,7 +71,7 @@ fn cache_hit(world: &mut SkySurveyCameraWorld) {
         },
         server: AlpacaServerConfig::new(0),
     };
-    let req = build_full_sensor_request(&config, pointing, 1, 1);
+    let req = build_full_sensor_request(&config, pointing, 1);
     let key = req.cache_key();
     let fits = make_zero_fits(640, 480);
     world.preseed_cache(&key, &fits);

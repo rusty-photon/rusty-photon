@@ -38,6 +38,9 @@ pub enum StubBehavior {
 pub struct StubState {
     pub behavior: Arc<RwLock<StubBehavior>>,
     pub get_count: Arc<AtomicU32>,
+    /// The `Pixels` parameter of the last cutout GET, as sent
+    /// (`"<width>,<height>"`), or `None` before the first one.
+    pub last_pixels: Arc<RwLock<Option<String>>>,
 }
 
 /// Behaviour the in-test ASCOM Telescope stub serves on each
@@ -353,6 +356,7 @@ impl SkySurveyCameraWorld {
         let state = Arc::new(StubState {
             behavior: Arc::new(RwLock::new(StubBehavior::Ok)),
             get_count: Arc::new(AtomicU32::new(0)),
+            last_pixels: Arc::new(RwLock::new(None)),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -474,6 +478,13 @@ impl SkySurveyCameraWorld {
         self.stub_state
             .as_ref()
             .map_or(0, |s| s.get_count.load(Ordering::Relaxed))
+    }
+
+    /// The `Pixels` parameter of the last cutout GET the stub served.
+    pub fn stub_last_pixels(&self) -> Option<String> {
+        self.stub_state
+            .as_ref()
+            .and_then(|s| s.last_pixels.read().expect("stub pixels rwlock").clone())
     }
 
     /// Point the survey endpoint at `127.0.0.1:1`, a low-numbered
@@ -822,6 +833,12 @@ async fn handle_stub(
     let method = request.method().clone();
     if method == Method::GET {
         state.get_count.fetch_add(1, Ordering::Relaxed);
+        let url = reqwest::Url::parse(&format!("http://stub{}", request.uri()))
+            .expect("stub request URI");
+        *state.last_pixels.write().expect("stub pixels rwlock") = url
+            .query_pairs()
+            .find(|(key, _)| key == "Pixels")
+            .map(|(_, value)| value.into_owned());
     }
     if method == Method::HEAD {
         return StatusCode::OK.into_response();
