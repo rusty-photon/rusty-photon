@@ -162,6 +162,20 @@ fn usb_inventory_empty(world: &mut DoctorWorld) {
     hardware.usb_unavailable = None;
 }
 
+#[given(expr = "hardware facts where the COM-port listing is unavailable because {string}")]
+fn com_port_listing_unavailable(world: &mut DoctorWorld, reason: String) {
+    world.hardware().com_ports_unavailable = Some(reason);
+}
+
+/// The `present COM ports` step below turns "" into one blank name, so it
+/// cannot stage a listing that ran and found nothing.
+#[given(expr = "hardware facts with an empty but readable COM-port listing")]
+fn com_port_listing_empty(world: &mut DoctorWorld) {
+    let hardware = world.hardware();
+    hardware.com_ports.clear();
+    hardware.com_ports_unavailable = None;
+}
+
 #[given(expr = "hardware facts with present COM ports {string}")]
 fn com_ports(world: &mut DoctorWorld, ports: String) {
     world.hardware().com_ports = ports.split(", ").map(str::to_string).collect();

@@ -100,6 +100,16 @@ fn check_detail_mentions(world: &mut DoctorWorld, needle: String) {
     );
 }
 
+#[then(expr = "that check's detail does not mention {string}")]
+fn check_detail_omits(world: &mut DoctorWorld, needle: String) {
+    let check = world.last_check.as_ref().expect("no check matched yet");
+    let detail = check["detail"].as_str().expect("check has a detail");
+    assert!(
+        !detail.contains(&needle),
+        "detail {detail:?} mentions {needle:?}"
+    );
+}
+
 #[then(expr = "that check's suggestion mentions {string}")]
 fn check_suggestion_mentions(world: &mut DoctorWorld, needle: String) {
     let check = world.last_check.as_ref().expect("no check matched yet");
@@ -109,6 +119,18 @@ fn check_suggestion_mentions(world: &mut DoctorWorld, needle: String) {
     assert!(
         suggestion.contains(&needle),
         "suggestion {suggestion:?} lacks {needle:?}"
+    );
+}
+
+#[then(expr = "that check's suggestion does not mention {string}")]
+fn check_suggestion_omits(world: &mut DoctorWorld, needle: String) {
+    let check = world.last_check.as_ref().expect("no check matched yet");
+    let suggestion = check["suggestion"]
+        .as_str()
+        .expect("check has a suggestion");
+    assert!(
+        !suggestion.contains(&needle),
+        "suggestion {suggestion:?} mentions {needle:?}"
     );
 }
 

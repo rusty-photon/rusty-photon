@@ -28,6 +28,10 @@ fn no_units(world: &mut DoctorWorld) {
 
 #[given(expr = "platform facts with a disabled unit {string}")]
 fn disabled_unit(world: &mut DoctorWorld, unit: String) {
+    push_disabled_unit(world, unit);
+}
+
+fn push_disabled_unit(world: &mut DoctorWorld, unit: String) {
     world.facts.units.push(UnitFacts {
         name: unit,
         enabled: false,
@@ -63,6 +67,18 @@ fn no_failed_units(world: &mut DoctorWorld) {
 fn windows_unit(world: &mut DoctorWorld, unit: String) {
     world.facts.platform = Platform::Windows;
     world.add_unit(&unit);
+}
+
+#[given(expr = "Windows platform facts with a disabled unit {string}")]
+fn windows_disabled_unit(world: &mut DoctorWorld, unit: String) {
+    world.facts.platform = Platform::Windows;
+    push_disabled_unit(world, unit);
+}
+
+#[given("Windows platform facts with no rusty-photon units")]
+fn windows_no_units(world: &mut DoctorWorld) {
+    world.facts.platform = Platform::Windows;
+    world.facts.units.clear();
 }
 
 #[given(expr = "platform facts where enabled unit {string} is gated on a missing file")]

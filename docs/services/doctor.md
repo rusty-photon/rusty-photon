@@ -487,7 +487,44 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   rules; a driver exposes it as a hidden `--usb-inventory <file>` flag under
   its own `simulation` feature as it gains device claims. No driver reads the
   USB inventory today — doctor is its only consumer.
-- **Serial ports** (Windows) — `[System.IO.Ports.SerialPort]::GetPortNames()`.
+- **Serial ports** (Windows) — read in-process from the registry key every
+  serial driver registers its ports under, `HKLM\HARDWARE\DEVICEMAP\SERIALCOMM`:
+  one value per port, named after the kernel device (`\Device\Serial0`),
+  whose string data is the port name (`COM3`). It is the key
+  `[System.IO.Ports.SerialPort]::GetPortNames()` reads; reading it directly
+  leaves no `powershell.exe` start-up, deadline or language mode between
+  doctor and the answer (Constrained Language Mode refuses the
+  `GetPortNames()` call outright). A listing has two outcomes:
+  - **The ports** — each string value, cut at its first NUL (a driver that
+    writes a terminated name into a longer buffer leaves junk after it,
+    which would never match a configured port) and trimmed. No name is
+    otherwise validated — a driver may register one like com0com's
+    `CNCA0`. A value that is not a string, or is blank, names no port and
+    is skipped with a `debug!` trail rather than failing the listing for
+    every other port (`GetPortNames()` throws on a non-string value). A
+    host with no serial driver loaded since boot has no such key at all —
+    Windows rebuilds `HKLM\HARDWARE` at every boot — and that is no ports,
+    not a failure. An empty listing is what `hardware.serial-node` reports
+    as `none present`.
+  - **A failed listing** — the key exists but could not be opened, its
+    values could not be listed, or it never read the same twice (below).
+    `com_ports` is left empty, `com_ports_unavailable` carries the reason
+    in Windows' own words (`Access is denied. (0x80070005)`), and
+    `HardwareFacts::com_port_present` answers `None` rather than `false`.
+    Folding a failure into an empty list would read as "no COM ports" and
+    send the operator to plug in a device over a fault on the host.
+
+  **The listing is read until two reads agree.** The values are enumerated
+  by index, so a port that arrives or leaves during a read — a hot-plug
+  race of microseconds — can shift the indices or end the enumeration
+  early, giving a short list that still reads as a success and can be
+  missing a port that never changed. A read is trusted once a second read
+  returns the same list; a key that changes on each of three reads is a
+  failed listing, and a re-run reads it clean.
+
+  Absent from a staged facts file, `com_ports_unavailable` means the
+  listing succeeded, so a file written before the marker existed keeps its
+  meaning.
 - **Identity** — the `rusty-photon` user's uid/gid, its account-level
   supplementary groups (the `/etc/group` member lists that name it), and
   the gid of every group the checks reference (udev `GROUP=` names, unit
@@ -796,18 +833,23 @@ it will start at boot and hit the problem, so this is tomorrow's 2am
 failure reported at noon — **`warn` otherwise** (a parked service, or a dev
 checkout). A check runs only for services that participate in diagnosis
 (config present or unit installed) and declare the relevant catalog
-metadata. The USB bus is the deliberate exception, judged by the scan
-rather than by unit state: a scan that could not run makes
+metadata. The host-wide listings are the deliberate exceptions, judged by
+the listing rather than by unit state. A USB scan that could not run makes
 `hardware.usb-device` **fail** for every service that declares a USB
 identity, and a device that is on the bus but not working only ever
 **warns** — as the host-level `hardware.usb-fault`, and as a service's own
 `hardware.usb-device` when it is that service's device. A dead device is
-information for the operator, never a doctor failure. A device absent from
-the bus keeps the rule above.
+information for the operator, never a doctor failure. A Windows COM-port
+listing that could not be read makes `hardware.serial-node` **fail** for
+every service whose serial gate is open: it holds no fact about any
+service's device for unit state to weigh, and a warning would let doctor
+exit 0 having checked nothing. A device absent from the bus, and a COM port
+absent from a listing that was read (an empty one included), keep the rule
+above.
 
 | Check | Platforms | Trigger |
 |---|---|---|
-| `hardware.serial-node` | Linux, macOS, Windows | The effective serial device — the config value at the catalog's `serial_pointer`, else the platform's declared default — does not exist, or exists but is not a character device (Unix). On Windows: the configured name is not among the host's present COM ports. A service with a `serial_gate_pointer` participates only while its config holds the gate value (star-adventurer-gti on `kind: "udp"` has no serial device to check — the same pointer is a UDP port number there). |
+| `hardware.serial-node` | Linux, macOS, Windows | The effective serial device — the config value at the catalog's `serial_pointer`, else the platform's declared default — does not exist, or exists but is not a character device (Unix). On Windows: the configured name is not among the host's present COM ports (compared without regard to ASCII case; the detail lists them, or says `none present`). **When the COM-port listing could not be read the check fails, whatever the unit's state, and reports that instead of an absence**, naming the failure and calling it a fault on the host; its suggestion stays on the host — find the port under *Ports (COM & LPT)* in Device Manager (repointing the config if it is listed under another name), fix what the reason names, re-run doctor — and never says to plug the device in: a listing that could not be read says nothing about whether the device is attached. A service with a `serial_gate_pointer` participates only while its config holds the gate value (star-adventurer-gti on `kind: "udp"` has no serial device to check — the same pointer is a UDP port number there). |
 | `hardware.serial-access` | Linux (packaged) | The node exists but the `rusty-photon` user cannot open it, judged from the node's owner/group/mode and the identity the kernel actually grants the process: the user's uid/gid, the unit's `SupplementaryGroups=`, **and** the account's own supplementary memberships from the group database — systemd initializes the process group list from the union, so a node openable only via an account-level membership passes, with the granting mechanism named in the detail (the packaged intent is the unit file; account-level grants are host-local state worth seeing). The fail suggestion distinguishes a membership neither source confers (add `SupplementaryGroups=` to the unit) from a mode/ownership problem (udev-rule surgery). |
 | `hardware.usb-device` | Linux, macOS, Windows | No device on the bus matches the service's declared USB identity: `usb_vendor`, plus `usb_product` when declared, plus `usb_model` as a substring of the product descriptor the device publishes on the bus, when declared. The substring is what makes the check honest for devices behind generic bridge chips — the four Pegasus devices all report FTDI's `0403:6015` and the FP2 reports the RP2040's `2e8a:000a`, so VID:PID alone would confuse "the Falcon is plugged in" with "the PPBA is plugged in". The declared value must come from an observed descriptor: a device's serial protocol may name it differently (the UPBv2 answers `P#` with `UPB2_OK` and publishes `UPBv2 revA`), and a model taken from the protocol side matches nothing, which this check can only report as an absent device. The match runs over the **inventory** — working devices only. When no working device matches but a **fault** does (the scan found the device but it is not working — no driver, failed to start, disabled), the detail says so, naming the fault's record and reason instead of the unplugged-cable wording, and the check is **always `warn`**, whatever the unit's state: doctor does not fail because a device is not working, only because the scan failed. A working match takes precedence over a fault, so a dead twin never hides a live device. **When the USB inventory is unavailable the check fails and reports that instead of an absence**, naming the collector failure: a scan that could not run says nothing about whether the device is plugged in, and reporting "not on the bus" from a failed scan sends the operator to look at a cable when the fault is on the host. |
 | `hardware.usb-fault` | Linux, macOS, Windows | Host-level, one `warn` per fault the USB scan reported — a record on the bus that is not a working device (see "USB inventory" above for what makes one on each platform): the record's platform name, plus the ids and location it carries when the name does not already spell them out, and the reason. **Always `warn`, never `fail`**, whatever units are enabled: the fault is left out of the inventory, every working device is still inventoried and judged, and the operator decides whether the dead device matters — a service that needs it is already reported by its own `hardware.usb-device` check. Nothing is reported when there are no faults, or when the scan failed (a failed scan reports no faults). |
@@ -1580,11 +1622,12 @@ behavior; every knob in it was a CLI flag first.)
   assert the rewritten file contents (untouched fields preserved),
   post-fix convergence, idempotence of a second run, that a default run
   writes nothing, and that unfixable checks stay reported without a write.
-  For hardware: stage `hardware` facts (nodes, USB inventory, groups, rule
-  contents) and assert each check's fail/warn split against enabled and
-  disabled units, plus that a facts file without a `hardware` object skips
-  the family. For the ACME convergence checks (staged `acme.json` +
-  wildcard pair): each fires on divergence, `--fix` converges a
+  For hardware: stage `hardware` facts (nodes, USB inventory, COM-port
+  listing, groups, rule contents) and assert each check's fail/warn split
+  against enabled and disabled units, that a USB scan or COM-port listing
+  that could not run fails whatever the unit's state, plus that a facts
+  file without a `hardware` object skips the family. For the ACME
+  convergence checks (staged `acme.json` + wildcard pair): each fires on divergence, `--fix` converges a
   previously provisioned install onto the flip end state within the
   fixpoint loop (repointed `server.tls`, removed pins, written
   `probe_domain`/`advertised_url`, rewritten client URLs), a second

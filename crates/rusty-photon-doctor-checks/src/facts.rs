@@ -129,9 +129,22 @@ pub struct HardwareFacts {
     /// data directories). Absent key = the path does not exist.
     #[serde(default)]
     pub paths: BTreeMap<String, PathFacts>,
-    /// Present COM port names (Windows).
+    /// Present COM port names (Windows). Empty means the host has none
+    /// **only** when [`Self::com_ports_unavailable`] is `None`; ask
+    /// [`Self::com_port_present`], which answers for both.
     #[serde(default)]
     pub com_ports: Vec<String>,
+    /// Why the COM-port listing could not be read, when it could not
+    /// (Windows only; always `None` elsewhere). `Some` makes
+    /// [`Self::com_ports`] meaningless rather than empty: a listing that
+    /// failed has no opinion about which ports exist. A registry value that
+    /// names no port is skipped rather than failing the listing, so there
+    /// is no fault class.
+    ///
+    /// Absent from a staged fixture means the listing succeeded, so every
+    /// fixture written before this field existed keeps its meaning.
+    #[serde(default)]
+    pub com_ports_unavailable: Option<String>,
     /// The host's USB inventory: the devices that are alive and working.
     /// Empty means an idle bus **only** when [`Self::usb_unavailable`] is
     /// `None`.
@@ -194,6 +207,20 @@ impl HardwareFacts {
                 && product.is_none_or(|p| d.product == p)
                 && model.is_none_or(|m| d.model.as_deref().is_some_and(|dm| dm.contains(m)))
         }))
+    }
+
+    /// Whether the host lists the named COM port, compared without regard
+    /// to ASCII case, as Windows compares device names.
+    ///
+    /// `None` when the listing is unavailable — a listing that could not
+    /// be read says nothing about which ports exist, and answering `false`
+    /// would send an operator to plug a device in over a host fault.
+    #[must_use]
+    pub fn com_port_present(&self, name: &str) -> Option<bool> {
+        if self.com_ports_unavailable.is_some() {
+            return None;
+        }
+        Some(self.com_ports.iter().any(|p| p.eq_ignore_ascii_case(name)))
     }
 
     /// The first fault whose identity matches, by the same rules as
@@ -525,9 +552,15 @@ pub struct ProbeRequest {
     pub staged_usb: Option<StagedUsbInventory>,
 }
 
-/// Gather hardware facts from the running host, read-only. Probe failures
-/// degrade to absence with a `debug!` trail — "not there" is a legitimate
-/// answer, not an error.
+/// Gather hardware facts from the running host, read-only.
+///
+/// A path, group or rule file that cannot be read degrades to absence (a
+/// path with a `debug!` trail); absence does not yet tell "not there" from
+/// "unreadable". The two host-wide listings do tell them apart: a USB scan
+/// or a Windows COM-port listing that could not be read is recorded as
+/// unavailable ([`HardwareFacts::usb_unavailable`],
+/// [`HardwareFacts::com_ports_unavailable`]), because a failed listing read
+/// as an empty one turns a fault on the host into "plug the device in".
 #[must_use]
 pub fn gather(req: &ProbeRequest) -> HardwareFacts {
     let mut facts = HardwareFacts::default();
@@ -558,7 +591,7 @@ pub fn gather(req: &ProbeRequest) -> HardwareFacts {
     }
     #[cfg(windows)]
     {
-        facts.com_ports = windows::com_ports();
+        record_com_ports(&mut facts, windows::com_ports());
     }
     // Staging replaces the USB scan rather than merging with it, so the
     // inventory cannot depend on what is plugged into the machine running
@@ -618,6 +651,23 @@ fn record_usb(facts: &mut HardwareFacts, scan: Result<UsbScan, String>) {
             facts.usb.clear();
             facts.usb_faults.clear();
             facts.usb_unavailable = Some(reason);
+        }
+    }
+}
+
+/// Land the COM-port listing on the facts, keeping "the listing failed"
+/// distinct from "the host has no COM ports". On failure the list is left
+/// empty *and* marked unavailable, as [`record_usb`] does for the bus, so a
+/// consumer that ignores the marker gets no ports rather than a
+/// plausible-looking list.
+#[cfg(any(windows, test))]
+fn record_com_ports(facts: &mut HardwareFacts, listing: Result<Vec<String>, String>) {
+    match listing {
+        Ok(ports) => facts.com_ports = ports,
+        Err(reason) => {
+            debug!(%reason, "COM-port listing unavailable");
+            facts.com_ports.clear();
+            facts.com_ports_unavailable = Some(reason);
         }
     }
 }
@@ -1092,14 +1142,14 @@ mod macos {
 
 /// Gated on `test` as well as `windows` so the **pure parsers** below —
 /// the location-path selection and the serial heuristic, which is where
-/// the judgement lives — are exercised by every platform's CI leg rather
-/// than only the Windows one. The impure entry points stay Windows-only.
+/// the judgement lives, and the COM-port value filter — are exercised by
+/// every platform's CI leg rather than only the Windows one. The impure
+/// entry points stay Windows-only.
 #[cfg(any(windows, test))]
 mod windows {
     #[cfg(windows)]
     use std::process::Command;
 
-    #[cfg(windows)]
     use tracing::debug;
 
     use super::{UsbDevice, UsbFault, UsbScan};
@@ -1122,19 +1172,138 @@ mod windows {
         })
     }
 
+    /// The key every serial driver registers its ports under: one value
+    /// per port, named after the kernel device (`\Device\Serial0`), whose
+    /// string data is the port name (`COM3`). It is the key
+    /// `[System.IO.Ports.SerialPort]::GetPortNames()` reads. `HKLM\HARDWARE`
+    /// is volatile: Windows rebuilds it at every boot.
+    const SERIALCOMM: &str = r"HARDWARE\DEVICEMAP\SERIALCOMM";
+
+    /// `HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)`: the key does not exist.
+    const KEY_NOT_FOUND: i32 = 0x8007_0002_u32.cast_signed();
+
+    /// How many times the key is read before a listing that changes on
+    /// every read is given up on.
+    const READ_ATTEMPTS: usize = 3;
+
+    /// The host's COM ports, read in-process from [`SERIALCOMM`] — no
+    /// child process, so no start-up time, deadline or shell language mode
+    /// can fail the listing. A key that exists but cannot be opened, whose
+    /// values cannot be listed, or that never reads the same twice is a
+    /// listing that failed, returned as such and never read as a host
+    /// without ports.
     #[cfg(windows)]
-    pub fn com_ports() -> Vec<String> {
-        powershell("[System.IO.Ports.SerialPort]::GetPortNames() -join \"`n\"")
-            .ok()
-            .map(|listing| {
-                listing
-                    .lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .map(str::to_string)
-                    .collect()
+    pub fn com_ports() -> Result<Vec<String>, String> {
+        use windows_registry::LOCAL_MACHINE;
+
+        let key = match LOCAL_MACHINE.open(SERIALCOMM) {
+            Ok(key) => key,
+            Err(e) => return listing_without_key(e.code().0, &e),
+        };
+        settled(|| {
+            let values = key
+                .values()
+                .map_err(|e| listing_failed("list the values of", &e))?;
+            Ok(port_names(
+                values.map(|(device, value)| (device, port_text(&value))),
+            ))
+        })
+    }
+
+    /// A registry value's data as UTF-16 when the value is a string —
+    /// `None` when it is not, which names no port. An expandable string is
+    /// read unexpanded: a port name holds no environment variable.
+    #[cfg(windows)]
+    pub fn port_text(value: &windows_registry::Value) -> Option<Vec<u16>> {
+        use windows_registry::Type;
+
+        matches!(value.ty(), Type::String | Type::ExpandString).then(|| value.as_wide().to_vec())
+    }
+
+    /// The listing once two reads in a row agree.
+    ///
+    /// The key's values are enumerated by index, so a port that arrives or
+    /// leaves during a read (a hot-plug race of microseconds) can shift the
+    /// indices or end the enumeration early — a short list that still reads
+    /// as a success, and can be missing a port that never changed. A read
+    /// that a second read confirms was not torn. A key that changes on
+    /// every one of [`READ_ATTEMPTS`] reads is a listing that failed, and a
+    /// re-run of doctor reads it clean. (A debug build of the registry
+    /// crate asserts on one shape of that race instead of stopping; the
+    /// release build doctor ships stops.)
+    pub fn settled(
+        mut read: impl FnMut() -> Result<Vec<String>, String>,
+    ) -> Result<Vec<String>, String> {
+        let mut previous = read()?;
+        for _ in 1..READ_ATTEMPTS {
+            let current = read()?;
+            if current == previous {
+                return Ok(current);
+            }
+            debug!(
+                ?previous,
+                ?current,
+                "serial-port registry key changed during the read"
+            );
+            previous = current;
+        }
+        Err(listing_failed(
+            "read",
+            &format!("its values changed on each of {READ_ATTEMPTS} reads"),
+        ))
+    }
+
+    /// The listing when [`SERIALCOMM`] could not be opened, judged by the
+    /// error's `HRESULT`: a key that does not exist is a host with no
+    /// serial driver loaded since boot — no ports, not a failure — and any
+    /// other error is a listing that could not be read.
+    pub fn listing_without_key(
+        code: i32,
+        error: &impl std::fmt::Display,
+    ) -> Result<Vec<String>, String> {
+        if code == KEY_NOT_FOUND {
+            debug!("no serial-port registry key: the host lists no COM ports");
+            return Ok(Vec::new());
+        }
+        Err(listing_failed("open", error))
+    }
+
+    /// Why the listing failed: the step, the key, and Windows' own words.
+    pub fn listing_failed(step: &str, error: &impl std::fmt::Display) -> String {
+        format!("Windows COM-port listing failed: could not {step} HKLM\\{SERIALCOMM}: {error}")
+    }
+
+    /// The port names under [`SERIALCOMM`], from each value's name (the
+    /// kernel device, kept for the debug trail) and its data as UTF-16 when
+    /// the value is a string — `None` when it is not.
+    ///
+    /// A value that is not a string, or whose string is blank, names no
+    /// port and is skipped: one odd driver registration must not fail the
+    /// listing for every other port, as a non-string value fails
+    /// `GetPortNames()`. A name
+    /// ends at its first NUL — a driver that writes a terminated name into
+    /// a longer buffer leaves junk after it, which would never match a
+    /// configured port. No name is otherwise validated: one a driver
+    /// registered oddly (com0com's `CNCA0`) stays in the list, where
+    /// `hardware.serial-node` shows it.
+    pub fn port_names(values: impl IntoIterator<Item = (String, Option<Vec<u16>>)>) -> Vec<String> {
+        values
+            .into_iter()
+            .filter_map(|(device, text)| {
+                let Some(text) = text else {
+                    debug!(%device, "serial-port registry value is not a string; skipped");
+                    return None;
+                };
+                let name = text.split(|&unit| unit == 0).next().unwrap_or_default();
+                let name = String::from_utf16_lossy(name);
+                let name = name.trim();
+                if name.is_empty() {
+                    debug!(%device, "serial-port registry value is blank; skipped");
+                    return None;
+                }
+                Some(name.to_string())
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     /// Present USB devices from `PnP`: the instance id carries
@@ -1406,6 +1575,7 @@ mod tests {
         assert!(facts.paths.is_empty());
         assert_eq!(facts.usb, Vec::<UsbDevice>::new());
         assert!(facts.service_user.is_none());
+        assert_eq!(facts.com_ports_unavailable, None);
     }
 
     #[test]
@@ -1456,6 +1626,86 @@ mod tests {
             Some(false),
             "a fixture written before the marker existed still means an empty bus"
         );
+    }
+
+    /// A COM-port listing that failed, as the collector reports one.
+    const COM_LISTING_DENIED: &str = r"Windows COM-port listing failed: could not open HKLM\HARDWARE\DEVICEMAP\SERIALCOMM: Access is denied. (0x80070005)";
+
+    #[test]
+    fn test_unavailable_com_port_listing_answers_nothing_rather_than_absent() {
+        let facts: HardwareFacts = serde_json::from_value(serde_json::json!({
+            "com_ports": [],
+            "com_ports_unavailable": COM_LISTING_DENIED,
+        }))
+        .unwrap();
+        assert_eq!(
+            facts.com_port_present("COM4"),
+            None,
+            "a failed listing must not read as an absent port"
+        );
+    }
+
+    /// The marker wins over a list that contradicts it: a staged file can
+    /// say both, and the answer is "unknown", never "present".
+    #[test]
+    fn test_unavailable_marker_outranks_a_listed_com_port() {
+        let facts: HardwareFacts = serde_json::from_value(serde_json::json!({
+            "com_ports": ["COM4"],
+            "com_ports_unavailable": COM_LISTING_DENIED,
+        }))
+        .unwrap();
+        assert_eq!(facts.com_port_present("COM4"), None);
+    }
+
+    #[test]
+    fn test_absent_com_port_marker_means_the_listing_succeeded() {
+        let facts: HardwareFacts = serde_json::from_str(r#"{ "com_ports": [] }"#).unwrap();
+        assert_eq!(
+            facts.com_port_present("COM4"),
+            Some(false),
+            "a fixture written before the marker existed still means no ports"
+        );
+    }
+
+    /// Windows compares device names without regard to case.
+    #[test]
+    fn test_com_port_match_ignores_ascii_case() {
+        let facts: HardwareFacts = serde_json::from_str(r#"{ "com_ports": ["com4"] }"#).unwrap();
+        assert_eq!(facts.com_port_present("COM4"), Some(true));
+    }
+
+    /// A port name is matched whole: neither one that extends a listed name
+    /// nor one that a listed name extends is present.
+    #[test]
+    fn test_com_port_match_is_whole_not_a_prefix() {
+        let listed_short: HardwareFacts =
+            serde_json::from_str(r#"{ "com_ports": ["COM1"] }"#).unwrap();
+        let listed_long: HardwareFacts =
+            serde_json::from_str(r#"{ "com_ports": ["COM14"] }"#).unwrap();
+        assert_eq!(listed_short.com_port_present("COM14"), Some(false));
+        assert_eq!(listed_long.com_port_present("COM1"), Some(false));
+    }
+
+    /// A failed listing has no opinion about the ports — none survive it.
+    #[test]
+    fn test_a_failed_com_port_listing_leaves_no_ports() {
+        let mut facts: HardwareFacts =
+            serde_json::from_str(r#"{ "com_ports": ["COM3"] }"#).unwrap();
+        record_com_ports(&mut facts, Err(COM_LISTING_DENIED.to_string()));
+        assert_eq!(facts.com_ports, Vec::<String>::new());
+        assert_eq!(
+            facts.com_ports_unavailable.as_deref(),
+            Some(COM_LISTING_DENIED)
+        );
+    }
+
+    /// A listing that ran lands its ports, an empty one included.
+    #[test]
+    fn test_a_com_port_listing_lands_its_ports_on_the_facts() {
+        let mut facts = HardwareFacts::default();
+        record_com_ports(&mut facts, Ok(vec!["COM3".to_string(), "COM4".to_string()]));
+        assert_eq!(facts.com_ports, ["COM3", "COM4"]);
+        assert_eq!(facts.com_ports_unavailable, None);
     }
 
     /// A dead device is not a present one: presence reads only the
@@ -2079,6 +2329,252 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
         let scan = super::windows::parse_pnp_listing("\r\n").unwrap();
         assert_eq!(scan.devices, Vec::<UsbDevice>::new());
         assert_eq!(scan.faults, Vec::<UsbFault>::new());
+    }
+
+    /// A registry value under the serial-port key whose data is a string,
+    /// as the registry hands it over (terminator included).
+    fn port_value(device: &str, data: &str) -> (String, Option<Vec<u16>>) {
+        (device.to_string(), Some(data.encode_utf16().collect()))
+    }
+
+    /// A registry value of any other type (`REG_DWORD`, `REG_BINARY`, …).
+    fn non_string_port_value(device: &str) -> (String, Option<Vec<u16>>) {
+        (device.to_string(), None)
+    }
+
+    /// Each string value is a port, its terminator and padding stripped.
+    #[test]
+    fn test_com_port_values_become_trimmed_names() {
+        assert_eq!(
+            super::windows::port_names([
+                port_value(r"\Device\Serial0", "COM3\0"),
+                port_value(r"\Device\VCP0", " COM4 \0"),
+            ]),
+            ["COM3", "COM4"]
+        );
+    }
+
+    /// A key with no values is a host without COM ports, not an error.
+    #[test]
+    fn test_com_port_key_without_values_is_no_ports() {
+        assert_eq!(super::windows::port_names([]), Vec::<String>::new());
+    }
+
+    /// A driver that writes a terminated name into a longer buffer leaves
+    /// junk after the NUL; the name is what precedes it.
+    #[test]
+    fn test_com_port_name_ends_at_its_first_nul() {
+        assert_eq!(
+            super::windows::port_names([port_value(r"\Device\VCP1", "COM9\0junk\0")]),
+            ["COM9"]
+        );
+    }
+
+    /// A value that is not a string names no port, and costs the listing
+    /// nothing else.
+    #[test]
+    fn test_com_port_value_that_is_not_a_string_is_skipped() {
+        assert_eq!(
+            super::windows::port_names([
+                non_string_port_value(r"\Device\Odd0"),
+                port_value(r"\Device\Serial0", "COM3\0"),
+            ]),
+            ["COM3"]
+        );
+    }
+
+    #[test]
+    fn test_blank_com_port_value_is_skipped() {
+        assert_eq!(
+            super::windows::port_names([
+                port_value(r"\Device\Odd0", " \0"),
+                port_value(r"\Device\Serial0", "COM3\0"),
+            ]),
+            ["COM3"]
+        );
+    }
+
+    /// A name the collector does not recognise is still a port: no name is
+    /// validated, so one odd driver registration cannot fail the listing.
+    #[test]
+    fn test_com_port_listing_keeps_names_it_does_not_recognise() {
+        assert_eq!(
+            super::windows::port_names([
+                port_value(r"\Device\com0com10", "CNCA0\0"),
+                port_value(r"\Device\Serial0", "COM3\0"),
+            ]),
+            ["CNCA0", "COM3"]
+        );
+    }
+
+    /// No serial driver has registered a port since boot, so the key does
+    /// not exist: the host has no COM ports, which is not a failure.
+    #[test]
+    fn test_missing_serial_port_key_is_a_host_without_ports() {
+        let file_not_found = 0x8007_0002_u32.cast_signed();
+        assert_eq!(
+            super::windows::listing_without_key(
+                file_not_found,
+                &"The system cannot find the file specified. (0x80070002)"
+            )
+            .unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    /// Any other reason the key cannot be opened is a listing that failed,
+    /// never a host without ports.
+    #[test]
+    fn test_unopenable_serial_port_key_is_a_failed_listing() {
+        let access_denied = 0x8007_0005_u32.cast_signed();
+        assert_eq!(
+            super::windows::listing_without_key(access_denied, &"Access is denied. (0x80070005)")
+                .unwrap_err(),
+            COM_LISTING_DENIED
+        );
+    }
+
+    /// The reason names the step that failed and the key, so an operator
+    /// can look at the same key.
+    #[test]
+    fn test_failed_com_port_listing_names_the_step_and_the_key() {
+        assert_eq!(
+            super::windows::listing_failed(
+                "list the values of",
+                &"The handle is invalid. (0x80070006)"
+            ),
+            r"Windows COM-port listing failed: could not list the values of HKLM\HARDWARE\DEVICEMAP\SERIALCOMM: The handle is invalid. (0x80070006)"
+        );
+    }
+
+    /// Reads of the serial-port key that answer from `answers` in order,
+    /// counting each read.
+    fn scripted_reads<'a>(
+        answers: Vec<Result<Vec<&'static str>, String>>,
+        reads: &'a std::cell::Cell<usize>,
+    ) -> impl FnMut() -> Result<Vec<String>, String> + 'a {
+        let mut answers = answers.into_iter();
+        move || {
+            reads.set(reads.get().saturating_add(1));
+            answers
+                .next()
+                .expect("the listing read more often than scripted")
+                .map(|ports| ports.into_iter().map(str::to_string).collect())
+        }
+    }
+
+    /// A second read that agrees confirms the first, and the listing stops
+    /// there.
+    #[test]
+    fn test_com_port_listing_that_reads_the_same_twice_is_settled() {
+        let reads = std::cell::Cell::new(0);
+        let listing = super::windows::settled(scripted_reads(
+            vec![Ok(vec!["COM3", "COM4"]), Ok(vec!["COM3", "COM4"])],
+            &reads,
+        ));
+        assert_eq!(listing.unwrap(), ["COM3", "COM4"]);
+        assert_eq!(reads.get(), 2);
+    }
+
+    /// A read that a hot-plug tore — here missing a port that never
+    /// changed — is not trusted: the listing is the one two reads agree on.
+    #[test]
+    fn test_torn_com_port_read_is_read_again() {
+        let reads = std::cell::Cell::new(0);
+        let listing = super::windows::settled(scripted_reads(
+            vec![
+                Ok(vec!["COM3"]),
+                Ok(vec!["COM3", "COM4"]),
+                Ok(vec!["COM3", "COM4"]),
+            ],
+            &reads,
+        ));
+        assert_eq!(listing.unwrap(), ["COM3", "COM4"]);
+        assert_eq!(reads.get(), 3);
+    }
+
+    /// A key that never reads the same twice is a listing that failed, not
+    /// whichever list the last read happened to return.
+    #[test]
+    fn test_com_port_listing_that_never_settles_is_a_failed_listing() {
+        let reads = std::cell::Cell::new(0);
+        let listing = super::windows::settled(scripted_reads(
+            vec![Ok(vec!["COM3"]), Ok(vec!["COM3", "COM4"]), Ok(vec!["COM4"])],
+            &reads,
+        ));
+        assert_eq!(
+            listing.unwrap_err(),
+            r"Windows COM-port listing failed: could not read HKLM\HARDWARE\DEVICEMAP\SERIALCOMM: its values changed on each of 3 reads"
+        );
+        assert_eq!(reads.get(), 3);
+    }
+
+    /// A read that fails fails the listing, whatever an earlier read said.
+    #[test]
+    fn test_failed_com_port_read_fails_the_listing() {
+        let reads = std::cell::Cell::new(0);
+        let listing = super::windows::settled(scripted_reads(
+            vec![Ok(vec!["COM3"]), Err(COM_LISTING_DENIED.to_string())],
+            &reads,
+        ));
+        assert_eq!(listing.unwrap_err(), COM_LISTING_DENIED);
+    }
+
+    /// Only string values carry a port name; an expandable string is read
+    /// as it is stored.
+    #[cfg(windows)]
+    #[test]
+    fn test_only_string_registry_values_carry_a_port_name() {
+        use windows_registry::{Type, Value};
+
+        let mut expandable = Value::from("COM5");
+        expandable.set_ty(Type::ExpandString);
+        assert_eq!(
+            super::windows::port_names([
+                (
+                    "string".to_string(),
+                    super::windows::port_text(&Value::from("COM3"))
+                ),
+                (
+                    "expandable".to_string(),
+                    super::windows::port_text(&expandable)
+                ),
+                (
+                    "dword".to_string(),
+                    super::windows::port_text(&Value::from(4_u32))
+                ),
+            ]),
+            ["COM3", "COM5"]
+        );
+    }
+
+    /// The registry crate's own error for a key that does not exist is the
+    /// one the collector reads as a host without ports.
+    #[cfg(windows)]
+    #[test]
+    fn test_registry_error_for_an_absent_key_reads_as_no_ports() {
+        let error = windows_registry::LOCAL_MACHINE
+            .open(r"HARDWARE\DEVICEMAP\RUSTY_PHOTON_ABSENT_KEY")
+            .unwrap_err();
+        assert_eq!(
+            super::windows::listing_without_key(error.code().0, &error).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    /// The host's real serial-port key, read the way doctor reads it. A
+    /// healthy Windows host can always open the key or find it missing;
+    /// anything else is the listing failing where nothing is wrong.
+    #[cfg(windows)]
+    #[test]
+    fn test_host_com_port_listing_is_read() {
+        let ports = super::windows::com_ports().unwrap();
+        for port in &ports {
+            assert!(
+                !port.is_empty() && port.trim() == port && !port.contains('\0'),
+                "port name {port:?} was not cleaned"
+            );
+        }
     }
 
     /// The query's `-like 'USB\VID_*'` ignores case, so the parser does too.
@@ -2840,7 +3336,9 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
             let dir = tempfile::tempdir().unwrap();
             let path = stage(
                 dir.path(),
-                r#"{ "paths": {}, "com_ports": [], "groups": { "plugdev": 46 },
+                r#"{ "paths": {}, "com_ports": [],
+                     "com_ports_unavailable": "Windows COM-port listing failed: could not open the key",
+                     "groups": { "plugdev": 46 },
                      "udev_rules": {},
                      "usb": [ { "vendor": "03c3", "product": "662b",
                                 "model": "ASI662MC", "port": "1-4.2",
@@ -3033,5 +3531,16 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
         assert!(!facts
             .paths
             .contains_key(&dir.path().join("absent").to_string_lossy().into_owned()));
+    }
+
+    /// `gather` lands the host's COM-port listing as the collector reads
+    /// it. On a host without COM ports both sides are empty, so this proves
+    /// the wiring only where the host lists at least one port.
+    #[cfg(windows)]
+    #[test]
+    fn test_gather_lands_the_host_com_port_listing() {
+        let facts = gather(&ProbeRequest::default());
+        assert_eq!(facts.com_ports_unavailable, None);
+        assert_eq!(facts.com_ports, super::windows::com_ports().unwrap());
     }
 }
