@@ -24,5 +24,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 
+# The Windows COM-port listing reads the serial-port registry key in-process
+# (docs/services/doctor.md "Serial ports"). Crate-local: nothing else reads
+# the registry. Every Windows service already links it through hyper-util.
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6.1"
+
 [dev-dependencies]
 tempfile = { workspace = true }

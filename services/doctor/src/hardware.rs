@@ -5,9 +5,10 @@
 //! [`HardwareFacts`](rusty_photon_doctor_checks::HardwareFacts) — staged
 //! by the test seam, gathered read-only otherwise. One severity rule for
 //! the family: `fail` when the unit will start at boot and hit the
-//! problem, `warn` otherwise. The USB bus is judged by the scan instead: a
-//! scan that could not run always fails, and a device that is not working
-//! only ever warns.
+//! problem, `warn` otherwise. The host-wide listings are judged by
+//! themselves instead: a USB scan or a Windows COM-port listing that could
+//! not run always fails, and a USB device that is not working only ever
+//! warns.
 
 use std::path::PathBuf;
 
@@ -177,32 +178,7 @@ fn serial_node(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, checks: &m
         return;
     };
     if ctx.facts.platform == Platform::Windows {
-        if hw.com_ports.iter().any(|p| p.eq_ignore_ascii_case(&path)) {
-            checks.push(Check::ok(
-                "hardware.serial-node",
-                Some(svc(scan)),
-                format!("serial port {path} is present"),
-            ));
-        } else {
-            checks.push(fail_or_warn(
-                ctx,
-                scan,
-                "hardware.serial-node",
-                format!(
-                    "serial port {path} is not among the host's COM ports ({}) — \
-                     the service cannot open its device",
-                    if hw.com_ports.is_empty() {
-                        "none present".to_string()
-                    } else {
-                        hw.com_ports.join(", ")
-                    }
-                ),
-                Some(format!(
-                    "plug the device in, or point {} at the right port",
-                    pointer_hint(scan)
-                )),
-            ));
-        }
+        checks.push(com_port_node(ctx, hw, scan, &path));
         return;
     }
     match hw.paths.get(&path) {
@@ -338,6 +314,65 @@ fn serial_access(
         detail,
         suggestion,
     ));
+}
+
+/// `hardware.serial-node` on Windows: the configured port against the
+/// host's COM-port listing.
+///
+/// A listing that could not be read always fails, whatever the unit's
+/// state, as a USB scan that could not run does: it holds no fact about
+/// the device for unit state to weigh, and a warning would let doctor exit
+/// 0 having checked nothing.
+fn com_port_node(ctx: &Context, hw: &HardwareFacts, scan: &ServiceScan, path: &str) -> Check {
+    let Some(present) = hw.com_port_present(path) else {
+        // A listing that could not be read says nothing about which ports
+        // exist. Reporting the port as missing would send an operator to
+        // replug a device over what is a fault on the host.
+        let reason = hw
+            .com_ports_unavailable
+            .as_deref()
+            .unwrap_or("reason unrecorded");
+        return Check::fail(
+            "hardware.serial-node",
+            Some(svc(scan)),
+            format!(
+                "the COM-port listing could not be read, so the presence of serial \
+                 port {path} is unknown (a fault on the host, not a sign the device is \
+                 missing): {reason}"
+            ),
+            Some(format!(
+                "look for {path} under Ports (COM & LPT) in Device Manager (if it is \
+                 listed under another name, point {} at it), fix what the reason above \
+                 names, then re-run doctor",
+                pointer_hint(scan)
+            )),
+        );
+    };
+    if present {
+        return Check::ok(
+            "hardware.serial-node",
+            Some(svc(scan)),
+            format!("serial port {path} is present"),
+        );
+    }
+    fail_or_warn(
+        ctx,
+        scan,
+        "hardware.serial-node",
+        format!(
+            "serial port {path} is not among the host's COM ports ({}) — \
+             the service cannot open its device",
+            if hw.com_ports.is_empty() {
+                "none present".to_string()
+            } else {
+                hw.com_ports.join(", ")
+            }
+        ),
+        Some(format!(
+            "plug the device in, or point {} at the right port",
+            pointer_hint(scan)
+        )),
+    )
 }
 
 fn pointer_hint(scan: &ServiceScan) -> String {

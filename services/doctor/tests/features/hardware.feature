@@ -6,11 +6,14 @@ Feature: Hardware checks (no SDK)
   start at boot and hit it), and warns otherwise. Hardware facts arrive
   through the platform-facts seam; a scenario that stages none gets no
   hardware checks at all — a staged file is its scenario's whole truth.
-  The USB bus is the exception to the severity rule: a device on the bus
-  that is not working is reported as a warning, never a failure — on its
-  own and when a service needs it — and every working device is still
-  inventoried and judged. A device absent from the bus keeps the
-  severity rule, and a scan that could not run always fails.
+  The host-wide listings are the exceptions to the severity rule. On the
+  USB bus a device that is not working is reported as a warning, never a
+  failure — on its own and when a service needs it — and every working
+  device is still inventoried and judged; a device absent from the bus
+  keeps the severity rule, and a scan that could not run always fails. A
+  Windows COM-port listing that could not be read always fails too, and
+  is never reported as an unplugged device; a port absent from a listing
+  that was read keeps the severity rule.
 
   Scenario: A missing serial device fails an enabled driver
     Given platform facts with an enabled unit "rusty-photon-ppba-driver"
@@ -344,6 +347,85 @@ Feature: Hardware checks (no SDK)
     When I run doctor with --json
     Then the report contains a "fail" check named "hardware.serial-node" for service "ppba-driver"
     And that check's detail mentions "COM3"
+
+  Scenario: A COM-port listing that could not be read fails, and never blames the device
+    Given Windows platform facts with no rusty-photon units
+    And a config file "ppba-driver.json" containing:
+      """
+      { "serial": { "port": "COM7" } }
+      """
+    And hardware facts where the COM-port listing is unavailable because "Windows COM-port listing failed: could not open HKLM\HARDWARE\DEVICEMAP\SERIALCOMM: Access is denied. (0x80070005)"
+    When I run doctor with --json
+    Then the report contains a "fail" check named "hardware.serial-node" for service "ppba-driver"
+    And that check's detail mentions "the COM-port listing could not be read, so the presence of serial port COM7 is unknown"
+    And that check's detail mentions "a fault on the host, not a sign the device is missing"
+    And that check's detail mentions "could not open HKLM\HARDWARE\DEVICEMAP\SERIALCOMM: Access is denied. (0x80070005)"
+    And that check's detail does not mention "none present"
+    And that check's suggestion mentions "Ports (COM & LPT) in Device Manager"
+    And that check's suggestion mentions "point /serial/port in ppba-driver.json at it"
+    And that check's suggestion does not mention "plug"
+    And doctor exits with code 1
+
+  Scenario: A COM-port listing that could not be read fails even when the unit is disabled
+    Given Windows platform facts with a disabled unit "rusty-photon-ppba-driver"
+    And hardware facts where the COM-port listing is unavailable because "Windows COM-port listing failed: could not list the values of HKLM\HARDWARE\DEVICEMAP\SERIALCOMM: The handle is invalid. (0x80070006)"
+    When I run doctor with --json
+    Then the report contains a "fail" check named "hardware.serial-node" for service "ppba-driver"
+    And that check's detail mentions "the presence of serial port COM3 is unknown"
+    And doctor exits with code 1
+
+  Scenario: An unreadable COM-port listing outranks a port it also lists
+    Given Windows platform facts with an enabled unit "rusty-photon-ppba-driver"
+    And a config file "ppba-driver.json" containing:
+      """
+      { "serial": { "port": "COM7" } }
+      """
+    And hardware facts with present COM ports "COM7"
+    And hardware facts where the COM-port listing is unavailable because "Windows COM-port listing failed: could not open HKLM\HARDWARE\DEVICEMAP\SERIALCOMM: Access is denied. (0x80070005)"
+    When I run doctor with --json
+    Then the report contains exactly 1 check named "hardware.serial-node"
+    And the report contains a "fail" check named "hardware.serial-node" for service "ppba-driver"
+    And that check's detail mentions "could not be read"
+
+  Scenario: Each serial service whose gate is open reports the unreadable listing, and no other
+    Given Windows platform facts with no rusty-photon units
+    And a config file "ppba-driver.json" containing:
+      """
+      { "serial": { "port": "COM7" } }
+      """
+    And a config file "dsd-fp2.json" containing:
+      """
+      { "serial": { "port": "COM4" } }
+      """
+    And a config file "star-adventurer-gti.json" containing:
+      """
+      { "transport": { "kind": "udp" } }
+      """
+    And hardware facts where the COM-port listing is unavailable because "Windows COM-port listing failed: could not open HKLM\HARDWARE\DEVICEMAP\SERIALCOMM: Access is denied. (0x80070005)"
+    When I run doctor with --json
+    Then the report contains exactly 2 checks named "hardware.serial-node"
+    And the report contains a "fail" check named "hardware.serial-node" for service "ppba-driver"
+    And the report contains a "fail" check named "hardware.serial-node" for service "dsd-fp2"
+    And the report has no checks named "hardware.serial-node" for service "star-adventurer-gti"
+
+  Scenario: A COM-port listing that was read empty reports the port as missing
+    Given Windows platform facts with an enabled unit "rusty-photon-ppba-driver"
+    And a config file "ppba-driver.json" containing:
+      """
+      { "serial": { "port": "COM7" } }
+      """
+    And hardware facts with an empty but readable COM-port listing
+    When I run doctor with --json
+    Then the report contains a "fail" check named "hardware.serial-node" for service "ppba-driver"
+    And that check's detail mentions "serial port COM7 is not among the host's COM ports (none present)"
+    And that check's suggestion mentions "plug the device in"
+
+  Scenario: A COM-port listing that was read empty only warns when the unit is disabled
+    Given Windows platform facts with a disabled unit "rusty-photon-ppba-driver"
+    And hardware facts with an empty but readable COM-port listing
+    When I run doctor with --json
+    Then the report contains a "warn" check named "hardware.serial-node" for service "ppba-driver"
+    And that check's detail mentions "(none present)"
 
   Scenario: Scenarios without hardware facts run no hardware checks
     Given platform facts with an enabled unit "rusty-photon-ppba-driver"

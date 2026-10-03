@@ -42,8 +42,8 @@ rust_library(
 rust_test(
     name = "rusty-photon-doctor-checks_mock_unit_test",
     size = "small",
-    # Same reason as the default-feature suite below: the gather() test's
-    # Windows leg shells out to PowerShell twice.
+    # Same reason as the default-feature suite below: the gather() tests'
+    # Windows leg shells out to PowerShell.
     timeout = "moderate",
     aliases = aliases(
         normal_dev = True,
@@ -64,8 +64,8 @@ rust_test(
 rust_test(
     name = "rusty-photon-doctor-checks_unit_test",
     size = "small",
-    # The gather() test's Windows leg shells out to PowerShell twice
-    # (COM-port + USB inventory); a cold CI runner can push the suite past
+    # The gather() tests' Windows leg shells out to PowerShell for the USB
+    # inventory, once per gather; a cold CI runner can push the suite past
     # small's default 60s.
     timeout = "moderate",
     aliases = aliases(
