@@ -722,18 +722,17 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   The connect handshake reads the area after all three, so this driver uses
   `(24, 0)`. Measured on rig2, 2026-10-03, SDK 24.1.9.12.
 
-  `(24, 34)` would trade the top 34 rows for the bottom 34. A dark frame of the
-  whole chip leans towards `(24, 0)`, but only through the bottom rows:
-  - **The last 34 rows, 6388–6421,** hold one hot pixel where the rest of the
-    sensor's rate (47 per megapixel) predicts about 15. They do not look like
-    imaging pixels.
-  - **Rows 0–33** carry hot pixels at the sensor's rate, 49 per megapixel. So
-    do columns 10–23, which lie outside the effective area (46 per megapixel).
-    A dark frame cannot tell imaging pixels from shielded ones, so this does
-    not show that the top rows image.
+  **A lit frame settles it: the imaging area is `(24, 0, 9576x6388)`.** With
+  the FP2 panel lighting the sensor (rig2, 2026-10-03, 0.12 s, frame
+  median about 23,000 ADU), a full-chip 9600x6422 frame from the SDK shows:
+  - **lit:** exactly chip rows 0–6387 and chip columns 24–9599;
+  - **dark** (row and column medians 492–535 ADU): rows 6388–6421 and
+    columns 0–23.
 
-  A frame with light on the sensor would settle the question; none has been
-  taken yet.
+  That is the area this driver uses. `(24, 34)` would drop 34 lit rows at the
+  top and take in 34 dark rows at the bottom. The driver's own full frame,
+  armed at `(24, 0)`, matches the chip frame's `(24, 0)` region (median ratio
+  1.000).
 - **B1 (a bin is cached, and `StartExposure` arms it).** `set_bin_x`/`set_bin_y`
   validate against the SDK's valid binning modes and cache symmetric binning;
   an unsupported bin returns `INVALID_VALUE`, whoever owns the device — the
@@ -1451,7 +1450,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   the target survive it as the last command given, and nothing re-asserts them,
   so on a rig whose `qhyccd.ini` sets `disable_auto_cooler` the connect's own
   init leaves the TEC off beside a `CoolerOn` that still reads true, until a
-  client sends `CoolerOn` again.
+  client sends `CoolerOn` again. Service start is one more such init, with no
+  client involved: to find each camera's filter wheel, `build()` opens every
+  camera and runs `InitQHYCCD` before `IsQHYCCDCFWPlugged`, the order indi-qhy
+  uses in its connect. So on such a rig, a TEC still running when the service
+  starts, or when a config reload re-enumerates, is switched off by that init.
 
 ### Sensor type
 
