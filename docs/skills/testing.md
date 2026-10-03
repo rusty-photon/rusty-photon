@@ -1856,6 +1856,15 @@ alternative is this section's own failure mode one level up: mistype
 across every value. That reads as "the rewrite is load-independent" when it
 actually means the experiment never ran.
 
+Mind which side of the fake's action the sleep sits on. Here it comes before
+`process_command`, so the command itself acts late — a slow *send*. A host
+that is slow to *notice* a reply is the other case: the device acted on time
+and only the reply is read late, so the sleep belongs in `recv_frame`, after
+the action. Timing bugs live in exactly that difference (issue #1371 was a
+sample dated on receipt), and star-adventurer-gti's mock keeps a permanent,
+test-set `reply_delay` knob for it — a struct field like its other fault
+knobs, not an environment variable.
+
 This stretches the code under test *across* the sample point, which is the
 condition a loaded runner produces and an idle one never does. Then sweep the
 latency rather than picking one value — the interesting failures cluster in a

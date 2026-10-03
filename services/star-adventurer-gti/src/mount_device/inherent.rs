@@ -532,8 +532,9 @@ impl MountDevice {
             .map_err(ASCOMError::from)?;
         // 2. Write the seed encoder values and publish them to the
         //    cached snapshot.
-        self.manager
-            .send(
+        let (_, ra_written) = self
+            .manager
+            .send_timed(
                 session,
                 Command::SetPosition {
                     axis: Axis::Ra,
@@ -542,9 +543,12 @@ impl MountDevice {
             )
             .await
             .map_err(ASCOMError::from)?;
-        self.manager.seed_ra_position(ra_target_ticks).await;
         self.manager
-            .send(
+            .seed_ra_position(ra_target_ticks, ra_written.sent_at)
+            .await;
+        let (_, dec_written) = self
+            .manager
+            .send_timed(
                 session,
                 Command::SetPosition {
                     axis: Axis::Dec,
@@ -553,7 +557,9 @@ impl MountDevice {
             )
             .await
             .map_err(ASCOMError::from)?;
-        self.manager.seed_dec_position(dec_target_ticks).await;
+        self.manager
+            .seed_dec_position(dec_target_ticks, dec_written.sent_at)
+            .await;
         // 3. Clear driver-internal motion / target / tracking state so
         //    the freshly written encoder is the source of truth.
         self.slew_in_progress.store(false, Ordering::SeqCst);

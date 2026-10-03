@@ -694,24 +694,31 @@ impl Telescope for MountDevice {
             )
         };
         let (ra_ticks, dec_ticks) = (ra_ticks.value(), dec_ticks.value());
-        self.send(Command::SetPosition {
-            axis: Axis::Ra,
-            ticks: ra_ticks,
-        })
-        .await
-        .map_err(ASCOMError::from)?;
+        let (_, ra_written) = self
+            .send_timed(Command::SetPosition {
+                axis: Axis::Ra,
+                ticks: ra_ticks,
+            })
+            .await
+            .map_err(ASCOMError::from)?;
         // Publish the just-written RA position to the cached snapshot
         // so an immediate `RightAscension` read reflects the sync
         // without having to wait for the next background poll. Done
-        // only after the wire `:E` succeeds.
-        self.manager.seed_ra_position(ra_ticks).await;
-        self.send(Command::SetPosition {
-            axis: Axis::Dec,
-            ticks: dec_ticks,
-        })
-        .await
-        .map_err(ASCOMError::from)?;
-        self.manager.seed_dec_position(dec_ticks).await;
+        // only after the wire `:E` succeeds, and dated when the `:E`
+        // went out, like a polled sample.
+        self.manager
+            .seed_ra_position(ra_ticks, ra_written.sent_at)
+            .await;
+        let (_, dec_written) = self
+            .send_timed(Command::SetPosition {
+                axis: Axis::Dec,
+                ticks: dec_ticks,
+            })
+            .await
+            .map_err(ASCOMError::from)?;
+        self.manager
+            .seed_dec_position(dec_ticks, dec_written.sent_at)
+            .await;
         // Per ASCOM ITelescopeV3, a successful Sync sets
         // TargetRightAscension / TargetDeclination to the synced
         // coordinates. ConformU asserts this. Only write the in-memory

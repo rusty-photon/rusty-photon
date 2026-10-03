@@ -20,6 +20,7 @@
 #![cfg_attr(coverage_nightly, coverage(off))]
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use rusty_photon_shared_transport::{FrameTransport, TransportError, TransportFactory};
@@ -266,6 +267,10 @@ pub struct MockMountState {
     /// Every command frame received, in arrival order. Tests assert against
     /// this to verify the driver issued the expected wire commands.
     pub command_log: Vec<Vec<u8>>,
+    /// When each [`command_log`](Self::command_log) frame arrived, at
+    /// the same index — the instant it acted, so for a `:j` the instant
+    /// its count was latched.
+    pub command_times: Vec<Instant>,
     /// Test-only fault injection. When `Some(letter)`, any command whose
     /// letter matches replies with a mount error (`!XX`) instead of its
     /// normal response, so the driver's send path returns `Err`. Used to
@@ -300,6 +305,12 @@ pub struct MockMountState {
     /// stop the driver sends takes: drives the paths where a stop is
     /// never confirmed.
     pub ignore_instant_stop: bool,
+    /// How long each reply is held back after its command has acted.
+    /// The command still acts — and a `:j` still latches its count — as
+    /// the frame arrives; only the reply's delivery is late, the way it
+    /// is on a host too busy to notice a reply (issue #1371).
+    /// [`Duration::ZERO`] (the default) delivers at once.
+    pub reply_delay: Duration,
     /// Pending replies the next `recv_frame` call should drain. Every
     /// processed command appends one frame; the [`FrameTransport`] impl
     /// pulls from the front to deliver replies in order.
@@ -342,12 +353,14 @@ impl Default for MockMountState {
             high_speed_ratio_dec: 32,
             motor_board_version: 0x000C_3003,
             command_log: Vec::new(),
+            command_times: Vec::new(),
             fail_command: None,
             fault_script: std::collections::VecDeque::new(),
             rate_change_step_ticks: 0.0,
             reject_live_step_period: false,
             ignore_decelerating_stop: false,
             ignore_instant_stop: false,
+            reply_delay: Duration::ZERO,
             pending_replies: std::collections::VecDeque::new(),
         }
     }
@@ -388,6 +401,7 @@ impl MockMountState {
         // starts the clock for an axis this frame just set running
         // (for every other axis no time has elapsed since the first).
         let now = Instant::now();
+        self.command_times.push(now);
         self.advance_tracking(now);
         self.dispatch_command(request);
         self.advance_tracking(now);
@@ -746,13 +760,19 @@ impl FrameTransport for MockFrameTransport {
     }
 
     async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
-        let frame = self
-            .state
-            .lock()
-            .await
-            .pending_replies
-            .pop_front()
-            .ok_or(TransportError::Eof)?;
+        let (frame, delay) = {
+            let mut state = self.state.lock().await;
+            let frame = state
+                .pending_replies
+                .pop_front()
+                .ok_or(TransportError::Eof)?;
+            (frame, state.reply_delay)
+        };
+        // With the state unlocked, so a delayed reply holds up only its
+        // own exchange's caller, as a slow host would.
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
         buf.clear();
         buf.extend_from_slice(&frame);
         Ok(())
@@ -1217,6 +1237,26 @@ mod tests {
             assert_eq!(round_trip(&mut t, frame).await, b"=\r");
         }
         (t, state)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reply_delay_holds_the_reply_back_but_not_the_count() {
+        let (mut t, state) = tracking_ra().await;
+        let delay = Duration::from_millis(41);
+        state.lock().await.reply_delay = delay;
+        let sent = Instant::now();
+
+        t.send_frame(b":j1\r").await.unwrap();
+        let latched = state.lock().await.ra.position_ticks;
+        let mut reply = Vec::new();
+        t.recv_frame(&mut reply).await.unwrap();
+
+        assert_eq!(sent.elapsed(), delay, "the reply arrives late");
+        assert_eq!(
+            reply,
+            ack_with(&encode_position(latched).unwrap()),
+            "it carries the count latched when the command arrived"
+        );
     }
 
     #[tokio::test]
