@@ -375,6 +375,19 @@ impl MountDevice {
             .await
     }
 
+    /// [`Self::send`], plus when the command crossed the wire; see
+    /// [`MountManager::send_timed`](crate::manager::MountManager::send_timed).
+    pub(super) async fn send_timed(
+        &self,
+        cmd: skywatcher_motor_protocol::Command,
+    ) -> crate::error::Result<(
+        skywatcher_motor_protocol::Response,
+        rusty_photon_shared_transport::WireTiming,
+    )> {
+        self.with_session(async |session| self.manager.send_timed(session, cmd).await)
+            .await
+    }
+
     /// Borrow the held session for the closure's wire I/O — a single
     /// request or a multi-step sequence (the read guard is held for the
     /// closure's whole duration either way) — converting the empty-slot

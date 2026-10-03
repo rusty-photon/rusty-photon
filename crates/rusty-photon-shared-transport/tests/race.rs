@@ -33,9 +33,13 @@
 mod common;
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use common::{build_noop_transport, CountingHooks};
-use rusty_photon_shared_transport::SharedTransport;
+use async_trait::async_trait;
+use common::{build_noop_transport, build_with_factory_and_hooks, CountingHooks, EchoTransport};
+use rusty_photon_shared_transport::{
+    FrameTransport, Hooks, SharedTransport, TransportError, TransportFactory,
+};
 
 #[tokio::test]
 async fn two_concurrent_acquires_open_exactly_once() {
@@ -110,4 +114,58 @@ async fn handshake_runs_exactly_once_for_concurrent_acquires() {
     let _sa = a.await.unwrap().unwrap();
     let _sb = b.await.unwrap().unwrap();
     assert_eq!(hs_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// How long each echo takes in the timing test below.
+const REPLY_DELAY: Duration = Duration::from_millis(41);
+
+/// Opens [`EchoTransport`]s whose echo takes [`REPLY_DELAY`].
+struct SlowEchoFactory;
+
+#[async_trait]
+impl TransportFactory for SlowEchoFactory {
+    async fn open(&self) -> Result<Box<dyn FrameTransport>, TransportError> {
+        Ok(Box::new(SlowEcho(EchoTransport::new())))
+    }
+}
+
+struct SlowEcho(EchoTransport);
+
+#[async_trait]
+impl FrameTransport for SlowEcho {
+    async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+        self.0.send_frame(bytes).await
+    }
+
+    async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
+        tokio::time::sleep(REPLY_DELAY).await;
+        self.0.recv_frame(buf).await
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_session_waiting_on_another_sessions_exchange_is_timed_from_its_own() {
+    // Two sessions on one transport take turns on the wire. The one
+    // that waits must get the timing of its own exchange, not one that
+    // starts when it began waiting: `Session::request_timed` hands back
+    // what the connection measured inside the command lock.
+    let st = build_with_factory_and_hooks(Arc::new(SlowEchoFactory), Hooks::noop());
+    let a = st.acquire().await.unwrap();
+    let b = st.acquire().await.unwrap();
+
+    let (ra, rb) = tokio::join!(
+        a.request_timed(b"a".to_vec()),
+        b.request_timed(b"b".to_vec()),
+    );
+    let mut timings = [ra.unwrap().1, rb.unwrap().1];
+    timings.sort_by_key(|t| t.sent_at);
+    let [first, queued] = timings;
+
+    assert_eq!(
+        queued.sent_at, first.received_at,
+        "the wait for the other session is not in the stamp"
+    );
+    assert_eq!(queued.round_trip(), REPLY_DELAY);
+    a.close().await.unwrap();
+    b.close().await.unwrap();
 }

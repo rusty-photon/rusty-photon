@@ -1912,6 +1912,16 @@ sweep something that isn't the code under test.
 `1 passed` cannot be satisfied by a filter that matched nothing, which is the
 whole point — `ok` can.
 
+Mind which side of the fake's action an injected sleep sits on. The `RP_WIRE_MS`
+example above puts it before `process_command`, so the command itself acts late — a
+slow *send*. A host that is slow to *notice* a reply is the other case: the
+device acted on time and only the reply is read late, so the sleep belongs in
+`recv_frame`, after the action. Timing bugs live in exactly that difference
+(issue #1371 was a sample dated on receipt). That case is not scratch:
+star-adventurer-gti's mock keeps a permanent `reply_delay` knob for it — a
+struct field a test sets, like the mock's other fault knobs, never an
+environment variable.
+
 #### 6.11 Compute Log Field Values Before the Macro, Not Inside It
 
 **A value that a log macro's field expression computes normally runs in no

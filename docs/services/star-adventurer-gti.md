@@ -701,9 +701,17 @@ current side and `mech_HA` the slew and sync planners and
 `DestinationSideOfPier` start from; the slew watcher's pickup-loop
 residual) use the sample **projected to now**:
 
-- **Stamp.** Each axis' sample records the instant its `:j` reply
-  arrived. A `SyncToCoordinates` / connect-time seed is stamped when it
-  publishes the just-written `:E` value.
+- **Stamp.** Each axis' sample is dated at the instant its `:j`
+  request went out — the shared transport's `WireTiming::sent_at`,
+  taken inside the command lock just before the frame is written — not
+  when the reply was read. The firmware latches the count as the
+  command arrives, and a loaded host delays the other side of the
+  exchange: it can be tens of milliseconds late noticing a reply, but
+  whatever delays the write after the stamp can only make the stamp
+  early, never late (`WireTiming::send_gap`, normally microseconds,
+  says by how much). A `SyncToCoordinates` / connect-time seed is dated at the
+  send of the `:E` that wrote it, and the handshake's samples at the
+  send of their `:j`. See *Why the send instant* below.
 - **Rate.** The sample also keeps the axis' decoded `:f` status reply
   (running, goto vs tracking, direction, speed, blocked) and the last
   **tracking** `:I` step period the driver sent that axis. Only a
@@ -751,7 +759,12 @@ residual) use the sample **projected to now**:
   re-read, so even a failed re-read leaves it unknown. The stop also
   raises the axis' *rate barrier*: a sample whose `:j` was read before
   it (a poll already in flight when the stop went out) may carry the
-  pre-stop status, so it is published with its rate cleared. The last-disconnect safety stop (`:L1`, `:L2`, `:K1`,
+  pre-stop status, so it is published with its rate cleared. The
+  barrier is taken after the stop's reply, so it errs late — the
+  opposite convention to a sample's stamp, and the safe one: "was this
+  `:j` read before the stop?" is asked of the earliest instant the `:j`
+  could have been read against the latest the stop could have acted.
+  The last-disconnect safety stop (`:L1`, `:L2`, `:K1`,
   sent outside the driver's command path) marks both axes' rates
   unknown and raises their barriers the same way. A failed re-read after a start leaves the
   sample to the next poll.
@@ -761,14 +774,32 @@ residual) use the sample **projected to now**:
   motion-command re-read that landed meanwhile — and every other writer
   (a motion-command re-read, the synchronous `poll_axes_now` read that
   `SetPark` and the slew watchers use) follows the same rule against a
-  poll that landed during it.
+  poll that landed during it. Every writer dates its sample at the send
+  of its frame, and the command lock puts one exchange on the wire at a
+  time, so "newer" by stamp is newer on the wire.
 
-The residual is the `:j` round trip — the stamp is taken on receipt,
-late by at most one round trip of motion — plus half a tick of
-rounding (one RA tick is 0.024 s), against ConformU's 0.07 s
-tolerance. The raw sample is still what `Slewing`, `SideOfPier`, the
-PulseGuide side and the tracking guard read: they use the encoder
-alone, not against an LST, and a poll of motion is immaterial to them.
+**Why the send instant.** Issue #1371: with ConformU issuing requests
+on the same Pi, replies on the poll loop's task were noticed 40–61 ms
+late (median 42 ms) — the host was busy, the mount was not. Dated on
+receipt, such a sample was carried forward ~1.75 ticks too little and
+`RightAscension` read ~0.042 s high, always high, which ConformU's
+cross-axis PulseGuide check caught. Fitted against fast samples on the
+rig, the slow samples' residual was −0.30 ± 0.19 ticks dated at the
+send and −2.11 ± 0.18 dated at receipt, so the count is latched at the
+send end of the exchange. The midpoint of the two is no better a
+compromise: it carries half of every host stall. The round trip
+(`WireTiming::round_trip`) still bounds how far the latch can be from
+the send, and is logged with every reply at `trace` level.
+
+The residual is the time from the stamp to the firmware latching the
+count — the send gap plus the link, about a millisecond over USB and
+more over Wi-Fi — plus half a tick of rounding (one RA tick is 0.024 s), against
+ConformU's 0.07 s tolerance; and on top of both, the step count's own
+jitter (about a tick, with occasional larger lumps), which a single
+sample cannot average out (issue #1371 tracks that). The raw sample is
+still what `Slewing`, `SideOfPier`, the PulseGuide side and the
+tracking guard read: they use the encoder alone, not against an LST,
+and a poll of motion is immaterial to them.
 
 ### Slew lifecycle
 
@@ -2755,6 +2786,11 @@ The two motion modes are simulated differently, on purpose:
   chunk toward `goto_target_ticks` and clears `running` on arrival, so
   a slew completes in a handful of polls however fast the test runs.
   Goto speed is not simulated.
+
+Replies are instant by default. The test knob `reply_delay` holds each
+reply back by a fixed time *after* the frame has acted — the count is
+still latched as the command arrives, as on the GTi — which models a
+host slow to notice replies, the condition behind issue #1371.
 
 BDD tests use the mock by default; ConformU and `test_lib.rs` use the
 feature-gated mock so the binary itself runs against a fake mount.

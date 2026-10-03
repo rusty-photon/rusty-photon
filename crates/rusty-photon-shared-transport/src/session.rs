@@ -18,7 +18,7 @@ use tokio::sync::RwLock;
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 
 use crate::codec::Codec;
-use crate::connection::Connection;
+use crate::connection::{Connection, WireTiming};
 use crate::error::{SessionError, TransportError};
 use crate::shared::SharedTransport;
 use crate::BoxFuture;
@@ -62,7 +62,8 @@ impl<C: Codec> Session<C> {
 
     /// Send `cmd` and return the matching typed response.
     ///
-    /// Forwards to [`Connection::request`] — the request arbitration
+    /// Forwards to [`Connection::request_timed`] and drops the timing —
+    /// the request arbitration
     /// lock makes this call safe to run concurrently from multiple
     /// `Session`s (and the while-open task) sharing the same transport.
     /// Reads the current connection via the cell so a supervisor-driven
@@ -76,9 +77,22 @@ impl<C: Codec> Session<C> {
     /// wire-level transport error, a codec decode failure, or an
     /// exhausted skip budget.
     pub async fn request(&self, cmd: C::Command) -> Result<C::Response, SessionError<C::Error>> {
+        self.request_timed(cmd).await.map(|(resp, _)| resp)
+    }
+
+    /// [`Self::request`], plus when the exchange crossed the wire — see
+    /// [`WireTiming`] and [`Connection::request_timed`].
+    ///
+    /// # Errors
+    ///
+    /// The [`Self::request`] failures, unchanged.
+    pub async fn request_timed(
+        &self,
+        cmd: C::Command,
+    ) -> Result<(C::Response, WireTiming), SessionError<C::Error>> {
         // `cell` only becomes `None` inside `close` (which consumes
         // `self`) or `drop` (which destructs `self`). Neither path can
-        // race a live `&self` call to `request`, so this branch is
+        // race a live `&self` call to `request_timed`, so this branch is
         // unreachable in well-typed code — handled as an I/O error
         // instead of a panic to satisfy the workspace's no-panic policy.
         let Some(cell) = self.cell.as_ref() else {
@@ -116,7 +130,7 @@ impl<C: Codec> Session<C> {
             // Existing `Session`s keep `Arc` clones of the connection cell
             // even after `SharedTransport::shutdown` drops the slot's clone,
             // so without this short-circuit a session can still call
-            // `connection.request` against the un-dropped `Connection<C>` and
+            // `connection.request_timed` against the un-dropped `Connection<C>` and
             // talk to hardware while the service is tearing down. Match the
             // error `acquire()` returns in the same situation.
             //
@@ -176,7 +190,7 @@ impl<C: Codec> Session<C> {
             }
         }
 
-        connection.request(cmd).await
+        connection.request_timed(cmd).await
     }
 
     /// Primary teardown path.
@@ -258,7 +272,20 @@ impl<C: Codec> WhileOpen<C> {
     /// wire-level transport error, a codec decode failure, or an
     /// exhausted skip budget.
     pub async fn request(&self, cmd: C::Command) -> Result<C::Response, SessionError<C::Error>> {
-        self.connection.request(cmd).await
+        self.request_timed(cmd).await.map(|(resp, _)| resp)
+    }
+
+    /// [`Self::request`], plus when the exchange crossed the wire — see
+    /// [`WireTiming`] and [`Connection::request_timed`].
+    ///
+    /// # Errors
+    ///
+    /// The [`Self::request`] failures, unchanged.
+    pub async fn request_timed(
+        &self,
+        cmd: C::Command,
+    ) -> Result<(C::Response, WireTiming), SessionError<C::Error>> {
+        self.connection.request_timed(cmd).await
     }
 
     /// Future that resolves when the surrounding [`SharedTransport`]

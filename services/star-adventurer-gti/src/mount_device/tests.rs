@@ -189,7 +189,9 @@ async fn seed_mech_ha(
     let cpr = d.manager.parameters().await.unwrap().cpr_ra;
     let ticks = (mech_ha * f64::from(cpr) / 24.0) as i32;
     mock.lock().await.ra.position_ticks = ticks;
-    d.manager.seed_ra_position(ticks).await;
+    d.manager
+        .seed_ra_position(ticks, tokio::time::Instant::now())
+        .await;
 }
 
 fn log_has_k1(log: &[Vec<u8>]) -> bool {
@@ -499,7 +501,9 @@ async fn auto_flip_tick_ignores_the_post_flip_side() {
     seed_mech_ha(&d, &mock, 0.2).await;
     let cpr = d.manager.parameters().await.unwrap().cpr_dec.cast_signed();
     mock.lock().await.dec.position_ticks = cpr / 2;
-    d.manager.seed_dec_position(cpr / 2).await;
+    d.manager
+        .seed_dec_position(cpr / 2, tokio::time::Instant::now())
+        .await;
     d.state.write().await.tracking_requested = true;
 
     let attempted = auto_flip_tick(&d, 0.0, false).await;
@@ -519,7 +523,9 @@ async fn auto_flip_tick_stays_latched_at_the_post_flip_fold_with_a_negative_offs
     seed_mech_ha(&d, &mock, 11.75).await;
     let cpr = d.manager.parameters().await.unwrap().cpr_dec.cast_signed();
     mock.lock().await.dec.position_ticks = cpr / 2;
-    d.manager.seed_dec_position(cpr / 2).await;
+    d.manager
+        .seed_dec_position(cpr / 2, tokio::time::Instant::now())
+        .await;
     d.state.write().await.tracking_requested = true;
 
     let attempted = auto_flip_tick(&d, -0.25, true).await;
@@ -539,7 +545,9 @@ async fn auto_flip_tick_rearms_after_the_fold_with_a_negative_offset() {
     seed_mech_ha(&d, &mock, -11.9).await;
     let cpr = d.manager.parameters().await.unwrap().cpr_dec.cast_signed();
     mock.lock().await.dec.position_ticks = cpr / 2;
-    d.manager.seed_dec_position(cpr / 2).await;
+    d.manager
+        .seed_dec_position(cpr / 2, tokio::time::Instant::now())
+        .await;
     d.state.write().await.tracking_requested = true;
 
     let attempted = auto_flip_tick(&d, -0.25, true).await;
@@ -1693,6 +1701,24 @@ async fn sync_refuses_while_a_slew_is_in_progress() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn a_sync_dates_the_positions_it_wrote_when_its_writes_went_out() {
+    // Like a polled sample, a sync's seed is dated at the send of the
+    // `:E` that wrote it — not when its reply was read, which a busy
+    // host can do tens of milliseconds late (issue #1371).
+    let (d, mock) = capturing_connected_device().await;
+    let _paused = d.manager.pause_background_polling();
+    mock.lock().await.reply_delay = Duration::from_millis(41);
+
+    d.sync_to_coordinates(6.0, 30.0).await.unwrap();
+
+    let snap = d.manager.snapshot().await;
+    let st = mock.lock().await;
+    assert_eq!(snap.ra.sampled_at, st.arrivals(b":E1").last().copied());
+    assert_eq!(snap.dec.sampled_at, st.arrivals(b":E2").last().copied());
+    assert!(snap.ra.sampled_at.is_some() && snap.dec.sampled_at.is_some());
+}
+
 #[tokio::test]
 async fn abort_waits_for_an_in_flight_sync_before_clearing_the_flag() {
     // `AbortSlew` clears `slew_in_progress` before awaiting its `:L`
@@ -2720,6 +2746,28 @@ async fn reset_mount_encoders_writes_encoder_and_clears_state() {
     assert_eq!(s.target_ra_hours, None);
     assert_eq!(s.target_dec_degrees, None);
     assert!(!s.tracking_requested);
+}
+
+#[tokio::test(start_paused = true)]
+async fn reset_mount_encoders_dates_the_positions_it_wrote_when_its_writes_went_out() {
+    // The connect-time / UnparkFromApPosition seed follows the same
+    // convention as a sync's (issue #1371).
+    let (d, mock) = capturing_connected_device().await;
+    let _paused = d.manager.pause_background_polling();
+    mock.lock().await.reply_delay = Duration::from_millis(41);
+    {
+        let guard = d.session.read().await;
+        let session = guard.as_ref().expect("connected device holds a session");
+        d.reset_mount_encoders(session, 12_345, -6_789)
+            .await
+            .unwrap();
+    }
+
+    let snap = d.manager.snapshot().await;
+    let st = mock.lock().await;
+    assert_eq!(snap.ra.sampled_at, st.arrivals(b":E1").last().copied());
+    assert_eq!(snap.dec.sampled_at, st.arrivals(b":E2").last().copied());
+    assert!(snap.ra.sampled_at.is_some() && snap.dec.sampled_at.is_some());
 }
 
 #[tokio::test]

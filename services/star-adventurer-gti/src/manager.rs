@@ -25,6 +25,7 @@ use std::time::Duration;
 
 use rusty_photon_shared_transport::{
     Connection, Hooks, Session, SharedTransport, StateAssertion, TransportFactory, WhileOpen,
+    WireTiming,
 };
 use skywatcher_motor_protocol::{
     Axis, AxisStatus, Command, Direction, ModeKind, MountType, Response, Speed,
@@ -87,9 +88,11 @@ impl MountParameters {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AxisSnapshot {
     pub position_ticks: i32,
-    /// When the `:j` position reply that produced `position_ticks`
-    /// arrived (or when a `seed_*_position` published a just-written
-    /// `:E` value). `None` until the first sample.
+    /// When the `:j` request that produced `position_ticks` went out —
+    /// its [`WireTiming::sent_at`] — or, for a `seed_*_position`, when
+    /// the `:E` that wrote it did. The firmware latches the count as
+    /// the command arrives; the reply can reach a busy host much later
+    /// (issue #1371). `None` until the first sample.
     pub sampled_at: Option<Instant>,
     /// The axis' last `:f` status reply, as decoded. `None` until the
     /// first status poll (the handshake reads positions only), which
@@ -630,7 +633,24 @@ impl MountManager {
         session: &Session<SkywatcherCodec>,
         command: Command,
     ) -> Result<Response> {
-        let response = self.request(session, command.clone()).await?;
+        self.send_timed(session, command)
+            .await
+            .map(|(response, _)| response)
+    }
+
+    /// [`Self::send`], plus when the command crossed the wire. For a
+    /// caller that dates what the command did — a sync seeding the
+    /// position its `:E` wrote, say.
+    ///
+    /// # Errors
+    ///
+    /// The [`Self::send`] failures, unchanged.
+    pub async fn send_timed(
+        &self,
+        session: &Session<SkywatcherCodec>,
+        command: Command,
+    ) -> Result<(Response, WireTiming)> {
+        let (response, timing) = self.request_timed(session, command.clone()).await?;
         match command {
             Command::SetMotionMode { axis, mode } => self.step_periods.set_mode(axis, mode.kind),
             Command::SetStepPeriod { axis, period } => {
@@ -645,7 +665,7 @@ impl MountManager {
             }
             _ => {}
         }
-        Ok(response)
+        Ok((response, timing))
     }
 
     /// The last **tracking** `:I` step period the driver sent `axis`, or
@@ -660,19 +680,21 @@ impl MountManager {
         self.step_periods.get(axis)
     }
 
-    /// One validated round trip, with none of [`Self::send`]'s snapshot
-    /// bookkeeping. The poll paths use it directly.
-    async fn request(
+    /// One validated round trip and its [`WireTiming`], with none of
+    /// [`Self::send`]'s snapshot bookkeeping. The poll paths use it
+    /// directly.
+    async fn request_timed(
         &self,
         session: &Session<SkywatcherCodec>,
         command: Command,
-    ) -> Result<Response> {
+    ) -> Result<(Response, WireTiming)> {
         validate_command_args(&command)?;
-        let bytes = session
-            .request(command.clone())
+        let (bytes, timing) = session
+            .request_timed(command.clone())
             .await
             .map_err(StarAdvError::from)?;
-        decode_frame_for(&command, &bytes).map_err(StarAdvError::from)
+        let response = decode_frame_for(&command, &bytes).map_err(StarAdvError::from)?;
+        Ok((response, timing))
     }
 
     /// Re-read `axis` (both, for [`Axis::Both`]) into the cached
@@ -764,22 +786,24 @@ impl MountManager {
     /// can differ, and there's no sensible single-tick interpretation
     /// of "seed both".
     ///
-    /// The seeded value is stamped as sampled now — the `:E` has just
-    /// set the encoder to it — so [`Self::snapshot_now`] carries it
-    /// forward from this instant. The axis' running state and rate stay
-    /// those of the previous sample: `:E` does not change them.
-    pub async fn seed_ra_position(&self, ticks: i32) {
+    /// `at` is when the `:E` that wrote the value went out (its
+    /// [`WireTiming::sent_at`], from [`Self::send_timed`]): the encoder
+    /// held `ticks` from then, so [`Self::snapshot_now`] carries it
+    /// forward from that instant — the same convention as a polled
+    /// sample. The axis' running state and rate stay those of the
+    /// previous sample: `:E` does not change them.
+    pub async fn seed_ra_position(&self, ticks: i32, at: Instant) {
         let mut snap = self.snapshot.write().await;
         snap.ra.position_ticks = ticks;
-        snap.ra.sampled_at = Some(Instant::now());
+        snap.ra.sampled_at = Some(at);
     }
 
     /// Update the cached snapshot's Dec position. See
     /// [`seed_ra_position`](Self::seed_ra_position) for rationale.
-    pub async fn seed_dec_position(&self, ticks: i32) {
+    pub async fn seed_dec_position(&self, ticks: i32, at: Instant) {
         let mut snap = self.snapshot.write().await;
         snap.dec.position_ticks = ticks;
-        snap.dec.sampled_at = Some(Instant::now());
+        snap.dec.sampled_at = Some(at);
     }
 
     /// Per-call command timeout from the active transport config block.
@@ -961,11 +985,13 @@ async fn handshake(
     let hsr_dec =
         expect_u24(request_typed(conn, Command::InquireHighSpeedRatio(Axis::Dec)).await?)?;
 
-    // Step 9–10: initial encoder positions seed the snapshot.
-    let pos_ra = expect_position(request_typed(conn, Command::InquirePosition(Axis::Ra)).await?)?;
-    let ra_sampled_at = Instant::now();
-    let pos_dec = expect_position(request_typed(conn, Command::InquirePosition(Axis::Dec)).await?)?;
-    let dec_sampled_at = Instant::now();
+    // Step 9–10: initial encoder positions seed the snapshot, dated
+    // like every other sample at the send of their `:j`.
+    let (pos_ra, ra_timing) = request_typed_timed(conn, Command::InquirePosition(Axis::Ra)).await?;
+    let pos_ra = expect_position(pos_ra)?;
+    let (pos_dec, dec_timing) =
+        request_typed_timed(conn, Command::InquirePosition(Axis::Dec)).await?;
+    let pos_dec = expect_position(pos_dec)?;
 
     *parameters.write().await = Some(MountParameters {
         cpr_ra,
@@ -987,12 +1013,12 @@ async fn handshake(
     *snapshot.write().await = MountSnapshot {
         ra: AxisSnapshot {
             position_ticks: pos_ra,
-            sampled_at: Some(ra_sampled_at),
+            sampled_at: Some(ra_timing.sent_at),
             ..AxisSnapshot::default()
         },
         dec: AxisSnapshot {
             position_ticks: pos_dec,
-            sampled_at: Some(dec_sampled_at),
+            sampled_at: Some(dec_timing.sent_at),
             ..AxisSnapshot::default()
         },
     };
@@ -1155,11 +1181,22 @@ async fn request_typed(
     conn: &Connection<SkywatcherCodec>,
     cmd: Command,
 ) -> std::result::Result<Response, SkywatcherCodecError> {
-    let bytes = conn
-        .request(cmd.clone())
+    request_typed_timed(conn, cmd)
+        .await
+        .map(|(response, _)| response)
+}
+
+/// [`request_typed`], plus when the exchange crossed the wire.
+async fn request_typed_timed(
+    conn: &Connection<SkywatcherCodec>,
+    cmd: Command,
+) -> std::result::Result<(Response, WireTiming), SkywatcherCodecError> {
+    let (bytes, timing) = conn
+        .request_timed(cmd.clone())
         .await
         .map_err(SkywatcherCodecError::from)?;
-    decode_frame_for(&cmd, &bytes).map_err(SkywatcherCodecError::Protocol)
+    let response = decode_frame_for(&cmd, &bytes).map_err(SkywatcherCodecError::Protocol)?;
+    Ok((response, timing))
 }
 
 async fn poll_axis_via_ctx(
@@ -1168,14 +1205,13 @@ async fn poll_axis_via_ctx(
     axis: Axis,
     out: &mut AxisSnapshot,
 ) -> Result<()> {
-    let pos_bytes = ctx
-        .request(Command::InquirePosition(axis))
+    let (pos_bytes, timing) = ctx
+        .request_timed(Command::InquirePosition(axis))
         .await
         .map_err(StarAdvError::from)?;
-    let sampled_at = Instant::now();
     let pos = decode_frame_for(&Command::InquirePosition(axis), &pos_bytes)
         .map_err(StarAdvError::from)?;
-    record_position(out, expect_position_runtime(pos)?, sampled_at);
+    record_position(out, expect_position_runtime(pos)?, timing);
     let status_bytes = ctx
         .request(Command::InquireStatus(axis))
         .await
@@ -1192,13 +1228,12 @@ async fn poll_axis_via_session(
     axis: Axis,
     out: &mut AxisSnapshot,
 ) -> Result<()> {
-    let pos = manager
-        .request(session, Command::InquirePosition(axis))
+    let (pos, timing) = manager
+        .request_timed(session, Command::InquirePosition(axis))
         .await?;
-    let sampled_at = Instant::now();
-    record_position(out, expect_position_runtime(pos)?, sampled_at);
-    let status = manager
-        .request(session, Command::InquireStatus(axis))
+    record_position(out, expect_position_runtime(pos)?, timing);
+    let (status, _) = manager
+        .request_timed(session, Command::InquireStatus(axis))
         .await?;
     record_status(
         out,
@@ -1208,13 +1243,18 @@ async fn poll_axis_via_session(
     Ok(())
 }
 
-/// Store a `:j` reply and the instant it arrived. The stamp is taken
-/// on receipt: the firmware latched the count somewhere inside the
-/// round trip, so receipt is late by at most one round trip — a few
-/// milliseconds of motion, against the poll interval it replaces.
-const fn record_position(out: &mut AxisSnapshot, ticks: i32, sampled_at: Instant) {
+/// Store a `:j` reply, dated when its request went out.
+///
+/// The firmware latches the count as the command arrives, so the send
+/// is the end of the round trip to date it by. Receipt is not: a busy
+/// host can notice the reply tens of milliseconds late — 40–61 ms on
+/// the rig in issue #1371, which made a tracking `RightAscension` read
+/// about 0.042 s high — while anything that holds up the write after
+/// the stamp can only make it early. The midpoint would carry half of
+/// every such stall. See [`WireTiming`] for what each stamp guarantees.
+const fn record_position(out: &mut AxisSnapshot, ticks: i32, timing: WireTiming) {
     out.position_ticks = ticks;
-    out.sampled_at = Some(sampled_at);
+    out.sampled_at = Some(timing.sent_at);
 }
 
 /// Store a `:f` reply, with the `:I` period in force, as the rate state
@@ -1747,8 +1787,8 @@ mod tests {
     #[tokio::test]
     async fn seed_positions_update_snapshot() {
         let m = manager();
-        m.seed_ra_position(12_345).await;
-        m.seed_dec_position(-6_789).await;
+        m.seed_ra_position(12_345, Instant::now()).await;
+        m.seed_dec_position(-6_789, Instant::now()).await;
         let snap = m.snapshot().await;
         assert_eq!(snap.ra.position_ticks, 12_345);
         assert_eq!(snap.dec.position_ticks, -6_789);
@@ -2727,15 +2767,113 @@ mod tests {
         session.close().await.unwrap();
     }
 
-    #[tokio::test]
-    async fn seeding_a_position_stamps_it_as_sampled_now() {
+    #[tokio::test(start_paused = true)]
+    async fn seeding_a_position_dates_it_when_its_write_went_out() {
         let m = manager();
-        let before = Instant::now();
-        m.seed_ra_position(12_345).await;
-        m.seed_dec_position(-6_789).await;
+        let written = Instant::now();
+        // The seed lands later than the write it records, as it does
+        // after a reply the host was slow to read.
+        tokio::time::advance(REPLY_DELAY).await;
+        m.seed_ra_position(12_345, written).await;
+        m.seed_dec_position(-6_789, written).await;
         let snap = m.snapshot().await;
-        assert!(snap.ra.sampled_at.unwrap() >= before);
-        assert!(snap.dec.sampled_at.unwrap() >= before);
+        assert_eq!(snap.ra.sampled_at, Some(written));
+        assert_eq!(snap.dec.sampled_at, Some(written));
+    }
+
+    // -----------------------------------------------------------------
+    // Dating a sample at the send of its `:j` (issue #1371)
+    // -----------------------------------------------------------------
+
+    /// How long the mock holds each reply back in the dating tests — the
+    /// 41 ms a busy host took to notice a reply on the rig in #1371.
+    const REPLY_DELAY: Duration = Duration::from_millis(41);
+
+    /// When the mock last received `frame` — the instant it latched
+    /// what that frame read.
+    fn last_arrival(state: &MockMountState, frame: &[u8]) -> Option<Instant> {
+        state.arrivals(frame).last().copied()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_session_read_is_dated_when_its_position_request_went_out() {
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        let m = MountManager::new(&Config::default(), Arc::new(factory));
+        let session = m.transport().acquire().await.unwrap();
+        let _paused = m.pause_background_polling();
+        state.lock().await.reply_delay = REPLY_DELAY;
+
+        let snap = m.poll_axes_now(&session).await.unwrap();
+
+        let st = state.lock().await;
+        assert_eq!(
+            snap.ra.sampled_at,
+            Some(last_arrival(&st, b":j1\r").unwrap()),
+            "dated when the :j1 reached the mount, not when its slow reply was read"
+        );
+        assert_eq!(
+            snap.dec.sampled_at,
+            Some(last_arrival(&st, b":j2\r").unwrap())
+        );
+        drop(st);
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_background_poll_is_dated_when_its_position_request_went_out() {
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        let m = MountManager::new(&Config::default(), Arc::new(factory));
+        let session = m.transport().acquire().await.unwrap();
+        state.lock().await.reply_delay = REPLY_DELAY;
+        let slow_from = Instant::now();
+
+        // The handshake's sample is the only one so far: wait for the
+        // poll loop to publish one it read through the slow replies.
+        let polled = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+                let ra = m.snapshot().await.ra;
+                if ra.sampled_at > Some(slow_from) {
+                    return ra;
+                }
+            }
+        })
+        .await
+        .expect("the poll loop never published an RA sample");
+
+        let sent = state.lock().await.arrivals(b":j1\r");
+        assert!(
+            sent.contains(&polled.sampled_at.unwrap()),
+            "the poll's RA sample is dated {:?}, which is not when any :j1 reached the mount ({sent:?})",
+            polled.sampled_at
+        );
+        session.close().await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_handshake_dates_its_positions_when_their_requests_went_out() {
+        let factory = CapturingMockFactory::new();
+        let state = Arc::clone(&factory.state);
+        state.lock().await.reply_delay = REPLY_DELAY;
+        let m = MountManager::new(&Config::default(), Arc::new(factory));
+        let _paused = m.pause_background_polling();
+
+        let session = m.transport().acquire().await.unwrap();
+
+        let snap = m.snapshot().await;
+        let st = state.lock().await;
+        assert_eq!(
+            snap.ra.sampled_at,
+            Some(last_arrival(&st, b":j1\r").unwrap())
+        );
+        assert_eq!(
+            snap.dec.sampled_at,
+            Some(last_arrival(&st, b":j2\r").unwrap())
+        );
+        drop(st);
+        session.close().await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
