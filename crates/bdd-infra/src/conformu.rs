@@ -40,10 +40,21 @@
 //!   the file and honour both. [`run_conformu_from_settings`] drives these; it
 //!   is the only entry point where a deselected test takes effect, and a run
 //!   made through it carries `ConformU` configuration alerts — which is why it
-//!   can never be a `docs/validation/` record.
+//!   can never be a `docs/validation/` record. The caller names the alerts it
+//!   expects, and the run fails on any other set.
+//!
+//! Neither runner trusts an exit status alone: `ConformU` exits with a count
+//! of findings, which Unix truncates to its low eight bits, so 256 findings
+//! read as success. The conformance suite writes a results file
+//! (`--resultsfile`), and its verdict comes from that: a full run passes only
+//! with a zero exit **and** a results file free of errors, issues and alerts;
+//! a settings run passes on that file alone, with no error, no issue and
+//! exactly the expected alerts (the alerts make its exit status non-zero).
+//! The protocol suite writes no such file, so it must exit zero **and** print
+//! a summary line whose whole error and issue counts are both zero.
 
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 
 use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -51,13 +62,17 @@ use tokio::process::Command;
 
 use crate::scratch;
 
-/// Outcome of [`run_conformu`].
+/// Outcome of [`run_conformu`] and [`run_conformu_from_settings`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum ConformuRun {
     /// `CONFORMU_PATH` was not set, so `ConformU` was not run. Callers treat this
     /// as a pass: the suite is inert unless `ConformU` is explicitly provided.
     Skipped,
-    /// `ConformU` ran and reported success (zero exit status).
+    /// `ConformU` ran and both suites met the runner's verdict: the protocol
+    /// suite exited zero, and the conformance suite's results file lists no
+    /// error, no issue and — for [`run_conformu`], whose conformance suite
+    /// must also exit zero — no configuration alert, or for
+    /// [`run_conformu_from_settings`] exactly the expected ones.
     Passed,
 }
 
@@ -169,18 +184,250 @@ impl FullRunSettings {
     }
 }
 
-/// How [`run_mode`] treats a non-zero exit whose summary shows zero errors and
-/// zero issues — the signature of a run narrowed by deselected tests.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConfigurationAlerts {
-    /// Fail the run. Nothing a [`FullRunSettings`] can write is a selection, so
-    /// a run driven through it cannot be narrowed: alerts are not expected and
-    /// a non-zero exit is a real verdict.
-    Reject,
-    /// Accept the run. The `*-settings` verbs honour deselection, and every
-    /// deliberately omitted test produces an alert that counts into the exit
-    /// code exactly like an error or issue.
-    Accept,
+/// The keys of `ConformU` 4.5.0's default `Settings.TelescopeTests` dictionary.
+///
+/// A settings file that carries `TelescopeTests` replaces that default
+/// outright: `ConformU` uses the dictionary exactly as deserialised and indexes
+/// it by these names — the protocol suite fourteen of them, the conformance
+/// suite's methods phase all seventeen — so a missing key throws a
+/// `KeyNotFoundException` wherever a suite first reaches it, abandoning the
+/// rest of that suite as an error or issue that names only that one key. The
+/// list is pinned to the version the nightly installs today. A newer
+/// `ConformU` that adds a key still fails a file written to this list —
+/// loudly, the same way — and the key then belongs here.
+const TELESCOPE_TESTS: [&str; 17] = [
+    "CanMoveAxis",
+    "Park/Unpark",
+    "AbortSlew",
+    "AxisRate",
+    "FindHome",
+    "MoveAxis",
+    "PulseGuide",
+    "SlewToCoordinates",
+    "SlewToCoordinatesAsync",
+    "SlewToTarget",
+    "SlewToTargetAsync",
+    "DestinationSideOfPier",
+    "SlewToAltAz",
+    "SlewToAltAzAsync",
+    "SyncToCoordinates",
+    "SyncToTarget",
+    "SyncToAltAz",
+];
+
+/// Refuse a settings file whose `TelescopeTests` dictionary would abandon a
+/// suite part-way, naming every missing key at once. A file without the dictionary
+/// keeps `ConformU`'s all-enabled default and passes.
+fn check_telescope_tests(settings: &serde_json::Value) -> Result<(), String> {
+    let Some(tests) = settings.get("TelescopeTests") else {
+        return Ok(());
+    };
+    let tests = tests
+        .as_object()
+        .ok_or_else(|| format!("`TelescopeTests` is not a JSON object: {tests}"))?;
+    let missing: Vec<&str> = TELESCOPE_TESTS
+        .into_iter()
+        .filter(|key| !tests.contains_key(*key))
+        .collect();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "`TelescopeTests` lacks {missing:?}: ConformU indexes the dictionary as written, \
+             so a missing key abandons the run part-way — spell out every key, `false` for a \
+             deselected test"
+        ))
+    }
+}
+
+/// The verdict-bearing part of the results file `ConformU`'s conformance suite
+/// writes when given `--resultsfile` (its `ConformResults` class). Every entry
+/// is the `Key` / `Value` pair `ConformU` records: where the finding arose (a
+/// test, a stage, or `Conform configuration` for every alert), then the
+/// message — which is why alerts are compared by message alone.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ConformResults {
+    errors: Vec<(String, String)>,
+    issues: Vec<(String, String)>,
+    configuration_alerts: Vec<(String, String)>,
+}
+
+impl ConformResults {
+    fn parse(json: &str) -> Result<Self, String> {
+        let value: serde_json::Value =
+            serde_json::from_str(json).map_err(|e| format!("not JSON: {e}"))?;
+        let entries = |field: &str| -> Result<Vec<(String, String)>, String> {
+            value
+                .get(field)
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| format!("no `{field}` array"))?
+                .iter()
+                .map(|entry| {
+                    let text = |name: &str| {
+                        entry
+                            .get(name)
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned)
+                    };
+                    text("Key").zip(text("Value")).ok_or_else(|| {
+                        format!("a `{field}` entry is not a Key/Value pair: {entry}")
+                    })
+                })
+                .collect()
+        };
+        Ok(Self {
+            errors: entries("Errors")?,
+            issues: entries("Issues")?,
+            configuration_alerts: entries("ConfigurationAlerts")?,
+        })
+    }
+
+    fn read(path: &Path) -> Result<Self, String> {
+        let json = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        Self::parse(&json).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// The configuration alerts' messages, sorted, so two lists compare equal
+    /// whatever their order — duplicates still count.
+    fn alert_messages(&self) -> Vec<&str> {
+        let mut messages: Vec<&str> = self
+            .configuration_alerts
+            .iter()
+            .map(|(_, message)| message.as_str())
+            .collect();
+        messages.sort_unstable();
+        messages
+    }
+
+    fn describe_defects(&self) -> String {
+        format!(
+            "{} issue(s) {:?} and {} error(s) {:?}",
+            self.issues.len(),
+            self.issues,
+            self.errors.len(),
+            self.errors
+        )
+    }
+}
+
+/// The error and issue counts on the summary line `ConformU`'s protocol suite
+/// prints once it finishes: `Found <E> error(s), <I> issue(s) and <N>
+/// information message(s).`, or its all-clear line when all three are zero.
+/// The counts are read whole, so `10 errors` is ten. `None` when no line has
+/// either shape — the suite did not finish.
+fn protocol_summary(output: &[String]) -> Option<(usize, usize)> {
+    output.iter().find_map(|line| {
+        let line = line.trim();
+        if line.starts_with("Congratulations there were no errors, issues or information alerts") {
+            return Some((0, 0));
+        }
+        let words: Vec<&str> = line.split_whitespace().collect();
+        match words.as_slice() {
+            ["Found", errors, error_word, issues, issue_word, "and", _, "information", message_word]
+                if error_word.starts_with("error")
+                    && issue_word.starts_with("issue")
+                    && message_word.starts_with("message") =>
+            {
+                Some((errors.parse().ok()?, issues.parse().ok()?))
+            }
+            _ => None,
+        }
+    })
+}
+
+/// A protocol suite's verdict: a zero exit and a summary line reporting zero
+/// errors and zero issues. Its information messages — a deselected test among
+/// them — never count. `status` is the exit status as the process reported
+/// it, for the message.
+fn protocol_verdict(
+    suite: &str,
+    target: &str,
+    status: &str,
+    exited_zero: bool,
+    output: &[String],
+) -> Result<(), String> {
+    if !exited_zero {
+        return Err(format!(
+            "ConformU `{suite}` exited with {status} testing {target}"
+        ));
+    }
+    match protocol_summary(output) {
+        Some((0, 0)) => Ok(()),
+        Some((errors, issues)) => Err(format!(
+            "ConformU `{suite}` exited with {status} testing {target} although its summary \
+             reports {errors} error(s) and {issues} issue(s)"
+        )),
+        None => Err(format!(
+            "ConformU `{suite}` exited with {status} testing {target} but printed no summary \
+             line, so the run did not finish"
+        )),
+    }
+}
+
+/// A full run's conformance verdict: it passes with a zero exit and a results
+/// file that lists nothing — no error, no issue and no configuration alert. A
+/// full run has nothing to deselect, so a non-zero exit, any listed finding,
+/// or no readable results file fails it. `status` is the exit status as
+/// `ConformU`'s process reported it, for the message.
+fn full_run_verdict(
+    target: &str,
+    status: &str,
+    exited_zero: bool,
+    results: Result<ConformResults, String>,
+) -> Result<(), String> {
+    let results = results.map_err(|e| {
+        format!(
+            "ConformU `conformance` exited with {status} testing {target} and left no \
+             readable results file ({e})"
+        )
+    })?;
+    if !results.issues.is_empty() || !results.errors.is_empty() {
+        return Err(format!(
+            "ConformU `conformance` exited with {status} testing {target}: {}",
+            results.describe_defects()
+        ));
+    }
+    if !results.configuration_alerts.is_empty() {
+        return Err(format!(
+            "ConformU `conformance` exited with {status} testing {target} with 0 issues and \
+             0 errors: the run was narrowed by configuration alerts {:?}, which a full run never \
+             has — a deselected test only takes effect through run_conformu_from_settings",
+            results.alert_messages()
+        ));
+    }
+    if exited_zero {
+        Ok(())
+    } else {
+        Err(format!(
+            "ConformU `conformance` exited with {status} testing {target} although its results \
+             file lists no error, issue or alert"
+        ))
+    }
+}
+
+/// A settings run passes with no error, no issue and exactly the expected
+/// configuration alerts — compared as lists of messages in any order, so a
+/// missing, extra, duplicated or reworded alert fails it.
+fn settings_run_verdict(results: &ConformResults, expected_alerts: &[&str]) -> Result<(), String> {
+    if !results.issues.is_empty() || !results.errors.is_empty() {
+        return Err(format!(
+            "ConformU `conformance-settings` reported {}",
+            results.describe_defects()
+        ));
+    }
+    let raised = results.alert_messages();
+    let mut expected = expected_alerts.to_vec();
+    expected.sort_unstable();
+    if raised == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "ConformU `conformance-settings` raised configuration alerts {raised:?}, but the \
+             caller expects exactly {expected:?}: every deselection is a documented decision, \
+             so a change to the selection changes the expected list (and the design doc) too"
+        ))
+    }
 }
 
 /// Run both ASCOM `ConformU` suites — `alpacaprotocol`, then `conformance` —
@@ -190,7 +437,7 @@ enum ConfigurationAlerts {
 ///
 /// ```text
 /// conformu alpacaprotocol --settingsfile <generated> <base_url>/api/v1/<device_type>/<device_number>
-/// conformu conformance    --settingsfile <generated> <base_url>/api/v1/<device_type>/<device_number>
+/// conformu conformance    --settingsfile <generated> --resultsfile <scratch> <base_url>/api/v1/<device_type>/<device_number>
 /// ```
 ///
 /// `device_type` is the lowercase Alpaca device-type URL segment (`"focuser"`,
@@ -207,14 +454,18 @@ enum ConfigurationAlerts {
 /// [`run_conformu_from_settings`].
 ///
 /// Returns [`ConformuRun::Skipped`] when `CONFORMU_PATH` is unset and
-/// [`ConformuRun::Passed`] once both suites have exited zero.
+/// [`ConformuRun::Passed`] once both suites have exited zero, the protocol
+/// suite's summary reports no error or issue, and the conformance suite's
+/// results file lists no error, issue or configuration alert.
 ///
 /// # Errors
 ///
 /// Returns an error if `ConformU` cannot be spawned, the settings file cannot
-/// be written, its output cannot be read, or either suite exits non-zero. A
-/// full run has nothing to deselect, so no configuration-alert allowance
-/// applies here: any non-zero exit is a verdict.
+/// be written, its output cannot be read, either suite exits non-zero, the
+/// protocol suite prints no summary or one with an error or issue, or the
+/// conformance suite leaves no readable results file or one that lists any
+/// finding. A full run has nothing to deselect, so no configuration-alert
+/// allowance applies here.
 pub async fn run_conformu(
     device_type: &str,
     base_url: &str,
@@ -234,24 +485,44 @@ pub async fn run_conformu(
     // Always hand ConformU a file: without `--settingsfile` it reads the
     // per-user `conform.settings` the GUI saves into, whose timeouts and
     // tolerances the URL verbs honour. The scratch guard lives across both
-    // suites; the file goes with it.
+    // suites; the file, and the results file beside it, go with it.
     let settings = settings.cloned().unwrap_or_default();
-    let (_settings_dir, settings_path) = settings.write_to_scratch()?;
+    let (settings_dir, settings_path) = settings.write_to_scratch()?;
+    let results_path = settings_dir.path().join("conformance-results.json");
 
     // Run both ConformU suites against the device, matching the upstream
     // ascom_alpaca::test runner (`ConformUTestBuilder::run`): `alpacaprotocol`
     // (Alpaca wire-protocol conformance) then `conformance` (full ASCOM
     // device-interface tests). Both must pass.
-    for mode in ["alpacaprotocol", "conformance"] {
-        run_mode(
-            &conformu,
-            mode,
-            Some(&settings_path),
-            Some(&device_url),
-            ConfigurationAlerts::Reject,
-        )
-        .await?;
-    }
+    let protocol = run_mode(
+        &conformu,
+        "alpacaprotocol",
+        &settings_path,
+        None,
+        Some(&device_url),
+    )
+    .await?;
+    protocol_verdict(
+        "alpacaprotocol",
+        &device_url,
+        &protocol.status.to_string(),
+        protocol.status.success(),
+        &protocol.output,
+    )?;
+    let conformance = run_mode(
+        &conformu,
+        "conformance",
+        &settings_path,
+        Some(&results_path),
+        Some(&device_url),
+    )
+    .await?;
+    full_run_verdict(
+        &device_url,
+        &conformance.status.to_string(),
+        conformance.status.success(),
+        ConformResults::read(&results_path),
+    )?;
     Ok(ConformuRun::Passed)
 }
 
@@ -275,24 +546,40 @@ pub async fn run_conformu(
 ///
 /// The file is the caller's to write in full. `ConformU` uses a
 /// `TelescopeTests` dictionary exactly as deserialised — a missing key is a
-/// `KeyNotFoundException` when the methods phase starts — so a Telescope
-/// settings file must spell out every entry (planetarium-bridge's test carries
-/// the complete list).
+/// `KeyNotFoundException` wherever a suite first reaches it — so a Telescope
+/// settings file that carries the dictionary must spell out every entry
+/// (planetarium-bridge's test carries the complete list). The file is checked
+/// for that before `ConformU` starts, and the error names each missing key.
 ///
 /// A deliberately omitted test produces a `ConformU` "configuration alert",
-/// and alerts count into the exit code exactly like errors and issues. A
-/// run whose only marks are configuration alerts is therefore accepted as a
-/// pass here, detected via the summary line `ConformU` prints; errors and
-/// issues still fail. Because of those alerts a run made this way never meets
-/// the `docs/validation/` record rule.
+/// and alerts count into the conformance suite's exit code exactly like errors
+/// and issues. That suite's verdict is therefore read from the results file
+/// it writes, not from its exit code: the run passes with no error, no issue
+/// and exactly the configuration alerts named in `expected_alerts` — each one
+/// the alert's message as `ConformU` words it (e.g. `"Pulse guide tests were
+/// omitted due to Conform configuration."`), in any order. A missing or extra
+/// alert fails, so the file cannot deselect a test that raises an alert without
+/// its caller documenting it. Settings that narrow or soften a run without
+/// any alert — the camera caps, `SwitchExtendedNumberTestRange`, the
+/// tolerances — are honoured silently and are not caught here; a settings
+/// file leaves them at `ConformU`'s defaults. The protocol suite reports a
+/// deselected test as an information message that never touches its exit
+/// code or its error and issue counts, so it must exit zero with a summary
+/// reporting no error or issue. Because of the alerts a run made this way
+/// never meets the `docs/validation/` record rule.
 ///
 /// # Errors
 ///
-/// Returns an error if `ConformU` cannot be spawned, its output cannot be
-/// read, or either `*-settings` suite exits non-zero with errors or issues
-/// in its summary.
+/// Returns an error if the settings file cannot be read, is not JSON or
+/// carries an incomplete `TelescopeTests` dictionary; if `ConformU` cannot be
+/// spawned or its output cannot be read; if the protocol suite exits
+/// non-zero or prints no summary, or one with an error or issue; or if the
+/// conformance suite leaves no readable results file, or
+/// one with an error, an issue, or a configuration-alert set other than
+/// `expected_alerts`.
 pub async fn run_conformu_from_settings(
     settings_file: &Path,
+    expected_alerts: &[&str],
 ) -> Result<ConformuRun, Box<dyn std::error::Error + Send + Sync>> {
     let Some(conformu) = std::env::var_os("CONFORMU_PATH").filter(|v| !v.is_empty()) else {
         eprintln!(
@@ -302,33 +589,72 @@ pub async fn run_conformu_from_settings(
         return Ok(ConformuRun::Skipped);
     };
 
-    for mode in ["alpacaprotocol-settings", "conformance-settings"] {
-        run_mode(
-            &conformu,
-            mode,
-            Some(settings_file),
-            None,
-            ConfigurationAlerts::Accept,
-        )
-        .await?;
-    }
+    let settings = std::fs::read_to_string(settings_file)
+        .map_err(|e| format!("cannot read settings file {}: {e}", settings_file.display()))?;
+    let settings: serde_json::Value = serde_json::from_str(&settings)
+        .map_err(|e| format!("settings file {} is not JSON: {e}", settings_file.display()))?;
+    check_telescope_tests(&settings)
+        .map_err(|e| format!("settings file {}: {e}", settings_file.display()))?;
+
+    let target = format!("the device in {}", settings_file.display());
+    let protocol = run_mode(
+        &conformu,
+        "alpacaprotocol-settings",
+        settings_file,
+        None,
+        None,
+    )
+    .await?;
+    protocol_verdict(
+        "alpacaprotocol-settings",
+        &target,
+        &protocol.status.to_string(),
+        protocol.status.success(),
+        &protocol.output,
+    )?;
+
+    let results_dir = scratch::new_dir("conformu-results-")?;
+    let results_path = results_dir.path().join("conformance-results.json");
+    let status = run_mode(
+        &conformu,
+        "conformance-settings",
+        settings_file,
+        Some(&results_path),
+        None,
+    )
+    .await?
+    .status;
+    let results = ConformResults::read(&results_path).map_err(|e| {
+        format!("ConformU `conformance-settings` exited with {status} and left no readable results file: {e}")
+    })?;
+    settings_run_verdict(&results, expected_alerts)?;
+    println!(
+        "[conformu conformance-settings] {status} accepted: 0 issues, 0 errors and exactly the \
+         expected configuration alerts {:?}",
+        results.alert_messages()
+    );
     Ok(ConformuRun::Passed)
 }
 
-/// Run a single `ConformU` mode, streaming its output. `device_url` is the
-/// positional device argument for the URL-based commands and `None` for the
-/// `*-settings` commands (which read the device from the settings file).
-/// Returns `Err` on a non-zero exit, except — under
-/// [`ConfigurationAlerts::Accept`] — when the output's summary line shows
-/// zero errors and zero issues: the exit code also counts configuration
-/// alerts (deliberately deselected tests), which are not device defects.
+/// What one `ConformU` mode left behind: its exit status and every line it
+/// printed to stdout.
+struct ModeRun {
+    status: ExitStatus,
+    output: Vec<String>,
+}
+
+/// Run a single `ConformU` mode, streaming its output into the test log, and
+/// return its exit status and output for the caller to judge. `results_file` adds
+/// `--resultsfile` (the conformance suites); `device_url` is the positional
+/// device argument for the URL-based commands and `None` for the `*-settings`
+/// commands, which read the device from the settings file.
 async fn run_mode(
     conformu: &std::ffi::OsStr,
     mode: &str,
-    settings_file: Option<&Path>,
+    settings_file: &Path,
+    results_file: Option<&Path>,
     device_url: Option<&str>,
-    alerts: ConfigurationAlerts,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<ModeRun, Box<dyn std::error::Error + Send + Sync>> {
     let mut command = Command::new(conformu);
     command.arg(mode);
     // ConformU writes a per-run log tree under $HOME (e.g.
@@ -343,8 +669,9 @@ async fn run_mode(
     // a `FullRunSettings` (test selection is not expressible there — the
     // command calls SetFullTest()); for the `*-settings` commands it carries
     // the device and the test selection too.
-    if let Some(path) = settings_file {
-        command.arg("--settingsfile").arg(path);
+    command.arg("--settingsfile").arg(settings_file);
+    if let Some(path) = results_file {
+        command.arg("--resultsfile").arg(path);
     }
     if let Some(url) = device_url {
         command.arg(url);
@@ -352,54 +679,30 @@ async fn run_mode(
     let mut child = command.stdout(Stdio::piped()).spawn()?;
 
     // Stream ConformU's (unstructured) stdout into the test log so progress is
-    // visible and a verbose run can't deadlock on an undrained pipe. The
-    // summary lines are also inspected for the alerts-only pass below.
-    let mut clean_except_alerts = false;
+    // visible and a verbose run can't deadlock on an undrained pipe, and keep
+    // it: the protocol suite's verdict includes its summary line.
+    let mut output = Vec::new();
     if let Some(stdout) = child.stdout.take() {
         let mut lines = BufReader::new(stdout).lines();
         while let Some(line) = lines.next_line().await? {
             println!("[conformu {mode}] {line}");
-            // The two summary shapes: the conformance suite prints
-            // "Your device had 0 issues, 0 errors and N configuration
-            // alert(s)"; the protocol suite prints "Found 0 errors, 0
-            // issues and N information messages" (informational messages
-            // never affect its exit code).
-            if line.contains("0 issues, 0 errors and") {
-                clean_except_alerts = true;
-            }
+            output.push(line);
         }
     }
 
-    let status = child.wait().await?;
-    let target = device_url.unwrap_or("the settings-file device");
-    if status.success() {
-        return Ok(());
-    }
-    match (alerts, clean_except_alerts) {
-        (ConfigurationAlerts::Accept, true) => {
-            println!(
-                "[conformu {mode}] non-zero exit {status} accepted: the summary reported 0 issues \
-                 and 0 errors (configuration alerts only)"
-            );
-            Ok(())
-        }
-        (ConfigurationAlerts::Reject, true) => Err(format!(
-            "ConformU `{mode}` exited with {status} testing {target} although its summary \
-             reported 0 issues and 0 errors: the run was narrowed by configuration alerts, \
-             which a full run never has — a deselected test only takes effect through \
-             run_conformu_from_settings"
-        )
-        .into()),
-        (_, false) => {
-            Err(format!("ConformU `{mode}` exited with {status} testing {target}").into())
-        }
-    }
+    Ok(ModeRun {
+        status: child.wait().await?,
+        output,
+    })
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use super::FullRunSettings;
+    use super::{
+        check_telescope_tests, full_run_verdict, protocol_summary, protocol_verdict,
+        settings_run_verdict, ConformResults, FullRunSettings, TELESCOPE_TESTS,
+    };
 
     /// Every `Settings` property `ConformU` 4.5.0 marks `[MandatoryInFullTest]`
     /// — forced by `SetFullTest()` on the URL-verb path — plus the
@@ -443,8 +746,9 @@ mod tests {
     /// `ConformU`'s GUI paths, so a field for one would promise an effect a
     /// CLI run does not have. `RunAs32Bit` is read by the CLI too: on 64-bit
     /// Windows it makes `ConformU` start a detached 32-bit copy of itself on
-    /// the same command line and exit 0 at once, so the caller sees a pass
-    /// while that copy, whose verdict nobody reads, drives the device.
+    /// the same command line and exit 0 at once, before any results file
+    /// exists — so the run fails, while that copy, whose verdict nobody
+    /// reads, still drives the device.
     const APPLICATION_ONLY: &[&str] = &[
         "ConnectionTimeout",
         "GoHomeOnDeviceSelected",
@@ -547,11 +851,389 @@ mod tests {
         assert_eq!(on_disk, settings.to_json());
     }
 
-    /// The strictness boundary itself, exercised against a stand-in
-    /// `conformu`: a shell script that prints a chosen summary line and exits
-    /// with a chosen status. Unix-only because the stand-in is a `#!/bin/sh`
-    /// script; `run_mode`'s policy logic has no platform arm, so the Windows
-    /// leg of the Bazel target simply selects nothing here.
+    /// A `TelescopeTests` dictionary with every key `ConformU` defines, all on.
+    fn complete_telescope_tests() -> serde_json::Value {
+        TELESCOPE_TESTS
+            .into_iter()
+            .map(|key| (key.to_owned(), serde_json::Value::Bool(true)))
+            .collect::<serde_json::Map<_, _>>()
+            .into()
+    }
+
+    #[test]
+    fn a_complete_telescope_tests_dictionary_passes_the_check() {
+        let settings = serde_json::json!({ "TelescopeTests": complete_telescope_tests() });
+
+        check_telescope_tests(&settings).unwrap();
+    }
+
+    #[test]
+    fn a_settings_file_without_telescope_tests_passes_the_check() {
+        let settings = serde_json::json!({ "SettingsCompatibilityVersion": 1 });
+
+        check_telescope_tests(&settings).unwrap();
+    }
+
+    #[test]
+    fn the_check_names_every_missing_telescope_test() {
+        let mut tests = complete_telescope_tests();
+        let object = tests.as_object_mut().unwrap();
+        object.remove("CanMoveAxis");
+        object.remove("Park/Unpark");
+        let settings = serde_json::json!({ "TelescopeTests": tests });
+
+        let err = check_telescope_tests(&settings).unwrap_err();
+
+        assert!(
+            err.contains(r#"["CanMoveAxis", "Park/Unpark"]"#),
+            "unexpected error text: {err}"
+        );
+    }
+
+    #[test]
+    fn the_check_refuses_a_telescope_tests_value_that_is_not_an_object() {
+        let settings = serde_json::json!({ "TelescopeTests": [] });
+
+        let err = check_telescope_tests(&settings).unwrap_err();
+
+        assert!(
+            err.contains("not a JSON object"),
+            "unexpected error text: {err}"
+        );
+    }
+
+    const PULSE_GUIDE_ALERT: &str = "Pulse guide tests were omitted due to Conform configuration.";
+    const SIDE_OF_PIER_READ_ALERT: &str =
+        "Extended side of pier read tests were omitted due to Conform configuration.";
+
+    /// `ConformU` 4.5.0's results-file shape — every field it writes, entries
+    /// as `Key` / `Value` pairs the way a planetarium-bridge run's file carries
+    /// them — with one invented issue so the parser sees a non-empty list.
+    const RESULTS_FILE: &str = r#"{
+      "ErrorCount": 0,
+      "IssueCount": 1,
+      "ConfigurationAlertCount": 1,
+      "TimingIssuesCount": 0,
+      "TimingCount": 62,
+      "Errors": [],
+      "Issues": [ { "Key": "SlewToTarget", "Value": "Slewed 12.3 arc seconds away" } ],
+      "ConfigurationAlerts": [
+        { "Key": "Conform configuration", "Value": "Pulse guide tests were omitted due to Conform configuration." }
+      ],
+      "Timings": [ { "Key": "AbortSlew", "Value": "0.1" } ]
+    }"#;
+
+    fn alerts(messages: &[&str]) -> ConformResults {
+        ConformResults {
+            configuration_alerts: messages
+                .iter()
+                .map(|m| ("Conform configuration".to_owned(), (*m).to_owned()))
+                .collect(),
+            ..ConformResults::default()
+        }
+    }
+
+    #[test]
+    fn a_results_file_parses_into_its_three_verdict_lists() {
+        let results = ConformResults::parse(RESULTS_FILE).unwrap();
+
+        assert_eq!(
+            results,
+            ConformResults {
+                errors: vec![],
+                issues: vec![(
+                    "SlewToTarget".to_owned(),
+                    "Slewed 12.3 arc seconds away".to_owned()
+                )],
+                configuration_alerts: vec![(
+                    "Conform configuration".to_owned(),
+                    PULSE_GUIDE_ALERT.to_owned()
+                )],
+            }
+        );
+    }
+
+    #[test]
+    fn a_results_file_missing_any_verdict_list_is_refused() {
+        for field in ["Errors", "Issues", "ConfigurationAlerts"] {
+            let mut file =
+                serde_json::json!({ "Errors": [], "Issues": [], "ConfigurationAlerts": [] });
+            file.as_object_mut().unwrap().remove(field);
+
+            let err = ConformResults::parse(&file.to_string()).unwrap_err();
+
+            assert!(
+                err.contains(&format!("no `{field}` array")),
+                "{field}: unexpected error text: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_settings_run_passes_with_exactly_the_expected_alerts_in_any_order() {
+        // ConformU's emission order, which is not sorted.
+        let results = alerts(&[PULSE_GUIDE_ALERT, SIDE_OF_PIER_READ_ALERT]);
+
+        settings_run_verdict(&results, &[PULSE_GUIDE_ALERT, SIDE_OF_PIER_READ_ALERT]).unwrap();
+        settings_run_verdict(&results, &[SIDE_OF_PIER_READ_ALERT, PULSE_GUIDE_ALERT]).unwrap();
+    }
+
+    #[test]
+    fn a_settings_run_with_an_unexpected_alert_fails() {
+        let results = alerts(&[PULSE_GUIDE_ALERT, SIDE_OF_PIER_READ_ALERT]);
+
+        let err = settings_run_verdict(&results, &[PULSE_GUIDE_ALERT]).unwrap_err();
+
+        assert!(
+            err.contains("expects exactly"),
+            "unexpected error text: {err}"
+        );
+    }
+
+    #[test]
+    fn a_settings_run_missing_an_expected_alert_fails() {
+        let results = alerts(&[]);
+
+        let err = settings_run_verdict(&results, &[PULSE_GUIDE_ALERT]).unwrap_err();
+
+        assert!(
+            err.contains("expects exactly"),
+            "unexpected error text: {err}"
+        );
+    }
+
+    /// `ConformU` can raise one alert several times (a Switch's skipped
+    /// offset tests, once per switch), so each expected occurrence counts.
+    #[test]
+    fn a_settings_run_raising_an_expected_alert_twice_fails() {
+        let results = alerts(&[PULSE_GUIDE_ALERT, PULSE_GUIDE_ALERT]);
+
+        let err = settings_run_verdict(&results, &[PULSE_GUIDE_ALERT]).unwrap_err();
+
+        assert!(
+            err.contains("expects exactly"),
+            "unexpected error text: {err}"
+        );
+    }
+
+    #[test]
+    fn a_settings_run_with_an_issue_fails_even_with_the_expected_alerts() {
+        let results = ConformResults::parse(RESULTS_FILE).unwrap();
+
+        let err = settings_run_verdict(&results, &[PULSE_GUIDE_ALERT]).unwrap_err();
+
+        assert!(err.contains("1 issue(s)"), "unexpected error text: {err}");
+    }
+
+    #[test]
+    fn a_settings_run_with_an_error_fails_even_with_the_expected_alerts() {
+        let results = ConformResults {
+            errors: vec![("PulseGuide".to_owned(), "NOT_IMPLEMENTED".to_owned())],
+            ..alerts(&[PULSE_GUIDE_ALERT])
+        };
+
+        let err = settings_run_verdict(&results, &[PULSE_GUIDE_ALERT]).unwrap_err();
+
+        assert!(err.contains("1 error(s)"), "unexpected error text: {err}");
+    }
+
+    const URL: &str = "http://127.0.0.1:1/api/v1/telescope/0";
+
+    #[test]
+    fn a_full_run_with_a_zero_exit_and_an_empty_results_file_passes() {
+        full_run_verdict(URL, "exit status: 0", true, Ok(ConformResults::default())).unwrap();
+    }
+
+    #[test]
+    fn a_full_run_with_only_alerts_is_reported_as_narrowed() {
+        let err = full_run_verdict(
+            URL,
+            "exit status: 1",
+            false,
+            Ok(alerts(&[PULSE_GUIDE_ALERT])),
+        )
+        .unwrap_err();
+
+        assert!(
+            err.contains("narrowed by configuration alerts"),
+            "unexpected error text: {err}"
+        );
+    }
+
+    #[test]
+    fn a_full_run_with_issues_names_them() {
+        let err = full_run_verdict(
+            URL,
+            "exit status: 2",
+            false,
+            ConformResults::parse(RESULTS_FILE),
+        )
+        .unwrap_err();
+
+        assert!(
+            err.contains("1 issue(s)") && err.contains("Slewed 12.3 arc seconds away"),
+            "unexpected error text: {err}"
+        );
+    }
+
+    #[test]
+    fn a_full_run_with_errors_names_them_rather_than_a_narrowing() {
+        let results = ConformResults {
+            errors: vec![("PulseGuide".to_owned(), "NOT_IMPLEMENTED".to_owned())],
+            ..alerts(&[PULSE_GUIDE_ALERT])
+        };
+
+        let err = full_run_verdict(URL, "exit status: 2", false, Ok(results)).unwrap_err();
+
+        assert!(
+            err.contains("1 error(s)") && !err.contains("narrowed"),
+            "unexpected error text: {err}"
+        );
+    }
+
+    /// `ConformU` exits with its count of findings, which Unix truncates to
+    /// the low eight bits — 256 issues exit 0. The results file still lists
+    /// them.
+    #[test]
+    fn a_full_run_whose_zero_exit_hides_listed_issues_fails() {
+        let err = full_run_verdict(
+            URL,
+            "exit status: 0",
+            true,
+            ConformResults::parse(RESULTS_FILE),
+        )
+        .unwrap_err();
+
+        assert!(err.contains("1 issue(s)"), "unexpected error text: {err}");
+    }
+
+    #[test]
+    fn a_full_run_without_a_results_file_fails_even_on_a_zero_exit() {
+        let err = full_run_verdict(
+            URL,
+            "exit status: 0",
+            true,
+            Err("cannot read /nowhere".to_owned()),
+        )
+        .unwrap_err();
+
+        assert!(
+            err.contains("left no readable results file") && err.contains("/nowhere"),
+            "unexpected error text: {err}"
+        );
+    }
+
+    #[test]
+    fn a_full_run_with_a_non_zero_exit_fails_even_with_an_empty_results_file() {
+        let err = full_run_verdict(URL, "exit status: 1", false, Ok(ConformResults::default()))
+            .unwrap_err();
+
+        assert!(
+            err.contains("exited with exit status: 1"),
+            "unexpected error text: {err}"
+        );
+    }
+
+    const CLEAN_PROTOCOL: &str = "Congratulations there were no errors, issues or information \
+                                  alerts - Your device passes ASCOM Alpaca protocol validation!!";
+
+    fn lines(text: &[&str]) -> Vec<String> {
+        text.iter().map(|line| (*line).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_protocol_all_clear_line_reads_as_no_errors_or_issues() {
+        assert_eq!(
+            protocol_summary(&lines(&["", CLEAN_PROTOCOL, ""])),
+            Some((0, 0))
+        );
+    }
+
+    #[test]
+    fn the_protocol_summary_counts_are_read_whole() {
+        // Both counts end in 0 without being 0, so a substring match on
+        // "0 errors" or "0 issues" would misread them.
+        let output = lines(&["Found 10 errors, 20 issues and 30 information messages. "]);
+
+        assert_eq!(protocol_summary(&output), Some((10, 20)));
+    }
+
+    #[test]
+    fn the_protocol_summary_reads_singular_counts() {
+        let output = lines(&["Found 1 error, 1 issue and 1 information message."]);
+
+        assert_eq!(protocol_summary(&output), Some((1, 1)));
+    }
+
+    #[test]
+    fn output_without_a_summary_line_has_no_protocol_summary() {
+        let output = lines(&[
+            "Check Alpaca Protocol - Conform Universal 4.5.0",
+            "PUT PulseGuide ==> Test omitted due to Conform configuration setting",
+        ]);
+
+        assert_eq!(protocol_summary(&output), None);
+    }
+
+    #[test]
+    fn a_protocol_run_with_a_zero_exit_and_only_information_messages_passes() {
+        let output = lines(&["Found 0 errors, 0 issues and 5 information messages."]);
+
+        protocol_verdict("alpacaprotocol", URL, "exit status: 0", true, &output).unwrap();
+    }
+
+    /// The protocol suite exits with its error and issue count, which Unix
+    /// truncates to eight bits: 256 issues exit 0, and the summary still
+    /// reports them.
+    #[test]
+    fn a_protocol_run_whose_zero_exit_hides_issues_fails() {
+        let output = lines(&["Found 0 errors, 256 issues and 0 information messages."]);
+
+        let err =
+            protocol_verdict("alpacaprotocol", URL, "exit status: 0", true, &output).unwrap_err();
+
+        assert!(err.contains("256 issue(s)"), "unexpected error text: {err}");
+    }
+
+    #[test]
+    fn a_protocol_run_whose_summary_reports_errors_fails_on_a_zero_exit() {
+        let output = lines(&["Found 10 errors, 0 issues and 0 information messages."]);
+
+        let err =
+            protocol_verdict("alpacaprotocol", URL, "exit status: 0", true, &output).unwrap_err();
+
+        assert!(err.contains("10 error(s)"), "unexpected error text: {err}");
+    }
+
+    #[test]
+    fn a_protocol_run_without_a_summary_fails_even_on_a_zero_exit() {
+        let err = protocol_verdict("alpacaprotocol", URL, "exit status: 0", true, &[]).unwrap_err();
+
+        assert!(
+            err.contains("printed no summary line"),
+            "unexpected error text: {err}"
+        );
+    }
+
+    #[test]
+    fn a_protocol_run_with_a_non_zero_exit_fails_even_with_a_clean_summary() {
+        let output = lines(&[CLEAN_PROTOCOL]);
+
+        let err =
+            protocol_verdict("alpacaprotocol", URL, "exit status: 1", false, &output).unwrap_err();
+
+        assert!(
+            err.contains("`alpacaprotocol` exited with exit status: 1"),
+            "unexpected error text: {err}"
+        );
+    }
+
+    /// The runners' wiring, exercised against a stand-in `conformu`: a shell
+    /// script that records its arguments, writes a chosen results file when
+    /// handed `--resultsfile` (only the conformance suites are), and exits
+    /// with the status chosen for that suite. Unix-only because the stand-in
+    /// is a `#!/bin/sh` script; the verdict logic above has no platform arm
+    /// and runs everywhere.
     #[cfg(unix)]
     mod stand_in_conformu {
         use std::ffi::OsString;
@@ -560,15 +1242,13 @@ mod tests {
 
         use tempfile::TempDir;
 
-        use crate::conformu::{
-            run_conformu, run_conformu_from_settings, run_mode, ConfigurationAlerts, ConformuRun,
+        use super::{
+            complete_telescope_tests, CLEAN_PROTOCOL, PULSE_GUIDE_ALERT, SIDE_OF_PIER_READ_ALERT,
         };
+        use crate::conformu::{run_conformu, run_conformu_from_settings, ConformuRun};
         use crate::scratch;
 
-        const CLEAN_WITH_ALERTS: &str =
-            "Your device had 0 issues, 0 errors and 2 configuration alerts";
-        const REAL_ISSUES: &str = "Your device had 3 issues, 0 errors and 0 configuration alerts";
-        const URL: &str = "http://127.0.0.1:1/api/v1/telescope/0";
+        const NO_FINDINGS: &str = r#"{ "Errors": [], "Issues": [], "ConfigurationAlerts": [] }"#;
 
         /// These tests fork. A child forked by one test in the window between
         /// another test writing its script and closing it inherits that
@@ -577,29 +1257,90 @@ mod tests {
         /// sequence removes the overlap.
         static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+        /// How the stand-in behaves, per suite: the protocol suite's exit
+        /// status and stdout line, then the conformance suite's, and the
+        /// results file the conformance suite writes (`None` writes none). An
+        /// empty stdout line prints nothing.
+        struct Behaviour<'a> {
+            protocol_exit: i32,
+            protocol_stdout: &'a str,
+            conformance_exit: i32,
+            conformance_stdout: &'a str,
+            results: Option<&'a str>,
+        }
+
         /// A `conformu` that appends its arguments to `args.log` beside itself
-        /// (one line per invocation), prints `summary` and exits with `code`.
-        /// The guard owns the script's directory.
-        fn stand_in(summary: &str, code: i32) -> (TempDir, PathBuf) {
+        /// (one line per invocation) and behaves as `behaviour` says. The
+        /// guard owns the script's directory.
+        fn stand_in(behaviour: &Behaviour) -> (TempDir, PathBuf) {
             let dir = scratch::new_dir("stand-in-conformu-").unwrap();
             let path = dir.path().join("conformu");
             let log = dir.path().join("args.log");
+            let write_results = behaviour
+                .results
+                .map(|json| format!("printf '%s' '{json}' > \"$2\"; "))
+                .unwrap_or_default();
+            let print = |line: &str| {
+                if line.is_empty() {
+                    String::new()
+                } else {
+                    format!("printf '%s\\n' '{line}'\n")
+                }
+            };
             let script = format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{log}'\necho '{summary}'\nexit {code}\n",
-                log = log.display()
+                "#!/bin/sh\n\
+                 printf '%s\\n' \"$*\" >> '{log}'\n\
+                 suite=protocol\n\
+                 while [ $# -gt 0 ]; do\n\
+                 if [ \"$1\" = --resultsfile ]; then {write_results}suite=conformance; fi\n\
+                 shift\n\
+                 done\n\
+                 if [ $suite = protocol ]; then\n\
+                 {protocol_stdout}\
+                 exit {protocol_exit}\n\
+                 fi\n\
+                 {conformance_stdout}\
+                 exit {conformance_exit}\n",
+                log = log.display(),
+                protocol_stdout = print(behaviour.protocol_stdout),
+                protocol_exit = behaviour.protocol_exit,
+                conformance_stdout = print(behaviour.conformance_stdout),
+                conformance_exit = behaviour.conformance_exit,
             );
             std::fs::write(&path, script).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
             (dir, path)
         }
 
-        /// The argument lines the stand-in recorded, in call order.
+        /// The argument lines the stand-in recorded, in call order (none if
+        /// it never ran).
         fn invocations(dir: &TempDir) -> Vec<String> {
             std::fs::read_to_string(dir.path().join("args.log"))
-                .unwrap()
-                .lines()
-                .map(str::to_owned)
-                .collect()
+                .map(|log| log.lines().map(str::to_owned).collect())
+                .unwrap_or_default()
+        }
+
+        /// A results file carrying exactly these configuration alerts.
+        fn results_with_alerts(messages: &[&str]) -> String {
+            let alerts: Vec<serde_json::Value> = messages
+                .iter()
+                .map(|m| serde_json::json!({ "Key": "Conform configuration", "Value": m }))
+                .collect();
+            serde_json::json!({ "Errors": [], "Issues": [], "ConfigurationAlerts": alerts })
+                .to_string()
+        }
+
+        /// A settings file the pre-flight check accepts, in a scratch
+        /// directory the guard owns.
+        fn settings_file() -> (TempDir, PathBuf) {
+            let dir = scratch::new_dir("stand-in-settings-").unwrap();
+            let path = dir.path().join("bridge.json");
+            let settings = serde_json::json!({
+                "SettingsCompatibilityVersion": 1,
+                "TelescopeTests": complete_telescope_tests(),
+            });
+            std::fs::write(&path, settings.to_string()).unwrap();
+            (dir, path)
         }
 
         /// Points `CONFORMU_PATH` at `value` (or unsets it) for the guard's
@@ -629,9 +1370,15 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn run_conformu_hands_a_settings_file_and_the_device_url_to_both_suites() {
+        async fn run_conformu_hands_settings_results_and_the_device_url_to_the_suites() {
             let _serial = ONE_AT_A_TIME.lock().await;
-            let (dir, conformu) = stand_in("Congratulations, no errors", 0);
+            let (dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
+                conformance_exit: 0,
+                results: Some(NO_FINDINGS),
+                conformance_stdout: "",
+            });
             let _env = ConformuPath::set(Some(&conformu));
 
             let outcome = run_conformu("telescope", "http://127.0.0.1:1/", 0, None)
@@ -641,38 +1388,53 @@ mod tests {
             assert_eq!(outcome, ConformuRun::Passed);
             let calls = invocations(&dir);
             assert_eq!(calls.len(), 2, "{calls:?}");
-            for (call, mode) in calls.iter().zip(["alpacaprotocol", "conformance"]) {
-                assert!(
-                    call.starts_with(&format!("{mode} --settingsfile ")),
-                    "{call}"
-                );
-                assert!(
-                    call.ends_with("/conformu-settings.json http://127.0.0.1:1/api/v1/telescope/0"),
-                    "{call}"
-                );
-            }
+            assert!(
+                calls[0].starts_with("alpacaprotocol --settingsfile ")
+                    && calls[0]
+                        .ends_with("/conformu-settings.json http://127.0.0.1:1/api/v1/telescope/0"),
+                "{}",
+                calls[0]
+            );
+            assert!(
+                calls[1].starts_with("conformance --settingsfile ")
+                    && calls[1].contains("/conformu-settings.json --resultsfile ")
+                    && calls[1].ends_with(
+                        "/conformance-results.json http://127.0.0.1:1/api/v1/telescope/0"
+                    ),
+                "{}",
+                calls[1]
+            );
         }
 
         #[tokio::test]
-        async fn run_conformu_from_settings_runs_both_settings_suites_on_the_given_file() {
+        async fn run_conformu_from_settings_passes_with_exactly_the_expected_alerts() {
             let _serial = ONE_AT_A_TIME.lock().await;
-            let (dir, conformu) = stand_in(
-                "Your device had 0 issues, 0 errors and 1 configuration alert",
-                1,
-            );
+            let results = results_with_alerts(&[PULSE_GUIDE_ALERT]);
+            let (dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
+                conformance_exit: 1,
+                results: Some(&results),
+                conformance_stdout: "",
+            });
+            let (_settings_dir, settings) = settings_file();
             let _env = ConformuPath::set(Some(&conformu));
 
-            let outcome = run_conformu_from_settings(Path::new("/settings/bridge.json"))
+            let outcome = run_conformu_from_settings(&settings, &[PULSE_GUIDE_ALERT])
                 .await
                 .unwrap();
 
             assert_eq!(outcome, ConformuRun::Passed);
-            assert_eq!(
-                invocations(&dir),
-                [
-                    "alpacaprotocol-settings --settingsfile /settings/bridge.json",
-                    "conformance-settings --settingsfile /settings/bridge.json",
-                ]
+            let calls = invocations(&dir);
+            let settings_arg = format!("--settingsfile {}", settings.display());
+            assert_eq!(calls.len(), 2, "{calls:?}");
+            assert_eq!(calls[0], format!("alpacaprotocol-settings {settings_arg}"));
+            assert!(
+                calls[1].starts_with(&format!(
+                    "conformance-settings {settings_arg} --resultsfile "
+                )) && calls[1].ends_with("/conformance-results.json"),
+                "{}",
+                calls[1]
             );
         }
 
@@ -685,7 +1447,7 @@ mod tests {
                 let url_run = run_conformu("focuser", "http://127.0.0.1:1", 0, None)
                     .await
                     .unwrap();
-                let settings_run = run_conformu_from_settings(Path::new("/nowhere.json"))
+                let settings_run = run_conformu_from_settings(Path::new("/nowhere.json"), &[])
                     .await
                     .unwrap();
                 assert_eq!(
@@ -696,19 +1458,21 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_full_run_rejects_a_clean_summary_with_a_non_zero_exit() {
+        async fn a_full_run_narrowed_by_alerts_fails() {
             let _serial = ONE_AT_A_TIME.lock().await;
-            let (_dir, conformu) = stand_in(CLEAN_WITH_ALERTS, 2);
+            let results = results_with_alerts(&[PULSE_GUIDE_ALERT, SIDE_OF_PIER_READ_ALERT]);
+            let (_dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
+                conformance_exit: 2,
+                results: Some(&results),
+                conformance_stdout: "",
+            });
+            let _env = ConformuPath::set(Some(&conformu));
 
-            let err = run_mode(
-                conformu.as_os_str(),
-                "conformance",
-                None,
-                Some(URL),
-                ConfigurationAlerts::Reject,
-            )
-            .await
-            .unwrap_err();
+            let err = run_conformu("telescope", "http://127.0.0.1:1", 0, None)
+                .await
+                .unwrap_err();
 
             assert!(
                 err.to_string().contains("narrowed by configuration alerts"),
@@ -717,48 +1481,333 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn a_settings_run_accepts_a_clean_summary_with_a_non_zero_exit() {
+        async fn a_full_run_fails_when_the_protocol_suite_exits_non_zero() {
             let _serial = ONE_AT_A_TIME.lock().await;
-            let (_dir, conformu) = stand_in(CLEAN_WITH_ALERTS, 2);
+            let (dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 1,
+                protocol_stdout: CLEAN_PROTOCOL,
+                conformance_exit: 0,
+                results: Some(NO_FINDINGS),
+                conformance_stdout: "",
+            });
+            let _env = ConformuPath::set(Some(&conformu));
 
-            run_mode(
-                conformu.as_os_str(),
-                "conformance-settings",
-                None,
-                None,
-                ConfigurationAlerts::Accept,
+            let err = run_conformu("telescope", "http://127.0.0.1:1", 0, None)
+                .await
+                .unwrap_err();
+
+            assert!(
+                err.to_string()
+                    .contains("`alpacaprotocol` exited with exit status: 1"),
+                "unexpected error text: {err}"
+            );
+            assert_eq!(
+                invocations(&dir).len(),
+                1,
+                "the conformance suite must not run"
+            );
+        }
+
+        /// The exit status `ConformU` returns is its count of findings, which
+        /// Unix truncates to eight bits, so a zero exit does not make a run
+        /// clean: the results file decides.
+        #[tokio::test]
+        async fn a_full_run_with_a_zero_exit_but_listed_issues_fails() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let results = serde_json::json!({
+                "Errors": [],
+                "Issues": [ { "Key": "SlewToTarget", "Value": "wrong" } ],
+                "ConfigurationAlerts": [],
+            })
+            .to_string();
+            let (_dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
+                conformance_exit: 0,
+                results: Some(&results),
+                conformance_stdout: "",
+            });
+            let _env = ConformuPath::set(Some(&conformu));
+
+            let err = run_conformu("telescope", "http://127.0.0.1:1", 0, None)
+                .await
+                .unwrap_err();
+
+            assert!(
+                err.to_string().contains("1 issue(s)"),
+                "unexpected error text: {err}"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_full_run_without_a_results_file_fails_on_a_zero_exit() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let (_dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
+                conformance_exit: 0,
+                results: None,
+                conformance_stdout: "",
+            });
+            let _env = ConformuPath::set(Some(&conformu));
+
+            let err = run_conformu("telescope", "http://127.0.0.1:1", 0, None)
+                .await
+                .unwrap_err();
+
+            assert!(
+                err.to_string().contains("left no readable results file"),
+                "unexpected error text: {err}"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_full_run_with_a_non_zero_exit_fails_on_an_empty_results_file() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let (_dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
+                conformance_exit: 1,
+                results: Some(NO_FINDINGS),
+                conformance_stdout: "",
+            });
+            let _env = ConformuPath::set(Some(&conformu));
+
+            let err = run_conformu("telescope", "http://127.0.0.1:1", 0, None)
+                .await
+                .unwrap_err();
+
+            assert!(
+                err.to_string()
+                    .contains("although its results file lists no error, issue or alert"),
+                "unexpected error text: {err}"
+            );
+        }
+
+        /// `exit 256` reaches the caller as a zero exit, as a protocol run
+        /// with 256 issues does on Unix.
+        #[tokio::test]
+        async fn a_full_run_whose_protocol_exit_wrapped_to_zero_fails() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let (dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 256,
+                protocol_stdout: "Found 0 errors, 256 issues and 0 information messages.",
+                conformance_exit: 0,
+                conformance_stdout: "",
+                results: Some(NO_FINDINGS),
+            });
+            let _env = ConformuPath::set(Some(&conformu));
+
+            let err = run_conformu("telescope", "http://127.0.0.1:1", 0, None)
+                .await
+                .unwrap_err();
+
+            assert!(
+                err.to_string().contains("256 issue(s)"),
+                "unexpected error text: {err}"
+            );
+            assert_eq!(
+                invocations(&dir).len(),
+                1,
+                "the conformance suite must not run"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_settings_run_whose_protocol_exit_wrapped_to_zero_fails() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let results = results_with_alerts(&[PULSE_GUIDE_ALERT]);
+            let (dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 256,
+                protocol_stdout: "Found 0 errors, 256 issues and 1 information message.",
+                conformance_exit: 1,
+                conformance_stdout: "",
+                results: Some(&results),
+            });
+            let (_settings_dir, settings) = settings_file();
+            let _env = ConformuPath::set(Some(&conformu));
+
+            let err = run_conformu_from_settings(&settings, &[PULSE_GUIDE_ALERT])
+                .await
+                .unwrap_err();
+
+            assert!(
+                err.to_string().contains("256 issue(s)"),
+                "unexpected error text: {err}"
+            );
+            assert_eq!(
+                invocations(&dir).len(),
+                1,
+                "the conformance suite must not run"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_settings_run_with_a_clean_exit_but_no_expected_alert_fails() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let (_dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
+                conformance_exit: 0,
+                results: Some(NO_FINDINGS),
+                conformance_stdout: "",
+            });
+            let (_settings_dir, settings) = settings_file();
+            let _env = ConformuPath::set(Some(&conformu));
+
+            let err = run_conformu_from_settings(&settings, &[PULSE_GUIDE_ALERT])
+                .await
+                .unwrap_err();
+
+            assert!(
+                err.to_string().contains("expects exactly"),
+                "unexpected error text: {err}"
+            );
+        }
+
+        /// Ten issues fail the run although `ConformU`'s console summary for
+        /// them, which the stand-in prints, contains the text `0 issues, 0
+        /// errors and`: the verdict counts the results file's `Issues`, never
+        /// the console.
+        #[tokio::test]
+        async fn a_settings_run_with_ten_issues_fails() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let issues: Vec<serde_json::Value> = (0..10)
+                .map(|n| serde_json::json!({ "Key": format!("Test{n}"), "Value": "wrong" }))
+                .collect();
+            let results = serde_json::json!({
+                "Errors": [],
+                "Issues": issues,
+                "ConfigurationAlerts": [
+                    { "Key": "Conform configuration", "Value": PULSE_GUIDE_ALERT }
+                ],
+            })
+            .to_string();
+            let (_dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
+                conformance_exit: 11,
+                results: Some(&results),
+                conformance_stdout: "Your device had 10 issues, 0 errors and 1 configuration alert",
+            });
+            let (_settings_dir, settings) = settings_file();
+            let _env = ConformuPath::set(Some(&conformu));
+
+            let err = run_conformu_from_settings(&settings, &[PULSE_GUIDE_ALERT])
+                .await
+                .unwrap_err();
+
+            assert!(
+                err.to_string().contains("10 issue(s)"),
+                "unexpected error text: {err}"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_settings_run_with_alerts_beyond_the_expected_set_fails() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let results = results_with_alerts(&[PULSE_GUIDE_ALERT, SIDE_OF_PIER_READ_ALERT]);
+            let (_dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
+                conformance_exit: 2,
+                results: Some(&results),
+                conformance_stdout: "",
+            });
+            let (_settings_dir, settings) = settings_file();
+            let _env = ConformuPath::set(Some(&conformu));
+
+            let err = run_conformu_from_settings(&settings, &[PULSE_GUIDE_ALERT])
+                .await
+                .unwrap_err();
+
+            assert!(
+                err.to_string().contains("expects exactly"),
+                "unexpected error text: {err}"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_settings_run_fails_when_the_protocol_suite_exits_non_zero() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let results = results_with_alerts(&[PULSE_GUIDE_ALERT]);
+            let (dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 1,
+                protocol_stdout: CLEAN_PROTOCOL,
+                conformance_exit: 1,
+                results: Some(&results),
+                conformance_stdout: "",
+            });
+            let (_settings_dir, settings) = settings_file();
+            let _env = ConformuPath::set(Some(&conformu));
+
+            let err = run_conformu_from_settings(&settings, &[PULSE_GUIDE_ALERT])
+                .await
+                .unwrap_err();
+
+            assert!(
+                err.to_string()
+                    .contains("`alpacaprotocol-settings` exited with exit status: 1"),
+                "unexpected error text: {err}"
+            );
+            assert_eq!(
+                invocations(&dir).len(),
+                1,
+                "the conformance suite must not run"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_settings_run_without_a_results_file_fails() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let (_dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
+                conformance_exit: 1,
+                results: None,
+                conformance_stdout: "",
+            });
+            let (_settings_dir, settings) = settings_file();
+            let _env = ConformuPath::set(Some(&conformu));
+
+            let err = run_conformu_from_settings(&settings, &[PULSE_GUIDE_ALERT])
+                .await
+                .unwrap_err();
+
+            assert!(
+                err.to_string().contains("left no readable results file"),
+                "unexpected error text: {err}"
+            );
+        }
+
+        #[tokio::test]
+        async fn an_incomplete_telescope_tests_dictionary_fails_before_conformu_starts() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let (dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
+                conformance_exit: 0,
+                results: Some(NO_FINDINGS),
+                conformance_stdout: "",
+            });
+            let settings_dir = scratch::new_dir("stand-in-settings-").unwrap();
+            let settings = settings_dir.path().join("bridge.json");
+            std::fs::write(
+                &settings,
+                r#"{ "SettingsCompatibilityVersion": 1, "TelescopeTests": {} }"#,
             )
-            .await
             .unwrap();
-        }
+            let _env = ConformuPath::set(Some(&conformu));
 
-        #[tokio::test]
-        async fn a_non_zero_exit_with_real_issues_fails_under_both_policies() {
-            let _serial = ONE_AT_A_TIME.lock().await;
-            for policy in [ConfigurationAlerts::Reject, ConfigurationAlerts::Accept] {
-                let (_dir, conformu) = stand_in(REAL_ISSUES, 3);
+            let err = run_conformu_from_settings(&settings, &[])
+                .await
+                .unwrap_err();
 
-                let err = run_mode(conformu.as_os_str(), "conformance", None, Some(URL), policy)
-                    .await
-                    .unwrap_err();
-
-                assert!(
-                    err.to_string().contains("exited with exit status: 3"),
-                    "{policy:?}: unexpected error text: {err}"
-                );
-            }
-        }
-
-        #[tokio::test]
-        async fn a_zero_exit_passes_under_both_policies() {
-            let _serial = ONE_AT_A_TIME.lock().await;
-            for policy in [ConfigurationAlerts::Reject, ConfigurationAlerts::Accept] {
-                let (_dir, conformu) = stand_in("Congratulations, no errors", 0);
-
-                run_mode(conformu.as_os_str(), "conformance", None, Some(URL), policy)
-                    .await
-                    .unwrap();
-            }
+            assert!(
+                err.to_string().contains("\"CanMoveAxis\""),
+                "unexpected error text: {err}"
+            );
+            assert!(invocations(&dir).is_empty(), "ConformU must not have run");
         }
     }
 }

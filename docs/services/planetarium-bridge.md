@@ -308,12 +308,15 @@ rather than device semantics:
   inside them, run only when `SideOfPier` can be read, and this device
   answers `NOT_IMPLEMENTED`, so ConformU logs an `INFO` skip.
 - Deliberately deselected tests surface as ConformU "configuration
-  alerts", which count into its exit code like errors; the runner
-  accepts a run whose summary shows zero errors and zero issues. A
-  clean conformance run ends `0 issues, 0 errors and 1 configuration
-  alert` — "Pulse guide tests were omitted due to Conform
-  configuration" — and the protocol suite reports `0 errors, 0
-  issues`.
+  alerts", which count into its exit code like errors. The runner
+  therefore takes the conformance verdict from ConformU's results file
+  and requires zero errors, zero issues and exactly the alerts the test
+  names (`EXPECTED_ALERTS`): here the single "Pulse guide tests were
+  omitted due to Conform configuration", so a clean conformance run
+  ends `0 issues, 0 errors and 1 configuration alert`. The protocol
+  suite reports the omission as an information message, which counts
+  neither as an error nor as an issue; it must exit zero and print a
+  summary of `0 errors, 0 issues`.
 - The harness config sets `slew_duration: "5s"`: ConformU's AbortSlew
   test validates `Slewing == true` a fixed 1.5 s after starting an
   async slew, so the convergence window must comfortably exceed that.
