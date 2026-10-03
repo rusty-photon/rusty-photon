@@ -89,9 +89,16 @@ overridden, and no test can quietly soften a verdict (tolerances *are*
 honoured by those verbs and raise no alert). Use it unless the device has a
 documented capability gap the full set cannot accommodate; then, and only
 then, use `run_conformu_from_settings`, which honours the selection in a
-hand-written file, logs a configuration alert per omitted test, and can
-never produce a `docs/validation/` record (planetarium-bridge is the worked
-example). Adding a field to `FullRunSettings` means checking, in the
+hand-written file and logs a configuration alert per omitted test. The
+caller passes the alerts it expects, word for word: the runner reads the
+verdict from ConformU's results file and fails on an error, an issue, or any
+other alert set, so the file cannot make an alert-raising deselection the
+test does not document. Settings that narrow or soften a run without any
+alert (camera caps, `SwitchExtendedNumberTestRange`, tolerances) escape that
+check, so a settings file leaves them at ConformU's defaults. The runner also
+refuses, before ConformU starts, a `TelescopeTests` dictionary missing any
+key. Such a run can never produce a `docs/validation/` record
+(planetarium-bridge is the worked example). Adding a field to `FullRunSettings` means checking, in the
 ConformU source, that the setting is read on the URL-verb path, carries no
 `[MandatoryInFullTest]` attribute, cannot loosen a verdict, and does not
 change which tests run (so no `DomeTests`, `TestPerformance`,
