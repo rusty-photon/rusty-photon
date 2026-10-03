@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::prediction::Prediction;
 use crate::sizing::SweepSource;
-use crate::sweep::{CurvePoint, SweepOutcome};
+use crate::sweep::{CurvePoint, FailedAttempt, SweepOutcome};
 
 /// The schema version this build writes for a fresh store.
 ///
@@ -115,6 +115,11 @@ pub struct FocusRun {
     pub sweep_source: SweepSource,
     #[serde(default)]
     pub prediction: Option<Prediction>,
+    /// One entry per attempt that failed to fit: why, and what the
+    /// sweep did next. Empty when the first fit held, and on a run
+    /// recorded before the log existed.
+    #[serde(default)]
+    pub attempts_log: Vec<FailedAttempt>,
     /// The sweep's samples, exactly as it measured them.
     #[serde(default)]
     pub curve_points: Vec<CurvePoint>,
@@ -142,6 +147,7 @@ pub struct RunSummary {
     pub half_width: i32,
     pub sweep_source: SweepSource,
     pub prediction: Option<Prediction>,
+    pub attempts_log: Vec<FailedAttempt>,
     /// How many samples the run measured. The samples are read with
     /// `get_focus_runs`.
     pub curve_points_recorded: usize,
@@ -167,6 +173,7 @@ impl From<&FocusRun> for RunSummary {
             half_width: run.half_width,
             sweep_source: run.sweep_source,
             prediction: run.prediction.clone(),
+            attempts_log: run.attempts_log.clone(),
             curve_points_recorded: run.curve_points.len(),
         }
     }
@@ -202,6 +209,7 @@ impl FocusRun {
             half_width,
             sweep_source,
             prediction: None,
+            attempts_log: Vec::new(),
             curve_points: Vec::new(),
         }
     }
@@ -222,6 +230,7 @@ impl FocusRun {
         self.samples_used = Some(outcome.samples_used);
         self.attempts = Some(outcome.attempts);
         self.wing_slope = outcome.wing_slope;
+        self.attempts_log.clone_from(&outcome.attempts_log);
         self.curve_points.clone_from(&outcome.curve_points);
         self
     }

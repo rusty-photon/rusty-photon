@@ -177,6 +177,38 @@ Feature: Focus tools served through rp
     Then the tool call should return an error
     And the error message should contain "attempts: 2"
 
+  # A starless sweep says nothing about which side focus lies on, so the
+  # retry walks the same grid. The attempts log names, for each attempt
+  # that failed to fit, why, where its grid was centred, what the gate
+  # left of it and what the sweep did next, and each entry's points
+  # count splits the run's curve points by attempt.
+  Scenario: A repeated sweep records why each attempt failed and what came next
+    Given rp's data_directory is pinned to a fresh tempdir
+    And a running Alpaca simulator
+    And the focus provider is configured for train "main" with max_attempts "2"
+    And rp is running with a focus train on the simulator and focus-model registered as a tool provider
+    And an MCP client connected to rp
+    And the focuser is at position 25000
+    When the MCP client calls "focus_train" with {"train_id": "main"}
+    Then the tool call should return an error
+    And the error message should contain "attempts_log"
+    When the MCP client calls "get_focus_runs" with {"train_id": "main"}
+    Then the tool call should succeed
+    And the tool result "/runs/0/curve_points" should have 14 entries
+    And the tool result "/runs/0/attempts_log" should have 2 entries
+    And the tool result at "/runs/0/attempts_log/0/attempt" should be the JSON 1
+    And the tool result at "/runs/0/attempts_log/0/outcome" should be the JSON "not_enough_stars"
+    And the tool result at "/runs/0/attempts_log/0/centre" should be the JSON 25000
+    And the tool result at "/runs/0/attempts_log/0/points" should be the JSON 7
+    And the tool result at "/runs/0/attempts_log/0/accepted" should be the JSON 0
+    And the tool result at "/runs/0/attempts_log/0/sparse" should be the JSON 0
+    And the tool result at "/runs/0/attempts_log/0/starless" should be the JSON 7
+    And the tool result at "/runs/0/attempts_log/0/retry" should be the JSON "same_grid"
+    And the tool result at "/runs/0/attempts_log/0/next_centre" should be the JSON 25000
+    And the tool result at "/runs/0/attempts_log/1/attempt" should be the JSON 2
+    And the tool result at "/runs/0/attempts_log/1/retry" should be the JSON "no_attempts_left"
+    And the tool result at "/runs/0/attempts_log/1/next_centre" should be the JSON null
+
   # rp brackets a focus tool named in the registration's focus_tools
   # map with the same event triple it emits around its own sweeps, so a
   # night watching the stream sees one focus vocabulary whoever ran the

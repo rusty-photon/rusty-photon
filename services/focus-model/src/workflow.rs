@@ -27,8 +27,8 @@ use crate::store::{
     now_rfc3339, FocusRecord, FocusRun, FocusStore, LastGood, RunOutcome, RunSummary, TrainFacts,
 };
 use crate::sweep::{
-    check_grid, grid_length, run_sweep, Confirmation, CurvePoint, Direction, Measurement,
-    SweepFailure, SweepOps, SweepOutcome, SweepParams,
+    check_grid, grid_length, run_sweep, Confirmation, CurvePoint, Direction, FailedAttempt,
+    FitOutcome, Measurement, SweepFailure, SweepOps, SweepOutcome, SweepParams,
 };
 
 // ---------------------------------------------------------------------------
@@ -256,6 +256,9 @@ pub struct FocusTrainOutcome {
     pub samples_used: usize,
     pub attempts: u32,
     pub wing_slope: Option<f64>,
+    /// The attempts that failed to fit before the one that produced
+    /// this result.
+    pub attempts_log: Vec<FailedAttempt>,
     pub confirmation: Confirmation,
     pub curve_points: Vec<CurvePoint>,
     pub temperature_c: Option<f64>,
@@ -1277,6 +1280,7 @@ fn succeeded(
         samples_used: outcome.samples_used,
         attempts: outcome.attempts,
         wing_slope: outcome.wing_slope,
+        attempts_log: outcome.attempts_log.clone(),
         confirmation: outcome.confirmation.clone(),
         curve_points: outcome.curve_points.clone(),
         temperature_c: call.temperature_c,
@@ -1298,21 +1302,27 @@ fn failure_error(
         SweepFailure::Fit {
             error,
             attempts,
+            attempts_log,
             curve_points,
         } => {
             run.outcome = match error.outcome() {
-                "monotonic_curve" => RunOutcome::MonotonicCurve,
-                _ => RunOutcome::NotEnoughStars,
+                FitOutcome::MonotonicCurve => RunOutcome::MonotonicCurve,
+                FitOutcome::NotEnoughStars => RunOutcome::NotEnoughStars,
             };
             run.attempts = Some(*attempts);
+            run.attempts_log.clone_from(attempts_log);
             run.curve_points.clone_from(curve_points);
+            let log = serde_json::to_string(attempts_log).unwrap_or_else(|_| "[]".to_owned());
             let points = serde_json::to_string(curve_points).unwrap_or_else(|_| "[]".to_owned());
             let prediction_json =
                 serde_json::to_string(prediction).unwrap_or_else(|_| "null".to_owned());
             run.error = Some(error.to_string());
+            // `curve_points` stays the last field the sweep writes: a
+            // consumer reads one JSON array from the start of what
+            // follows it, since a put-back or record note may come after.
             FocusModelError::Sweep(format!(
-                "{error}; attempts: {attempts}; prediction: {prediction_json}; \
-                 curve_points: {points}"
+                "{error}; attempts: {attempts}; attempts_log: {log}; \
+                 prediction: {prediction_json}; curve_points: {points}"
             ))
         }
         SweepFailure::Grid(message) => {
@@ -1322,6 +1332,7 @@ fn failure_error(
         }
         SweepFailure::Rig {
             error,
+            attempts_log,
             curve_points,
         } => {
             run.outcome = if error.is_cancelled() {
@@ -1330,11 +1341,12 @@ fn failure_error(
                 RunOutcome::Error
             };
             run.error = Some(error.tool_message());
+            run.attempts_log.clone_from(attempts_log);
             run.curve_points.clone_from(curve_points);
             // The kind survives the fold: a caller running several
             // sweeps tells a cancellation and a failed device from a
             // fit that did not hold. The text is the same either way.
-            match error {
+            match &**error {
                 FocusModelError::Cancelled(reason) => FocusModelError::Cancelled(reason.clone()),
                 other => FocusModelError::ToolCall(other.tool_message()),
             }
@@ -2124,6 +2136,214 @@ mod tests {
         assert_eq!(record.runs[0].outcome, RunOutcome::NotEnoughStars);
         assert_eq!(record.runs[0].curve_points.len(), 9);
         assert!(record.last_good.is_empty(), "a failure teaches no position");
+    }
+
+    /// The error carries the attempts log ahead of the samples, which
+    /// stay the last field the sweep writes, and the recorded run keeps
+    /// the same log.
+    #[tokio::test]
+    async fn a_failed_sweep_records_why_each_attempt_failed() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        measures_nothing(&mut active);
+        let cleanup = cleanup_rig(&position, 25_000);
+
+        let err = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap_err();
+
+        let message = err.tool_message();
+        let (head, tail) = message.split_once("; curve_points: ").unwrap();
+        // The samples open the tail; a put-back or record note may
+        // follow them, so read one value rather than the whole tail.
+        let points: serde_json::Value = serde_json::Deserializer::from_str(tail)
+            .into_iter()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(points.as_array().map(Vec::len), Some(9), "{message}");
+        let (_, log) = head.split_once("; attempts_log: ").unwrap();
+        let (log, _) = log.split_once("; prediction: ").unwrap();
+        let log: Vec<FailedAttempt> = serde_json::from_str(log).unwrap();
+
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.runs[0].attempts_log, log);
+        let [only] = log.as_slice() else {
+            panic!("one attempt, one entry: {log:?}");
+        };
+        assert_eq!(only.outcome, FitOutcome::NotEnoughStars);
+        assert_eq!(only.centre, 25_000);
+        assert_eq!(only.points, 9);
+        assert_eq!(only.starless, 9);
+        assert_eq!(only.retry, crate::sweep::Retry::NoAttemptsLeft);
+    }
+
+    /// A sweep that walks one wing of a V far off its grid fits a vertex
+    /// outside its samples: recorded as a monotonic curve, with the
+    /// focuser put back.
+    #[tokio::test]
+    async fn a_monotonic_sweep_is_recorded_as_a_monotonic_curve() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        measures_a_v(&mut active, &position, 24_000);
+        let cleanup = cleanup_rig(&position, 25_000);
+
+        let err = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.tool_message().contains("monotonic curve"), "{err}");
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.runs[0].outcome, RunOutcome::MonotonicCurve);
+        assert_eq!(
+            record.runs[0]
+                .attempts_log
+                .iter()
+                .map(|attempt| attempt.outcome)
+                .collect::<Vec<_>>(),
+            [FitOutcome::MonotonicCurve]
+        );
+    }
+
+    /// `CONFIGURED`, allowed a second sweep.
+    fn two_attempts() -> Config {
+        config(&CONFIGURED.replace(r#""max_attempts": 1"#, r#""max_attempts": 2"#))
+    }
+
+    /// A rig whose first walk of nine frames sees no stars and whose
+    /// second measures a clean V centred on `vertex`.
+    fn starless_then_a_v(rig: &mut MockFocusRig, position: &Position, vertex: i32) {
+        let at = position.clone();
+        let frames = Arc::new(Mutex::new(0_u32));
+        rig.expect_measure_stars().returning(move |_, _, _, _| {
+            let frame = {
+                let mut frames = frames.lock().unwrap();
+                *frames += 1;
+                *frames
+            };
+            let dx = f64::from(at.get() - vertex);
+            let measurement = if frame <= 9 {
+                StarMeasurement {
+                    median_hfr: None,
+                    star_count: 0,
+                }
+            } else {
+                StarMeasurement {
+                    median_hfr: Some(1.0 + dx * dx / 400.0),
+                    star_count: 100,
+                }
+            };
+            Box::pin(async move { Ok(measurement) })
+        });
+    }
+
+    #[tokio::test]
+    async fn a_sweep_that_fits_on_its_retry_reports_and_records_the_failed_attempt() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        starless_then_a_v(&mut active, &position, 25_010);
+        let cleanup = MockFocusRig::new();
+
+        let outcome = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &two_attempts(),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome.attempts, 2);
+        let [only] = outcome.attempts_log.as_slice() else {
+            panic!("one failed attempt: {:?}", outcome.attempts_log);
+        };
+        assert_eq!(only.retry, crate::sweep::Retry::SameGrid);
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.runs[0].attempts_log, outcome.attempts_log);
+    }
+
+    /// A device that fails on the retry stops the run; the attempt that
+    /// failed to fit before it stays on the record.
+    #[tokio::test]
+    async fn a_rig_failure_on_the_retry_records_the_attempt_before_it() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = MockFocusRig::new();
+        let captures = Arc::new(Mutex::new(0_u32));
+        // Registered before `base_rig`'s, so this answer wins: the first
+        // walk's nine frames and one more, then the camera stops.
+        active.expect_capture().returning(move |_, _| {
+            let capture = {
+                let mut captures = captures.lock().unwrap();
+                *captures += 1;
+                *captures
+            };
+            Box::pin(async move {
+                if capture <= 10 {
+                    Ok(CaptureResult {
+                        document_id: "doc".to_owned(),
+                    })
+                } else {
+                    Err(FocusModelError::ToolCall("the camera stopped".to_owned()))
+                }
+            })
+        });
+        active
+            .expect_get_refocus_plan()
+            .returning(|_| Box::pin(async { Ok(RefocusPlan::default()) }));
+        let mut active = base_rig(active, &position);
+        measures_nothing(&mut active);
+        let cleanup = cleanup_rig(&position, 25_000);
+
+        let err = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &two_attempts(),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.tool_message().contains("the camera stopped"), "{err}");
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.runs[0].outcome, RunOutcome::Error);
+        let [only] = record.runs[0].attempts_log.as_slice() else {
+            panic!(
+                "the attempt before the failure: {:?}",
+                record.runs[0].attempts_log
+            );
+        };
+        assert_eq!(only.retry, crate::sweep::Retry::SameGrid);
+        assert_eq!(record.runs[0].curve_points.len(), 10, "nine, then one");
     }
 
     #[tokio::test]

@@ -97,9 +97,11 @@ needs a `min_fit_points` below the shipped default of 5. Both are
 true — the replay shows the gate picks the right samples, the default
 refuses to fit so few of them — and neither describes a sweep that
 reaches a confirmation frame. Note what that
-is *not* — `retry_centre` holds the same centre for
-`not_enough_stars` and shifts only after `monotonic_curve`
-(`services/focus-model/src/sweep.rs`), and the confirmation frame is
+is *not* — `retry_centre` holds the same centre for this sweep, whose
+stars ran out on both sides (`services/focus-model/src/sweep.rs`
+shifts after `not_enough_stars` only when they ran out on one side
+and the accepted samples fall strictly away from it, focus-model plan
+D13 step 5), and the confirmation frame is
 never reached because no fit is produced. Refusal and restore are the
 safety here, and an R² gate would add nothing: at the defaults no fit
 exists for it to judge, and at `min_fit_points` 3 three samples meet
