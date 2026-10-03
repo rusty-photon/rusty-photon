@@ -757,8 +757,18 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   there (164 to 460, against a median of 28). Back at bin 1, all twelve are
   at `(x, y)` again. Twelve concurrent `BinX`/`BinY` pairs, each followed by a
   frame, came back at `NumX` by `NumY` every time, and `StartExposure`
-  answered in 16 ms at either bin. The QHY600M has not been run with the bin
-  armed this way.
+  answered in 16 ms at either bin. **On rig2's QHY600M** (2026-10-03, Windows,
+  5 s full frames with no light on the sensor —
+  [record](../validation/2026-10-03-qhy-camera-qhy600m-cfw-windows/README.md)):
+  the bin-2 frame's median is four times bin 1's (1988 against 497), and
+  sixteen isolated bin-1 pixels at 65534 each have a saturated 65535 within
+  one pixel of `(x/2, y/2)` in it — four exactly there, twelve one pixel
+  away — while the three inside a top-left crop of its shape read 1995 to
+  2019 there, against the median of 1988; back at bin 1, all sixteen are
+  bright within a pixel of `(x, y)`. The frame is binned, not cropped. The
+  one-pixel scatter, which the QHY178M does not show, is not explained, but
+  the bin-2 frame was armed at exactly half of bin 1's effective-area origin,
+  so it is not this driver's translation (the record has the detail).
 - **B2.** `CanAsymmetricBin = false`; `MaxBinX`/`MaxBinY` come from the valid
   modes (typically 1–4, up to 8).
 - **B3.** The cached ROI is held in **unbinned** sensor pixels: the region the
@@ -1118,8 +1128,16 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   the 132–220 that identical frames spread over, and its gain statistics match
   the frame before it exactly — and the next frame takes the new values. The
   two `SetQHYCCDParam` writes add about 11 ms to `StartExposure` (12.5 to
-  23.9 ms, median), against a 2.5 s single-frame readout. The QHY600M has not
-  been run with the gain and offset armed this way.
+  23.9 ms, median), against a 2.5 s single-frame readout. Rig2's QHY600M
+  (Windows —
+  [record](../validation/2026-10-03-qhy-camera-qhy600m-cfw-windows/README.md))
+  behaves the same way before and after this rule: set 1.2 s into a 3 s
+  exposure, an offset of 25 → 85 took that frame's median from 414 to 1374
+  and a gain of 0 → 100 from 494 to 3063 on the build before it, while on
+  this one the frame in flight read 414 and 494 and the next frame took the
+  new values. Its two writes cost more than the QHY178M's: 32 ms per
+  exposure at the median (31.8 to 33.1 ms over 31 exposures, from the
+  driver's log), on Windows with `qhyccd.dll` 24.1.9.12.
 - **GO3.** `GainMin/Max`, `OffsetMin/Max` reflect the cached SDK min-max,
   converted **once per mode** — at connect, and again at every readout-mode
   change (RM1) — to ASCOM's `i32` by rounding to nearest — the
@@ -1242,6 +1260,19 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   (`disable_auto_cooler=false` on that rig), and the filter wheel read
   position 0 before and after a switch, which says nothing about homing (C5),
   since it was at 0 already.
+
+  The carry-over was measured again on 2026-10-03, with the gain and offset
+  cached and armed by `StartExposure` (`qhyccd.dll` 24.1.9.12 —
+  [record](../validation/2026-10-03-qhy-camera-qhy600m-cfw-windows/README.md)).
+  A gain and offset set in mode 0 with no exposure after them, so that the
+  camera still held the previous frame's, read back after a switch to mode 1,
+  and the first frame there came back at them: a median of 1456, against 1454
+  for the same values set in mode 1 and 408 for the ones the camera held. A
+  gain and offset that reached the driver 0.79 s and 0.92 s into a 2.125 s
+  switch were answered at once, landed while the camera was being
+  re-initialized, and were the ones carried (RM4): read back after the
+  switch, and in the first frame's level. Each switch took 2.12 s at the
+  driver, and the `ReadoutMode` write answered in about 2.25 s at the client.
 - **RM2.** The `ImageArray` unpack is total in both directions, and reports the
   **format before the length**: a bit depth the driver cannot unpack is rejected
   as such even when the buffer is also short, because the length it would be
@@ -1682,8 +1713,15 @@ Layered per [`testing.md`](../skills/testing.md).
   exposure (GO2); per-control read and write failures stand in for a value the
   camera will not report (GO1) and one it refuses at arm time. It is written from the
   same reading of the SDK as the driver, so a green run shows the driver does
-  what that reading says, not that the reading is right: that is the QHY600M
-  run in *Future Work*.
+  what that reading says, not that the reading is right. The reading is
+  checked on rig2's multi-mode QHY600M: the mode switch, its geometry and its
+  cost in RM1's *Measured on hardware* (2026-09-28), and a gain and offset
+  carried across a switch and armed by the next exposure in the
+  [2026-10-03 record](../validation/2026-10-03-qhy-camera-qhy600m-cfw-windows/README.md).
+  Two of the knobs model behaviour no camera here has shown — an init that
+  resets gain and offset (reported for a QHYminiCam8M) and an init that
+  switches the cooler off (`disable_auto_cooler=true`; rig2 runs with it
+  false) — so for those the mock is still the reading alone.
 - **Windows DLL resolution** — the preflight's candidate ordering/selection are
   pure functions with **injected** environment and fs-existence checkers, and
   the doctor's check assembly / prompt parsing are pure over plain data —

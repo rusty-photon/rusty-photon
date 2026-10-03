@@ -1,0 +1,85 @@
+20:28:53.133 Check Alpaca Protocol - Conform Universal 4.5.0 (Build 53834.49ab847) 
+20:28:53.137                                     
+20:28:53.137 Test Camera device:  - 127.0.0.1:11141 through URL: http://127.0.0.1:11141 
+20:28:53.137                                     
+20:28:53.143 OK messages are suppressed, they can be enabled through the Alpaca and COM settings page. 
+20:28:53.143                                     
+20:28:53.143 Connecting to device...             
+20:28:55.338                                     
+20:28:55.338 Successfully connected to device, disconnecting in order to test that connection using a different PUT parameter order is successful... 
+20:28:56.328                                     
+20:28:56.329 Successfully disconnected from device, re-connecting using re-ordered PUT parameters... 
+20:28:56.329                                     
+20:28:58.462 Successfully connected to device using re-ordered PUT parameters, testing device... 
+20:28:58.462                                     
+20:28:58.475 Device exposes interface version 4  
+20:29:02.338 GET ImageArray                      INFO     Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.339 GET ImageArray                      INFO     Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.339 GET ImageArray                      INFO     Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.339 GET ImageArray                      INFO     Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.341 GET ImageArrayVariant               INFO     Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.341 GET ImageArrayVariant               INFO     Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.341 GET ImageArrayVariant               INFO     Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.342 GET ImageArrayVariant               INFO     Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.343 GET LastExposureDuration            INFO     Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.343 GET LastExposureDuration            INFO     Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.343 GET LastExposureDuration            INFO     Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.346 GET LastExposureDuration            INFO     Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.347 GET LastExposureStartTime           INFO     Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.347 GET LastExposureStartTime           INFO     Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.348 GET LastExposureStartTime           INFO     Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.348 GET LastExposureStartTime           INFO     Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+20:29:02.724                                     
+20:29:02.725 Successfully disconnected from device. 
+20:29:02.725                                     
+20:29:02.725 Found 0 errors, 0 issues and 16 information messages. 
+20:29:02.725                                     
+20:29:02.725 Information Message Summary         
+20:29:02.725 GET ImageArray ==> Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image available; ImageReady is false
+ 
+20:29:02.726 GET ImageArray ==> Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image available; ImageReady is false
+ 
+20:29:02.726 GET ImageArray ==> Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image available; ImageReady is false
+ 
+20:29:02.726 GET ImageArray ==> Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image available; ImageReady is false
+ 
+20:29:02.726 GET ImageArrayVariant ==> Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image available; ImageReady is false
+ 
+20:29:02.726 GET ImageArrayVariant ==> Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image available; ImageReady is false
+ 
+20:29:02.726 GET ImageArrayVariant ==> Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image available; ImageReady is false
+ 
+20:29:02.726 GET ImageArrayVariant ==> Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image available; ImageReady is false
+ 
+20:29:02.726 GET LastExposureDuration ==> Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a ValueNotSet error (0x00000402) for client transaction: 67890, server transaction: 451. Error message: A value has not been set.
+ 
+20:29:02.726 GET LastExposureDuration ==> Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a ValueNotSet error (0x00000402) for client transaction: 67890, server transaction: 452. Error message: A value has not been set.
+ 
+20:29:02.726 GET LastExposureDuration ==> Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a ValueNotSet error (0x00000402) for client transaction: 67890, server transaction: 453. Error message: A value has not been set.
+ 
+20:29:02.727 GET LastExposureDuration ==> Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a ValueNotSet error (0x00000402) for client transaction: 67890, server transaction: 454. Error message: A value has not been set.
+ 
+20:29:02.727 GET LastExposureStartTime ==> Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a ValueNotSet error (0x00000402) for client transaction: 67890, server transaction: 455. Error message: A value has not been set.
+ 
+20:29:02.727 GET LastExposureStartTime ==> Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a ValueNotSet error (0x00000402) for client transaction: 67890, server transaction: 456. Error message: A value has not been set.
+ 
+20:29:02.727 GET LastExposureStartTime ==> Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a ValueNotSet error (0x00000402) for client transaction: 67890, server transaction: 457. Error message: A value has not been set.
+ 
+20:29:02.727 GET LastExposureStartTime ==> Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a ValueNotSet error (0x00000402) for client transaction: 67890, server transaction: 458. Error message: A value has not been set.
+ 
