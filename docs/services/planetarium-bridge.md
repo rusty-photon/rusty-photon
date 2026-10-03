@@ -314,8 +314,9 @@ rather than device semantics:
   names (`EXPECTED_ALERTS`): here the single "Pulse guide tests were
   omitted due to Conform configuration", so a clean conformance run
   ends `0 issues, 0 errors and 1 configuration alert`. The protocol
-  suite reports the omission as an information message and must exit
-  zero (`0 errors, 0 issues`).
+  suite reports the omission as an information message, which counts
+  neither as an error nor as an issue; it must exit zero and print a
+  summary of `0 errors, 0 issues`.
 - The harness config sets `slew_duration: "5s"`: ConformU's AbortSlew
   test validates `Slewing == true` a fixed 1.5 s after starting an
   async slew, so the convergence window must comfortably exceed that.

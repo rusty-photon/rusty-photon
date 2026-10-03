@@ -43,14 +43,15 @@
 //!   can never be a `docs/validation/` record. The caller names the alerts it
 //!   expects, and the run fails on any other set.
 //!
-//! Neither runner parses `ConformU`'s console output. Both read the results
-//! file the conformance suite writes (`--resultsfile`): a full run passes only
+//! Neither runner trusts an exit status alone: `ConformU` exits with a count
+//! of findings, which Unix truncates to its low eight bits, so 256 findings
+//! read as success. The conformance suite writes a results file
+//! (`--resultsfile`), and its verdict comes from that: a full run passes only
 //! with a zero exit **and** a results file free of errors, issues and alerts;
 //! a settings run passes on that file alone, with no error, no issue and
 //! exactly the expected alerts (the alerts make its exit status non-zero).
-//! The file is the verdict rather than the exit status because `ConformU`
-//! exits with the count of errors, issues and alerts, which Unix truncates to
-//! its low eight bits — 256 findings read as success.
+//! The protocol suite writes no such file, so it must exit zero **and** print
+//! a summary line whose whole error and issue counts are both zero.
 
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
@@ -310,6 +311,60 @@ impl ConformResults {
     }
 }
 
+/// The error and issue counts on the summary line `ConformU`'s protocol suite
+/// prints once it finishes: `Found <E> error(s), <I> issue(s) and <N>
+/// information message(s).`, or its all-clear line when all three are zero.
+/// The counts are read whole, so `10 errors` is ten. `None` when no line has
+/// either shape — the suite did not finish.
+fn protocol_summary(output: &[String]) -> Option<(usize, usize)> {
+    output.iter().find_map(|line| {
+        let line = line.trim();
+        if line.starts_with("Congratulations there were no errors, issues or information alerts") {
+            return Some((0, 0));
+        }
+        let words: Vec<&str> = line.split_whitespace().collect();
+        match words.as_slice() {
+            ["Found", errors, error_word, issues, issue_word, "and", _, "information", message_word]
+                if error_word.starts_with("error")
+                    && issue_word.starts_with("issue")
+                    && message_word.starts_with("message") =>
+            {
+                Some((errors.parse().ok()?, issues.parse().ok()?))
+            }
+            _ => None,
+        }
+    })
+}
+
+/// A protocol suite's verdict: a zero exit and a summary line reporting zero
+/// errors and zero issues. Its information messages — a deselected test among
+/// them — never count. `status` is the exit status as the process reported
+/// it, for the message.
+fn protocol_verdict(
+    suite: &str,
+    target: &str,
+    status: &str,
+    exited_zero: bool,
+    output: &[String],
+) -> Result<(), String> {
+    if !exited_zero {
+        return Err(format!(
+            "ConformU `{suite}` exited with {status} testing {target}"
+        ));
+    }
+    match protocol_summary(output) {
+        Some((0, 0)) => Ok(()),
+        Some((errors, issues)) => Err(format!(
+            "ConformU `{suite}` exited with {status} testing {target} although its summary \
+             reports {errors} error(s) and {issues} issue(s)"
+        )),
+        None => Err(format!(
+            "ConformU `{suite}` exited with {status} testing {target} but printed no summary \
+             line, so the run did not finish"
+        )),
+    }
+}
+
 /// A full run's conformance verdict: it passes with a zero exit and a results
 /// file that lists nothing — no error, no issue and no configuration alert. A
 /// full run has nothing to deselect, so a non-zero exit, any listed finding,
@@ -399,14 +454,15 @@ fn settings_run_verdict(results: &ConformResults, expected_alerts: &[&str]) -> R
 /// [`run_conformu_from_settings`].
 ///
 /// Returns [`ConformuRun::Skipped`] when `CONFORMU_PATH` is unset and
-/// [`ConformuRun::Passed`] once both suites have exited zero and the
-/// conformance suite's results file lists no error, issue or configuration
-/// alert.
+/// [`ConformuRun::Passed`] once both suites have exited zero, the protocol
+/// suite's summary reports no error or issue, and the conformance suite's
+/// results file lists no error, issue or configuration alert.
 ///
 /// # Errors
 ///
 /// Returns an error if `ConformU` cannot be spawned, the settings file cannot
-/// be written, its output cannot be read, either suite exits non-zero, or the
+/// be written, its output cannot be read, either suite exits non-zero, the
+/// protocol suite prints no summary or one with an error or issue, or the
 /// conformance suite leaves no readable results file or one that lists any
 /// finding. A full run has nothing to deselect, so no configuration-alert
 /// allowance applies here.
@@ -438,7 +494,7 @@ pub async fn run_conformu(
     // ascom_alpaca::test runner (`ConformUTestBuilder::run`): `alpacaprotocol`
     // (Alpaca wire-protocol conformance) then `conformance` (full ASCOM
     // device-interface tests). Both must pass.
-    let status = run_mode(
+    let protocol = run_mode(
         &conformu,
         "alpacaprotocol",
         &settings_path,
@@ -446,12 +502,14 @@ pub async fn run_conformu(
         Some(&device_url),
     )
     .await?;
-    if !status.success() {
-        return Err(
-            format!("ConformU `alpacaprotocol` exited with {status} testing {device_url}").into(),
-        );
-    }
-    let status = run_mode(
+    protocol_verdict(
+        "alpacaprotocol",
+        &device_url,
+        &protocol.status.to_string(),
+        protocol.status.success(),
+        &protocol.output,
+    )?;
+    let conformance = run_mode(
         &conformu,
         "conformance",
         &settings_path,
@@ -461,8 +519,8 @@ pub async fn run_conformu(
     .await?;
     full_run_verdict(
         &device_url,
-        &status.to_string(),
-        status.success(),
+        &conformance.status.to_string(),
+        conformance.status.success(),
         ConformResults::read(&results_path),
     )?;
     Ok(ConformuRun::Passed)
@@ -506,15 +564,17 @@ pub async fn run_conformu(
 /// tolerances — are honoured silently and are not caught here; a settings
 /// file leaves them at `ConformU`'s defaults. The protocol suite reports a
 /// deselected test as an information message that never touches its exit
-/// code, so it must exit zero. Because of the alerts a run made this way never
-/// meets the `docs/validation/` record rule.
+/// code or its error and issue counts, so it must exit zero with a summary
+/// reporting no error or issue. Because of the alerts a run made this way
+/// never meets the `docs/validation/` record rule.
 ///
 /// # Errors
 ///
 /// Returns an error if the settings file cannot be read, is not JSON or
 /// carries an incomplete `TelescopeTests` dictionary; if `ConformU` cannot be
 /// spawned or its output cannot be read; if the protocol suite exits
-/// non-zero; or if the conformance suite leaves no readable results file, or
+/// non-zero or prints no summary, or one with an error or issue; or if the
+/// conformance suite leaves no readable results file, or
 /// one with an error, an issue, or a configuration-alert set other than
 /// `expected_alerts`.
 pub async fn run_conformu_from_settings(
@@ -536,7 +596,8 @@ pub async fn run_conformu_from_settings(
     check_telescope_tests(&settings)
         .map_err(|e| format!("settings file {}: {e}", settings_file.display()))?;
 
-    let status = run_mode(
+    let target = format!("the device in {}", settings_file.display());
+    let protocol = run_mode(
         &conformu,
         "alpacaprotocol-settings",
         settings_file,
@@ -544,13 +605,13 @@ pub async fn run_conformu_from_settings(
         None,
     )
     .await?;
-    if !status.success() {
-        return Err(format!(
-            "ConformU `alpacaprotocol-settings` exited with {status} testing the device in {}",
-            settings_file.display()
-        )
-        .into());
-    }
+    protocol_verdict(
+        "alpacaprotocol-settings",
+        &target,
+        &protocol.status.to_string(),
+        protocol.status.success(),
+        &protocol.output,
+    )?;
 
     let results_dir = scratch::new_dir("conformu-results-")?;
     let results_path = results_dir.path().join("conformance-results.json");
@@ -561,7 +622,8 @@ pub async fn run_conformu_from_settings(
         Some(&results_path),
         None,
     )
-    .await?;
+    .await?
+    .status;
     let results = ConformResults::read(&results_path).map_err(|e| {
         format!("ConformU `conformance-settings` exited with {status} and left no readable results file: {e}")
     })?;
@@ -574,8 +636,15 @@ pub async fn run_conformu_from_settings(
     Ok(ConformuRun::Passed)
 }
 
+/// What one `ConformU` mode left behind: its exit status and every line it
+/// printed to stdout.
+struct ModeRun {
+    status: ExitStatus,
+    output: Vec<String>,
+}
+
 /// Run a single `ConformU` mode, streaming its output into the test log, and
-/// return its exit status for the caller to judge. `results_file` adds
+/// return its exit status and output for the caller to judge. `results_file` adds
 /// `--resultsfile` (the conformance suites); `device_url` is the positional
 /// device argument for the URL-based commands and `None` for the `*-settings`
 /// commands, which read the device from the settings file.
@@ -585,7 +654,7 @@ async fn run_mode(
     settings_file: &Path,
     results_file: Option<&Path>,
     device_url: Option<&str>,
-) -> Result<ExitStatus, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<ModeRun, Box<dyn std::error::Error + Send + Sync>> {
     let mut command = Command::new(conformu);
     command.arg(mode);
     // ConformU writes a per-run log tree under $HOME (e.g.
@@ -610,25 +679,29 @@ async fn run_mode(
     let mut child = command.stdout(Stdio::piped()).spawn()?;
 
     // Stream ConformU's (unstructured) stdout into the test log so progress is
-    // visible and a verbose run can't deadlock on an undrained pipe. Nothing
-    // here parses it: the verdict comes from the exit status and the results
-    // file.
+    // visible and a verbose run can't deadlock on an undrained pipe, and keep
+    // it: the protocol suite's verdict includes its summary line.
+    let mut output = Vec::new();
     if let Some(stdout) = child.stdout.take() {
         let mut lines = BufReader::new(stdout).lines();
         while let Some(line) = lines.next_line().await? {
             println!("[conformu {mode}] {line}");
+            output.push(line);
         }
     }
 
-    Ok(child.wait().await?)
+    Ok(ModeRun {
+        status: child.wait().await?,
+        output,
+    })
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::{
-        check_telescope_tests, full_run_verdict, settings_run_verdict, ConformResults,
-        FullRunSettings, TELESCOPE_TESTS,
+        check_telescope_tests, full_run_verdict, protocol_summary, protocol_verdict,
+        settings_run_verdict, ConformResults, FullRunSettings, TELESCOPE_TESTS,
     };
 
     /// Every `Settings` property `ConformU` 4.5.0 marks `[MandatoryInFullTest]`
@@ -1061,6 +1134,100 @@ mod tests {
         );
     }
 
+    const CLEAN_PROTOCOL: &str = "Congratulations there were no errors, issues or information \
+                                  alerts - Your device passes ASCOM Alpaca protocol validation!!";
+
+    fn lines(text: &[&str]) -> Vec<String> {
+        text.iter().map(|line| (*line).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_protocol_all_clear_line_reads_as_no_errors_or_issues() {
+        assert_eq!(
+            protocol_summary(&lines(&["", CLEAN_PROTOCOL, ""])),
+            Some((0, 0))
+        );
+    }
+
+    #[test]
+    fn the_protocol_summary_counts_are_read_whole() {
+        // Both counts end in 0 without being 0, so a substring match on
+        // "0 errors" or "0 issues" would misread them.
+        let output = lines(&["Found 10 errors, 20 issues and 30 information messages. "]);
+
+        assert_eq!(protocol_summary(&output), Some((10, 20)));
+    }
+
+    #[test]
+    fn the_protocol_summary_reads_singular_counts() {
+        let output = lines(&["Found 1 error, 1 issue and 1 information message."]);
+
+        assert_eq!(protocol_summary(&output), Some((1, 1)));
+    }
+
+    #[test]
+    fn output_without_a_summary_line_has_no_protocol_summary() {
+        let output = lines(&[
+            "Check Alpaca Protocol - Conform Universal 4.5.0",
+            "PUT PulseGuide ==> Test omitted due to Conform configuration setting",
+        ]);
+
+        assert_eq!(protocol_summary(&output), None);
+    }
+
+    #[test]
+    fn a_protocol_run_with_a_zero_exit_and_only_information_messages_passes() {
+        let output = lines(&["Found 0 errors, 0 issues and 5 information messages."]);
+
+        protocol_verdict("alpacaprotocol", URL, "exit status: 0", true, &output).unwrap();
+    }
+
+    /// The protocol suite exits with its error and issue count, which Unix
+    /// truncates to eight bits: 256 issues exit 0, and the summary still
+    /// reports them.
+    #[test]
+    fn a_protocol_run_whose_zero_exit_hides_issues_fails() {
+        let output = lines(&["Found 0 errors, 256 issues and 0 information messages."]);
+
+        let err =
+            protocol_verdict("alpacaprotocol", URL, "exit status: 0", true, &output).unwrap_err();
+
+        assert!(err.contains("256 issue(s)"), "unexpected error text: {err}");
+    }
+
+    #[test]
+    fn a_protocol_run_whose_summary_reports_errors_fails_on_a_zero_exit() {
+        let output = lines(&["Found 10 errors, 0 issues and 0 information messages."]);
+
+        let err =
+            protocol_verdict("alpacaprotocol", URL, "exit status: 0", true, &output).unwrap_err();
+
+        assert!(err.contains("10 error(s)"), "unexpected error text: {err}");
+    }
+
+    #[test]
+    fn a_protocol_run_without_a_summary_fails_even_on_a_zero_exit() {
+        let err = protocol_verdict("alpacaprotocol", URL, "exit status: 0", true, &[]).unwrap_err();
+
+        assert!(
+            err.contains("printed no summary line"),
+            "unexpected error text: {err}"
+        );
+    }
+
+    #[test]
+    fn a_protocol_run_with_a_non_zero_exit_fails_even_with_a_clean_summary() {
+        let output = lines(&[CLEAN_PROTOCOL]);
+
+        let err =
+            protocol_verdict("alpacaprotocol", URL, "exit status: 1", false, &output).unwrap_err();
+
+        assert!(
+            err.contains("`alpacaprotocol` exited with exit status: 1"),
+            "unexpected error text: {err}"
+        );
+    }
+
     /// The runners' wiring, exercised against a stand-in `conformu`: a shell
     /// script that records its arguments, writes a chosen results file when
     /// handed `--resultsfile` (only the conformance suites are), and exits
@@ -1075,7 +1242,9 @@ mod tests {
 
         use tempfile::TempDir;
 
-        use super::{complete_telescope_tests, PULSE_GUIDE_ALERT, SIDE_OF_PIER_READ_ALERT};
+        use super::{
+            complete_telescope_tests, CLEAN_PROTOCOL, PULSE_GUIDE_ALERT, SIDE_OF_PIER_READ_ALERT,
+        };
         use crate::conformu::{run_conformu, run_conformu_from_settings, ConformuRun};
         use crate::scratch;
 
@@ -1088,15 +1257,16 @@ mod tests {
         /// sequence removes the overlap.
         static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-        /// How the stand-in behaves: the protocol suite's exit status, then
-        /// the conformance suite's, the results file it writes (`None` writes
-        /// none), and a line it prints to stdout on every run (empty prints
-        /// nothing).
+        /// How the stand-in behaves, per suite: the protocol suite's exit
+        /// status and stdout line, then the conformance suite's, and the
+        /// results file the conformance suite writes (`None` writes none). An
+        /// empty stdout line prints nothing.
         struct Behaviour<'a> {
             protocol_exit: i32,
+            protocol_stdout: &'a str,
             conformance_exit: i32,
+            conformance_stdout: &'a str,
             results: Option<&'a str>,
-            stdout: &'a str,
         }
 
         /// A `conformu` that appends its arguments to `args.log` beside itself
@@ -1110,24 +1280,32 @@ mod tests {
                 .results
                 .map(|json| format!("printf '%s' '{json}' > \"$2\"; "))
                 .unwrap_or_default();
-            let print_stdout = if behaviour.stdout.is_empty() {
-                String::new()
-            } else {
-                format!("printf '%s\\n' '{}'\n", behaviour.stdout)
+            let print = |line: &str| {
+                if line.is_empty() {
+                    String::new()
+                } else {
+                    format!("printf '%s\\n' '{line}'\n")
+                }
             };
             let script = format!(
                 "#!/bin/sh\n\
                  printf '%s\\n' \"$*\" >> '{log}'\n\
-                 {print_stdout}\
-                 code={protocol}\n\
+                 suite=protocol\n\
                  while [ $# -gt 0 ]; do\n\
-                 if [ \"$1\" = --resultsfile ]; then {write_results}code={conformance}; fi\n\
+                 if [ \"$1\" = --resultsfile ]; then {write_results}suite=conformance; fi\n\
                  shift\n\
                  done\n\
-                 exit $code\n",
+                 if [ $suite = protocol ]; then\n\
+                 {protocol_stdout}\
+                 exit {protocol_exit}\n\
+                 fi\n\
+                 {conformance_stdout}\
+                 exit {conformance_exit}\n",
                 log = log.display(),
-                protocol = behaviour.protocol_exit,
-                conformance = behaviour.conformance_exit,
+                protocol_stdout = print(behaviour.protocol_stdout),
+                protocol_exit = behaviour.protocol_exit,
+                conformance_stdout = print(behaviour.conformance_stdout),
+                conformance_exit = behaviour.conformance_exit,
             );
             std::fs::write(&path, script).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -1196,9 +1374,10 @@ mod tests {
             let _serial = ONE_AT_A_TIME.lock().await;
             let (dir, conformu) = stand_in(&Behaviour {
                 protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
                 conformance_exit: 0,
                 results: Some(NO_FINDINGS),
-                stdout: "",
+                conformance_stdout: "",
             });
             let _env = ConformuPath::set(Some(&conformu));
 
@@ -1233,9 +1412,10 @@ mod tests {
             let results = results_with_alerts(&[PULSE_GUIDE_ALERT]);
             let (dir, conformu) = stand_in(&Behaviour {
                 protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
                 conformance_exit: 1,
                 results: Some(&results),
-                stdout: "",
+                conformance_stdout: "",
             });
             let (_settings_dir, settings) = settings_file();
             let _env = ConformuPath::set(Some(&conformu));
@@ -1283,9 +1463,10 @@ mod tests {
             let results = results_with_alerts(&[PULSE_GUIDE_ALERT, SIDE_OF_PIER_READ_ALERT]);
             let (_dir, conformu) = stand_in(&Behaviour {
                 protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
                 conformance_exit: 2,
                 results: Some(&results),
-                stdout: "",
+                conformance_stdout: "",
             });
             let _env = ConformuPath::set(Some(&conformu));
 
@@ -1304,9 +1485,10 @@ mod tests {
             let _serial = ONE_AT_A_TIME.lock().await;
             let (dir, conformu) = stand_in(&Behaviour {
                 protocol_exit: 1,
+                protocol_stdout: CLEAN_PROTOCOL,
                 conformance_exit: 0,
                 results: Some(NO_FINDINGS),
-                stdout: "",
+                conformance_stdout: "",
             });
             let _env = ConformuPath::set(Some(&conformu));
 
@@ -1340,9 +1522,10 @@ mod tests {
             .to_string();
             let (_dir, conformu) = stand_in(&Behaviour {
                 protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
                 conformance_exit: 0,
                 results: Some(&results),
-                stdout: "",
+                conformance_stdout: "",
             });
             let _env = ConformuPath::set(Some(&conformu));
 
@@ -1361,9 +1544,10 @@ mod tests {
             let _serial = ONE_AT_A_TIME.lock().await;
             let (_dir, conformu) = stand_in(&Behaviour {
                 protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
                 conformance_exit: 0,
                 results: None,
-                stdout: "",
+                conformance_stdout: "",
             });
             let _env = ConformuPath::set(Some(&conformu));
 
@@ -1382,9 +1566,10 @@ mod tests {
             let _serial = ONE_AT_A_TIME.lock().await;
             let (_dir, conformu) = stand_in(&Behaviour {
                 protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
                 conformance_exit: 1,
                 results: Some(NO_FINDINGS),
-                stdout: "",
+                conformance_stdout: "",
             });
             let _env = ConformuPath::set(Some(&conformu));
 
@@ -1399,14 +1584,73 @@ mod tests {
             );
         }
 
+        /// `exit 256` reaches the caller as a zero exit, as a protocol run
+        /// with 256 issues does on Unix.
+        #[tokio::test]
+        async fn a_full_run_whose_protocol_exit_wrapped_to_zero_fails() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let (dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 256,
+                protocol_stdout: "Found 0 errors, 256 issues and 0 information messages.",
+                conformance_exit: 0,
+                conformance_stdout: "",
+                results: Some(NO_FINDINGS),
+            });
+            let _env = ConformuPath::set(Some(&conformu));
+
+            let err = run_conformu("telescope", "http://127.0.0.1:1", 0, None)
+                .await
+                .unwrap_err();
+
+            assert!(
+                err.to_string().contains("256 issue(s)"),
+                "unexpected error text: {err}"
+            );
+            assert_eq!(
+                invocations(&dir).len(),
+                1,
+                "the conformance suite must not run"
+            );
+        }
+
+        #[tokio::test]
+        async fn a_settings_run_whose_protocol_exit_wrapped_to_zero_fails() {
+            let _serial = ONE_AT_A_TIME.lock().await;
+            let results = results_with_alerts(&[PULSE_GUIDE_ALERT]);
+            let (dir, conformu) = stand_in(&Behaviour {
+                protocol_exit: 256,
+                protocol_stdout: "Found 0 errors, 256 issues and 1 information message.",
+                conformance_exit: 1,
+                conformance_stdout: "",
+                results: Some(&results),
+            });
+            let (_settings_dir, settings) = settings_file();
+            let _env = ConformuPath::set(Some(&conformu));
+
+            let err = run_conformu_from_settings(&settings, &[PULSE_GUIDE_ALERT])
+                .await
+                .unwrap_err();
+
+            assert!(
+                err.to_string().contains("256 issue(s)"),
+                "unexpected error text: {err}"
+            );
+            assert_eq!(
+                invocations(&dir).len(),
+                1,
+                "the conformance suite must not run"
+            );
+        }
+
         #[tokio::test]
         async fn a_settings_run_with_a_clean_exit_but_no_expected_alert_fails() {
             let _serial = ONE_AT_A_TIME.lock().await;
             let (_dir, conformu) = stand_in(&Behaviour {
                 protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
                 conformance_exit: 0,
                 results: Some(NO_FINDINGS),
-                stdout: "",
+                conformance_stdout: "",
             });
             let (_settings_dir, settings) = settings_file();
             let _env = ConformuPath::set(Some(&conformu));
@@ -1441,9 +1685,10 @@ mod tests {
             .to_string();
             let (_dir, conformu) = stand_in(&Behaviour {
                 protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
                 conformance_exit: 11,
                 results: Some(&results),
-                stdout: "Your device had 10 issues, 0 errors and 1 configuration alert",
+                conformance_stdout: "Your device had 10 issues, 0 errors and 1 configuration alert",
             });
             let (_settings_dir, settings) = settings_file();
             let _env = ConformuPath::set(Some(&conformu));
@@ -1464,9 +1709,10 @@ mod tests {
             let results = results_with_alerts(&[PULSE_GUIDE_ALERT, SIDE_OF_PIER_READ_ALERT]);
             let (_dir, conformu) = stand_in(&Behaviour {
                 protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
                 conformance_exit: 2,
                 results: Some(&results),
-                stdout: "",
+                conformance_stdout: "",
             });
             let (_settings_dir, settings) = settings_file();
             let _env = ConformuPath::set(Some(&conformu));
@@ -1487,9 +1733,10 @@ mod tests {
             let results = results_with_alerts(&[PULSE_GUIDE_ALERT]);
             let (dir, conformu) = stand_in(&Behaviour {
                 protocol_exit: 1,
+                protocol_stdout: CLEAN_PROTOCOL,
                 conformance_exit: 1,
                 results: Some(&results),
-                stdout: "",
+                conformance_stdout: "",
             });
             let (_settings_dir, settings) = settings_file();
             let _env = ConformuPath::set(Some(&conformu));
@@ -1515,9 +1762,10 @@ mod tests {
             let _serial = ONE_AT_A_TIME.lock().await;
             let (_dir, conformu) = stand_in(&Behaviour {
                 protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
                 conformance_exit: 1,
                 results: None,
-                stdout: "",
+                conformance_stdout: "",
             });
             let (_settings_dir, settings) = settings_file();
             let _env = ConformuPath::set(Some(&conformu));
@@ -1537,9 +1785,10 @@ mod tests {
             let _serial = ONE_AT_A_TIME.lock().await;
             let (dir, conformu) = stand_in(&Behaviour {
                 protocol_exit: 0,
+                protocol_stdout: CLEAN_PROTOCOL,
                 conformance_exit: 0,
                 results: Some(NO_FINDINGS),
-                stdout: "",
+                conformance_stdout: "",
             });
             let settings_dir = scratch::new_dir("stand-in-settings-").unwrap();
             let settings = settings_dir.path().join("bridge.json");
