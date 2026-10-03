@@ -1,0 +1,136 @@
+20:29:43.229 ASCOM Universal Device Conformance Checker Version 4.5.0.53834, Build time: Thu 06 August 2026 11:42:42          
+20:29:43.229                                              
+20:29:43.231 Operating system is Windows 11 (25H2), Processor is Intel/AMD 64bit, Application is 64bit.          
+20:29:43.231                                              
+20:29:43.231 Alpaca device:  (127.0.0.1:11141 FilterWheel/0)          
+20:29:43.231                                              
+20:29:43.232 CreateDevice                        INFO     Creating Alpaca device: IP address: 127.0.0.1, IP Port: 11141, Alpaca device number: 0
+20:29:43.250 CreateDevice                        INFO     Successfully created driver
+20:29:44.336 CreateDevice                        OK       Found a valid interface version: 3
+20:29:44.336 CreateDevice                        OK       Driver instance created successfully
+20:29:44.336                                              
+20:29:44.336 Connect to device                            
+20:29:44.878 Connected                           OK       Connected to device successfully using Connected = True
+20:29:45.497 Connected                           OK       Disconnected from device successfully using Connected = False
+20:29:46.019 Connect                             OK       Connected to device successfully using Connect()
+20:29:46.020                                              
+20:29:46.026 Common Driver Methods                        
+20:29:46.026 InterfaceVersion                    OK       3
+20:29:46.027 Connected                           OK       True
+20:29:46.033 Description                         OK       QHYCCD filter wheel
+20:29:46.034 DriverInfo                          OK       rusty-photon qhy-camera
+20:29:46.034 DriverVersion                       OK       0.1.0
+20:29:46.035 Name                                OK       QHYCCD Filter Wheel QHY600M-3b1ea54688eb9f9d7
+20:29:46.035                                              
+20:29:46.037 SupportedActions                    OK       Driver returned an empty action list
+20:29:46.037 Action                              INFO     Conform cannot test the Action method
+20:29:46.037                                              
+20:29:46.043 DeviceState                         OK       Received 2 operational state properties.
+20:29:46.044 DeviceState                         OK         TimeStamp = 10/3/2026 1:29:46 AM
+20:29:46.044 DeviceState                         OK         Position = 0
+20:29:46.046 DeviceState                         OK       Found all expected operational properties
+20:29:46.046                                              
+20:29:46.046 Pre-run Checks                               
+20:29:47.569 Pre-run Check                       OK       Filter wheel is stationary, ready to start tests
+20:29:47.569                                              
+20:29:47.570 Properties                                   
+20:29:47.589 FocusOffsets Get                    OK       Found 7 filter offset values
+20:29:47.589 FocusOffsets Get                    INFO     Filter 0 Offset: 0
+20:29:47.589 FocusOffsets Get                    INFO     Filter 1 Offset: 0
+20:29:47.589 FocusOffsets Get                    INFO     Filter 2 Offset: 0
+20:29:47.589 FocusOffsets Get                    INFO     Filter 3 Offset: 0
+20:29:47.589 FocusOffsets Get                    INFO     Filter 4 Offset: 0
+20:29:47.589 FocusOffsets Get                    INFO     Filter 5 Offset: 0
+20:29:47.589 FocusOffsets Get                    INFO     Filter 6 Offset: 0
+20:29:47.592 Names Get                           OK       Found 7 filter names
+20:29:47.592 Names Get                           INFO     Filter 0 Name: Filter0
+20:29:47.592 Names Get                           INFO     Filter 1 Name: Filter1
+20:29:47.592 Names Get                           INFO     Filter 2 Name: Filter2
+20:29:47.592 Names Get                           INFO     Filter 3 Name: Filter3
+20:29:47.592 Names Get                           INFO     Filter 4 Name: Filter4
+20:29:47.592 Names Get                           INFO     Filter 5 Name: Filter5
+20:29:47.592 Names Get                           INFO     Filter 6 Name: Filter6
+20:29:47.592 Names Get                           OK       Number of filter offsets and number of names are the same: 7
+20:29:47.593 Position Get                        OK       Currently at position: 0
+20:29:47.593                                              
+20:29:47.593 Testing ascending sequential movement          
+20:29:47.598 Position Set 0                      OK       Reached position: 0 in: 0.0 seconds
+20:29:50.403 Position Set 1                      OK       Reached position: 1 in: 1.8 seconds
+20:29:53.204 Position Set 2                      OK       Reached position: 2 in: 1.8 seconds
+20:29:56.021 Position Set 3                      OK       Reached position: 3 in: 1.8 seconds
+20:29:58.829 Position Set 4                      OK       Reached position: 4 in: 1.8 seconds
+20:30:01.631 Position Set 5                      OK       Reached position: 5 in: 1.8 seconds
+20:30:04.427 Position Set 6                      OK       Reached position: 6 in: 1.8 seconds
+20:30:05.442                                              
+20:30:05.442 Testing descending sequential movement          
+20:30:05.448 Position Set 6                      OK       Reached position: 6 in: 0.0 seconds
+20:30:08.250 Position Set 5                      OK       Reached position: 5 in: 1.8 seconds
+20:30:11.035 Position Set 4                      OK       Reached position: 4 in: 1.8 seconds
+20:30:13.829 Position Set 3                      OK       Reached position: 3 in: 1.8 seconds
+20:30:16.612 Position Set 2                      OK       Reached position: 2 in: 1.8 seconds
+20:30:19.404 Position Set 1                      OK       Reached position: 1 in: 1.8 seconds
+20:30:22.182 Position Set 0                      OK       Reached position: 0 in: 1.8 seconds
+20:30:23.193                                              
+20:30:23.193 Testing potentially long distance moves          
+20:30:23.198 Position Set 0                      OK       Reached position: 0 in: 0.0 seconds
+20:30:26.017 Position Set 6                      OK       Reached position: 6 in: 1.8 seconds
+20:30:28.810 Position Set 5                      OK       Reached position: 5 in: 1.8 seconds
+20:30:32.671 Position Set 0                      OK       Reached position: 0 in: 2.8 seconds
+20:30:37.719 Position Set 3                      OK       Reached position: 3 in: 4.0 seconds
+20:30:42.738 Position Set 0                      OK       Reached position: 0 in: 4.0 seconds
+20:30:43.750                                              
+20:30:43.750 Testing error conditions                     
+20:30:43.767 Position Set                        OK       Correctly rejected bad position: -1
+20:30:43.768 Position Set                        OK       Correctly rejected bad position: 7
+20:30:43.768                                              
+20:30:43.768 Directionality assessment                    
+20:30:43.768 Directionality                      INFO     The filter wheel is bi-directional.
+20:30:43.768                                              
+20:30:43.768 Disconnect from device                       
+20:30:44.283 Disconnect                          OK       Disconnected from device successfully using Disconnect()
+20:30:44.283                                              
+20:30:44.284 Conformance test has finished                
+20:30:44.284                                              
+20:30:44.285 Congratulations, no errors, warnings or issues found: your driver passes ASCOM validation!!          
+20:30:44.286                                     
+20:30:44.286 Timing Summary                               See Help for further information.
+20:30:44.286 Timing Summary                               FAST target response time: 0.1 seconds, (configuration and state reporting members).
+20:30:44.286 Timing Summary                               STANDARD target response time: 1.0 second, (property write and asynchronous initiators).
+20:30:44.287 Timing Summary                               EXTENDED target response time: 600.0 seconds, (synchronous methods, ImageArray and ImageArrayVariant).
+20:30:44.287 Timing Summary                               Conform is configured to report both good and bad timing outcomes.
+20:30:44.287                                              
+20:30:44.287 Connect                                      At 20:29:45.501 Connect                  0.002 seconds. ✓ (STANDARD)
+20:30:44.287 InterfaceVersion                             At 20:29:46.026 InterfaceVersion         0.000 seconds. ✓ (FAST)
+20:30:44.287 Connected                                    At 20:29:46.027 Connected                0.001 seconds. ✓ (FAST)
+20:30:44.287 Description                                  At 20:29:46.033 Description              0.005 seconds. ✓ (FAST)
+20:30:44.287 DriverInfo                                   At 20:29:46.034 DriverInfo               0.001 seconds. ✓ (FAST)
+20:30:44.287 DriverVersion                                At 20:29:46.034 DriverVersion            0.001 seconds. ✓ (FAST)
+20:30:44.287 Name                                         At 20:29:46.035 Name                     0.001 seconds. ✓ (FAST)
+20:30:44.287 SupportedActions                             At 20:29:46.037 SupportedActions         0.002 seconds. ✓ (FAST)
+20:30:44.287 DeviceState                                  At 20:29:46.043 DeviceState              0.006 seconds. ✓ (FAST)
+20:30:44.288 FocusOffsets                                 At 20:29:47.589 FocusOffsets             0.015 seconds. ✓ (FAST)
+20:30:44.288 Names                                        At 20:29:47.591 Names                    0.003 seconds. ✓ (FAST)
+20:30:44.288 Position                                     At 20:29:47.593 Position                 0.001 seconds. ✓ (FAST)
+20:30:44.288 Move to position 0                           At 20:29:47.595 Move to position 0       0.001 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 1                           At 20:29:48.644 Move to position 1       0.033 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 2                           At 20:29:51.447 Move to position 2       0.033 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 3                           At 20:29:54.264 Move to position 3       0.032 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 4                           At 20:29:57.067 Move to position 4       0.033 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 5                           At 20:29:59.876 Move to position 5       0.034 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 6                           At 20:30:02.672 Move to position 6       0.032 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 6                           At 20:30:05.444 Move to position 6       0.002 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 5                           At 20:30:06.487 Move to position 5       0.032 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 4                           At 20:30:09.294 Move to position 4       0.033 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 3                           At 20:30:12.076 Move to position 3       0.036 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 2                           At 20:30:14.862 Move to position 2       0.032 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 1                           At 20:30:17.652 Move to position 1       0.033 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 0                           At 20:30:20.454 Move to position 0       0.033 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 0                           At 20:30:23.195 Move to position 0       0.002 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 6                           At 20:30:24.235 Move to position 6       0.032 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 5                           At 20:30:27.058 Move to position 5       0.033 seconds. ✓ (STANDARD)
+20:30:44.288 Move to position 0                           At 20:30:29.858 Move to position 0       0.033 seconds. ✓ (STANDARD)
+20:30:44.289 Move to position 3                           At 20:30:33.717 Move to position 3       0.032 seconds. ✓ (STANDARD)
+20:30:44.289 Move to position 0                           At 20:30:38.763 Move to position 0       0.038 seconds. ✓ (STANDARD)
+20:30:44.289 Disconnect                                   At 20:30:43.772 Disconnect               0.001 seconds. ✓ (STANDARD)
+20:30:44.289                                              
+20:30:44.289 Congratulations, all members returned within their target response times!!          
