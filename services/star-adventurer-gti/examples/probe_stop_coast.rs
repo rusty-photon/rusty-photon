@@ -44,6 +44,12 @@
 //! so even a mount that ignored every stop would come to rest at a goto
 //! target, inside the envelope. Only the commands in [`Op`] reach the wire.
 //!
+//! **Blocked.** An axis whose `:f` reports `blocked` (stepping, but not
+//! following) is treated as the service's slew watcher treats it: every
+//! axis is halted at once, that one first, and the run ends. `:f` is
+//! read on every pass while an axis moves, and a goto refuses to start
+//! on a blocked axis.
+//!
 //! Every exit path — a finished run, an error, `SIGINT`, `SIGTERM`,
 //! `SIGHUP`, `SIGQUIT` — ends with `:L1 :L2 :K1` and waits for both axes to
 //! report stopped.
@@ -576,6 +582,12 @@ fn seconds(value: f64) -> Result<Duration, ProbeError> {
         .map_err(|e| ProbeError::Precondition(format!("duration {value} s: {e}")))
 }
 
+fn blocked(axis: Axis) -> ProbeError {
+    ProbeError::Precondition(format!(
+        "{axis:?} reports blocked (stepping, not following); halted every axis"
+    ))
+}
+
 fn unexpected(op: Op, ex: &Exchange) -> ProbeError {
     ProbeError::Unexpected {
         cmd: format!("{op:?}"),
@@ -806,9 +818,9 @@ async fn goto(
 ) -> Result<(i32, f64), ProbeError> {
     let g = *geometry.axis(axis);
     let (status, _) = link.status(axis).await?;
-    if status.running {
+    if status.running || status.blocked {
         return Err(ProbeError::Precondition(format!(
-            "{axis:?} is still running; a goto needs it stopped"
+            "{axis:?} is running or blocked ({status:?}); a goto needs it stopped and free"
         )));
     }
     let from = link.position(axis).await?.ticks;
@@ -887,6 +899,10 @@ async fn observe(
         for (axis, trace) in axes.iter().zip(traces.iter_mut()) {
             let (status, _) = link.status(*axis).await?;
             trace.statuses.push(status);
+            if status.blocked {
+                link.halt_all(axes, Some(*axis)).await;
+                return Err(blocked(*axis));
+            }
             let sample = link.position(*axis).await?;
             trace.samples.push(sample);
             if let Err(e) = geometry.axis(*axis).check(*axis, sample.ticks, "count") {
@@ -1093,6 +1109,10 @@ async fn run_up(
         let mut done = true;
         for ((leg, from), out) in legs.iter().zip(samples.iter_mut()) {
             let g = geometry.axis(leg.axis);
+            if link.status(leg.axis).await?.0.blocked {
+                link.halt_all(&axes, Some(leg.axis)).await;
+                return Err(blocked(leg.axis));
+            }
             let s = link.position(leg.axis).await?;
             out.push(s);
             if let Err(e) = g.check(leg.axis, s.ticks, "count during the run-up") {
