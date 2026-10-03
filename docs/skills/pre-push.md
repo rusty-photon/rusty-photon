@@ -651,14 +651,19 @@ commented out. Under Miri they take over 6 hours on GitHub runners.
 
 **The Miri toolchain is unpinned.** The job installs the newest nightly that
 ships the `miri` component. A Miri release can therefore turn the job red with
-no change in the repository. To reproduce a red job, use the same nightly CI
-used, because an older local `nightly` may still pass:
+no change in the repository. To reproduce a red job, use the exact nightly that
+job installed. Read it from the failed job's log, because an older local
+`nightly` may still pass, and a newer one may behave differently:
 
 ```bash
-NIGHTLY=nightly-$(curl -s https://rust-lang.github.io/rustup-components-history/x86_64-unknown-linux-gnu/miri)
+NIGHTLY=$(gh run view <run-id> --job <job-id> --log | grep -oE 'nightly-20[0-9]{2}-[0-9]{2}-[0-9]{2}' | head -n 1)
 rustup toolchain install "$NIGHTLY" --component miri
 MIRIFLAGS="-Zmiri-disable-isolation" cargo +"$NIGHTLY" miri test -p <service> --no-fail-fast
 ```
+
+To check a fix against the nightly the *next* run will pick, set
+`NIGHTLY=nightly-$(curl -s https://rust-lang.github.io/rustup-components-history/x86_64-unknown-linux-gnu/miri)`
+instead. That is the lookup the job itself performs.
 
 Miri aborts the whole test binary at the first operation it does not support,
 so one failure can hide others behind it in the same binary. `--no-fail-fast`
