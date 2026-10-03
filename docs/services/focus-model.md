@@ -40,11 +40,12 @@ anything except through `rp`'s tools. The decision record is the
    optimisation: focus is reached without it.
 3. **Retry with the same parameters; shift, never widen.** A failed fit
    is repeated up to `max_attempts` times, the way N.I.N.A. and Ekos
-   retry, the grid shifted toward the lowest sample whenever the sweep
-   says focus lies past one end of it — a monotonic curve, or stars
-   that ran out on one side only while the samples that kept them fall
-   strictly toward the other ([The sweep](#the-sweep)). No attempt
-   halves or doubles the step.
+   retry, the grid shifted half a width whenever the samples say focus
+   lies past one end of them — a monotonic curve that lost no frames
+   past the end its lowest sample sits nearer, or stars that ran out on
+   one side only while the samples that kept them fall strictly toward
+   the other ([The sweep](#the-sweep)). No attempt halves or doubles
+   the step.
 4. **Put things back.** A sweep that fails after every attempt, a
    cancelled sweep and an equipment error all end with the focuser
    moved back to where it was before the call — the position read at
@@ -784,9 +785,10 @@ the current position.
 
 The V-curve with the semantics `rp`'s capture sweep has today
 ([rp.md § `auto_focus` Contract](rp.md#auto_focus-contract)), through
-`rp`'s primitives — except the shift after a sweep whose stars ran out
-on one side (step 6), which `rp`'s sweep does not make: the capture
-sweep retires at the plan's S7, and the rule lives here:
+`rp`'s primitives — except where the retry goes (step 6): `rp`'s sweep
+makes no shift after a sweep whose stars ran out on one side, and
+reads the `monotonic_curve` side against the grid's centre. The capture
+sweep retires at the plan's S7, and the rules live here:
 
 1. The grid is `centre ± half_width` in `step_size` increments, clamped
    to the focuser's bounds (points outside are dropped, not coerced),
@@ -829,8 +831,22 @@ sweep retires at the plan's S7, and the rule lives here:
    `max_attempts`, and where the next grid sits depends on what the
    failed one said about focus:
    - After `monotonic_curve` the centre moves by `half_width` toward
-     the lowest accepted sample (unchanged when that sample sits at
-     the centre): the curve fell toward one end, so focus lies past it.
+     whichever end of the accepted samples the lowest one sits nearer:
+     the curve fell toward that end, so focus lies past it. The ends
+     are the samples', never the grid's centre: a grid a bound clipped,
+     or one whose frames on one side of the centre all lost their stars
+     to a passing cloud, holds every accepted sample on one side of a
+     centre they were never measured around, and a comparison with the
+     centre names the wrong side. The grid stays where it is when the
+     lowest sample sits midway between the ends, and when a point that
+     is not accepted — sparse or starless — lies past the end it sits
+     nearer: HFR falling toward that point puts it nearer focus than
+     any accepted sample, so the sky took its stars, not the far wing
+     leaving the detector's band, and the frames that would place
+     focus are ones the grid already walks. With focus near the lowest
+     sample, as a good prediction leaves it, a shift would start the
+     next grid at focus and a parabola through its one wing would fail
+     the same way, where the same grid under a cleared sky fits.
    - After `not_enough_stars` the grid is the same one, unless the
      attempt's points — ordered by position, sparse and starless
      points alike counted as not accepted — say focus lies past one
@@ -841,11 +857,9 @@ sweep retires at the plan's S7, and the rule lives here:
      out on one side only is the far wing leaving the detector's band,
      and HFR falling away from it is focus lying past the other end,
      so the centre moves by `half_width` away from the starved side,
-     toward the lowest accepted sample, as after `monotonic_curve`. The
-     side is read from the samples alone: a grid the focuser's bounds
-     clipped can hold every sample on one side of a centre it was never
-     walked around, and the side the samples name is still the one
-     focus lies on. Anything else keeps the grid:
+     toward the end holding the lowest accepted sample, the side read
+     from the samples alone as after `monotonic_curve`. Anything else
+     keeps the grid:
      points that are not accepted on both sides or among the accepted
      ones, accepted HFRs that tie or turn, a single accepted point.
      The samples do not agree on a side then, and the same grid is
