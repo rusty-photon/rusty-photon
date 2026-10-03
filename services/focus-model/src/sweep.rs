@@ -410,14 +410,14 @@ pub fn one_sided_starvation(curve_points: &[CurvePoint]) -> Option<Ordering> {
         .filter_map(|point| point.accepted_sample())
         .map(|(position, hfr, _)| (position, hfr))
         .collect();
-    if accepted.len() < 2 || accepted.len() == ordered.len() {
-        return None;
-    }
-    let (Some(&(lowest_accepted, _)), Some(&(highest_accepted, _))) =
-        (accepted.first(), accepted.last())
-    else {
+    // Two accepted points at least, and at least one that is not.
+    let [(lowest_accepted, _), .., (highest_accepted, _)] = accepted.as_slice() else {
         return None;
     };
+    let (lowest_accepted, highest_accepted) = (*lowest_accepted, *highest_accepted);
+    if accepted.len() == ordered.len() {
+        return None;
+    }
     let mut not_accepted = ordered
         .iter()
         .filter(|point| point.accepted_sample().is_none())
@@ -1100,10 +1100,12 @@ fn log_failed_attempt(
 ) {
     let (grid_min, grid_max) = grid_span(grid);
     let (next_grid_min, next_grid_max) = next_grid.map_or((None, None), grid_span);
+    let outcome = failed.outcome.as_str();
+    let retry = failed.retry.as_str();
     warn!(
         attempt = failed.attempt,
         max_attempts,
-        outcome = failed.outcome.as_str(),
+        outcome,
         error = %failed.error,
         centre = failed.centre,
         grid_min = ?grid_min,
@@ -1111,7 +1113,7 @@ fn log_failed_attempt(
         accepted = failed.accepted,
         sparse = failed.sparse,
         starless = failed.starless,
-        retry = failed.retry.as_str(),
+        retry,
         next_centre = ?failed.next_centre,
         next_grid_min = ?next_grid_min,
         next_grid_max = ?next_grid_max,
@@ -1646,6 +1648,30 @@ mod tests {
     #[test]
     fn the_gate_counts_split_accepted_sparse_and_starless() {
         assert_eq!(gate_counts(&starved_above()), (3, 4, 2));
+    }
+
+    /// The log line and the record name an outcome and a retry the same
+    /// way.
+    #[test]
+    fn the_logged_names_are_the_recorded_names() {
+        for outcome in [FitOutcome::NotEnoughStars, FitOutcome::MonotonicCurve] {
+            assert_eq!(
+                serde_json::to_value(outcome).unwrap(),
+                serde_json::json!(outcome.as_str())
+            );
+        }
+        for retry in [
+            Retry::SameGrid,
+            Retry::Shift,
+            Retry::ShiftAbsorbed,
+            Retry::GridTooSmall,
+            Retry::NoAttemptsLeft,
+        ] {
+            assert_eq!(
+                serde_json::to_value(retry).unwrap(),
+                serde_json::json!(retry.as_str())
+            );
+        }
     }
 
     #[test]

@@ -2188,6 +2188,43 @@ mod tests {
         assert_eq!(only.retry, crate::sweep::Retry::NoAttemptsLeft);
     }
 
+    /// A sweep that walks one wing of a V far off its grid fits a vertex
+    /// outside its samples: recorded as a monotonic curve, with the
+    /// focuser put back.
+    #[tokio::test]
+    async fn a_monotonic_sweep_is_recorded_as_a_monotonic_curve() {
+        let (store, _dir) = temp_store().await;
+        let position = Position::new(25_000);
+        let mut active = rig(&position);
+        measures_a_v(&mut active, &position, 24_000);
+        let cleanup = cleanup_rig(&position, 25_000);
+
+        let err = focus_train(
+            Rig {
+                active: &active,
+                cleanup: &cleanup,
+            },
+            &store,
+            &config(CONFIGURED),
+            &params(None),
+            &NoProgress,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.tool_message().contains("monotonic curve"), "{err}");
+        let record = store.get("main").await.unwrap().unwrap();
+        assert_eq!(record.runs[0].outcome, RunOutcome::MonotonicCurve);
+        assert_eq!(
+            record.runs[0]
+                .attempts_log
+                .iter()
+                .map(|attempt| attempt.outcome)
+                .collect::<Vec<_>>(),
+            [FitOutcome::MonotonicCurve]
+        );
+    }
+
     /// `CONFIGURED`, allowed a second sweep.
     fn two_attempts() -> Config {
         config(&CONFIGURED.replace(r#""max_attempts": 1"#, r#""max_attempts": 2"#))
