@@ -636,9 +636,9 @@ optimisation to be off, which is a scheduler detail, not a contract.
 
 Nothing awaits between the publish and the new record point. A
 cancellation at the respawn's lock leaves the debt standing, which is
-today's "owed until proven landed" behaviour. If the move is declined
-(see Open points), the respawn comment and the `commit_replacement`
-doc must state the residual instead.
+today's "owed until proven landed" behaviour. The move was decided on
+2026-10-03, so the guarantee is exact rather than documented as a
+residual.
 
 **Effect on the services.**
 - *GTi:* a refused poll logs at `debug!` and skips the tick. Coordinate
@@ -1330,14 +1330,12 @@ traffic or changes what the connect path sends.
    lazy `acquire`) goes beyond the two fixes asked for, and turns an
    unwind into an `Err`. Ship it, or ship only the `Hooks::while_open`
    contract paragraph?
-2. **Bug A's record move** (debt recorded before the respawn). It is
-   the default here. The alternative keeps today's order and states the
-   multi-thread residual in the two comments.
-3. **`IN_ATTEMPT` is dropped**, although the design panel had it. A
-   test-util-only form is verified and can be added if wanted.
-4. **CLAUDE.md rule 10** names only crates.io dependencies as the
+2. **CLAUDE.md rule 10** names only crates.io dependencies as the
    trigger for a `MODULE.bazel.lock` refresh. Any member-manifest edit
    is one. PR 6 widens the trigger in pre-push.md; rewording the rule
    itself is the maintainer's call.
-5. **The Windows hardware leg runs `dsd-fp2` on rig2**, because rig2
+3. **The Windows hardware leg runs `dsd-fp2` on rig2**, because rig2
    has no GTi.
+
+Settled on review (2026-10-03): bug A records the owed stop before the
+respawn, and `IN_ATTEMPT` is not added.
