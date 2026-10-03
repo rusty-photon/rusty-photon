@@ -518,9 +518,10 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   by index, so a port that arrives or leaves during a read — a hot-plug
   race of microseconds — can shift the indices or end the enumeration
   early, giving a short list that still reads as a success and can be
-  missing a port that never changed. A read is trusted once a second read
-  returns the same list; a key that changes on each of three reads is a
-  failed listing, and a re-run reads it clean.
+  missing a port that never changed. Each read opens the key afresh, and
+  a read — a missing key included — is trusted once a second read returns
+  the same list; a key that changes on each of three reads is a failed
+  listing, and a re-run reads it clean.
 
   Absent from a staged facts file, `com_ports_unavailable` means the
   listing succeeded, so a file written before the marker existed keeps its

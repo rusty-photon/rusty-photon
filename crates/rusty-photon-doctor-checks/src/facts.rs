@@ -1192,15 +1192,18 @@ mod windows {
     /// values cannot be listed, or that never reads the same twice is a
     /// listing that failed, returned as such and never read as a host
     /// without ports.
+    ///
+    /// Every read opens the key afresh, so each outcome — a missing key
+    /// included — is trusted only once a second read agrees.
     #[cfg(windows)]
     pub fn com_ports() -> Result<Vec<String>, String> {
         use windows_registry::LOCAL_MACHINE;
 
-        let key = match LOCAL_MACHINE.open(SERIALCOMM) {
-            Ok(key) => key,
-            Err(e) => return listing_without_key(e.code().0, &e),
-        };
         settled(|| {
+            let key = match LOCAL_MACHINE.open(SERIALCOMM) {
+                Ok(key) => key,
+                Err(e) => return listing_without_key(e.code().0, &e),
+            };
             let values = key
                 .values()
                 .map_err(|e| listing_failed("list the values of", &e))?;
