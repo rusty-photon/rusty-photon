@@ -747,6 +747,7 @@ mod device_config_action_tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // config.apply fsyncs the config's parent directory, which Miri cannot open
     async fn config_apply_persists_and_fires_reload() {
         let (device, reload, _dir, path) = device_with_config_actions(test_config());
         let mut changed = test_config();
@@ -780,6 +781,7 @@ mod device_config_action_tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // config.apply fsyncs the config's parent directory, which Miri cannot open
     async fn config_apply_persists_port_and_interval_together() {
         let (device, _reload, _dir, path) = device_with_config_actions(test_config());
         let mut changed = test_config();
@@ -798,6 +800,7 @@ mod device_config_action_tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(miri, ignore)] // config.apply fsyncs the config's parent directory, which Miri cannot open
     async fn config_apply_without_change_returns_ok() {
         let (device, _reload, _dir, _path) = device_with_config_actions(test_config());
         let params = serde_json::to_string(&test_config()).unwrap();

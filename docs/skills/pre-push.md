@@ -636,14 +636,48 @@ cargo metadata --format-version 1 --no-deps | \
 
 Current services and their commands:
 - **filemonitor**: `cargo miri test -p filemonitor`
+- **pa-scops-oag**: `cargo miri test -p pa-scops-oag`
 - **phd2-guider**: `cargo miri test -p phd2-guider`
-- **ppba-driver**: `cargo miri test -p ppba-driver`
 - **qhy-focuser**: `cargo miri test -p qhy-focuser`
 - **rp-auth**: `cargo miri test -p rp-auth`
 
-> **Note:** Miri only runs on push to main (not on PRs) and requires
-> `MIRIFLAGS="-Zmiri-disable-isolation"`. A clean build (`cargo clean`) is
-> recommended before running miri to avoid stale artifact issues.
+`ppba-driver` and `upbv2-driver` keep their `[package.metadata.miri]` block
+commented out. Under Miri they take over 6 hours on GitHub runners.
+
+> **Note:** Miri runs on push to main, nightly, and on manual dispatch, never
+> on PRs. It requires `MIRIFLAGS="-Zmiri-disable-isolation"`. A clean build
+> (`cargo clean`) is recommended before running miri to avoid stale artifact
+> issues.
+
+**The Miri toolchain is unpinned.** The job installs the newest nightly that
+ships the `miri` component. A Miri release can therefore turn the job red with
+no change in the repository. To reproduce a red job, use the exact nightly that
+job installed. Read it from the failed job's log, because an older local
+`nightly` may still pass, and a newer one may behave differently:
+
+```bash
+NIGHTLY=$(gh run view <run-id> --job <job-id> --log | grep -oE 'nightly-20[0-9]{2}-[0-9]{2}-[0-9]{2}' | head -n 1)
+rustup toolchain install "$NIGHTLY" --component miri
+MIRIFLAGS="-Zmiri-disable-isolation" cargo +"$NIGHTLY" miri test -p <service> --no-fail-fast
+```
+
+To check a fix against the nightly the *next* run will pick, set
+`NIGHTLY=nightly-$(curl -s https://rust-lang.github.io/rustup-components-history/x86_64-unknown-linux-gnu/miri)`
+instead. That is the lookup the job itself performs.
+
+Miri aborts the whole test binary at the first operation it does not support,
+so one failure can hide others behind it in the same binary. `--no-fail-fast`
+keeps cargo running the crate's other test targets. After a fix, re-run until
+every target is green.
+
+**Accommodate Miri in tests, never in production code.** When Miri cannot
+model an operation a test reaches, gate the test:
+- `#[cfg_attr(miri, ignore)] // <what Miri cannot do>` on the individual test;
+- or `#[cfg(not(miri))]` on a test module or helper.
+
+Never add `cfg(miri)` / `cfg!(miri)` to production code to make Miri pass.
+Miri exists to check the code that ships, and a production `cfg(miri)` branch
+means it checks something else.
 
 ---
 
