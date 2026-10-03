@@ -1713,8 +1713,15 @@ Layered per [`testing.md`](../skills/testing.md).
   exposure (GO2); per-control read and write failures stand in for a value the
   camera will not report (GO1) and one it refuses at arm time. It is written from the
   same reading of the SDK as the driver, so a green run shows the driver does
-  what that reading says, not that the reading is right: that is the QHY600M
-  run in *Future Work*.
+  what that reading says, not that the reading is right. The reading is
+  checked on rig2's multi-mode QHY600M: the mode switch, its geometry and its
+  cost in RM1's *Measured on hardware* (2026-09-28), and a gain and offset
+  carried across a switch and armed by the next exposure in the
+  [2026-10-03 record](../validation/2026-10-03-qhy-camera-qhy600m-cfw-windows/README.md).
+  Two of the knobs model behaviour no camera here has shown — an init that
+  resets gain and offset (reported for a QHYminiCam8M) and an init that
+  switches the cooler off (`disable_auto_cooler=true`; rig2 runs with it
+  false) — so for those the mock is still the reading alone.
 - **Windows DLL resolution** — the preflight's candidate ordering/selection are
   pure functions with **injected** environment and fs-existence checkers, and
   the doctor's check assembly / prompt parsing are pure over plain data —
