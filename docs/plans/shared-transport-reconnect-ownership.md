@@ -2,7 +2,8 @@
 
 **Status:** Proposed. Issue
 [#1243](https://github.com/rusty-photon/rusty-photon/issues/1243);
-decisions settled by Igor on 2026-10-03.
+decisions settled by Igor on 2026-10-03, and revised on review on
+2026-10-04 (decisions 6 and 7).
 
 In `rusty-photon-shared-transport`, a reconnect attempt can outlive the
 lifecycle it started in. It can then publish a conduit, respawn a poll
@@ -28,6 +29,11 @@ Two bugs found during the investigation ride along: the background
 poll ignores the safety debt, and an open path that fails drops its
 conduit instead of closing it.
 
+A third fix lands first, as PR 0: a request abandoned after its send
+leaves its reply unread, and today every later request on that conduit
+reads the reply meant for the one before it. After PR 0 the abandoned
+request owes its reply, and the next request discards it.
+
 ## Problem
 
 This is the state on `main` at `d201506c`. Each window was reproduced
@@ -45,6 +51,7 @@ follow the investigation.
 | **Lazy variant** | `reconnect_now` publishes during the LazyAcquire 1→0 cleanup, and the next `start()` promotes onto an empty slot. | No: needs `reconnect_now`, and no service runs LazyAcquire | PR 8 (made unreachable) |
 | **Bug A** (poll ignores the debt) | `WhileOpen::request` skips the safety-debt check that `Session::request` makes. "No request reaches the device while a stop is owed" therefore holds for sessions only. | Yes, on GTi after a failed last-client stop. Latent: every poll body today only inquires. | PR 3 |
 | **Bug B** (drop on a failed handshake) | When a handshake fails after `factory.open()`, the code drops `new_conn` instead of closing it. This happens in the attempt, in the cold start, and in the lazy 0→1. Related: a `while_open` constructor that passes its `WhileOpen` on and then panics leaks the port on a cold start or a lazy 0→1, because those two paths do not catch the panic. | No effect today: the opener holds the only `Arc`, so dropping it is the same as closing it. The constructor case is latent: no production constructor can panic | PR 2 |
+| **Stale reply** (found on review) | `Connection::request_timed` is not cancel-safe. A request dropped after its send leaves its reply unread. Nothing discards it, and a stray frame never signals a reconnect: a decode error or `SkipExhausted` does not signal, and under the default `matches` the stray is simply taken as the reply. So every later request on that conduit reads the reply meant for the one before it, until a request times out or the conduit is reopened. GTi and dsd-fp2 cannot tell a stray from a reply at all, and dsd-fp2's `(OK)`, `(0)` and `(1)` replies are byte-identical across commands, so wrong values are taken silently. | Yes: a lifecycle abort mid-request, or an HTTP handler dropped mid-exchange (not reproduced). §Deliberately left names the routes, R1–R4 | PR 0 |
 
 Two windows are already closed and are not reopened here:
 
@@ -71,6 +78,7 @@ unreachable.
 
 | PR | Description | Status | Branch / PR |
 |----|-------------|--------|-------------|
+| 0 | A request abandoned after its send owes its reply, and the next request discards it | Not started | |
 | 1 | Pin the guarantees that already hold: the post-join re-store, W4 as filed, W6 (tests only) | Not started | |
 | 2 | Bug B: an open that fails before the publish closes the conduit it opened | Not started | |
 | 3 | Bug A: the poll task answers to the safety debt too | Not started | |
@@ -78,10 +86,14 @@ unreachable.
 | 5 | W4b: a missed last-client stop wakes the supervisor on its own signal | Not started | |
 | 6 | W1-LEAK: `shutdown` closes what the slot holds when it empties it | Not started | |
 | 7 | `reconnect_now` becomes a `test-util` hook | Not started | |
-| 8 | One owner for every reconnect attempt; the token as the generation; a poll task stays registered until its join returns | Not started | |
+| 8 | One owner for every reconnect attempt; the token as the generation | Not started | |
 
 The order follows production risk:
 
+- **PR 0** comes first (decision 7). Its bug is the one here that needs
+  no teardown, it is `Connection` work that none of the lifecycle PRs
+  touch, and it is what lets PR 8 keep aborting a poll task mid-request
+  (decision 6).
 - **PR 1** puts a net under the join that PR 4 edits.
 - **PR 2** comes before the other fixes. It changes nothing a production
   service can observe, and it leaves `WhileOpen` built in one place,
@@ -94,13 +106,15 @@ The order follows production risk:
   and can move earlier at no cost. It edits the crate's `Cargo.toml`,
   so it needs `scripts/repin-bazel-lock.sh`, merged in
   [#1391](https://github.com/rusty-photon/rusty-photon/pull/1391).
-- **PR 8** closes W1, W2, W3 and the Lazy variant in the code, and
-  stops a teardown from aborting the poll task mid-request (decision 6).
+- **PR 8** closes W1, W2, W3 and the Lazy variant in the code.
 
 Each PR is a separate change that leaves `main` green, but only when it
 lands on top of its predecessors. Land them in order. The one
 exception is PR 7, which needs nothing else in the series and can land
 at any point. The dependencies:
+- PR 0 needs nothing else in the series. PR 8 relies on it: the abort
+  of a poll task mid-request that PR 8 keeps is harmless only once
+  PR 0 has landed.
 - PR 3 builds on PR 2's `build_while_open`.
 - PRs 4, 5, 6 and 8 edit lines that PR 3 renames.
 - PR 1's tests are the net PR 4 edits under.
@@ -119,7 +133,7 @@ where the invariants live, so a PR's rustdoc change is its design-doc
 change under rule 2 and
 [development-workflow.md](../skills/development-workflow.md).
 
-## Decisions (settled 2026-10-03)
+## Decisions (settled 2026-10-03; 6 revised and 7 added on 2026-10-04)
 
 1. **One owner with a cancellation token, instead of a counter
    generation.**
@@ -208,7 +222,8 @@ change under rule 2 and
      within the last reconnect interval, the replay starts at once.
      Otherwise it waits out the rest of that interval: at most one
      interval, which is 5 s in production, because no service changes
-     the default. Skipping the floor is open point 5.
+     the default. Letting the wake skip the floor was rejected on
+     review (§Rejected alternatives).
 
 5. **Two bug fixes ride along.**
 
@@ -229,27 +244,72 @@ change under rule 2 and
    then panics. Closing that one changes public behaviour, so it ships
    as the PR's second commit, approved on 2026-10-03.
 
-6. **A teardown does not abort a poll task mid-request; only the 5 s
-   bound does.** This is part of PR 8.
+6. **A teardown may abort a poll task mid-request, because PR 0 makes
+   that harmless** (revised on review, 2026-10-04).
 
-   `cancel_while_open` keeps the poll task registered in
-   `while_open_state` until a join of it returns. Take the case where
-   the supervisor's cancel arm aborts an attempt inside its own
-   `cancel_while_open`. The cancelled task stays registered, and the
-   teardown's step 6 joins it once it finishes its tick. Aborting it
-   instead can drop a request between its send and its receive. The
-   reply then answers the shutdown hook's first stop (see §Deliberately
-   left). Joining the task after aborting it would not help: the abort
-   is what strands the reply.
+   As first merged, this decision kept the poll task registered in
+   `while_open_state` until a join of it returned, so that no teardown
+   aborted it mid-request. The case is an attempt that the supervisor's
+   cancel arm aborts inside its own `cancel_while_open`.
+   `AbortDetachedGuard` then aborts the poll task, which can drop a
+   request between its send and its receive. Without PR 0, the
+   stranded reply answers the shutdown hook's first stop.
 
-   The cost falls on an abandoned teardown. It no longer aborts a
-   stubborn task, which runs until the next `start`, `shutdown` or lazy
-   0→1 joins it. If the instance is dropped first, the task runs on,
-   detached. Production never abandons a teardown.
+   PR 0 removes that reason. The dropped request owes its reply, and the
+   hook's first stop discards it before reading its own. So
+   `cancel_while_open` and `AbortDetachedGuard` stay as they are, and
+   PR 8 drops the lock held across the join, the invariant that a task
+   leaves `while_open_state` only after its join returns, and the three
+   tests that pinned it. This also removes that version's cost: an
+   abandoned teardown no longer leaves a stubborn poll task running
+   until the next teardown, or detached if the instance is dropped
+   first.
 
-   The 5 s bound still aborts a task that has not returned 5 s into a
-   join of it, mid-request or not. A GTi poll on a slow link can reach it,
-   because it checks its token only between ticks.
+7. **A cancel-safe exchange lands first, as PR 0** (settled on review,
+   2026-10-04).
+
+   `Connection` counts the reply frames that abandoned exchanges owe:
+   - **A request dropped after its send completes owes one frame.** That
+     covers a drop while it waits for the reply, a drop part-way through
+     reading it, and a drop while it skips frames under `max_skip`.
+   - **A request dropped part-way through its send owes one frame too.**
+     Whether the device answers a torn frame is unknown, and owing one
+     is the direction that heals (below).
+   - **A receive timeout owes nothing.** A reply that misses its read
+     timeout is more often lost than late, especially over UDP, and the
+     timeout already raises a reconnect.
+
+   The next exchange sends at once, reads and discards the owed frames,
+   and only then reads its own reply under the usual `matches` and
+   `max_skip`. Discarded frames are not decoded and do not count
+   against `max_skip`.
+
+   Why this shape:
+   - **No send waits.** A stop goes out as soon as it has the lock.
+   - **It works on whole frames.** A half-read reply's remainder ends at
+     the terminator, so it is one frame. Bytes already in the serial
+     transport's `BufReader`, or in the read-ahead buffer tokio-serial
+     keeps on Windows, are read and discarded like any other frame. No
+     `FrameTransport` method is added.
+   - **Counting too many heals; counting too few would not.** If an
+     owed reply never comes (a lost UDP datagram, a torn frame the device
+     ignores), the next exchange discards its own reply and times out.
+     That raises a reconnect, and the replacement conduit starts at zero.
+     That is what a lost reply does today. A count that is too low would
+     leave the conduit one frame behind indefinitely, which is the bug.
+   - **The cost of counting too many lands on the stop only by
+     coincidence.** If the exchange that pays is GTi's safety stop,
+     `:L1` still goes out at once, `:L2` waits out one read timeout, and
+     the verdict is `NotAsserted`, so the debt replays the stop. That
+     needs an abandoned exchange and the loss of its reply together.
+
+   This decision moved the work ahead of PR 1. The plan as first merged
+   listed it as a follow-up issue. It goes first for two reasons. The
+   stale reply is the one problem here that needs no teardown: an HTTP
+   handler dropped mid-exchange can leave one in any of the seven
+   services (R3, not reproduced), and it then lasts until a request
+   times out or the conduit is reopened. And PR 0 lets decision 6 be
+   undone.
 
 ### Rejected alternatives
 
@@ -271,12 +331,32 @@ change under rule 2 and
 - **Holding the slot guard across the respawn.** This nests
   `while_open_state` inside `slot`, the reverse of the cold-start and
   lazy publishes, which take `while_open_state` and then `slot`.
-  Taking both at C3 in the publishes' order is a separate question
-  (open point 2).
-- **Joining a poll task after aborting it.** The abort is what strands
-  the reply, so a join afterwards changes nothing (decision 6).
-- **Keeping `AbortDetachedGuard`.** It aborts at once, whatever the task
-  is in the middle of.
+  Taking both at C3 in the publishes' order is a separate alternative,
+  also rejected (below).
+- **Keeping a poll task registered until its join returns** (decision 6
+  as first merged; undone on review, 2026-10-04). After PR 0 an abort
+  mid-request strands nothing. Keeping it would leave the lock held
+  across a join and an extra invariant for no remaining benefit.
+- **For PR 0: discard pending input before the next send.** It needs a
+  new `FrameTransport` method. It can only discard what has already
+  arrived, so to be sure it must wait for the line to go quiet, up to a
+  read timeout, and that includes before a stop. `PurgeComm` cannot
+  reach the bytes tokio-serial has already read ahead on Windows. The
+  GTi stop-coast probe drains this way, and it deliberately never
+  drains before a stop.
+- **For PR 0: poison the conduit and reconnect.** Every abandoned
+  exchange would cost a reconnect: up to one reconnect interval, then
+  the handshake (ten requests on GTi). A stop on a poisoned conduit
+  would fail without being sent and wait for the replay.
+- **For PR 0: codec matching alone.** Only qhy-focuser can tell its
+  reply from another command's. GTi and dsd-fp2 use the default
+  `matches`, and the other four match on the reply's shape only. No
+  codec can reject an earlier reply to the same command.
+- **For PR 0: owing a frame on a receive timeout.** When the reply was
+  lost rather than late, the next exchange would discard its own reply
+  and stall for a read timeout. Until the reconnect replaces the
+  conduit, that exchange is the poll or a stop hook. GTi's `:L2` would
+  then wait 2 s.
 - **Gating supervisor wakes on the debt or on `reconnecting`.** This
   drops genuine wire wakes.
 - **A bounded teardown that detaches the attempt.** This hands the
@@ -287,6 +367,24 @@ change under rule 2 and
 - **A pending-attempt counter in `reconnect_now`.** It closes the first
   W3 ordering and leaves the second untouched, as the issue itself
   notes.
+- **Respawning the poll task inside C3** (rejected on review,
+  2026-10-04). It would take `while_open_state` and then `slot` at C3,
+  in the publishes' order. That closes the stale child's late
+  registration (§Deliberately left, abandoned teardown), and lets the
+  publishes assert that nothing is registered. That corner needs an
+  abandoned teardown, which production never does, plus a multi-thread
+  race of microseconds. It does not justify nesting two locks at the
+  attempt's last commit point.
+- **Letting a `stop_owed` wake skip the cadence floor after a
+  recovery** (rejected on review, 2026-10-04). The floor delays the
+  replay only when the stop is refused within one interval of a
+  recovery's attempt, and then only by the rest of that interval. A
+  stop refused that soon usually means the link has dropped again, so
+  an immediate attempt would most likely fail and fall back to the
+  floor anyway. Skipping it would also let a client that connects and
+  disconnects in a loop cycle the port at the client's rate, against a
+  device that refuses its stop and then accepts the replay. "Every
+  attempt waits out the floor" stays the one rule.
 
 ## Design
 
@@ -319,8 +417,7 @@ change under rule 2 and
   service unconditionally when it fires.
 - **`safety_debt: Arc<SafetyDebt>`** (PR 3) replaces the two loose
   counters. `WhileOpen` holds a clone of it.
-- **Removed:** `supervisor_live`, `ManualReconnectGuard` and
-  `AbortDetachedGuard`.
+- **Removed:** `supervisor_live` and `ManualReconnectGuard`.
 - **Never added:** the design panel's `IN_ATTEMPT` task-local (see
   below).
 - **Kept:** `attempt_reconnect_lock`. Its doc narrows to the one thing
@@ -361,7 +458,7 @@ change under rule 2 and
    - `release_any_held_conduit` writes no flag before its cancel.
 4. **Nothing aborts the supervisor.** A teardown cancels it and joins
    it: `warn!` at 5 s, then wait without a bound. Its handle is never
-   aborted, not from a `Drop` either, because aborting the parent is
+   wrapped in `AbortDetachedGuard`, because aborting the parent is
    exactly what drops a still-running child's handle.
 5. **The debt is the authority for both request handles.** `Session`
    and `WhileOpen` each refuse a request while
@@ -371,12 +468,11 @@ change under rule 2 and
    failure, constructor panic, C2 and C3. The one exception is a
    cancellation point, where the conduit is dropped instead. That
    still releases it, because nothing else holds it yet.
-7. **A poll task leaves `while_open_state` only when a join of it has
-   returned.** A caller dropped mid-join leaves the task registered and
-   cancelled, for the next `cancel_while_open` to join. Only the 5 s
-   bound aborts one (decision 6). The one exception is the
-   abandoned-teardown corner in §Deliberately left, which open point 2
-   would close.
+7. **A request abandoned after its send owes its reply** (PR 0). The
+   next request on that conduit sends, discards the owed frames, and
+   only then reads its own reply. A receive timeout owes nothing; its
+   late reply, if one comes, is left to the reconnect that the timeout
+   raises.
 
 ### Lock order
 
@@ -396,32 +492,15 @@ cell's `RwLock` → the `Connection` command lock.
   same as today, and causes no inversion.
 - `reconnect_now` takes `supervisor_state` alone, then awaits its
   oneshot with no lock held.
-- Below `supervisor_state`, `while_open_state` is the one lock held
-  across a join (decision 6). `acquire_lock` above it, and
-  `attempt_reconnect_lock` outside the order, are held across joins too.
-  `cancel_while_open` holds it while it joins the poll task: up to 5 s,
-  then until an aborted task reaches its next yield.
-  - The join cannot wait on its own lock. `WhileOpen` holds an
-    `Arc<Connection>`, a token and (after PR 3) the debt's atomics, so
-    its requests take only the command lock. Nothing that holds the
-    command lock waits on `while_open_state`.
-  - Nothing contends for it in production. Every other taker either
-    holds `acquire_lock` with the supervisor already retired (the
-    publishes, `release_any_held_conduit`, `shutdown`, the LazyAcquire
-    1→0), or is the supervisor's child, which the retire has ended.
-  - A `while_open` body that calls `acquire`, `start` or `shutdown` on
-    its own transport waits on `acquire_lock` while a teardown holding
-    it joins the body. The 5 s bound and its abort break that, as they
-    do today.
+- PR 0 adds no lock. The owed count lives with the conduit, behind the
+  `Connection` command lock, so only a holder of that lock reads or
+  changes it.
 
 **Why the unbounded join cannot deadlock.** While `shutdown` waits, it
 holds only `acquire_lock`. A child blocked on any async wait, including
 a hook that calls `acquire()`, is `Pending`, so the supervisor's
-cancel arm drops it at once. That includes a child inside its own
-`cancel_while_open`: it holds `while_open_state` there, but it is
-`Pending` on the join, so the abort releases the lock. Only a stall
-that never yields extends the wait, and such a stall holds the port
-whatever the teardown does.
+cancel arm drops it at once. Only a stall that never yields extends
+the wait, and such a stall holds the port whatever the teardown does.
 
 ### The attempt and its three commit points
 
@@ -477,14 +556,12 @@ let current = !lifecycle.is_cancelled() && slot.as_ref().is_some_and(|c| Arc::pt
      waiting;
    - inside the supervisor: the biased cancel arm aborts the child,
      awaits it, and breaks, which drops the kick inbox;
-   - a child aborted inside its own `cancel_while_open` leaves the
-     cancelled poll task registered.
+   - a child aborted inside its own `cancel_while_open` aborts the poll
+     task through `AbortDetachedGuard`. A request that abort cuts off
+     owes its reply (PR 0), and step 7's first stop discards it.
 5. Store `available = false` again. This re-store undoes a publish
    that landed between step 2 and the cancel; PR 1 pins it.
 6. Run `cancel_while_open`. Nothing can respawn the poll task any more.
-   It joins whatever is registered, including a task an aborted child
-   left. A cooperative poll is joined once it finishes its tick. A
-   stubborn one gets a fresh 5 s and then the abort.
 7. Read the cell without taking it, run `Hooks::shutdown` on a clone,
    and close that clone. If the hook panics, the slot still names the
    conduit.
@@ -498,50 +575,12 @@ let current = !lifecycle.is_cancelled() && slot.as_ref().is_some_and(|c| Arc::pt
 `release_any_held_conduit`, which runs before a cold start or a lazy
 0→1, follows the same order: take the supervisor, retire it, run
 `cancel_while_open`, reset `last_attempt`, then take the slot and close
-what it holds. Its `cancel_while_open` also joins a task left by an
-aborted child or an abandoned teardown.
+what it holds.
 
-`cancel_while_open` after PR 8 (decision 6). It has five callers:
-- replacing a conduit;
-- abandoning a replacement;
-- opening over a conduit left behind;
-- shutting down;
-- releasing the last client's conduit in LazyAcquire.
-
-```rust
-async fn cancel_while_open(&self, context: &'static str) {
-    let mut registered = self.while_open_state.lock().await;
-    let Some((handle, cancel)) = registered.as_mut() else { return };
-    cancel.cancel(); // before the join, so a caller dropped inside it still leaves the task cancelled
-    match tokio::time::timeout(WHILE_OPEN_TEARDOWN_TIMEOUT, &mut *handle).await {
-        Ok(Ok(())) => {}
-        Ok(Err(join_err)) => warn!(error = %join_err, context, "while_open task panicked or was cancelled before its teardown"),
-        Err(_) => {
-            handle.abort(); // the only abort of a poll task: it has outlived the bound
-            let _ = (&mut *handle).await;
-            warn!(timeout = ?WHILE_OPEN_TEARDOWN_TIMEOUT, context, "while_open task did not respond to cancellation; aborted");
-        }
-    }
-    *registered = None; // no await since the join returned: a finished JoinHandle polled again panics
-}
-```
-
-How it behaves:
-
-- **The clear happens on the same poll as the join's `Ready`.** Tokio
-  panics with "JoinHandle polled after completion" if a finished handle
-  is joined again. In a scratch run, omitting the clear made three
-  existing tests panic.
-- **An earlier abort-then-await that was itself dropped needs no new
-  branch.** It leaves a handle that the next join resolves at once as
-  `Err(Cancelled)`, which is the `Ok(Err)` arm.
-- **The publishes keep their plain assignment.** In production no
-  publish finds a registration: every publish path runs a
-  `cancel_while_open` first, and nothing registers in between. The one
-  exception predates this change. A stale child of an abandoned
-  teardown can register after the next cold start's quiesce, which
-  needs a multi-thread race of microseconds. Because of it, a
-  `debug_assert!` there could fail, so none is added (open point 2).
+`cancel_while_open` itself is unchanged (decision 6). It takes the
+handle out of `while_open_state` and joins it inside
+`AbortDetachedGuard`, which aborts the task if the caller is dropped
+mid-join. The 5 s bound aborts a task that has not returned.
 
 ```rust
 async fn retire_supervisor(&self, sup: Supervisor<C>, context: &'static str) {
@@ -620,7 +659,7 @@ untouched, which honours the investigation's warning not to gate them.
 A wake it acts on still passes through `wait_out_cadence`, the same as
 a wire wake. A stop refused just after a recovery is therefore replayed
 when the interval since that recovery's attempt has run out, not at
-once (decision 4; open point 5).
+once (decision 4). Skipping the floor here was rejected on review.
 
 ### `reconnect_now` as a test-only hook
 
@@ -932,6 +971,109 @@ alike. It also leaves `WhileOpen` constructed in one place,
   - W4 after-drain → PR 5;
   - W1, W2, W3 and Lazy → PR 8.
 
+### PR 0 — `fix(shared-transport): a request abandoned after its send owes its reply, and the next request discards it`
+
+**Scope** (decision 7).
+- `Connection`'s mutex guards the transport and an owed-frame count
+  together, so the count lives and dies with the conduit. A fresh
+  conduit is a fresh `Connection`, and starts at zero.
+- In `request_timed`, a guard owns the lock for the whole exchange. It
+  is armed when the send starts. If the future is dropped while the
+  guard is armed, its `Drop` adds one to the count before the lock is
+  released, so the next holder sees it.
+- After the send, the exchange reads and discards owed frames,
+  decrementing the count as each one arrives. A drop part-way through
+  therefore leaves the frames not yet read still owed, plus one for
+  itself. Discarded frames are not decoded and do not count against
+  `max_skip`.
+- The guard is disarmed when the exchange returns:
+  - with its reply;
+  - with a codec error or `SkipExhausted`, which have consumed the
+    frame they judged;
+  - with a send or receive error. That one already raises a reconnect,
+    and decision 7 has a receive timeout owe nothing.
+
+  A receive error while discarding leaves the frames not yet read still
+  owed, and adds nothing for this exchange.
+- A request dropped while it waits for the lock owes nothing: it has
+  not sent.
+- Each discarded frame gets the existing `wire recv` trace event,
+  marked as discarded, and the exchange logs one `debug!` with the
+  number it discarded.
+
+**Tests.** They need a device double that behaves like a line: it
+queues each answer when the frame is written, and a read parks
+*before* it pops, so a dropped read leaves its answer for the next
+reader. It offers `park_next_read`, `wait_inside_read` and
+`release_read`. Neither `EchoTransport` nor `ScriptedReplies` can do
+this: the first keeps a single slot that each send overwrites, and the
+second ignores sends.
+- `Connection::new` is crate-private, so the `connection.rs` tests get
+  the double in-module, next to `ScriptedReplies`.
+- `tests/common` gets it as `LineTransport` and `LineFactory`, for the
+  `while_open` test below and for PR 8's.
+- The torn-frame test instead runs a real `SerialFrameTransport` over a
+  `tokio::io::duplex` pair, so it exercises the `BufReader`.
+- `connection.rs::tests::a_request_dropped_while_awaiting_its_reply_leaves_it_for_the_next_request_to_discard`.
+  A is dropped while parked in its read. B returns B's answer.
+
+  Mutation: never arm the guard → B returns A's answer.
+- `…::a_request_dropped_part_way_through_a_frame_discards_the_rest_of_it`
+  (duplex). The device writes half of A's answer, A is dropped, and the
+  device writes the rest and then B's answer. B returns B's answer.
+- `…::a_request_dropped_while_skipping_still_owes_its_own_reply`
+  (`max_skip` 1). A is dropped while reading the frame after a skipped
+  one. B returns its own answer.
+- `…::a_request_dropped_while_discarding_keeps_the_count`. With one
+  frame owed, B is dropped while discarding it. C discards two frames
+  and returns its own answer.
+- `…::a_request_dropped_before_it_takes_the_lock_owes_nothing`. B is
+  dropped while A holds the lock. C returns its own answer.
+
+  Mutation: arm the guard before the lock → C times out.
+- `…::a_receive_timeout_owes_nothing`. The device never answers A, so
+  A times out. B returns its own answer.
+
+  Mutation: owe a frame on a timeout → B discards its own answer and
+  times out.
+- `…::an_owed_reply_that_never_comes_makes_the_next_request_time_out_and_signal`.
+  A is dropped after its send, and the device never answers it. B
+  discards its own answer, times out, and raises the reconnect signal.
+  This pins "counting too many heals".
+- `…::discarded_frames_do_not_count_against_the_skip_budget`
+  (`max_skip` 1, one frame owed, then one unmatched frame). The request
+  returns its own answer.
+- `tests/while_open.rs::a_poll_aborted_mid_request_leaves_the_shutdown_hook_its_own_reply`
+  (`start_paused`). This is R1 (§Deliberately left), today's route
+  through the 5 s bound.
+  The poll is parked in its read, which has no timeout of its own, when
+  `shutdown` runs. So `cancel_while_open`'s join reaches the bound and
+  aborts it mid-request. The shutdown hook sends
+  `BYE` and records what it reads back. It asserts `BYE`.
+
+  Mutation: never arm the guard → the hook reads `POLL`.
+
+**Docs.**
+- `request_timed`'s rustdoc gains a cancel-safety section: what is
+  owed and when, and that a receive timeout owes nothing.
+- The `WireTiming` doc: a frame left over from an abandoned request is
+  now discarded; one that arrives after its request timed out can still
+  answer the next request.
+- The `Codec` trait doc: owed frames are discarded before `matches` and
+  `max_skip` see anything.
+- The crate's module rustdoc gains invariant 7.
+- [star-adventurer-gti.md](../services/star-adventurer-gti.md), where
+  it discusses a stale ack: a reply left by an abandoned request is
+  discarded; a duplicated datagram, or a reply that arrives after its
+  request timed out, still is not.
+- `watcher_poll_with_retry`'s doc in `star-adventurer-gti` claims the
+  backoff lets the read "flush whatever junk". No code reads during the
+  sleep, so the comment is corrected.
+
+**Hardware.** None. With nothing owed, an exchange sends and reads
+exactly as it does today, and only an abandoned request makes anything
+owed. The tests drive every owed path.
+
 ### PR 1 — `test(shared-transport): pin the post-join re-store and the reconnect guarantees that already hold`
 
 **Scope.** Tests only, and green on `d201506c`. This PR is the net
@@ -972,7 +1114,9 @@ behaviour, not the transport's.
   Mutation: delete `publish_recovery`'s re-read and undo → red.
 - `star-adventurer-gti` `manager.rs::tests::a_stale_poll_reply_ahead_of_the_safety_stop_reads_as_not_asserted`.
   It pins what §Deliberately left says about a stale poll reply ahead
-  of the safety stop. PR 8 removes one route to that, not all of them.
+  of the safety stop. PR 0 removes every route that abandons a request,
+  but not a stray it cannot count: a late reply after a receive
+  timeout, or a duplicated UDP datagram. This pin covers those.
   A transport that wraps `CapturingMockFactory`'s hands
   back one stale `:j` reply before the mock's own replies. A
   `SharedTransport` on it has an `on_last_disconnect` hook that calls
@@ -1215,8 +1359,7 @@ the connect path. GTi lib tests and BDD run with `--features mock`.
   - the transport is available again within that interval plus a
     margin.
 
-  This pins the floor that decision 4 keeps. If open point 5 is taken,
-  the first assertion inverts.
+  This pins the floor that decision 4 keeps.
 - `a_panicked_disconnect_hook_is_replayed_without_waiting_for_the_tick`
   (`last_disconnect_panicking_on(2)`): covers the guard's raise.
 
@@ -1335,15 +1478,9 @@ evidence goes in the PR description:
 - The supervisor's kick handling, including skipping closed replies.
 - `wait_out_cadence` reduced to one read and made preemptible.
 - `attempt_reconnect(lifecycle)` with C1, C2 and C3.
-- `cancel_while_open` as in §Teardown (decision 6). It:
-  - holds `while_open_state` across the bounded join;
-  - cancels before the join;
-  - clears the entry on the same poll as the join returns.
-
-  The publishes are unchanged.
+- `cancel_while_open` is unchanged (decision 6).
 - Deletions:
   - `ManualReconnectGuard`, `supervisor_live` and the dead re-read;
-  - `AbortDetachedGuard`, with its `Drop` and its `warn!`;
   - `reconnect_now`'s own flag stores, publish and clear;
   - `Session`'s LazyAcquire "reopens once every session is released"
     arm, and `is_service_lifetime`, both unreachable by construction.
@@ -1404,70 +1541,24 @@ reachable only through `reconnect_now`.
   - `a_kicked_attempt_that_panics_is_reported_and_retried`.
 - Group mutation: re-inline the attempt into `reconnect_now` → the W1,
   W2 and W3 tests go red.
-- The poll task is not aborted mid-request (decision 6):
-  - `reconnect.rs::a_teardown_that_interrupts_an_attempt_lets_the_poll_finish_its_request`.
-    Runtime: current_thread on the real clock. Under `start_paused`,
-    auto-advance would fire step 6's 5 s join, and its abort strands
-    the reply.
+- The cancel arm's route to a stranded reply, made harmless by PR 0
+  (decision 6):
+  `reconnect.rs::a_teardown_that_interrupts_an_attempt_leaves_the_hook_its_own_reply`.
+  It uses PR 0's `LineTransport` and a shutdown hook that sends `BYE`
+  and records what it reads back. PR 3's `PokedPoll` gains `poke()`,
+  which does not wait. Steps:
+  1. `start()`, `park_next_read`, `poke`, `wait_inside_read`.
+  2. Spawn `reconnect_now()`. Its attempt's `cancel_while_open` joins
+     the parked poll.
+  3. Spawn `shutdown()` and await the kick: `Err` with "supervisor
+     stopped". This is the precondition: the cancel arm aborted the
+     child inside its `cancel_while_open`, and `AbortDetachedGuard`
+     aborted the poll mid-request.
+  4. `shutdown` returns `Ok`.
 
-    It needs three new helpers in `tests/common`:
-    - **A `LineTransport` and `LineFactory`.** The device queues each
-      answer in a FIFO when the frame is written. A read parks *before*
-      it pops, so a dropped read leaves its answer for the next reader.
-      It offers `park_next_read`, `wait_inside_read` and
-      `release_read`. Neither `EchoTransport` nor the investigation's
-      `ScriptedTransport` can do this: each keeps a single `last_sent`
-      slot.
-    - **A shutdown hook** that sends `BYE` and records what it reads
-      back.
-    - **Three additions to PR 3's `PokedPoll`:**
-      - `poke()`, which does not wait;
-      - a bounded `next_result()`;
-      - `wait_cancelled_mid_request()`. The body uses a `biased` select
-        with the request first, and finishes the request it was
-        cancelled in.
+  Asserts: the hook read `Ok(BYE)`.
 
-    Steps:
-    1. `start()`, `park_next_read`, `poke`, `wait_inside_read`.
-    2. Spawn `reconnect_now()`, then `wait_cancelled_mid_request()`.
-    3. Spawn `shutdown()` and await the kick: `Err` with "supervisor
-       stopped". This is the precondition: the cancel arm aborted the
-       child mid-join.
-    4. `release_read()`; `shutdown` returns `Ok`.
-
-    Asserts:
-    - the hook read `Ok(BYE)`;
-    - `next_result()` is `Ok(POLL)`;
-    - the poll exited on its own and was not dropped.
-
-    Mutation: take the handle before the join and abort it from a drop
-    guard, as today → the hook reads `POLL`. In a scratch run, today's
-    code with the `reconnect_now` task aborted standing in for the
-    cancel arm read `[POLL]` against `[BYE]` with the change.
-
-    The test holds only if the cancel arm answers the kick *after*
-    `attempt.await`. If it answers first, step 3 passes before the
-    abort lands, and the test passes under the mutation.
-  - `shared.rs::tests::a_join_that_returns_clears_the_registration_in_the_same_poll`.
-    Runtime: current_thread. A cooperative `while_open` sets `exited` on
-    cancel. Steps:
-    1. Pin `st.cancel_while_open("t")`.
-    2. Poll it once through a `biased` select against `ready(())`. It
-       must be `Pending`.
-    3. `yield_now` until `exited`.
-    4. Poll it again. It must be `Ready`.
-    5. Drop it, run `cancel_while_open("again")`, then `shutdown()`.
-
-    Mutations:
-    - An await between the join's return and the clear → the second
-      poll is `Pending`, red. Nothing else catches this. In a scratch
-      run the whole existing suite, the test above and the rewritten
-      abandoned-teardown test all stayed green under it.
-    - Omit the clear → red here, and three existing tests panic with
-      "JoinHandle polled after completion".
-  - A test that tears down while an attempt is inside
-    `cancel_while_open` must let that poll finish before it awaits
-    `shutdown`. Otherwise step 6 costs it a second 5 s and an abort.
+  Mutation: disarm PR 0's guard → the hook reads `POLL`.
 
 **Rewritten.**
 - `reconnect_now_before_start_returns_slot_empty_error` is replaced by
@@ -1476,35 +1567,9 @@ reachable only through `reconnect_now`.
   becomes the cadence-wait kick test.
 - `a_manual_reconnect_that_unwinds_with_no_supervisor_clears_the_retry`
   becomes the abandoned-shutdown refusal.
-- `an_abandoned_teardown_does_not_leave_the_poll_task_running` becomes
-  `an_abandoned_teardown_leaves_the_poll_task_to_the_next_one`. It uses
-  `start_paused` and `stubborn_hooks_recording_their_drop`. Steps:
-  1. `start()`, then wait for `started`.
-  2. Expire `timeout(50 ms, st.shutdown())` inside step 6's join.
-  3. Run a watch window (testing.md §6.9): 40 × 5 ms, asserting
-     `!dropped` every time.
-  4. Run a second `st.shutdown()`. It finds the task still registered
-     and aborts it at the 5 s bound, on virtual time.
-
-  Asserts: `dropped`, `!exited`, and `dropped_count() == 1`.
-
-  Mutations:
-  - Restore `AbortDetachedGuard` → red inside the window.
-  - Take the handle and let it go without aborting → red at the final
-    `dropped`.
-
-  A one-off `!dropped` check would fail under today's code only by
-  scheduling accident, which is why the test needs the window.
-- **Unchanged, and green with the change in a scratch run (139 of
-  140; the 140th is the test above):**
-  - `stubborn_while_open_task_is_aborted_after_timeout`;
-  - `shutdown_with_stubborn_while_open_aborts_after_timeout`;
-  - `stubborn_while_open_is_aborted_during_reconnect`.
-
-  They pin the bound's own abort, which stays. Only their comments
-  change. In `tests/common`, the docs on `DropRecorder` and
-  `stubborn_hooks_recording_their_drop` gain a third case: a task left
-  registered for the next teardown.
+- `an_abandoned_teardown_does_not_leave_the_poll_task_running` is driven
+  through `AbortDetachedGuard` with `timeout(50 ms, st.shutdown())` and
+  a stubborn poll task.
 - `a_reconnect_that_loses_its_slot_closes_the_replacement` is renamed
   and recommented: the attempt is now dropped inside `open`, with the
   distinct "supervisor stopped" text.
@@ -1533,19 +1598,11 @@ comments change.
   - the uniform "the opener closes what it abandons" sentence.
 - Rustdoc for `reconnect_now`, `attempt_reconnect`,
   `commit_replacement` and `acquire`; the field docs; and the
-  `PostPublishGuard` example. A poll task whose guard cancels it is now
-  joined by whoever next runs `cancel_while_open`.
-- `cancel_while_open`'s rustdoc:
-  - it has five callers, not "the three";
-  - the task stays registered until its join returns;
-  - holding `while_open_state` across the join cannot deadlock.
-- `WHILE_OPEN_TEARDOWN_TIMEOUT`'s doc: its abort is the only abort of a
-  poll task, and it can still drop a request in flight.
+  `PostPublishGuard` and `AbortDetachedGuard` examples.
+- `cancel_while_open`'s rustdoc: it has five callers, not "the three".
 - `session.rs` around the request path, and the `Hooks` doc. Hooks and
   `while_open` bodies must not call `acquire`, `start` or `shutdown` on
-  their own transport. In `Hooks::while_open`, "aborted outright if the
-  teardown doing that is itself abandoned" becomes "left registered,
-  cancelled, for the next teardown to join".
+  their own transport.
 - [workspace.md](../workspace.md), shared-transport row: one clause on
   single ownership.
 
@@ -1628,8 +1685,9 @@ names the mock test that covers that phase instead.
   `NotAsserted` by design (§Deliberately left). It is a finding only
   when the log shows no replacement open began before the shutdown
   hook. A teardown rarely lands inside the attempt's poll join, which
-  lasts about one tick on a healthy link, so the mock test above is the
-  evidence for decision 6.
+  lasts about one tick on a healthy link. So the evidence that an
+  aborted poll leaves the hook its own reply is the mock tests: PR 0's
+  `while_open` test, and PR 8's cancel-arm test.
 - **rig2 (Windows), `dsd-fp2`.** rig2 carries no GTi, so the Windows
   leg runs the shared-transport device rig2 does have: the FP2 panel,
   on COM4. It follows the same procedure and the same counting. This
@@ -1659,30 +1717,34 @@ names the mock test that covers that phase instead.
 Record the outcome in the PR description. `docs/validation/` holds
 ConformU records, and these runs are not ConformU runs.
 
-PRs 1, 2, 3, 5, 6 and 7 rest on mock evidence. None of them adds wire
-traffic or changes what the connect path sends.
+PRs 0, 1, 2, 3, 5, 6 and 7 rest on mock evidence. None of them sends
+anything new or changes what the connect path sends. PR 0 only reads
+and discards frames a device already sent.
 
 ## Follow-ups and what is deliberately left
 
 ### Issues to file
 
-- **Proposed:** make `Connection::request_timed` cancel-safe for a codec
-  that cannot tell a reply from a stray frame. It would record an
-  exchange abandoned after its send, or timed out on its receive, and
-  then either discard pending input before the next send or poison the
-  conduit. That one change closes every remaining stale-reply route
-  below at the source. It is `Connection` work, not lifecycle work.
-- **Optional:** a synchronous commit lock around `publish_recovery`'s
-  check-and-stores and the cleanup's record (the `qhy-camera` pattern),
-  which would close the W6 transient.
-- **Issue hygiene on #1243**, done by hand:
-  - "neither window leaks a port" has been false since `6fab4d02`;
-  - comment 6 (W6) was closed by #1286;
-  - add W4b and W1-LEAK to the scope;
-  - record why single ownership replaces the counter;
-  - record bug B as "no observable change; explicit close for
-    consistency", plus the constructor-panic hardening in its second
-    commit.
+- **`Connection::request_timed` cancel-safety** was proposed here as an
+  issue. On review (2026-10-04) it moved into the plan as PR 0
+  (decision 7).
+- **Filed on 2026-10-04**, both found during this plan's review and
+  outside its scope:
+  - [#1398](https://github.com/rusty-photon/rusty-photon/issues/1398):
+    a `Session::close` dropped while it waits on `acquire_lock` has
+    already taken its handle, so neither it nor `Drop` lowers the
+    count. The last-client stop then never runs again on that
+    instance.
+  - [#1399](https://github.com/rusty-photon/rusty-photon/issues/1399):
+    TLS serving stops accepting at shutdown but does not drain open
+    connections, unlike plain HTTP, so `shutdown` can overlap a request
+    still in flight.
+- **Not filed** (decided on review, 2026-10-04): a synchronous commit
+  lock around `publish_recovery`'s check-and-stores and the cleanup's
+  record (the `qhy-camera` pattern). It would close the W6 transient,
+  which nothing acts on.
+- **Issue hygiene on #1243:** done on 2026-10-04
+  ([comment](https://github.com/rusty-photon/rusty-photon/issues/1243#issuecomment-5982697182)).
 
 ### Deliberately left
 
@@ -1690,47 +1752,39 @@ traffic or changes what the connect path sends.
   `is_available()` can still read true for a few instructions inside
   `publish_recovery`. The debt, which `Session` and (after PR 3)
   `WhileOpen` both consult, is the authority, so this is benign.
-- **A stale reply ahead of a safety stop.** `Connection::request_timed`
-  is not cancel-safe. Nothing guards the gap between `send_frame` and
-  the receive, and nothing discards stray input before a send. Take any
-  exchange dropped in that gap, or timed out in its receive: its reply
-  arrives later and answers the next request on the conduit. With the
-  default `max_skip` of 0 nothing is skipped: a frame `matches` rejects
-  is an error, not a skip. Only qhy-focuser raises `max_skip`.
-  `SkywatcherCodec` also keeps the default `matches`, so it cannot even
-  tell the frame is not its own.
+- **A stray reply that PR 0 cannot count.** PR 0 counts what an
+  abandoned request owes (decision 7). That closes every route that
+  abandons a request:
+  - **R1**, the 5 s bound's abort of a poll that has not returned. GTi
+    checks its token only between ticks, and a slow link can keep one
+    tick going past 5 s.
+  - **R3**, an HTTP handler dropped when its client goes away. The
+    pinned ascom-alpaca fork spawns only the Platform 7 `connect` and
+    `disconnect` calls, and every other device call runs inline in its
+    handler. This is from reading the code; it has not been reproduced.
+  - **R4**, an attempt aborted in the middle of its replay, after C3,
+    which left a stop's `=\r` ack on the published conduit.
+  - An attempt aborted inside its own `cancel_while_open`, whose
+    `AbortDetachedGuard` aborts the poll task mid-request.
 
-  PR 8 removes one route to this: a teardown that aborts an attempt
-  inside its own `cancel_while_open`, which today aborts the poll task
-  in the middle of a tick (decision 6). These routes remain:
-  - **R1, the 5 s bound's own abort.** It aborts a poll that has not
-    returned 5 s into a join of it, mid-request or not. GTi checks its
-    token only between ticks. A tick is up to four requests, each bounded by a write and a
-    read timeout (`command_timeout`, 2 s by default, each), and it ends at its first
-    error. All six poll loops select without `biased`. So once a tick
-    outlasts `polling_interval` (200 ms), another tick can start after
-    the cancel. A link that answers slowly can pass 5 s within one
-    tick. A healthy link cannot reach the bound.
-  - **R2, a late reply after a receive timeout.** The serial and UDP
-    transports time a read out without clearing input. The timeout is
-    a wire failure, so the supervisor cycles the conduit. Until it
-    does, a poll, a 1→0 hook or a shutdown can read the late frame.
-    C1 deliberately leaves that conduit live for the shutdown hook. The
+  Two kinds of stray are not counted:
+  - **R2, a late reply after a receive timeout.** A timeout owes
+    nothing (decision 7). The serial and UDP transports time a read out
+    without clearing input. The timeout is a wire failure, so the
+    supervisor takes the transport out of service at once, refusing
+    sessions with `Reconnecting`, and then cycles the conduit. Until it
+    does, a poll, a 1→0 hook or a shutdown can read the late frame. C1
+    deliberately leaves that conduit live for the shutdown hook. The
     late frame can be an ack to a client's motion command.
-  - **R3, a client request dropped mid-exchange.** The pinned
-    ascom-alpaca fork spawns only the Platform 7 `connect` and
-    `disconnect` calls; every other device call runs inline in its
-    handler. A handler future dropped when its HTTP client goes away
-    therefore drops the request. This is from reading the code; it
-    has not been reproduced.
-  - **R4, an attempt aborted in the middle of its replay, after C3.**
-    It leaves a stop's `=\r` ack on the published conduit. PR 3's
-    gate keeps the respawned poll off the wire, because the debt was
-    recorded before the respawn and the aborted replay never paid it.
-    So the shutdown hook's `:L1` reads that ack. Decision 6 does not
-    change this route (open point 3).
+  - **A frame no request asked for:** a duplicated UDP datagram, or
+    qhy-focuser's unsolicited position frames. qhy's `matches` on
+    `cmd_id` absorbs the latter.
 
-  On the GTi, what the stale frame is decides the outcome:
+  Open points 3 (R4) and 4 (`biased;` selects in the poll loops, to
+  narrow R1) were dropped on review on 2026-10-04, because PR 0 closes
+  both routes.
+
+  On the GTi, what an uncounted stray is decides the outcome:
   - **A stale payload frame.** Every poll reply carries a payload, and
     `Response::decode` rejects any payload on a stop's ack. The stop
     that reads the frame fails to decode. Every later stop reads the
@@ -1740,7 +1794,8 @@ traffic or changes what the connect path sends.
     happen: a displaced reply means the stale frame was read, and
     reading it failed the verdict. A partial frame fails framing the
     same way.
-  - **A stale ack (R2, R3, R4).** It shifts the verdict by one frame.
+  - **A stale ack (R2, or a duplicated datagram).** It shifts the
+    verdict by one frame.
     The verdict then covers the replies to `:L1` and `:L2`, and `:K1`'s
     own reply is never read. A false `Asserted` needs `:K1` alone to be
     refused after both `:L` stops were acknowledged.
@@ -1755,16 +1810,20 @@ traffic or changes what the connect path sends.
 
   PR 1 pins the payload case.
 
-  A conduit in this state is closed right after the hook, so the offset
-  goes no further, unless the leftover outlives the close. The mock's
-  reply queue does outlive it: there, the next open's `:e1` read the
-  leftover `=\r` and was refused as the wrong device. That failure is
-  loud, not a silent offset. Whether a real serial port keeps a reply
-  across a close and reopen is not verified. UDP cannot, because GTi
-  binds a fresh ephemeral port on each open. After PR 8,
-  `release_any_held_conduit` can strand a reply before a cold open only
-  through R1. The `Connection` issue proposed above closes all four
-  routes.
+  A conduit carrying a stray at teardown is closed right after the
+  hook, so the offset goes no further, unless the leftover outlives the
+  close. The mock's reply queue does outlive it: there, the next open's
+  `:e1` read the leftover `=\r` and was refused as the wrong device.
+  That failure is loud, not a silent offset. Whether a real serial port
+  keeps a reply across a close and reopen is not verified. UDP cannot,
+  because GTi binds a fresh ephemeral port on each open.
+- **An owed reply that never comes.** The next request discards its
+  own reply in its place and times out, which raises a reconnect
+  (decision 7). The replacement conduit starts with nothing owed. If
+  that request is GTi's safety stop, `:L1` still goes out at once,
+  `:L2` goes out one read timeout late, and the verdict is
+  `NotAsserted`, so the debt replays the stop. It needs an abandoned
+  request and the loss of its reply together.
 - **An abandoned (dropped) teardown future.** Not reachable in
   production: `BoundServer` and the `build()` rollback always await
   `shutdown`. After PR 8, a cancelled supervisor that was detached this
@@ -1772,16 +1831,13 @@ traffic or changes what the connect path sends.
   `attempt_reconnect_lock` serialises it against the next child. A port
   collision with a cold open on the same instance is still possible,
   and is not addressed.
-  - A cancelled poll task stays registered (decision 6). A stubborn one
-    runs until the next `start`, `shutdown` or lazy 0→1 joins it. If the
-    instance is dropped first, it runs on, detached, holding its
-    `Arc<Connection>` and so the port.
   - Two corners predate PR 8 and are unchanged by it. Each needs a
     multi-thread race of microseconds against the detached supervisor's
     abort:
     - The stale child can register its poll after the next cold
       start's quiesce, and that start's publish then overwrites it,
-      detaching it. Open point 2 would close this.
+      detaching it. Respawning inside C3 would close it, and was
+      rejected on review (§Rejected alternatives).
     - Past C3, the stale child's `commit_replacement` can cancel the
       *next* lifecycle's poll task. Closing that would need
       `commit_replacement` to cancel only its own token.
@@ -1807,42 +1863,7 @@ traffic or changes what the connect path sends.
    has no GTi. The link is dropped with `pnputil`, or a UPBv2 port if
    the FP2 hangs off one. Which one is confirmed on rig2 before PR 4's
    leg. The on-site fallback is the `win11` guest with the PPBA
-   (§Validation).
-2. **Optional: respawn the poll task inside C3.**
-   1. Take `while_open_state`, then `slot`, the order the cold-start
-      and lazy publishes already use.
-   2. Check `!cancelled && ptr_eq`.
-   3. Write the cell, record the owed stop, spawn the poll task and
-      register it.
-   4. Release both.
-
-   This closes the stale child's late registration (§Deliberately
-   left, abandoned teardown). If it is taken, only then can the
-   publishes assert that nothing is registered. That assert must sit
-   inside the `current` branch: a stale, cancelled child reaches the
-   section after the new lifecycle has registered. PR 3's sentence
-   about a cancellation at the respawn's lock would change.
-3. **R4, an attempt aborted in the middle of its replay.** Three
-   options:
-   - (a) leave it with the text in §Deliberately left;
-   - (b) have the supervisor's cancel arm await, rather than abort, a
-     child that is past C3. That is bounded by the replay's requests
-     times the write and read timeouts, plus `commit_replacement`'s
-     bounded poll join and the close;
-   - (c) add a second PR 1 GTi pin, for the verdict after a stale ack.
-4. **`biased;` cancel-first selects in the six poll loops.** This would
-   narrow R1. It is a one-line change per service, outside this crate.
-5. **Optional: let a `stop_owed` wake skip the cadence floor.** It
-   would skip the floor only when the last attempt published a
-   recovery. A failed attempt would keep the floor, so a stop that keeps
-   failing on a fresh link still cannot cycle the port at open speed.
-   That would make the replay of a stop refused just after a recovery
-   immediate, not up to 5 s later.
-
-   The cost: a client that connects and disconnects in a loop, against
-   a device that refuses its stop and then accepts the replay, would
-   cycle the port at the client's rate. PR 5 would carry it, and its
-   recent-attempt test would invert.
+   (§Validation). This is a fact to check on rig2, not a decision.
 
 Settled on review (2026-10-03):
 - bug A records the owed stop before the respawn;
@@ -1852,4 +1873,21 @@ Settled on review (2026-10-03):
   `Cargo.toml` (the root's or a member's), with
   `scripts/repin-bazel-lock.sh` and a pre-commit check
   ([#1391](https://github.com/rusty-photon/rusty-photon/pull/1391));
-- "never abort a poll task mid-request" is part of PR 8 (decision 6).
+- "never abort a poll task mid-request" is part of PR 8 (decision 6,
+  revised on 2026-10-04).
+
+Settled on review (2026-10-04):
+- `Connection::request_timed` cancel-safety lands first, as PR 0, by
+  owing and skipping; a receive timeout owes nothing (decision 7);
+- decision 6 is undone: after PR 0 an abort mid-request strands
+  nothing, so `cancel_while_open` and `AbortDetachedGuard` stay;
+- open point 2, respawning the poll task inside C3, is rejected
+  (§Rejected alternatives);
+- open point 3, R4, is closed by PR 0, and needs neither a cancel arm
+  that waits nor a second GTi pin;
+- open point 4, `biased;` selects in the poll loops, is dropped: it
+  only narrowed R1, which PR 0 closes;
+- open point 5, a `stop_owed` wake that skips the cadence floor, is
+  rejected (§Rejected alternatives);
+- #1398 and #1399 are filed; the W6 commit lock is not
+  (§Issues to file).
