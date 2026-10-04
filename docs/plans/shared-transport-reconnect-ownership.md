@@ -92,7 +92,7 @@ The order follows production risk:
 - **PR 7** turns "nothing in production calls `reconnect_now`" from a
   grep result into a compile error. It is independent of the others
   and can move earlier at no cost. It edits the crate's `Cargo.toml`,
-  so it needs `scripts/repin-bazel-lock.sh`, which arrives with
+  so it needs `scripts/repin-bazel-lock.sh`, merged in
   [#1391](https://github.com/rusty-photon/rusty-photon/pull/1391).
 - **PR 8** closes W1, W2, W3 and the Lazy variant in the code, and
   stops a teardown from aborting the poll task mid-request (decision 6).
@@ -185,11 +185,16 @@ change under rule 2 and
    `stop_owed` is a separate `Notify`:
    - The supervisor acts on it only while `reconnecting` is set, and
      never writes a flag for it.
-   - While a debt stands, `reconnecting` is always set, so the replay
-     is still prompt.
-   - `UnlandedStateGuard` raises it as well, so a panicked stop, which
-     today waits for the next link failure or the next tick, is now
-     replayed promptly too.
+   - While a debt stands, `reconnecting` is always set, so the wake is
+     never ignored.
+   - `UnlandedStateGuard` raises it as well. A panicked stop, which
+     today waits for the next link failure or the next tick, wakes the
+     supervisor at once too.
+   - The wake does not skip the cadence floor. If no attempt started
+     within the last reconnect interval, the replay starts at once.
+     Otherwise it waits out the rest of that interval: at most one
+     interval, which is 5 s in production, because no service changes
+     the default. Skipping the floor is open point 5.
 
 5. **Two bug fixes ride along.**
 
@@ -540,6 +545,16 @@ On a kick, the supervisor:
 4. replies.
 
 A kick that arrives during the cadence wait cuts the wait short.
+
+Kicks are not coalesced. A kick queued while an attempt runs gets its
+own attempt, after the running one has published. In between, the
+transport is advertised on a conduit that is live and handshaken, which
+is true at that moment. The queued kick then takes the transport out of
+service before its attempt closes that conduit, exactly as a wire wake
+right after a recovery would. A request that passed its gate before
+that is held to the same one-check-before-the-lock bound as after any
+wire wake. What W3 was, two writers interleaving the flags, cannot
+happen: the flags have one writer, in program order.
 `wait_out_cadence` reduces to a single `last_attempt` read. The dead
 re-read after it is deleted.
 
@@ -575,6 +590,11 @@ false. While a supervisor is registered, the only thing that clears
 flag clear only when no debt is outstanding. So any wake it ignores
 belongs to a stop that has already been replayed. Wire wakes are left
 untouched, which honours the investigation's warning not to gate them.
+
+A wake it acts on still passes through `wait_out_cadence`, the same as
+a wire wake. A stop refused just after a recovery is therefore replayed
+when the interval since that recovery's attempt has run out, not at
+once (decision 4; open point 5).
 
 ### `reconnect_now` as a test-only hook
 
@@ -1152,9 +1172,20 @@ the connect path. GTi lib tests and BDD run with `--features mock`.
 
   Mutation: raise `reconnect_signal` again → opens reaches 3.
 - `a_refused_disconnect_stop_is_replayed_without_waiting_for_the_tick`
-  (interval 3600 s): the transport is available again within 2 s.
+  (interval 3600 s, no attempt yet): the transport is available again
+  within 2 s.
 
   Mutation: delete the `stop_owed` arm → timeout.
+- `a_stop_refused_just_after_a_recovery_waits_out_only_the_rest_of_the_interval`
+  (interval 1 s, real clock). A reconnect recovers first and stamps
+  `last_attempt`; a client then connects, and its disconnect stop is
+  refused. It asserts:
+  - no replay before the interval since that attempt has run out;
+  - the transport is available again within that interval plus a
+    margin.
+
+  This pins the floor that decision 4 keeps. If open point 5 is taken,
+  the first assertion inverts.
 - `a_panicked_disconnect_hook_is_replayed_without_waiting_for_the_tick`
   (`last_disconnect_panicking_on(2)`): covers the guard's raise.
 
@@ -1701,6 +1732,17 @@ traffic or changes what the connect path sends.
    - (c) add a second PR 1 GTi pin, for the verdict after a stale ack.
 4. **`biased;` cancel-first selects in the six poll loops.** This would
    narrow R1. It is a one-line change per service, outside this crate.
+5. **Optional: let a `stop_owed` wake skip the cadence floor.** It
+   would skip the floor only when the last attempt published a
+   recovery. A failed attempt would keep the floor, so a stop that keeps
+   failing on a fresh link still cannot cycle the port at open speed.
+   That would make the replay of a stop refused just after a recovery
+   immediate, not up to 5 s later.
+
+   The cost: a client that connects and disconnects in a loop, against
+   a device that refuses its stop and then accepts the replay, would
+   cycle the port at the client's rate. PR 5 would carry it, and its
+   recent-attempt test would invert.
 
 Settled on review (2026-10-03):
 - bug A records the owed stop before the respawn;
