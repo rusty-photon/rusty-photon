@@ -725,7 +725,7 @@ Pre-push commands (these ARE the gate — run them before pushing):
 
 ```bash
 bazel build //...
-bazel test //...           # filters out tagged `requires-cargo` and `bdd`
+bazel test //...           # filters out tagged `requires-cargo` and `conformu`; BDD runs
 ```
 
 **Warnings are errors in CI, not locally.** `--config=ci` passes `-Dwarnings` to
@@ -749,24 +749,65 @@ bazel build --@rules_rust//rust/settings:extra_rustc_flags=-Dwarnings \
             --@rules_rust//rust/settings:extra_exec_rustc_flags=-Dwarnings //...
 ```
 
-If you added a crates.io dependency, refresh the Bazel index:
+### Refreshing MODULE.bazel.lock
+
+**Any change to `Cargo.lock` or to a workspace member's `Cargo.toml` needs
+a refreshed `MODULE.bazel.lock` in the same commit.** That covers a new
+dependency, a version bump (a crate release included), a feature, a new
+workspace member, and a comment too. `crate_universe` reads those files,
+and the lock records a SHA-256 of each one as an input of its extension
+(the `"FILE:@@//…"` entries), so any byte change leaves the lock stale.
+Refresh it with:
 
 ```bash
-# 2nd (un-forced) `bazel mod tidy` resets the lock's recorded CARGO_BAZEL_REPIN
-# fingerprint to null, so the committed lock doesn't churn on later plain `bazel` runs.
-CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy
-# Required third step: `bazel mod tidy` only fixes up extensions it reaches via an
-# explicit `use_repo()` in MODULE.bazel, so an extension pulled in transitively with
-# no `use_repo()` of its own can be left out of the lock on some hosts. A full
-# `--lockfile_mode=update` build does real target-graph analysis and fills the gap;
-# skipping it produces a lock that `--lockfile_mode=error` rejects on x86_64 CI while
-# `bazel mod tidy` alone looks fine locally.
-bazel build --nobuild --lockfile_mode=update //...
-git add MODULE.bazel.lock
+scripts/repin-bazel-lock.sh
 ```
 
+The script runs the repin, resolves once more in CI's
+`--lockfile_mode=error` on this host, and stages the lock. Its comments say
+why each step is needed:
+- It unsets crate_universe's environment variables first. The lock
+  records them, and CI sets none of them.
+- `bazel mod tidy` runs twice, forced and then un-forced, so the committed
+  lock does not churn on later plain `bazel` runs.
+- A `--lockfile_mode=update` build follows, which fills in an extension
+  `mod tidy` cannot reach.
+
+The repin hashes the working tree, so stage the Cargo change as well. The
+script says so if it finds one left unstaged.
+
+The pre-commit hook runs `tools/ci/check_bazel_lock.py` first. It compares
+the hashes the staged lock records with the staged files, and refuses the
+commit with what to do:
+- for a Cargo file changed since the last repin, run the script;
+- for a change the repin saw but you did not stage, `git add` it;
+- for a lock written with one of those environment variables set, run the
+  script.
+
+It needs no Bazel and takes about a tenth of a second on Linux. It checks
+only what the Cargo files feed into the lock: a `MODULE.bazel` edit can
+also leave the lock stale, and only CI catches that.
+
+The hook does not run on a rebase, a cherry-pick or a clean merge. After
+resolving a `MODULE.bazel.lock` conflict there, typically the
+`FILE:@@//Cargo.lock` line after a dependabot bump, take either side and run
+the script, or run `python3 tools/ci/check_bazel_lock.py` before pushing.
+
+Every worktree runs the hook installed in the main checkout's `.git/hooks`.
+cargo-husky, a dev-dependency, writes it from `.cargo-husky/hooks/` when its
+build script runs:
+- in the main checkout only, because cargo-husky does not follow a linked
+  worktree's `.git` file;
+- on the first `cargo test` or `cargo clippy --all-targets` in a fresh target
+  directory, or after `cargo clean`.
+
+To pick up a hook change, run `cargo clean -p cargo-husky && cargo clippy
+--all-targets` in the main checkout once it has the change. On a branch that
+predates the lock check, the hook skips the check instead of refusing the
+commit.
+
 `repin-bazel.yml` is gated on `github.actor == 'dependabot[bot]'`, so a
-human PR that adds a crates.io dependency gets **no** automatic repin. A
+human PR that changes a Cargo file gets **no** automatic repin. A
 forgotten repin fails every CI Bazel leg — `bazel / ubuntu-latest`,
 `bazel / windows-latest`, `bazel coverage` — within seconds of the job
 starting, during module resolution and before anything is compiled:
@@ -809,6 +850,8 @@ Reviewing the result: `git diff --stat` badly under-reports a
 `defs.bzl` are stored as single JSON string lines, so a 2-line diff can
 carry a several-hundred-kilobyte changed-line payload. Use
 `git diff --word-diff` or a JSON-aware differ.
+
+### What `bazel test //...` runs, and coverage
 
 BDD cucumber tests build and run under Bazel and are **part of the
 default test filter** (since PR #452): a plain `bazel test //...` runs
@@ -868,7 +911,8 @@ Known limitations:
 - A few tests in `bdd-infra`, `phd2-guider`, and `filemonitor:test_cli`
   shell out to `cargo` or assume `target/debug` paths; they are tagged
   `requires-cargo` and skipped under Bazel.
-- Conformu integration tests and Miri continue to run only under Cargo.
+- Miri runs only under Cargo. The conformu integration tests run under
+  Bazel only with `--config=conformu` (see above).
 
 ---
 

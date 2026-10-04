@@ -241,8 +241,8 @@ change.
   entirely. If **absent**, the dev-dep stays but its role shrinks to "keep
   simulation's optional deps in `@cr`" (document that), or pull them via a
   `crate.annotation`.
-- `CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` (Rule 10), then
-  `git diff MODULE.bazel.lock`.
+- `scripts/repin-bazel-lock.sh` (Rule 10), then
+  `git diff --cached MODULE.bazel.lock`.
 - **Verify Bazel** (shadow jobs run `install-zwo-sdk` first):
   - `bazel build //crates/zwo-rs/...` + `//services/zwo-camera/...`.
   - Confirm the **prod** `zwo-camera` binary now compiles + links the **real**

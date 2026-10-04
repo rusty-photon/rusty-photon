@@ -1,6 +1,24 @@
 #!/bin/sh
 set -e
 
+# First, because it is quick and the clippy passes are not: a Cargo file
+# staged without a refreshed MODULE.bazel.lock fails every Bazel leg in CI.
+# The fix it asks for is `scripts/repin-bazel-lock.sh`.
+#
+# Every worktree runs this one installed hook, so it also runs on branches
+# that predate the check; there it skips rather than refusing every commit.
+# python3 is probed by running it, because on Windows `command -v` also finds
+# the Store alias that only prints an install hint. CI still enforces the lock
+# whenever this skips.
+if [ ! -f tools/ci/check_bazel_lock.py ]; then
+  echo '! tools/ci/check_bazel_lock.py not in this checkout — skipping the lock check'
+elif ! python3 -c '' >/dev/null 2>&1; then
+  echo '! python3 not available — skipping the lock check (CI still enforces it)'
+else
+  echo '+python3 tools/ci/check_bazel_lock.py'
+  python3 tools/ci/check_bazel_lock.py
+fi
+
 echo '+cargo clippy --all --all-targets --all-features -- -D warnings'
 cargo clippy --all --all-targets --all-features -- -D warnings
 # Second pass, default features + production targets: lints the `not(feature =

@@ -169,8 +169,10 @@ wrapper's dependency resolves on crates.io.
 5. `cargo publish -p zwo-rs`.
 6. Verify on docs.rs / crates.io; tag the release.
 
-`MODULE.bazel` is unchanged across a publish (members are auto-discovered). A
-`CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` is needed only when the
-vendored crates' **external** deps change (not on a version bump alone). The
+`MODULE.bazel` is unchanged across a publish (members are auto-discovered).
+*Amended 2026-10-03:* the version bump itself needs a repin, because
+`MODULE.bazel.lock` records a hash of `Cargo.lock` and of every member's
+`Cargo.toml`. Run `scripts/repin-bazel-lock.sh` in the bump commit (Rule 10).
+The original text said a repin was needed only when external deps changed. The
 standalone `ivonnyssen/zwo-rs` repo is archived once the first publish-from-monorepo
 is verified; thereafter the monorepo is the sole source of truth.

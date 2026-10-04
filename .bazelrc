@@ -274,8 +274,8 @@ build:ci --disk_cache=
 # recorded inputs no longer match the lock — for crate_universe that is a
 # fresh `cargo-bazel` splice against Cargo.lock — and the ephemeral runner
 # then throws the refreshed lock away. Two things go wrong under that default.
-# A PR that skips the repin after a dependency change (the CARGO_BAZEL_REPIN
-# dance in docs/skills/pre-push.md) passes every Bazel check and lands a stale
+# A PR that changes a Cargo file without the repin (scripts/repin-bazel-lock.sh;
+# docs/skills/pre-push.md) passes every Bazel check and lands a stale
 # lock on main, which the next `bazel` run on every developer machine rewrites
 # into a dirty working tree. And every dependabot cargo PR arrives with exactly
 # such a stale lock: repin-bazel.yml pushes the refreshed lock a few minutes
