@@ -487,6 +487,10 @@ install a custom hook script kept in the repo at
 `.cargo-husky/hooks/pre-commit`, which currently runs:
 
 ```sh
+# MODULE.bazel.lock matches the staged Cargo files (rule 10). Guarded on the
+# script existing and python3 running, so older branches and Python-less
+# machines skip it:
+python3 tools/ci/check_bazel_lock.py
 cargo clippy --all --all-targets --all-features -- -D warnings
 cargo clippy --all --lib --bins -- -D warnings   # default-features pass (#988)
 cargo fmt --all -- --check
@@ -495,8 +499,11 @@ cargo fmt --all -- --check
 bazel test //:buildifier_check
 ```
 
-The hook is installed automatically the first time any test build pulls
-`cargo-husky` in as a dev-dependency.
+`cargo-husky` installs the hook when its build script runs: the first test
+build in a fresh target directory, or after `cargo clean`. It installs only
+from the main checkout, and every worktree runs the main checkout's hook; see
+[pre-push.md](skills/pre-push.md#refreshing-modulebazellock) for how to pick
+up a change to it.
 
 ## Coding Conventions
 
@@ -804,8 +811,8 @@ closes that green-PR/red-nightly gap at no cost: `display` adds only
 Bazel is the per-PR build / test / coverage gate. `Cargo.toml` and `Cargo.lock`
 remain the single source of truth for dependency versions, and Bazel's
 `crate_universe` reads them. The repo root holds `MODULE.bazel` and `BUILD.bazel`;
-`bazel test //...` runs all non-`requires-cargo`, non-BDD targets, and
-`bazel test --test_tag_filters=bdd //...` adds the BDD suites. The required PR
+`bazel test //...` runs every target except those tagged `requires-cargo` or
+`conformu`, the BDD suites included. The required PR
 checks are `bazel / <os>` (build + test on Linux/macOS/Windows), `bazel coverage`,
 plus the Cargo `stable / fmt` and `stable / clippy` lint jobs (Bazel does not run
 rustfmt/clippy). `bazel/cargo target parity` and the Cargo build/test jobs run
@@ -814,8 +821,10 @@ nightly as a safety net (coverage is Bazel-only), as do the `windows / clippy` +
 ubuntu gate never compiles. `bazel build //... && bazel test //...` is
 the local pre-commit loop (see [docs/skills/pre-push.md](skills/pre-push.md)).
 
-After adding a crates.io dependency to the workspace, run
-`CARGO_BAZEL_REPIN=1 bazel mod tidy && bazel mod tidy` to refresh
-`MODULE.bazel.lock` before committing. The second, un-forced `bazel mod tidy`
-resets the lock's recorded `CARGO_BAZEL_REPIN` env fingerprint to `null` so the
-committed lock doesn't churn on later plain `bazel` runs.
+Any commit that changes `Cargo.lock` or any workspace `Cargo.toml` (the root's
+or a member's) must include a refreshed `MODULE.bazel.lock`, because the lock
+records a hash of each of those files. Run `scripts/repin-bazel-lock.sh`, which refreshes and
+stages it; the pre-commit hook refuses a commit whose lock does not match the
+staged Cargo files. See
+[pre-push.md](skills/pre-push.md#refreshing-modulebazellock) for why each step
+of the repin is needed.

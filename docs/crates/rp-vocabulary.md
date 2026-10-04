@@ -477,9 +477,9 @@ letting `rp` project the vocabulary onto the wire.
 | `schemars` *(optional, `schema`)* | `JsonSchema` for the wire projection |
 
 No new crates.io dependency is introduced — every one is already in the
-workspace. No `MODULE.bazel.lock` repin is required for the crate's deps;
-adding a new workspace member still needs the standard `bazel mod tidy`
-refresh per [Rule 10](../workspace.md#bazel-primary-ci-gate).
+workspace. Adding the crate as a workspace member still changes the root
+`Cargo.toml` and `Cargo.lock`, so it needs `scripts/repin-bazel-lock.sh` per
+[Rule 10](../skills/pre-push.md#refreshing-modulebazellock).
 
 ## Module layout
 

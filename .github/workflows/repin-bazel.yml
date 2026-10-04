@@ -83,10 +83,12 @@ name: repin-bazel
 
 jobs:
   repin:
-    # Only Dependabot PRs. Other PRs that change deps are expected to repin by
-    # hand (rule 10); `--lockfile_mode=error` under `--config=ci` turns a miss
-    # into a fast red on every Bazel leg (and the nightly `bazel/cargo target
-    # parity` catches target drift).
+    # Only Dependabot PRs. Other PRs that change a Cargo file repin locally
+    # with scripts/repin-bazel-lock.sh (rule 10), and the pre-commit hook's
+    # tools/ci/check_bazel_lock.py refuses a commit that forgot to;
+    # `--lockfile_mode=error` under `--config=ci` turns a miss that gets past
+    # both into a fast red on every Bazel leg (and the nightly `bazel/cargo
+    # target parity` catches target drift).
     if: github.actor == 'dependabot[bot]'
     # Venue routing (ADR-020): byte-for-byte the expression in
     # bazel-coverage.yml. Keep the copies identical — a divergence here is a
@@ -148,6 +150,8 @@ jobs:
       # (see the header comment above — the rules_python `uv` extension gap).
       # `--lockfile_mode=update` comes after `--config=ci` on purpose: the
       # config carries `--lockfile_mode=error` and the later flag wins.
+      # scripts/repin-bazel-lock.sh runs the same repin locally (and checks
+      # the result in error mode before staging it); keep the two in step.
       - name: Repin crate index
         run: |
           CARGO_BAZEL_REPIN=1 bazel mod tidy
