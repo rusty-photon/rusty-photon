@@ -45,7 +45,7 @@
 
 9. You MUST use `debug!()` log messages throughout. Only use `info!()` log messages where users will derive clear advantage from them when using the services, such as `Service started succesfully`.
 
-10. You MUST add dependencies to the workspace Cargo.toml when more than one service has the same dependency. Cargo.toml and Cargo.lock remain the single source of truth for dependency versions; Bazel's `crate_universe` reads them, so any commit that changes `Cargo.lock` or a workspace member's `Cargo.toml` MUST include a refreshed `MODULE.bazel.lock`: run `scripts/repin-bazel-lock.sh`, which refreshes and stages it (why: [docs/skills/pre-push.md](skills/pre-push.md#refreshing-modulebazellock)). The pre-commit hook refuses a commit whose lock does not match the staged Cargo files.
+10. You MUST add dependencies to the workspace Cargo.toml when more than one service has the same dependency. Cargo.toml and Cargo.lock remain the single source of truth for dependency versions; Bazel's `crate_universe` reads them, so any commit that changes `Cargo.lock` or any workspace `Cargo.toml` (the root's or a member's) MUST include a refreshed `MODULE.bazel.lock`: run `scripts/repin-bazel-lock.sh`, which refreshes and stages it (why: [docs/skills/pre-push.md](skills/pre-push.md#refreshing-modulebazellock)). The pre-commit hook refuses a commit whose lock does not match the staged Cargo files.
 
 11. You MUST persist project-wide knowledge (design decisions, motivations, conventions) in the repository documentation (docs/, README.md, ADRs) rather than in local agent memory. This ensures all operators and machines share the same context.
 

@@ -751,10 +751,12 @@ bazel build --@rules_rust//rust/settings:extra_rustc_flags=-Dwarnings \
 
 ### Refreshing MODULE.bazel.lock
 
-**Any change to `Cargo.lock` or to a workspace member's `Cargo.toml` needs
-a refreshed `MODULE.bazel.lock` in the same commit.** That covers a new
-dependency, a version bump (a crate release included), a feature, a new
-workspace member, and a comment too. `crate_universe` reads those files,
+**Any change to `Cargo.lock` or to any workspace `Cargo.toml` needs a
+refreshed `MODULE.bazel.lock` in the same commit.** That means the root
+`Cargo.toml` (a virtual manifest: `[workspace.dependencies]`, profiles, the
+members list) as well as every member's. It covers a new dependency, a
+version bump (a crate release included), a feature, a new workspace member,
+and a comment too. `crate_universe` reads those files,
 and the lock records a SHA-256 of each one as an input of its extension
 (the `"FILE:@@//…"` entries), so any byte change leaves the lock stale.
 Refresh it with:
@@ -780,9 +782,14 @@ The pre-commit hook runs `tools/ci/check_bazel_lock.py` first. It compares
 the hashes the staged lock records with the staged files, and refuses the
 commit with what to do:
 - for a Cargo file changed since the last repin, run the script;
-- for a change the repin saw but you did not stage, `git add` it;
+- for a file whose working-tree copy matches the lock but whose staged copy
+  does not (typically a change the repin saw but you did not stage, a new
+  member's untracked manifest included), `git add` it if the working tree
+  is what you mean to commit;
 - for a lock written with one of those environment variables set, run the
-  script.
+  script;
+- for a lock whose file inputs it cannot read, update the check, because
+  Bazel's format has changed.
 
 It needs no Bazel and takes about a tenth of a second on Linux. It checks
 only what the Cargo files feed into the lock: a `MODULE.bazel` edit can

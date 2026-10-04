@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Refuse a commit whose MODULE.bazel.lock no longer matches the Cargo files.
 
-Bazel's `crate_universe` reads `Cargo.lock` and every workspace member's
-`Cargo.toml`, and `MODULE.bazel.lock` records a SHA-256 of each of those
-files as an input of the crate extension. Any byte change to one of them
+Bazel's `crate_universe` reads `Cargo.lock` and every workspace
+`Cargo.toml`, the root's included, and `MODULE.bazel.lock` records a SHA-256
+of each of those files as an input of the crate extension. Any byte change to one of them
 leaves the lock stale: a new dependency, a version bump, a feature, a
 comment. CI builds with `--lockfile_mode=error`, so a stale lock fails
 every Bazel leg during module resolution, before anything compiles.
@@ -117,6 +117,24 @@ def main() -> int:
         ).stdout.strip()
     )
 
+    # A fingerprint this script does not know cannot be compared, and
+    # skipping it would pass a lock nobody checked. Refuse it the same way as
+    # a lock with no inputs at all.
+    unknown = [
+        f"{path} {recorded}"
+        for path, recorded in files
+        if recorded != "ENOENT" and not SHA256.match(recorded)
+    ]
+    if unknown:
+        print(
+            f"check_bazel_lock: {LOCK} records file inputs in a form this "
+            "check does not know; update tools/ci/check_bazel_lock.py:",
+            file=sys.stderr,
+        )
+        for entry in unknown:
+            print(f"  {entry}", file=sys.stderr)
+        return 1
+
     changed: list[str] = []
     unstaged: list[str] = []
     for path, recorded in sorted(set(files)):
@@ -124,20 +142,20 @@ def main() -> int:
         if recorded == "ENOENT":
             if content is not None:
                 changed.append(f"{path} (added)")
-        elif not SHA256.match(recorded):
-            # A marker this script does not know; nothing to compare it with.
             continue
+        if content is not None and sha256(content) == recorded:
+            continue
+        # The repin hashes the working tree. If that copy is the one the lock
+        # recorded, the lock is right and the file is what is not staged,
+        # a new member's untracked manifest included; running the repin again
+        # would change nothing.
+        on_disk = toplevel / path
+        if on_disk.is_file() and sha256(on_disk.read_bytes()) == recorded:
+            unstaged.append(path)
         elif content is None:
-            changed.append(f"{path} (no longer in the index)")
-        elif sha256(content) != recorded:
-            # The repin hashes the working tree. If that copy is the one the
-            # lock recorded, the lock is right and the file is what was left
-            # unstaged; running the repin again would change nothing.
-            on_disk = toplevel / path
-            if on_disk.is_file() and sha256(on_disk.read_bytes()) == recorded:
-                unstaged.append(path)
-            else:
-                changed.append(path)
+            changed.append(f"{path} (not in the index)")
+        else:
+            changed.append(path)
 
     if not (changed or unstaged or env_set):
         return 0
@@ -151,12 +169,18 @@ def main() -> int:
             print(f"  {path}", file=sys.stderr)
     if unstaged:
         print(
-            f"{LOCK} was refreshed from changes that are not staged. "
-            "Stage them as well:",
+            f"{LOCK} matches the working-tree copy of these, not the staged "
+            "one:",
             file=sys.stderr,
         )
         for path in unstaged:
-            print(f"  git add {path}", file=sys.stderr)
+            print(f"  {path}", file=sys.stderr)
+        print(
+            "If the working tree is what you mean to commit, `git add` them. "
+            "If the staged copy is, put it back in the working tree and run "
+            "scripts/repin-bazel-lock.sh.",
+            file=sys.stderr,
+        )
     if env_set:
         print(
             f"{LOCK} was refreshed with these set in the environment, "

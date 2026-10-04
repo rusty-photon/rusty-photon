@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Refresh MODULE.bazel.lock after a change to Cargo.lock or any workspace
-# member's Cargo.toml, and stage it.
+# Cargo.toml (the root's or a member's), and stage it.
 #
 # Bazel's crate_universe reads the Cargo files, and the lock records a hash of
 # each one, so any edit to them leaves the lock stale and CI's
@@ -46,7 +46,11 @@ git add MODULE.bazel.lock
 # The repin hashed the working tree, so the lock matches the Cargo files as
 # they are on disk. Any of them left unstaged would make the commit disagree
 # with its own lock; the generator can also have rewritten Cargo.lock itself.
-unstaged=$(git diff --name-only -- Cargo.lock '*Cargo.toml')
+# Untracked manifests count too: a new member's Cargo.toml is one until added.
+unstaged=$(
+    git diff --name-only -- Cargo.lock '*Cargo.toml'
+    git ls-files --others --exclude-standard -- Cargo.lock '*Cargo.toml'
+)
 if [ -n "$unstaged" ]; then
     echo "MODULE.bazel.lock refreshed and staged, from Cargo files that are not staged:"
     printf '%s\n' "$unstaged" | sed 's/^/  /'

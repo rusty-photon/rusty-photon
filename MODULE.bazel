@@ -7,7 +7,8 @@ instead of "crates") is intentional: rules_rust embeds the repo name twice
 in every build-script runfiles path, and aws-lc-sys's deeply nested vendored
 source tree hits the Windows MAX_PATH (260) limit with longer names.
 
-After any change to Cargo.lock or a workspace member's Cargo.toml, run
+After any change to Cargo.lock or any workspace Cargo.toml (the root's or a
+member's), run
 `scripts/repin-bazel-lock.sh` to refresh MODULE.bazel.lock (rule 10;
 docs/skills/pre-push.md, "Refreshing MODULE.bazel.lock").
 """

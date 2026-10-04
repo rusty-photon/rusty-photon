@@ -171,8 +171,8 @@ wrapper's dependency resolves on crates.io.
 
 `MODULE.bazel` is unchanged across a publish (members are auto-discovered).
 *Amended 2026-10-03:* the version bump itself needs a repin, because
-`MODULE.bazel.lock` records a hash of `Cargo.lock` and of every member's
-`Cargo.toml`. Run `scripts/repin-bazel-lock.sh` in the bump commit (Rule 10).
+`MODULE.bazel.lock` records a hash of `Cargo.lock` and of every workspace
+`Cargo.toml`, the root's included. Run `scripts/repin-bazel-lock.sh` in the bump commit (Rule 10).
 The original text said a repin was needed only when external deps changed. The
 standalone `ivonnyssen/zwo-rs` repo is archived once the first publish-from-monorepo
 is verified; thereafter the monorepo is the sole source of truth.

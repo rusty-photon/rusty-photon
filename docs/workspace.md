@@ -821,9 +821,9 @@ nightly as a safety net (coverage is Bazel-only), as do the `windows / clippy` +
 ubuntu gate never compiles. `bazel build //... && bazel test //...` is
 the local pre-commit loop (see [docs/skills/pre-push.md](skills/pre-push.md)).
 
-Any commit that changes `Cargo.lock` or a workspace member's `Cargo.toml` must
-include a refreshed `MODULE.bazel.lock`, because the lock records a hash of
-each of those files. Run `scripts/repin-bazel-lock.sh`, which refreshes and
+Any commit that changes `Cargo.lock` or any workspace `Cargo.toml` (the root's
+or a member's) must include a refreshed `MODULE.bazel.lock`, because the lock
+records a hash of each of those files. Run `scripts/repin-bazel-lock.sh`, which refreshes and
 stages it; the pre-commit hook refuses a commit whose lock does not match the
 staged Cargo files. See
 [pre-push.md](skills/pre-push.md#refreshing-modulebazellock) for why each step
