@@ -254,19 +254,20 @@ impl Verifier {
                         .checked_sub(started.elapsed())
                         .unwrap_or(Duration::ZERO);
                     if remaining.is_zero() {
+                        // The wait has elapsed and the fresh `claim_slot` above
+                        // still reports a *different* credential in flight: only
+                        // now, after re-inspecting the slot, is 503 honest.
                         shared.note_refusal();
                         return Verdict::Busy;
                     }
-                    // Wait for the gate to free, then loop to try to claim it.
-                    // A closed channel cannot happen while `self` lives; treat
-                    // any non-timeout wake as a reason to re-inspect the slot.
-                    if tokio::time::timeout(remaining, freed.changed())
-                        .await
-                        .is_err()
-                    {
-                        shared.note_refusal();
-                        return Verdict::Busy;
-                    }
+                    // Wait for the gate to free or the wait to elapse, then loop
+                    // to re-inspect the slot. A timeout never refuses on its own:
+                    // the next `claim_slot` may join a sibling that took our tag,
+                    // read a verdict proved at the deadline, or claim the freed
+                    // gate; it refuses only if a different credential is still in
+                    // flight past the wait. A closed channel cannot happen while
+                    // `self` lives, so its wake is treated like any other.
+                    let _ = tokio::time::timeout(remaining, freed.changed()).await;
                 }
             }
         }

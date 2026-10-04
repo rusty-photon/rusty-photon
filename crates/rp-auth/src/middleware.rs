@@ -102,6 +102,7 @@ fn service_unavailable_response() -> Response {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
 
@@ -197,16 +198,35 @@ mod tests {
     async fn a_busy_gate_answers_503_with_retry_after_and_no_challenge() {
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
         let release_rx = Mutex::new(release_rx);
-        let kdf: Box<Kdf> = Box::new(move |password, _| {
-            let _ = release_rx.lock().unwrap().recv();
-            password == "pw"
+        let started = Arc::new(AtomicUsize::new(0));
+        let kdf: Box<Kdf> = Box::new({
+            let started = Arc::clone(&started);
+            move |password, _| {
+                started.fetch_add(1, Ordering::SeqCst);
+                let _ = release_rx.lock().unwrap().recv();
+                password == "pw"
+            }
         });
         let (app, _verifier) = router_with_kdf(kdf);
         let first = tokio::spawn({
             let app = app.clone();
             async move { app.oneshot(authed_request("testuser", "pw")).await.unwrap() }
         });
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        // Wait until `first` is actually inside the KDF holding the gate: a
+        // fixed sleep could let the competing request win the gate first and
+        // block in the KDF, which never returns until `release_tx` is signalled
+        // — and that signal comes only after the competing request returns.
+        for _ in 0..500 {
+            if started.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            1,
+            "the first request must hold the gate before the competing one is issued"
+        );
 
         let response = app
             .clone()
