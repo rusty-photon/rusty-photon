@@ -394,6 +394,8 @@ struct Link {
     /// A stop's exchange failed without a drain; drain before the next
     /// exchange whose reply matters.
     resync: bool,
+    /// The first failure writing `exchanges.jsonl`, if any.
+    log_error: Option<String>,
     rtts: Vec<f64>,
     abort: Arc<AtomicBool>,
 }
@@ -535,9 +537,12 @@ impl Link {
             "cmd": cmd,
             "reply": reply,
         });
-        // A lost log line must not abort a run mid-motion; the summary
-        // records the analysis either way.
-        let _ = writeln!(self.log, "{line}");
+        // A lost log line must not abort a run mid-motion, but it must not
+        // pass unnoticed either: the first failure is kept, reported in
+        // the summary, and fails the run once the mount is stopped.
+        if let Err(e) = writeln!(self.log, "{line}") {
+            self.log_error.get_or_insert_with(|| e.to_string());
+        }
     }
 
     async fn u24(&mut self, op: Op) -> Result<u32, ProbeError> {
@@ -1125,6 +1130,9 @@ struct Summary {
     run_error: Option<String>,
     final_return: Vec<Landing>,
     final_return_error: Option<String>,
+    /// The first failure writing or flushing `exchanges.jsonl`: the raw
+    /// record is incomplete, and the run does not count as a success.
+    exchange_log_error: Option<String>,
     stop_report: String,
 }
 
@@ -1648,8 +1656,38 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
+/// Print how the run ended.
+fn report(summary: &Summary) {
+    if let Some(e) = &summary.run_error {
+        say(&format!("RUN ERROR: {e}"));
+    }
+    for l in &summary.final_return {
+        say(&format!(
+            "final return {:?} {} -> {} off {}",
+            l.axis,
+            l.from,
+            l.target,
+            fmt_ticks(l.off_by_ticks)
+        ));
+    }
+    if let Some(e) = &summary.final_return_error {
+        say(&format!("final return failed: {e}"));
+    }
+    say(&format!("final stop: {}", summary.stop_report));
+    say(&format!(
+        "rtt p50 {} s, p99 {} s, max {} s",
+        fmt_opt(summary.rtt_p50_s, 4),
+        fmt_opt(summary.rtt_p99_s, 4),
+        fmt_opt(summary.rtt_max_s, 4)
+    ));
+    if let Some(e) = &summary.exchange_log_error {
+        say(&format!("EXCHANGE LOG INCOMPLETE: {e}"));
+    }
+}
+
 /// Returns `Ok(true)` when every trial completed, the mount came back to
-/// its start pose and both axes confirmed stopped.
+/// its start pose, both axes confirmed stopped and the exchange log was
+/// written in full.
 async fn probe(args: &Args) -> Result<bool, ProbeError> {
     std::fs::create_dir_all(&args.out).map_err(|e| ProbeError::Output(e.to_string()))?;
     let log = File::create_new(args.out.join("exchanges.jsonl")).map_err(|e| {
@@ -1669,6 +1707,7 @@ async fn probe(args: &Args) -> Result<bool, ProbeError> {
         armed_ra: false,
         armed_dec: false,
         resync: false,
+        log_error: None,
         rtts: Vec::new(),
         abort,
     };
@@ -1714,36 +1753,20 @@ async fn probe(args: &Args) -> Result<bool, ProbeError> {
         }
     }
     summary.stop_report = final_stop(&mut link).await;
-    let _ = link.log.flush();
+    if let Err(e) = link.log.flush() {
+        link.log_error.get_or_insert_with(|| e.to_string());
+    }
+    summary.exchange_log_error = link.log_error.clone();
     summary.run_error = result.err().map(|e| e.to_string());
     let mut rtts = link.rtts.clone();
     rtts.sort_by(f64::total_cmp);
     summary.rtt_p50_s = percentile(&rtts, 50);
     summary.rtt_p99_s = percentile(&rtts, 99);
     summary.rtt_max_s = rtts.last().copied();
-    if let Some(e) = &summary.run_error {
-        say(&format!("RUN ERROR: {e}"));
-    }
-    for l in &summary.final_return {
-        say(&format!(
-            "final return {:?} {} -> {} off {}",
-            l.axis,
-            l.from,
-            l.target,
-            fmt_ticks(l.off_by_ticks)
-        ));
-    }
-    if let Some(e) = &summary.final_return_error {
-        say(&format!("final return failed: {e}"));
-    }
-    say(&format!("final stop: {}", summary.stop_report));
-    say(&format!(
-        "rtt p50 {} s, p99 {} s, max {} s",
-        fmt_opt(summary.rtt_p50_s, 4),
-        fmt_opt(summary.rtt_p99_s, 4),
-        fmt_opt(summary.rtt_max_s, 4)
-    ));
-    let ok = summary.run_error.is_none() && summary.stop_report.contains("both axes stopped");
+    report(&summary);
+    let ok = summary.run_error.is_none()
+        && summary.exchange_log_error.is_none()
+        && summary.stop_report.contains("both axes stopped");
     let json = serde_json::to_string(&summary).map_err(|e| ProbeError::Output(e.to_string()))?;
     std::fs::write(args.out.join("summary.json"), json)
         .map_err(|e| ProbeError::Output(e.to_string()))?;
