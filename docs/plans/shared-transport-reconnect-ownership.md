@@ -603,7 +603,11 @@ The alternatives were weighed and set aside:
 ```rust
 pub(crate) struct SafetyDebt { pub(crate) incurred: AtomicU32, pub(crate) paid: AtomicU32 }
 impl SafetyDebt {
-    pub(crate) fn outstanding(&self) -> bool { self.incurred.load(SeqCst) != self.paid.load(SeqCst) }
+    pub(crate) fn outstanding(&self) -> bool {
+        // `paid` first: see "In what order it loads" below.
+        let paid = self.paid.load(SeqCst);
+        self.incurred.load(SeqCst) != paid
+    }
 }
 
 // WhileOpen::request_timed; `request` goes through it
@@ -625,6 +629,17 @@ How the gate behaves:
 - **When it checks.** Once, before the command lock. That is the same
   bound `Session` has: a debt recorded after a poll has queued on the
   lock does not stop it.
+- **In what order it loads.** `paid` first, then `incurred`. Both
+  counters only grow, and `paid` never passes `incurred`. Under that
+  order, `false` means no debt stood at the moment of the second load,
+  so the check counts as made at that later moment. A concurrent incur
+  reads as owed. A concurrent payment can at worst read as owed one
+  check too long, which costs one skipped tick. The reverse order, which
+  `safety_debt_outstanding` uses today, can return `false` when a
+  cleanup incurs between the two loads. The check then counts as made at
+  the first load. That still sits inside the one-check bound above, but
+  it widens the window for no gain. `Session`'s gates read the same
+  ledger, so they get the same order.
 
 **The debt is recorded before the respawn.** In `attempt_reconnect`,
 the `owed`/`replayed` decision and the debt increment move up to just
@@ -864,6 +879,7 @@ branch is unreachable from production hooks.
 **Scope.**
 - The `SafetyDebt` ledger, with every old-name site renamed (19 sites,
   including the five in-crate test lines and anything PR 1 added).
+  `outstanding` loads `paid` before `incurred` (see §Bug A).
 - The gate on `WhileOpen::request_timed`.
 - `Arc::clone(&self.safety_debt)` passed at the one `WhileOpen::new`
   site, inside PR 2's `build_while_open`.
@@ -905,6 +921,9 @@ elsewhere, no dependency and no BUILD change.
   `current_thread`. The spawned poll cannot run before the attempt's
   first yield, and that yield comes after the record either way. The PR
   says so rather than shipping a test that cannot discriminate.
+- Swap the load order back → also unobservable. It takes an incur
+  landing between two adjacent atomic loads, which no test here can
+  schedule. The ledger's rustdoc carries the argument instead.
 
 **Docs.**
 - `session.rs`:
@@ -915,7 +934,8 @@ elsewhere, no dependency and no BUILD change.
     also states the one-check-before-the-lock bound.
   - `Hooks::while_open`: "its requests answer to the safety debt".
 - `shared.rs`: the `SafetyDebt`, field and `safety_debt_outstanding`
-  docs.
+  docs. The `SafetyDebt` doc includes why `outstanding` loads `paid`
+  first.
 - [star-adventurer-gti.md](../services/star-adventurer-gti.md),
   §Safety stop across a reconnect: a paragraph on the poll being held
   to the same debt. It covers:
@@ -979,8 +999,10 @@ the connect path. GTi lib tests and BDD run with `--features mock`.
   - §Safety stop: a reload during a reconnect waits for the attempt.
 - [dsd-fp2.md](../services/dsd-fp2.md) §In-process reload: the "Await
   the server's own teardown" bullet.
-- [service-lifecycle.md](../skills/service-lifecycle.md) says "five
-  shared-transport services"; there are seven.
+- [service-lifecycle.md](../skills/service-lifecycle.md) §Plugging
+  into a server says "The five shared-transport services"; there are
+  seven now. Its other two mentions of five stay. They describe the
+  migration that closed #294, when there were five.
 
 **Hardware.** Required before merge (see Validation).
 
