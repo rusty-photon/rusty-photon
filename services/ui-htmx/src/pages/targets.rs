@@ -117,7 +117,7 @@ fn parse_row(value: &Value) -> Row {
         goals: value
             .get("goals")
             .and_then(Value::as_array)
-            .map(|goals| {
+            .map_or_default(|goals| {
                 goals
                     .iter()
                     .map(|g| Goal {
@@ -143,8 +143,7 @@ fn parse_row(value: &Value) -> Row {
                             .to_string(),
                     })
                     .collect()
-            })
-            .unwrap_or_default(),
+            }),
         notes: opt_text("notes"),
         created_by: text("created_by"),
         updated_by: text("updated_by"),
@@ -424,10 +423,7 @@ impl FormEcho {
         Self {
             display_name: row.display_name.clone(),
             priority: row.priority.to_string(),
-            position_angle: row
-                .position_angle_degrees
-                .map(trim_float)
-                .unwrap_or_default(),
+            position_angle: row.position_angle_degrees.map_or_default(trim_float),
             goals: row.goals.clone(),
         }
     }

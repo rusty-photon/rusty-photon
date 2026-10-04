@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 # Explicit, lower-than-workspace MSRV: dual-homed to crates.io (ADR-010), so the
 # published floor must reflect what downstream consumers can build on, NOT the
-# workspace's unified 1.94.1. Verified out-of-tree by the nightly publish-readiness
+# workspace's unified 1.98.1. Verified out-of-tree by the nightly publish-readiness
 # check (docs/plans/archive/publish-readiness-checks.md). The honest floor is 1.87.0: the
 # build chain bottoms out at libzwo-sys's `bindgen 0.73` (MSRV 1.71.0), but
 # `src/camera.rs` calls `u32::is_multiple_of` (stabilised in Rust 1.87.0). Replace

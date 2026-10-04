@@ -21,9 +21,7 @@ pub fn find_check(world: &mut DoctorWorld, status: &str, name: &str, service: Op
         Some(check) => world.last_check = Some(check),
         None => panic!(
             "no {status} check named {name}{} in report:\n{}",
-            service
-                .map(|s| format!(" for service {s}"))
-                .unwrap_or_default(),
+            service.map_or_default(|s| format!(" for service {s}")),
             serde_json::to_string_pretty(world.report()).expect("report serializes")
         ),
     }

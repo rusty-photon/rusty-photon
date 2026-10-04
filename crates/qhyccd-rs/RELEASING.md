@@ -30,7 +30,7 @@ mechanic dictates the publish **order** and the version-bump rules below.
 ## MSRV
 
 Both crates declare an **explicit, lower-than-workspace** `rust-version` (not
-`workspace = true`, which would publish the workspace's `1.94.1`), and the two now
+`workspace = true`, which would publish the workspace's `1.98.1`), and the two now
 differ: **`qhyccd-rs` is `1.85.0`** (its `simulation` feature pulls rand 0.10, MSRV
 1.85; the base build is held to 1.81 by derive_more 2.1) while **`libqhyccd-sys` is
 `1.68.0`** (dependency-free hand-written FFI). The nightly publish-readiness check

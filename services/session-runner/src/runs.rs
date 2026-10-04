@@ -819,7 +819,7 @@ fn unsafe_detail(status: &Value) -> String {
     let monitors = status
         .get("monitors")
         .and_then(Value::as_array)
-        .map(|monitors| {
+        .map_or_default(|monitors| {
             monitors
                 .iter()
                 .filter_map(|m| {
@@ -829,8 +829,7 @@ fn unsafe_detail(status: &Value) -> String {
                 })
                 .collect::<Vec<_>>()
                 .join(", ")
-        })
-        .unwrap_or_default();
+        });
     if monitors.is_empty() {
         format!("rp reports {overall}")
     } else {

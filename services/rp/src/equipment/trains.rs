@@ -652,8 +652,7 @@ impl TrainModel {
         let sequence = self.af_sequence(train_id)?;
         let guiding_members: HashSet<&str> = self
             .guiding_train()
-            .map(|t| t.devices.iter().map(|d| d.id.as_str()).collect())
-            .unwrap_or_default();
+            .map_or_default(|t| t.devices.iter().map(|d| d.id.as_str()).collect());
         let steps: Vec<PlanStep> = sequence
             .into_iter()
             .map(|step| {

@@ -269,8 +269,7 @@ fn list_systemd_units() -> Vec<UnitFacts> {
                 source_name: None,
                 supplementary_groups: unit_file
                     .as_deref()
-                    .map(parse_supplementary_groups)
-                    .unwrap_or_default(),
+                    .map_or_default(parse_supplementary_groups),
                 name,
                 enabled,
             }

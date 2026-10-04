@@ -554,12 +554,11 @@ fn add_event_plugin(world: &mut RpWorld, events: Vec<String>) {
             let existing = config
                 .get("subscribes_to")
                 .and_then(|v| v.as_array())
-                .map(|arr| {
+                .map_or_default(|arr| {
                     arr.iter()
                         .filter_map(|v| v.as_str().map(String::from))
                         .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
+                });
 
             let mut merged = existing;
             for e in events {

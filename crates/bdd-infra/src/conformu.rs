@@ -1278,8 +1278,7 @@ mod tests {
             let log = dir.path().join("args.log");
             let write_results = behaviour
                 .results
-                .map(|json| format!("printf '%s' '{json}' > \"$2\"; "))
-                .unwrap_or_default();
+                .map_or_default(|json| format!("printf '%s' '{json}' > \"$2\"; "));
             let print = |line: &str| {
                 if line.is_empty() {
                     String::new()
@@ -1316,8 +1315,7 @@ mod tests {
         /// it never ran).
         fn invocations(dir: &TempDir) -> Vec<String> {
             std::fs::read_to_string(dir.path().join("args.log"))
-                .map(|log| log.lines().map(str::to_owned).collect())
-                .unwrap_or_default()
+                .map_or_default(|log| log.lines().map(str::to_owned).collect())
         }
 
         /// A results file carrying exactly these configuration alerts.

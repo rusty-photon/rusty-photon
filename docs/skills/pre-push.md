@@ -341,7 +341,7 @@ python3 tools/ci/beta_clippy_census.py --root "$PWD" --summary /tmp/census.md \
 `--all-targets` compiles each source file once per target, so the script
 deduplicates sites on (lint, file, line, column); the raw JSON over-counts.
 
-The workspace uses a single MSRV (currently 1.94.1) declared in the root
+The workspace uses a single MSRV (currently 1.98.1) declared in the root
 `Cargo.toml` via `[workspace.package]`. All members inherit it with
 `rust-version.workspace = true` **except the four dual-homed FFI crates**
 (`qhyccd-rs` 1.85.0, `libqhyccd-sys` 1.68.0, `libzwo-sys` 1.71.0, `zwo-rs` 1.87.0), which

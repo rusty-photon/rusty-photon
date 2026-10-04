@@ -3,7 +3,7 @@
 # publish to crates.io on their own cadence (ADR-009 / ADR-010), so before a
 # release they must satisfy the guarantees a crates.io consumer relies on —
 # guarantees the in-workspace `check` / `test` jobs cannot verify (the
-# workspace pins one unified MSRV of 1.94.1 and a single newest-version
+# workspace pins one unified MSRV of 1.98.1 and a single newest-version
 # Cargo.lock). This workflow restores the coverage the standalone repos had
 # and that vendoring dropped:
 #   - MSRV + minimal-versions : each crate builds on its declared (lower) MSRV

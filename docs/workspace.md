@@ -338,7 +338,7 @@ sentinel/src/
 ## MSRV
 
 The minimum supported Rust version is pinned in `[workspace.package]` of the
-root `Cargo.toml` (`rust-version = "1.94.1"`). Every member listed in
+root `Cargo.toml` (`rust-version = "1.98.1"`). Every member listed in
 `[workspace].members` — all services and shared crates — inherits it via
 `rust-version.workspace = true`.
 

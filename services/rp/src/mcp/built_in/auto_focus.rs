@@ -475,8 +475,7 @@ impl McpHandler {
         let guiding_members: HashSet<&str> = self
             .trains
             .guiding_train()
-            .map(|t| t.devices.iter().map(|d| d.id.as_str()).collect())
-            .unwrap_or_default();
+            .map_or_default(|t| t.devices.iter().map(|d| d.id.as_str()).collect());
         let touches_guiding = planned.iter().any(|s| {
             matches!(s, PlannedStep::Capture { .. }) && guiding_members.contains(s.focuser_id())
         });

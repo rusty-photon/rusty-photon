@@ -4,7 +4,7 @@ version = "0.1.9"
 edition = "2021"
 # Explicit, lower-than-workspace MSRV: this crate is dual-homed to crates.io
 # (ADR-009), so its published floor must reflect what DOWNSTREAM consumers can
-# build on, NOT the workspace's unified 1.94.1. The floor is verified out-of-tree
+# build on, NOT the workspace's unified 1.98.1. The floor is verified out-of-tree
 # by the nightly publish-readiness check (docs/plans/archive/publish-readiness-checks.md),
 # which copies the crate family out of the workspace and builds it on this
 # toolchain with a direct-minimal-versions lockfile — it cannot be verified

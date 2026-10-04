@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 # Explicit, lower-than-workspace MSRV: dual-homed to crates.io (mirroring
 # qhyccd-rs/zwo-rs), so the published floor must reflect what downstream
-# consumers can build on, NOT the workspace's unified 1.94.1. 1.85.0 (not
+# consumers can build on, NOT the workspace's unified 1.98.1. 1.85.0 (not
 # libsvbony-sys's 1.68.0 floor): the `simulation` feature pulls rand 0.10,
 # whose own MSRV is 1.85. Verified out-of-tree by the nightly
 # publish-readiness check (docs/plans/archive/publish-readiness-checks.md).

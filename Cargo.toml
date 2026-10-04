@@ -74,7 +74,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
-rust-version = "1.94.1"
+rust-version = "1.98.1"
 repository = "https://github.com/ivonnyssen/rusty_photon"
 description = "Rusty Photon - An astrophotography application"
 
