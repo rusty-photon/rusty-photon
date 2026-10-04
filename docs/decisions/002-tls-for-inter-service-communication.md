@@ -6,6 +6,24 @@ Accepted
 
 ## Updates
 
+**2026-10-04** — `serve_tls_with_acceptor`
+(`crates/rusty-photon-tls/src/server.rs`) now drains its connections on
+shutdown, as `serve_plain` already did through axum's
+`with_graceful_shutdown`
+([#1399](https://github.com/rusty-photon/rusty-photon/issues/1399)).
+Before, it only stopped accepting: each connection ran as a detached
+task, so the serve future returned while a request could still be in
+flight, and a kept-alive connection outlived a reload, served by the old
+instance's router, manager and shut-down transport. Now, when the
+shutdown future resolves, every open TLS connection is told to finish
+gracefully: an in-flight request completes, and an idle kept-alive
+connection closes. The serve future returns only once they have all
+ended. As on the plain path the wait has no bound: a long request (an
+MCP `tools/call`, for one) holds shutdown and reload until it finishes.
+A connection still in its first-byte peek, handshake or plaintext
+redirect is waited for too, which those phases' own 5 s and 10 s bounds
+cap.
+
 **2026-08-30** — The Cloudflare DNS provider now calls the Cloudflare v4
 REST API directly through the workspace `reqwest` client
 ([#229](https://github.com/rusty-photon/rusty-photon/issues/229)):

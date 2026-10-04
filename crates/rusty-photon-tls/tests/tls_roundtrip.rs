@@ -170,9 +170,12 @@ async fn client_without_ca_rejects_self_signed() {
     server_handle.await.ok();
 }
 
-/// Handshake against `addr` trusting `ca_path`, returning the peer's leaf
-/// certificate DER.
-async fn peer_cert_der(addr: SocketAddr, ca_path: &std::path::Path) -> Vec<u8> {
+/// Open a raw TLS connection to `addr` trusting `ca_path` — one connection
+/// the test owns outright, unlike a `reqwest` client's pool.
+async fn connect_tls(
+    addr: SocketAddr,
+    ca_path: &std::path::Path,
+) -> tokio_rustls::client::TlsStream<tokio::net::TcpStream> {
     let ca_pem = std::fs::read_to_string(ca_path).unwrap();
     let mut roots = rustls::RootCertStore::empty();
     for cert in rustls_pemfile::certs(&mut ca_pem.as_bytes()) {
@@ -184,7 +187,13 @@ async fn peer_cert_der(addr: SocketAddr, ca_path: &std::path::Path) -> Vec<u8> {
     let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
     let tcp = tokio::net::TcpStream::connect(addr).await.unwrap();
     let name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
-    let tls = connector.connect(name, tcp).await.unwrap();
+    connector.connect(name, tcp).await.unwrap()
+}
+
+/// Handshake against `addr` trusting `ca_path`, returning the peer's leaf
+/// certificate DER.
+async fn peer_cert_der(addr: SocketAddr, ca_path: &std::path::Path) -> Vec<u8> {
+    let tls = connect_tls(addr, ca_path).await;
     tls.get_ref().1.peer_certificates().unwrap()[0].to_vec()
 }
 
@@ -255,10 +264,24 @@ async fn swapped_pair_is_served_without_rebinding() {
     server_handle.await.ok();
 }
 
-/// Set up a TLS server (CA + service cert) on an OS-assigned port, returning
-/// the pki dir (kept alive for its `TempDir` drop), the bound address, a
-/// shutdown handle, and the server task's join handle.
+/// Set up a TLS server (CA + service cert) serving a `/health` route on an
+/// OS-assigned port — see [`start_tls_server`] for what it returns.
 async fn start_tls_server_with_health_route() -> (
+    tempfile::TempDir,
+    SocketAddr,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    start_tls_server(Router::new().route("/health", get(|| async { "ok" }))).await
+}
+
+/// Set up a TLS server (CA + service cert) serving `router` on an
+/// OS-assigned port, returning the pki dir (kept alive for its `TempDir`
+/// drop; the CA is `ca.pem` inside it), the bound address, a shutdown
+/// handle, and the server task's join handle.
+async fn start_tls_server(
+    router: Router,
+) -> (
     tempfile::TempDir,
     SocketAddr,
     tokio::sync::oneshot::Sender<()>,
@@ -294,7 +317,6 @@ async fn start_tls_server_with_health_route() -> (
         .await
         .unwrap();
     let bound_addr = listener.local_addr().unwrap();
-    let router = Router::new().route("/health", get(|| async { "ok" }));
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let server_handle = tokio::spawn(async move {
@@ -306,6 +328,116 @@ async fn start_tls_server_with_health_route() -> (
     });
 
     (pki_dir, bound_addr, shutdown_tx, server_handle)
+}
+
+/// Read from `tls` until the bytes read end with `suffix` — the end of a
+/// response whose body the test knows.
+async fn read_until_suffix(
+    tls: &mut tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
+    suffix: &[u8],
+) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 1024];
+    while !buf.ends_with(suffix) {
+        let n = tls.read(&mut chunk).await.unwrap();
+        assert_ne!(n, 0, "connection closed before the response ended: {buf:?}");
+        buf.extend_from_slice(&chunk[..n]);
+    }
+    buf
+}
+
+#[tokio::test]
+async fn shutdown_closes_an_idle_kept_alive_tls_connection() {
+    let (pki_dir, bound_addr, shutdown_tx, server_handle) =
+        start_tls_server_with_health_route().await;
+    let mut tls = connect_tls(bound_addr, &pki_dir.path().join("ca.pem")).await;
+
+    // One full request/response leaves the connection open and idle: the
+    // pooled connection an HTTP client keeps for its next request.
+    tls.write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let response = tokio::time::timeout(
+        Duration::from_secs(10),
+        read_until_suffix(&mut tls, b"\r\n\r\nok"),
+    )
+    .await
+    .expect("the /health response should arrive");
+    assert!(
+        response.starts_with(b"HTTP/1.1 200 OK\r\n"),
+        "{}",
+        String::from_utf8_lossy(&response)
+    );
+
+    shutdown_tx.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(10), server_handle)
+        .await
+        .expect("serve_tls should return once its connections have closed")
+        .unwrap();
+
+    let mut buf = [0u8; 1];
+    let n = tokio::time::timeout(Duration::from_secs(10), tls.read(&mut buf))
+        .await
+        .expect("shutdown left the idle kept-alive connection open")
+        .unwrap();
+    assert_eq!(
+        n, 0,
+        "the server should close the idle connection, not answer on it"
+    );
+}
+
+#[tokio::test]
+async fn shutdown_waits_for_an_in_flight_tls_request() {
+    let started = std::sync::Arc::new(tokio::sync::Notify::new());
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let router = Router::new().route(
+        "/slow",
+        get({
+            let started = std::sync::Arc::clone(&started);
+            let release = std::sync::Arc::clone(&release);
+            move || {
+                let started = std::sync::Arc::clone(&started);
+                let release = std::sync::Arc::clone(&release);
+                async move {
+                    started.notify_one();
+                    release.notified().await;
+                    "done"
+                }
+            }
+        }),
+    );
+    let (pki_dir, bound_addr, shutdown_tx, mut server_handle) = start_tls_server(router).await;
+
+    let client =
+        rusty_photon_tls::client::build_reqwest_client(Some(&pki_dir.path().join("ca.pem")))
+            .unwrap();
+    let url = format!("https://localhost:{}/slow", bound_addr.port());
+    let request = tokio::spawn(async move {
+        let response = client.get(&url).send().await.unwrap();
+        (response.status(), response.text().await.unwrap())
+    });
+    tokio::time::timeout(Duration::from_secs(10), started.notified())
+        .await
+        .expect("the /slow handler should start");
+
+    shutdown_tx.send(()).unwrap();
+    // A window, not a nap: serve_tls returning at any point inside it, while
+    // the handler is still parked, is the failure.
+    tokio::time::timeout(Duration::from_millis(500), &mut server_handle)
+        .await
+        .expect_err("serve_tls returned while a request was still in flight");
+
+    release.notify_one();
+    let (status, body) = tokio::time::timeout(Duration::from_secs(10), request)
+        .await
+        .expect("the in-flight request should complete")
+        .unwrap();
+    assert_eq!(status, 200);
+    assert_eq!(body, "done");
+    tokio::time::timeout(Duration::from_secs(10), server_handle)
+        .await
+        .expect("serve_tls should return once the in-flight request has finished")
+        .unwrap();
 }
 
 #[tokio::test]
