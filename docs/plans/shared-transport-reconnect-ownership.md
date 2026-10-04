@@ -1589,16 +1589,23 @@ names the mock test that covers that phase instead.
   1. With a client connected, pull the mount's USB cable so the
      supervisor is retrying.
   2. Opening phase: with the cable still out, arm the trigger and let
-     it fire on the next attempt.
+     it fire on the next attempt. The rebuilt instance's eager
+     `start()` in `build()` then fails, because the device is absent.
+     The reload loop propagates that error, so the process exits
+     non-zero. That is the expected end of this phase, not a failure.
+     Once the log proves the overlap, reconnect the cable. systemd then
+     restarts the service (`Restart=on-failure`, `RestartSec=5`).
   3. Handshake and replay phases: reconnect the cable, arm the trigger,
      and let it fire on the next attempt.
   4. Repeat until the counts above are met.
 
   Pass, for every counted run:
-  - the reload returns;
-  - the new instance's open is not refused;
   - the old instance logs nothing after its `shutdown` returned;
-  - a client connects to the new instance;
+  - the next open is not refused, which shows the old instance left no
+    port held. In the handshake and replay phases that is the reload's
+    rebuilt instance. In the opening phase it is the restarted process;
+  - the reload returns (handshake and replay phases only);
+  - a client connects to the instance that is now serving;
   - the mount reports stopped.
 
   For PR 8, also record each counted run's old-instance `safety stop
@@ -1612,7 +1619,11 @@ names the mock test that covers that phase instead.
 - **rig2 (Windows), `dsd-fp2`.** rig2 carries no GTi, so the Windows
   leg runs the shared-transport device rig2 does have: the FP2 panel,
   on COM4. It follows the same procedure and the same counting. This
-  is the leg that exercises the Windows handle release.
+  is the leg that exercises the Windows handle release. `dsd-fp2` also
+  starts its transport eagerly in `build()`. So in the opening phase,
+  once the log proves the overlap, re-enable the device and start the
+  service again explicitly. Do not rely on the SCM's recovery
+  settings.
 
   Nobody is at that pier, so the link is dropped remotely. Before
   PR 4's leg starts, confirm the method on rig2 and record it in the
