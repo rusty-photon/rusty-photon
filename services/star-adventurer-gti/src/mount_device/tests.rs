@@ -2070,7 +2070,33 @@ async fn pickup_stop_axis_reports_an_axis_that_will_not_stop() {
     // the pickup skips its start.
     let manager = MountManager::new(&base_config(), Arc::new(StuckAxisFactory));
     let session = manager.transport().acquire().await.unwrap();
-    assert!(!pickup_stop_axis(&manager, &session, Axis::Ra).await);
+    let slot = Arc::new(SlewSlot::default());
+    let reservation = reserve(&slot).unwrap();
+    assert_eq!(
+        pickup_stop_axis(&manager, &session, &reservation.claim(), Axis::Ra).await,
+        Some(false)
+    );
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn pickup_stop_axis_sends_nothing_once_its_claim_has_lapsed() {
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let manager = MountManager::new(&base_config(), Arc::new(factory));
+    let session = manager.transport().acquire().await.unwrap();
+    let slot = Arc::new(SlewSlot::default());
+    let reservation = reserve(&slot).unwrap();
+    slot.clear();
+    let from = mock.lock().await.command_log.len();
+    assert_eq!(
+        pickup_stop_axis(&manager, &session, &reservation.claim(), Axis::Ra).await,
+        None
+    );
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from),
+        Vec::<String>::new()
+    );
     session.close().await.unwrap();
 }
 
@@ -2804,8 +2830,7 @@ async fn park_target_uses_preferred_ap_park_distinct_from_unpark_seed() {
 #[tokio::test]
 async fn reset_mount_encoders_writes_encoder_and_clears_state() {
     let d = connected_device().await;
-    // Dirty the in-memory motion/target/tracking state a reset clears.
-    d.slew_in_progress.try_claim().unwrap();
+    // Dirty the in-memory target/tracking state a reset clears.
     {
         let mut s = d.state.write().await;
         s.target_ra_hours = Some(5.0);
@@ -2823,12 +2848,62 @@ async fn reset_mount_encoders_writes_encoder_and_clears_state() {
     let snap = d.manager.snapshot().await;
     assert_eq!(snap.ra.position_ticks, 12_345);
     assert_eq!(snap.dec.position_ticks, -6_789);
-    // Driver-internal motion/target/tracking state is cleared.
-    assert!(!d.slew_in_progress.is_held());
+    // Driver-internal target/tracking state is cleared.
     let s = d.state.read().await;
     assert_eq!(s.target_ra_hours, None);
     assert_eq!(s.target_dec_degrees, None);
     assert!(!s.tracking_requested);
+}
+
+#[tokio::test]
+async fn reset_mount_encoders_leaves_the_slew_slot_alone() {
+    // Emptying the slot would void the claim of a slew that is not the
+    // reset's to cancel.
+    let d = connected_device().await;
+    let claimed = d.slew_in_progress.try_claim().unwrap();
+    {
+        let guard = d.session.read().await;
+        let session = guard.as_ref().expect("connected device holds a session");
+        d.reset_mount_encoders(session, 12_345, -6_789)
+            .await
+            .unwrap();
+    }
+    assert!(d.slew_in_progress.holds(claimed));
+}
+
+#[tokio::test(start_paused = true)]
+async fn unpark_from_ap_position_holds_off_a_slew_until_its_encoders_are_written() {
+    // A second client unparks and slews while the reset is stopping the
+    // axes: the slew may only start once the encoders are written.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.state.write().await.at_park = true;
+    let from = mock.lock().await.command_log.len();
+    let reset = d.action("UnparkFromApPosition".into(), "ap_park_3".into());
+    let unpark_and_slew = async {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        d.unpark().await.unwrap();
+        let lst = d.sidereal_time().await.unwrap();
+        d.slew_to_coordinates_async((lst - 1.0).rem_euclid(24.0), 30.0)
+            .await
+    };
+    let (reset, slewed) = tokio::join!(reset, unpark_and_slew);
+    reset.unwrap();
+    slewed.unwrap();
+    let frames = setter_frames_since(&*mock.lock().await, from);
+    let last_write = frames.iter().rposition(|f| f.starts_with(":E")).unwrap();
+    let first_goto = frames.iter().position(|f| f.starts_with(":G")).unwrap();
+    // The reset's own stops are the first two `:K`s; the slew's follow.
+    let slew_stop = frames
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.starts_with(":K"))
+        .nth(2)
+        .map(|(i, _)| i)
+        .unwrap();
+    assert!(
+        last_write < slew_stop && slew_stop < first_goto,
+        "the slew interleaved with the encoder reset: {frames:?}"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -6722,6 +6797,9 @@ async fn an_abort_while_a_slew_waits_for_its_stops_starts_no_goto() {
     );
     assert!(!m.dec.running, "Dec left running");
     drop(m);
+    // Slewing reads the poll's last sample of Dec, taken mid-coast,
+    // until the next poll: wait for it.
+    tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(!d.slewing().await.unwrap());
 }
 
@@ -6784,4 +6862,175 @@ async fn a_watcher_whose_user_has_gone_releases_its_claim() {
         !d.slew_in_progress.is_held(),
         "a watcher whose user disconnected left Slewing true"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_park_aborted_while_its_axes_stop_sends_no_goto() {
+    // Dec is mid-goto, so park's `:K2` sets it coasting for 1.5 s; the
+    // abort lands inside that wait.
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    mock.lock().await.dec.stop_coast = Some(PIER1_DEC_COAST);
+    let mut cfg = base_config();
+    cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
+    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
+    cfg.mount.park_ra_ticks = Some(0);
+    cfg.mount.park_dec_ticks = Some(0);
+    let manager = MountManager::new(&cfg, Arc::new(factory));
+    let d = MountDevice::new(cfg.mount, manager);
+    d.set_connected(true).await.unwrap();
+    mid_goto(
+        &mut mock.lock().await.dec,
+        200_000,
+        skywatcher_motor_protocol::Direction::Cw,
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let from = mock.lock().await.command_log.len();
+    let park = d.park();
+    let abort = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        d.abort_slew().await.unwrap();
+    };
+    let (parked, ()) = tokio::join!(park, abort);
+    let err = parked.unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(err.message.contains("aborted"), "{}", err.message);
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from),
+        vec![":K1", ":K2", ":L1", ":L2"]
+    );
+    assert!(!d.at_park().await.unwrap());
+}
+
+/// A slew watcher on `d` with its target far from the stopped axes, so
+/// that once `MIN_SLEW_DWELL` has passed on the wall clock it starts a
+/// pickup. Returns where the mock's log stood before it was spawned.
+async fn spawn_watcher_due_a_pickup(d: &MountDevice, mock: &SharedMock) -> usize {
+    let lst = d.sidereal_time().await.unwrap();
+    {
+        let mut s = d.state.write().await;
+        s.target_ra_hours = Some((lst - 1.0).rem_euclid(24.0));
+        s.target_dec_degrees = Some(30.0);
+        s.target_pier_side = Some(PierSide::West);
+    }
+    let from = mock.lock().await.command_log.len();
+    spawn_claimed_slew_watcher(d).await;
+    from
+}
+
+#[tokio::test]
+async fn an_abort_while_a_pickup_stops_its_axes_starts_no_pickup() {
+    // Real time: the pickup waits for MIN_SLEW_DWELL on the wall clock.
+    // The abort lands on the pickup's first stop, inside its stop waits
+    // and before the starts take the axes.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    let from = spawn_watcher_due_a_pickup(&d, &mock).await;
+    loop {
+        let stopping = mock
+            .lock()
+            .await
+            .command_log
+            .iter()
+            .skip(from)
+            .any(|f| f.starts_with(b":K1"));
+        if stopping {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    d.abort_slew().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let frames = setter_frames_since(&*mock.lock().await, from);
+    assert!(
+        !frames.iter().any(|f| f.starts_with(":G")),
+        "a pickup started after the abort: {frames:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_pickup_starts_no_goto_on_an_axis_it_could_not_stop() {
+    // Real time, as above. The pickup's `:K1` is refused, so RA is not
+    // known to be stopped: only Dec's goto may start.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    mock.lock().await.fault_script.push_back(ScriptedFault {
+        letter: b'K',
+        fault: Fault::MountError(2),
+    });
+    let from = spawn_watcher_due_a_pickup(&d, &mock).await;
+    tokio::time::sleep(Duration::from_millis(2_500)).await;
+    let frames = setter_frames_since(&*mock.lock().await, from);
+    // The first pickup iteration, up to the next one's `:K1`; the next
+    // retries RA, as it should.
+    let next = frames
+        .iter()
+        .skip(1)
+        .position(|f| f == ":K1")
+        .map_or(frames.len(), |i| i + 1);
+    let first = &frames[..next];
+    assert!(
+        first.iter().any(|f| f.starts_with(":G2")),
+        "no pickup ran: {frames:?}"
+    );
+    assert!(
+        !first.iter().any(|f| f.starts_with(":G1")),
+        "a pickup started RA after its stop failed: {frames:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slew_aborted_during_its_ra_stop_sends_no_dec_stop() {
+    // RA is mid-goto, so the slew's `:K1` sets it coasting; the abort
+    // lands in that wait. The slew's claim has lapsed by the Dec stop,
+    // so no `:K2` of its own reaches the mount (a successor may own Dec).
+    let (d, mock) = pier1_like_device(CwExclusionZone::Disabled).await;
+    mid_goto(
+        &mut mock.lock().await.ra,
+        100_000,
+        skywatcher_motor_protocol::Direction::Cw,
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let from = mock.lock().await.command_log.len();
+    let lst = d.sidereal_time().await.unwrap();
+    let slew = d.slew_to_coordinates_async((lst - 1.0).rem_euclid(24.0), 30.0);
+    let abort = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        d.abort_slew().await.unwrap();
+    };
+    let (slewed, ()) = tokio::join!(slew, abort);
+    assert_eq!(slewed.unwrap_err().code, ASCOMErrorCode::INVALID_OPERATION);
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from),
+        vec![":K1", ":L1", ":L2"]
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slew_whose_axis_is_restarted_during_its_stops_is_refused() {
+    // Dec is coasting, so the slew waits on its stop; Tracking is turned
+    // on in that wait, restarting RA. The slew must not plan from, or
+    // send a goto against, a moving axis.
+    let (d, mock) = pier1_like_device(CwExclusionZone::Disabled).await;
+    mid_goto(
+        &mut mock.lock().await.dec,
+        200_000,
+        skywatcher_motor_protocol::Direction::Cw,
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let lst = d.sidereal_time().await.unwrap();
+    let slew = d.slew_to_coordinates_async((lst - 1.0).rem_euclid(24.0), 30.0);
+    let track = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        d.set_tracking(true).await.unwrap();
+    };
+    let (slewed, ()) = tokio::join!(slew, track);
+    let err = slewed.unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(err.message.contains("moving again"), "{}", err.message);
+    let m = mock.lock().await;
+    assert_eq!(
+        m.ra.mode,
+        skywatcher_motor_protocol::ModeKind::Tracking,
+        "a goto replaced the tracking the client asked for"
+    );
+    assert!(m.ra.running);
 }

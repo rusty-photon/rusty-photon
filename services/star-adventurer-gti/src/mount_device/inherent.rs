@@ -52,7 +52,7 @@ use crate::units::{Cpr, Dec, DecTicks, Lst, MechDec, MechHa, Ra, RaTicks};
 use super::park_persistence::{read_connect_fields, MountConnectFields};
 use super::slew::{
     check_non_flip_ra_path, flip_slew_dec_delta, flip_slew_ra_delta, issue_slew_axis,
-    stop_axis_and_wait, AXIS_STOP_TIMEOUT,
+    stop_axis_and_wait, wait_axis_stopped, AXIS_STOP_TIMEOUT,
 };
 use super::watchers::{spawn_slew_completion_watcher, SlewWatchCtx};
 use super::{pre_flip_side_for_latitude, MountDevice, PulseGuiding, SlewClaim, SlewReservation};
@@ -335,6 +335,35 @@ impl MountDevice {
         .await
     }
 
+    /// [`Self::stop_and_wait`] for a slew or park that holds `claim`.
+    /// The `:K` goes out under [`SlewClaim::hold_axes`], so an operation
+    /// whose claim has lapsed sends no stop into the slew that replaced
+    /// it, and fails instead. The wait polls outside the lock, so an
+    /// abort never waits on a stop poll.
+    pub(super) async fn stop_and_wait_claimed(
+        &self,
+        claim: &SlewClaim,
+        axis: Axis,
+    ) -> ASCOMResult<()> {
+        {
+            let Some(_axes) = claim.hold_axes().await else {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    "aborted while the axes were stopping",
+                ));
+            };
+            self.send(Command::StopMotion(axis))
+                .await
+                .map_err(ASCOMError::from)?;
+        }
+        self.with_session(async |session| {
+            wait_axis_stopped(&self.manager, session, axis, AXIS_STOP_TIMEOUT)
+                .await
+                .map_err(ASCOMError::from)
+        })
+        .await
+    }
+
     /// Block until the slew-completion watcher clears `slew_in_progress`,
     /// or until [`SYNC_SLEW_TIMEOUT`] elapses. Used by the synchronous
     /// `SlewToCoordinates` / `SlewToTarget` variants — those wrap their
@@ -580,9 +609,11 @@ impl MountDevice {
         self.manager
             .seed_dec_position(dec_target_ticks, dec_written.sent_at)
             .await;
-        // 3. Clear driver-internal motion / target / tracking state so
-        //    the freshly written encoder is the source of truth.
-        self.slew_in_progress.clear();
+        // 3. Clear driver-internal target / tracking state so the freshly
+        //    written encoder is the source of truth. The slew slot is
+        //    left alone: emptying it here would void the claim of a slew
+        //    that is not this reset's to cancel. The callers make sure
+        //    no slew holds it.
         let mut state = self.state.write().await;
         state.target_ra_hours = None;
         state.target_dec_degrees = None;
@@ -818,20 +849,22 @@ impl MountDevice {
     /// counterweight path the mount does not sweep, and read the pier
     /// side from a count the axis has left.
     ///
-    /// Both stops are the INDI `:K` + poll `:f`; see
-    /// [`stop_axis_and_wait`]. The RA stop is also the wire event that
-    /// halts any sidereal tracking. `tracking_requested` follows it only
-    /// once it has succeeded, so the state never gets ahead of the wire
-    /// on a transport failure. Each axis is cleared from `taken`, the
-    /// pulses the slew took over, once it has been stopped.
+    /// Both stops are the INDI `:K` + poll `:f`, each `:K` sent under the
+    /// claim; see [`Self::stop_and_wait_claimed`]. The RA stop is also
+    /// the wire event that halts any sidereal tracking.
+    /// `tracking_requested` follows it only once it has succeeded, so the
+    /// state never gets ahead of the wire on a transport failure. Each
+    /// axis is cleared from `taken`, the pulses the slew took over, once
+    /// it has been stopped.
+    ///
+    /// The fresh read, the plan, the latch and both gotos then run under
+    /// one [`SlewClaim::hold_axes`]. An `AbortSlew` lands either before
+    /// the claim is checked, which fails the slew with no goto started,
+    /// or after both `:J`s, where its `:L`s stop the gotos. Nothing else
+    /// that takes the axes (a `Tracking` write, say) can move an axis
+    /// between the reading and the gotos planned from it.
     ///
     /// A plan refused here leaves both axes stopped and Tracking false.
-    ///
-    /// The latch and both gotos run under [`SlewClaim::hold_axes`]. An
-    /// `AbortSlew` lands either before the claim is checked, which fails
-    /// the slew with no goto started, or after both `:J`s, where its `:L`s
-    /// stop the gotos. A stale setup can therefore never latch over, or
-    /// send a goto into, the next slew.
     async fn stop_plan_and_start(
         &self,
         ra: f64,
@@ -841,48 +874,13 @@ impl MountDevice {
         claim: &SlewClaim,
         taken: &mut PulseGuiding,
     ) -> ASCOMResult<()> {
-        let plan = {
-            let guard = self.session.read().await;
-            let session = guard
-                .as_ref()
-                .ok_or_else(|| ASCOMError::from(StarAdvError::NotConnected))?;
-            // Stop through the session already borrowed: a second read of
-            // the session lock here would queue behind a waiting
-            // `Connected` write that is itself waiting for this read.
-            stop_axis_and_wait(&self.manager, session, Axis::Ra, AXIS_STOP_TIMEOUT)
-                .await
-                .map_err(ASCOMError::from)?;
-            taken.set(Axis::Ra, None);
-            self.state.write().await.tracking_requested = false;
-            stop_axis_and_wait(&self.manager, session, Axis::Dec, AXIS_STOP_TIMEOUT)
-                .await
-                .map_err(ASCOMError::from)?;
-            taken.set(Axis::Dec, None);
-            // A fresh wire read: the background snapshot lags the wire by
-            // up to a poll, so it can predate the end of the coast.
-            let rest = self
-                .manager
-                .poll_axes_now(session)
-                .await
-                .map_err(ASCOMError::from)?;
-            drop(guard);
-            let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-                .map_err(ASCOMError::from)?;
-            self.plan_slew(ra, dec, side, &rest, lst, params)
-                .map_err(|e| {
-                    ASCOMError::new(
-                        e.code,
-                        format!(
-                            "slew refused from where the mount came to rest, with both axes \
-                             now stopped: {}",
-                            e.message
-                        ),
-                    )
-                })?
-        };
+        self.stop_and_wait_claimed(claim, Axis::Ra).await?;
+        taken.set(Axis::Ra, None);
+        self.state.write().await.tracking_requested = false;
+        self.stop_and_wait_claimed(claim, Axis::Dec).await?;
+        taken.set(Axis::Dec, None);
         // `axis_ownership` comes before the session slot in the lock
-        // order, so the stops' session guard is gone before the axes are
-        // taken, and the session is borrowed again under them.
+        // order: the axes first, then the session under them.
         let Some(_axes) = claim.hold_axes().await else {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
@@ -893,6 +891,36 @@ impl MountDevice {
         let session = guard
             .as_ref()
             .ok_or_else(|| ASCOMError::from(StarAdvError::NotConnected))?;
+        // A fresh wire read: the background snapshot lags the wire by up
+        // to a poll, so it can predate the end of the coast.
+        let rest = self
+            .manager
+            .poll_axes_now(session)
+            .await
+            .map_err(ASCOMError::from)?;
+        if rest.ra.running() || rest.dec.running() {
+            // Something restarted an axis between its stop and the axes
+            // being taken: a reading of a moving axis is no plan.
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "slew refused: an axis started moving again while the slew \
+                 waited for its stops",
+            ));
+        }
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(ASCOMError::from)?;
+        let plan = self
+            .plan_slew(ra, dec, side, &rest, lst, params)
+            .map_err(|e| {
+                ASCOMError::new(
+                    e.code,
+                    format!(
+                        "slew refused from where the mount came to rest, with both axes \
+                         now stopped: {}",
+                        e.message
+                    ),
+                )
+            })?;
         // The target and the side the plan chose are one target: latch
         // them together, and only once a plan has accepted them.
         {

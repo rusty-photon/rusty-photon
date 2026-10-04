@@ -590,11 +590,20 @@ impl SlewWatchCtx {
         // the original goto. `:K` + poll keeps the
         // motor-not-stopped contract intact even if a previous send
         // failed mid-sequence. Both axes stop first; then the starts go
-        // out under the axes, so an AbortSlew lands either before the
-        // claim check (no pickup) or after both `:J`s (its `:L` stops
-        // them), never between — see `SlewClaim::hold_axes`.
-        let ra_stopped = pickup_stop_axis(&self.manager, session, Axis::Ra).await;
-        let dec_stopped = pickup_stop_axis(&self.manager, session, Axis::Dec).await;
+        // out under the axes. Each stop's `:K` and the starts each check
+        // the claim under the axes, so an AbortSlew lands either before
+        // a check (no further command) or after the starts' `:J`s (its
+        // `:L` stops them), never between — see `SlewClaim::hold_axes`.
+        let Some(ra_stopped) =
+            pickup_stop_axis(&self.manager, session, &self.claim, Axis::Ra).await
+        else {
+            return Some(CompletionDecision::Bail);
+        };
+        let Some(dec_stopped) =
+            pickup_stop_axis(&self.manager, session, &self.claim, Axis::Dec).await
+        else {
+            return Some(CompletionDecision::Bail);
+        };
         let Some(_axes) = self.claim.hold_axes().await else {
             return Some(CompletionDecision::Bail);
         };

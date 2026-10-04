@@ -859,9 +859,11 @@ impl Telescope for MountDevice {
             // reading could point the long way around if an axis was
             // still moving (tracking, in-flight slew) when Park was
             // called.
-            self.stop_and_wait(Axis::Ra).await?;
+            self.stop_and_wait_claimed(&reservation.claim(), Axis::Ra)
+                .await?;
             taken.set(Axis::Ra, None);
-            self.stop_and_wait(Axis::Dec).await?;
+            self.stop_and_wait_claimed(&reservation.claim(), Axis::Dec)
+                .await?;
             taken.set(Axis::Dec, None);
             // Fresh wire read after the stops — the cached background
             // snapshot lags the wire by up to one `polling_interval`.

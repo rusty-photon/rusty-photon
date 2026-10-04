@@ -823,16 +823,21 @@ SlewToCoordinatesAsync(ra, dec)
    │           snapshot (the plan steps are listed below). A slew this
    │           plan refuses is refused before anything moves.
    │
-   ├─ stop both axes (INDI StopWaitMotor):
+   ├─ stop both axes (INDI StopWaitMotor), each :K sent holding
+   │   axis_ownership while the slew's claim still holds:
    │     :K1, poll :f1 until Running=0 (max 2 s, AXIS_STOP_TIMEOUT)
    │     :K2, poll :f2 until Running=0 (max 2 s)
-   ├─ re-read both axes (:j / :f) where they came to rest
+   │
+   │   From here to the last :J, holding axis_ownership, after one
+   │   last check of the slew's claim:
+   ├─ re-read both axes (:j / :f) where they came to rest; refuse if
+   │           either reads running again (a Tracking write during
+   │           the stops, say)
    ├─ plan again from that reading, with a fresh LST. This plan is
    │           the one the wire carries. A slew it refuses leaves both
    │           axes stopped and Tracking false.
    ├─ remember: TargetRightAscension/Declination = (ra, dec), and
    │           the pier side the plan chose
-   │
    ├─ for each axis (INDI-style wire sequence — see
    │   indi-eqmod/skywatcher.cpp::SlewTo):
    │     :G<axis><mode>  motion mode = Goto+Fast, CCW bit from sign of delta
@@ -840,11 +845,10 @@ SlewToCoordinatesAsync(ra, dec)
    │     :H<axis><|delta|>  target by increment (magnitude only)
    │     :M<axis><breaks>   break-point = min(|delta|/10, 3200)
    │     :J<axis>      start motion
-   │   The target latch and both sequences run holding
-   │   axis_ownership, after one last check of the slew's claim. An
-   │   AbortSlew during the stops fails the slew with
-   │   INVALID_OPERATION and no goto; one that arrives during the
-   │   sequences waits for them, and its :L stops both gotos.
+   │   An AbortSlew during the stops fails the slew with
+   │   INVALID_OPERATION, and no further :K or goto is sent; one that
+   │   arrives during the guarded steps waits for them, and its :L
+   │   stops both gotos.
    │
    ├─ Slewing = true
    └─ background poll :f1 / :f2 every 200 ms
@@ -947,7 +951,9 @@ A check of the claim followed by wire commands would still race. An
 abort could land between them, and the next slew could claim the slot
 before the commands went out. So each act that a lapsed claim must not
 perform takes `axis_ownership` and checks the claim under it:
-- the slew's target latch and gotos;
+- each stop's `:K` (slew, Park, pickup), so a stale operation sends
+  no stop into its successor's goto;
+- the slew's fresh read, plan, target latch and gotos, as one step;
 - Park's gotos;
 - the watcher's pickup starts and its tracking restart;
 - the watcher's finalize, which for Park sets AtPark.
@@ -957,6 +963,13 @@ perform takes `axis_ownership` and checks the claim under it:
 which fails, or after the act, where its `:L` stops anything the act
 started. The lock is never held across a wait for an axis to stop, so
 an abort waits a few frames at most.
+
+`UnparkFromApPosition` holds `axis_ownership` from its slew check
+through its encoder reset and the `AtPark` clear. A slew that a
+concurrent `Unpark` made possible therefore cannot claim the slot
+until the encoders are written. The reset itself leaves the slew slot
+alone: emptying it would void a claim that is not the reset's to
+cancel.
 
 ### Park lifecycle
 

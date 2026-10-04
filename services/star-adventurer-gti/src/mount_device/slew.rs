@@ -27,6 +27,8 @@ use crate::error::StarAdvError;
 use crate::manager::{MountManager, MountParameters};
 use crate::units::{Cpr, RaTicks};
 
+use super::SlewClaim;
+
 /// Upper bound on how long [`stop_axis_and_wait`] will poll `:f<axis>`
 /// after a `:K` (decelerate stop) before giving up. From the driver's
 /// own goto speed the `GTi` (firmware 3.48) reads Dec stopped 1.50 s
@@ -116,6 +118,18 @@ pub(super) async fn stop_axis_and_wait(
     timeout: Duration,
 ) -> crate::error::Result<()> {
     manager.send(session, Command::StopMotion(axis)).await?;
+    wait_axis_stopped(manager, session, axis, timeout).await
+}
+
+/// The wait half of [`stop_axis_and_wait`]: poll `:f<axis>` until the
+/// running flag clears or `timeout` elapses, for a caller that sent the
+/// stop itself (under a lock it must not hold while polling).
+pub(super) async fn wait_axis_stopped(
+    manager: &MountManager,
+    session: &Session<SkywatcherCodec>,
+    axis: Axis,
+    timeout: Duration,
+) -> crate::error::Result<()> {
     let start = std::time::Instant::now();
     tokio::time::sleep(Duration::from_millis(100)).await;
     loop {
@@ -173,10 +187,11 @@ pub(super) async fn enable_sidereal_tracking_ra(
 }
 
 /// The stop half of a pickup re-slew in the watcher's EQMOD pickup
-/// loop: [`stop_axis_and_wait`], which drains any residual goto
-/// deceleration. Returns whether the axis stopped. The watcher waits
-/// on both axes before it takes the axes for the starts (see
-/// [`pickup_start_axis`]), so an abort never waits on a stop poll.
+/// loop, which drains any residual goto deceleration. The `:K` goes out
+/// under [`SlewClaim::hold_axes`], so a watcher whose claim has lapsed
+/// sends no stop into the slew that replaced it. The wait polls outside
+/// the lock, so an abort never waits on a stop poll. [`None`] when the
+/// claim has lapsed; otherwise whether the axis stopped.
 ///
 /// Best-effort, like [`pickup_start_axis`]: a failure is logged at
 /// `warn` and swallowed, because the watcher has nothing useful to do
@@ -186,13 +201,21 @@ pub(super) async fn enable_sidereal_tracking_ra(
 pub(super) async fn pickup_stop_axis(
     manager: &MountManager,
     session: &Session<SkywatcherCodec>,
+    claim: &SlewClaim,
     axis: Axis,
-) -> bool {
-    if let Err(e) = stop_axis_and_wait(manager, session, axis, AXIS_STOP_TIMEOUT).await {
-        tracing::warn!("pickup stop {axis:?} failed: {e}");
-        return false;
+) -> Option<bool> {
+    {
+        let _axes = claim.hold_axes().await?;
+        if let Err(e) = manager.send(session, Command::StopMotion(axis)).await {
+            tracing::warn!("pickup stop {axis:?} failed: {e}");
+            return Some(false);
+        }
     }
-    true
+    if let Err(e) = wait_axis_stopped(manager, session, axis, AXIS_STOP_TIMEOUT).await {
+        tracing::warn!("pickup stop {axis:?} failed: {e}");
+        return Some(false);
+    }
+    Some(true)
 }
 
 /// The start half of a pickup re-slew: [`issue_slew_axis`] with the
