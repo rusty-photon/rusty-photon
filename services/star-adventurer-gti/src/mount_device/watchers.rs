@@ -19,7 +19,6 @@
 //! `DriverState` write lock, after which the watcher clears the
 //! `slew_in_progress` atomic.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -39,7 +38,7 @@ use crate::manager::{MountManager, MountParameters, MountSnapshot};
 use crate::units::{Cpr, Dec, DecTicks, Lst, Ra, RaTicks};
 
 use super::slew::{enable_sidereal_tracking_ra, pickup_reslew_axis};
-use super::{pre_flip_side_for_latitude, DriverState};
+use super::{pre_flip_side_for_latitude, DriverState, SlewClaim};
 
 /// Shared session slot the device holds. Watchers peek for `is_none()`
 /// to detect "user disconnected" — independent of their own session
@@ -105,18 +104,17 @@ const WATCHER_POLL_RETRY_LIMIT: u32 = 3;
 const WATCHER_POLL_RETRY_BACKOFF: Duration = Duration::from_millis(100);
 
 /// Returns `true` when the slew-completion watcher must bail out of
-/// its current iteration: either `AbortSlew` cleared
-/// `slew_in_progress`, or `set_connected(false)` closed the transport.
+/// its current iteration: either `AbortSlew` (or disconnect) voided
+/// the watcher's claim on the slew slot — even if another slew has
+/// claimed the slot since — or `set_connected(false)` closed the
+/// transport.
 /// Both conditions can race in mid-iteration after the top-of-loop
 /// guard has already passed, so the watcher checks this helper a
 /// second time immediately before issuing any post-snapshot wire
 /// commands (the EQMOD pickup re-slew or the post-slew tracking
 /// restart).
-pub(super) async fn watcher_should_abort(
-    slew_in_progress: &AtomicBool,
-    session_slot: &SessionSlot,
-) -> bool {
-    !slew_in_progress.load(Ordering::SeqCst) || user_disconnected(session_slot).await
+pub(super) async fn watcher_should_abort(claim: &SlewClaim, session_slot: &SessionSlot) -> bool {
+    !claim.is_current() || user_disconnected(session_slot).await
 }
 
 /// Retrying wrapper around [`MountManager::poll_axes_now`] used by
@@ -209,8 +207,9 @@ enum CompletionDecision {
 /// watchers. Both watchers observe the same six top-of-loop steps:
 ///
 /// 1. Sleep one `polling_interval` tick.
-/// 2. Bail if `slew_in_progress` was cleared externally (`AbortSlew`,
-///    `set_connected(false)`).
+/// 2. Bail once the operation's claim on the slew slot has lapsed
+///    (`AbortSlew`, `set_connected(false)`), even if a later slew
+///    holds the slot now.
 /// 3. Bail if the transport became unavailable.
 /// 4. Snapshot via [`watcher_poll_with_retry`].
 /// 5. Honour `blocked` reads with `:L` on both axes + bail.
@@ -246,7 +245,7 @@ async fn run_completion_watcher<C, F>(
     manager: Arc<MountManager>,
     session: Session<SkywatcherCodec>,
     session_slot: SessionSlot,
-    slew_in_progress: Arc<AtomicBool>,
+    claim: SlewClaim,
     polling_interval: Duration,
     settle: Duration,
     context: &'static str,
@@ -268,11 +267,12 @@ async fn run_completion_watcher<C, F>(
     loop {
         tokio::time::sleep(polling_interval).await;
 
-        // External abort / disconnect path: AbortSlew clears
-        // `slew_in_progress` before issuing :L; set_connected(false)
-        // also clears it. Either way, bail before overwriting
-        // user-visible state.
-        if !slew_in_progress.load(Ordering::SeqCst) {
+        // External abort / disconnect path: AbortSlew empties the slew
+        // slot before issuing :L; set_connected(false) also empties it.
+        // Either way this operation's claim has lapsed, even if the next
+        // slew has claimed the slot already: bail before overwriting
+        // user-visible state or moving the mount under that slew.
+        if !claim.is_current() {
             break;
         }
         // Belt-and-braces: if the user disconnected, exit even if
@@ -281,7 +281,7 @@ async fn run_completion_watcher<C, F>(
         // so `manager.is_available()` would lie — we look at the
         // device's session slot instead.
         if user_disconnected(&session_slot).await {
-            slew_in_progress.store(false, Ordering::SeqCst);
+            claim.release();
             break;
         }
 
@@ -294,7 +294,7 @@ async fn run_completion_watcher<C, F>(
         // axes so the motor isn't left commutating with no
         // observer.
         let Ok(snap) = watcher_poll_with_retry(&manager, &session, context).await else {
-            slew_in_progress.store(false, Ordering::SeqCst);
+            claim.release();
             break;
         };
         // Sky-Watcher spec §5 reports `Blocked` in the `:f` status
@@ -318,7 +318,7 @@ async fn run_completion_watcher<C, F>(
             let _ = manager
                 .send(&session, Command::InstantStop(Axis::Dec))
                 .await;
-            slew_in_progress.store(false, Ordering::SeqCst);
+            claim.release();
             break;
         }
         if snap.ra.running() || snap.dec.running() {
@@ -327,7 +327,7 @@ async fn run_completion_watcher<C, F>(
         match on_axes_stopped(snap, &session).await {
             CompletionDecision::Continue => {}
             CompletionDecision::Bail => {
-                slew_in_progress.store(false, Ordering::SeqCst);
+                claim.release();
                 break;
             }
             CompletionDecision::Complete => {
@@ -352,7 +352,7 @@ async fn run_completion_watcher<C, F>(
                     let mut s = state.write().await;
                     on_finalize(&mut s);
                 }
-                slew_in_progress.store(false, Ordering::SeqCst);
+                claim.release();
                 break;
             }
         }
@@ -375,7 +375,7 @@ pub(super) struct SlewWatchCtx {
     pub(super) state: Arc<RwLock<DriverState>>,
     pub(super) manager: Arc<MountManager>,
     pub(super) session_slot: SessionSlot,
-    pub(super) slew_in_progress: Arc<AtomicBool>,
+    pub(super) claim: SlewClaim,
     pub(super) config: MountConfig,
     pub(super) polling_interval: Duration,
     /// The [`MIN_SLEW_DWELL`] floor anchor. Callers seed it at
@@ -563,7 +563,7 @@ impl SlewWatchCtx {
         // or set_connected(false) (which closes the transport) may
         // have raced ahead. Without this second guard the pickup
         // loop would restart motion after the user aborted.
-        if watcher_should_abort(&self.slew_in_progress, &self.session_slot).await {
+        if watcher_should_abort(&self.claim, &self.session_slot).await {
             return Some(CompletionDecision::Bail);
         }
         let projection = pickup.next_projection(self.polling_interval);
@@ -609,7 +609,7 @@ impl SlewWatchCtx {
         // `slew_in_progress` between the top-of-loop check and now
         // must skip the tracking restart, or the user-visible state
         // would say "aborted" while the wire is back to tracking.
-        if watcher_should_abort(&self.slew_in_progress, &self.session_slot).await {
+        if watcher_should_abort(&self.claim, &self.session_slot).await {
             return CompletionDecision::Bail;
         }
         if self.tracking_was_on {
@@ -726,7 +726,7 @@ pub(super) async fn spawn_slew_completion_watcher(
     let state = Arc::clone(&ctx.state);
     let manager = Arc::clone(&ctx.manager);
     let session_slot = Arc::clone(&ctx.session_slot);
-    let slew_in_progress = Arc::clone(&ctx.slew_in_progress);
+    let claim = ctx.claim.clone();
     let polling_interval = ctx.polling_interval;
     tokio::spawn(async move {
         let mut pickup = PickupState::default();
@@ -735,7 +735,7 @@ pub(super) async fn spawn_slew_completion_watcher(
             manager,
             session,
             session_slot,
-            slew_in_progress,
+            claim,
             polling_interval,
             settle,
             "slew_watcher",
@@ -776,7 +776,7 @@ pub(super) async fn spawn_park_completion_watcher(
     state: Arc<RwLock<DriverState>>,
     manager: Arc<MountManager>,
     session_slot: SessionSlot,
-    slew_in_progress: Arc<AtomicBool>,
+    claim: SlewClaim,
     polling_interval: Duration,
     settle: Duration,
 ) -> crate::error::Result<()> {
@@ -791,7 +791,7 @@ pub(super) async fn spawn_park_completion_watcher(
             manager,
             session,
             session_slot,
-            slew_in_progress,
+            claim,
             polling_interval,
             settle,
             "park_watcher",

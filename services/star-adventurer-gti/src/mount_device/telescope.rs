@@ -6,7 +6,6 @@
 //! sibling submodules; methods here orchestrate but rarely compute.
 
 use std::ops::RangeInclusive;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -29,7 +28,7 @@ use crate::coordinates::{
 use crate::manager::MountParameters;
 use crate::units::{Cpr, Dec, DecTicks, Ra, RaTicks};
 
-use super::inherent::validate_guide_rate;
+use super::inherent::{validate_guide_rate, SideChoice};
 use super::park_persistence::write_park_to_config;
 use super::slew::enable_sidereal_tracking_ra;
 use super::watchers::spawn_park_completion_watcher;
@@ -302,7 +301,7 @@ impl Telescope for MountDevice {
         // task signalling completion (after settle + tracking re-issue),
         // so the flag covers both the active-motion period and the
         // post-motion settle window.
-        if self.slew_in_progress.load(Ordering::SeqCst) {
+        if self.slew_in_progress.is_held() {
             return Ok(true);
         }
         let snap = self.manager.snapshot().await;
@@ -505,7 +504,7 @@ impl Telescope for MountDevice {
         // own `slew_in_progress` check, but rejecting here yields a
         // cleaner error before we read the snapshot and compute a
         // stale celestial target.
-        if self.slew_in_progress.load(Ordering::SeqCst) {
+        if self.slew_in_progress.is_held() {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "SetSideOfPier refused: slew already in progress",
@@ -537,7 +536,7 @@ impl Telescope for MountDevice {
         // Read the *celestial* current pointing from the snapshot —
         // `encoder_to_celestial` applies the post-flip RA/Dec mapping
         // when the Dec encoder is past the pole.
-        // `execute_slew_with_explicit_side` will re-compute the target
+        // `execute_slew` will re-compute the target
         // encoder for the chosen side.
         let (cur_ra, cur_dec) = encoder_to_celestial(
             RaTicks::new(snap.ra.position_ticks),
@@ -553,7 +552,7 @@ impl Telescope for MountDevice {
         // stay-on-current preference is correct for slew_to_coordinates
         // but wrong for an explicit SetSideOfPier — the user pinned the
         // side, honour it.
-        self.execute_slew_with_explicit_side(cur_ra, cur_dec, side_of_pier)
+        self.execute_slew(cur_ra, cur_dec, SideChoice::Pinned(side_of_pier))
             .await
     }
 
@@ -635,7 +634,7 @@ impl Telescope for MountDevice {
         // not depend on the encoder position, and its wire bursts take
         // this same lock, so they queue behind the `:E` writes below.
         let _axes = self.axis_ownership.lock().await;
-        if self.slew_in_progress.load(Ordering::SeqCst) {
+        if self.slew_in_progress.is_held() {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "sync refused: slew already in progress",
@@ -755,54 +754,14 @@ impl Telescope for MountDevice {
         self.ensure_connected().await?;
         Self::validate_coordinates(ra, dec)?;
         self.ensure_unparked().await?;
-        let params = self
-            .manager
-            .parameters()
-            .await
-            .ok_or(ASCOMError::NOT_CONNECTED)?;
-
-        // Compute target encoder ticks for the *current* LST. INDI's
-        // EQMOD-style post-stop pickup loop (issue #205) handles the
-        // residual that arises because RA drifts during the goto: when
-        // the watcher detects both axes stopped, it reads the actual
-        // RA/Dec, computes the residual against the latched target,
-        // and re-issues a corrective goto if the residual exceeds the
-        // INDI tolerance (`RAGOTORESOLUTION = 5"`). Earlier revisions
-        // sidestepped this by pre-shifting LST by `MIN_SLEW_DWELL` —
-        // that bounded mock drift but undershot real-hardware slews
-        // of 3-7 s, leaving 45-120 arc-second RA residuals. The
-        // pickup loop closes the gap cleanly.
-        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(ASCOMError::from)?;
-
-        // Phase 6: determine target pier side via the flip policy. With
-        // `flip_policy.enabled = false` (the default), `chosen_side`
-        // always equals `current_side` and the rest of this function
-        // reduces to the pre-Phase-6 pipeline. With it enabled, a
-        // flip slew may be chosen — see the design doc's
+        // The flip policy picks the pier side. With
+        // `flip_policy.enabled = false` (the default) the slew stays on
+        // the current side; with it enabled, a flip slew may be chosen —
+        // see the design doc's
         // [§"Meridian flip"](../../../../docs/services/star-adventurer-gti.md#meridian-flip).
-        let snap = self.manager.snapshot_now().await;
-        let current_side = side_of_pier_calc(
-            DecTicks::new(snap.dec.position_ticks),
-            Cpr::new(params.cpr_dec),
-            self.config.site_latitude_deg,
-        );
-        // The selector needs where the mount stands, not just which
-        // side it is on: a side is only usable when an RA sweep to it
-        // clears the CW exclusion zone.
-        let current_mech_ha =
-            RaTicks::new(snap.ra.position_ticks).to_mech_ha(Cpr::new(params.cpr_ra));
-        let chosen_side = select_pier_side_for_target(
-            Ra::new(ra),
-            lst,
-            current_side,
-            current_mech_ha,
-            &self.config.flip_policy,
-            self.config.cw_exclusion_zone.bounds(),
-            self.config.site_latitude_deg,
-        );
-        self.execute_slew_with_explicit_side(ra, dec, chosen_side)
-            .await
+        // The choice is made with the rest of the plan, from where the
+        // mount stands.
+        self.execute_slew(ra, dec, SideChoice::FlipPolicy).await
     }
 
     async fn slew_to_target_async(&self) -> ASCOMResult<()> {
@@ -967,7 +926,7 @@ impl Telescope for MountDevice {
             Arc::clone(&self.state),
             Arc::clone(&self.manager),
             Arc::clone(&self.session),
-            Arc::clone(&self.slew_in_progress),
+            reservation.claim(),
             self.manager.polling_interval_for_watcher(),
             settle,
         )
@@ -1010,7 +969,7 @@ impl Telescope for MountDevice {
         //      reason the in-memory flag wouldn't capture (a tracking
         //      pulse, an external `:J` from a future out-of-band path,
         //      a flag-set racing the wire send).
-        if self.slew_in_progress.load(Ordering::SeqCst) {
+        if self.slew_in_progress.is_held() {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "SetPark refused while slew or park is in progress",
@@ -1097,14 +1056,16 @@ impl Telescope for MountDevice {
         // should let the position write finish rather than interleave
         // with it.
         let _axes = self.axis_ownership.lock().await;
-        // Clear slew_in_progress first so the slew/park watchers see the
-        // abort and bail before clobbering the snapshot or at_park flag.
+        // Empty the slew slot first, voiding the claim of the slew or
+        // park in flight: its watcher bails before clobbering the
+        // snapshot or at_park flag, and a slew still waiting on its
+        // stops starts no goto (or stops the one it just started).
         // Also clear tracking_requested — `:L` halts any motion the
         // mount is doing including any sidereal tracking the watcher
         // may have re-issued. After abort the user must explicitly
         // re-enable tracking. Matches ASCOM's "AbortSlew does not
         // auto-restore tracking" guarantee.
-        self.slew_in_progress.store(false, Ordering::SeqCst);
+        self.slew_in_progress.clear();
         {
             let mut s = self.state.write().await;
             s.tracking_requested = false;

@@ -65,6 +65,37 @@ pub struct AxisSimState {
     /// so slow rates (a 0.5 × sidereal Dec pulse is ~17 ticks/s, a few
     /// ticks per poll) accumulate instead of truncating to a lower rate.
     pub tracking_tick_remainder: f64,
+    /// How a goto on this axis stops. `None` (the default) stops it the
+    /// instant a `:K` or `:L` arrives. `Some` carries the axis on in its
+    /// direction of motion instead, reading running until the coast
+    /// ends, the way the `GTi` does from goto speed (see
+    /// [`StopCoast`]).
+    pub stop_coast: Option<StopCoast>,
+    /// The coast a stop started, while it runs; see
+    /// [`AxisSimState::advance_coast`].
+    pub coasting: Option<Coasting>,
+}
+
+/// How far, and over how long, a goto axis keeps moving after `:K` or
+/// `:L`.
+///
+/// The pier1 `GTi` (firmware 3.48) decelerates at a constant rate under
+/// either stop. From the driver's goto speed it travels on 30,323 Dec
+/// ticks over 1.50 s and 27,060 RA ticks over 1.27 s.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StopCoast {
+    pub ticks: u32,
+    pub duration: Duration,
+}
+
+/// A coast in progress; see [`AxisSimState::advance_coast`].
+#[derive(Debug, Clone, Copy)]
+pub struct Coasting {
+    from_ticks: i32,
+    /// Signed: the coast runs in the direction the axis was moving.
+    distance_ticks: i32,
+    started: Instant,
+    duration: Duration,
 }
 
 impl Default for AxisSimState {
@@ -81,6 +112,8 @@ impl Default for AxisSimState {
             step_period: 0,
             tracking_clock: None,
             tracking_tick_remainder: 0.0,
+            stop_coast: None,
+            coasting: None,
         }
     }
 }
@@ -120,7 +153,7 @@ impl AxisSimState {
     /// Tracking-mode motion is not poll-driven — it runs on the clock at
     /// the rate `:I` set; see [`Self::advance_tracking`].
     fn advance_one_step(&mut self) {
-        if !self.running || self.mode != ModeKind::Goto {
+        if !self.running || self.mode != ModeKind::Goto || self.coasting.is_some() {
             return;
         }
         // Direction comes from the wire-level direction bit decoded
@@ -165,6 +198,50 @@ impl AxisSimState {
             Direction::Ccw => -1,
             Direction::Cw => 1,
         }
+    }
+
+    /// Apply a `:K` or `:L` the mock honours. A running goto with a
+    /// [`stop_coast`](Self::stop_coast) starts to coast, and a stop that
+    /// arrives mid-coast changes nothing. Any other motion stops at once.
+    fn stop(&mut self, now: Instant) {
+        if self.coasting.is_some() {
+            return;
+        }
+        match self.stop_coast {
+            Some(coast) if self.running && self.mode == ModeKind::Goto => {
+                self.coasting = Some(Coasting {
+                    from_ticks: self.position_ticks,
+                    distance_ticks: coast
+                        .ticks
+                        .cast_signed()
+                        .saturating_mul(self.direction_sign()),
+                    started: now,
+                    duration: coast.duration,
+                });
+            }
+            _ => self.running = false,
+        }
+    }
+
+    /// Bring a coast up to `now`. The axis decelerates at a constant
+    /// rate, so at time `t` of a coast lasting `T` it has covered
+    /// `1 − (1 − t/T)²` of the distance. At `T` it stops.
+    fn advance_coast(&mut self, now: Instant) {
+        let Some(coast) = self.coasting else {
+            return;
+        };
+        let elapsed = now.saturating_duration_since(coast.started);
+        if elapsed >= coast.duration {
+            self.position_ticks =
+                clamp_to_wire_range(coast.from_ticks.saturating_add(coast.distance_ticks));
+            self.running = false;
+            self.coasting = None;
+            return;
+        }
+        let left = 1.0 - elapsed.as_secs_f64() / coast.duration.as_secs_f64();
+        let covered = f64::from(coast.distance_ticks) * left.mul_add(-left, 1.0);
+        self.position_ticks =
+            clamp_to_wire_range(coast.from_ticks.saturating_add(sat_round_i32(covered)));
     }
 
     /// Bring **tracking-mode** motion up to `now`.
@@ -422,6 +499,8 @@ impl MockMountState {
         self.command_log.push(request.to_vec());
         self.command_times.push(now);
         self.advance_tracking(now);
+        self.ra.advance_coast(now);
+        self.dec.advance_coast(now);
         self.dispatch_command(request);
         self.advance_tracking(now);
     }
@@ -690,6 +769,14 @@ impl MockMountState {
                     Err(reply) => return reply,
                 };
                 if let Some(ax) = self.axis_mut(axis) {
+                    // A coast carries on from the written count: shift
+                    // its start by the write, or the next frame's coast
+                    // advance would put the old count back.
+                    if let Some(coast) = ax.coasting.as_mut() {
+                        coast.from_ticks = coast
+                            .from_ticks
+                            .saturating_add(ticks.saturating_sub(ax.position_ticks));
+                    }
                     ax.position_ticks = ticks;
                     ack_with(&[])
                 } else {
@@ -707,22 +794,21 @@ impl MockMountState {
                     err_reply(0)
                 }
             }
-            // `:K` (stop) and `:L` (instant stop) differ only in
-            // deceleration on real hardware; the mock stops instantly
-            // either way.
+            // `:K` (stop) and `:L` (instant stop) decelerate alike from
+            // goto speed on the `GTi`. The mock stops instantly under
+            // either, unless the axis has a `stop_coast`.
             b'K' | b'L' => {
                 let ignore = match cmd {
                     b'K' => self.ignore_decelerating_stop,
                     _ => self.ignore_instant_stop,
                 };
-                if let Some(ax) = self.axis_mut(axis) {
-                    if !ignore {
-                        ax.running = false;
-                    }
-                    ack_with(&[])
-                } else {
-                    err_reply(0)
+                let Some(ax) = self.axis_mut(axis) else {
+                    return err_reply(0);
+                };
+                if !ignore {
+                    ax.stop(Instant::now());
                 }
+                ack_with(&[])
             }
             _ => err_reply(0), // UnknownCommand
         }
@@ -958,6 +1044,127 @@ mod tests {
         s.advance_tracking(t0, TMR_FREQ, 32);
         s.advance_tracking(t0 + std::time::Duration::from_secs(10), TMR_FREQ, 32);
         assert_eq!(s.position_ticks, 0);
+    }
+
+    /// 30,000 ticks over 1.5 s: round numbers near the pier1 `GTi`'s Dec
+    /// coast, so the constant-deceleration fractions come out exact.
+    const COAST: StopCoast = StopCoast {
+        ticks: 30_000,
+        duration: std::time::Duration::from_millis(1_500),
+    };
+
+    /// An axis running a goto in `direction`, its target far enough away
+    /// that the goto itself never ends inside a test.
+    fn coasting_goto_axis(direction: Direction) -> AxisSimState {
+        AxisSimState {
+            running: true,
+            mode: ModeKind::Goto,
+            speed: Speed::Fast,
+            direction,
+            position_ticks: 1_000,
+            goto_target_ticks: match direction {
+                Direction::Cw => 2_000_000,
+                Direction::Ccw => -2_000_000,
+            },
+            stop_coast: Some(COAST),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_stopped_goto_coasts_on_in_its_direction_at_constant_deceleration() {
+        let t0 = Instant::now();
+        let mut s = coasting_goto_axis(Direction::Ccw);
+        s.stop(t0);
+        // Half the time covers three quarters of the distance.
+        s.advance_coast(t0 + std::time::Duration::from_millis(750));
+        assert_eq!(s.position_ticks, 1_000 - 22_500);
+        assert!(s.running, "a coasting axis must read running");
+    }
+
+    #[test]
+    fn a_coast_ends_stopped_at_its_full_distance() {
+        let t0 = Instant::now();
+        let mut s = coasting_goto_axis(Direction::Cw);
+        s.stop(t0);
+        s.advance_coast(t0 + COAST.duration);
+        assert_eq!(s.position_ticks, 1_000 + 30_000);
+        assert!(!s.running);
+        assert!(s.coasting.is_none());
+    }
+
+    #[test]
+    fn a_stop_that_arrives_mid_coast_does_not_restart_it() {
+        let t0 = Instant::now();
+        let mut s = coasting_goto_axis(Direction::Cw);
+        s.stop(t0);
+        s.advance_coast(t0 + std::time::Duration::from_secs(1));
+        s.stop(t0 + std::time::Duration::from_secs(1));
+        s.advance_coast(t0 + COAST.duration);
+        assert_eq!(s.position_ticks, 1_000 + 30_000);
+        assert!(!s.running);
+    }
+
+    #[test]
+    fn a_coasting_goto_does_not_step_toward_its_target() {
+        let t0 = Instant::now();
+        let mut s = coasting_goto_axis(Direction::Cw);
+        s.stop(t0);
+        s.advance_one_step();
+        assert_eq!(s.position_ticks, 1_000);
+    }
+
+    #[test]
+    fn a_stopped_tracking_axis_does_not_coast() {
+        // The `GTi` stops a tracking axis within milliseconds; only goto
+        // speed carries it on.
+        let mut s = tracking_axis(Direction::Cw, 1_000);
+        s.stop_coast = Some(COAST);
+        s.stop(Instant::now());
+        assert!(!s.running);
+        assert!(s.coasting.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_wire_reads_a_coast_running_until_it_ends() {
+        // The coast runs on the clock, like tracking: `:f` alone sees the
+        // axis running until the coast's time is up, then stopped where
+        // the coast ended.
+        let factory = CapturingMockFactory::new();
+        {
+            let mut m = factory.state.lock().await;
+            m.dec = coasting_goto_axis(Direction::Cw);
+            m.dec.initialized = true;
+        }
+        let mut t = factory.open().await.unwrap();
+        assert_eq!(round_trip(&mut t, b":L2\r").await, b"=\r");
+        // Goto, CW, fast (`4`); running (`1`); initialised (`1`).
+        assert_eq!(round_trip(&mut t, b":f2\r").await, b"=411\r");
+        tokio::time::advance(COAST.duration).await;
+        assert_eq!(round_trip(&mut t, b":f2\r").await, b"=401\r");
+        let position = round_trip(&mut t, b":j2\r").await;
+        let payload: &[u8; 6] = position[1..7].try_into().unwrap();
+        assert_eq!(decode_position(payload).unwrap(), 1_000 + 30_000);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_position_written_mid_coast_holds_and_the_coast_carries_on_from_it() {
+        let factory = CapturingMockFactory::new();
+        {
+            let mut m = factory.state.lock().await;
+            m.dec = coasting_goto_axis(Direction::Cw);
+            m.dec.initialized = true;
+        }
+        let mut t = factory.open().await.unwrap();
+        assert_eq!(round_trip(&mut t, b":L2\r").await, b"=\r");
+        let mut write = b":E2".to_vec();
+        write.extend_from_slice(&encode_position(500_000).unwrap());
+        write.push(b'\r');
+        assert_eq!(round_trip(&mut t, &write).await, b"=\r");
+        tokio::time::advance(COAST.duration).await;
+        let position = round_trip(&mut t, b":j2\r").await;
+        let payload: &[u8; 6] = position[1..7].try_into().unwrap();
+        assert_eq!(decode_position(payload).unwrap(), 500_000 + 30_000);
     }
 
     #[test]

@@ -17,8 +17,6 @@
 //!
 //! [§Unpark from AP position]: ../../../../docs/services/star-adventurer-gti.md#unpark-from-ap-position
 
-use std::sync::atomic::Ordering;
-
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 
 use crate::config::ApPark;
@@ -177,7 +175,7 @@ impl MountDevice {
                 "UnparkFromApPosition refused: mount is not parked",
             ));
         }
-        if self.slew_in_progress.load(Ordering::SeqCst) {
+        if self.slew_in_progress.is_held() {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "UnparkFromApPosition refused: slew in progress",

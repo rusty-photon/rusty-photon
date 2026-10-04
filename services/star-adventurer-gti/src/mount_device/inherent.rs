@@ -22,10 +22,11 @@
 //!   [`MountDevice::seed_after_connect`],
 //!   [`MountDevice::load_park_target_after_connect`].
 //! - **Slew planner**:
-//!   [`MountDevice::execute_slew_with_explicit_side`] — the shared
-//!   body for `SlewToCoordinatesAsync` and `SetSideOfPier`.
+//!   [`MountDevice::execute_slew`] — the shared body for
+//!   `SlewToCoordinatesAsync` and `SetSideOfPier` — and
+//!   [`MountDevice::plan_slew`], which it runs from the latest
+//!   snapshot and again from where the axes came to rest.
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -40,11 +41,11 @@ use crate::codec::SkywatcherCodec;
 use crate::config::ApPark;
 use crate::coordinates::{
     local_sidereal_time_hours, mech_ha_in_binding_zone, ra_dec_to_alt_az,
-    side_of_pier as side_of_pier_calc, target_encoder_flipped, target_encoder_normal,
-    SIDEREAL_DEG_PER_SEC,
+    select_pier_side_for_target, side_of_pier as side_of_pier_calc, target_encoder_flipped,
+    target_encoder_normal, SIDEREAL_DEG_PER_SEC,
 };
 use crate::error::StarAdvError;
-use crate::manager::{MountParameters, MountSnapshot};
+use crate::manager::{AxisSnapshot, MountParameters, MountSnapshot};
 use crate::units::{Cpr, Dec, DecTicks, Lst, MechDec, MechHa, Ra, RaTicks};
 
 use super::park_persistence::{read_connect_fields, MountConnectFields};
@@ -53,7 +54,7 @@ use super::slew::{
     stop_axis_and_wait, AXIS_STOP_TIMEOUT,
 };
 use super::watchers::{spawn_slew_completion_watcher, SlewWatchCtx};
-use super::{pre_flip_side_for_latitude, MountDevice, PulseGuiding, SlewReservation};
+use super::{pre_flip_side_for_latitude, MountDevice, PulseGuiding, SlewClaim, SlewReservation};
 
 /// Upper bound on how long the synchronous `SlewToCoordinates` /
 /// `SlewToTarget` will wait for the watcher to clear `slew_in_progress`.
@@ -75,6 +76,24 @@ const SYNC_SLEW_TIMEOUT: Duration = Duration::from_mins(5);
 /// distinguishes "just powered up" from "the operator already moved
 /// the mount this session".
 const FRESH_POWER_UP_TICK_TOLERANCE: i32 = 10;
+
+/// Which pier side a slew lands on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SideChoice {
+    /// Whichever side the flip-policy selector picks from where the
+    /// mount stands; see [`select_pier_side_for_target`].
+    FlipPolicy,
+    /// The side the caller asked for (`SetSideOfPier`).
+    Pinned(PierSide),
+}
+
+/// A slew planned from one reading of both axes; see
+/// [`MountDevice::plan_slew`].
+struct SlewPlan {
+    side: PierSide,
+    ra_delta: i32,
+    dec_delta: i32,
+}
 
 /// Validate an ASCOM `GuideRate*` setter value (deg/sec) and return
 /// the equivalent fraction of sidereal. Rejects values outside the
@@ -562,7 +581,7 @@ impl MountDevice {
             .await;
         // 3. Clear driver-internal motion / target / tracking state so
         //    the freshly written encoder is the source of truth.
-        self.slew_in_progress.store(false, Ordering::SeqCst);
+        self.slew_in_progress.clear();
         let mut state = self.state.write().await;
         state.target_ra_hours = None;
         state.target_dec_degrees = None;
@@ -673,66 +692,37 @@ impl MountDevice {
         Ok(())
     }
 
-    /// Execute a slew to celestial (ra, dec) on the explicitly-chosen
-    /// pier side. Used by both `slew_to_coordinates_async` (where the
-    /// side is picked from the flip policy decision tree) and
-    /// `set_side_of_pier` (where the user pins the side directly).
+    /// Execute a slew to celestial (ra, dec), landing on the pier side
+    /// `side` asks for. The shared body of `slew_to_coordinates_async`
+    /// (side from the flip-policy selector) and `set_side_of_pier`
+    /// (side pinned by the caller).
     ///
     /// Caller must have already validated: connected, coords in
     /// range, not parked. The helper then:
-    ///   1. Computes target encoder ticks for the chosen side
-    ///      (pre-flip or post-flip) and validates against the
-    ///      per-side safety envelope.
-    ///   2. Atomically latches `slew_in_progress` and the
-    ///      target RA/Dec.
-    ///   3. Computes deltas with `fold_to_canonical_band` (handles a
-    ///      post-through-wrap raw encoder) and applies
-    ///      `flip_slew_ra_delta` on the RA axis for flip slews
-    ///      (forces CCW direction through the safe negative-mech_HA
-    ///      half).
-    ///   4. Issues the INDI wire sequence per axis and hands off to
-    ///      the slew-completion watcher.
-    pub(super) async fn execute_slew_with_explicit_side(
+    ///   1. Claims the slew slot, refusing while a slew or park holds it.
+    ///   2. Unless an axis is still in a goto, plans the slew from the
+    ///      latest snapshot with [`Self::plan_slew`]. A slew refused here
+    ///      is refused before anything moves.
+    ///   3. Stops both axes, plans again from where they came to rest,
+    ///      latches the target and starts the gotos from that plan — see
+    ///      [`Self::stop_plan_and_start`].
+    ///   4. Hands off to the slew-completion watcher.
+    pub(super) async fn execute_slew(
         &self,
         ra: f64,
         dec: f64,
-        chosen_side: PierSide,
+        side: SideChoice,
     ) -> ASCOMResult<()> {
         let params = self
             .manager
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
-        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(ASCOMError::from)?;
-        let pre_flip_side = pre_flip_side_for_latitude(self.config.site_latitude_deg);
-        let target_is_flipped = chosen_side != pre_flip_side && chosen_side != PierSide::Unknown;
-        let (ra_ticks, dec_ticks) = if target_is_flipped {
-            target_encoder_flipped(
-                Ra::new(ra),
-                Dec::new(dec),
-                lst,
-                Cpr::new(params.cpr_ra),
-                Cpr::new(params.cpr_dec),
-            )
-        } else {
-            target_encoder_normal(
-                Ra::new(ra),
-                Dec::new(dec),
-                lst,
-                Cpr::new(params.cpr_ra),
-                Cpr::new(params.cpr_dec),
-            )
-        };
-        // Refuse before any wire motion if the slew target falls
-        // outside the configured mechanical envelope for the chosen
-        // pier side.
-        self.check_within_safe_envelope(ra, dec, lst.value(), target_is_flipped)?;
 
-        // Reserve the in-progress slot **before** issuing any motion.
-        // The returned guard clears `slew_in_progress` on drop, so every
-        // `?` below — a failed wire command or a failed watcher hand-off
-        // — rolls the flag back without an explicit clear.
+        // Claim the slew slot **before** issuing any motion. The
+        // returned guard releases the claim on drop, so every `?` below
+        // — a refused plan, a failed wire command or a failed watcher
+        // hand-off — rolls it back without an explicit release.
         // Serialize with an in-flight sync's encoder writes before
         // claiming the axes; see `axis_ownership`. Held only across the
         // acquisition — the slew's own ownership is the reservation,
@@ -749,35 +739,39 @@ impl MountDevice {
                 "slew refused: slew already in progress",
             ));
         };
-        // Latch the target + capture the tracking flag.
-        let tracking_was_on;
-        {
-            let mut s = self.state.write().await;
-            s.target_ra_hours = Some(ra);
-            s.target_dec_degrees = Some(dec);
-            s.target_pier_side = Some(chosen_side);
-            tracking_was_on = s.tracking_requested;
+        // Refuse from the latest snapshot first, so that a slew which is
+        // refused anyway leaves the mount as it was: still tracking, with
+        // any guide pulse left to end itself. Not while an axis is still
+        // in a goto, coasting from an abort or a safety stop: the snapshot
+        // is then not where the axis will stop, and its plan could refuse
+        // a slew the rest position allows. Stopping an axis that is
+        // already decelerating changes nothing, so the plan after the stop
+        // alone decides.
+        let snap = self.manager.snapshot_now().await;
+        let in_goto = |axis: &AxisSnapshot| axis.running() && axis.goto();
+        if !in_goto(&snap.ra) && !in_goto(&snap.dec) {
+            let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+                .map_err(ASCOMError::from)?;
+            self.plan_slew(ra, dec, side, &snap, lst, &params)?;
         }
+        // The watcher restores tracking after the slew if it was on now;
+        // the RA stop below turns it off.
+        let tracking_was_on = self.state.read().await.tracking_requested;
 
-        // Issue the motion sequence. Any `?` failure inside drops
-        // `reservation`, which clears `slew_in_progress` — the driver
-        // can't get stuck reporting Slewing after a failed slew.
-        let mut taken = PulseGuiding::IDLE;
-        let result: ASCOMResult<()> = async {
-            let snap = self.manager.snapshot_now().await;
-            let (ra_delta, dec_delta) =
-                self.slew_axis_deltas(&snap, &params, ra_ticks, dec_ticks, chosen_side)?;
-            // The slew is going to move: take both axes from any guide
-            // pulse in flight, under the lock the pulse's own bursts hold,
-            // so no pulse restore lands inside the wire sequence below (a
-            // stray `:I1` between `:I1 6` and `:J1` would set the goto's
-            // speed). Not earlier: a slew refused above must leave a pulse
-            // to end itself, not strand its axis at the guide rate.
-            taken = self.take_pulses().await;
-            self.issue_slew_sequence(ra_delta, dec_delta, &mut taken)
-                .await
-        }
-        .await;
+        // The slew is going to move: take both axes from any guide pulse
+        // in flight, under the lock the pulse's own bursts hold, so no
+        // pulse restore lands inside the wire sequence below (a stray
+        // `:I1` between `:I1 6` and `:J1` would set the goto's speed).
+        // Not earlier: a slew refused above must leave a pulse to end
+        // itself, not strand its axis at the guide rate.
+        let claim = reservation.claim();
+        let mut taken = self.take_pulses().await;
+        // Any failure below drops `reservation`, which releases the
+        // claim — the driver can't get stuck reporting Slewing after a
+        // failed slew.
+        let result = self
+            .stop_plan_and_start(ra, dec, side, &params, &claim, &mut taken)
+            .await;
         if result.is_err() {
             self.stop_taken_pulse_axes(taken).await;
         }
@@ -795,7 +789,7 @@ impl MountDevice {
                 state: Arc::clone(&self.state),
                 manager: Arc::clone(&self.manager),
                 session_slot: Arc::clone(&self.session),
-                slew_in_progress: Arc::clone(&self.slew_in_progress),
+                claim,
                 config: self.config.clone(),
                 polling_interval: self.manager.polling_interval_for_watcher(),
                 started: std::time::Instant::now(),
@@ -805,29 +799,41 @@ impl MountDevice {
         )
         .await
         .map_err(ASCOMError::from)?;
-        // Watcher spawned — hand off the flag. If the spawn above had
-        // failed, `?` would have dropped `reservation` and rolled the
-        // flag back, so a failed hand-off can no longer leave the driver
-        // stuck reporting Slewing with no watcher to clear it.
+        // Watcher spawned — hand off the claim. If the spawn above had
+        // failed, `?` would have dropped `reservation` and released it,
+        // so a failed hand-off can no longer leave the driver stuck
+        // reporting Slewing with no watcher to clear it.
         reservation.dismiss();
         Ok(())
     }
 
-    /// The per-axis wire deltas for a slew from `snap` to the target
-    /// encoder pair, flip-aware. Pure: reads only the snapshot,
-    /// parameters, and config.
-    /// The slew's wire sequence. Both axes use the INDI sequence: `:K` +
-    /// poll `:f` (decelerate stop) → `:G goto+fast` → `:I 6` →
-    /// `:H |delta|` → `:M breaks` → `:J`. The RA-axis `:K` is also the
-    /// wire event that halts any in-progress sidereal tracking; mirror
-    /// that into the in-memory `tracking_requested` flag only after the
-    /// stop has actually succeeded so the state never gets ahead of the
-    /// wire on transport failures. Each axis is cleared from `taken`, the
+    /// Stop both axes, re-read where they came to rest, plan the slew
+    /// from that reading and start it.
+    ///
+    /// The plan has to follow the stop. `:H` is relative to the count
+    /// when `:J` arrives, and an axis stopped from goto speed keeps
+    /// moving: the pier1 `GTi` carries Dec 3.76° on over 1.50 s. A plan
+    /// made before the stop would aim off by that coast, judge a
+    /// counterweight path the mount does not sweep, and read the pier
+    /// side from a count the axis has left.
+    ///
+    /// Both stops are the INDI `:K` + poll `:f`; see
+    /// [`stop_axis_and_wait`]. The RA stop is also the wire event that
+    /// halts any sidereal tracking. `tracking_requested` follows it only
+    /// once it has succeeded, so the state never gets ahead of the wire
+    /// on a transport failure. Each axis is cleared from `taken`, the
     /// pulses the slew took over, once it has been stopped.
-    async fn issue_slew_sequence(
+    ///
+    /// A plan refused here leaves both axes stopped and Tracking false.
+    /// An `AbortSlew` that lands before the gotos are running fails the
+    /// slew; see [`Self::ensure_slew_not_aborted`].
+    async fn stop_plan_and_start(
         &self,
-        ra_delta: i32,
-        dec_delta: i32,
+        ra: f64,
+        dec: f64,
+        side: SideChoice,
+        params: &MountParameters,
+        claim: &SlewClaim,
         taken: &mut PulseGuiding,
     ) -> ASCOMResult<()> {
         let guard = self.session.read().await;
@@ -842,20 +848,166 @@ impl MountDevice {
             .map_err(ASCOMError::from)?;
         taken.set(Axis::Ra, None);
         self.state.write().await.tracking_requested = false;
-        issue_slew_axis(&self.manager, session, Axis::Ra, ra_delta)
-            .await
-            .map_err(ASCOMError::from)?;
         stop_axis_and_wait(&self.manager, session, Axis::Dec, AXIS_STOP_TIMEOUT)
             .await
             .map_err(ASCOMError::from)?;
         taken.set(Axis::Dec, None);
-        issue_slew_axis(&self.manager, session, Axis::Dec, dec_delta)
+        // A fresh wire read: the background snapshot lags the wire by up
+        // to a poll, so it can predate the end of the coast.
+        let rest = self
+            .manager
+            .poll_axes_now(session)
             .await
             .map_err(ASCOMError::from)?;
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(ASCOMError::from)?;
+        let plan = self
+            .plan_slew(ra, dec, side, &rest, lst, params)
+            .map_err(|e| {
+                ASCOMError::new(
+                    e.code,
+                    format!(
+                        "slew refused from where the mount came to rest, with both axes \
+                         now stopped: {}",
+                        e.message
+                    ),
+                )
+            })?;
+        // The target and the side the plan chose are one target: latch
+        // them together, and only once a plan has accepted them.
+        {
+            let mut s = self.state.write().await;
+            s.target_ra_hours = Some(ra);
+            s.target_dec_degrees = Some(dec);
+            s.target_pier_side = Some(plan.side);
+        }
+        self.ensure_slew_not_aborted(session, claim, &[]).await?;
+        issue_slew_axis(&self.manager, session, Axis::Ra, plan.ra_delta)
+            .await
+            .map_err(ASCOMError::from)?;
+        self.ensure_slew_not_aborted(session, claim, &[Axis::Ra])
+            .await?;
+        issue_slew_axis(&self.manager, session, Axis::Dec, plan.dec_delta)
+            .await
+            .map_err(ASCOMError::from)?;
+        self.ensure_slew_not_aborted(session, claim, &[Axis::Ra, Axis::Dec])
+            .await?;
         drop(guard);
         Ok(())
     }
 
+    /// Fail the slew once `AbortSlew` (or a disconnect) has voided its
+    /// claim, first stopping `started`, the axes whose goto it has sent.
+    ///
+    /// The stops before a slew's gotos can take over a second, and an
+    /// abort in that window must win. `AbortSlew` empties the slot before
+    /// it sends its `:L`s. So while the claim still holds after an axis'
+    /// `:J`, any abort's `:L` follows that `:J` and stops the goto. Once
+    /// the claim has lapsed, the abort's `:L` may have gone out before
+    /// the `:J`, so the slew stops what it started itself. The watcher's
+    /// pickup loop makes the same check before it re-slews.
+    async fn ensure_slew_not_aborted(
+        &self,
+        session: &Session<SkywatcherCodec>,
+        claim: &SlewClaim,
+        started: &[Axis],
+    ) -> ASCOMResult<()> {
+        if claim.is_current() {
+            return Ok(());
+        }
+        for &axis in started {
+            if let Err(e) = self.manager.send(session, Command::InstantStop(axis)).await {
+                debug!("stop of {axis:?} after an abort failed: {e}");
+            }
+        }
+        Err(ASCOMError::new(
+            ASCOMErrorCode::INVALID_OPERATION,
+            "slew aborted before its gotos were running",
+        ))
+    }
+
+    /// Plan a slew to celestial `(ra, dec)` from one reading of both
+    /// axes, `snap`, at sidereal time `lst`. Pure: reads only its
+    /// arguments and the config.
+    ///
+    /// Picks the pier side (the flip-policy selector, unless `side`
+    /// pins it), computes the target encoder pair for that side, checks
+    /// it against the per-side safety envelope, and computes each axis'
+    /// delta with its path checks (see [`Self::slew_axis_deltas`]).
+    fn plan_slew(
+        &self,
+        ra: f64,
+        dec: f64,
+        side: SideChoice,
+        snap: &MountSnapshot,
+        lst: Lst,
+        params: &MountParameters,
+    ) -> ASCOMResult<SlewPlan> {
+        let side = match side {
+            SideChoice::Pinned(side) => side,
+            SideChoice::FlipPolicy => {
+                let current_side = side_of_pier_calc(
+                    DecTicks::new(snap.dec.position_ticks),
+                    Cpr::new(params.cpr_dec),
+                    self.config.site_latitude_deg,
+                );
+                // The selector needs where the mount stands, not just
+                // which side it is on: a side is only usable when an RA
+                // sweep to it clears the CW exclusion zone.
+                let current_mech_ha =
+                    RaTicks::new(snap.ra.position_ticks).to_mech_ha(Cpr::new(params.cpr_ra));
+                select_pier_side_for_target(
+                    Ra::new(ra),
+                    lst,
+                    current_side,
+                    current_mech_ha,
+                    &self.config.flip_policy,
+                    self.config.cw_exclusion_zone.bounds(),
+                    self.config.site_latitude_deg,
+                )
+            }
+        };
+        let pre_flip_side = pre_flip_side_for_latitude(self.config.site_latitude_deg);
+        let target_is_flipped = side != pre_flip_side && side != PierSide::Unknown;
+        // Target ticks for `lst`, with no allowance for the goto's own
+        // duration. INDI's EQMOD-style pickup loop closes the residual
+        // RA drifts during the goto: once both axes stop, the watcher
+        // reads the actual RA/Dec and re-issues a corrective goto while
+        // the residual exceeds `RAGOTORESOLUTION = 5"`. Pre-shifting LST
+        // by `MIN_SLEW_DWELL` instead undershot real-hardware slews of
+        // 3-7 s by 45-120 arc-seconds.
+        let (ra_ticks, dec_ticks) = if target_is_flipped {
+            target_encoder_flipped(
+                Ra::new(ra),
+                Dec::new(dec),
+                lst,
+                Cpr::new(params.cpr_ra),
+                Cpr::new(params.cpr_dec),
+            )
+        } else {
+            target_encoder_normal(
+                Ra::new(ra),
+                Dec::new(dec),
+                lst,
+                Cpr::new(params.cpr_ra),
+                Cpr::new(params.cpr_dec),
+            )
+        };
+        // The target must fall inside the configured mechanical
+        // envelope for the chosen pier side.
+        self.check_within_safe_envelope(ra, dec, lst.value(), target_is_flipped)?;
+        let (ra_delta, dec_delta) =
+            self.slew_axis_deltas(snap, params, ra_ticks, dec_ticks, side)?;
+        Ok(SlewPlan {
+            side,
+            ra_delta,
+            dec_delta,
+        })
+    }
+
+    /// The per-axis wire deltas for a slew from `snap` to the target
+    /// encoder pair, flip-aware. Pure: reads only the snapshot,
+    /// parameters, and config.
     fn slew_axis_deltas(
         &self,
         snap: &MountSnapshot,

@@ -142,7 +142,7 @@ impl Device for MountDevice {
                 // roll it back from `Drop`), so clear it here too — this also
                 // signals any in-flight completion watcher to bail.
                 self.state.write().await.reset_for_disconnect();
-                self.slew_in_progress.store(false, Ordering::SeqCst);
+                self.slew_in_progress.clear();
                 self.live_rate_refused.store(false, Ordering::SeqCst);
             }
             _ => {}

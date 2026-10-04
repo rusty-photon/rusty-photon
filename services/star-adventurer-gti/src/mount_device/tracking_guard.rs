@@ -36,7 +36,6 @@
 //! "extension of the existing poll loop" issue #259 describes without
 //! crossing into the transport layer.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -54,7 +53,7 @@ use crate::coordinates::{
 use crate::manager::MountManager;
 use crate::units::{Cpr, DecTicks, RaTicks};
 
-use super::{pre_flip_side_for_latitude, DriverState, MountDevice};
+use super::{pre_flip_side_for_latitude, DriverState, MountDevice, SlewSlot};
 
 /// Device session slot, shared with the completion watchers. `Some`
 /// between `set_connected(true)` and `set_connected(false)`.
@@ -113,7 +112,7 @@ pub(super) async fn tracking_guard_tick(
     state: &Arc<RwLock<DriverState>>,
     manager: &MountManager,
     session_slot: &SessionSlot,
-    slew_in_progress: &AtomicBool,
+    slew_in_progress: &SlewSlot,
     axis_ownership: &Mutex<()>,
     zone: (f64, f64),
     margin: f64,
@@ -124,7 +123,7 @@ pub(super) async fn tracking_guard_tick(
     // it already keeps the guard dormant during slews; the
     // `slew_in_progress` check is belt-and-suspenders for the brief
     // post-slew tracking-restart window.
-    if !state.read().await.tracking_requested || slew_in_progress.load(Ordering::SeqCst) {
+    if !state.read().await.tracking_requested || slew_in_progress.is_held() {
         return false;
     }
     // `mech_HA` needs the per-axis CPR captured at handshake.
@@ -145,7 +144,7 @@ pub(super) async fn tracking_guard_tick(
     // RA from any guide pulse in flight, so its restore cannot restart
     // the motor behind the stop.
     let _axes = axis_ownership.lock().await;
-    if !state.read().await.tracking_requested || slew_in_progress.load(Ordering::SeqCst) {
+    if !state.read().await.tracking_requested || slew_in_progress.is_held() {
         return false;
     }
     state.write().await.pulse_guiding.set(Axis::Ra, None);
@@ -226,9 +225,7 @@ pub(super) async fn auto_flip_tick(
 ) -> bool {
     // Same cheap gates as the guard: only act while the client has
     // tracking engaged and no slew is in flight.
-    if !device.state.read().await.tracking_requested
-        || device.slew_in_progress.load(Ordering::SeqCst)
-    {
+    if !device.state.read().await.tracking_requested || device.slew_in_progress.is_held() {
         return already_attempted;
     }
     let Some(params) = device.manager.parameters().await else {

@@ -33,7 +33,7 @@
 //!   and the boot-time writability probe.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -291,13 +291,14 @@ pub struct MountDevice {
     #[debug(skip)]
     session: Arc<RwLock<Option<Session<SkywatcherCodec>>>>,
     state: Arc<RwLock<DriverState>>,
-    /// Slew/park "in progress" flag. Lives here as an [`AtomicBool`]
-    /// rather than a [`DriverState`] field so [`SlewReservation`] can
-    /// roll it back **synchronously** from `Drop` — a `Drop` impl can't
-    /// `.await` the `state` `RwLock`. Set by the slew / park reservation,
-    /// `ORed` into `slewing()` and the concurrent-motion refusals, and
-    /// cleared by the completion watchers, `AbortSlew`, and disconnect.
-    slew_in_progress: Arc<AtomicBool>,
+    /// The slew/park slot: empty, or held by one slew or park. Lives
+    /// here as a [`SlewSlot`] (atomics) rather than a [`DriverState`]
+    /// field so [`SlewReservation`] can release it **synchronously** from
+    /// `Drop` — a `Drop` impl can't `.await` the `state` `RwLock`. Claimed
+    /// by the slew / park reservation, `ORed` into `slewing()` and the
+    /// concurrent-motion refusals, released by the completion watchers,
+    /// and emptied by `AbortSlew` and disconnect.
+    slew_in_progress: Arc<SlewSlot>,
     /// Serializes *taking ownership of the axes* — held across a sync's
     /// encoder writes, taken by a slew or park around its
     /// [`SlewReservation`] acquisition, and held by every `PulseGuide`
@@ -349,7 +350,7 @@ impl MountDevice {
             config_file_path,
             session: Arc::new(RwLock::new(None)),
             state: Arc::new(RwLock::new(DriverState::default())),
-            slew_in_progress: Arc::new(AtomicBool::new(false)),
+            slew_in_progress: Arc::new(SlewSlot::default()),
             axis_ownership: Arc::new(tokio::sync::Mutex::new(())),
             live_rate_refused: Arc::new(AtomicBool::new(false)),
             manager,
@@ -412,44 +413,138 @@ impl MountDevice {
 
 /// RAII reservation of the `slew_in_progress` slot on [`MountDevice`].
 ///
-/// Acquired before a slew or park issues any motion. While held, the
-/// reservation **rolls back on drop** — clearing `slew_in_progress` — so
-/// every `?` early-return on the motion-issue path (a failed wire
-/// command, or a failed hand-off to the completion watcher) restores the
-/// flag without an explicit clear at the call site. On the success path
-/// the caller calls [`SlewReservation::dismiss`] once the completion
-/// watcher has been spawned; from that point the watcher owns clearing
-/// the flag.
+/// The slew/park slot: empty, or held by one slew or park, which it
+/// names by that operation's [`SlewToken`].
 ///
-/// The flag is an [`AtomicBool`] rather than a field behind the device's
-/// `RwLock<DriverState>` precisely so this rollback can be a synchronous
-/// store from `Drop` (a `Drop` impl cannot `.await` a `tokio::sync::RwLock`
+/// A plain "in progress" flag cannot tell *still running* from
+/// *aborted, then claimed by the next slew*: a watcher or a slew that
+/// only reads `true` carries on under the next operation's claim. After
+/// `AbortSlew` and an immediate new slew, the aborted slew's watcher
+/// would then run its pickup re-slew into the middle of the new one. So
+/// the slot holds its owner's token, and each actor checks for its own
+/// ([`SlewClaim::is_current`]) before it acts. A release only empties
+/// the slot while it still holds the releaser's token, so a late
+/// release cannot clear a newer owner's claim. `AbortSlew` and
+/// disconnect empty it outright ([`SlewSlot::clear`]), voiding whoever
+/// held it.
+#[derive(Debug, Default)]
+pub(super) struct SlewSlot {
+    /// `0` when empty, otherwise the owner's token.
+    owner: AtomicU64,
+    /// The last token handed out; tokens start at 1.
+    issued: AtomicU64,
+}
+
+/// Names one slew or park for as long as it holds the [`SlewSlot`].
+/// Never `0`, which marks the slot empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SlewToken(u64);
+
+impl SlewSlot {
+    /// Whether any slew or park holds the slot.
+    pub(super) fn is_held(&self) -> bool {
+        self.owner.load(Ordering::SeqCst) != 0
+    }
+
+    /// Claim the empty slot under a fresh token, or [`None`] when a slew
+    /// or park already holds it. The check-and-set is a single
+    /// `compare_exchange`, so two concurrent callers can't both win.
+    pub(super) fn try_claim(&self) -> Option<SlewToken> {
+        // `saturating_add` keeps the token off `0` even after the counter
+        // wraps — which 2^64 claims will not reach.
+        let token = self.issued.fetch_add(1, Ordering::SeqCst).saturating_add(1);
+        self.owner
+            .compare_exchange(0, token, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| SlewToken(token))
+    }
+
+    /// Whether `token`'s operation still holds the slot.
+    pub(super) fn holds(&self, token: SlewToken) -> bool {
+        self.owner.load(Ordering::SeqCst) == token.0
+    }
+
+    /// Empty the slot if `token` still holds it. Does nothing once an
+    /// abort, a disconnect or a later claim has moved it on.
+    pub(super) fn release(&self, token: SlewToken) {
+        // `Err` is the "moved on" case, which is exactly when there is
+        // nothing to release.
+        let _ = self
+            .owner
+            .compare_exchange(token.0, 0, Ordering::SeqCst, Ordering::SeqCst);
+    }
+
+    /// Empty the slot whoever holds it: `AbortSlew`, disconnect and an
+    /// encoder reset void the operation in flight.
+    pub(super) fn clear(&self) {
+        self.owner.store(0, Ordering::SeqCst);
+    }
+}
+
+/// One operation's hold on the [`SlewSlot`], as its completion watcher
+/// carries it.
+#[derive(Debug, Clone)]
+pub(super) struct SlewClaim {
+    slot: Arc<SlewSlot>,
+    token: SlewToken,
+}
+
+impl SlewClaim {
+    /// Whether this operation still holds the slot — `false` once
+    /// `AbortSlew` or disconnect has emptied it, even if another slew has
+    /// claimed it since.
+    pub(super) fn is_current(&self) -> bool {
+        self.slot.holds(self.token)
+    }
+
+    /// Empty the slot if this operation still holds it.
+    pub(super) fn release(&self) {
+        self.slot.release(self.token);
+    }
+}
+
+/// Acquired before a slew or park issues any motion. While held, the
+/// reservation **rolls back on drop** — releasing its claim on the
+/// [`SlewSlot`] — so every `?` early-return on the motion-issue path (a
+/// refused plan, a failed wire command, or a failed hand-off to the
+/// completion watcher) restores the slot without an explicit release at
+/// the call site. On the success path the caller hands
+/// [`SlewReservation::claim`] to the completion watcher and calls
+/// [`SlewReservation::dismiss`] once it has been spawned; from that
+/// point the watcher owns the release.
+///
+/// The slot is atomics rather than a field behind the device's
+/// `RwLock<DriverState>` precisely so this rollback can be synchronous
+/// from `Drop` (a `Drop` impl cannot `.await` a `tokio::sync::RwLock`
 /// write). Mirrors the synchronous rollback-on-drop guard the
 /// `rusty-photon-shared-transport` `acquire()` path uses for its refcount.
-#[must_use = "a dropped reservation rolls back slew_in_progress; bind it for the operation's duration"]
+#[must_use = "a dropped reservation releases the slew slot; bind it for the operation's duration"]
 pub(super) struct SlewReservation {
-    flag: Arc<AtomicBool>,
+    claim: SlewClaim,
     armed: bool,
 }
 
 impl SlewReservation {
     /// Reserve the slot, returning the guard, or [`None`] when a slew /
-    /// park is already in progress. The check-and-set is a single
-    /// `compare_exchange`, so two concurrent callers can't both win the
-    /// reservation (the TOCTOU-free guarantee the previous lock-guarded
-    /// check-and-set gave).
-    pub(super) fn try_acquire(flag: &Arc<AtomicBool>) -> Option<Self> {
-        flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .ok()
-            .map(|_| Self {
-                flag: Arc::clone(flag),
-                armed: true,
-            })
+    /// park is already in progress.
+    pub(super) fn try_acquire(slot: &Arc<SlewSlot>) -> Option<Self> {
+        slot.try_claim().map(|token| Self {
+            claim: SlewClaim {
+                slot: Arc::clone(slot),
+                token,
+            },
+            armed: true,
+        })
     }
 
-    /// Hand the flag's lifecycle off to the completion watcher: disarm
-    /// the rollback so dropping this guard leaves `slew_in_progress` set.
-    /// Call only after the watcher has been successfully spawned.
+    /// This operation's claim, for its own checks and its watcher.
+    pub(super) fn claim(&self) -> SlewClaim {
+        self.claim.clone()
+    }
+
+    /// Hand the slot's release off to the completion watcher: disarm the
+    /// rollback so dropping this guard leaves the claim in place. Call
+    /// only after the watcher has been successfully spawned.
     pub(super) fn dismiss(mut self) {
         self.armed = false;
     }
@@ -458,7 +553,7 @@ impl SlewReservation {
 impl Drop for SlewReservation {
     fn drop(&mut self) {
         if self.armed {
-            self.flag.store(false, Ordering::SeqCst);
+            self.claim.release();
         }
     }
 }

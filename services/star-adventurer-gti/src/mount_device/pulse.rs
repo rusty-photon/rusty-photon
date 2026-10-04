@@ -225,7 +225,7 @@ impl MountDevice {
         let lock = self.axis_ownership.lock().await;
         let (id, tracking_on) = {
             let mut s = self.state.write().await;
-            if self.slew_in_progress.load(Ordering::SeqCst) {
+            if self.slew_in_progress.is_held() {
                 return Err(ASCOMError::new(
                     ASCOMErrorCode::INVALID_OPERATION,
                     "PulseGuide refused while slewing",
