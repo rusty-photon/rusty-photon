@@ -7,6 +7,7 @@ use hyper_util::service::TowerToHyperService;
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::watch;
 // tokio's Instant, not std's: identical to std::time::Instant in production,
 // but also tracks tokio's paused/virtual clock under `#[tokio::test(start_paused
 // = true)]` — std::time::Instant would silently ignore tokio::time::advance(),
@@ -185,7 +186,11 @@ where
 /// acceptor (e.g. one from [`acceptor_from_resolver`]).
 ///
 /// Accepts TCP connections, wraps them with TLS, and serves the router.
-/// Stops accepting new connections when `shutdown` completes.
+/// When `shutdown` completes it stops accepting, asks every open
+/// connection to finish gracefully — an in-flight request completes, an
+/// idle kept-alive connection closes — and returns only once they have
+/// all ended. That is the drain [`serve_plain`] gets from axum, and like
+/// it the wait has no bound.
 ///
 /// # Errors
 ///
@@ -205,15 +210,24 @@ where
     let shutdown = shutdown;
     pin!(shutdown);
 
+    // `stop` asks the open connections to finish. Every connection task
+    // also holds a clone of `open_rx`, so `open_tx.closed()` resolves once
+    // the last of them has ended.
+    let (stop_tx, stop_rx) = watch::channel(false);
+    let (open_tx, open_rx) = watch::channel(());
+
     loop {
         tokio::select! {
             result = listener.accept() => {
                 let (stream, remote_addr) = result?;
                 let acceptor = acceptor.clone();
                 let router = router.clone();
+                let stop = stop_rx.clone();
+                let open = open_rx.clone();
 
                 tokio::spawn(async move {
-                    handle_connection(stream, remote_addr, acceptor, router).await;
+                    handle_connection(stream, remote_addr, acceptor, router, stop).await;
+                    drop(open);
                 });
             }
             () = &mut shutdown => {
@@ -223,19 +237,38 @@ where
         }
     }
 
+    drop(listener);
+    drop(open_rx);
+    stop_tx.send_replace(true);
+    debug!(
+        "Waiting for {} open TLS connection(s) to finish",
+        open_tx.receiver_count()
+    );
+    open_tx.closed().await;
+    debug!("TLS server drained");
+
     Ok(())
+}
+
+/// Resolve once the serve loop asks its connections to stop. A dropped
+/// sender counts too: the loop has ended without asking, on an accept
+/// error, and its connections should wind down rather than outlive it.
+async fn stop_requested(mut stop: watch::Receiver<bool>) {
+    let _ = stop.wait_for(|stop| *stop).await;
 }
 
 /// Dispatch one accepted connection on the TLS port: a genuine TLS
 /// handshake (first byte `0x16`) proceeds as before; anything else is
 /// handled as a possibly-plaintext HTTP request and answered with a
 /// redirect to `https://` on the same host and port, or dropped if it
-/// doesn't look like HTTP at all (issue #610).
+/// doesn't look like HTTP at all (issue #610). `stop` resolving makes an
+/// established TLS connection finish gracefully.
 async fn handle_connection(
     stream: TcpStream,
     remote_addr: SocketAddr,
     acceptor: TlsAcceptor,
     router: axum::Router,
+    stop: watch::Receiver<bool>,
 ) {
     // One deadline shared across the initial byte peek and (if this turns
     // out to be plaintext) the request-head read, so the total resource-sink
@@ -286,12 +319,19 @@ async fn handle_connection(
 
         let io = TokioIo::new(tls_stream);
         let service = TowerToHyperService::new(router.into_service());
+        let builder =
+            hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+        let conn = builder.serve_connection(io, service);
+        tokio::pin!(conn);
 
-        if let Err(e) =
-            hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
-                .serve_connection(io, service)
-                .await
-        {
+        let result = tokio::select! {
+            result = conn.as_mut() => result,
+            () = stop_requested(stop) => {
+                conn.as_mut().graceful_shutdown();
+                conn.await
+            }
+        };
+        if let Err(e) = result {
             debug!("Error serving TLS connection from {}: {}", remote_addr, e);
         }
         return;
