@@ -97,8 +97,22 @@ The order follows production risk:
 - **PR 8** closes W1, W2, W3 and the Lazy variant in the code, and
   stops a teardown from aborting the poll task mid-request (decision 6).
 
-Every PR is mergeable on its own. Hardware validation gates PRs 4
-and 8.
+Each PR is a separate change that leaves `main` green, but only when it
+lands on top of its predecessors. Land them in order. The one
+exception is PR 7, which needs nothing else in the series and can land
+at any point. The dependencies:
+- PR 3 builds on PR 2's `build_while_open`.
+- PRs 4, 5, 6 and 8 edit lines that PR 3 renames.
+- PR 1's tests are the net PR 4 edits under.
+- PR 8 builds on PRs 2 through 7:
+  - C2 goes in ahead of PR 2's `handshake_or_close`;
+  - PR 3's `SafetyDebt`;
+  - PR 4's `Supervisor` and `retire_supervisor`;
+  - PR 5's `stop_owed` arm;
+  - PR 6's close-at-take;
+  - PR 7's `test-util` gate, which lets PR 8 carry no `!`.
+
+Hardware validation gates PRs 4 and 8.
 
 The crate has no design doc under `docs/crates/`. Its module rustdoc is
 where the invariants live, so a PR's rustdoc change is its design-doc
