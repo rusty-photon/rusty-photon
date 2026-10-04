@@ -113,7 +113,7 @@ lands on top of its predecessors. Land them in order. The one
 exception is PR 7, which needs nothing else in the series and can land
 at any point. The dependencies:
 - PR 0 needs nothing else in the series. PR 8 relies on it: the abort
-  of a poll task mid-request that PR 8 keeps is harmless only once
+  of a poll task mid-request that PR 8 keeps strands no reply only once
   PR 0 has landed.
 - PR 3 builds on PR 2's `build_while_open`.
 - PRs 4, 5, 6 and 8 edit lines that PR 3 renames.
@@ -244,8 +244,8 @@ change under rule 2 and
    then panics. Closing that one changes public behaviour, so it ships
    as the PR's second commit, approved on 2026-10-03.
 
-6. **A teardown may abort a poll task mid-request, because PR 0 makes
-   that harmless** (revised on review, 2026-10-04).
+6. **A teardown may abort a poll task mid-request, because PR 0 counts
+   the reply it strands** (revised on review, 2026-10-04).
 
    As first merged, this decision kept the poll task registered in
    `while_open_state` until a join of it returned, so that no teardown
@@ -256,7 +256,9 @@ change under rule 2 and
    stranded reply answers the shutdown hook's first stop.
 
    PR 0 removes that reason. The dropped request owes its reply, and the
-   hook's first stop discards it before reading its own. So
+   hook's first stop discards it before reading its own. On UDP, a
+   reorder can still hand that stop the poll's reply, which fails its
+   decode and so fails safe (decision 7). So
    `cancel_while_open` and `AbortDetachedGuard` stay as they are, and
    PR 8 drops the lock held across the join, the invariant that a task
    leaves `while_open_state` only after its join returns, and the three
@@ -303,6 +305,34 @@ change under rule 2 and
      the verdict is `NotAsserted`, so the debt replays the stop. That
      needs an abandoned exchange and the loss of its reply together.
 
+   **It assumes replies arrive in order.** Serial delivers them in
+   order. UDP can drop, reorder or duplicate them
+   ([star-adventurer-gti.md](../services/star-adventurer-gti.md) says
+   so where it explains why a cache of firmware state is unsafe over
+   UDP), and GTi over UDP is the one such conduit in the workspace.
+   - **What a reorder costs.** If an owed reply arrives after the next
+     request's own, that request discards its own reply as the owed
+     one, and takes the owed reply as its answer. Both frames have now
+     been read, so the conduit is back in step from the next request
+     on. That is one misattributed reply, where today every later
+     reply is misattributed.
+   - **When it can happen.** The owed reply must still be in flight when
+     the next request is sent, and the two datagrams must then cross on
+     the link. That needs the abandonment to fall within about one round
+     trip of the next send.
+   - **What it does to GTi's safety stop.** A stray poll reply read in
+     place of `:L1`'s ack fails the decode, because an ack carries no
+     payload. The verdict is `NotAsserted` and the debt replays the
+     stop, the same fail-safe outcome as an uncounted stray today. A
+     stray ack read in place of `:L1`'s ack is accepted, but `:L1`'s
+     own ack did arrive, as the frame that was discarded, so the
+     verdict still holds. Either way all three stop frames go out.
+   - **Why not more.** GTi's replies carry no tag, so no codec can
+     correlate a reply with its request. Poisoning the conduit instead
+     would close the gap on UDP, since a fresh socket receives nothing
+     meant for the old one, but at the costs §Rejected alternatives
+     lists, including the stop that most needs to go out.
+
    This decision moved the work ahead of PR 1. The plan as first merged
    listed it as a follow-up issue. It goes first for two reasons. The
    stale reply is the one problem here that needs no teardown: an HTTP
@@ -334,8 +364,9 @@ change under rule 2 and
   Taking both at C3 in the publishes' order is a separate alternative,
   also rejected (below).
 - **Keeping a poll task registered until its join returns** (decision 6
-  as first merged; undone on review, 2026-10-04). After PR 0 an abort
-  mid-request strands nothing. Keeping it would leave the lock held
+  as first merged; undone on review, 2026-10-04). After PR 0 the reply
+  an abort mid-request strands is counted and discarded. Keeping it
+  would leave the lock held
   across a join and an extra invariant for no remaining benefit.
 - **For PR 0: discard pending input before the next send.** It needs a
   new `FrameTransport` method. It can only discard what has already
@@ -347,7 +378,10 @@ change under rule 2 and
 - **For PR 0: poison the conduit and reconnect.** Every abandoned
   exchange would cost a reconnect: up to one reconnect interval, then
   the handshake (ten requests on GTi). A stop on a poisoned conduit
-  would fail without being sent and wait for the replay.
+  would fail without being sent and wait for the replay. On UDP it
+  would also close the reorder gap that owing leaves (decision 7). That
+  does not justify it: a reorder costs one misattributed reply, while
+  poisoning would hold back the shutdown stop after every aborted poll.
 - **For PR 0: codec matching alone.** Only qhy-focuser can tell its
   reply from another command's. GTi and dsd-fp2 use the default
   `matches`, and the other four match on the reply's shape only. No
@@ -1043,6 +1077,13 @@ second ignores sends.
 - `…::discarded_frames_do_not_count_against_the_skip_budget`
   (`max_skip` 1, one frame owed, then one unmatched frame). The request
   returns its own answer.
+- `…::a_reordered_owed_reply_costs_one_misattributed_reply`. A is
+  dropped after its send, and the double holds A's answer back until
+  B's is queued, as a UDP link may reorder them. B returns A's answer,
+  and C then returns its own. This pins the bound decision 7 states for
+  an unordered conduit: one misattributed reply, then back in step.
+
+  Mutation: never arm the guard → C returns A's answer.
 - `tests/while_open.rs::a_poll_aborted_mid_request_leaves_the_shutdown_hook_its_own_reply`
   (`start_paused`). This is R1 (§Deliberately left), today's route
   through the 5 s bound.
@@ -1064,8 +1105,9 @@ second ignores sends.
 - The crate's module rustdoc gains invariant 7.
 - [star-adventurer-gti.md](../services/star-adventurer-gti.md), where
   it discusses a stale ack: a reply left by an abandoned request is
-  discarded; a duplicated datagram, or a reply that arrives after its
-  request timed out, still is not.
+  discarded. A duplicated datagram, or a reply that arrives after its
+  request timed out, still is not. An owed reply that UDP delivers
+  after the next request's own is taken by that one request.
 - `watcher_poll_with_retry`'s doc in `star-adventurer-gti` claims the
   backoff lets the read "flush whatever junk". No code reads during the
   sleep, so the comment is corrected.
@@ -1114,9 +1156,10 @@ behaviour, not the transport's.
   Mutation: delete `publish_recovery`'s re-read and undo → red.
 - `star-adventurer-gti` `manager.rs::tests::a_stale_poll_reply_ahead_of_the_safety_stop_reads_as_not_asserted`.
   It pins what §Deliberately left says about a stale poll reply ahead
-  of the safety stop. PR 0 removes every route that abandons a request,
-  but not a stray it cannot count: a late reply after a receive
-  timeout, or a duplicated UDP datagram. This pin covers those.
+  of the safety stop. PR 0 counts what every abandoned request owes,
+  but not a stray it cannot count or place: a late reply after a
+  receive timeout, a duplicated UDP datagram, or an owed UDP reply that
+  arrives after the stop's own. This pin covers those.
   A transport that wraps `CapturingMockFactory`'s hands
   back one stale `:j` reply before the mock's own replies. A
   `SharedTransport` on it has an `on_last_disconnect` hook that calls
@@ -1541,7 +1584,7 @@ reachable only through `reconnect_now`.
   - `a_kicked_attempt_that_panics_is_reported_and_retried`.
 - Group mutation: re-inline the attempt into `reconnect_now` → the W1,
   W2 and W3 tests go red.
-- The cancel arm's route to a stranded reply, made harmless by PR 0
+- The cancel arm's route to a stranded reply, which PR 0 counts
   (decision 6):
   `reconnect.rs::a_teardown_that_interrupts_an_attempt_leaves_the_hook_its_own_reply`.
   It uses PR 0's `LineTransport` and a shutdown hook that sends `BYE`
@@ -1752,9 +1795,9 @@ and discards frames a device already sent.
   `is_available()` can still read true for a few instructions inside
   `publish_recovery`. The debt, which `Session` and (after PR 3)
   `WhileOpen` both consult, is the authority, so this is benign.
-- **A stray reply that PR 0 cannot count.** PR 0 counts what an
-  abandoned request owes (decision 7). That closes every route that
-  abandons a request:
+- **A stray reply that PR 0 cannot count or place.** PR 0 counts what
+  an abandoned request owes (decision 7). On a conduit that delivers in
+  order, that closes every route that abandons a request:
   - **R1**, the 5 s bound's abort of a poll that has not returned. GTi
     checks its token only between ticks, and a slow link can keep one
     tick going past 5 s.
@@ -1767,7 +1810,7 @@ and discards frames a device already sent.
   - An attempt aborted inside its own `cancel_while_open`, whose
     `AbortDetachedGuard` aborts the poll task mid-request.
 
-  Two kinds of stray are not counted:
+  Three kinds of stray are not handled:
   - **R2, a late reply after a receive timeout.** A timeout owes
     nothing (decision 7). The serial and UDP transports time a read out
     without clearing input. The timeout is a wire failure, so the
@@ -1779,10 +1822,16 @@ and discards frames a device already sent.
   - **A frame no request asked for:** a duplicated UDP datagram, or
     qhy-focuser's unsolicited position frames. qhy's `matches` on
     `cmd_id` absorbs the latter.
+  - **An owed UDP reply that arrives after the next request's own.**
+    The count is right but the order is not, so that one request takes
+    the owed reply, and the conduit is back in step after it. Decision 7
+    covers when this can happen and what it does to GTi's safety stop:
+    it fails safe.
 
   Open points 3 (R4) and 4 (`biased;` selects in the poll loops, to
-  narrow R1) were dropped on review on 2026-10-04, because PR 0 closes
-  both routes.
+  narrow R1) were dropped on review on 2026-10-04. PR 0 counts the
+  reply both routes strand. On UDP a reorder can still misattribute
+  that one reply, which fails safe at the stop (decision 7).
 
   On the GTi, what an uncounted stray is decides the outcome:
   - **A stale payload frame.** Every poll reply carries a payload, and
@@ -1884,9 +1933,10 @@ Settled on review (2026-10-04):
 - open point 2, respawning the poll task inside C3, is rejected
   (§Rejected alternatives);
 - open point 3, R4, is closed by PR 0, and needs neither a cancel arm
-  that waits nor a second GTi pin;
+  that waits nor a second GTi pin. On UDP a reorder can still
+  misattribute the one reply, which fails safe at the stop;
 - open point 4, `biased;` selects in the poll loops, is dropped: it
-  only narrowed R1, which PR 0 closes;
+  only narrowed R1, whose stranded reply PR 0 counts;
 - open point 5, a `stop_owed` wake that skips the cadence floor, is
   rejected (§Rejected alternatives);
 - #1398 and #1399 are filed; the W6 commit lock is not
