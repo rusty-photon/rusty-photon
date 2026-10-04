@@ -28,9 +28,13 @@ use std::sync::{Arc, RwLock};
 /// and binning readers need no handle.
 ///
 /// A disconnected slot keeps its stale handle and metadata until a
-/// successful re-establish replaces the pair: concurrent callers then
-/// see honest `NOT_CONNECTED` errors from the device rather than a
-/// handle vanishing mid-operation.
+/// successful re-establish replaces the pair, so no handle vanishes
+/// mid-operation. Calls through a stale handle fail with
+/// `NOT_CONNECTED` (or a transport error) until a re-establish turns
+/// the device back on; from then on the device answers them from the
+/// new session, because `Connected` is device-wide. A caller that must
+/// attribute an answer to the session it took the handle from checks
+/// [`Self::is_live`] after the call.
 pub struct DeviceSession<T: ?Sized, M = ()> {
     state: RwLock<SessionState<T, M>>,
 }
@@ -65,9 +69,11 @@ impl<T: ?Sized, M> DeviceSession<T, M> {
     /// following this with [`Self::metadata`].
     ///
     /// May be a stale handle from a dead session when
-    /// [`Self::is_connected`] is false — calls on it then fail with
-    /// `NOT_CONNECTED` or a transport error, which is the honest
-    /// outcome.
+    /// [`Self::is_connected`] is false. Calls on it fail with
+    /// `NOT_CONNECTED` or a transport error until a re-establish turns
+    /// the device back on, and are answered by the new session after
+    /// that — a caller that must tell the two apart checks
+    /// [`Self::is_live`] after the call.
     #[must_use]
     pub fn device(&self) -> Option<Arc<T>> {
         self.read().device.clone()
@@ -101,6 +107,26 @@ impl<T: ?Sized, M> DeviceSession<T, M> {
             .device
             .clone()
             .map(|device| (device, state.metadata.clone()))
+    }
+
+    /// Whether `device` is the handle of the session live right now:
+    /// the slot reads connected and still holds that very handle. Both
+    /// are checked under one guard, so the answer cannot straddle a
+    /// re-establish.
+    ///
+    /// For a caller that read through a handle and must know whether
+    /// the answer came from the session it took the handle for — a
+    /// re-establish turns the replacement session on at the device
+    /// before installing its handle, so a read through the old handle
+    /// can be answered by the new session.
+    #[must_use]
+    pub fn is_live(&self, device: &Arc<T>) -> bool {
+        let state = self.read();
+        state.connected
+            && state
+                .device
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, device))
     }
 
     /// Install a freshly established session — its handle and the
@@ -200,6 +226,39 @@ mod tests {
         session.install(Arc::from("new"), ());
         assert!(session.is_connected());
         assert_eq!(session.device().as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn the_handle_of_the_connected_session_is_live() {
+        let handle: Arc<str> = Arc::from("handle");
+        let session: DeviceSession<str> = DeviceSession::connected(Arc::clone(&handle));
+        assert!(session.is_live(&handle));
+    }
+
+    #[test]
+    fn a_handle_is_not_live_once_its_session_is_marked_disconnected() {
+        let handle: Arc<str> = Arc::from("handle");
+        let session: DeviceSession<str> = DeviceSession::connected(Arc::clone(&handle));
+        session.mark_disconnected();
+        assert!(
+            !session.is_live(&handle),
+            "a dead session's handle stays in the slot but is not live"
+        );
+    }
+
+    /// Liveness is the handle's identity, not its contents: a session
+    /// re-established against the same device is a new session.
+    #[test]
+    fn a_replaced_handle_is_not_live_even_beside_an_identical_one() {
+        let old: Arc<str> = Arc::from("same device");
+        let session: DeviceSession<str> = DeviceSession::connected(Arc::clone(&old));
+        let new: Arc<str> = Arc::from("same device");
+        session.install(Arc::clone(&new), ());
+        assert!(
+            !session.is_live(&old),
+            "the replaced session's handle must not read live"
+        );
+        assert!(session.is_live(&new));
     }
 
     #[test]

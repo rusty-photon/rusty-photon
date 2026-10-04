@@ -215,7 +215,8 @@ impl TemperatureWatch {
     /// live probe **concurrently** — each read is bounded by
     /// [`READ_TIMEOUT`], so one unanswering device neither delays the
     /// others' readings nor stretches the pass beyond one timeout —
-    /// then apply the observations in config order.
+    /// then apply the observations in config order, each only if the
+    /// session it was read through is still the live one.
     pub(crate) async fn pass(&mut self) {
         let mut reads = tokio::task::JoinSet::new();
         for (index, entry) in self.equipment.focusers.iter().enumerate() {
@@ -245,7 +246,7 @@ impl TemperatureWatch {
             let focuser_id = entry.id.clone();
             reads.spawn(async move {
                 let probe = read_probe(&focuser_id, device.as_ref()).await;
-                (index, focuser_id, probe)
+                (index, focuser_id, device, probe)
             });
         }
 
@@ -260,9 +261,27 @@ impl TemperatureWatch {
         }
         // Emission order follows the config, whatever order the reads
         // came back in.
-        readings.sort_by_key(|(index, _, _)| *index);
+        readings.sort_by_key(|(index, _, _, _)| *index);
 
-        for (_, focuser_id, probe) in readings {
+        for (index, focuser_id, device, probe) in readings {
+            // The supervisor marks a dead session disconnected before it
+            // turns the replacement on at the device, but a read already
+            // in flight through the old handle can still be answered by
+            // the replacement. That reading belongs to no session this
+            // watch holds a baseline for, so it counts only if the
+            // session it was read through is still the live one.
+            let live = self
+                .equipment
+                .focusers
+                .get(index)
+                .is_some_and(|entry| entry.session.is_live(&device));
+            if !live {
+                debug!(
+                    focuser_id = %focuser_id,
+                    "temperature watch: session replaced during the read; reading discarded"
+                );
+                continue;
+            }
             self.apply(&focuser_id, probe);
         }
     }
@@ -317,11 +336,12 @@ async fn read_probe(focuser_id: &str, device: &dyn Focuser) -> Probe {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::Mutex;
 
     use axum::routing::{get, put};
     use axum::{Json, Router};
+    use tokio::sync::Notify;
 
     use super::*;
     use crate::config;
@@ -462,6 +482,11 @@ mod tests {
     struct ProbeState {
         probe: Mutex<StubProbe>,
         reads: AtomicU32,
+        /// When set, the next `Temperature` read is held: it signals
+        /// `held` on arrival and answers only once `release` fires.
+        hold_next: AtomicBool,
+        held: Notify,
+        release: Notify,
     }
 
     fn focuser_router(state: Arc<ProbeState>) -> Router {
@@ -491,6 +516,10 @@ mod tests {
                     let state = state.clone();
                     async move {
                         state.reads.fetch_add(1, Ordering::SeqCst);
+                        if state.hold_next.swap(false, Ordering::SeqCst) {
+                            state.held.notify_one();
+                            state.release.notified().await;
+                        }
                         let probe = *state.probe.lock().unwrap();
                         match probe {
                             StubProbe::Reading(value) => Json(serde_json::json!({
@@ -540,6 +569,9 @@ mod tests {
         Arc::new(ProbeState {
             probe: Mutex::new(probe),
             reads: AtomicU32::new(0),
+            hold_next: AtomicBool::new(false),
+            held: Notify::new(),
+            release: Notify::new(),
         })
     }
 
@@ -598,6 +630,47 @@ mod tests {
             .try_recv()
             .expect("drift from the new baseline emits");
         assert_eq!(event.payload["value"], 25.6);
+    }
+
+    /// A read already in flight when its session is replaced can be
+    /// answered by the replacement, which the device serves before the
+    /// new handle is installed. That reading belongs to neither
+    /// session's baseline: measured against the old one it would emit,
+    /// so it is discarded.
+    #[tokio::test]
+    async fn a_reading_answered_across_a_session_replacement_is_discarded() {
+        let state = probe_state(StubProbe::Reading(10.0));
+        let stub = spawn_stub(focuser_router(state.clone())).await;
+        let registry = registry_with(&stub.url()).await;
+        let mut watch = watch_over(registry.clone());
+        let mut events = watch.event_bus.subscribe();
+        watch.pass().await;
+
+        let fresh = registry_with(&stub.url()).await.focusers[0]
+            .device()
+            .expect("the second connect must yield a handle");
+        *state.probe.lock().unwrap() = StubProbe::Reading(25.0);
+        state.hold_next.store(true, Ordering::SeqCst);
+        // Replace the session while the pass's read through the old
+        // handle is held at the device, then let the device answer it.
+        let replace_mid_read = async {
+            state.held.notified().await;
+            registry.focusers[0]
+                .session
+                .install(fresh, crate::equipment::FocuserInvariants::default());
+            state.release.notify_one();
+        };
+        tokio::join!(watch.pass(), replace_mid_read);
+
+        assert_eq!(
+            state.reads.load(Ordering::SeqCst),
+            2,
+            "the held read must have been answered"
+        );
+        assert!(
+            events.try_recv().is_err(),
+            "a reading answered across the replacement must not be measured against the old baseline"
+        );
     }
 
     #[tokio::test]
