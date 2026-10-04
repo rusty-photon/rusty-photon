@@ -848,7 +848,9 @@ SlewToCoordinatesAsync(ra, dec)
    │   An AbortSlew during the stops fails the slew with
    │   INVALID_OPERATION, and no further :K or goto is sent; one that
    │   arrives during the guarded steps waits for them, and its :L
-   │   stops both gotos.
+   │   stops both gotos. A sequence that fails part-way (a :J whose
+   │   reply was lost, say) sends :L1 :L2 before the error returns,
+   │   since a goto may have started that no watcher will follow.
    │
    ├─ Slewing = true
    └─ background poll :f1 / :f2 every 200 ms
@@ -954,9 +956,18 @@ perform takes `axis_ownership` and checks the claim under it:
 - each stop's `:K` (slew, Park, pickup), so a stale operation sends
   no stop into its successor's goto;
 - the slew's fresh read, plan, target latch and gotos, as one step;
-- Park's gotos;
-- the watcher's pickup starts and its tracking restart;
+- Park's fresh read and gotos, as one step;
+- the watcher's pickup starts, after a re-read of both axes, and its
+  tracking restart;
+- the watcher's emergency `:L`s (poll retries exhausted, an axis
+  reporting blocked);
 - the watcher's finalize, which for Park sets AtPark.
+
+Each fresh read under the guard refuses the act if an axis reads as
+running again. A `Tracking` write is allowed during a slew, and could
+have restarted RA during the stop waits. The slew and Park fail. The
+pickup ends the slew, leaving the axis to whoever restarted it, so the
+watcher does not wait on an axis that tracks on.
 
 `AbortSlew`, disconnect and every new claim also go through
 `axis_ownership`. An abort therefore lands either before the check,
@@ -981,16 +992,20 @@ Park()
    │           holds it)
    ├─ Tracking = false (issue :K on RA axis)
    │
-   ├─ stop both axes: :K1 + poll :f1, then :K2 + poll :f2
-   ├─ re-read both axes (:j / :f) where they came to rest
+   ├─ stop both axes: :K1 + poll :f1, then :K2 + poll :f2, each :K
+   │     sent only while park still holds its claim
    ├─ holding axis_ownership, and only if park still holds its claim
    │     (an AbortSlew during the stops fails the park, with no goto):
+   ├─ re-read both axes (:j / :f) where they came to rest; refuse if
+   │     either reads running again
    ├─ for each axis, ONLY if it has a park target (anchored frame
    │     or raw tick override — see below):
    │       :G<axis><goto-mode>      ccw chosen from sign(target − rest)
    │       :S<axis><park_target>    target = in-memory park-target ticks
    │       :J<axis>
    │     else: the axis parks IN PLACE — stopped is parked
+   │     A sequence that fails part-way sends :L1 :L2 before the error
+   │     returns.
    │
    ├─ background poll :f1 / :f2 until both stopped
    │     (no auto-abort on timeout — caller must AbortSlew if stuck;

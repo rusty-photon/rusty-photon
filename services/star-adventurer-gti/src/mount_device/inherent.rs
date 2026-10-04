@@ -51,8 +51,8 @@ use crate::units::{Cpr, Dec, DecTicks, Lst, MechDec, MechHa, Ra, RaTicks};
 
 use super::park_persistence::{read_connect_fields, MountConnectFields};
 use super::slew::{
-    check_non_flip_ra_path, flip_slew_dec_delta, flip_slew_ra_delta, issue_slew_axis,
-    stop_axis_and_wait, wait_axis_stopped, AXIS_STOP_TIMEOUT,
+    check_non_flip_ra_path, flip_slew_dec_delta, flip_slew_ra_delta, halt_after_failed_start,
+    issue_slew_axis, stop_axis_and_wait, wait_axis_stopped, AXIS_STOP_TIMEOUT,
 };
 use super::watchers::{spawn_slew_completion_watcher, SlewWatchCtx};
 use super::{pre_flip_side_for_latitude, MountDevice, PulseGuiding, SlewClaim, SlewReservation};
@@ -865,6 +865,9 @@ impl MountDevice {
     /// between the reading and the gotos planned from it.
     ///
     /// A plan refused here leaves both axes stopped and Tracking false.
+    /// A goto sequence that fails part-way halts both axes before the
+    /// error returns: a goto may have started (a `:J` whose reply was
+    /// lost), and no watcher will follow it.
     async fn stop_plan_and_start(
         &self,
         ra: f64,
@@ -929,28 +932,32 @@ impl MountDevice {
             s.target_dec_degrees = Some(dec);
             s.target_pier_side = Some(plan.side);
         }
-        issue_slew_axis(&self.manager, session, Axis::Ra, plan.ra_delta)
-            .await
-            .map_err(ASCOMError::from)?;
-        issue_slew_axis(&self.manager, session, Axis::Dec, plan.dec_delta)
-            .await
-            .map_err(ASCOMError::from)?;
+        let started = async {
+            issue_slew_axis(&self.manager, session, Axis::Ra, plan.ra_delta).await?;
+            issue_slew_axis(&self.manager, session, Axis::Dec, plan.dec_delta).await
+        }
+        .await;
+        if let Err(e) = started {
+            halt_after_failed_start(&self.manager, session).await;
+            return Err(ASCOMError::from(e));
+        }
         drop(guard);
         Ok(())
     }
 
-    /// Park's gotos, from `rest`, the reading taken after its stops:
-    /// `:G` (direction from `sign(target − rest)`) → `:S target` → `:J`
-    /// for each axis with a park target in `targets` (RA, Dec). An axis
-    /// without one (unanchored frame) parks in place.
+    /// Park's gotos: `:G` (direction from `sign(target − rest)`) →
+    /// `:S target` → `:J` for each axis with a park target in `targets`
+    /// (RA, Dec). An axis without one (unanchored frame) parks in place.
     ///
-    /// They go out under [`SlewClaim::hold_axes`], like a slew's, so an
-    /// `AbortSlew` during park's stops fails the park instead of being
-    /// followed by its gotos.
+    /// Like a slew's, the fresh read of where the axes came to rest and
+    /// the gotos run under one [`SlewClaim::hold_axes`]. An `AbortSlew`
+    /// during park's stops therefore fails the park instead of being
+    /// followed by its gotos. A read that finds an axis running again
+    /// (a `Tracking` write during the stops, say) refuses the park, and a
+    /// goto sequence that fails part-way halts both axes.
     pub(super) async fn start_park_gotos(
         &self,
         claim: &SlewClaim,
-        rest: &MountSnapshot,
         targets: (Option<i32>, Option<i32>),
     ) -> ASCOMResult<()> {
         let Some(_axes) = claim.hold_axes().await else {
@@ -959,38 +966,66 @@ impl MountDevice {
                 "park aborted while its axes were stopping",
             ));
         };
-        for (axis, current_ticks, target_ticks) in [
-            (Axis::Ra, rest.ra.position_ticks, targets.0),
-            (Axis::Dec, rest.dec.position_ticks, targets.1),
-        ] {
-            let Some(target_ticks) = target_ticks else {
-                debug!(
-                    ?axis,
-                    "no park target (unanchored frame) — axis parks in place"
-                );
-                continue;
-            };
-            let mode = MotionMode {
-                kind: ModeKind::Goto,
-                speed: Speed::Fast,
-                ccw: current_ticks > target_ticks,
-            };
-            self.send(Command::SetMotionMode { axis, mode })
-                .await
-                .map_err(ASCOMError::from)?;
-            // No `:I` in Goto mode — the firmware computes slew speed
-            // internally.
-            self.send(Command::SetGotoTarget {
-                axis,
-                ticks: target_ticks,
+        // Fresh wire read after the stops — the cached background
+        // snapshot lags the wire by up to one `polling_interval`.
+        let rest = self
+            .with_session(async |session| {
+                self.manager
+                    .poll_axes_now(session)
+                    .await
+                    .map_err(ASCOMError::from)
             })
-            .await
-            .map_err(ASCOMError::from)?;
-            self.send(Command::StartMotion(axis))
+            .await?;
+        if rest.ra.running() || rest.dec.running() {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "park refused: an axis started moving again while park waited for its \
+                 stops",
+            ));
+        }
+        let started: ASCOMResult<()> = async {
+            for (axis, current_ticks, target_ticks) in [
+                (Axis::Ra, rest.ra.position_ticks, targets.0),
+                (Axis::Dec, rest.dec.position_ticks, targets.1),
+            ] {
+                let Some(target_ticks) = target_ticks else {
+                    debug!(
+                        ?axis,
+                        "no park target (unanchored frame) — axis parks in place"
+                    );
+                    continue;
+                };
+                let mode = MotionMode {
+                    kind: ModeKind::Goto,
+                    speed: Speed::Fast,
+                    ccw: current_ticks > target_ticks,
+                };
+                self.send(Command::SetMotionMode { axis, mode })
+                    .await
+                    .map_err(ASCOMError::from)?;
+                // No `:I` in Goto mode — the firmware computes slew speed
+                // internally.
+                self.send(Command::SetGotoTarget {
+                    axis,
+                    ticks: target_ticks,
+                })
                 .await
                 .map_err(ASCOMError::from)?;
+                self.send(Command::StartMotion(axis))
+                    .await
+                    .map_err(ASCOMError::from)?;
+            }
+            Ok(())
         }
-        Ok(())
+        .await;
+        if started.is_err() {
+            self.with_session(async |session| {
+                halt_after_failed_start(&self.manager, session).await;
+                Ok::<(), ASCOMError>(())
+            })
+            .await?;
+        }
+        started
     }
 
     /// Plan a slew to celestial `(ra, dec)` from one reading of both

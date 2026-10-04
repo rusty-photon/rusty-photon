@@ -865,22 +865,10 @@ impl Telescope for MountDevice {
             self.stop_and_wait_claimed(&reservation.claim(), Axis::Dec)
                 .await?;
             taken.set(Axis::Dec, None);
-            // Fresh wire read after the stops — the cached background
-            // snapshot lags the wire by up to one `polling_interval`.
-            let snap = self
-                .with_session(async |session| {
-                    self.manager
-                        .poll_axes_now(session)
-                        .await
-                        .map_err(ASCOMError::from)
-                })
-                .await?;
-            self.start_park_gotos(
-                &reservation.claim(),
-                &snap,
-                (target_ra_ticks, target_dec_ticks),
-            )
-            .await
+            // The fresh read of where the axes stopped happens in here,
+            // under the claim's axes guard, with the gotos.
+            self.start_park_gotos(&reservation.claim(), (target_ra_ticks, target_dec_ticks))
+                .await
         }
         .await;
         if result.is_err() {

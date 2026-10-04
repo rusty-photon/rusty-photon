@@ -148,6 +148,23 @@ pub(super) async fn wait_axis_stopped(
     }
 }
 
+/// Halt both axes after a goto sequence failed part-way. A goto may have
+/// started even though its sequence returned an error (a `:J` that took
+/// effect but whose reply was lost, or RA running when a Dec frame
+/// failed), and no watcher will follow it. Best-effort: each failure is
+/// logged and the other axis is still stopped. Call it under the claim's
+/// [`SlewClaim::hold_axes`], so the stops cannot reach a successor.
+pub(super) async fn halt_after_failed_start(
+    manager: &MountManager,
+    session: &Session<SkywatcherCodec>,
+) {
+    for axis in [Axis::Ra, Axis::Dec] {
+        if let Err(e) = manager.send(session, Command::InstantStop(axis)).await {
+            tracing::warn!("stop of {axis:?} after a failed goto start failed: {e}");
+        }
+    }
+}
+
 /// Re-engage sidereal tracking on the RA axis. Issues the canonical
 /// three-step sequence: `:G1 TRACKING` → `:I1 sidereal_period` → `:J1`.
 ///

@@ -5019,7 +5019,9 @@ async fn flaky_manager() -> (
 #[tokio::test]
 async fn watcher_poll_with_retry_returns_ok_on_first_success() {
     let (manager, ctrl, session) = flaky_manager().await;
-    let snap = watcher_poll_with_retry(&manager, &session, "test")
+    let slot = Arc::new(SlewSlot::default());
+    let reservation = reserve(&slot).unwrap();
+    let snap = watcher_poll_with_retry(&manager, &session, &reservation.claim(), "test")
         .await
         .expect("happy-path poll should succeed");
     // No retries needed → no best-effort :L was issued.
@@ -5036,10 +5038,12 @@ async fn watcher_poll_with_retry_returns_ok_on_first_success() {
 #[tokio::test]
 async fn watcher_poll_with_retry_recovers_after_transient_error() {
     let (manager, ctrl, session) = flaky_manager().await;
+    let slot = Arc::new(SlewSlot::default());
+    let reservation = reserve(&slot).unwrap();
     // Fail the next round-trip exactly once: the helper's second
     // attempt should land on a healthy transport and return Ok.
     ctrl.fail_remaining.store(1, Ordering::SeqCst);
-    watcher_poll_with_retry(&manager, &session, "test")
+    watcher_poll_with_retry(&manager, &session, &reservation.claim(), "test")
         .await
         .expect("retry should recover from a single transient error");
     // No retry-exhaustion path → no best-effort :L.
@@ -5051,9 +5055,11 @@ async fn watcher_poll_with_retry_recovers_after_transient_error() {
 #[tokio::test]
 async fn watcher_poll_with_retry_exhausts_then_issues_best_effort_stop() {
     let (manager, ctrl, session) = flaky_manager().await;
+    let slot = Arc::new(SlewSlot::default());
+    let reservation = reserve(&slot).unwrap();
     // Saturate the failure budget so every retry attempt errors.
     ctrl.fail_remaining.store(u32::MAX, Ordering::SeqCst);
-    let err = watcher_poll_with_retry(&manager, &session, "test")
+    let err = watcher_poll_with_retry(&manager, &session, &reservation.claim(), "test")
         .await
         .expect_err("retry budget should be exhausted");
     match err {
@@ -5068,6 +5074,23 @@ async fn watcher_poll_with_retry_exhausts_then_issues_best_effort_stop() {
     assert_eq!(ctrl.stop_calls_ra.load(Ordering::SeqCst), 1);
     assert_eq!(ctrl.stop_calls_dec.load(Ordering::SeqCst), 1);
     let _ = session.close().await; // may fail because of pending fails; tolerate
+}
+
+#[tokio::test]
+async fn watcher_poll_with_retry_sends_no_stop_once_its_claim_has_lapsed() {
+    // AbortSlew has already stopped the axes, and a successor may own
+    // them: a stale watcher's emergency `:L` would stop its goto.
+    let (manager, ctrl, session) = flaky_manager().await;
+    let slot = Arc::new(SlewSlot::default());
+    let reservation = reserve(&slot).unwrap();
+    slot.clear();
+    ctrl.fail_remaining.store(u32::MAX, Ordering::SeqCst);
+    watcher_poll_with_retry(&manager, &session, &reservation.claim(), "test")
+        .await
+        .expect_err("retry budget should be exhausted");
+    assert_eq!(ctrl.stop_calls_ra.load(Ordering::SeqCst), 0);
+    assert_eq!(ctrl.stop_calls_dec.load(Ordering::SeqCst), 0);
+    let _ = session.close().await;
 }
 
 #[test]
@@ -6864,10 +6887,10 @@ async fn a_watcher_whose_user_has_gone_releases_its_claim() {
     );
 }
 
-#[tokio::test(start_paused = true)]
-async fn a_park_aborted_while_its_axes_stop_sends_no_goto() {
-    // Dec is mid-goto, so park's `:K2` sets it coasting for 1.5 s; the
-    // abort lands inside that wait.
+/// A capturing mock device, connected, with a park target of `(0, 0)`
+/// (so Park has gotos to send) and a Dec that coasts after a stop the
+/// way the pier1 `GTi`'s does.
+async fn parkable_device() -> (MountDevice, SharedMock) {
     let factory = CapturingMockFactory::new();
     let mock = Arc::clone(&factory.state);
     mock.lock().await.dec.stop_coast = Some(PIER1_DEC_COAST);
@@ -6879,6 +6902,14 @@ async fn a_park_aborted_while_its_axes_stop_sends_no_goto() {
     let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
+    (d, mock)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_park_aborted_while_its_axes_stop_sends_no_goto() {
+    // Dec is mid-goto, so park's `:K2` sets it coasting for 1.5 s; the
+    // abort lands inside that wait.
+    let (d, mock) = parkable_device().await;
     mid_goto(
         &mut mock.lock().await.dec,
         200_000,
@@ -7033,4 +7064,98 @@ async fn a_slew_whose_axis_is_restarted_during_its_stops_is_refused() {
         "a goto replaced the tracking the client asked for"
     );
     assert!(m.ra.running);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slew_whose_goto_reply_is_lost_halts_the_axes_it_may_have_started() {
+    // RA's `:J1` takes effect but its reply does not decode: the goto
+    // runs, the sequence fails, and no watcher will follow it.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    mock.lock().await.fault_script.push_back(ScriptedFault {
+        letter: b'J',
+        fault: Fault::Garbled,
+    });
+    let lst = d.sidereal_time().await.unwrap();
+    d.slew_to_coordinates_async((lst + 6.0).rem_euclid(24.0), 30.0)
+        .await
+        .unwrap_err();
+    let m = mock.lock().await;
+    assert!(!m.ra.running, "RA left running a goto no watcher follows");
+    assert!(!m.dec.running, "Dec left running");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_park_whose_goto_reply_is_lost_halts_the_axes_it_may_have_started() {
+    let (d, mock) = parkable_device().await;
+    mock.lock().await.fault_script.push_back(ScriptedFault {
+        letter: b'J',
+        fault: Fault::Garbled,
+    });
+    d.park().await.unwrap_err();
+    let m = mock.lock().await;
+    assert!(!m.ra.running, "RA left running a goto no watcher follows");
+    assert!(!m.dec.running, "Dec left running");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_park_whose_axis_is_restarted_during_its_stops_is_refused() {
+    // Dec is coasting, so park waits on its stop; Tracking is turned on
+    // in that wait, restarting RA. Park must not send its gotos against
+    // a moving axis.
+    let (d, mock) = parkable_device().await;
+    mid_goto(
+        &mut mock.lock().await.dec,
+        200_000,
+        skywatcher_motor_protocol::Direction::Cw,
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let park = d.park();
+    let track = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        d.set_tracking(true).await.unwrap();
+    };
+    let (parked, ()) = tokio::join!(park, track);
+    let err = parked.unwrap_err();
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert!(err.message.contains("moving again"), "{}", err.message);
+    let m = mock.lock().await;
+    assert_eq!(m.ra.mode, skywatcher_motor_protocol::ModeKind::Tracking);
+    assert!(m.ra.running);
+    drop(m);
+    assert!(!d.at_park().await.unwrap());
+}
+
+#[tokio::test]
+async fn a_pickup_ends_the_slew_when_an_axis_restarts_during_its_stops() {
+    // Real time: the pickup waits for MIN_SLEW_DWELL on the wall clock.
+    // RA is restarted (as a Tracking write would) while the pickup waits
+    // on its Dec stop: no pickup goto may go out against it, and the
+    // watcher must not wait on an axis that tracks on.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    let from = spawn_watcher_due_a_pickup(&d, &mock).await;
+    loop {
+        let mut m = mock.lock().await;
+        let stopping_dec = m
+            .command_log
+            .iter()
+            .skip(from)
+            .any(|f| f.starts_with(b":K2"));
+        if stopping_dec {
+            m.ra.mode = skywatcher_motor_protocol::ModeKind::Tracking;
+            m.ra.running = true;
+            break;
+        }
+        drop(m);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let frames = setter_frames_since(&*mock.lock().await, from);
+    assert!(
+        !frames.iter().any(|f| f.starts_with(":G")),
+        "a pickup goto went out against a running axis: {frames:?}"
+    );
+    assert!(
+        !d.slew_in_progress.is_held(),
+        "the watcher kept the slew going over an axis that tracks on"
+    );
 }

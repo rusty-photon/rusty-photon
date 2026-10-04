@@ -117,6 +117,23 @@ pub(super) async fn watcher_should_abort(claim: &SlewClaim, session_slot: &Sessi
     !claim.is_current() || user_disconnected(session_slot).await
 }
 
+/// The watcher's emergency halt: `:L` on both axes, sent only while this
+/// operation still holds `claim` and under its axes guard. Once the claim
+/// has lapsed, `AbortSlew` (or disconnect) has already stopped the axes,
+/// and a successor may own them now: a late `:L` would stop its goto.
+async fn halt_if_current(
+    manager: &MountManager,
+    session: &Session<SkywatcherCodec>,
+    claim: &SlewClaim,
+) {
+    let Some(_axes) = claim.hold_axes().await else {
+        debug!("watcher halt skipped: the operation's claim has lapsed");
+        return;
+    };
+    let _ = manager.send(session, Command::InstantStop(Axis::Ra)).await;
+    let _ = manager.send(session, Command::InstantStop(Axis::Dec)).await;
+}
+
 /// Retrying wrapper around [`MountManager::poll_axes_now`] used by
 /// both the slew and park completion watchers. Tolerates up to
 /// [`WATCHER_POLL_RETRY_LIMIT`] consecutive transport errors so a
@@ -139,6 +156,7 @@ pub(super) async fn watcher_should_abort(claim: &SlewClaim, session_slot: &Sessi
 pub(super) async fn watcher_poll_with_retry(
     manager: &MountManager,
     session: &Session<SkywatcherCodec>,
+    claim: &SlewClaim,
     context: &'static str,
 ) -> crate::error::Result<MountSnapshot> {
     let mut last_err: Option<StarAdvError> = None;
@@ -177,8 +195,7 @@ pub(super) async fn watcher_poll_with_retry(
         context = context,
         "watcher poll_axes_now retries exhausted — best-effort :L on both axes before bailing"
     );
-    let _ = manager.send(session, Command::InstantStop(Axis::Ra)).await;
-    let _ = manager.send(session, Command::InstantStop(Axis::Dec)).await;
+    halt_if_current(manager, session, claim).await;
     Err(last_err
         .unwrap_or_else(|| StarAdvError::Transport("watcher poll retries exhausted".to_string())))
 }
@@ -293,7 +310,7 @@ async fn run_completion_watcher<C, F>(
         // exhaustion it also issues a best-effort `:L` on both
         // axes so the motor isn't left commutating with no
         // observer.
-        let Ok(snap) = watcher_poll_with_retry(&manager, &session, context).await else {
+        let Ok(snap) = watcher_poll_with_retry(&manager, &session, &claim, context).await else {
             claim.release();
             break;
         };
@@ -314,10 +331,7 @@ async fn run_completion_watcher<C, F>(
                 context = context,
                 "axis reports Blocked — aborting via :L"
             );
-            let _ = manager.send(&session, Command::InstantStop(Axis::Ra)).await;
-            let _ = manager
-                .send(&session, Command::InstantStop(Axis::Dec))
-                .await;
+            halt_if_current(&manager, &session, &claim).await;
             claim.release();
             break;
         }
@@ -609,6 +623,24 @@ impl SlewWatchCtx {
         };
         if user_disconnected(&self.session_slot).await {
             return Some(CompletionDecision::Bail);
+        }
+        // The stops' waits ran outside the lock, so re-read under it. A
+        // `Tracking` write in between would otherwise get a pickup `:G`
+        // refused on a running RA, and leave this watcher waiting for an
+        // axis that tracks on. An axis running again ends the slew's
+        // supervision and leaves the axis to whoever restarted it.
+        match self.manager.poll_axes_now(session).await {
+            Ok(now) if now.ra.running() || now.dec.running() => {
+                tracing::warn!(
+                    "an axis started moving again during the pickup's stops; ending the slew"
+                );
+                return Some(CompletionDecision::Bail);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("pickup re-read failed; retrying on the next poll: {e}");
+                return Some(CompletionDecision::Continue);
+            }
         }
         if ra_stopped {
             pickup_start_axis(&self.manager, session, Axis::Ra, ra_delta).await;
