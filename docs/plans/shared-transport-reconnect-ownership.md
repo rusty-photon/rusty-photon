@@ -783,7 +783,9 @@ alike. It also leaves `WhileOpen` constructed in one place,
 
 **Scope.** Tests only, and green on `d201506c`. This PR is the net
 under PR 4's edits to the same join. `ScriptedFactory` and
-`ScriptedTransport` move into `tests/common`.
+`ScriptedTransport` move into `tests/common`. One test lives in
+`star-adventurer-gti`, because what it pins is the GTi decoder's
+behaviour, not the transport's.
 
 **Tests.**
 - `shared.rs::tests::a_recovery_published_inside_the_shutdown_join_is_withdrawn_after_it`
@@ -815,6 +817,20 @@ under PR 4's edits to the same join. `ScriptedFactory` and
   - the replay lands and the transport recovers within ten intervals.
 
   Mutation: delete `publish_recovery`'s re-read and undo → red.
+- `star-adventurer-gti` `manager.rs::tests::a_stale_poll_reply_ahead_of_the_safety_stop_reads_as_not_asserted`.
+  It pins what §Deliberately left says about a poll task aborted
+  mid-request. A transport that wraps `CapturingMockFactory`'s hands
+  back one stale `:j` reply before the mock's own replies. A
+  `SharedTransport` on it has an `on_last_disconnect` hook that calls
+  `safety_stop` and records the verdict, so the test reads the verdict
+  rather than a log line. Closing the only session runs it. The test
+  asserts:
+  - all three stop frames (`:L1`, `:L2`, `:K1`) were written;
+  - the verdict is `NotAsserted`.
+
+  Mutation: let `Response::decode` accept a payload on an ack → the
+  verdict reads `Asserted`, the false assertion this test exists to
+  rule out.
 
 **Docs.** None.
 
@@ -1297,8 +1313,19 @@ traffic or changes what the connect path sends.
 
 ### Issues to file
 
-- **Optional:** an orphan join for a poll task that was aborted inside
-  an interrupted attempt (see below).
+- **Optional:** never abort a poll task mid-request (see below).
+  `cancel_while_open` would keep the task registered in
+  `while_open_state` until its join returns. An attempt aborted
+  mid-join would then leave the cancelled task to the teardown's own
+  `cancel_while_open`, which joins it after it finishes its tick. The
+  only other users of `while_open_state` are the publishes, which do
+  not run concurrently with a teardown, so holding it across the
+  bounded join is safe. The cost: an abandoned teardown would leave a
+  stubborn task running until the next `start` or `shutdown` instead of
+  aborting it, and `an_abandoned_teardown_does_not_leave_the_poll_task_running`
+  changes with it. Joining the aborted task, which this item used to
+  propose, would not help: the reply is stranded by the abort, not by
+  the missing join.
 - **Optional:** a synchronous commit lock around `publish_recovery`'s
   check-and-stores and the cleanup's record (the `qhy-camera` pattern),
   which would close the W6 transient.
@@ -1317,14 +1344,56 @@ traffic or changes what the connect path sends.
   `is_available()` can still read true for a few instructions inside
   `publish_recovery`. The debt, which `Session` and (after PR 3)
   `WhileOpen` both consult, is the authority, so this is benign.
-- **A poll task aborted but not joined before the hook.** This is
-  theoretical: a teardown interrupts an attempt inside its own
-  `cancel_while_open`, and `AbortDetachedGuard` aborts without joining.
-  The aborted task is dropped at its next poll, which releases the
-  command lock before the hook can take it. Only a stale reply can
-  reach the hook's first receive, and the codec's match-and-skip
-  absorbs it. It is documented, and the orphan join is the optional
-  follow-up.
+- **A poll task aborted mid-request before the shutdown hook.** It is
+  narrow but reachable, for example on a reload during a reconnect
+  that `stop_owed` started on a healthy conduit:
+  - A teardown interrupts an attempt inside its own
+    `cancel_while_open`. `AbortDetachedGuard` aborts the poll task it
+    took.
+  - GTi's poll loop checks its token only between ticks. If a tick is
+    in flight, the abort can drop a request between its send and its
+    receive.
+  - The task is dropped at its next poll, which releases the command
+    lock. The reply to its last command is still coming, on the conduit
+    the shutdown hook then uses.
+
+  Nothing absorbs that reply. With the default `max_skip` of 0,
+  `Connection::request_timed` never skips a frame: a frame `matches`
+  rejects is an error, not a skip. Only qhy-focuser raises `max_skip`.
+  `SkywatcherCodec` also keeps the default `matches`, so it cannot even
+  tell the frame is not its own. What saves the GTi is that
+  `Response::decode` rejects any payload on a stop's ack, and a poll
+  sends only `:j` and `:f`, whose replies always carry one. The command
+  lock allows one request in flight, so there is at most one stale
+  frame. So:
+  - every stop frame still goes out, and the mount acts on all three;
+  - the stop that reads the stale frame fails to decode, and every
+    later stop reads the ack before its own, so the verdict is
+    `NotAsserted`. The log then says the mount may still be moving,
+    which here is a false alarm;
+  - a false `Asserted` cannot happen: a displaced reply means the
+    stale frame was read, and reading it already failed the verdict.
+    A partial frame left by a receive cut short fails framing the
+    same way.
+
+  The failure is in the safe direction. A scratch test on the GTi mock
+  confirmed it with a wrapping transport that hands back one stale
+  frame first, compared against a control run:
+  - a stale `:j` reply, a stale `:f` reply and a partial tail (`80\r`)
+    each gave `NotAsserted`;
+  - all three stop frames were written every time;
+  - the control gave `Asserted`.
+
+  PR 1 pins this.
+
+  A conduit in this state is closed right after the hook, so the offset
+  goes no further unless the leftover ack outlives the close. The mock's
+  reply queue does outlive it, and there the next open's `:e1` read the
+  leftover `=\r` and was refused as the wrong device. That failure is
+  loud, not a silent offset. Whether a real port keeps a reply across a
+  close and reopen is not verified. `release_any_held_conduit` can
+  strand a reply the same way before a cold open, but it runs no hook.
+  The optional follow-up above removes the abort instead.
 - **An abandoned (dropped) teardown future.** Not reachable in
   production: `BoundServer` and the `build()` rollback always await
   `shutdown`. After PR 8, a cancelled supervisor that was detached this
