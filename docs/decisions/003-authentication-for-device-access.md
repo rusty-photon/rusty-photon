@@ -15,6 +15,24 @@ before calling `rp_auth::layer(router, auth)`. The authentication
 decision is unchanged — only the upstream adapter shape changed. See
 `services/*/src/lib.rs` for the live pattern.
 
+**2026-10-03** — On the Raspberry Pi 5 field rig the Argon2id verify
+costs ~41 ms of CPU per authenticated request, and the middleware ran
+it inline on a tokio worker, which froze the service's timers and I/O
+for that long on every NINA poll, sentinel probe and rp read (late
+pulse-guide ends and late poll ticks in the star-adventurer-gti
+driver, issue #1388). The verify now runs on the blocking pool behind
+a one-permit gate, and a layer-scoped verification memo answers a
+repeat presentation of an already-proved credential in microseconds.
+The stored credential, its parameters, the wire format and the config
+schema are unchanged — see § [Verification memo and KDF admission
+control](#verification-memo-and-kdf-admission-control) and
+§ [Rejected: cheaper per-request
+verification](#rejected-cheaper-per-request-verification-2026-10-03).
+The `rp hash-password` / `rp init-tls` commands quoted below moved to
+`doctor auth hash-password` / `doctor --fix` with
+[ADR-016](./016-service-config-ownership-and-doctor.md); the text was
+corrected in place.
+
 ## Context
 
 ADR-002 introduced opt-in TLS for inter-service communication, protecting
@@ -220,7 +238,7 @@ password_hash = "$argon2id$v=19$m=19456,t=2,p=1$..."
 A CLI command generates the hash from a plaintext password:
 
 ```bash
-rp hash-password
+doctor auth hash-password
 # Enter password: ********
 # Confirm password: ********
 # $argon2id$v=19$m=19456,t=2,p=1$...
@@ -271,12 +289,123 @@ fn unauthorized_response() -> Response {
 The `WWW-Authenticate` header is required by RFC 7235 and triggers
 browser credential prompts (useful for accessing the sentinel dashboard).
 
+### Verification memo and KDF admission control
+
+Argon2id's cost protects the *stored* hash against offline cracking; it
+is not an online defence, and paying it on every request is a liability
+on a small board. Measured on the field rig (Raspberry Pi 5, release
+build): a verify with the default parameters takes 40.9 ms median (p95
+54 ms) and allocates 19 MiB; every OWASP-compliant parameter set costs
+36–58 ms; pre-allocating the memory saves 2 ms; a keyed BLAKE2b-256 tag
+of the credential costs 0.5 µs. Tuning parameters cannot remove the
+cost — only moving the KDF off the hot path can. HTTP Basic is
+stateless, so without a memo every NINA poll, every sentinel probe,
+every rp supervisor read and every MCP call pays it, and because the
+middleware ran the verify inline on a tokio worker, the worker that
+holds the runtime's I/O and timer driver spent those 41 ms in Argon2:
+serial replies were noticed late and `sleep_until` deadlines (pulse
+ends) fired late (issue #1388).
+
+The middleware therefore separates *proving* a credential from
+*recognising* one it has already proved:
+
+- **Memo.** Each `rp_auth::layer` call builds one verifier holding a
+  64-byte key drawn from the OS RNG. A presented credential is reduced
+  to a keyed BLAKE2b-256 tag over a domain string and the
+  length-prefixed username, password and stored PHC string. The memo
+  holds one positive slot — one `AuthConfig` admits exactly one
+  credential, so there is nothing to evict — and a ring of at most
+  eight negative tags. A positive hit answers in microseconds and
+  refreshes a 15-minute sliding idle TTL; on expiry the slot is cleared
+  and zeroized. A negative hit answers 401 for 5 s, so a stale poller
+  with an old password costs one KDF per 5 s instead of one per poll.
+  Tags are PRF outputs under a key that never leaves the process: the
+  memo holds no password, no hash and nothing a config-file attacker
+  can use, and a hit still requires presenting the full credential, so
+  it is not a bearer artefact. The key is per layer instance — never
+  shared across services, logged or persisted — and a config reload
+  rebuilds the router and therefore the memo. If the OS RNG cannot
+  supply a key, the memo and the single-flight are disabled and every
+  request takes the gated KDF path, so concurrent requests for one
+  credential serialise on the permit and may be answered 503; the gate
+  itself does not depend on the key, and a fixed key is never
+  substituted.
+- **Gate.** A miss runs the KDF on tokio's blocking pool behind a
+  one-permit semaphore. The permit and the memo store live *inside* the
+  blocking closure, so a client that disconnects mid-verify (an HTTP/2
+  `RST_STREAM`, a TCP reset) can neither release the gate early nor lose
+  the warm-up. At most one Argon2id computation — one core, 19 MiB — is
+  in flight per service whatever clients do; the inline design allowed
+  one per worker, and an ungated `spawn_blocking` would allow 512.
+- **Single-flight by tag.** A request presenting the credential that is
+  currently being verified waits for that verdict and is never refused,
+  whether it found the verification in flight on arrival or only after
+  queueing for the permit (two cold requests for one credential that
+  both queue behind a third credential's KDF run one KDF between them:
+  the one that loses the permit race becomes a waiter on the winner's
+  verdict when its permit wait runs out). The client's own timeout
+  remains the ceiling. Only a request for a *different* credential may
+  be answered `503 Service Unavailable` with `Retry-After: 1`, after
+  waiting 1 s for the permit and finding it still held by that other
+  credential. **The auth layer must never answer 5xx for a credential
+  that is being verified:** rp's SafetyMonitor read is fail-unsafe and
+  parks the mount on any error, and sentinel's probe reads 503 as
+  degraded (alive) but any other unexpected status as down. The 1 s
+  bound sits under sentinel's 2 s probe timeout.
+- **Verdict rules.** The username is compared in constant time (as
+  fixed-length digests) and ANDed with the KDF result *after* the KDF
+  has run, so a wrong username costs the same as a wrong password; the
+  previous short-circuit answered a wrong username in 0.07 ms and a
+  right one in 41 ms, a username oracle. A `password_hash` that Argon2
+  could never accept a password against — not a PHC string, another
+  algorithm's identifier, parameters Argon2 rejects, a salt under 8
+  bytes, no hash field — is reported once at startup with the reason,
+  and misses are then verified against a syntactically valid decoy
+  whose hash field is random bytes with no known preimage, so the
+  server fails closed with wrong-password timing instead of a
+  microsecond 401. A KDF that panics writes nothing to the memo and
+  answers 401.
+- **What does not change.** `password_hash` stays an Argon2id PHC
+  string with the crate's default parameters (m=19456, t=2, p=1);
+  `doctor auth hash-password` and `doctor auth rotate` emit the same
+  hashes; the wire format, the 401 challenge and the config schema are
+  untouched; `rp_auth::layer` and `rp_auth::credentials::{hash_password,
+  verify_password}` keep their signatures. No new crates: `blake2`,
+  `subtle` and `zeroize` were already in the dependency graph.
+
+Accepted residuals:
+
+- A process-memory dump reduces a *human-chosen* password to fast-hash
+  cracking for the lifetime of the layer instance. This is not a new
+  class: the un-wiped Argon2 block buffer of the most recent verify is
+  an equivalent BLAKE2b-speed oracle, and the Basic header sits in
+  every live connection's read buffer. A doctor-minted credential
+  (~190 bits of entropy) is unaffected under any of them.
+- Under a sustained spray of distinct wrong passwords from a host on the
+  LAN or VPN (≥ 25 requests/s), the single permit stays busy and a
+  *cold* legitimate client — first request after a service start, a
+  reload, or 15 minutes idle — is refused with 503 until the spray
+  stops. Warm clients are unaffected. Per-peer limiting would close
+  this and needs the accepted connection's peer address exposed to the
+  router, which `rusty-photon-tls` does not do today; the refusals are
+  counted and logged so the condition is visible.
+- The gate bounds work per process, not per host: a spray against all
+  services on one Pi still runs one KDF per service on four cores.
+- The first request per service after a start or reload still pays one
+  41 ms verify, now off the worker threads. On a rig running sentinel
+  over TLS with `service_auth` configured, sentinel's 30 s probe is the
+  de facto warm-up.
+
 ### Shared Crate: rp-auth
 
 Authentication logic lives in a new workspace crate, `crates/rp-auth`,
 following the same pattern as `crates/rp-tls`:
 
 - `credentials.rs` — Argon2id hashing and verification
+- `memo.rs` — the verification memo (keyed tags, positive slot,
+  negative ring, TTLs)
+- `verifier.rs` — the per-layer verifier: memo lookup, single-flight by
+  tag, the one-permit gate and the off-worker KDF
 - `middleware.rs` — axum/tower authentication layer
 - `config.rs` — `AuthConfig` struct (username, password_hash)
 
@@ -369,14 +498,14 @@ warning is logged:
 
 ```
 WARN: Authentication is enabled but TLS is not. Credentials will be
-      transmitted in cleartext. Consider enabling TLS (see `rp init-tls`).
+      transmitted in cleartext. Consider enabling TLS (see `doctor --fix`).
 ```
 
 ### Password Recovery
 
 If a user forgets their password, they edit the service config file
 directly — remove the `auth` section or replace the `password_hash`
-with a new value from `rp hash-password`. No separate recovery mechanism
+with a new value from `doctor auth hash-password`. No separate recovery mechanism
 is needed.
 
 ## Consequences
@@ -385,7 +514,8 @@ is needed.
 
 - New workspace crate: `crates/rp-auth` (Argon2id hashing, tower
   middleware, config)
-- `rp` gains a `hash-password` subcommand
+- `rp` gains a `hash-password` subcommand (since moved to `doctor auth
+  hash-password`, ADR-016)
 - Each service's `ServerBuilder` gains auth middleware wrapping (~10
   lines)
 - Service configs gain an optional `auth` section
@@ -407,7 +537,7 @@ is needed.
 
 ```bash
 # One-time setup
-rp hash-password
+doctor auth hash-password
 # Enter password: ********
 # $argon2id$v=19$m=19456,t=2,p=1$...
 
@@ -424,6 +554,10 @@ rp hash-password
 | Tampering protection  | None               | Yes (TLS integrity) |
 | Credential storage    | Argon2id hash      | Argon2id hash      |
 | Brute-force resistance| Argon2id cost      | Argon2id cost      |
+| Per-request verify cost | µs on a warm memo; one gated 41 ms KDF per credential per 15 min idle | same |
+| Verification DoS      | One KDF in flight per service, off the worker threads | same |
+| Username enumeration  | Constant-time compare, KDF always runs | same |
+| Credential in process memory | Keyed tag only; a dump is a fast-hash target for a human-chosen password (accepted) | same |
 
 ## Future: API Keys as a Secondary Mechanism
 
@@ -451,10 +585,49 @@ Alpaca clients.
 ## Future: Rate Limiting
 
 Authentication opens the door for brute-force attacks against the
-password. A future enhancement could add per-IP rate limiting on failed
-authentication attempts (e.g., exponential backoff after 5 failures).
-This is a defense-in-depth measure; Argon2id's computational cost
-already makes online brute-force impractical for reasonable passwords.
+password. Argon2id's cost is **not** the online defence — NIST SP 800-63B
+treats verifier cost as protection for the stored hash and a throttle as
+the online control — and since 2026-10-03 the verify runs behind a
+one-permit gate that bounds the *work* an attacker can cause per service
+(one core, 19 MiB), not the number of guesses they can make. A future
+per-peer limiter (e.g. exponential backoff after 5 failures from one
+address) needs the accepted connection's peer address exposed to the
+router, which `rusty-photon-tls` does not do today, and it must count
+negative-memo hits as failed presentations or repeated guesses inside the
+5 s negative window become invisible to it. Any refusal it answers must be
+`503`, never `429`: sentinel reads 503 as degraded and any other unexpected
+status as down.
+
+## Rejected: cheaper per-request verification (2026-10-03)
+
+Considered for issue #1388 and rejected, so they are not reopened:
+
+- **Argon2id parameter tuning** — every OWASP-compliant set measured
+  36–58 ms on the Pi 5; the sets are equal-cost by design.
+- **Below-OWASP parameters** — m=4096,t=3 is still 11.6 ms inline and
+  weakens every hand-typed password.
+- **A cheaper stored form for the doctor-minted credential only** — the
+  fleet must keep working with hand-set passwords, so the verifier
+  cannot assume a high-entropy secret; the memo serves both.
+- **Switching KDF (bcrypt, scrypt, PBKDF2)** — any compliant setting is
+  at least Argon2id-cost on a Cortex-A76; ADR-003 already preferred
+  Argon2id over OmniSim's PBKDF2.
+- **Memory pre-allocation / buffer reuse** — saves 2 ms of 41.
+- **Offload only (`spawn_blocking` without a memo)** — unfreezes the
+  runtime but leaves 41 ms of latency and ~10 % of the Pi's CPU on
+  Argon2 during a NINA session.
+- **Memo keyed by the raw `Authorization` header** — same latency in
+  fewer lines, but keeps the base64 credential in memory for the TTL;
+  the keyed tag costs 0.5 µs more and holds nothing crackable.
+- **Session cookie or bearer token** — Alpaca clients only send Basic
+  (Option 4 above).
+- **Per-connection authentication state** — the router sees no
+  connection identity in 22 of 23 services, and ui-htmx closes every
+  proxied connection by design; the memo subsumes it.
+- **A reverse proxy terminating auth on the Pi** — a second process and
+  hop on four cores for 16 ports, and a re-plumb of ADR-002.
+- **Exempting `/health` or the management API** — does nothing for
+  device polls and would remove sentinel's probe as the warm-up.
 
 ## References
 
