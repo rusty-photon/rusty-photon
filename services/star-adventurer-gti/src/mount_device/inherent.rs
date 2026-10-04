@@ -34,6 +34,7 @@ use ascom_alpaca::api::telescope::{PierSide, Telescope};
 use ascom_alpaca::api::Device;
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use rusty_photon_shared_transport::{Session, SessionError, TransportError};
+use skywatcher_motor_protocol::command::{ModeKind, MotionMode, Speed};
 use skywatcher_motor_protocol::{Axis, Command};
 use tracing::{debug, info};
 
@@ -731,7 +732,7 @@ impl MountDevice {
         // is taken over below, once the slew is sure to move.
         let reservation = {
             let _axes = self.axis_ownership.lock().await;
-            SlewReservation::try_acquire(&self.slew_in_progress)
+            SlewReservation::try_acquire(&self.slew_in_progress, &self.axis_ownership)
         };
         let Some(reservation) = reservation else {
             return Err(ASCOMError::new(
@@ -825,8 +826,12 @@ impl MountDevice {
     /// pulses the slew took over, once it has been stopped.
     ///
     /// A plan refused here leaves both axes stopped and Tracking false.
-    /// An `AbortSlew` that lands before the gotos are running fails the
-    /// slew; see [`Self::ensure_slew_not_aborted`].
+    ///
+    /// The latch and both gotos run under [`SlewClaim::hold_axes`]. An
+    /// `AbortSlew` lands either before the claim is checked, which fails
+    /// the slew with no goto started, or after both `:J`s, where its `:L`s
+    /// stop the gotos. A stale setup can therefore never latch over, or
+    /// send a goto into, the next slew.
     async fn stop_plan_and_start(
         &self,
         ra: f64,
@@ -836,43 +841,58 @@ impl MountDevice {
         claim: &SlewClaim,
         taken: &mut PulseGuiding,
     ) -> ASCOMResult<()> {
+        let plan = {
+            let guard = self.session.read().await;
+            let session = guard
+                .as_ref()
+                .ok_or_else(|| ASCOMError::from(StarAdvError::NotConnected))?;
+            // Stop through the session already borrowed: a second read of
+            // the session lock here would queue behind a waiting
+            // `Connected` write that is itself waiting for this read.
+            stop_axis_and_wait(&self.manager, session, Axis::Ra, AXIS_STOP_TIMEOUT)
+                .await
+                .map_err(ASCOMError::from)?;
+            taken.set(Axis::Ra, None);
+            self.state.write().await.tracking_requested = false;
+            stop_axis_and_wait(&self.manager, session, Axis::Dec, AXIS_STOP_TIMEOUT)
+                .await
+                .map_err(ASCOMError::from)?;
+            taken.set(Axis::Dec, None);
+            // A fresh wire read: the background snapshot lags the wire by
+            // up to a poll, so it can predate the end of the coast.
+            let rest = self
+                .manager
+                .poll_axes_now(session)
+                .await
+                .map_err(ASCOMError::from)?;
+            drop(guard);
+            let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+                .map_err(ASCOMError::from)?;
+            self.plan_slew(ra, dec, side, &rest, lst, params)
+                .map_err(|e| {
+                    ASCOMError::new(
+                        e.code,
+                        format!(
+                            "slew refused from where the mount came to rest, with both axes \
+                             now stopped: {}",
+                            e.message
+                        ),
+                    )
+                })?
+        };
+        // `axis_ownership` comes before the session slot in the lock
+        // order, so the stops' session guard is gone before the axes are
+        // taken, and the session is borrowed again under them.
+        let Some(_axes) = claim.hold_axes().await else {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "slew aborted while its axes were stopping",
+            ));
+        };
         let guard = self.session.read().await;
         let session = guard
             .as_ref()
             .ok_or_else(|| ASCOMError::from(StarAdvError::NotConnected))?;
-        // Stop through the session already borrowed: a second read of
-        // the session lock here would queue behind a waiting
-        // `Connected` write that is itself waiting for this read.
-        stop_axis_and_wait(&self.manager, session, Axis::Ra, AXIS_STOP_TIMEOUT)
-            .await
-            .map_err(ASCOMError::from)?;
-        taken.set(Axis::Ra, None);
-        self.state.write().await.tracking_requested = false;
-        stop_axis_and_wait(&self.manager, session, Axis::Dec, AXIS_STOP_TIMEOUT)
-            .await
-            .map_err(ASCOMError::from)?;
-        taken.set(Axis::Dec, None);
-        // A fresh wire read: the background snapshot lags the wire by up
-        // to a poll, so it can predate the end of the coast.
-        let rest = self
-            .manager
-            .poll_axes_now(session)
-            .await
-            .map_err(ASCOMError::from)?;
-        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(ASCOMError::from)?;
-        let plan = self
-            .plan_slew(ra, dec, side, &rest, lst, params)
-            .map_err(|e| {
-                ASCOMError::new(
-                    e.code,
-                    format!(
-                        "slew refused from where the mount came to rest, with both axes \
-                         now stopped: {}",
-                        e.message
-                    ),
-                )
-            })?;
         // The target and the side the plan chose are one target: latch
         // them together, and only once a plan has accepted them.
         {
@@ -881,49 +901,68 @@ impl MountDevice {
             s.target_dec_degrees = Some(dec);
             s.target_pier_side = Some(plan.side);
         }
-        self.ensure_slew_not_aborted(session, claim, &[]).await?;
         issue_slew_axis(&self.manager, session, Axis::Ra, plan.ra_delta)
             .await
             .map_err(ASCOMError::from)?;
-        self.ensure_slew_not_aborted(session, claim, &[Axis::Ra])
-            .await?;
         issue_slew_axis(&self.manager, session, Axis::Dec, plan.dec_delta)
             .await
             .map_err(ASCOMError::from)?;
-        self.ensure_slew_not_aborted(session, claim, &[Axis::Ra, Axis::Dec])
-            .await?;
         drop(guard);
         Ok(())
     }
 
-    /// Fail the slew once `AbortSlew` (or a disconnect) has voided its
-    /// claim, first stopping `started`, the axes whose goto it has sent.
+    /// Park's gotos, from `rest`, the reading taken after its stops:
+    /// `:G` (direction from `sign(target − rest)`) → `:S target` → `:J`
+    /// for each axis with a park target in `targets` (RA, Dec). An axis
+    /// without one (unanchored frame) parks in place.
     ///
-    /// The stops before a slew's gotos can take over a second, and an
-    /// abort in that window must win. `AbortSlew` empties the slot before
-    /// it sends its `:L`s. So while the claim still holds after an axis'
-    /// `:J`, any abort's `:L` follows that `:J` and stops the goto. Once
-    /// the claim has lapsed, the abort's `:L` may have gone out before
-    /// the `:J`, so the slew stops what it started itself. The watcher's
-    /// pickup loop makes the same check before it re-slews.
-    async fn ensure_slew_not_aborted(
+    /// They go out under [`SlewClaim::hold_axes`], like a slew's, so an
+    /// `AbortSlew` during park's stops fails the park instead of being
+    /// followed by its gotos.
+    pub(super) async fn start_park_gotos(
         &self,
-        session: &Session<SkywatcherCodec>,
         claim: &SlewClaim,
-        started: &[Axis],
+        rest: &MountSnapshot,
+        targets: (Option<i32>, Option<i32>),
     ) -> ASCOMResult<()> {
-        if claim.is_current() {
-            return Ok(());
+        let Some(_axes) = claim.hold_axes().await else {
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "park aborted while its axes were stopping",
+            ));
+        };
+        for (axis, current_ticks, target_ticks) in [
+            (Axis::Ra, rest.ra.position_ticks, targets.0),
+            (Axis::Dec, rest.dec.position_ticks, targets.1),
+        ] {
+            let Some(target_ticks) = target_ticks else {
+                debug!(
+                    ?axis,
+                    "no park target (unanchored frame) — axis parks in place"
+                );
+                continue;
+            };
+            let mode = MotionMode {
+                kind: ModeKind::Goto,
+                speed: Speed::Fast,
+                ccw: current_ticks > target_ticks,
+            };
+            self.send(Command::SetMotionMode { axis, mode })
+                .await
+                .map_err(ASCOMError::from)?;
+            // No `:I` in Goto mode — the firmware computes slew speed
+            // internally.
+            self.send(Command::SetGotoTarget {
+                axis,
+                ticks: target_ticks,
+            })
+            .await
+            .map_err(ASCOMError::from)?;
+            self.send(Command::StartMotion(axis))
+                .await
+                .map_err(ASCOMError::from)?;
         }
-        for &axis in started {
-            if let Err(e) = self.manager.send(session, Command::InstantStop(axis)).await {
-                debug!("stop of {axis:?} after an abort failed: {e}");
-            }
-        }
-        Err(ASCOMError::new(
-            ASCOMErrorCode::INVALID_OPERATION,
-            "slew aborted before its gotos were running",
-        ))
+        Ok(())
     }
 
     /// Plan a slew to celestial `(ra, dec)` from one reading of both

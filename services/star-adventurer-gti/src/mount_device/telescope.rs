@@ -16,7 +16,6 @@ use ascom_alpaca::api::telescope::{
 use ascom_alpaca::api::Device;
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use async_trait::async_trait;
-use skywatcher_motor_protocol::command::{ModeKind, MotionMode, Speed};
 use skywatcher_motor_protocol::{Axis, Command};
 use tracing::debug;
 
@@ -813,7 +812,8 @@ impl Telescope for MountDevice {
         let mut taken = PulseGuiding::IDLE;
         let reservation = {
             let _axes = self.axis_ownership.lock().await;
-            let reservation = SlewReservation::try_acquire(&self.slew_in_progress);
+            let reservation =
+                SlewReservation::try_acquire(&self.slew_in_progress, &self.axis_ownership);
             if reservation.is_some() {
                 taken = std::mem::replace(
                     &mut self.state.write().await.pulse_guiding,
@@ -873,39 +873,12 @@ impl Telescope for MountDevice {
                         .map_err(ASCOMError::from)
                 })
                 .await?;
-            for (axis, current_ticks, target_ticks) in [
-                (Axis::Ra, snap.ra.position_ticks, target_ra_ticks),
-                (Axis::Dec, snap.dec.position_ticks, target_dec_ticks),
-            ] {
-                let Some(target_ticks) = target_ticks else {
-                    debug!(
-                        ?axis,
-                        "no park target (unanchored frame) — axis parks in place"
-                    );
-                    continue;
-                };
-                let mode = MotionMode {
-                    kind: ModeKind::Goto,
-                    speed: Speed::Fast,
-                    ccw: current_ticks > target_ticks,
-                };
-                self.send(Command::SetMotionMode { axis, mode })
-                    .await
-                    .map_err(ASCOMError::from)?;
-                // No `:I` in Goto mode — the firmware computes slew speed
-                // internally. See the matching note in
-                // `slew_to_coordinates_async`.
-                self.send(Command::SetGotoTarget {
-                    axis,
-                    ticks: target_ticks,
-                })
-                .await
-                .map_err(ASCOMError::from)?;
-                self.send(Command::StartMotion(axis))
-                    .await
-                    .map_err(ASCOMError::from)?;
-            }
-            Ok(())
+            self.start_park_gotos(
+                &reservation.claim(),
+                &snap,
+                (target_ra_ticks, target_dec_ticks),
+            )
+            .await
         }
         .await;
         if result.is_err() {

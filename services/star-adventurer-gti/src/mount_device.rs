@@ -487,6 +487,8 @@ impl SlewSlot {
 pub(super) struct SlewClaim {
     slot: Arc<SlewSlot>,
     token: SlewToken,
+    /// The device's `axis_ownership` lock; see [`Self::hold_axes`].
+    axes: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SlewClaim {
@@ -495,6 +497,22 @@ impl SlewClaim {
     /// claimed it since.
     pub(super) fn is_current(&self) -> bool {
         self.slot.holds(self.token)
+    }
+
+    /// Take `axis_ownership`, if this operation still holds the slot.
+    ///
+    /// `AbortSlew`, disconnect and every new claim go through
+    /// `axis_ownership`, so the claim cannot lapse while the returned
+    /// guard is held. A check of [`Self::is_current`] followed by wire
+    /// commands races them: an abort can land in between, and the next
+    /// slew can claim the slot before the commands go out. Under the
+    /// guard, an abort lands either before the check, which then fails,
+    /// or after the commands, where its `:L` stops what they started.
+    /// Hold it across the act only, never across a wait for an axis to
+    /// stop, so that an abort waits for a few frames at most.
+    pub(super) async fn hold_axes(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        let guard = self.axes.lock().await;
+        self.is_current().then_some(guard)
     }
 
     /// Empty the slot if this operation still holds it.
@@ -526,12 +544,17 @@ pub(super) struct SlewReservation {
 
 impl SlewReservation {
     /// Reserve the slot, returning the guard, or [`None`] when a slew /
-    /// park is already in progress.
-    pub(super) fn try_acquire(slot: &Arc<SlewSlot>) -> Option<Self> {
+    /// park is already in progress. `axes` is the device's
+    /// `axis_ownership`, which the caller holds while it claims.
+    pub(super) fn try_acquire(
+        slot: &Arc<SlewSlot>,
+        axes: &Arc<tokio::sync::Mutex<()>>,
+    ) -> Option<Self> {
         slot.try_claim().map(|token| Self {
             claim: SlewClaim {
                 slot: Arc::clone(slot),
                 token,
+                axes: Arc::clone(axes),
             },
             armed: true,
         })

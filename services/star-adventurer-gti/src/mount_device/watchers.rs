@@ -37,7 +37,7 @@ use crate::error::StarAdvError;
 use crate::manager::{MountManager, MountParameters, MountSnapshot};
 use crate::units::{Cpr, Dec, DecTicks, Lst, Ra, RaTicks};
 
-use super::slew::{enable_sidereal_tracking_ra, pickup_reslew_axis};
+use super::slew::{enable_sidereal_tracking_ra, pickup_start_axis, pickup_stop_axis};
 use super::{pre_flip_side_for_latitude, DriverState, SlewClaim};
 
 /// Shared session slot the device holds. Watchers peek for `is_none()`
@@ -348,11 +348,16 @@ async fn run_completion_watcher<C, F>(
                 // (~5-10″).
                 drop(poll_guard);
                 tokio::time::sleep(settle).await;
-                {
+                // Finalize only while this operation still holds the
+                // slot, and under the axes: an AbortSlew or the next
+                // claim during the settle must not be followed by this
+                // watcher marking the mount parked.
+                if let Some(_axes) = claim.hold_axes().await {
                     let mut s = state.write().await;
                     on_finalize(&mut s);
+                    drop(s);
+                    claim.release();
                 }
-                claim.release();
                 break;
             }
         }
@@ -556,13 +561,9 @@ impl SlewWatchCtx {
         if !over_tolerance {
             return None;
         }
-        // Re-check the abort / disconnect signals immediately before
-        // issuing any wire commands. The top-of-loop guard ran one
-        // `:f` round-trip + a few coordinate ops ago; in that window
-        // AbortSlew (which clears `slew_in_progress` and issues :L)
-        // or set_connected(false) (which closes the transport) may
-        // have raced ahead. Without this second guard the pickup
-        // loop would restart motion after the user aborted.
+        // Re-check the abort / disconnect signals before any wire
+        // command, so a pickup the user has aborted does not even stop
+        // the axes. The starts below check again, under the axes.
         if watcher_should_abort(&self.claim, &self.session_slot).await {
             return Some(CompletionDecision::Bail);
         }
@@ -586,11 +587,26 @@ impl SlewWatchCtx {
             "slew pickup iteration"
         );
         // The pickup re-slew goes through the same wire sequence as
-        // the original goto. `:L` + poll keeps the
+        // the original goto. `:K` + poll keeps the
         // motor-not-stopped contract intact even if a previous send
-        // failed mid-sequence.
-        pickup_reslew_axis(&self.manager, session, Axis::Ra, ra_delta).await;
-        pickup_reslew_axis(&self.manager, session, Axis::Dec, dec_delta).await;
+        // failed mid-sequence. Both axes stop first; then the starts go
+        // out under the axes, so an AbortSlew lands either before the
+        // claim check (no pickup) or after both `:J`s (its `:L` stops
+        // them), never between — see `SlewClaim::hold_axes`.
+        let ra_stopped = pickup_stop_axis(&self.manager, session, Axis::Ra).await;
+        let dec_stopped = pickup_stop_axis(&self.manager, session, Axis::Dec).await;
+        let Some(_axes) = self.claim.hold_axes().await else {
+            return Some(CompletionDecision::Bail);
+        };
+        if user_disconnected(&self.session_slot).await {
+            return Some(CompletionDecision::Bail);
+        }
+        if ra_stopped {
+            pickup_start_axis(&self.manager, session, Axis::Ra, ra_delta).await;
+        }
+        if dec_stopped {
+            pickup_start_axis(&self.manager, session, Axis::Dec, dec_delta).await;
+        }
         Some(CompletionDecision::Continue)
     }
 
@@ -604,12 +620,14 @@ impl SlewWatchCtx {
     /// failed).
     async fn finish_slew(&self, session: &Session<SkywatcherCodec>) -> CompletionDecision {
         // Re-check abort / disconnect before issuing the tracking
-        // wire sequence — same race-window argument as the pickup
-        // loop's pre-wire guard. AbortSlew clearing
-        // `slew_in_progress` between the top-of-loop check and now
+        // wire sequence, under the axes for the same reason as the
+        // pickup's starts. An AbortSlew since the top-of-loop check
         // must skip the tracking restart, or the user-visible state
         // would say "aborted" while the wire is back to tracking.
-        if watcher_should_abort(&self.claim, &self.session_slot).await {
+        let Some(_axes) = self.claim.hold_axes().await else {
+            return CompletionDecision::Bail;
+        };
+        if user_disconnected(&self.session_slot).await {
             return CompletionDecision::Bail;
         }
         if self.tracking_was_on {

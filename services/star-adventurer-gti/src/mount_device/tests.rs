@@ -38,12 +38,12 @@ use crate::units::{Cpr, Dec, Lst, Ra, RaTicks};
 use super::park_persistence::{read_connect_fields, write_park_to_config};
 use super::slew::{
     canonical_path_crosses_pole, check_non_flip_ra_path, flip_slew_dec_delta, flip_slew_ra_delta,
-    pickup_reslew_axis, stop_axis_and_wait,
+    pickup_start_axis, pickup_stop_axis, stop_axis_and_wait,
 };
 use super::tracking_guard::{auto_flip_tick, guard_loop_tick, tracking_guard_tick};
 use super::watchers::{
-    spawn_slew_completion_watcher, watcher_poll_with_retry, watcher_should_abort, SessionSlot,
-    SlewWatchCtx,
+    spawn_park_completion_watcher, spawn_slew_completion_watcher, watcher_poll_with_retry,
+    watcher_should_abort, SessionSlot, SlewWatchCtx,
 };
 use super::*;
 
@@ -1954,6 +1954,42 @@ async fn stop_axis_and_wait_returns_transport_error_when_axis_never_stops() {
     session.close().await.unwrap();
 }
 
+/// Reserve `slot` with an `axis_ownership` lock of its own.
+fn reserve(slot: &Arc<SlewSlot>) -> Option<SlewReservation> {
+    SlewReservation::try_acquire(slot, &Arc::new(tokio::sync::Mutex::new(())))
+}
+
+#[tokio::test]
+async fn holding_the_axes_keeps_an_abort_waiting() {
+    // An abort must land either before a claim's check or after the
+    // wire burst it guards: while the guard is held, AbortSlew waits.
+    let (d, _mock) = pulse_device(NO_TRIM, |_| {}).await;
+    let reservation = SlewReservation::try_acquire(&d.slew_in_progress, &d.axis_ownership).unwrap();
+    let claim = reservation.claim();
+    let held = claim.hold_axes().await.unwrap();
+    let abort = d.abort_slew();
+    let release_later = async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            claim.is_current(),
+            "the abort voided the claim while its axes were held"
+        );
+        drop(held);
+    };
+    let (aborted, ()) = tokio::join!(abort, release_later);
+    aborted.unwrap();
+    assert!(!claim.is_current());
+}
+
+#[tokio::test]
+async fn a_lapsed_claim_cannot_hold_the_axes() {
+    let slot = Arc::new(SlewSlot::default());
+    let reservation = reserve(&slot).unwrap();
+    let claim = reservation.claim();
+    slot.clear();
+    assert!(claim.hold_axes().await.is_none());
+}
+
 /// A device session in a slot of its own, as the watcher sees the
 /// user's connection.
 async fn live_session_slot() -> SessionSlot {
@@ -1966,7 +2002,7 @@ async fn live_session_slot() -> SessionSlot {
 async fn watcher_should_abort_carries_on_while_its_claim_holds() {
     let session_slot = live_session_slot().await;
     let slot = Arc::new(SlewSlot::default());
-    let reservation = SlewReservation::try_acquire(&slot).unwrap();
+    let reservation = reserve(&slot).unwrap();
     assert!(!watcher_should_abort(&reservation.claim(), &session_slot).await);
 }
 
@@ -1976,9 +2012,10 @@ async fn watcher_should_abort_once_an_abort_has_voided_its_claim() {
     // old watcher must still see its own claim gone, not the new one's.
     let session_slot = live_session_slot().await;
     let slot = Arc::new(SlewSlot::default());
-    let aborted = SlewReservation::try_acquire(&slot).unwrap().claim();
+    let reservation = reserve(&slot).unwrap();
+    let aborted = reservation.claim();
     slot.clear();
-    let _next = SlewReservation::try_acquire(&slot).unwrap();
+    let _next = reserve(&slot).unwrap();
     assert!(
         watcher_should_abort(&aborted, &session_slot).await,
         "a watcher carried on under the next slew's claim"
@@ -1993,7 +2030,7 @@ async fn watcher_should_abort_once_the_user_disconnects() {
     // transport open even after the user disconnects.
     let session_slot = live_session_slot().await;
     let slot = Arc::new(SlewSlot::default());
-    let reservation = SlewReservation::try_acquire(&slot).unwrap();
+    let reservation = reserve(&slot).unwrap();
     if let Some(s) = session_slot.write().await.take() {
         s.close().await.unwrap();
     }
@@ -2005,9 +2042,9 @@ fn a_late_release_leaves_the_next_claim_in_place() {
     // An aborted slew whose reservation drops after the next slew has
     // claimed the slot must not empty it under that slew.
     let slot = Arc::new(SlewSlot::default());
-    let aborted = SlewReservation::try_acquire(&slot).unwrap();
+    let aborted = reserve(&slot).unwrap();
     slot.clear();
-    let next = SlewReservation::try_acquire(&slot).unwrap();
+    let next = reserve(&slot).unwrap();
     drop(aborted);
     assert!(next.claim().is_current());
 }
@@ -2015,30 +2052,37 @@ fn a_late_release_leaves_the_next_claim_in_place() {
 #[test]
 fn a_dropped_reservation_empties_the_slot_it_still_holds() {
     let slot = Arc::new(SlewSlot::default());
-    drop(SlewReservation::try_acquire(&slot).unwrap());
+    drop(reserve(&slot).unwrap());
     assert!(!slot.is_held());
 }
 
 #[test]
 fn a_held_slot_refuses_a_second_claim() {
     let slot = Arc::new(SlewSlot::default());
-    let _first = SlewReservation::try_acquire(&slot).unwrap();
-    assert!(SlewReservation::try_acquire(&slot).is_none());
+    let _first = reserve(&slot).unwrap();
+    assert!(reserve(&slot).is_none());
 }
 
 #[tokio::test]
-async fn pickup_reslew_axis_swallows_transport_errors() {
-    // The watcher calls `pickup_reslew_axis` per axis from the
-    // pickup loop. Its failure-logging branches fire when the
-    // wrapped `stop_axis_and_wait` or `issue_slew_axis` returns
-    // an error — that happens when the axis stays stuck. With
-    // the StuckAxis transport, the inner `stop_axis_and_wait`
-    // hits its timeout branch; the helper must log and return
-    // without panicking.
+async fn pickup_stop_axis_reports_an_axis_that_will_not_stop() {
+    // With the StuckAxis transport the inner `stop_axis_and_wait` hits
+    // its timeout; the helper logs and reports the axis not stopped, so
+    // the pickup skips its start.
     let manager = MountManager::new(&base_config(), Arc::new(StuckAxisFactory));
     let session = manager.transport().acquire().await.unwrap();
-    pickup_reslew_axis(&manager, &session, Axis::Ra, 1_000_000).await;
-    pickup_reslew_axis(&manager, &session, Axis::Dec, -1_000_000).await;
+    assert!(!pickup_stop_axis(&manager, &session, Axis::Ra).await);
+    session.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn pickup_start_axis_swallows_a_refused_goto() {
+    let factory = CapturingMockFactory::new();
+    let mock = Arc::clone(&factory.state);
+    let manager = MountManager::new(&base_config(), Arc::new(factory));
+    let session = manager.transport().acquire().await.unwrap();
+    mock.lock().await.fail_command = Some(b'G');
+    pickup_start_axis(&manager, &session, Axis::Dec, -1_000_000).await;
+    assert!(!mock.lock().await.dec.running);
     session.close().await.unwrap();
 }
 
@@ -6337,15 +6381,37 @@ async fn a_slew_right_after_an_abort_aims_from_where_the_axes_came_to_rest() {
 
 #[tokio::test(start_paused = true)]
 async fn a_slew_starts_neither_axis_before_both_have_stopped() {
-    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    // Dec is mid-goto, so the slew's `:K2` sets it coasting for 1.5 s.
+    // RA is at rest: only the wait on Dec's coast keeps RA's goto back.
+    let (d, mock) = pier1_like_device(CwExclusionZone::Disabled).await;
+    mid_goto(
+        &mut mock.lock().await.dec,
+        200_000,
+        skywatcher_motor_protocol::Direction::Cw,
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
     let from = mock.lock().await.command_log.len();
     let lst = d.sidereal_time().await.unwrap();
     d.slew_to_coordinates_async((lst - 1.0).rem_euclid(24.0), 30.0)
         .await
         .unwrap();
-    let frames = setter_frames_since(&*mock.lock().await, from);
+    let m = mock.lock().await;
+    let frames = setter_frames_since(&m, from);
     assert_eq!(frames[..2], [":K1", ":K2"], "frames: {frames:?}");
     assert!(frames[2].starts_with(":G1"), "frames: {frames:?}");
+    let arrived = |prefix: &[u8]| {
+        m.command_log
+            .iter()
+            .zip(&m.command_times)
+            .skip(from)
+            .find(|(frame, _)| frame.starts_with(prefix))
+            .map(|(_, at)| *at)
+            .unwrap()
+    };
+    assert!(
+        arrived(b":G1").duration_since(arrived(b":K2")) >= PIER1_DEC_COAST.duration,
+        "RA's goto started while Dec was still coasting"
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -6477,19 +6543,16 @@ async fn a_slew_takes_its_pier_side_from_where_the_axes_came_to_rest() {
     );
 }
 
-/// Slew while `AbortSlew` lands between RA's `:G1` and its `:J1`, with
-/// `setup` applied to the mock first. Replies are held back 50 ms, so the
-/// abort's `:L1` queues behind `:G1` and reaches the mount before the
-/// slew's `:J1` restarts RA. Returns the slew's result, the mock, and
-/// where the log stood before the slew.
-async fn slew_aborted_between_goto_frames(
-    setup: impl FnOnce(&mut MockMountState),
-) -> (ascom_alpaca::ASCOMResult<()>, SharedMock, usize) {
+#[tokio::test(start_paused = true)]
+async fn an_abort_during_a_slews_goto_frames_waits_for_them_and_stops_both() {
+    // The gotos go out under the axes, so an abort that arrives on the
+    // first goto frame waits until both `:J`s are out, then stops both.
+    // Replies are held back 50 ms: without the guard, the abort's `:L1`
+    // would queue behind `:G1` and reach the mount before `:J1`.
     let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
     let from = {
         let mut m = mock.lock().await;
         m.reply_delay = Duration::from_millis(50);
-        setup(&mut m);
         m.command_log.len()
     };
     let lst = d.sidereal_time().await.unwrap();
@@ -6513,50 +6576,50 @@ async fn slew_aborted_between_goto_frames(
         d.abort_slew().await.unwrap();
     };
     let (slewed, ()) = tokio::join!(slew, abort_on_the_first_goto_frame);
-    (slewed, mock, from)
-}
-
-#[tokio::test(start_paused = true)]
-async fn an_abort_between_a_gotos_frames_stops_the_axis_the_slew_started() {
-    // Once `:J1` is answered the slew finds its claim voided, and stops
-    // the RA goto that `:J1` restarted after the abort's `:L1`.
-    let (slewed, mock, from) = slew_aborted_between_goto_frames(|_| {}).await;
-    assert_eq!(slewed.unwrap_err().code, ASCOMErrorCode::INVALID_OPERATION);
+    slewed.unwrap();
     let m = mock.lock().await;
     let frames = setter_frames_since(&m, from);
+    let first_stop = frames.iter().position(|f| f.starts_with(":L")).unwrap();
+    let last_start = frames.iter().rposition(|f| f == ":J2").unwrap();
     assert!(
-        frames.iter().any(|f| f == ":J1"),
-        "the abort landed too early to test the window: {frames:?}"
-    );
-    assert!(
-        !frames.iter().any(|f| f.starts_with(":G2")),
-        "the Dec goto started after the abort: {frames:?}"
+        first_stop > last_start,
+        "the abort's stop reached the mount inside the slew's goto frames: {frames:?}"
     );
     assert!(!m.ra.running, "RA left running a goto after the abort");
+    assert!(!m.dec.running, "Dec left running a goto after the abort");
 }
 
 #[tokio::test(start_paused = true)]
-async fn an_aborted_slew_whose_own_stop_fails_still_reports_the_abort() {
-    // Every `:L` is refused: the abort's two, then the slew's own.
-    let (slewed, mock, from) = slew_aborted_between_goto_frames(|m| {
-        for _ in 0..3 {
-            m.fault_script.push_back(ScriptedFault {
-                letter: b'L',
-                fault: Fault::MountError(0),
-            });
-        }
-    })
-    .await;
-    let err = slewed.unwrap_err();
-    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-    assert!(err.message.contains("aborted"), "{}", err.message);
-    let m = mock.lock().await;
-    let stops = setter_frames_since(&m, from)
-        .into_iter()
-        .filter(|f| f.starts_with(":L"))
-        .count();
-    assert_eq!(stops, 3, "the slew did not try to stop RA itself");
-    assert!(m.fault_script.is_empty());
+async fn a_park_aborted_during_its_settle_is_not_marked_parked() {
+    // The park watcher sleeps out its settle once the axes have stopped.
+    // An abort and the next claim inside that sleep must leave AtPark
+    // false and the next claim in place.
+    let (d, _mock) = pulse_device(NO_TRIM, |_| {}).await;
+    let reservation = SlewReservation::try_acquire(&d.slew_in_progress, &d.axis_ownership).unwrap();
+    spawn_park_completion_watcher(
+        Arc::clone(&d.state),
+        Arc::clone(&d.manager),
+        Arc::clone(&d.session),
+        reservation.claim(),
+        Duration::from_millis(20),
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap();
+    reservation.dismiss();
+    // Past the watcher's first poll of the stopped axes: inside the settle.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    d.abort_slew().await.unwrap();
+    let _next = d.slew_in_progress.try_claim().unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        !d.at_park().await.unwrap(),
+        "an aborted park's watcher marked the mount parked"
+    );
+    assert!(
+        d.slew_in_progress.is_held(),
+        "an aborted park's watcher released the next claim"
+    );
 }
 
 #[tokio::test]
@@ -6575,7 +6638,7 @@ async fn an_aborted_slews_watcher_leaves_the_next_slew_alone() {
         s.target_dec_degrees = Some(60.0);
         s.target_pier_side = Some(PierSide::West);
     }
-    let aborted = SlewReservation::try_acquire(&d.slew_in_progress).unwrap();
+    let aborted = SlewReservation::try_acquire(&d.slew_in_progress, &d.axis_ownership).unwrap();
     let claim = aborted.claim();
     aborted.dismiss();
     d.slew_in_progress.clear();
@@ -6660,4 +6723,65 @@ async fn an_abort_while_a_slew_waits_for_its_stops_starts_no_goto() {
     assert!(!m.dec.running, "Dec left running");
     drop(m);
     assert!(!d.slewing().await.unwrap());
+}
+
+/// Spawn a slew watcher on `d` that holds the slew slot under a claim of
+/// its own, as a slew hands it over.
+async fn spawn_claimed_slew_watcher(d: &MountDevice) {
+    let reservation = SlewReservation::try_acquire(&d.slew_in_progress, &d.axis_ownership).unwrap();
+    spawn_slew_completion_watcher(
+        SlewWatchCtx {
+            state: Arc::clone(&d.state),
+            manager: Arc::clone(&d.manager),
+            session_slot: Arc::clone(&d.session),
+            claim: reservation.claim(),
+            config: d.config.clone(),
+            polling_interval: Duration::from_millis(20),
+            started: std::time::Instant::now(),
+            tracking_was_on: false,
+        },
+        Duration::ZERO,
+    )
+    .await
+    .unwrap();
+    reservation.dismiss();
+}
+
+/// Sleep (paused time) until the slew slot is empty, or give up.
+async fn until_slot_empties(d: &MountDevice) {
+    for _ in 0..500 {
+        if !d.slew_in_progress.is_held() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_watcher_that_loses_the_mount_releases_its_claim() {
+    // Every `:j` fails, so the watcher's polls run out of retries.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    spawn_claimed_slew_watcher(&d).await;
+    mock.lock().await.fail_command = Some(b'j');
+    until_slot_empties(&d).await;
+    assert!(
+        !d.slew_in_progress.is_held(),
+        "a watcher that lost the mount left Slewing true"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_watcher_whose_user_has_gone_releases_its_claim() {
+    // The device session is gone while the claim still holds, the
+    // window before the disconnect path empties the slot itself.
+    let (d, _mock) = pulse_device(NO_TRIM, |_| {}).await;
+    spawn_claimed_slew_watcher(&d).await;
+    if let Some(session) = d.session.write().await.take() {
+        session.close().await.unwrap();
+    }
+    until_slot_empties(&d).await;
+    assert!(
+        !d.slew_in_progress.is_held(),
+        "a watcher whose user disconnected left Slewing true"
+    );
 }

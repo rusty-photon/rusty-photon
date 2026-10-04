@@ -172,25 +172,38 @@ pub(super) async fn enable_sidereal_tracking_ra(
     Ok(())
 }
 
-/// Per-axis pickup re-slew used by the watcher's EQMOD pickup loop.
-/// Calls [`stop_axis_and_wait`] (drains any residual goto deceleration)
-/// then [`issue_slew_axis`] (re-runs the INDI wire sequence with the
-/// freshly-computed `delta`). Both calls are best-effort: a failure
-/// from either is logged at `warn` and swallowed because the watcher
-/// has nothing useful to do with the error other than retry on the
-/// next iteration. Wrapping the pair in this helper keeps the watcher
-/// body free of nested `if let Err` branches that codecov flags as
-/// uncovered for the rare-but-real failure paths.
-pub(super) async fn pickup_reslew_axis(
+/// The stop half of a pickup re-slew in the watcher's EQMOD pickup
+/// loop: [`stop_axis_and_wait`], which drains any residual goto
+/// deceleration. Returns whether the axis stopped. The watcher waits
+/// on both axes before it takes the axes for the starts (see
+/// [`pickup_start_axis`]), so an abort never waits on a stop poll.
+///
+/// Best-effort, like [`pickup_start_axis`]: a failure is logged at
+/// `warn` and swallowed, because the watcher has nothing useful to do
+/// with the error other than retry on the next iteration. Keeping the
+/// logging in these helpers keeps the watcher body free of nested
+/// `if let Err` branches.
+pub(super) async fn pickup_stop_axis(
+    manager: &MountManager,
+    session: &Session<SkywatcherCodec>,
+    axis: Axis,
+) -> bool {
+    if let Err(e) = stop_axis_and_wait(manager, session, axis, AXIS_STOP_TIMEOUT).await {
+        tracing::warn!("pickup stop {axis:?} failed: {e}");
+        return false;
+    }
+    true
+}
+
+/// The start half of a pickup re-slew: [`issue_slew_axis`] with the
+/// freshly-computed `delta`, for an axis [`pickup_stop_axis`] stopped.
+/// Best-effort: a failure is logged at `warn` and swallowed.
+pub(super) async fn pickup_start_axis(
     manager: &MountManager,
     session: &Session<SkywatcherCodec>,
     axis: Axis,
     delta: i32,
 ) {
-    if let Err(e) = stop_axis_and_wait(manager, session, axis, AXIS_STOP_TIMEOUT).await {
-        tracing::warn!("pickup stop {axis:?} failed: {e}");
-        return;
-    }
     if let Err(e) = issue_slew_axis(manager, session, axis, delta).await {
         tracing::warn!("pickup re-slew {axis:?} failed: {e}");
     }

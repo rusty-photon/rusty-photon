@@ -840,9 +840,11 @@ SlewToCoordinatesAsync(ra, dec)
    │     :H<axis><|delta|>  target by increment (magnitude only)
    │     :M<axis><breaks>   break-point = min(|delta|/10, 3200)
    │     :J<axis>      start motion
-   │   An AbortSlew since the slot was claimed fails the slew with
-   │   INVALID_OPERATION: checked before the first :G and after each
-   │   :J, and any goto the slew already started is stopped with :L.
+   │   The target latch and both sequences run holding
+   │   axis_ownership, after one last check of the slew's claim. An
+   │   AbortSlew during the stops fails the slew with
+   │   INVALID_OPERATION and no goto; one that arrives during the
+   │   sequences waits for them, and its :L stops both gotos.
    │
    ├─ Slewing = true
    └─ background poll :f1 / :f2 every 200 ms
@@ -941,6 +943,21 @@ and send its pickup goto, which has no zone check, into the middle of
 the new slew. A release by an operation whose claim has lapsed leaves
 the slot alone, so it cannot end a newer slew's claim.
 
+A check of the claim followed by wire commands would still race. An
+abort could land between them, and the next slew could claim the slot
+before the commands went out. So each act that a lapsed claim must not
+perform takes `axis_ownership` and checks the claim under it:
+- the slew's target latch and gotos;
+- Park's gotos;
+- the watcher's pickup starts and its tracking restart;
+- the watcher's finalize, which for Park sets AtPark.
+
+`AbortSlew`, disconnect and every new claim also go through
+`axis_ownership`. An abort therefore lands either before the check,
+which fails, or after the act, where its `:L` stops anything the act
+started. The lock is never held across a wait for an axis to stop, so
+an abort waits a few frames at most.
+
 ### Park lifecycle
 
 ```
@@ -953,6 +970,8 @@ Park()
    │
    ├─ stop both axes: :K1 + poll :f1, then :K2 + poll :f2
    ├─ re-read both axes (:j / :f) where they came to rest
+   ├─ holding axis_ownership, and only if park still holds its claim
+   │     (an AbortSlew during the stops fails the park, with no goto):
    ├─ for each axis, ONLY if it has a park target (anchored frame
    │     or raw tick override — see below):
    │       :G<axis><goto-mode>      ccw chosen from sign(target − rest)
