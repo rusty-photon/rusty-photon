@@ -34,7 +34,7 @@ use crate::manager::{MountManager, MountParameters};
 
 use super::slew::AXIS_STOP_TIMEOUT;
 use super::telescope::GuidePulse;
-use super::{DriverState, MountDevice, PulseGuiding, PulseId};
+use super::{DriverState, MountDevice, PulseGuiding, PulseId, SlewClaim};
 
 /// Device session slot, shared with the watcher. `Some` between
 /// `set_connected(true)` and `set_connected(false)`.
@@ -502,9 +502,19 @@ impl MountDevice {
 
     /// A slew or park that took `taken` failed before it stopped those
     /// axes itself: stop them, under `axis_ownership`.
-    pub(super) async fn stop_taken_pulse_axes(&self, taken: PulseGuiding) {
-        let _axes = self.axis_ownership.lock().await;
-        self.stop_orphaned_axes(taken.axes()).await;
+    ///
+    /// The stops go out only while the slew or park still holds `claim`,
+    /// under its axes guard. Once it has lapsed, `AbortSlew` (or
+    /// disconnect) has already stopped the axes, and a successor may own
+    /// them now.
+    pub(super) async fn stop_taken_pulse_axes_claimed(
+        &self,
+        claim: &SlewClaim,
+        taken: PulseGuiding,
+    ) {
+        if let Some(_axes) = claim.hold_axes().await {
+            self.stop_orphaned_axes(taken.axes()).await;
+        }
     }
 
     /// Stop `axes`, which an operation took from guide pulses and did

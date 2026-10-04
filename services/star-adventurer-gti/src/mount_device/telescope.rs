@@ -834,12 +834,23 @@ impl Telescope for MountDevice {
         let result: ASCOMResult<()> = async {
             // Stop tracking before slewing home (per ASCOM, tracking
             // remains off after Park). The wire `:K1` is issued first
-            // so the in-memory flag flip only follows a successful stop.
-            if self.state.read().await.tracking_requested {
-                self.send(Command::StopMotion(Axis::Ra))
-                    .await
-                    .map_err(ASCOMError::from)?;
-                self.state.write().await.tracking_requested = false;
+            // so the in-memory flag flip only follows a successful stop,
+            // and under the claim's axes guard, so a park an abort has
+            // already voided sends no stop into a successor's goto.
+            {
+                let claim = reservation.claim();
+                let Some(_axes) = claim.hold_axes().await else {
+                    return Err(ASCOMError::new(
+                        ASCOMErrorCode::INVALID_OPERATION,
+                        "park aborted before it started",
+                    ));
+                };
+                if self.state.read().await.tracking_requested {
+                    self.send(Command::StopMotion(Axis::Ra))
+                        .await
+                        .map_err(ASCOMError::from)?;
+                    self.state.write().await.tracking_requested = false;
+                }
             }
             // Per-axis park target: `Some` from a raw config override
             // or (anchored frame) the `preferred_ap_park` pose; `None`
@@ -872,7 +883,8 @@ impl Telescope for MountDevice {
         }
         .await;
         if result.is_err() {
-            self.stop_taken_pulse_axes(taken).await;
+            self.stop_taken_pulse_axes_claimed(&reservation.claim(), taken)
+                .await;
         }
         result?;
         // Hand off to the park watcher; it owns `slew_in_progress` from

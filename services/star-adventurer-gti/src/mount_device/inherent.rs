@@ -88,6 +88,16 @@ pub(super) enum SideChoice {
     Pinned(PierSide),
 }
 
+/// Whether `axis` may still be in a goto, so that a plan from this
+/// sample could start from a count the axis is about to leave. That is
+/// the case when its last status reads a running goto, or when no status
+/// has been read yet: the handshake seeds each axis' position, read
+/// before the startup safety stop, with no status. Until the first poll,
+/// a goto that stop interrupted can still be coasting.
+pub(super) const fn may_be_in_goto(axis: &AxisSnapshot) -> bool {
+    axis.status.is_none() || (axis.running() && axis.goto())
+}
+
 /// A slew planned from one reading of both axes; see
 /// [`MountDevice::plan_slew`].
 struct SlewPlan {
@@ -362,6 +372,44 @@ impl MountDevice {
                 .map_err(ASCOMError::from)
         })
         .await
+    }
+
+    /// The slew's RA stop, which also ends any sidereal tracking. Returns
+    /// whether Tracking was on, for the watcher to restore after the slew.
+    ///
+    /// Reading and clearing `tracking_requested` and sending `:K1` happen
+    /// as one step under [`SlewClaim::hold_axes`]. `Tracking` writes take
+    /// the axes too, so one lands either wholly before that step, and is
+    /// restored after the slew, or wholly after it, where it restarts RA
+    /// and the slew's guarded re-read refuses the slew. A `:K1` that does
+    /// not go out puts the flag back. So does a stop RA never confirms:
+    /// Tracking must not read false over an RA that may still be running.
+    async fn stop_ra_for_slew(&self, claim: &SlewClaim) -> ASCOMResult<bool> {
+        let tracking_was_on = {
+            let Some(_axes) = claim.hold_axes().await else {
+                return Err(ASCOMError::new(
+                    ASCOMErrorCode::INVALID_OPERATION,
+                    "aborted while the axes were stopping",
+                ));
+            };
+            let was_on = std::mem::replace(&mut self.state.write().await.tracking_requested, false);
+            if let Err(e) = self.send(Command::StopMotion(Axis::Ra)).await {
+                self.state.write().await.tracking_requested = was_on;
+                return Err(ASCOMError::from(e));
+            }
+            was_on
+        };
+        let stopped = self
+            .with_session(async |session| {
+                wait_axis_stopped(&self.manager, session, Axis::Ra, AXIS_STOP_TIMEOUT)
+                    .await
+                    .map_err(ASCOMError::from)
+            })
+            .await;
+        if stopped.is_err() && tracking_was_on {
+            self.state.write().await.tracking_requested = true;
+        }
+        stopped.map(|()| tracking_was_on)
     }
 
     /// Block until the slew-completion watcher clears `slew_in_progress`,
@@ -773,22 +821,18 @@ impl MountDevice {
         };
         // Refuse from the latest snapshot first, so that a slew which is
         // refused anyway leaves the mount as it was: still tracking, with
-        // any guide pulse left to end itself. Not while an axis is still
-        // in a goto, coasting from an abort or a safety stop: the snapshot
-        // is then not where the axis will stop, and its plan could refuse
-        // a slew the rest position allows. Stopping an axis that is
-        // already decelerating changes nothing, so the plan after the stop
-        // alone decides.
+        // any guide pulse left to end itself. Not while an axis may still
+        // be in a goto (see `may_be_in_goto`): the snapshot is then not
+        // where the axis will stop, and its plan could refuse a slew the
+        // rest position allows. Stopping an axis that is already
+        // decelerating changes nothing, so the plan after the stop alone
+        // decides.
         let snap = self.manager.snapshot_now().await;
-        let in_goto = |axis: &AxisSnapshot| axis.running() && axis.goto();
-        if !in_goto(&snap.ra) && !in_goto(&snap.dec) {
+        if !may_be_in_goto(&snap.ra) && !may_be_in_goto(&snap.dec) {
             let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
                 .map_err(ASCOMError::from)?;
             self.plan_slew(ra, dec, side, &snap, lst, &params)?;
         }
-        // The watcher restores tracking after the slew if it was on now;
-        // the RA stop below turns it off.
-        let tracking_was_on = self.state.read().await.tracking_requested;
 
         // The slew is going to move: take both axes from any guide pulse
         // in flight, under the lock the pulse's own bursts hold, so no
@@ -805,9 +849,11 @@ impl MountDevice {
             .stop_plan_and_start(ra, dec, side, &params, &claim, &mut taken)
             .await;
         if result.is_err() {
-            self.stop_taken_pulse_axes(taken).await;
+            self.stop_taken_pulse_axes_claimed(&claim, taken).await;
         }
-        result?;
+        // Whether Tracking was on when the slew stopped RA: the watcher
+        // restores it after the slew.
+        let tracking_was_on = result?;
 
         // Hand off to the completion watcher. The watcher acquires its
         // own session so the user's disconnect path doesn't have to
@@ -876,10 +922,9 @@ impl MountDevice {
         params: &MountParameters,
         claim: &SlewClaim,
         taken: &mut PulseGuiding,
-    ) -> ASCOMResult<()> {
-        self.stop_and_wait_claimed(claim, Axis::Ra).await?;
+    ) -> ASCOMResult<bool> {
+        let tracking_was_on = self.stop_ra_for_slew(claim).await?;
         taken.set(Axis::Ra, None);
-        self.state.write().await.tracking_requested = false;
         self.stop_and_wait_claimed(claim, Axis::Dec).await?;
         taken.set(Axis::Dec, None);
         // `axis_ownership` comes before the session slot in the lock
@@ -942,7 +987,7 @@ impl MountDevice {
             return Err(ASCOMError::from(e));
         }
         drop(guard);
-        Ok(())
+        Ok(tracking_was_on)
     }
 
     /// Park's gotos: `:G` (direction from `sign(target − rest)`) →

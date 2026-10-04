@@ -647,7 +647,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 |---|---|
 | `Connected = true` | acquire a session on the already-open transport (opened eagerly at service start — see [§Connection Lifecycle](#connection-lifecycle)); refcount bump, then the post-acquire hooks `seed_after_connect` (fresh-power-up AP-pose encoder seed) and `load_park_target_after_connect` run |
 | `Connected = false` | release the session. On the last client disconnect, issue the `:L1`/`:L2`/`:K1` safety stop; the transport stays open and background polling continues until service shutdown. A reconnect that completes while no client is attached re-issues the same stop on the fresh link — see [Safety stop across a reconnect](#safety-stop-across-a-reconnect) |
-| `SlewToCoordinatesAsync(ra, dec)` | validate (not parked, valid coords), plan from the latest snapshot (unless an axis is still in a goto), stop both axes, re-read them, plan again from where they came to rest with `LST(now)`, then issue `:G` `:I` `:H` `:M` `:J` per axis and set `Slewing=true` — see [§Slew lifecycle](#slew-lifecycle). Returns once the gotos have started, which takes over a second when an axis is still coasting from goto speed; caller polls `Slewing` |
+| `SlewToCoordinatesAsync(ra, dec)` | validate (not parked, valid coords), plan from the latest snapshot (unless an axis may still be in a goto), stop both axes, re-read them, plan again from where they came to rest with `LST(now)`, then issue `:G` `:I` `:H` `:M` `:J` per axis and set `Slewing=true` — see [§Slew lifecycle](#slew-lifecycle). Returns once the gotos have started, which takes over a second when an axis is still coasting from goto speed; caller polls `Slewing` |
 | `SlewToCoordinates(ra, dec)` | wraps the async variant and waits for `Slewing` to clear (bounded by a generous timeout) before returning. Mandatory per ASCOM when `CanSlew=true` |
 | `SlewToTargetAsync()` | uses last-set `TargetRightAscension`/`Declination` |
 | `SlewToTarget()` | synchronous variant of the above; same wait semantics as `SlewToCoordinates` |
@@ -819,7 +819,7 @@ SlewToCoordinatesAsync(ra, dec)
    ├─ validate: !AtPark, ra ∈ [0,24), dec ∈ [-90,90]
    ├─ claim the slew slot (INVALID_OPERATION if a slew or park
    │           holds it)
-   ├─ unless an axis is still in a goto: plan from the latest
+   ├─ unless an axis may still be in a goto: plan from the latest
    │           snapshot (the plan steps are listed below). A slew this
    │           plan refuses is refused before anything moves.
    │
@@ -931,13 +931,19 @@ nothing: tracking stays on and no target is remembered. Without it,
 every refused slew would first stop tracking. A tracking or idle axis
 stops within milliseconds, so the two plans then agree.
 
-The first plan is skipped while either axis reads as running a goto,
-for example coasting from an abort or a safety stop. The snapshot is
-then not where the axis will stop, so its plan could refuse a slew the
-rest position allows. Stopping an axis that is already decelerating
-changes nothing, so the second plan alone decides. A slew it refuses
-fails with that plan's error. Both axes are then stopped, and
-Tracking reads false.
+The first plan is skipped while either axis may still be in a goto:
+- it reads as running a goto, for example coasting from an abort or a
+  safety stop;
+- or no status has been read for it yet. The handshake seeds each
+  position, read before the startup safety stop, with no status, so
+  until the first poll a goto that stop interrupted may still be
+  coasting.
+
+The snapshot is then not where the axis will stop, so its plan could
+refuse a slew the rest position allows. Stopping an axis that is
+already decelerating changes nothing, so the second plan alone
+decides. A slew it refuses fails with that plan's error. Both axes are
+then stopped, and Tracking reads false.
 
 **Each slew holds its own claim on the slew slot.** The slot holds the
 claiming operation's token rather than a plain "in progress" flag.
@@ -954,7 +960,13 @@ abort could land between them, and the next slew could claim the slot
 before the commands went out. So each act that a lapsed claim must not
 perform takes `axis_ownership` and checks the claim under it:
 - each stop's `:K` (slew, Park, pickup), so a stale operation sends
-  no stop into its successor's goto;
+  no stop into its successor's goto. This includes Park's tracking
+  stop and the stops of axes a failed slew or park took from guide
+  pulses;
+- the slew's RA stop, reading and clearing `Tracking` in the same
+  step. A `Tracking` write lands either before it, and the watcher
+  restores tracking after the slew, or after it, where the slew's
+  guarded re-read refuses the slew;
 - the slew's fresh read, plan, target latch and gotos, as one step;
 - Park's fresh read and gotos, as one step;
 - the watcher's pickup starts, after a re-read of both axes, and its

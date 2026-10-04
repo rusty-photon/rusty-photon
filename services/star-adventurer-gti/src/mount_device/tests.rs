@@ -35,6 +35,7 @@ use crate::transport::mock::{
 };
 use crate::units::{Cpr, Dec, Lst, Ra, RaTicks};
 
+use super::inherent::may_be_in_goto;
 use super::park_persistence::{read_connect_fields, write_park_to_config};
 use super::slew::{
     canonical_path_crosses_pole, check_non_flip_ra_path, flip_slew_dec_delta, flip_slew_ra_delta,
@@ -5891,6 +5892,9 @@ async fn a_refused_slew_leaves_an_in_flight_pulse_to_end_itself() {
     let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
+    // Let the first poll read the axes' status: until it has, the slew
+    // treats them as possibly coasting and skips its snapshot plan.
+    tokio::time::sleep(Duration::from_secs(1)).await;
     d.pulse_guide(GuideDirection::North, Duration::from_secs(3))
         .await
         .unwrap();
@@ -6658,19 +6662,7 @@ async fn an_abort_during_a_slews_goto_frames_waits_for_them_and_stops_both() {
     // before the test looks at it.
     let slew = d.slew_to_coordinates_async((lst + 6.0).rem_euclid(24.0), 30.0);
     let abort_on_the_first_goto_frame = async {
-        loop {
-            let sent = mock
-                .lock()
-                .await
-                .command_log
-                .iter()
-                .skip(from)
-                .any(|f| f.starts_with(b":G1"));
-            if sent {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
+        until_logged(&mock, from, b":G1").await;
         d.abort_slew().await.unwrap();
     };
     let (slewed, ()) = tokio::join!(slew, abort_on_the_first_goto_frame);
@@ -6773,6 +6765,9 @@ async fn an_aborted_slews_watcher_leaves_the_next_slew_alone() {
 async fn a_slew_refused_from_the_snapshot_moves_nothing_and_leaves_tracking_on() {
     let (d, mock) = pier1_like_device(CwExclusionZone::Active(ActiveZone::new(0.95, 11.05))).await;
     d.set_tracking(true).await.unwrap();
+    // Let the poll read the axes' status: until it has, the slew treats
+    // them as possibly coasting and skips its snapshot plan.
+    tokio::time::sleep(Duration::from_secs(1)).await;
     let from = mock.lock().await.command_log.len();
     // mech_HA 11.5 h is outside the zone, but the only way there from
     // mech_HA 0 on this side crosses it.
@@ -6887,6 +6882,33 @@ async fn a_watcher_whose_user_has_gone_releases_its_claim() {
     );
 }
 
+/// Wait until the mock logs a frame starting with `prefix` after
+/// `from`. Fails the test after ten seconds (paused or wall time) rather
+/// than hanging when the frame never comes.
+async fn until_logged(mock: &SharedMock, from: usize, prefix: &[u8]) {
+    let logged = async {
+        loop {
+            let seen = mock
+                .lock()
+                .await
+                .command_log
+                .iter()
+                .skip(from)
+                .any(|f| f.starts_with(prefix));
+            if seen {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    };
+    let found = tokio::time::timeout(Duration::from_secs(10), logged).await;
+    assert!(
+        found.is_ok(),
+        "no {} frame within 10 s",
+        String::from_utf8_lossy(prefix)
+    );
+}
+
 /// A capturing mock device, connected, with a park target of `(0, 0)`
 /// (so Park has gotos to send) and a Dec that coasts after a stop the
 /// way the pier1 `GTi`'s does.
@@ -6956,19 +6978,7 @@ async fn an_abort_while_a_pickup_stops_its_axes_starts_no_pickup() {
     // and before the starts take the axes.
     let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
     let from = spawn_watcher_due_a_pickup(&d, &mock).await;
-    loop {
-        let stopping = mock
-            .lock()
-            .await
-            .command_log
-            .iter()
-            .skip(from)
-            .any(|f| f.starts_with(b":K1"));
-        if stopping {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    until_logged(&mock, from, b":K1").await;
     d.abort_slew().await.unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
     let frames = setter_frames_since(&*mock.lock().await, from);
@@ -7133,20 +7143,11 @@ async fn a_pickup_ends_the_slew_when_an_axis_restarts_during_its_stops() {
     // watcher must not wait on an axis that tracks on.
     let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
     let from = spawn_watcher_due_a_pickup(&d, &mock).await;
-    loop {
+    until_logged(&mock, from, b":K2").await;
+    {
         let mut m = mock.lock().await;
-        let stopping_dec = m
-            .command_log
-            .iter()
-            .skip(from)
-            .any(|f| f.starts_with(b":K2"));
-        if stopping_dec {
-            m.ra.mode = skywatcher_motor_protocol::ModeKind::Tracking;
-            m.ra.running = true;
-            break;
-        }
-        drop(m);
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        m.ra.mode = skywatcher_motor_protocol::ModeKind::Tracking;
+        m.ra.running = true;
     }
     tokio::time::sleep(Duration::from_millis(500)).await;
     let frames = setter_frames_since(&*mock.lock().await, from);
@@ -7157,5 +7158,106 @@ async fn a_pickup_ends_the_slew_when_an_axis_restarts_during_its_stops() {
     assert!(
         !d.slew_in_progress.is_held(),
         "the watcher kept the slew going over an axis that tracks on"
+    );
+}
+
+/// An axis sample with `status` as `(running, mode)`, or none read yet.
+fn axis_reading(
+    status: Option<(bool, skywatcher_motor_protocol::ModeKind)>,
+) -> crate::manager::AxisSnapshot {
+    crate::manager::AxisSnapshot {
+        status: status.map(|(running, mode)| skywatcher_motor_protocol::AxisStatus {
+            mode,
+            direction: skywatcher_motor_protocol::Direction::Cw,
+            speed: skywatcher_motor_protocol::Speed::Fast,
+            motion: skywatcher_motor_protocol::MotionFlags {
+                running,
+                blocked: false,
+            },
+            init: skywatcher_motor_protocol::InitFlags {
+                initialized: true,
+                level_switch_on: false,
+            },
+        }),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn an_axis_with_no_status_read_yet_may_be_in_a_goto() {
+    // The handshake seeds positions read before the startup safety stop,
+    // with no status: a goto that stop interrupted may still coast.
+    assert!(may_be_in_goto(&axis_reading(None)));
+}
+
+#[test]
+fn a_running_goto_may_be_in_a_goto() {
+    assert!(may_be_in_goto(&axis_reading(Some((
+        true,
+        skywatcher_motor_protocol::ModeKind::Goto
+    )))));
+}
+
+#[test]
+fn a_stopped_or_tracking_axis_is_not_in_a_goto() {
+    assert!(!may_be_in_goto(&axis_reading(Some((
+        false,
+        skywatcher_motor_protocol::ModeKind::Goto
+    )))));
+    assert!(!may_be_in_goto(&axis_reading(Some((
+        true,
+        skywatcher_motor_protocol::ModeKind::Tracking
+    )))));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slew_whose_ra_stop_is_refused_leaves_tracking_on() {
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    mock.lock().await.fault_script.push_back(ScriptedFault {
+        letter: b'K',
+        fault: Fault::MountError(2),
+    });
+    let lst = d.sidereal_time().await.unwrap();
+    d.slew_to_coordinates_async((lst - 1.0).rem_euclid(24.0), 30.0)
+        .await
+        .unwrap_err();
+    assert!(
+        d.tracking().await.unwrap(),
+        "Tracking read false over an RA the slew never stopped"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slew_whose_ra_stop_is_never_confirmed_leaves_tracking_on() {
+    // RA ignores `:K`, so the slew's wait for it times out.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    mock.lock().await.ignore_decelerating_stop = true;
+    let lst = d.sidereal_time().await.unwrap();
+    d.slew_to_coordinates_async((lst - 1.0).rem_euclid(24.0), 30.0)
+        .await
+        .unwrap_err();
+    assert!(
+        d.tracking().await.unwrap(),
+        "Tracking read false over an RA no stop was confirmed on"
+    );
+}
+
+#[tokio::test]
+async fn a_lapsed_claim_stops_no_pulse_axis() {
+    // AbortSlew has already stopped the axes a failed slew took from its
+    // pulses; a successor may own them now.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    let reservation = SlewReservation::try_acquire(&d.slew_in_progress, &d.axis_ownership).unwrap();
+    let claim = reservation.claim();
+    d.slew_in_progress.clear();
+    let mut taken = PulseGuiding::IDLE;
+    taken.set(Axis::Dec, Some(PulseId(1)));
+    let from = mock.lock().await.command_log.len();
+    d.stop_taken_pulse_axes_claimed(&claim, taken).await;
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from),
+        Vec::<String>::new()
     );
 }
