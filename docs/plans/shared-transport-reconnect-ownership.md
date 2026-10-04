@@ -291,7 +291,8 @@ change under rule 2 and
   "the reconnect supervisor stopped before the attempt finished".
 - **`cancel` is the lifecycle generation.**
   - Every teardown cancels it before it touches the slot, the cell,
-    `while_open_state` or the flags.
+    `while_open_state` or any flag other than its own first
+    `available = false` (invariant 3).
   - A cold start or a promotion gets a fresh token.
   - An attempt receives a clone when it is spawned.
 - **`stop_owed: Notify`** (PR 5) is raised only by `run_cleanup_locked`
@@ -334,6 +335,16 @@ change under rule 2 and
    token before it touches the slot, the cell, `while_open_state` or
    the flags. An attempt that sees its token cancelled commits
    nothing.
+
+   There is one exemption, `shutdown`'s step 2 store of
+   `available = false`, which comes before the cancel (§Teardown).
+   - It only takes the transport out of service, so sessions are
+     refused from that moment rather than from the end of the join.
+     Nothing an attempt could commit depends on it.
+   - A publish that lands between it and the cancel is undone by
+     step 5's re-store after the join, which PR 1 pins. That re-store
+     comes after the cancel, so it needs no exemption.
+   - `release_any_held_conduit` writes no flag before its cancel.
 4. **Nothing aborts the supervisor.** A teardown cancels it and joins
    it: `warn!` at 5 s, then wait without a bound. Its handle is never
    aborted, not from a `Drop` either, because aborting the parent is
@@ -443,7 +454,8 @@ let current = !lifecycle.is_cancelled() && slot.as_ref().is_some_and(|c| Arc::pt
 `shutdown` after PR 8:
 
 1. Take `acquire_lock`. In LazyAcquire, return.
-2. Store `available = false`.
+2. Store `available = false`. This is invariant 3's one exemption: a
+   flag write before the cancel.
 3. Call `take_supervisor`. The kick sender leaves with it.
 4. Call `retire_supervisor`:
    - cancel the token (the generation moves here);
