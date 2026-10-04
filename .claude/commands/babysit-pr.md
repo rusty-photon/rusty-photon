@@ -37,8 +37,12 @@ Arguments: $ARGUMENTS
    current branch (above). If neither exists, stop and say so.
 2. Read `docs/skills/babysitting-prs.md` and run its loop — it defines
    the exit criteria, the reply-per-thread rule, the exact `gh api`
-   calls (Copilot re-request does not work via `gh pr edit`), and the
-   triage guidance.
+   calls, and the triage guidance. Rounds are drawn by the push: the
+   repo's Co-Pilot Code Reviews ruleset reviews on open and on every
+   push, so never request one by hand except in the fallback cases the
+   skill names (a bot-authored PR, a request that never appeared in the
+   timeline, a Copilot error notice that asks for a re-request), and
+   then with its `gh api` call, not `gh pr edit`.
 3. **Read the body of every Copilot review, not just
    `pulls/<n>/comments`.** Most findings arrive *suppressed* — inside a
    `<details><summary>Suppressed comments (n)</summary>` block in the
