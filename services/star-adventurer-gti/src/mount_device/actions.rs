@@ -17,8 +17,6 @@
 //!
 //! [§Unpark from AP position]: ../../../../docs/services/star-adventurer-gti.md#unpark-from-ap-position
 
-use std::sync::atomic::Ordering;
-
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 
 use crate::config::ApPark;
@@ -171,13 +169,19 @@ impl MountDevice {
     ) -> ASCOMResult<String> {
         let park = parse_ap_park(parameter)?;
         self.ensure_connected().await?;
+        // Hold the axes from the slew check through the encoder reset and
+        // the `AtPark` clear. A slew can only claim the slot under this
+        // lock, so none can start, after a concurrent `Unpark`, while the
+        // reset is stopping the axes or writing the encoders. The mount is
+        // parked and still, so the reset's stop waits are a poll each.
+        let _axes = self.axis_ownership.lock().await;
         if !self.state.read().await.at_park {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "UnparkFromApPosition refused: mount is not parked",
             ));
         }
-        if self.slew_in_progress.load(Ordering::SeqCst) {
+        if self.slew_in_progress.is_held() {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "UnparkFromApPosition refused: slew in progress",

@@ -1,16 +1,24 @@
 Feature: Asynchronous slewing
-  SlewToCoordinatesAsync validates the target, computes target encoder
-  positions from RA/Dec + LST + sync offset + side-of-pier choice, then
-  issues the INDI eqmod-style sequence on each axis. Per axis the wire
-  sequence is :L instant-stop + poll :f until not running (the
-  Sky-Watcher firmware rejects :G against a still-decelerating motor
-  with !2 MotorNotStopped), then :G goto+fast → :I step-period →
-  :H delta-target → :M break-point → :J start. The call returns
-  immediately; callers poll Slewing to detect completion. After both
-  axes stop, the driver runs an EQMOD-style pickup loop (capped at
-  5 iterations) to push any RA/Dec residual under 5". SlewToTargetAsync
-  uses the most-recent TargetRightAscension / TargetDeclination set on
-  the device.
+  SlewToCoordinatesAsync validates the target, then plans the slew
+  from the latest encoder snapshot. A target that plan refuses is
+  refused before anything moves. Planning means computing target
+  encoder positions from RA/Dec + LST + sync offset + side-of-pier
+  choice, and the per-axis deltas and path checks.
+
+  The driver then stops both axes with :K and polls :f until neither is
+  running. The Sky-Watcher firmware rejects :G against a
+  still-decelerating motor with !2 MotorNotStopped, and an axis stopped
+  from goto speed coasts for over a second. It re-reads both axes,
+  plans again from where they came to rest, and issues the INDI
+  eqmod-style sequence on each axis: :G goto+fast → :I step-period →
+  :H delta-target → :M break-point → :J start.
+
+  The call returns once the gotos have started, which takes over a
+  second when an axis is still coasting; callers poll Slewing to
+  detect completion. After both axes stop, the driver runs an EQMOD-style
+  pickup loop (capped at 5 iterations) to push any RA/Dec residual
+  under 5". SlewToTargetAsync uses the most-recent TargetRightAscension
+  / TargetDeclination set on the device.
 
   The baseline configuration these scenarios run under ships the
   default CW exclusion zone, (0.95, 11.05) h of mech_HA, so a slew

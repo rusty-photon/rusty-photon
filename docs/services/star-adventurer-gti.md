@@ -647,13 +647,13 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 |---|---|
 | `Connected = true` | acquire a session on the already-open transport (opened eagerly at service start — see [§Connection Lifecycle](#connection-lifecycle)); refcount bump, then the post-acquire hooks `seed_after_connect` (fresh-power-up AP-pose encoder seed) and `load_park_target_after_connect` run |
 | `Connected = false` | release the session. On the last client disconnect, issue the `:L1`/`:L2`/`:K1` safety stop; the transport stays open and background polling continues until service shutdown. A reconnect that completes while no client is attached re-issues the same stop on the fresh link — see [Safety stop across a reconnect](#safety-stop-across-a-reconnect) |
-| `SlewToCoordinatesAsync(ra, dec)` | validate (not parked, valid coords), compute target encoder positions for `LST(now + MIN_SLEW_DWELL)` so the post-slew RA reading lands on `target_RA` instead of drifting at sidereal rate during the slew, issue `:G` `:S` `:J` per axis, set `Slewing=true`. Returns immediately; caller polls `Slewing` |
+| `SlewToCoordinatesAsync(ra, dec)` | validate (not parked, valid coords), plan from the latest snapshot (unless an axis may still be in a goto), stop both axes, re-read them, plan again from where they came to rest with `LST(now)`, then issue `:G` `:I` `:H` `:M` `:J` per axis and set `Slewing=true` — see [§Slew lifecycle](#slew-lifecycle). Returns once the gotos have started, which takes over a second when an axis is still coasting from goto speed; caller polls `Slewing` |
 | `SlewToCoordinates(ra, dec)` | wraps the async variant and waits for `Slewing` to clear (bounded by a generous timeout) before returning. Mandatory per ASCOM when `CanSlew=true` |
 | `SlewToTargetAsync()` | uses last-set `TargetRightAscension`/`Declination` |
 | `SlewToTarget()` | synchronous variant of the above; same wait semantics as `SlewToCoordinates` |
 | `SyncToCoordinates(ra, dec)` | issue `:E<axis><pos>` for each axis (set encoder position **for the side the mount is physically on** — see [§Sync and pier side](#sync-and-pier-side)), update the cached snapshot so an immediate `RightAscension` / `Declination` read reflects the sync without waiting for the next background poll, and **update `TargetRightAscension` / `TargetDeclination`** to the synced coordinates (per ASCOM ITelescopeV3 — a successful Sync writes Target) |
 | `SyncToTarget()` | uses last-set target |
-| `AbortSlew()` | refuse with `INVALID_WHILE_PARKED` when parked; otherwise issue `:L1` `:L2` (instant stop), clear `Slewing`, do NOT auto-restore tracking |
+| `AbortSlew()` | refuse with `INVALID_WHILE_PARKED` when parked; otherwise empty the slew slot (voiding the claim of the slew or park in flight, so neither it nor its watcher sends another goto), issue `:L1` `:L2` (instant stop), do NOT auto-restore tracking |
 | `Park()` | stop tracking, then — **only when the coordinate frame is anchored** (see [§Park lifecycle](#park-lifecycle)) — slew both axes to the in-memory park-target encoder pair; with an unanchored frame (`ap_park_0`, no sync yet, no raw tick override) Park stops both axes **in place** and issues no goto. When both axes report stopped set `AtPark=true`. **Tracking remains off after park** (per ASCOM) |
 | `Unpark()` | clear `AtPark`. Does NOT auto-enable tracking |
 | `SetPark()` | capture current encoder pair, write back into the running config file (only the `mount.park_ra_ticks` / `mount.park_dec_ticks` keys are touched — see [§Park persistence](#park-persistence)), update the in-memory park target. Refuses if not connected or while slewing. (The binary always resolves a config path, so the historical "no `--config`" refusal no longer fires in practice — see [§Park persistence](#park-persistence).) |
@@ -817,39 +817,40 @@ and a poll of motion is immaterial to them.
 SlewToCoordinatesAsync(ra, dec)
    │
    ├─ validate: !AtPark, ra ∈ [0,24), dec ∈ [-90,90]
-   ├─ remember: TargetRightAscension/Declination = (ra, dec)
-   ├─ pick pier side: the side whose destination mech_HA and RA
-   │           path both clear the CW exclusion zone, preferring the
-   │           current side — see
-   │           [§Pier-side decision tree](#pier-side-decision-tree).
-   │           With `enabled = false` always chooses the current side.
-   ├─ compute: (ra_target_ticks, dec_target_ticks) from
-   │           ra/dec + LST(now) + sync offset + chosen pier side.
-   │           Pre-flip (pierWest) target is `(LST − ra, dec)`;
-   │           flipped (pierEast) target is `(LST − ra + 12 h)` mod 24
-   │           folded signed, with dec past the pole at
-   │           `sign(dec) · (180° − |dec|)`. The post-stop pickup loop
-   │           closes the residual that arises from RA drifting at
-   │           sidereal rate during the goto, so the LST snapshot is
-   │           taken at issue time.
-   ├─ validate per-side safety envelope (pre-flip side reuses
-   │           `ra_*_hours` / `dec_*_degrees`; flipped side uses the
-   │           mirror band through the encoder wrap at ±12 h —
-   │           see [§Meridian flip](#meridian-flip))
-   ├─ flip slew? route the RA axis through the negative-`mech_HA`
-   │           half (counterweight-below-horizon arc). The wire
-   │           sequence below is unchanged; only the encoder target
-   │           and `:G`'s CCW bit differ.
+   ├─ claim the slew slot (INVALID_OPERATION if a slew or park
+   │           holds it)
+   ├─ unless an axis may still be in a goto: plan from the latest
+   │           snapshot (the plan steps are listed below). A slew this
+   │           plan refuses is refused before anything moves.
    │
+   ├─ stop both axes (INDI StopWaitMotor), each :K sent holding
+   │   axis_ownership while the slew's claim still holds:
+   │     :K1, poll :f1 until Running=0 (max 2 s, AXIS_STOP_TIMEOUT)
+   │     :K2, poll :f2 until Running=0 (max 2 s)
+   │
+   │   From here to the last :J, holding axis_ownership, after one
+   │   last check of the slew's claim:
+   ├─ re-read both axes (:j / :f) where they came to rest; refuse if
+   │           either reads running again (a Tracking write during
+   │           the stops, say)
+   ├─ plan again from that reading, with a fresh LST. This plan is
+   │           the one the wire carries. A slew it refuses leaves both
+   │           axes stopped and Tracking false.
+   ├─ remember: TargetRightAscension/Declination = (ra, dec), and
+   │           the pier side the plan chose
    ├─ for each axis (INDI-style wire sequence — see
    │   indi-eqmod/skywatcher.cpp::SlewTo):
-   │     :K<axis>      stop motor (decelerate)
-   │     poll :f<axis> until Running=0 (max 2 s, AXIS_STOP_TIMEOUT)
    │     :G<axis><mode>  motion mode = Goto+Fast, CCW bit from sign of delta
    │     :I<axis>6     step period (INDI minperiods default)
    │     :H<axis><|delta|>  target by increment (magnitude only)
    │     :M<axis><breaks>   break-point = min(|delta|/10, 3200)
    │     :J<axis>      start motion
+   │   An AbortSlew during the stops fails the slew with
+   │   INVALID_OPERATION, and no further :K or goto is sent; one that
+   │   arrives during the guarded steps waits for them, and its :L
+   │   stops both gotos. A sequence that fails part-way (a :J whose
+   │   reply was lost, say) sends :L1 :L2 before the error returns,
+   │   since a goto may have started that no watcher will follow.
    │
    ├─ Slewing = true
    └─ background poll :f1 / :f2 every 200 ms
@@ -867,11 +868,133 @@ SlewToCoordinatesAsync(ra, dec)
              read current RA/Dec from encoders + current LST,
              if |target_RA - current_RA| > 5″ or |target_Dec - current_Dec| > 5″:
                recompute delta against current encoder + current LST,
-               re-issue :L → :G → :I → :H → :M → :J for each axis,
+               stop each axis (:K + poll :f), re-read both under
+               axis_ownership (an axis running again ends the slew),
+               then :G → :I → :H → :M → :J for each axis,
                iterate.
         └─ if Tracking was on: re-issue tracking-mode :G + :I + :J on RA axis
         └─ apply config.settle_after_slew before clearing Slewing = false
 ```
+
+Each plan runs these steps from one reading of both axes and one LST:
+
+1. **Pick the pier side.** Take the side whose destination `mech_HA`
+   and RA path both clear the CW exclusion zone, preferring the
+   current side; see
+   [§Pier-side decision tree](#pier-side-decision-tree). With
+   `enabled = false` it always picks the current side.
+   `SetSideOfPier` pins the side instead.
+2. **Compute the target** `(ra_target_ticks, dec_target_ticks)` from
+   ra/dec, LST, the sync offset and the chosen pier side.
+   - The pre-flip (pierWest) target is `(LST − ra, dec)`.
+   - The flipped (pierEast) target is `(LST − ra + 12 h)` mod 24,
+     folded signed, with dec past the pole at
+     `sign(dec) · (180° − |dec|)`.
+   - The post-stop pickup loop closes the residual from RA drifting
+     at sidereal rate during the goto, so LST is taken when the plan
+     is made.
+3. **Check the per-side safety envelope.** The pre-flip side reuses
+   `ra_*_hours` / `dec_*_degrees`. The flipped side uses the mirror
+   band through the encoder wrap at ±12 h; see
+   [§Meridian flip](#meridian-flip).
+4. **Compute each axis' delta from the reading and check the RA
+   path.** A flip slew routes the RA axis through the
+   negative-`mech_HA` half (the counterweight-below-horizon arc) and
+   the Dec axis through the visible pole; see
+   [§Through-wrap slew routing](#through-wrap-slew-routing). The wire
+   sequence is the same for a flip; only the encoder target and
+   `:G`'s CCW bit differ.
+
+**Why the slew plans again after stopping.** `:H` is relative to the
+count when `:J` arrives, and an axis stopped from goto speed keeps
+moving. The pier1 `GTi` carries Dec 3.76° and RA 2.69° past the stop,
+over 1.50 s and 1.27 s; see
+[§Safety stop at startup](#safety-stop-at-startup) for the table. A
+plan made before the stop would therefore:
+
+- aim off by that coast, which the pickup loop then corrects without
+  re-checking the path;
+- judge a counterweight path the mount does not sweep;
+- read the pier side from a Dec count the axis may already have left.
+
+This matters for a slew that arrives while an axis is still
+decelerating:
+
+- right after `AbortSlew`, which returns once its `:L` stops are
+  acknowledged;
+- after a last client left mid-goto;
+- after a startup halt.
+
+Park plans the same way: it stops, re-reads, then sends an absolute
+`:S` target.
+
+The first plan exists so that a slew that is refused anyway changes
+nothing: tracking stays on and no target is remembered. Without it,
+every refused slew would first stop tracking. A tracking or idle axis
+stops within milliseconds, so the two plans then agree.
+
+The first plan is skipped while either axis may still be in a goto:
+- it reads as running a goto, for example coasting from an abort or a
+  safety stop;
+- or no status has been read for it yet. The handshake seeds each
+  position, read before the startup safety stop, with no status, so
+  until the first poll a goto that stop interrupted may still be
+  coasting.
+
+The snapshot is then not where the axis will stop, so its plan could
+refuse a slew the rest position allows. Stopping an axis that is
+already decelerating changes nothing, so the second plan alone
+decides. A slew it refuses fails with that plan's error. Both axes are
+then stopped, and Tracking reads false.
+
+**Each slew holds its own claim on the slew slot.** The slot holds the
+claiming operation's token rather than a plain "in progress" flag.
+`AbortSlew` and disconnect empty the slot. A slew's own checks and its
+completion watcher act only while the slot still holds their token.
+This matters for "AbortSlew, then slew at once". There, the aborted
+slew's watcher would otherwise see the new slew's claim as its own,
+and send its pickup goto, which has no zone check, into the middle of
+the new slew. A release by an operation whose claim has lapsed leaves
+the slot alone, so it cannot end a newer slew's claim.
+
+A check of the claim followed by wire commands would still race. An
+abort could land between them, and the next slew could claim the slot
+before the commands went out. So each act that a lapsed claim must not
+perform takes `axis_ownership` and checks the claim under it:
+- each stop's `:K` (slew, Park, pickup), so a stale operation sends
+  no stop into its successor's goto. This includes Park's tracking
+  stop and the stops of axes a failed slew or park took from guide
+  pulses;
+- the slew's RA stop, reading and clearing `Tracking` in the same
+  step. A `Tracking` write lands either before it, and the watcher
+  restores tracking after the slew, or after it, where the slew's
+  guarded re-read refuses the slew;
+- the slew's fresh read, plan, target latch and gotos, as one step;
+- Park's fresh read and gotos, as one step;
+- the watcher's pickup starts, after a re-read of both axes, and its
+  tracking restart;
+- the watcher's emergency `:L`s (poll retries exhausted, an axis
+  reporting blocked);
+- the watcher's finalize, which for Park sets AtPark.
+
+Each fresh read under the guard refuses the act if an axis reads as
+running again. A `Tracking` write is allowed during a slew, and could
+have restarted RA during the stop waits. The slew and Park fail. The
+pickup ends the slew, leaving the axis to whoever restarted it, so the
+watcher does not wait on an axis that tracks on.
+
+`AbortSlew`, disconnect and every new claim also go through
+`axis_ownership`. An abort therefore lands either before the check,
+which fails, or after the act, where its `:L` stops anything the act
+started. The lock is never held across a wait for an axis to stop, so
+an abort waits a few frames at most.
+
+`UnparkFromApPosition` holds `axis_ownership` from its slew check
+through its encoder reset and the `AtPark` clear. A slew that a
+concurrent `Unpark` made possible therefore cannot claim the slot
+until the encoders are written. The reset itself leaves the slew slot
+alone: emptying it would void a claim that is not the reset's to
+cancel.
 
 ### Park lifecycle
 
@@ -879,16 +1002,24 @@ SlewToCoordinatesAsync(ra, dec)
 Park()
    │
    ├─ if AtPark: return immediately (idempotent)
+   ├─ claim the slew slot (INVALID_OPERATION if a slew or park
+   │           holds it)
    ├─ Tracking = false (issue :K on RA axis)
    │
-   ├─ for each axis:
-   │     :K<axis> + poll :f until stopped    (stop-and-wait)
-   │     then, ONLY if this axis has a park target (anchored frame
+   ├─ stop both axes: :K1 + poll :f1, then :K2 + poll :f2, each :K
+   │     sent only while park still holds its claim
+   ├─ holding axis_ownership, and only if park still holds its claim
+   │     (an AbortSlew during the stops fails the park, with no goto):
+   ├─ re-read both axes (:j / :f) where they came to rest; refuse if
+   │     either reads running again
+   ├─ for each axis, ONLY if it has a park target (anchored frame
    │     or raw tick override — see below):
-   │       :G<axis><goto-mode>      ccw chosen from sign(target − current)
+   │       :G<axis><goto-mode>      ccw chosen from sign(target − rest)
    │       :S<axis><park_target>    target = in-memory park-target ticks
    │       :J<axis>
    │     else: the axis parks IN PLACE — stopped is parked
+   │     A sequence that fails part-way sends :L1 :L2 before the error
+   │     returns.
    │
    ├─ background poll :f1 / :f2 until both stopped
    │     (no auto-abort on timeout — caller must AbortSlew if stuck;
@@ -1990,6 +2121,11 @@ After a successful flip the next encoder snapshot's `SideOfPier` reads
 the new value (the Dec encoder has moved past the pole);
 `TargetRightAscension` / `TargetDeclination` remain unchanged.
 
+The current side and the pointing to keep are read when
+`SetSideOfPier` is called. The flip slew itself is planned like any
+other slew: from where the axes come to rest after its stop (see
+[§Slew lifecycle](#slew-lifecycle)).
+
 #### Through-wrap slew routing
 
 When the slew planner decides to flip (either via `SetSideOfPier` or
@@ -2068,13 +2204,17 @@ exposed. The fix forces the long way around (`delta − cpr` or
 `delta + cpr`) so the path always crosses the *safe* pole.
 
 The slew lifecycle (see [§Slew lifecycle](#slew-lifecycle)) is
-otherwise unchanged: the same `:K → :G → :I → :H → :M → :J`
-wire sequence per axis, the same EQMOD pickup loop, the same settle
-delay. The flip slew differs from a normal slew only in which
-encoder target the planner computes and which CCW bit `:G` issues
-per axis (forced to the safe-direction sign on flip slews, so the
-routing goes "under" the polar axis on RA and through the visible
-pole on Dec rather than taking the shortest-encoder path).
+otherwise unchanged. A flip slew uses:
+- the same stop of both axes and re-read before the plan the wire
+  carries;
+- the same `:G → :I → :H → :M → :J` sequence per axis;
+- the same EQMOD pickup loop and the same settle delay.
+
+The flip slew differs from a normal slew only in which encoder target
+the planner computes and which CCW bit `:G` issues per axis. The CCW
+bit is forced to the safe-direction sign, so the routing goes "under"
+the polar axis on RA and through the visible pole on Dec rather than
+taking the shortest-encoder path.
 
 #### Hardware validation
 
@@ -2671,7 +2811,7 @@ src/
                            (`seed_after_connect`, `reset_mount_encoders`,
                             `load_park_target_after_connect`),
                            the slew planner
-                           (`execute_slew_with_explicit_side`),
+                           (`execute_slew`, `plan_slew`),
                            plus the `validate_guide_rate` helper
     slew.rs              — wire-level slew helpers (`:K`/`:G`/`:I`/
                            `:H`/`:M`/`:J` sequence, decelerate-and-wait)
@@ -2802,6 +2942,18 @@ The two motion modes are simulated differently, on purpose:
   chunk toward `goto_target_ticks` and clears `running` on arrival, so
   a slew completes in a handful of polls however fast the test runs.
   Goto speed is not simulated.
+- **A stopped goto can coast.** By default a `:K` or `:L` stops a goto
+  axis at once. The per-axis test knob `stop_coast`
+  (`StopCoast { ticks, duration }`, `None` by default) instead carries
+  a running goto on in its direction for `ticks` over `duration`, at
+  constant deceleration and on the clock. `:f` reads the axis as
+  running until the coast ends, and poll steps are suspended
+  meanwhile. Tracking-mode stops never coast. The slew-planning unit
+  tests set it from the pier1 measurement:
+  - RA: 27,060 ticks over 1.27 s;
+  - Dec: 30,323 ticks over 1.50 s.
+
+  See [§Safety stop at startup](#safety-stop-at-startup).
 
 Replies are instant by default. The test knob `reply_delay` holds each
 reply back by a fixed time *after* the frame has acted — the count is
