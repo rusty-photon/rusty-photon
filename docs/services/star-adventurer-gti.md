@@ -868,7 +868,9 @@ SlewToCoordinatesAsync(ra, dec)
              read current RA/Dec from encoders + current LST,
              if |target_RA - current_RA| > 5″ or |target_Dec - current_Dec| > 5″:
                recompute delta against current encoder + current LST,
-               re-issue :L → :G → :I → :H → :M → :J for each axis,
+               stop each axis (:K + poll :f), re-read both under
+               axis_ownership (an axis running again ends the slew),
+               then :G → :I → :H → :M → :J for each axis,
                iterate.
         └─ if Tracking was on: re-issue tracking-mode :G + :I + :J on RA axis
         └─ apply config.settle_after_slew before clearing Slewing = false

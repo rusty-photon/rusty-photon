@@ -474,8 +474,8 @@ impl SlewSlot {
             .compare_exchange(token.0, 0, Ordering::SeqCst, Ordering::SeqCst);
     }
 
-    /// Empty the slot whoever holds it: `AbortSlew`, disconnect and an
-    /// encoder reset void the operation in flight.
+    /// Empty the slot whoever holds it: `AbortSlew` and disconnect void
+    /// the operation in flight.
     pub(super) fn clear(&self) {
         self.owner.store(0, Ordering::SeqCst);
     }

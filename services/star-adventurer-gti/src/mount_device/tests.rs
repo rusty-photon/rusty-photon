@@ -7261,3 +7261,29 @@ async fn a_lapsed_claim_stops_no_pulse_axis() {
         Vec::<String>::new()
     );
 }
+
+#[tokio::test(start_paused = true)]
+async fn an_abort_during_a_never_confirmed_ra_stop_keeps_tracking_off() {
+    // RA ignores every stop, so the slew's wait for it times out. An
+    // AbortSlew in that wait turns Tracking off on purpose: the slew's
+    // put-back of the flag must not undo it.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.set_tracking(true).await.unwrap();
+    {
+        let mut m = mock.lock().await;
+        m.ignore_decelerating_stop = true;
+        m.ignore_instant_stop = true;
+    }
+    let lst = d.sidereal_time().await.unwrap();
+    let slew = d.slew_to_coordinates_async((lst - 1.0).rem_euclid(24.0), 30.0);
+    let abort = async {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        d.abort_slew().await.unwrap();
+    };
+    let (slewed, ()) = tokio::join!(slew, abort);
+    slewed.unwrap_err();
+    assert!(
+        !d.tracking().await.unwrap(),
+        "the slew's put-back undid the abort's Tracking off"
+    );
+}

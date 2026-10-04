@@ -382,8 +382,11 @@ impl MountDevice {
     /// the axes too, so one lands either wholly before that step, and is
     /// restored after the slew, or wholly after it, where it restarts RA
     /// and the slew's guarded re-read refuses the slew. A `:K1` that does
-    /// not go out puts the flag back. So does a stop RA never confirms:
-    /// Tracking must not read false over an RA that may still be running.
+    /// not go out puts the flag back. So does a stop RA never confirms,
+    /// since Tracking must not read false over an RA that may still be
+    /// running. That restore is made under the guard too, and only while
+    /// the claim holds: an `AbortSlew` in the meantime turned Tracking off
+    /// on purpose.
     async fn stop_ra_for_slew(&self, claim: &SlewClaim) -> ASCOMResult<bool> {
         let tracking_was_on = {
             let Some(_axes) = claim.hold_axes().await else {
@@ -407,7 +410,13 @@ impl MountDevice {
             })
             .await;
         if stopped.is_err() && tracking_was_on {
-            self.state.write().await.tracking_requested = true;
+            // The wait ran outside the lock, so put the flag back under it,
+            // and only while the slew still holds its claim: an AbortSlew
+            // in the meantime turned Tracking off on purpose, and must not
+            // be undone.
+            if let Some(_axes) = claim.hold_axes().await {
+                self.state.write().await.tracking_requested = true;
+            }
         }
         stopped.map(|()| tracking_was_on)
     }
