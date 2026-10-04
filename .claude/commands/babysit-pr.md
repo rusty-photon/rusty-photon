@@ -41,7 +41,8 @@ Arguments: $ARGUMENTS
    repo's Co-Pilot Code Reviews ruleset reviews on open and on every
    push, so never request one by hand except in the fallback cases the
    skill names (a bot-authored PR, a request that never appeared in the
-   timeline), and then with its `gh api` call, not `gh pr edit`.
+   timeline, a Copilot error notice that asks for a re-request), and
+   then with its `gh api` call, not `gh pr edit`.
 3. **Read the body of every Copilot review, not just
    `pulls/<n>/comments`.** Most findings arrive *suppressed* — inside a
    `<details><summary>Suppressed comments (n)</summary>` block in the
