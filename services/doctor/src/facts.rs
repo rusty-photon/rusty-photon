@@ -450,8 +450,7 @@ fn gather_windows() -> PlatformFacts {
         "Get-CimInstance Win32_Service -Filter \"Name LIKE 'rusty-photon-%'\" | \
          ForEach-Object { \"$($_.Name)`t$($_.StartMode)`t$($_.State)`t$($_.PathName)\" }",
     ]))
-    .map(|listing| parse_windows_service_listing(&listing))
-    .unwrap_or_default();
+    .map_or_default(|listing| parse_windows_service_listing(&listing));
     PlatformFacts {
         platform: Platform::Windows,
         units,
@@ -515,8 +514,7 @@ pub fn parse_windows_path_name(path_name: &str) -> Option<PathBuf> {
 #[cfg(target_os = "macos")]
 fn gather_macos() -> PlatformFacts {
     let mut units = run(Command::new("brew").args(["services", "list"]))
-        .map(|listing| parse_brew_services_listing(&listing))
-        .unwrap_or_default();
+        .map_or_default(|listing| parse_brew_services_listing(&listing));
     // brew links each formula's binaries into `<prefix>/bin` under the unit
     // stem's own name; only a path that actually exists is recorded.
     if !units.is_empty() {

@@ -541,13 +541,14 @@ jobs:
           # cargo-msrv doesn't resolve [workspace.package].rust-version from
           # virtual workspace roots, so verify each member individually.
           #
-          # Skip the four dual-homed FFI crates (qhyccd-rs + libqhyccd-sys, zwo-rs
-          # + libzwo-sys): they declare lower, independent MSRVs that CANNOT be
-          # verified in-workspace — the root `[profile.dev] debug =
-          # "line-tables-only"` needs Rust >= 1.71 and the shared Cargo.lock pins
-          # newest deps. publish-readiness.yml verifies them OUT of the workspace
-          # instead. The skip set = every crate carrying
-          # [package.metadata.publish-readiness] plus its declared `sys-crate`.
+          # Skip the six dual-homed FFI crates (qhyccd-rs + libqhyccd-sys, zwo-rs
+          # + libzwo-sys, svbony-rs + libsvbony-sys): they declare lower,
+          # independent MSRVs that CANNOT be verified in-workspace — the root
+          # `[profile.dev] debug = "line-tables-only"` needs Rust >= 1.71 and the
+          # shared Cargo.lock pins newest deps. publish-readiness.yml verifies
+          # them OUT of the workspace instead. The skip set = every crate
+          # carrying [package.metadata.publish-readiness] plus its declared
+          # `sys-crate`.
           meta="$(cargo metadata --format-version 1 --no-deps)"
           skip="$(echo "$meta" | jq -c '[.packages[]
                   | select(.metadata["publish-readiness"])

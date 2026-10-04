@@ -340,8 +340,11 @@ sentinel/src/
 
 The minimum supported Rust version is pinned in `[workspace.package]` of the
 root `Cargo.toml` (`rust-version = "1.98.1"`). Every member listed in
-`[workspace].members` — all services and shared crates — inherits it via
-`rust-version.workspace = true`.
+`[workspace].members` inherits it via `rust-version.workspace = true`, except
+the six dual-homed FFI crates (`qhyccd-rs`, `libqhyccd-sys`, `zwo-rs`,
+`libzwo-sys`, `svbony-rs`, `libsvbony-sys`). Those publish to crates.io and
+declare explicit, lower floors; [pre-push.md](skills/pre-push.md) lists them
+and how each set is verified.
 
 ## Supported targets
 
