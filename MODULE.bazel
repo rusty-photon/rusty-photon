@@ -20,8 +20,8 @@ module(
 
 # --- Core Bazel rules ------------------------------------------------------
 
-bazel_dep(name = "rules_rust", version = "0.70.0")
-bazel_dep(name = "platforms", version = "1.0.0")
+bazel_dep(name = "rules_rust", version = "0.74.0")
+bazel_dep(name = "platforms", version = "1.1.0")
 
 # `sh_test`, for the runner-pool harnesses under //tools/ci. Bazel 8 moved the
 # shell rules out of the builtins into this module, so they have to be loaded
@@ -35,10 +35,12 @@ bazel_dep(name = "rules_shell", version = "0.6.1")
 # is always the root module — this never needs to resolve for a downstream consumer.
 bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = True)
 
-# Four pinned patches to rules_rust (patch 3 spans two FILES — Bazel's patch
-# applier failed a two-file unified diff with CONTENT_DOES_NOT_MATCH_TARGET on
-# whichever file section came second, while each single-file diff applies
-# cleanly, so its .bzl half lives in its own file).
+# Five pinned patches to rules_rust (patches 3 and 5 each span two FILES —
+# Bazel's patch applier failed a two-file unified diff with
+# CONTENT_DOES_NOT_MATCH_TARGET on whichever file section came second, while
+# each single-file diff applies cleanly, so each file gets its own .patch).
+# Bazel's applier also does no fuzz matching: on a rules_rust bump, regenerate
+# every patch against the new release rather than trusting `patch` to land it.
 # See docs/plans/archive/bazel-migration.md.
 #
 # 1. collect_coverage_extra_objects.patch — BDD rust_tests spawn the service
@@ -208,6 +210,19 @@ bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = Tr
 #    `external -> ..\` symlink and resolves to the runfiles root, not the output
 #    base.
 #
+#    process_wrapper's `--subst <path>=<path>` pairs, one per build-script output
+#    directory, pass through RF() untouched: each is a substitution rule, not a
+#    path, and the `external/` branch would otherwise warn about a runfile that
+#    was never a file. Resolving them would change nothing: the writer strips
+#    the `bazel-out/<cfg>/bin/` root off each key too, so no key matches the
+#    `${<out_dir>}` tokens the `--arg-file` contents carry, and a search path
+#    under a build script's OUT_DIR stays unresolved inside a doc test. That
+#    does not reach the doc tests here: a static native library rides inside
+#    its crate's rlib, and an import library such as `windows.0.52.0.lib` sits
+#    under its crate's CARGO_MANIFEST_DIR — a `.cargo_runfiles` directory beside
+#    the OUT_DIR, not inside it — spelled `${pwd}/bazel-out/...`, which the
+#    `pwd=${pwd}` rewrite above already resolves.
+#
 # 4. process_wrapper_read_retry.patch — process_wrapper reads its `--arg-file`
 #    inputs with a single unretried `File::open`, and on windows-latest that
 #    open rarely fails with a transient ERROR_ACCESS_DENIED on a runfile that
@@ -230,10 +245,25 @@ bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = Tr
 #    their execroot targets, so this retry remains only as the backstop for
 #    paths the manifest cannot resolve.
 #
+# 5. rustdoc_test_inline_args_rustc.patch + rustdoc_test_inline_args_rustdoc.patch
+#    — rules_rust spills `rustc_flags` to a params file on every action, not
+#    only when the command line is too long. For a doc test that file is the
+#    `.rustdoc_opt_params` the writer copies through with only the exec-root
+#    prefixes stripped, so every flag in it — `--extern=`, `--sysroot=`, the
+#    crate root, the `--arg-file` values — skips patch 3's runner resolver and
+#    reaches rustdoc tree-relative again, which is exactly the surface patch 3
+#    exists to get Windows off. The rustc.bzl half adds an
+#    `always_use_param_file` option to `construct_arguments` (default True,
+#    upstream's behaviour); the rustdoc.bzl half turns it off for doc tests
+#    only, so their flags stay on the command line unless they cannot fit.
+#    Every other action keeps the always-spill. bazel.yml's "Report doc-test
+#    argument routing (Windows)" step shows it holding: each doc test should
+#    report `params file: unused`.
+#
 # Upstream has no equivalent hooks for 1-2 (collect_coverage PRs #3490/#3808
-# unmerged; HEAD identical), so these are carried until upstreamed. The
-# `bazel/cargo target parity` CI job guards that the patches still apply and
-# are effective.
+# unmerged; still absent in 0.74.0), so these are carried until upstreamed.
+# The `bazel/cargo target parity` CI job guards that the patches still apply
+# and are effective.
 single_version_override(
     module_name = "rules_rust",
     patch_strip = 1,
@@ -243,6 +273,8 @@ single_version_override(
         "//third_party/patches:rustdoc_test_windows_external_repo_path.patch",
         "//third_party/patches:rustdoc_test_windows_companion_script.patch",
         "//third_party/patches:process_wrapper_read_retry.patch",
+        "//third_party/patches:rustdoc_test_inline_args_rustc.patch",
+        "//third_party/patches:rustdoc_test_inline_args_rustdoc.patch",
     ],
 )
 
@@ -280,7 +312,7 @@ register_toolchains("@rust_toolchains//:all")
 
 # --- crate_universe: resolve crates.io + git deps from Cargo files ---------
 
-crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 crate.from_cargo(
     name = "cr",
     cargo_lockfile = "//:Cargo.lock",

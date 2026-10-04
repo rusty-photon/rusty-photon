@@ -1,6 +1,6 @@
 --- a/rust/private/rustc.bzl
 +++ b/rust/private/rustc.bzl
-@@ -1765,7 +1765,13 @@
+@@ -2169,7 +2169,13 @@
      executable = crate_info.output if crate_info.type == "bin" or crate_info.is_test else None
  
      instrumented_files_kwargs = {

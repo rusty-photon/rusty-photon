@@ -41,7 +41,7 @@
          .unwrap()
          .flatten()
          .filter_map(|entry| {
-@@ -192,7 +217,28 @@
+@@ -202,7 +227,28 @@
          .arg("-ignore-filename-regex=.*external/.+")
          .arg("-ignore-filename-regex=/tmp/.+")
          .arg(format!("-path-equivalence=.,{}", execroot.display()))

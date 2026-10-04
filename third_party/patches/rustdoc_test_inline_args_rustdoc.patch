@@ -1,0 +1,15 @@
+--- a/rust/private/rustdoc.bzl
++++ b/rust/private/rustdoc.bzl
+@@ -225,6 +225,12 @@
+         include_link_flags = False,
+         force_depend_on_objects = force_depend_on_objects,
+         skip_expanding_rustc_env = True,
++        # rusty-photon patch (rustdoc_test_inline_args): a doc test's
++        # Windows runner resolves each command-line path through the
++        # runfiles manifest (rustdoc_test_windows_external_repo_path), and a
++        # flag spilled to the params file bypasses that resolver. Keep the
++        # test's flags on the command line unless they cannot fit.
++        always_use_param_file = not is_test,
+     )
+ 
+     # Because rustdoc tests compile tests outside of the sandbox, the sysroot

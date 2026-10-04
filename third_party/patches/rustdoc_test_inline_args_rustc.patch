@@ -1,0 +1,32 @@
+--- a/rust/private/rustc.bzl
++++ b/rust/private/rustc.bzl
+@@ -984,7 +984,8 @@
+         require_explicit_unstable_features = False,
+         error_format = None,
+         allowed_unstable_rust_features = None,
+-        link_std_dylib = False):
++        link_std_dylib = False,
++        always_use_param_file = True):
+     """Builds an Args object containing common rustc flags
+ 
+     Args:
+@@ -1057,6 +1058,10 @@
+         error_format (str, optional): Error format to pass to the `--error-format` command line argument. If set to None, uses the "_error_format" entry in `attr`.
+         allowed_unstable_rust_features (list, optional): List of unstable Rust language features allowed for this target.
+         link_std_dylib (bool): Whether to dynamically link the Rust standard library using `--prefer-dynamic`.
++        always_use_param_file (bool): rusty-photon patch (rustdoc_test_inline_args):
++            whether `rustc_flags` spill to a params file on every action rather
++            than only when the command line is too long for the OS. False keeps
++            the flags on the command line wherever they fit.
+ 
+     Returns:
+         tuple: A tuple of the following items
+@@ -1194,7 +1199,7 @@
+     # Rustc arguments
+     rustc_flags = ctx.actions.args()
+     rustc_flags.set_param_file_format("multiline")
+-    rustc_flags.use_param_file("@%s", use_always = bool(ctx.executable._process_wrapper))
++    rustc_flags.use_param_file("@%s", use_always = always_use_param_file and bool(ctx.executable._process_wrapper))
+     rustc_flags.add_all([(crate_info.root, crate_info.root_path)], map_each = _get_crate_root_path)
+     rustc_flags.add(crate_info.name, format = "--crate-name=%s")
+     rustc_flags.add(crate_info.type, format = "--crate-type=%s")
