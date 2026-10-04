@@ -235,7 +235,7 @@ rusty-photon/
   CLAUDE.md / AGENTS.md   Operating rules for AI agents and human contributors
   crates/
     bdd-infra/                       Shared BDD test infrastructure (ServiceHandle + rp-harness)
-    rp-auth/                         HTTP Basic Auth utilities (Argon2id + axum, ADR-003)
+    rp-auth/                         HTTP Basic Auth utilities (Argon2id + axum + memoised verifier, ADR-003)
     rp-catalog/                      Embedded Messier/NGC/IC catalog with name resolution
     rp-ephemeris/                    Astronomical math (Ephemeris + ERFA wrapper + Site)
     rp-fits/                         FITS reader/writer wrapper (ADR-001)

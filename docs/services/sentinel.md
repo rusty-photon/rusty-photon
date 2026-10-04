@@ -588,7 +588,7 @@ promoted):
 | Constant | Value | Meaning |
 |---|---|---|
 | probe timeout | `2s` | Per-probe bound (the same bound as the watchdog ladder's health rung). The probed endpoint should therefore be cheap; `plate-solver`'s `/health` (two filesystem stats, no subprocess) is the reference shape. |
-| poll interval | `30s` | Probe cadence. Probing continues at this cadence during outages and backoff — only *restarting* is throttled. |
+| poll interval | `30s` | Probe cadence. Probing continues at this cadence during outages and backoff — only *restarting* is throttled. When `service_auth` is configured and the target is reached over https, each probe also keeps the target's rp-auth verification memo warm (ADR-003), so an imaging client's first request after a service restart finds the credential already proved. |
 | failure threshold | `3` | Consecutive failed probes before the first autonomous restart. |
 | restart backoff | `60s` | Wait before a second restart attempt when the first did not cure the service, doubling after every attempt. |
 | restart backoff max | `900s` | Ceiling for the doubling backoff. |
@@ -610,6 +610,17 @@ a condition a service restart cannot cure, so supervision must not try
 one: no failure counting, no restart, no notification; the dashboard shows
 the service amber instead of green. Any other status, a timeout, or a
 connection error counts as a failed probe.
+
+Every auth-enabled service has a second, body-less `503` source: the
+rp-auth verification gate ([ADR-003 § Verification memo and KDF
+admission control](../decisions/003-authentication-for-device-access.md#verification-memo-and-kdf-admission-control))
+answers `503` + `Retry-After: 1` when a probe arrives with a credential
+the service has not yet proved while its single KDF permit has been busy
+with *other* credentials for a whole second — in practice a flood of
+distinct wrong passwords. No `message` is shown for it; the tell is the
+service's own `credential verification gate busy` warning. Sentinel's
+handling is the same as for any other `503`: alive, degraded, never
+restarted.
 
 The response body is never *interpreted* (health bodies are not uniform
 across services, and no supervision decision may ever depend on one), with
@@ -647,7 +658,9 @@ A missing, non-JSON, or message-less body simply shows no message.
   pass-through `message` when the body carries one — instead of `up`.
   Degraded is a normal operating state (a parked rig's guider spends every
   daylight hour there), so it is never notified; the amber dashboard row is
-  the signal.
+  the signal. An amber row with no message can also be the rp-auth
+  verification gate refusing the probe (see above); the service log says
+  which.
 - **Underivable probe.** A `running` service whose `<svc>.json` cannot be
   read has no probe URL: its health reports `unknown`, no probe-driven
   restart fires, and the derivation is retried every discovery cycle.

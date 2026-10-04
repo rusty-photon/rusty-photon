@@ -1085,6 +1085,19 @@ than once per scenario, since a suite's scenarios all want the same
 throwaway PKI. Reach for the same shape whenever setup is both expensive
 and identical across scenarios.
 
+This rule is about *hashing*. Verification is cheap since rp-auth
+memoises verdicts and runs the KDF off the worker threads: a service
+under test pays one Argon2id verify per distinct credential it is shown
+(unoptimised, ~0.3 s on an x86 runner), and every repeat is a
+microsecond hit. Two things follow for a suite: a scenario that fires
+concurrent *cold* requests with *different* credentials at one service
+queues them behind a single KDF permit with a 1 s bound, after which the
+later ones are answered `503` rather than `401`, so do not assert `401`
+on a wrong-password request raced against another credential's first
+request; and a wrong-password assertion repeated within 5 s is answered
+from the negative memo without a KDF, so it cannot be used to measure
+verification cost.
+
 The same reasoning applies to a helper a step calls: make it `async` all
 the way down rather than blocking one level lower.
 
