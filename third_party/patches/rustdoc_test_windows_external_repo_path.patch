@@ -82,7 +82,7 @@
          .iter()
          // Remove any substrings found in the argument
          .map(|arg| {
-@@ -226,20 +261,286 @@
+@@ -226,20 +261,294 @@
                  .for_each(|substring| stripped_arg = stripped_arg.replace(substring, ""));
              stripped_arg
          })
@@ -298,6 +298,14 @@
 +        $t = RFR $matches[2]
 +        if ($t) { return $v + $t }
 +    }
++    # process_wrapper's `--subst <key>=<value>` pairs for build-script output
++    # directories arrive spelled `<path>=<path>`: a substitution rule, not a
++    # path, so pass it through as it is. The `external/` branch below would
++    # otherwise warn about a runfile that was never a file. Resolving the value
++    # would buy nothing either: the writer strips the `bazel-out/<cfg>/bin/`
++    # root off the key as well, so it no longer matches the `${...}` tokens
++    # the `--arg-file` contents carry.
++    if ($p -match '^[^-=][^=]*[\\/][^=]*=') { return $p }
 +    if ($p -match '^\.\.[\\/]') {
 +        $t = RFR $p
 +        if ($t) { return $t }
@@ -378,7 +386,7 @@
          "".to_owned(),
      ];
  
-@@ -266,14 +567,29 @@
+@@ -266,14 +575,29 @@
  
  fn write_test_runner(
      path: &Path,
@@ -409,7 +417,7 @@
      }
  
      set_executable(path);
-@@ -287,5 +603,11 @@
+@@ -287,5 +611,11 @@
          .filter(|(key, _)| opt.env_keys.iter().any(|k| k == key))
          .collect();
  
