@@ -1045,7 +1045,9 @@ alike. It also leaves `WhileOpen` constructed in one place,
 queues each answer when the frame is written, and a read parks
 *before* it pops, so a dropped read leaves its answer for the next
 reader. It offers `park_next_read`, `wait_inside_read` and
-`release_read`. Neither `EchoTransport` nor `ScriptedReplies` can do
+`release_read`, and `park_next_send` with its own wait and release. A
+parked send has already handed its frame to the device, so its answer
+is queued. Neither `EchoTransport` nor `ScriptedReplies` can do
 this: the first keeps a single slot that each send overwrites, and the
 second ignores sends.
 - `Connection::new` is crate-private, so the `connection.rs` tests get
@@ -1058,6 +1060,12 @@ second ignores sends.
   A is dropped while parked in its read. B returns B's answer.
 
   Mutation: never arm the guard → B returns A's answer.
+- `…::a_request_dropped_while_its_send_is_pending_owes_its_reply`. A is
+  dropped while parked inside `send_frame`, after the device has taken
+  its frame. B discards A's answer and returns its own.
+
+  Mutation: arm the guard only after `send_frame` returns → B returns
+  A's answer.
 - `…::a_request_dropped_part_way_through_a_frame_discards_the_rest_of_it`
   (duplex). The device writes half of A's answer, A is dropped, and the
   device writes the rest and then B's answer. B returns B's answer.
