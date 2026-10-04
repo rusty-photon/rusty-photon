@@ -2659,6 +2659,13 @@ devices:
   This holds even when some other client turned the device back on in
   the meantime: rp never adopts a session it did not establish, so the
   property cache is always the establish routine's own fresh read.
+  The entry is marked disconnected **before** the routine runs. The
+  routine turns the new session on at the device before rp holds its
+  handle, and from that moment a call through the old handle is
+  answered by the new session; marking the entry first means no reader
+  that checks the flag takes such an answer for the old session's.
+  `GET /api/equipment` therefore reports the device disconnected while
+  its connect routine runs.
 - **On success** the new session replaces the old one, the entry's
   `connected` flag turns true, and an `equipment_changed` event is
   emitted. The handle and the property cache read from it replace the
@@ -2669,11 +2676,13 @@ devices:
   calls is what would straddle a replacement, so a caller wanting both
   takes them together; the separate accessors serve the callers that
   want one half, such as the health check and the cooler loop. The
-  event fires on every successful re-establishment — also when the flag
-  never observably flipped (a service bounce between two supervisor
-  passes) — so a healed session is always visible in the event stream.
-- **On failure** the entry is marked disconnected (`equipment_changed`
-  once per transition, not once per attempt) and the next pass retries.
+  event fires on every successful re-establishment — also for a service
+  bounce between two supervisor passes, which drew no
+  `connected: false` event — so a healed session is always visible in
+  the event stream.
+- **On failure** the entry stays disconnected (`equipment_changed` with
+  `connected: false` once per transition, not once per attempt) and the
+  next pass retries.
   There is no give-up state: an outcome that is permanent within one
   connect routine ("device not found") is still retried on the next
   pass, which is exactly what case 3 needs.
@@ -3251,7 +3260,11 @@ is then compared against its focuser's **baseline**:
   supervisor re-establishes is a new handle, and the first reading
   through it seeds a fresh baseline. The service behind the same
   config id may have come back with a different device; nothing is
-  assumed across a session.
+  assumed across a session. A reading counts only if the session it
+  was read through is still the live one when the reading arrives: a
+  read already in flight through the old handle when the session is
+  replaced can be answered by the replacement, and that reading
+  belongs to neither baseline, so it is discarded.
 
 The watch runs whenever at least one focuser is configured (no
 focusers, no task); it starts after the startup connect and never

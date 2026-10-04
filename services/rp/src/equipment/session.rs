@@ -103,6 +103,26 @@ impl<T: ?Sized, M> DeviceSession<T, M> {
             .map(|device| (device, state.metadata.clone()))
     }
 
+    /// Whether `device` is the handle of the session live right now:
+    /// the slot reads connected and still holds that very handle. Both
+    /// are checked under one guard, so the answer cannot straddle a
+    /// re-establish.
+    ///
+    /// For a caller that read through a handle and must know whether
+    /// the answer came from the session it took the handle for — a
+    /// re-establish turns the replacement session on at the device
+    /// before installing its handle, so a read through the old handle
+    /// can be answered by the new session.
+    #[must_use]
+    pub fn is_live(&self, device: &Arc<T>) -> bool {
+        let state = self.read();
+        state.connected
+            && state
+                .device
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, device))
+    }
+
     /// Install a freshly established session — its handle and the
     /// metadata read from it — and mark it connected.
     pub fn install(&self, device: Arc<T>, metadata: M) {
@@ -200,6 +220,39 @@ mod tests {
         session.install(Arc::from("new"), ());
         assert!(session.is_connected());
         assert_eq!(session.device().as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn the_handle_of_the_connected_session_is_live() {
+        let handle: Arc<str> = Arc::from("handle");
+        let session: DeviceSession<str> = DeviceSession::connected(Arc::clone(&handle));
+        assert!(session.is_live(&handle));
+    }
+
+    #[test]
+    fn a_handle_is_not_live_once_its_session_is_marked_disconnected() {
+        let handle: Arc<str> = Arc::from("handle");
+        let session: DeviceSession<str> = DeviceSession::connected(Arc::clone(&handle));
+        session.mark_disconnected();
+        assert!(
+            !session.is_live(&handle),
+            "a dead session's handle stays in the slot but is not live"
+        );
+    }
+
+    /// Liveness is the handle's identity, not its contents: a session
+    /// re-established against the same device is a new session.
+    #[test]
+    fn a_replaced_handle_is_not_live_even_beside_an_identical_one() {
+        let old: Arc<str> = Arc::from("same device");
+        let session: DeviceSession<str> = DeviceSession::connected(Arc::clone(&old));
+        let new: Arc<str> = Arc::from("same device");
+        session.install(Arc::clone(&new), ());
+        assert!(
+            !session.is_live(&old),
+            "the replaced session's handle must not read live"
+        );
+        assert!(session.is_live(&new));
     }
 
     #[test]

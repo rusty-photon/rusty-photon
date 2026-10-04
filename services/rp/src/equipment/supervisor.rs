@@ -248,6 +248,12 @@ async fn supervise<T, F, Fut>(
 /// adopted from a session rp did not establish, so the connect-time
 /// property cache is always the establish routine's own fresh read.
 ///
+/// The entry is marked disconnected before `reestablish` runs. The
+/// routine issues `Connected = true` before it hands back the new
+/// handle, and from that moment a read through the old handle reaches
+/// the new session; a slot still reading connected with the old handle
+/// would let a reader take that answer for the old session's.
+///
 /// `reestablish` hands back the handle *with* the metadata read from
 /// it, and the two install as one step — so a reader that takes them
 /// together, through [`DeviceSession::snapshot`], always gets one
@@ -258,9 +264,9 @@ async fn supervise<T, F, Fut>(
 ///
 /// On success the fresh handle is installed and an `equipment_changed`
 /// event with `connected: true` is emitted unconditionally: a service
-/// that bounced between two passes never observably flipped the flag,
+/// that bounced between two passes drew no `connected: false` event,
 /// but the session was still re-established and the operator should
-/// see it. On failure the entry is marked disconnected, with the
+/// see it. On failure the entry stays disconnected, with the
 /// `connected: false` event emitted once per transition — not once per
 /// attempt.
 async fn supervise_with_metadata<T, M, F, Fut>(
@@ -298,6 +304,7 @@ async fn supervise_with_metadata<T, M, F, Fut>(
     }
 
     let was_connected = session.is_connected();
+    session.mark_disconnected();
     match reestablish().await {
         Ok((device, metadata)) => {
             session.install(device, metadata);
@@ -307,7 +314,6 @@ async fn supervise_with_metadata<T, M, F, Fut>(
         Err(e) => {
             if was_connected {
                 warn!(kind, id, error = %e, "device session lost and re-establish failed; retrying every pass");
-                session.mark_disconnected();
                 emit(event_bus, kind, id, false);
             } else {
                 debug!(kind, id, error = %e, "device still unavailable");
@@ -467,8 +473,8 @@ mod tests {
     /// The incident shape (#1138): the downstream service restarted, so
     /// its fresh process reports Connected=false. The pass re-issues
     /// Connected=true through the full connect routine and emits
-    /// `equipment_changed` with connected=true even though the flag
-    /// never observably flipped.
+    /// `equipment_changed` with connected=true even though no
+    /// connected=false event was emitted for the bounce.
     #[tokio::test]
     async fn pass_reestablishes_a_session_the_service_restart_killed() {
         let state = Arc::new(StubState::default());
@@ -494,6 +500,43 @@ mod tests {
         assert_eq!(event.payload["kind"], "safety_monitor");
         assert_eq!(event.payload["device"], "sm-under-test");
         assert_eq!(event.payload["connected"], true);
+    }
+
+    /// The establish routine turns the replacement session on at the
+    /// device before it hands back the new handle, so the slot must
+    /// already read disconnected while the routine runs: a reader that
+    /// took the old handle then would reach the new session through it
+    /// and take the answer for the old session's.
+    #[tokio::test]
+    async fn a_dead_session_reads_disconnected_while_it_is_re_established() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let entry = connected_entry(&stub.url()).await;
+        state.connected.store(false, Ordering::SeqCst);
+
+        let event_bus = EventBus::from_config(&[], None).unwrap();
+        let connected_during_establish = AtomicBool::new(true);
+        supervise(
+            "safety_monitor",
+            Some(&entry.id),
+            &entry.session,
+            &event_bus,
+            || async {
+                connected_during_establish.store(entry.is_connected(), Ordering::SeqCst);
+                crate::equipment::safety_monitor::establish_safety_monitor(&entry.config, None)
+                    .await
+            },
+        )
+        .await;
+
+        assert!(
+            !connected_during_establish.load(Ordering::SeqCst),
+            "the slot must read disconnected before the establish routine runs"
+        );
+        assert!(
+            entry.is_connected(),
+            "the re-established session is live once installed"
+        );
     }
 
     /// A device that was down at rp startup (entry registered with no
