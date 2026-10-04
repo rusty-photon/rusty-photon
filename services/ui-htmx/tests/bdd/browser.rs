@@ -104,8 +104,7 @@ impl BrowserSession {
             // poisoned lock just yields no detail rather than masking the cause).
             let captured = stderr_log
                 .lock()
-                .map(|buf| buf.trim_end().to_string())
-                .unwrap_or_default();
+                .map_or_default(|buf| buf.trim_end().to_string());
             let detail = if captured.is_empty() {
                 "(geckodriver produced no stderr)".to_string()
             } else {

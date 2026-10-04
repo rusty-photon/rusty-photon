@@ -147,7 +147,7 @@ One-shot CLI that diagnoses a multi-service install and repairs it: packages put
 
 ### Prerequisites
 
-- **Rust** (edition 2021, MSRV 1.94.1 — inherited by all workspace members)
+- **Rust** (edition 2021, MSRV 1.98.1 — inherited by every workspace member except the six dual-homed FFI crates, which declare lower floors for crates.io consumers)
 - **[Bazel](https://bazel.build/)** via bazelisk (version pinned by `.bazelversion`) — the local build/test loop and the per-PR CI gate
 - **[cargo-nextest](https://nexte.st/)** (`cargo install cargo-nextest --locked`) — optional; used by the nightly Cargo safety net (`act` / raw-cargo fallback)
 - **Vendor camera SDKs** (ZWO ASI/EFW/EAF + QHYCCD) — **required**: `bazel build //...` includes the `zwo-camera` / `zwo-focuser` / `qhy-camera` packages, which link the native SDKs (the shared Bazel `zwo-rs` targets build the union of device features, so all three ZWO blobs are needed there; per-service cargo builds link only their own — ADR-014). Install them per [`services/zwo-camera/README.md`](services/zwo-camera/README.md) and [`services/qhy-camera`](services/qhy-camera/) (the same SDKs CI provisions).

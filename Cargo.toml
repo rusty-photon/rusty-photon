@@ -74,7 +74,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
-rust-version = "1.94.1"
+rust-version = "1.98.1"
 repository = "https://github.com/ivonnyssen/rusty_photon"
 description = "Rusty Photon - An astrophotography application"
 
@@ -239,8 +239,9 @@ redb = "4"
 # same way).
 if-addrs = "0.15"
 tokio-serial = "5.4.5"
-# Simulation-backend deps shared by the two vendored, dual-homed camera crates
-# (`zwo-rs` + `qhyccd-rs`), each behind its own `simulation` feature. Pinned once
+# Simulation-backend deps shared by the vendored, dual-homed camera crates
+# (`rand` by `zwo-rs`, `qhyccd-rs` and `svbony-rs`; `rayon` by the first two),
+# each behind its own `simulation` feature. Pinned once
 # here so the shared version can't drift (Rule 10); the `optional` flag stays
 # crate-local. `cargo publish` flattens the inherited version into a concrete one,
 # so dual-home standalone releases are unaffected.

@@ -665,16 +665,13 @@ fn spawn_focus_watch_if_configured(
         return;
     };
     let guiding_train_id = trains.guiding_train().map(|t| t.id.clone());
-    let guiding_focusers: Vec<String> = trains
-        .guiding_train()
-        .map(|t| {
-            t.devices
-                .iter()
-                .filter(|d| d.kind == crate::equipment::trains::TrainDeviceKind::Focuser)
-                .map(|d| d.id.clone())
-                .collect()
-        })
-        .unwrap_or_default();
+    let guiding_focusers: Vec<String> = trains.guiding_train().map_or_default(|t| {
+        t.devices
+            .iter()
+            .filter(|d| d.kind == crate::equipment::trains::TrainDeviceKind::Focuser)
+            .map(|d| d.id.clone())
+            .collect()
+    });
     crate::guiding_watch::spawn(
         client,
         event_bus.clone(),

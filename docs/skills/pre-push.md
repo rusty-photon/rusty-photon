@@ -341,16 +341,17 @@ python3 tools/ci/beta_clippy_census.py --root "$PWD" --summary /tmp/census.md \
 `--all-targets` compiles each source file once per target, so the script
 deduplicates sites on (lint, file, line, column); the raw JSON over-counts.
 
-The workspace uses a single MSRV (currently 1.94.1) declared in the root
+The workspace uses a single MSRV (currently 1.98.1) declared in the root
 `Cargo.toml` via `[workspace.package]`. All members inherit it with
-`rust-version.workspace = true` **except the four dual-homed FFI crates**
-(`qhyccd-rs` 1.85.0, `libqhyccd-sys` 1.68.0, `libzwo-sys` 1.71.0, `zwo-rs` 1.87.0), which
+`rust-version.workspace = true` **except the six dual-homed FFI crates**
+(`qhyccd-rs` 1.85.0, `libqhyccd-sys` 1.68.0, `zwo-rs` 1.87.0, `libzwo-sys` 1.71.0,
+`svbony-rs` 1.85.0, `libsvbony-sys` 1.68.0), which
 declare explicit lower MSRVs because they publish to crates.io for outside
 consumers. Those lower floors cannot be verified in-workspace (the root
 `profile.dev` needs Rust ≥ 1.71 and the shared lockfile pins newest deps), so the
-in-workspace **msrv** job (`check.yml`) **skips** those four (the wrapper plus its
+in-workspace **msrv** job (`check.yml`) **skips** those six (each wrapper plus its
 `sys-crate`, discovered from `[package.metadata.publish-readiness]`) and verifies
-only the workspace-MSRV members. The four are instead checked out-of-tree by the
+only the workspace-MSRV members. The six are instead checked out-of-tree by the
 nightly **publish-readiness** workflow — see below and
 [docs/plans/archive/publish-readiness-checks.md](../plans/archive/publish-readiness-checks.md).
 
@@ -587,9 +588,10 @@ security model, setup steps, and decommissioning procedure.
 
 ### publish-readiness.yml (rolling)
 
-Pre-publish verification for the four **dual-homed FFI crates** (`qhyccd-rs` +
-`libqhyccd-sys`, `zwo-rs` + `libzwo-sys`) — the published-in-isolation guarantees
-the in-workspace `check`/`test` jobs cannot give. Nightly cron (02:30 UTC) +
+Pre-publish verification for the six **dual-homed FFI crates** (`qhyccd-rs` +
+`libqhyccd-sys`, `zwo-rs` + `libzwo-sys`, `svbony-rs` + `libsvbony-sys`) — the
+published-in-isolation guarantees the in-workspace `check`/`test` jobs cannot
+give. Nightly cron (02:30 UTC) +
 `workflow_dispatch` + paths-filtered PR/push on the workflow and its script;
 **non-blocking** for ordinary PRs (a minimal-versions break usually comes from an
 upstream release, not the PR under review). Families are discovered dynamically via

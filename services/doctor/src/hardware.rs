@@ -286,9 +286,7 @@ fn serial_access(
         node.mode,
         node.uid,
         node.gid,
-        owning_group
-            .map(|g| format!(" = group {g}"))
-            .unwrap_or_default(),
+        owning_group.map_or_default(|g| format!(" = group {g}")),
     );
     let suggestion = if missing_membership {
         // Packaged units all carry their SupplementaryGroups=; losing one

@@ -56,8 +56,7 @@ pub fn render(report: &Report) -> String {
         let scope = check
             .service
             .as_deref()
-            .map(|s| format!(" ({s})"))
-            .unwrap_or_default();
+            .map_or_default(|s| format!(" ({s})"));
         let _ = writeln!(out, "{label} {}{scope}: {}", check.name, check.detail);
         if let Some(suggestion) = &check.suggestion {
             let _ = writeln!(out, "     fix: {suggestion}");

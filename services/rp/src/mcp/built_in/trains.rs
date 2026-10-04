@@ -57,22 +57,17 @@ impl McpHandler {
         // always registered; an empty list is a wheel configured
         // without names.
         let wheel = filter_wheel_id.and_then(|id| self.equipment.find_filter_wheel(id));
-        let filters: Option<Vec<String>> = filter_wheel_id.map(|_| {
-            wheel
-                .map(|entry| entry.config.filter_names())
-                .unwrap_or_default()
-        });
+        let filters: Option<Vec<String>> =
+            filter_wheel_id.map(|_| wheel.map_or_default(|entry| entry.config.filter_names()));
         let filter_wavelengths_nm: Option<serde_json::Value> = filter_wheel_id.map(|_| {
-            let map: serde_json::Map<String, serde_json::Value> = wheel
-                .map(|entry| {
-                    entry
-                        .config
-                        .filters
-                        .iter()
-                        .map(|f| (f.name().to_string(), serde_json::json!(f.wavelength_nm())))
-                        .collect()
-                })
-                .unwrap_or_default();
+            let map: serde_json::Map<String, serde_json::Value> = wheel.map_or_default(|entry| {
+                entry
+                    .config
+                    .filters
+                    .iter()
+                    .map(|f| (f.name().to_string(), serde_json::json!(f.wavelength_nm())))
+                    .collect()
+            });
             serde_json::Value::Object(map)
         });
 

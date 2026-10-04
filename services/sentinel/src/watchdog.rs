@@ -306,8 +306,7 @@ impl OperationDeadlineMonitor {
         self.config
             .operations
             .get(family)
-            .map(|p| p.on_expiry)
-            .unwrap_or_default()
+            .map_or_default(|p| p.on_expiry)
     }
 
     /// Consume frames from one connected session, managing per-operation

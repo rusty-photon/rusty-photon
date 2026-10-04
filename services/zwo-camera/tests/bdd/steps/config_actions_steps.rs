@@ -83,25 +83,19 @@ async fn schema_offers_max_adu_modes(world: &mut CameraWorld) {
     // schemars renders a *documented* fieldless enum as `oneOf[].const`, and an
     // undocumented one as a flat `enum` array. Accept either, so that editing a
     // doc comment cannot quietly gut this assertion.
-    let mut modes: Vec<&str> = def["oneOf"]
-        .as_array()
-        .map(|variants| {
-            variants
-                .iter()
-                .filter_map(|v| v["const"].as_str())
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut modes: Vec<&str> = def["oneOf"].as_array().map_or_default(|variants| {
+        variants
+            .iter()
+            .filter_map(|v| v["const"].as_str())
+            .collect()
+    });
     if modes.is_empty() {
-        modes = def["enum"]
-            .as_array()
-            .map(|values| {
-                values
-                    .iter()
-                    .filter_map(serde_json::Value::as_str)
-                    .collect()
-            })
-            .unwrap_or_default();
+        modes = def["enum"].as_array().map_or_default(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .collect()
+        });
     }
     modes.sort_unstable();
     assert_eq!(
