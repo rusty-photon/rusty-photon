@@ -175,16 +175,26 @@ What it means for the hardware:
   Note what the handshake's `:j1` / `:j2` do *not* tell you. They are
   read **before** the stop goes out, and the axis does not come to rest
   the instant it arrives. `:L` is the *instant stop* this document names
-  everywhere else — but that name distinguishes it from `:K`'s
-  controlled deceleration, it does not promise zero settling time: a
-  moving axis still coasts through a mechanical ramp-down that the
-  firmware counts. Measured on the rig from a 5.1°/s goto, the mount covered a
-  further 30,367 Dec ticks — 3.77° — between the handshake sample and
-  coming to rest. The handshake value is therefore a pre-stop sample,
-  stale the moment the halt executes; the resting position is what the
-  200 ms poll loop reads back once the axes have stopped. Anything that
-  treated the handshake pair as the final position would be wrong by
-  degrees, and by more on a faster mount or a longer ramp.
+  everywhere else, but from goto speed the GTi does not stop it any
+  faster: `:L` and `:K` decelerate identically, through a ramp-down the
+  firmware counts. Measured on the rig from the driver's own goto speed
+  (see [§Real-hardware validation](#real-hardware-validation)):
+
+  | Axis | Goto speed | Travel after the stop | `:f` reads stopped after |
+  |---|---|---|---|
+  | Dec | 5.01°/s | 3.76° (30,323 ticks) | 1.50 s |
+  | RA | 4.24°/s | 2.69° (27,060–27,095 ticks) | 1.27 s |
+
+  The figures are the same for `:L`, for `:K` and for this three-command
+  sequence, in either direction, to within a few ticks and a few
+  milliseconds. Even then the count is not quite final: for about a
+  second after `:f` first reads stopped it moves back 9–20 ticks (under
+  7″), then holds still.
+
+  The handshake value is therefore a pre-stop sample, stale the moment
+  the halt executes; the resting position is what the 200 ms poll loop
+  reads back once the axes have stopped. Anything that treated the
+  handshake pair as the final position would be wrong by degrees.
 
   The counter is the *commanded* one — the GTi has no closed-loop
   feedback, so it records the steps the firmware issued rather than
@@ -565,7 +575,7 @@ shape).
 | `:I<axis><period24>` | Set step period (T1 preset) | tracking and guide pulses (sidereal period computed from TMR_Freq and the **addressed axis'** CPR — see [§PulseGuide lifecycle](#pulseguide-lifecycle)). An East/West pulse on an RA axis that is already tracking sends `:I1` to the **running** motor, once to shift the rate and once to restore sidereal, with no `:K` / `:G` / `:J` around it. Slew: fixed period 6, INDI `minperiods` default |
 | `:J<axis>` | Start motion | every slew, every track start, every pulse started from rest |
 | `:K<axis>` | Stop motion (decelerate) | `Tracking = false`; the stop-and-wait before every `:G` (slew, park, `Tracking = true`, a pulse started from rest); the tracking-time safety guard; the end of a pulse started from rest; a pulse restore that could not change the rate |
-| `:L<axis>` | Instant stop | `AbortSlew`; the slew/park watchers' blocked-axis abort; the last-disconnect safety stop; a pulse restore whose `:K` did not stop the axis |
+| `:L<axis>` | Instant stop. From goto speed the GTi decelerates exactly as it does for `:K` ([§Safety stop at startup](#safety-stop-at-startup)) | `AbortSlew`; the slew/park watchers' blocked-axis abort; the last-disconnect safety stop; a pulse restore whose `:K` did not stop the axis |
 | `:a<axis>` | Inquire CPR | connect handshake |
 | `:b1` | Inquire TMR_Freq | connect handshake |
 | `:e<axis>` | Inquire motor-board version | connect handshake (logging only) |
@@ -833,8 +843,8 @@ SlewToCoordinatesAsync(ra, dec)
    │
    ├─ for each axis (INDI-style wire sequence — see
    │   indi-eqmod/skywatcher.cpp::SlewTo):
-   │     :L<axis>      instant-stop motor
-   │     poll :f<axis> until Running=0 (max 2 s)
+   │     :K<axis>      stop motor (decelerate)
+   │     poll :f<axis> until Running=0 (max 2 s, AXIS_STOP_TIMEOUT)
    │     :G<axis><mode>  motion mode = Goto+Fast, CCW bit from sign of delta
    │     :I<axis>6     step period (INDI minperiods default)
    │     :H<axis><|delta|>  target by increment (magnitude only)
@@ -2691,6 +2701,12 @@ examples/
                            applies a live `:I1` on a tracking RA axis
                            — ack, rate, edge steps, stop time — from
                            dense `:j1` samples. Never run by CI.
+  probe_stop_coast.rs    — operator-run hardware probe (service
+                           stopped, mount at `ApPark3`): measures how
+                           far and how long an axis moves after `:L`,
+                           `:K` and the safety-stop sequence from goto
+                           speed, and what the count does after `:f`
+                           reads stopped. Never run by CI.
 tests/
   bdd.rs                 — cucumber harness (harness = false)
   bdd/
@@ -3035,6 +3051,23 @@ Historical baselines (`alpacaprotocol`-only or partial
 The evidence trail is [`docs/validation/`](../validation/README.md);
 this service's runs, newest first:
 
+- **2026-10-03 — goto stop-coast probe (for #1287)** on the field rig,
+  service stopped, starting from `ApPark3`, using
+  `examples/probe_stop_coast.rs` over USB. 28 gotos of 30° were each
+  stopped 12° in: Dec away from and toward the pole, RA both ways, and
+  both axes at once with the safety-stop sequence. All 28 completed, and
+  all 38 positioning and return gotos landed exactly on target. It
+  settled:
+  - `:L` and `:K` stop a goto identically. Dec from 5.01°/s runs on
+    3.76° and reads stopped after 1.50 s. RA from 4.24°/s runs on 2.69°
+    and reads stopped after 1.27 s. A constant deceleration fits both to
+    the millisecond.
+  - For about a second after `:f` first reads stopped, the count moves
+    back 9–20 ticks, then holds exactly.
+  - `blocked` never appeared.
+  - `AXIS_STOP_TIMEOUT`'s 2 s leaves about 0.5 s of margin over a Dec stop
+    from goto speed.
+
 - **2026-09-28 — live step-period probe (P0 for #1299)** on the field
   rig, service stopped, RA tracking at the park pose, using
   `examples/probe_live_step_period.rs` over USB. It settled the firmware
@@ -3243,9 +3276,12 @@ In addition to the codec fixes:
   early version of this path used `:L` (instant stop) instead;
   switched to `:K` in issue #207 to match the spec's recommended
   stop semantics and INDI eqmod's `StopWaitMotor`
-  (`indi-eqmod/skywatcher.cpp:1741-1765`) — `:L` is harsher on
-  the gearbox and is reserved for genuine emergency stops
-  (`AbortSlew`, slew/park watcher abort on `blocked`).
+  (`indi-eqmod/skywatcher.cpp:1741-1765`). `:L` is kept for
+  genuine emergency stops (`AbortSlew`, slew/park watcher abort
+  on `blocked`). The spec presents it as the harsher stop, but
+  from goto speed the GTi decelerates identically under both, so
+  on this mount the choice records intent rather than load (see
+  [§Safety stop at startup](#safety-stop-at-startup)).
   Mock hid the wallclock issue originally because it processes
   `:K`/`:L` instantaneously.
 - **No mode-cache short-circuit (attempted and reverted)** — issue
