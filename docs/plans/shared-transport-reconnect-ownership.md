@@ -1102,6 +1102,11 @@ the connect path. GTi lib tests and BDD run with `--features mock`.
   a `debug!` with the total; never abort. It replaces the three copies
   of the join in `shutdown`, `release_any_held_conduit` and
   `spawn_supervisor`.
+- Add three `debug!` events, which §Validation needs to show that a
+  teardown landed inside an attempt:
+  - `attempt_reconnect` starting;
+  - `shutdown` starting;
+  - an attempt that the cancel ended.
 - Delete `spawn_supervisor`'s unreachable replace branch. Every caller
   has already retired the previous supervisor under `acquire_lock`,
   so a `debug_assert!` takes the branch's place. Register under the
@@ -1525,39 +1530,94 @@ the supervisor loop that all seven services run.
 
 PRs 4 and 8 change what every service's reload does while a reconnect
 is in flight. The standing rule is never to ship a connect-path change
-on mock evidence. Before each of them merges:
+on mock evidence. Before each of them merges, the legs below must
+show that the teardown really landed inside an attempt. A reload that
+happens to fall between attempts proves nothing about the change.
+
+**What makes a run count.** Run with debug logging for the service and
+the transport crate. A run counts only if the old instance's log shows
+three things, in this order:
+1. the attempt's start;
+2. the shutdown's start;
+3. the attempt's end: its outcome, or its being ended by the cancel.
+
+Today the transport logs only an attempt's outcome ("transport
+reconnected successfully", "transport reconnect attempt failed; will
+retry"). PR 4 adds three `debug!` events: one where `attempt_reconnect`
+starts, one where `shutdown` starts, and one for an attempt the cancel
+ended.
+
+A run without that sequence is discarded, not passed. For each counted
+run, record:
+- the phase it landed in: opening, handshaking or replaying, read from
+  the lines between the attempt's start and the shutdown's;
+- the log excerpt.
+
+**How to land the teardown inside an attempt.** Timing it by hand does
+not work: an attempt lasts well under a second, and one starts every
+5 s. Drive the reload from the log instead. A watcher tails the old
+instance's debug log and fires `config.apply` with a field that needs a
+reload, the moment the attempt-start line appears. A fixed delay in the
+trigger moves the landing later into the attempt.
+- With the link down, each attempt spends about 370 ms in the serial
+  open retry ladder.
+- With the link back, it runs open, handshake and replay.
+
+Neither phase can be held open on hardware without a test hook in
+production code, which this plan does not add. The log sequence is
+what makes a run evidence.
+
+Each leg needs at least three counted runs. On pier1, at least one of
+them must land in opening and one in handshaking or replaying. If a
+phase has not been landed in 20 triggered tries, the PR says so and
+names the mock test that covers that phase instead.
 
 - **pier1 (Linux), `star-adventurer-gti`.** This is the one service
   whose hooks put commands on the wire.
   1. With a client connected, pull the mount's USB cable so the
      supervisor is retrying.
-  2. Reconnect the cable, and within the next reconnect interval
-     `config.apply` a field that needs a reload, so the teardown lands
-     while an attempt is opening, handshaking or replaying.
-  3. Repeat several times to spread where the teardown lands.
+  2. Opening phase: with the cable still out, arm the trigger and let
+     it fire on the next attempt.
+  3. Handshake and replay phases: reconnect the cable, arm the trigger,
+     and let it fire on the next attempt.
+  4. Repeat until the counts above are met.
 
-  Pass:
+  Pass, for every counted run:
   - the reload returns;
   - the new instance's open is not refused;
   - the old instance logs nothing after its `shutdown` returned;
   - a client connects to the new instance;
   - the mount reports stopped.
 
-  For PR 8, also run with debug logging for the service and the
-  transport crate, and record each run's old-instance `safety stop
-  complete` verdict. `NotAsserted` is not a finding in itself. A
+  For PR 8, also record each counted run's old-instance `safety stop
+  complete` verdict. `NotAsserted` is not a finding in itself: a
   terminal stop on a conduit the attempt has already closed is
   `NotAsserted` by design (§Deliberately left). It is a finding only
   when the log shows no replacement open began before the shutdown
-  hook. A healthy link rarely lands a teardown inside the attempt's
-  poll join, which lasts about one tick, so the mock test above is the
+  hook. A teardown rarely lands inside the attempt's poll join, which
+  lasts about one tick on a healthy link, so the mock test above is the
   evidence for decision 6.
-- **rig2 (Windows).** rig2 carries no GTi. The Windows leg therefore
-  runs the shared-transport device rig2 does have, `dsd-fp2` (the FP2
-  panel on COM4), through the same procedure. Nobody is at that pier,
-  so the link has to be dropped remotely. Pegasus Unity's REST API can
-  switch the UPBv2's USB ports, if the FP2 hangs off one. This leg is
-  the one that exercises the Windows handle release.
+- **rig2 (Windows), `dsd-fp2`.** rig2 carries no GTi, so the Windows
+  leg runs the shared-transport device rig2 does have: the FP2 panel,
+  on COM4. It follows the same procedure and the same counting. This
+  is the leg that exercises the Windows handle release.
+
+  Nobody is at that pier, so the link is dropped remotely. Before
+  PR 4's leg starts, confirm the method on rig2 and record it in the
+  PR:
+  - **Default: disable and re-enable the FP2's device instance over
+    ssh,** with `pnputil /disable-device <instance-id>` and
+    `pnputil /enable-device <instance-id>` from an elevated shell.
+    This removes the COM port while the service holds it, and needs no
+    extra hardware. Record the instance ID.
+  - **Alternative: switch the UPBv2 USB port the FP2 hangs off,**
+    through Pegasus Unity's REST API, if it hangs off one. Record the
+    port and the command.
+
+  If rig2 allows neither, run the Windows leg on site instead. Use the
+  dev box's `win11` KVM guest, with the PPBA passed through and
+  `ppba-driver` running, and drop the link by detaching the USB device
+  from the guest live.
 
 Record the outcome in the PR description. `docs/validation/` holds
 ConformU records, and these runs are not ConformU runs.
@@ -1707,7 +1767,10 @@ traffic or changes what the connect path sends.
 ## Open points for review
 
 1. **The Windows hardware leg runs `dsd-fp2` on rig2**, because rig2
-   has no GTi.
+   has no GTi. The link is dropped with `pnputil`, or a UPBv2 port if
+   the FP2 hangs off one. Which one is confirmed on rig2 before PR 4's
+   leg. The on-site fallback is the `win11` guest with the PPBA
+   (§Validation).
 2. **Optional: respawn the poll task inside C3.**
    1. Take `while_open_state`, then `slot`, the order the cold-start
       and lazy publishes already use.
