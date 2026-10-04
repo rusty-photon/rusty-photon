@@ -382,10 +382,16 @@ change under rule 2 and
   would also close the reorder gap that owing leaves (decision 7). That
   does not justify it: a reorder costs one misattributed reply, while
   poisoning would hold back the shutdown stop after every aborted poll.
-- **For PR 0: codec matching alone.** Only qhy-focuser can tell its
-  reply from another command's. GTi and dsd-fp2 use the default
-  `matches`, and the other four match on the reply's shape only. No
-  codec can reject an earlier reply to the same command.
+- **For PR 0: codec matching alone.** The codecs differ in how much
+  they can tell apart:
+  - qhy-focuser matches every reply to its command, by `cmd_id`;
+  - ppba-driver and upbv2-driver prefix-match a set command's echo
+    against the command string, and otherwise match the reply's class;
+  - pa-falcon-rotator and pa-scops-oag match the reply's shape, and
+    check an echo's content above the codec;
+  - GTi and dsd-fp2 use the default `matches`, which accepts any frame.
+
+  None of them can reject an earlier reply to the same command.
 - **For PR 0: owing a frame on a receive timeout.** When the reply was
   lost rather than late, the next exchange would discard its own reply
   and stall for a read timeout. Until the reconnect replaces the
@@ -1922,8 +1928,9 @@ Settled on review (2026-10-03):
   `Cargo.toml` (the root's or a member's), with
   `scripts/repin-bazel-lock.sh` and a pre-commit check
   ([#1391](https://github.com/rusty-photon/rusty-photon/pull/1391));
-- "never abort a poll task mid-request" is part of PR 8 (decision 6,
-  revised on 2026-10-04).
+- "never abort a poll task mid-request" was made part of PR 8 (decision
+  6 as first merged). It was undone on 2026-10-04, below, and PR 8 no
+  longer does it.
 
 Settled on review (2026-10-04):
 - `Connection::request_timed` cancel-safety lands first, as PR 0, by
