@@ -296,6 +296,14 @@ erfars = "0.2"
 tzf-rs = "2"
 csv = "1"
 argon2 = { version = "0.5", features = ["std"] }
+# rp-auth's verification memo (ADR-003 § Verification memo and KDF admission
+# control). All three were already in the graph — blake2 through argon2,
+# subtle through digest, zeroize through rustls — so these add edges, not
+# crates. blake2 0.10 is part of the digest 0.10 chain that the rust-embed
+# hold below protects: bump it to 0.11 together with argon2 0.6, not alone.
+blake2 = { version = "0.10", default-features = false }
+subtle = "2"
+zeroize = "1"
 rpassword = "7"
 rcgen = { version = "0.14", features = ["pem", "x509-parser"] }
 instant-acme = { version = "0.8", features = ["hyper-rustls", "rcgen"] }

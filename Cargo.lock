@@ -4290,15 +4290,18 @@ dependencies = [
  "argon2",
  "axum",
  "base64 0.23.1",
+ "blake2",
  "derive_more",
  "reqwest",
  "schemars",
  "serde",
  "serde_json",
+ "subtle",
  "thiserror 2.0.21",
  "tokio",
  "tower",
  "tracing",
+ "zeroize",
 ]
 
 [[package]]
