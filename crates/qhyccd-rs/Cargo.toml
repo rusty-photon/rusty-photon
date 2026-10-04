@@ -31,8 +31,10 @@ homepage = "https://github.com/ivonnyssen/qhyccd-rs/wiki"
 
 # Marks this crate (+ its nested FFI sub-crate) for the nightly publish-readiness
 # check (docs/plans/archive/publish-readiness-checks.md). Discovered via `cargo metadata`
-# just like [package.metadata.conformu]/[package.metadata.miri]. ONLY the four
-# dual-homed FFI crates carry this; the rest of the workspace is never checked.
+# just like [package.metadata.conformu]/[package.metadata.miri]. ONLY the three
+# dual-homed FFI wrappers (qhyccd-rs, zwo-rs, svbony-rs) carry this, each naming
+# its sys crate, so six crates are verified; the rest of the workspace is never
+# checked.
 # - sys-crate:     the nested build-script sub-crate to co-verify standalone.
 # - skip-link-env: set =1 so the build script emits no link directives, letting
 #                  `cargo check` run with no QHYCCD SDK installed.

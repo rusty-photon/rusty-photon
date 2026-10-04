@@ -382,10 +382,13 @@ reference them with `dep.workspace = true`.
 ### Dual-homed crates inherit shared deps too
 
 The dual-homed members (`zwo-rs` + `libzwo-sys`, `qhyccd-rs` + `libqhyccd-sys` —
-ADR-009/010) follow the same rule: their **shared** third-party dependencies
-(e.g. `thiserror`, `tracing`, and the simulation-only `rand`/`rayon` shared
-between the two camera crates) inherit from `[workspace.dependencies]` with
-`dep.workspace = true`. This is safe for their independent crates.io releases
+ADR-009/010 — and `svbony-rs` + `libsvbony-sys`, per
+[docs/plans/archive/svbony-camera.md](plans/archive/svbony-camera.md)) follow the
+same rule: their **shared** third-party dependencies (e.g. `thiserror`,
+`tracing`, and the simulation-only `rand`, shared by all three camera crates,
+and `rayon`, shared by `zwo-rs` and `qhyccd-rs`) inherit from
+`[workspace.dependencies]` with `dep.workspace = true`. This is safe for their
+independent crates.io releases
 because `cargo publish` **flattens** an inherited dependency into a concrete
 version in the packaged manifest (verified by dry-run). What stays explicit on
 these members is their **package identity metadata** (`version` / `edition` /
