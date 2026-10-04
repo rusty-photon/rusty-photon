@@ -36,15 +36,15 @@ follow the investigation.
 
 | Window | What goes wrong | Reachable in production | Closed by |
 |--------|-----------------|-------------------------|-----------|
-| **W1-LEAK** (port leak) | `shutdown()` reads the cell without taking it. It closes the conduit it cloned *before* its hook ran, and empties the slot only afterwards; this came in with `6fab4d02`, inside #1241. An attempt that publishes while the hook runs therefore passes `still_in_slot`, and its replacement is never closed. The result: the port stays held, the respawned poll task keeps polling a live device, and the reload is refused with "Access is denied". The issue body's "neither window leaks a port" is no longer true. | Only through W5, or through `reconnect_now` | PR 3 (supervisor route), PR 5 (any publisher), PR 8 |
+| **W1-LEAK** (port leak) | `shutdown()` reads the cell without taking it. It closes the conduit it cloned *before* its hook ran, and empties the slot only afterwards; this came in with `6fab4d02`, inside #1241. An attempt that publishes while the hook runs therefore passes `still_in_slot`, and its replacement is never closed. The result: the port stays held, the respawned poll task keeps polling a live device, and the reload is refused with "Access is denied". The issue body's "neither window leaks a port" is no longer true. | Only through W5, or through `reconnect_now` | PR 4 (supervisor route), PR 6 (any publisher), PR 8 |
 | **W1** (poll task after shutdown) | The attempt respawns `while_open` after `shutdown` has drained `while_open_state`, and nothing drains it again. | No: needs `reconnect_now`, or the W5 corner | PR 8 |
 | **W2** (lying flag) | `reconnect_now`'s `available = true` lands after teardown. `acquire()` then returns "refcount > 0 but slot empty", and `start()` takes its idempotent early return. The supervisor's own variant (W2s) is neutralised by the post-join re-store, but no test pins that re-store. | No: needs `reconnect_now` | PR 1 pins the re-store; PR 8 |
 | **W3** (overlapping manual reconnects) | Two `reconnect_now` calls write their flags outside `attempt_reconnect_lock`, so the writes interleave. | No: needs `reconnect_now` | PR 8 |
-| **W4b** (cleanup permit) | For a stop that did not land, `run_cleanup_locked` raises `reconnect_signal` (shared.rs:2152, from #1286). If the attempt already in flight pays that debt, the permit outlives it, and the supervisor closes and reopens the healthy replacement once for nothing. | Yes, on GTi only: a window of microseconds, costing availability only | PR 4 |
-| **W5** (abandoned attempt) | A supervisor that misses the 5 s join is aborted. Aborting the parent does not stop its child attempt, which goes on opening or handshaking while the reload opens the same port. | Conditional: needs an attempt that does not yield for 5 s, such as a synchronous serial open in a wedged driver | PR 3 |
+| **W4b** (cleanup permit) | For a stop that did not land, `run_cleanup_locked` raises `reconnect_signal` (shared.rs:2152, from #1286). If the attempt already in flight pays that debt, the permit outlives it, and the supervisor closes and reopens the healthy replacement once for nothing. | Yes, on GTi only: a window of microseconds, costing availability only | PR 5 |
+| **W5** (abandoned attempt) | A supervisor that misses the 5 s join is aborted. Aborting the parent does not stop its child attempt, which goes on opening or handshaking while the reload opens the same port. | Conditional: needs an attempt that does not yield for 5 s, such as a synchronous serial open in a wedged driver | PR 4 |
 | **Lazy variant** | `reconnect_now` publishes during the LazyAcquire 1→0 cleanup, and the next `start()` promotes onto an empty slot. | No: needs `reconnect_now`, and no service runs LazyAcquire | PR 8 (made unreachable) |
-| **Bug A** (poll ignores the debt) | `WhileOpen::request` skips the safety-debt check that `Session::request` makes. "No request reaches the device while a stop is owed" therefore holds for sessions only. | Yes, on GTi after a failed last-client stop. Latent: every poll body today only inquires. | PR 2 |
-| **Bug B** (drop on a failed handshake) | When a handshake fails after `factory.open()`, the code drops `new_conn` instead of closing it. This happens in the attempt, in the cold start, and in the lazy 0→1. | No effect today: the opener holds the only `Arc`, so dropping it is the same as closing it | PR 7 |
+| **Bug A** (poll ignores the debt) | `WhileOpen::request` skips the safety-debt check that `Session::request` makes. "No request reaches the device while a stop is owed" therefore holds for sessions only. | Yes, on GTi after a failed last-client stop. Latent: every poll body today only inquires. | PR 3 |
+| **Bug B** (drop on a failed handshake) | When a handshake fails after `factory.open()`, the code drops `new_conn` instead of closing it. This happens in the attempt, in the cold start, and in the lazy 0→1. Related: a `while_open` constructor that passes its `WhileOpen` on and then panics leaks the port on a cold start or a lazy 0→1, because those two paths do not catch the panic. | No effect today: the opener holds the only `Arc`, so dropping it is the same as closing it. The constructor case is latent: no production constructor can panic | PR 2 |
 
 Two windows are already closed and are not reopened here:
 
@@ -64,7 +64,7 @@ which is W1-LEAK and W5.
 `reconnect_now` has no production caller. Comment 4 on the issue warns
 that this is a snapshot, not a property of the code. That is why the
 windows it opens are closed in the code (PR 8), and why the hook
-becomes a compile-time test option (PR 6), instead of being declared
+becomes a compile-time test option (PR 7), instead of being declared
 unreachable.
 
 ## Implementation Status
@@ -72,26 +72,31 @@ unreachable.
 | PR | Description | Status | Branch / PR |
 |----|-------------|--------|-------------|
 | 1 | Pin the guarantees that already hold: the post-join re-store, W4 as filed, W6 (tests only) | Not started | |
-| 2 | Bug A: the poll task answers to the safety debt too | Not started | |
-| 3 | W5: a teardown waits for the reconnect attempt instead of abandoning it | Not started | |
-| 4 | W4b: a missed last-client stop wakes the supervisor on its own signal | Not started | |
-| 5 | W1-LEAK: `shutdown` closes what the slot holds when it empties it | Not started | |
-| 6 | `reconnect_now` becomes a `test-util` hook | Not started | |
-| 7 | Bug B: an open that fails before the publish closes the conduit it opened | Not started | |
+| 2 | Bug B: an open that fails before the publish closes the conduit it opened | Not started | |
+| 3 | Bug A: the poll task answers to the safety debt too | Not started | |
+| 4 | W5: a teardown waits for the reconnect attempt instead of abandoning it | Not started | |
+| 5 | W4b: a missed last-client stop wakes the supervisor on its own signal | Not started | |
+| 6 | W1-LEAK: `shutdown` closes what the slot holds when it empties it | Not started | |
+| 7 | `reconnect_now` becomes a `test-util` hook | Not started | |
 | 8 | One owner for every reconnect attempt; the token as the generation | Not started | |
 
 The order follows production risk:
 
-- **PR 1** puts a net under the join that PR 3 edits.
-- **PRs 2–5** close everything production can reach.
-- **PR 6** turns "nothing in production calls `reconnect_now`" from a
+- **PR 1** puts a net under the join that PR 4 edits.
+- **PR 2** comes before the other fixes. It changes nothing a production
+  service can observe, and it leaves `WhileOpen` built in one place,
+  so PR 3 changes one construction site instead of three. It must also
+  precede PR 8, so that commit point C2 goes in as a two-line insertion
+  ahead of `handshake_or_close`.
+- **PRs 3–6** close everything production can reach.
+- **PR 7** turns "nothing in production calls `reconnect_now`" from a
   grep result into a compile error. It is independent of the others
-  and can move earlier at no cost.
-- **PR 7** must land before PR 8, so that commit point C2 goes in as a
-  two-line insertion ahead of `handshake_or_close`.
+  and can move earlier at no cost. It edits the crate's `Cargo.toml`,
+  so it needs `scripts/repin-bazel-lock.sh`, which arrives with
+  [#1391](https://github.com/rusty-photon/rusty-photon/pull/1391).
 - **PR 8** closes W1, W2, W3 and the Lazy variant in the code.
 
-Every PR is mergeable on its own. Hardware validation gates PRs 3
+Every PR is mergeable on its own. Hardware validation gates PRs 4
 and 8.
 
 The crate has no design doc under `docs/crates/`. Its module rustdoc is
@@ -201,8 +206,8 @@ change under rule 2 and
    crate's convention: close explicitly, never rely on the last `Arc`.
    The investigation behind B also found a related latent leak: a
    `while_open` constructor that hands its `WhileOpen` elsewhere and
-   then panics. Closing that one changes public behaviour, so it is
-   offered as a separate commit for sign-off (see Open points).
+   then panics. Closing that one changes public behaviour, so it ships
+   as the PR's second commit, approved on 2026-10-03.
 
 ### Rejected alternatives
 
@@ -255,7 +260,7 @@ change under rule 2 and
     `while_open_state` or the flags.
   - A cold start or a promotion gets a fresh token.
   - An attempt receives a clone when it is spawned.
-- **`stop_owed: Notify`** (PR 4) is raised only by `run_cleanup_locked`
+- **`stop_owed: Notify`** (PR 5) is raised only by `run_cleanup_locked`
   (ServiceLifetime, stop not landed) and by `UnlandedStateGuard`
   (ServiceLifetime). Both raise it after the debt increment and the
   `reconnecting = true` / `available = false` stores, with no await in
@@ -263,7 +268,7 @@ change under rule 2 and
 - **`reconnect_signal`** has one raiser: `Connection::request` on a
   wire failure. The supervisor still takes the transport out of
   service unconditionally when it fires.
-- **`safety_debt: Arc<SafetyDebt>`** (PR 2) replaces the two loose
+- **`safety_debt: Arc<SafetyDebt>`** (PR 3) replaces the two loose
   counters. `WhileOpen` holds a clone of it.
 - **Removed:** `supervisor_live` and `ManualReconnectGuard`.
 - **Never added:** the design panel's `IN_ATTEMPT` task-local (see
@@ -347,13 +352,13 @@ for its whole life:
    `factory.open()`.
 4. **C2:** if the token is cancelled, close `new_conn` and return
    `Err`. A handshake never runs on a lifecycle that has ended.
-5. Run `handshake_or_close` (PR 7), take the failure baseline, run the
+5. Run `handshake_or_close` (PR 2), take the failure baseline, run the
    post-handshake drain, and build the `while_open` future inside
    `catch_unwind`.
 6. **C3, under the slot guard:** compute
    `!cancelled && ptr_eq(slot, cell)`. If true, write the cell. If
    not, close `new_conn` and return `Err`.
-7. If this attempt will replay a stop, record it as owed now (PR 2).
+7. If this attempt will replay a stop, record it as owed now (PR 3).
    Then respawn `while_open`, replay, and run `commit_replacement`.
 8. Return to the supervisor. Its join select is biased cancel-first: if
    cancel fired, the outcome is discarded and nothing is advertised.
@@ -392,7 +397,7 @@ let current = !lifecycle.is_cancelled() && slot.as_ref().is_some_and(|c| Arc::pt
    and close that clone. If the hook panics, the slot still names the
    conduit.
 8. Take the slot, then clone and close whatever that cell holds at
-   this moment (PR 5). A publish holds the slot guard across its cell
+   this moment (PR 6). A publish holds the slot guard across its cell
    write. It therefore either landed before this take, and is closed
    here, or it finds the slot empty and closes its own conduit (C3).
 9. Store `reconnecting = false`, forgive the debt, and set
@@ -690,7 +695,7 @@ The same PR corrects two pieces of text:
   Windows handle sooner than a drop does;
 - the attempt-path comment saying a drop "on Windows is not a release".
 
-**Commit 2, for sign-off.** A `while_open` constructor that hands its
+**Commit 2.** A `while_open` constructor that hands its
 `WhileOpen` elsewhere and then panics leaks the port on a cold start or
 a lazy 0→1. Those two sites do not catch the panic. The reconnect path
 already does. Reproduced: the retry start is refused with "Access is
@@ -709,7 +714,8 @@ future and keep no other copy.
 
 No production constructor can panic or keep its context. The catch is
 therefore defence in depth, and makes all three open paths behave
-alike. If commit 2 is declined, the contract paragraph ships alone.
+alike. It also leaves `WhileOpen` constructed in one place,
+`build_while_open`, which is where PR 3 hands it the debt ledger.
 
 ## PR plan
 
@@ -738,7 +744,7 @@ alike. If commit 2 is declined, the contract paragraph ships alone.
   the PR description: reintroduce the defect and watch the test go red.
 - **Test placement.** New tests go into the existing `reconnect`,
   `lifecycle`, `while_open` and `rollback` targets or the in-crate
-  module, so `BUILD.bazel` changes only in PR 6. Size "small" covers
+  module, so `BUILD.bazel` changes only in PR 7. Size "small" covers
   the one ~5.5 s test.
 - **Gate before pushing.**
   - `bazel build //... && bazel test //...` (`--local_test_jobs=8`
@@ -754,14 +760,14 @@ alike. If commit 2 is declined, the contract paragraph ships alone.
   committed) assert the buggy outcomes. The inverted tests below are
   their committed form, and each must fail against the code before its
   PR:
-  - W5 → PR 3;
-  - W4 after-drain → PR 4;
+  - W5 → PR 4;
+  - W4 after-drain → PR 5;
   - W1, W2, W3 and Lazy → PR 8.
 
 ### PR 1 — `test(shared-transport): pin the post-join re-store and the reconnect guarantees that already hold`
 
 **Scope.** Tests only, and green on `d201506c`. This PR is the net
-under PR 3's edits to the same join. `ScriptedFactory` and
+under PR 4's edits to the same join. `ScriptedFactory` and
 `ScriptedTransport` move into `tests/common`.
 
 **Tests.**
@@ -799,20 +805,74 @@ under PR 3's edits to the same join. `ScriptedFactory` and
 
 **Hardware.** None.
 
-### PR 2 — `fix(shared-transport): the poll task answers to the safety debt too` (bug A)
+### PR 2 — `fix(shared-transport): an open that fails before the publish closes the conduit it opened` (bug B)
+
+**Commit 1: `handshake_or_close` at the three handshake sites.**
+
+Tests:
+- `reconnect.rs::a_reconnect_whose_handshake_fails_releases_the_port`:
+  the first test of a handshake error on the attempt path.
+- `lifecycle.rs::a_cold_start_whose_handshake_fails_releases_the_port`:
+  the first test of one in `start()`.
+
+Both pass on `main` and after the change. They are regression pins,
+and the PR says so.
+
+Mutations:
+- Deleting the close leaves the suite green. That is the expected
+  signature of a close that is identical to the drop.
+- Inserting `std::mem::forget(Arc::clone(&new_conn))` before the
+  attempt's handshake turns the first test red without the helper and
+  green with it. That shows what the close buys against a future
+  refactor that shares the conduit early.
+
+`handshake_failing_on(n)` goes into `tests/common` and uses
+`saturating_add`, because `common/mod.rs` does not allow arithmetic
+side effects itself.
+
+**Commit 2: `build_while_open` at all three constructor sites.**
+
+Tests:
+- `lifecycle.rs::a_cold_start_whose_constructor_panics_releases_a_conduit_it_passed_on`
+  and `rollback.rs::a_lazy_open_whose_constructor_panics_releases_a_conduit_it_passed_on`:
+  both red on `main`.
+- `reconnect.rs::a_reconnect_whose_constructor_panics_releases_a_conduit_it_passed_on`:
+  green on `main`, but the first test that fails if that existing close
+  is lost.
+- These use a helper,
+  `ctor_keeping_its_context_and_panicking_on(n, stash)`, in common.
+- `while_open_constructor_panic_rolls_back_state_fully` is updated to
+  the new contract: `unwrap_err` containing "while_open constructor
+  panicked", with `dropped_count` 1 then 2 and `opens` 1 then 2.
+
+Mutation: delete the close in `build_while_open` → the three new tests
+go red.
+
+**Docs.**
+- `session.rs` `Hooks::handshake`: "transport dropped" becomes
+  "transport closed".
+- The `Hooks::while_open` constructor contract.
+- `start()` and `acquire()` `# Errors` (commit 2).
+- The `connection.rs` `close()` rustdoc and the attempt-path comment,
+  as above.
+
+**Hardware.** None. Commit 1 is behaviour-identical, and commit 2's
+branch is unreachable from production hooks.
+
+### PR 3 — `fix(shared-transport): the poll task answers to the safety debt too` (bug A)
 
 **Scope.**
 - The `SafetyDebt` ledger, with every old-name site renamed (19 sites,
   including the five in-crate test lines and anything PR 1 added).
 - The gate on `WhileOpen::request_timed`.
-- `Arc::clone(&self.safety_debt)` passed at the three `WhileOpen::new`
-  sites.
+- `Arc::clone(&self.safety_debt)` passed at the one `WhileOpen::new`
+  site, inside PR 2's `build_while_open`.
 - The debt record moved ahead of the respawn in `attempt_reconnect`.
 
-It goes first among the fixes for two reasons. It is
-production-reachable on GTi, and it lands the rename before PRs 3, 4,
-5 and 8 edit the lines it touches. No ordering change elsewhere, no
-dependency and no BUILD change.
+It comes right after PR 2, ahead of the lifecycle fixes, for two
+reasons. It is production-reachable on GTi, and it lands the rename
+before PRs 4, 5, 6 and 8 edit the lines it touches. No ordering change
+elsewhere, no dependency and no BUILD change.
 
 **Tests.**
 - `shared.rs::tests::a_poll_request_is_refused_while_a_stop_is_owed_whatever_the_flags_say`.
@@ -822,7 +882,7 @@ dependency and no BUILD change.
   it; the poll returns `Ok` again.
 - `while_open.rs::the_poll_is_refused_while_a_reconnect_is_still_replaying_the_stop`.
   This one is driven by the supervisor, not `reconnect_now`, so it
-  needs no `test-util` wiring and survives PRs 3–8 unchanged. Steps:
+  needs no `test-util` wiring and survives PRs 4–8 unchanged. Steps:
   - set up `SafetyStopHooks::parking_after(1)` with a `PokedPoll`
     `while_open`, and call `start()`;
   - poke: `Ok`;
@@ -870,7 +930,7 @@ dependency and no BUILD change.
 **Hardware.** None. The change adds no wire traffic and does not touch
 the connect path. GTi lib tests and BDD run with `--features mock`.
 
-### PR 3 — `fix(shared-transport): a teardown waits for the reconnect attempt instead of abandoning it` (W5)
+### PR 4 — `fix(shared-transport): a teardown waits for the reconnect attempt instead of abandoning it` (W5)
 
 **Scope.**
 - Introduce `Supervisor { task, cancel }` and `retire_supervisor`:
@@ -924,7 +984,7 @@ the connect path. GTi lib tests and BDD run with `--features mock`.
 
 **Hardware.** Required before merge (see Validation).
 
-### PR 4 — `fix(shared-transport): a missed last-client stop wakes the supervisor on its own signal` (W4b)
+### PR 5 — `fix(shared-transport): a missed last-client stop wakes the supervisor on its own signal` (W4b)
 
 **Scope.**
 - Add `stop_owed: Notify`.
@@ -974,7 +1034,7 @@ PR 8, a `reconnect_now` publish made off the supervisor can make it
 spend the permit between its stores and its undo. The replay then waits
 one interval, and the Session debt gate holds throughout.
 
-### PR 5 — `fix(shared-transport): shutdown closes what the slot holds when it empties it` (W1-LEAK)
+### PR 6 — `fix(shared-transport): shutdown closes what the slot holds when it empties it` (W1-LEAK)
 
 **Scope.** About ten lines in `shutdown`. It keeps the read-without-take
 around the hook, so a conduit left behind by a panicking hook stays
@@ -1003,14 +1063,14 @@ harm that outlives the instance and hurts its successor.
 
 **Hardware.** None.
 
-### PR 6 — `build(shared-transport): reconnect_now is a test-util hook`
+### PR 7 — `build(shared-transport): reconnect_now is a test-util hook`
 
 **Scope.**
 - `Cargo.toml`: the feature and the self dev-dependency, with comments.
 - `Cargo.lock`: gains one line, the self-edge.
-- `MODULE.bazel.lock`: refreshed with the three-command recipe in
-  [pre-push.md](../skills/pre-push.md). The diff is two hash lines, and
-  the `cr` hub is unchanged.
+- `MODULE.bazel.lock`: refreshed with `scripts/repin-bazel-lock.sh`
+  ([#1391](https://github.com/rusty-photon/rusty-photon/pull/1391)). The
+  diff is two hash lines, and the `cr` hub is unchanged.
 - `BUILD.bazel`: the `_test_util` twin, and `test-util` on every test
   target.
 - `shared.rs`: three `#[cfg(feature = "test-util")]` attributes, on
@@ -1020,10 +1080,10 @@ harm that outlives the instance and hurts its successor.
 warning, and PR 8 deletes it.
 
 Any edit to a member `Cargo.toml` stales `MODULE.bazel.lock`, a comment
-included, because crate_universe hashes every member manifest. This PR
-is the first to hit that without adding a crates.io dependency. Run a
-CI-strict `bazel build --lockfile_mode=error` with `-Dwarnings` on the
-package before pushing.
+included, because crate_universe hashes every member manifest. Since
+#1391 the pre-commit hook refuses the commit if the repin is missing.
+Also run `bazel build` with `-Dwarnings` on the package before
+pushing.
 
 **Tests.** No behaviour changes, so there are no new tests. The
 evidence goes in the PR description:
@@ -1047,9 +1107,6 @@ evidence goes in the PR description:
   - Bazel builds a `testonly` `_test_util` twin, and every test target
     is compiled with the feature;
   - why not `required-features`: it skips tests silently.
-- [pre-push.md](../skills/pre-push.md): widen "If you added a crates.io
-  dependency" to any change to a member's `Cargo.toml` or to
-  `Cargo.lock`.
 - `reconnect_now` rustdoc: test-util only, and never to be called from
   a hook, a `while_open` body or a task they spawn.
 - `error.rs:55` and the field docs that imply a production caller are
@@ -1057,61 +1114,6 @@ evidence goes in the PR description:
   `reconnect_now` fires it, and it does not.
 
 **Hardware.** None. The production configuration only loses code.
-
-### PR 7 — `fix(shared-transport): an open that fails before the publish closes the conduit it opened` (bug B)
-
-**Commit 1: `handshake_or_close` at the three handshake sites.**
-
-Tests:
-- `reconnect.rs::a_reconnect_whose_handshake_fails_releases_the_port`:
-  the first test of a handshake error on the attempt path.
-- `lifecycle.rs::a_cold_start_whose_handshake_fails_releases_the_port`:
-  the first test of one in `start()`.
-
-Both pass on `main` and after the change. They are regression pins,
-and the PR says so.
-
-Mutations:
-- Deleting the close leaves the suite green. That is the expected
-  signature of a close that is identical to the drop.
-- Inserting `std::mem::forget(Arc::clone(&new_conn))` before the
-  attempt's handshake turns the first test red without the helper and
-  green with it. That shows what the close buys against a future
-  refactor that shares the conduit early.
-
-`handshake_failing_on(n)` goes into `tests/common` and uses
-`saturating_add`, because `common/mod.rs` does not allow arithmetic
-side effects itself.
-
-**Commit 2, subject to sign-off: `build_while_open` at all three
-constructor sites.**
-
-Tests:
-- `lifecycle.rs::a_cold_start_whose_constructor_panics_releases_a_conduit_it_passed_on`
-  and `rollback.rs::a_lazy_open_whose_constructor_panics_releases_a_conduit_it_passed_on`:
-  both red on `main`.
-- `reconnect.rs::a_reconnect_whose_constructor_panics_releases_a_conduit_it_passed_on`:
-  green on `main`, but the first test that fails if that existing close
-  is lost.
-- These use a helper,
-  `ctor_keeping_its_context_and_panicking_on(n, stash)`, in common.
-- `while_open_constructor_panic_rolls_back_state_fully` is updated to
-  the new contract: `unwrap_err` containing "while_open constructor
-  panicked", with `dropped_count` 1 then 2 and `opens` 1 then 2.
-
-Mutation: delete the close in `build_while_open` → the three new tests
-go red.
-
-**Docs.**
-- `session.rs` `Hooks::handshake`: "transport dropped" becomes
-  "transport closed".
-- The `Hooks::while_open` constructor contract.
-- `start()` and `acquire()` `# Errors` (commit 2).
-- The `connection.rs` `close()` rustdoc and the attempt-path comment,
-  as above.
-
-**Hardware.** None. Commit 1 is behaviour-identical, and commit 2's
-branch is unreachable from production hooks.
 
 ### PR 8 — `refactor(shared-transport): one owner for every reconnect attempt` (W1, W2, W3, Lazy)
 
@@ -1132,7 +1134,7 @@ branch is unreachable from production hooks.
     arm, and `is_service_lifetime`, both unreachable by construction.
 - The `attempt_reconnect_lock` doc is narrowed.
 
-No `!` on the title: after PR 6 the only API whose behaviour changes is
+No `!` on the title: after PR 7 the only API whose behaviour changes is
 behind `test-util`. The LazyAcquire behaviour removed here was
 reachable only through `reconnect_now`.
 
@@ -1162,7 +1164,7 @@ reachable only through `reconnect_now`.
   the second open is refused, `is_reconnecting` stays set, and the
   tick recovers.
 - `a_manual_reconnect_reports_the_attempts_own_error`: a failed
-  handshake comes back as `SessionError::Codec`, so PR 7's first test
+  handshake comes back as `SessionError::Codec`, so PR 2's first test
   keeps meaning what it says.
 - Refusal tests:
   - `a_manual_reconnect_before_start_is_refused` (opens 0, flags
@@ -1175,7 +1177,7 @@ reachable only through `reconnect_now`.
   - **C1** `a_reconnect_cancelled_before_its_close_leaves_the_conduit_to_the_teardown`:
     opens stays 1, and the shutdown hook's request reached the wire.
     Mutation: drop C1 → opens 2.
-  - **C2**: extend PR 3's W5 test with `handshakes == 1`. Mutation:
+  - **C2**: extend PR 4's W5 test with `handshakes == 1`. Mutation:
     drop C2 → 2.
   - **C3** `a_cancelled_lifecycle_never_installs_the_attempts_conduit`:
     `while_open` spawns 1, `Err`, port not held. Mutation: drop the
@@ -1237,7 +1239,7 @@ the supervisor loop that all seven services run.
 
 ## Validation
 
-PRs 3 and 8 change what every service's reload does while a reconnect
+PRs 4 and 8 change what every service's reload does while a reconnect
 is in flight. The standing rule is never to ship a connect-path change
 on mock evidence. Before each of them merges:
 
@@ -1266,7 +1268,7 @@ on mock evidence. Before each of them merges:
 Record the outcome in the PR description. `docs/validation/` holds
 ConformU records, and these runs are not ConformU runs.
 
-PRs 1, 2, 4, 5, 6 and 7 rest on mock evidence. None of them adds wire
+PRs 1, 2, 3, 5, 6 and 7 rest on mock evidence. None of them adds wire
 traffic or changes what the connect path sends.
 
 ## Follow-ups and what is deliberately left
@@ -1284,14 +1286,14 @@ traffic or changes what the connect path sends.
   - add W4b and W1-LEAK to the scope;
   - record why single ownership replaces the counter;
   - record bug B as "no observable change; explicit close for
-    consistency", plus the constructor-panic hardening if commit 2
-    lands.
+    consistency", plus the constructor-panic hardening in its second
+    commit.
 
 ### Deliberately left
 
 - **The W6 transient.** No *final* flag state contradicts the debt.
   `is_available()` can still read true for a few instructions inside
-  `publish_recovery`. The debt, which `Session` and (after PR 2)
+  `publish_recovery`. The debt, which `Session` and (after PR 3)
   `WhileOpen` both consult, is the authority, so this is benign.
 - **A poll task aborted but not joined before the hook.** This is
   theoretical: a teardown interrupts an attempt inside its own
@@ -1326,16 +1328,13 @@ traffic or changes what the connect path sends.
 
 ## Open points for review
 
-1. **Bug B commit 2** (the constructor-panic catch in `start` and the
-   lazy `acquire`) goes beyond the two fixes asked for, and turns an
-   unwind into an `Err`. Ship it, or ship only the `Hooks::while_open`
-   contract paragraph?
-2. **CLAUDE.md rule 10** names only crates.io dependencies as the
-   trigger for a `MODULE.bazel.lock` refresh. Any member-manifest edit
-   is one. PR 6 widens the trigger in pre-push.md; rewording the rule
-   itself is the maintainer's call.
-3. **The Windows hardware leg runs `dsd-fp2` on rig2**, because rig2
+1. **The Windows hardware leg runs `dsd-fp2` on rig2**, because rig2
    has no GTi.
 
-Settled on review (2026-10-03): bug A records the owed stop before the
-respawn, and `IN_ATTEMPT` is not added.
+Settled on review (2026-10-03):
+- bug A records the owed stop before the respawn;
+- `IN_ATTEMPT` is not added;
+- PR 2's constructor-panic commit ships, and PR 2 moves ahead of bug A;
+- rule 10's trigger is any change to `Cargo.lock` or a member's
+  `Cargo.toml`, with `scripts/repin-bazel-lock.sh` and a pre-commit check
+  ([#1391](https://github.com/rusty-photon/rusty-photon/pull/1391)).
