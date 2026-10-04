@@ -28,9 +28,13 @@ use std::sync::{Arc, RwLock};
 /// and binning readers need no handle.
 ///
 /// A disconnected slot keeps its stale handle and metadata until a
-/// successful re-establish replaces the pair: concurrent callers then
-/// see honest `NOT_CONNECTED` errors from the device rather than a
-/// handle vanishing mid-operation.
+/// successful re-establish replaces the pair, so no handle vanishes
+/// mid-operation. Calls through a stale handle fail with
+/// `NOT_CONNECTED` (or a transport error) until a re-establish turns
+/// the device back on; from then on the device answers them from the
+/// new session, because `Connected` is device-wide. A caller that must
+/// attribute an answer to the session it took the handle from checks
+/// [`Self::is_live`] after the call.
 pub struct DeviceSession<T: ?Sized, M = ()> {
     state: RwLock<SessionState<T, M>>,
 }
@@ -65,9 +69,11 @@ impl<T: ?Sized, M> DeviceSession<T, M> {
     /// following this with [`Self::metadata`].
     ///
     /// May be a stale handle from a dead session when
-    /// [`Self::is_connected`] is false — calls on it then fail with
-    /// `NOT_CONNECTED` or a transport error, which is the honest
-    /// outcome.
+    /// [`Self::is_connected`] is false. Calls on it fail with
+    /// `NOT_CONNECTED` or a transport error until a re-establish turns
+    /// the device back on, and are answered by the new session after
+    /// that — a caller that must tell the two apart checks
+    /// [`Self::is_live`] after the call.
     #[must_use]
     pub fn device(&self) -> Option<Arc<T>> {
         self.read().device.clone()

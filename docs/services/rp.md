@@ -2709,8 +2709,14 @@ Consequences and constraints:
   session handle keeps using it, together with that session's cached
   properties (the transport is stateless HTTP). A disconnected entry
   keeps its stale handle and cache until a successful re-establish
-  replaces the pair, so concurrent callers see honest `NOT_CONNECTED`
-  errors rather than a mid-operation handle swap.
+  replaces the pair, so no caller has a handle swapped out from under
+  it mid-operation. A call through a stale handle fails `NOT_CONNECTED`
+  (or with a transport error) until the re-establish turns the device
+  back on; from then on the device answers it from the **new** session,
+  because `Connected` is device-wide, not per client. A caller that
+  attributes an answer to a particular session — the temperature
+  watch's baseline is rp's one such caller — checks after the call
+  that the session it read through is still the live one.
 - `rp` never issues `Connected = false`, so the supervisor cannot fight
   an intentional disconnect — there is none.
 - `GET /api/equipment`'s `connected` flags reflect this live state, not
