@@ -1,5 +1,5 @@
-//! The per-layer verifier: memo lookup, single-flight by tag, the one-permit
-//! gate and the off-worker KDF.
+//! The per-layer verifier: memo lookup, a single-slot gate and the off-worker
+//! KDF.
 //!
 //! The Argon2id verify exists to be expensive — ~41 ms on a Raspberry Pi 5 —
 //! and HTTP Basic is stateless, so a middleware that runs it inline pays that
@@ -8,15 +8,18 @@
 //! *proving* a credential from *recognising* one already proved:
 //!
 //! - a hit in the [`Memo`] answers in microseconds and never touches the gate;
-//! - a miss runs the KDF on the blocking pool behind a one-permit
-//!   [`Semaphore`], with the permit and the memo store owned by the blocking
-//!   closure so a client that disconnects mid-verify can neither release the
-//!   gate early nor lose the warm-up;
+//! - one verification is in flight at a time, tracked by a single mutex-guarded
+//!   slot: taking the gate and publishing the credential's tag are the *same*
+//!   locked act, so there is no window in which a concurrent request can miss
+//!   an in-flight verification;
+//! - the KDF runs on the blocking pool, and a drop guard clears the slot on
+//!   every exit (return or panic), so a client that disconnects mid-verify can
+//!   neither free the gate early nor lose the warm-up, and a panicking KDF
+//!   cannot wedge the gate;
 //! - a request presenting the credential that is currently being verified
-//!   waits for that verdict and is never refused (single-flight by tag),
-//!   whether it found the verification in flight on arrival or only after
-//!   queueing for the permit; only a request for a different credential may
-//!   be answered [`Verdict::Busy`], after a bounded wait.
+//!   waits for that verdict and is never refused (single-flight by tag); only
+//!   a request for a different credential may be answered [`Verdict::Busy`],
+//!   after a bounded wait.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -29,7 +32,7 @@ use base64::Engine;
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
 use subtle::ConstantTimeEq;
-use tokio::sync::{watch, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::watch;
 use tracing::{debug, error, warn};
 use zeroize::Zeroizing;
 
@@ -37,16 +40,10 @@ use crate::config::AuthConfig;
 use crate::credentials;
 use crate::memo::{Lookup, MacKey, Memo, Tag};
 
-/// Concurrent KDF computations per layer instance. One bounds a
-/// credential-guessing flood to one core and one 19 MiB buffer per service,
-/// leaving the Pi's other cores to the imaging session; the price is that a
-/// cold legitimate client queues behind the flood (ADR-003, accepted).
-pub const GATE_PERMITS: usize = 1;
-
-/// How long a request waits for the permit before the gate is judged busy.
-/// Sits under sentinel's 2 s probe timeout. Only a request for a *different*
-/// credential than the one in flight is refused when it expires: one whose
-/// own credential is in flight by then switches to waiting for that verdict.
+/// How long a request waits for the gate before it is judged busy. Sits under
+/// sentinel's 2 s probe timeout. Only a request for a *different* credential
+/// than the one in flight is refused when it expires: one whose own credential
+/// is in flight waits for that verdict with no bound of its own.
 pub const GATE_WAIT: Duration = Duration::from_secs(1);
 
 /// A miss slower than this is logged: the verify takes its parameters from
@@ -72,21 +69,15 @@ pub enum Verdict {
 /// without argon2.
 pub type Kdf = dyn Fn(&str, &str) -> bool + Send + Sync;
 
-/// What a request found when its permit wait ran out.
-enum Late {
-    /// Its credential was proved, refuted or is in flight: no KDF of its own.
-    Verdict(Verdict),
-    /// The permit freed at the deadline: proceed as the holder.
-    Permit(OwnedSemaphorePermit),
-    /// The gate really is busy with another credential.
-    Busy,
-}
-
-/// The credential currently being proved, and where its verdict will land.
+/// The verification currently in flight, and where its verdict will land.
 /// `None` in the channel means "pending"; a sender dropped without a value
-/// means the KDF task died.
+/// means the KDF task died. `tag` is `None` only when the memo is disabled,
+/// in which case no request can single-flight onto it.
 struct InFlight {
-    tag: Tag,
+    /// A monotonic id so a drop guard clears only its own registration, never
+    /// a successor's.
+    id: u64,
+    tag: Option<Tag>,
     outcome: watch::Receiver<Option<bool>>,
 }
 
@@ -105,17 +96,53 @@ struct Shared {
     hash_usable: bool,
     /// `None` when the OS RNG was unavailable at construction: the memo and
     /// the single-flight are then disabled, every request runs the gated KDF,
-    /// and concurrent requests for one credential serialise on the permit
+    /// and concurrent requests for one credential serialise on the gate
     /// (so may be answered [`Verdict::Busy`]). Never a fixed key instead.
     mac_key: Option<MacKey>,
     memo: Mutex<Memo>,
-    gate: Arc<Semaphore>,
-    inflight: Mutex<Option<InFlight>>,
+    /// The gate: `Some` means a verification is in flight. Taking this slot is
+    /// the single atomic act of claiming the gate and publishing the tag.
+    slot: Mutex<Option<InFlight>>,
+    /// Bumped whenever the slot clears, so a request waiting for a different
+    /// credential to finish is woken without a lost-wakeup window.
+    freed: watch::Sender<u64>,
+    next_id: AtomicU64,
     kdf: Box<Kdf>,
     gate_wait: Duration,
     refusals: AtomicU64,
     #[cfg(test)]
     kdf_runs: std::sync::atomic::AtomicUsize,
+}
+
+/// Clears the gate slot (and wakes waiters) when a held verification ends,
+/// whether its blocking task returns or panics. Clears only its own
+/// registration, identified by `id`.
+struct SlotGuard {
+    shared: Arc<Shared>,
+    id: u64,
+}
+
+impl Drop for SlotGuard {
+    fn drop(&mut self) {
+        self.shared.release_slot(self.id);
+    }
+}
+
+/// What inspecting the gate slot under its lock decided this request should do
+/// once the lock is released. Carrying the decision out of the locked section
+/// keeps the `MutexGuard` from ever being held across an await.
+enum Claim {
+    /// The memo answered under the lock: let the request through.
+    Allow,
+    /// The memo answered under the lock: refuse with 401.
+    Deny,
+    /// This request claimed the free gate; run the KDF under `guard`,
+    /// publishing the verdict through the sender.
+    Hold(SlotGuard, watch::Sender<Option<bool>>),
+    /// This request's credential is already in flight; wait for its verdict.
+    Wait(watch::Receiver<Option<bool>>),
+    /// A different credential holds the gate.
+    Busy,
 }
 
 /// One layer instance's verifier. Cheap to share behind an `Arc`.
@@ -171,8 +198,9 @@ impl Verifier {
                 hash_usable,
                 mac_key,
                 memo: Mutex::new(Memo::new()),
-                gate: Arc::new(Semaphore::new(GATE_PERMITS)),
-                inflight: Mutex::new(None),
+                slot: Mutex::new(None),
+                freed: watch::channel(0u64).0,
+                next_id: AtomicU64::new(0),
                 kdf,
                 gate_wait,
                 refusals: AtomicU64::new(0),
@@ -185,8 +213,9 @@ impl Verifier {
     /// Check one presented credential.
     ///
     /// Cancellation-safe: dropping the returned future at any await point
-    /// leaves no lock held, and a KDF already spawned runs to completion,
-    /// stores its verdict and releases the permit on its own.
+    /// leaves no lock held and nothing half-registered, and a KDF already
+    /// spawned runs to completion, stores its verdict and frees the gate on
+    /// its own — its [`SlotGuard`] moves into the blocking task.
     pub async fn check(&self, username: &str, password: Zeroizing<String>) -> Verdict {
         let shared = &self.shared;
         let tag = shared.mac_key.as_ref().map(|key| {
@@ -198,75 +227,47 @@ impl Verifier {
             )
         });
 
+        // Fast path: a memo hit answers in microseconds, never touching the gate.
         if let Some(tag) = &tag {
             match shared.lookup(tag) {
                 Lookup::Hit => return Verdict::Allow,
                 Lookup::NegativeHit => return Verdict::Deny,
                 Lookup::Miss => {}
             }
-            if let Some(rx) = shared.same_tag_in_flight(tag) {
-                return shared.await_outcome(rx).await;
-            }
         }
 
-        let permit =
-            match tokio::time::timeout(shared.gate_wait, Arc::clone(&shared.gate).acquire_owned())
-                .await
-            {
-                Ok(Ok(permit)) => permit,
-                Ok(Err(_closed)) => return Verdict::Deny,
-                Err(_elapsed) => match shared.after_gate_timeout(tag.as_ref()).await {
-                    Late::Verdict(verdict) => return verdict,
-                    Late::Permit(permit) => permit,
-                    Late::Busy => {
+        // Subscribe before first inspecting the slot, so a free notification
+        // that lands between an inspection and the wait is not lost.
+        let mut freed = shared.freed.subscribe();
+        let started = Instant::now();
+        loop {
+            match shared.claim_slot(tag.as_ref()) {
+                Claim::Allow => return Verdict::Allow,
+                Claim::Deny => return Verdict::Deny,
+                Claim::Hold(guard, tx) => {
+                    return shared.run_held(guard, tx, username, password, tag).await;
+                }
+                Claim::Wait(rx) => return shared.await_outcome(rx).await,
+                Claim::Busy => {
+                    let remaining = shared
+                        .gate_wait
+                        .checked_sub(started.elapsed())
+                        .unwrap_or(Duration::ZERO);
+                    if remaining.is_zero() {
                         shared.note_refusal();
                         return Verdict::Busy;
                     }
-                },
-            };
-
-        // Under the permit no KDF is running, so a credential proved while we
-        // queued is in the memo now: re-check before paying for it again.
-        if let Some(tag) = &tag {
-            match shared.lookup(tag) {
-                Lookup::Hit => return Verdict::Allow,
-                Lookup::NegativeHit => return Verdict::Deny,
-                Lookup::Miss => {}
-            }
-        }
-
-        // The channel doubles as the registration's identity: a successor for
-        // the same tag gets its own channel, so cleanup can tell them apart.
-        let (tx, rx) = watch::channel(None);
-        let registration = rx.clone();
-        if let Some(tag) = &tag {
-            // With one permit the slot is ours; a stale entry left by a KDF
-            // task that died is replaced here.
-            *shared.lock_inflight() = Some(InFlight {
-                tag: tag.clone(),
-                outcome: rx,
-            });
-        }
-
-        let task_shared = Arc::clone(shared);
-        let presented_username = digest(username.as_bytes());
-        let handle = tokio::task::spawn_blocking(move || {
-            // The permit, the password and the store all end with this
-            // closure, not with the request that spawned it.
-            let _permit = permit;
-            task_shared.run_kdf(presented_username, &password, tag, &tx)
-        });
-
-        match handle.await {
-            Ok(true) => Verdict::Allow,
-            Ok(false) => Verdict::Deny,
-            Err(e) => {
-                error!(error = %e, "credential verification task failed; refusing the request");
-                // A panic released the permit during unwinding, so a successor
-                // for the same tag may already have registered: clear only
-                // the registration that was ours.
-                shared.clear_inflight_if_registered(&registration);
-                Verdict::Deny
+                    // Wait for the gate to free, then loop to try to claim it.
+                    // A closed channel cannot happen while `self` lives; treat
+                    // any non-timeout wake as a reason to re-inspect the slot.
+                    if tokio::time::timeout(remaining, freed.changed())
+                        .await
+                        .is_err()
+                    {
+                        shared.note_refusal();
+                        return Verdict::Busy;
+                    }
+                }
             }
         }
     }
@@ -290,82 +291,127 @@ impl Shared {
         self.memo.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn lock_inflight(&self) -> std::sync::MutexGuard<'_, Option<InFlight>> {
-        self.inflight.lock().unwrap_or_else(PoisonError::into_inner)
+    fn lock_slot(&self) -> std::sync::MutexGuard<'_, Option<InFlight>> {
+        self.slot.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Free the gate at the end of a held verification, clearing the slot only
+    /// if it still holds this registration (`id`) and waking every request
+    /// blocked on a busy gate so one may claim it. A non-matching id means a
+    /// successor already holds the gate and will wake the waiters itself.
+    fn release_slot(&self, id: u64) {
+        let cleared = {
+            let mut slot = self.lock_slot();
+            let is_ours = slot.as_ref().is_some_and(|inflight| inflight.id == id);
+            if is_ours {
+                *slot = None;
+            }
+            is_ours
+        };
+        if cleared {
+            self.freed
+                .send_modify(|generation| *generation = generation.wrapping_add(1));
+        }
     }
 
     fn lookup(&self, tag: &Tag) -> Lookup {
         self.lock_memo().lookup(tag, Instant::now())
     }
 
-    fn same_tag_in_flight(&self, tag: &Tag) -> Option<watch::Receiver<Option<bool>>> {
-        let guard = self.lock_inflight();
-        guard
-            .as_ref()
-            .filter(|entry| bool::from(entry.tag.ct_eq(tag)))
-            .map(|entry| entry.outcome.clone())
-    }
-
-    fn clear_inflight(&self) {
-        *self.lock_inflight() = None;
-    }
-
-    /// The permit wait ran out. That does not yet mean the gate is busy with
-    /// a *different* credential: a sibling that queued for the permit before
-    /// the winner registered its tag is now a same-tag waiter, the verdict
-    /// may already be in the memo, or the permit may have been released at
-    /// the deadline. Look again, yielding briefly to cover the winner's
-    /// acquire-to-register window, before refusing.
-    async fn after_gate_timeout(&self, tag: Option<&Tag>) -> Late {
-        for _ in 0..3 {
-            if let Some(tag) = tag {
-                match self.lookup(tag) {
-                    Lookup::Hit => return Late::Verdict(Verdict::Allow),
-                    Lookup::NegativeHit => return Late::Verdict(Verdict::Deny),
-                    Lookup::Miss => {}
-                }
-                if let Some(rx) = self.same_tag_in_flight(tag) {
-                    return Late::Verdict(self.await_outcome(rx).await);
-                }
-            }
-            if let Ok(permit) = Arc::clone(&self.gate).try_acquire_owned() {
-                return Late::Permit(permit);
-            }
-            tokio::task::yield_now().await;
+    /// Inspect the gate slot under its lock and decide this request's next
+    /// move, releasing the lock before returning so no guard is held across an
+    /// await. Claiming the free gate and publishing the credential's tag are
+    /// one locked act, so a concurrent request for the same credential can
+    /// never miss the in-flight verification and run a second KDF for it.
+    fn claim_slot(self: &Arc<Self>, tag: Option<&Tag>) -> Claim {
+        let mut slot = self.lock_slot();
+        if let Some(inflight) = slot.as_ref() {
+            return if tag_matches(inflight, tag) {
+                Claim::Wait(inflight.outcome.clone())
+            } else {
+                Claim::Busy
+            };
         }
-        Late::Busy
+        // The gate is free. Re-check the memo under the same lock: a verdict
+        // proved while we queued is served now, not paid for a second time.
+        // Bind the lookup so the memo guard drops before we build the entry.
+        if let Some(tag) = tag {
+            let verdict = self.lock_memo().lookup(tag, Instant::now());
+            match verdict {
+                Lookup::Hit => return Claim::Allow,
+                Lookup::NegativeHit => return Claim::Deny,
+                Lookup::Miss => {}
+            }
+        }
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = watch::channel(None);
+        *slot = Some(InFlight {
+            id,
+            tag: tag.cloned(),
+            outcome: rx,
+        });
+        // The tag is now published under the lock; release it before handing
+        // back the guard so the gate is observable as held to the next request.
+        drop(slot);
+        Claim::Hold(
+            SlotGuard {
+                shared: Arc::clone(self),
+                id,
+            },
+            tx,
+        )
     }
 
-    /// Clear the in-flight entry only if it is the exact registration whose
-    /// channel `registration` belongs to. A successor for the same tag has a
-    /// different channel, so a late cleanup can never delete its live entry.
-    fn clear_inflight_if_registered(&self, registration: &watch::Receiver<Option<bool>>) {
-        let mut guard = self.lock_inflight();
-        let is_ours = guard
-            .as_ref()
-            .is_some_and(|entry| entry.outcome.same_channel(registration));
-        if is_ours {
-            *guard = None;
+    /// Run the KDF on the blocking pool with the gate held by `guard`, publish
+    /// the verdict through `tx`, and await it. The guard, the password and the
+    /// tag move into the task, so a dropped request future neither frees the
+    /// gate early nor loses the warm-up, and a panicking KDF frees the gate
+    /// during unwinding rather than wedging it.
+    async fn run_held(
+        self: &Arc<Self>,
+        guard: SlotGuard,
+        tx: watch::Sender<Option<bool>>,
+        username: &str,
+        password: Zeroizing<String>,
+        tag: Option<Tag>,
+    ) -> Verdict {
+        let task_shared = Arc::clone(self);
+        let presented_username = digest(username.as_bytes());
+        let handle = tokio::task::spawn_blocking(move || {
+            // The gate guard, the password and the tag end with this closure,
+            // not with the request that spawned it.
+            let _guard = guard;
+            task_shared.run_kdf(presented_username, &password, tag, &tx)
+        });
+        match handle.await {
+            Ok(true) => Verdict::Allow,
+            Ok(false) => Verdict::Deny,
+            Err(e) => {
+                // The task panicked: its guard freed the gate during unwinding
+                // and any same-tag waiter was woken by the dropped sender.
+                error!(error = %e, "credential verification task failed; refusing the request");
+                Verdict::Deny
+            }
         }
     }
 
-    /// Wait for the verdict of the KDF already running for this tag. A
-    /// sender dropped without a verdict means that task died: fail closed and
-    /// clear that registration so the next presentation runs its own KDF.
+    /// Wait for the verdict of the KDF already in flight for this tag. A sender
+    /// dropped without a verdict means that task died: fail closed. The slot is
+    /// cleared by the dead task's [`SlotGuard`], not here.
     async fn await_outcome(&self, mut rx: watch::Receiver<Option<bool>>) -> Verdict {
         loop {
+            // Bind the borrow so its guard drops before the await below.
             let current = *rx.borrow_and_update();
             if let Some(ok) = current {
                 return if ok { Verdict::Allow } else { Verdict::Deny };
             }
             if rx.changed().await.is_err() {
-                self.clear_inflight_if_registered(&rx);
                 return Verdict::Deny;
             }
         }
     }
 
-    /// The blocking half of a miss. Runs on the blocking pool with the permit
+    /// The blocking half of a miss. Runs on the blocking pool with the gate
     /// held by the caller's closure. The verdict is the AND of the username
     /// comparison, the KDF result and the stored hash's validity, computed
     /// after the KDF so every miss costs the same whatever was wrong.
@@ -396,10 +442,11 @@ impl Shared {
         if let Some(tag) = tag {
             self.lock_memo().store(tag, ok, Instant::now());
         }
-        // Publish before clearing: a same-tag waiter that subscribed while
-        // the entry was present reads the value the channel retains.
+        // Publish the verdict through the retained channel value; the gate is
+        // freed by the `SlotGuard` when the blocking task ends, just after this
+        // returns, so a same-tag waiter reads the verdict before the slot
+        // clears and the memo is already warm by the time it does.
         let _ = tx.send(Some(ok));
-        self.clear_inflight();
         ok
     }
 
@@ -424,6 +471,17 @@ impl Shared {
 
 fn digest(bytes: &[u8]) -> [u8; 32] {
     Blake2b::<U32>::digest(bytes).into()
+}
+
+/// Whether an in-flight verification is for the presented credential's tag,
+/// compared in constant time. A memo-disabled request presents `None` and an
+/// in-flight entry then also carries `None`; two `None`s never match, so
+/// single-flight is simply inactive without a memo key.
+fn tag_matches(inflight: &InFlight, presented: Option<&Tag>) -> bool {
+    match (inflight.tag.as_ref(), presented) {
+        (Some(a), Some(b)) => bool::from(a.ct_eq(b)),
+        _ => false,
+    }
 }
 
 /// A fresh per-layer MAC key, or `None` when the OS RNG fails. Never a fixed
@@ -734,7 +792,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_cancelled_request_keeps_the_permit_and_still_warms_the_slot() {
+    async fn a_cancelled_request_keeps_the_gate_and_still_warms_the_slot() {
         let (kdf, release, started) = blocking_kdf();
         let v = verifier(kdf);
         let first = tokio::spawn({
@@ -745,7 +803,7 @@ mod tests {
         // The client goes away mid-verify.
         first.abort();
         assert!(first.await.unwrap_err().is_cancelled());
-        // The permit must still be held by the detached KDF: a different
+        // The gate must still be held by the detached KDF: a different
         // credential cannot get in.
         assert_eq!(check(&v, USER, "another-guess").await, Verdict::Busy);
         assert_eq!(started.load(Ordering::SeqCst), 1);
@@ -782,8 +840,8 @@ mod tests {
         assert_eq!(check(&v, USER, PASSWORD).await, Verdict::Deny);
         assert!(!v.shared.lock_memo().has_positive());
         assert!(
-            v.shared.lock_inflight().is_none(),
-            "the stale in-flight entry must be cleared"
+            v.shared.lock_slot().is_none(),
+            "the panicking task's guard must have freed the gate"
         );
         // The next presentation runs the KDF again and succeeds.
         assert_eq!(check(&v, USER, PASSWORD).await, Verdict::Allow);
@@ -817,22 +875,28 @@ mod tests {
         release_tx.send(()).unwrap();
         assert_eq!(first.await.unwrap(), Verdict::Deny);
         assert_eq!(waiter.await.unwrap(), Verdict::Deny);
-        assert!(v.shared.lock_inflight().is_none());
+        assert!(v.shared.lock_slot().is_none());
         assert!(!v.shared.lock_memo().has_positive());
     }
 
     #[tokio::test]
-    async fn a_same_credential_request_that_queued_for_the_permit_is_never_refused() {
+    // Orchestrates a foreign credential holding the gate while two same-credential
+    // siblings queue through the bounded Busy-wait; Miri's ~100x slowdown lets the
+    // short test gate wait elapse before the siblings re-claim, so the real-time
+    // interleaving cannot be reproduced. The claim-and-publish atomicity this
+    // guards is covered under Miri by the synchronous claim_slot/release_slot tests.
+    #[cfg_attr(miri, ignore)]
+    async fn a_same_credential_request_that_queued_for_the_gate_is_never_refused() {
         let (kdf, release, started) = blocking_kdf();
         let v = verifier(kdf); // gate wait 200 ms
-                               // X: a different credential holds the permit.
+                               // X: a different credential holds the gate.
         let x = tokio::spawn({
             let v = Arc::clone(&v);
             async move { check(&v, USER, "stale-password").await }
         });
         wait_until(&started, 1).await;
         // A and B: the same correct credential, both cold, both queue for
-        // the permit because X's tag is the one in flight.
+        // the gate because X's tag is the one in flight.
         let a = tokio::spawn({
             let v = Arc::clone(&v);
             async move { check(&v, USER, PASSWORD).await }
@@ -842,10 +906,10 @@ mod tests {
             async move { check(&v, USER, PASSWORD).await }
         });
         tokio::time::sleep(Duration::from_millis(100)).await;
-        // X finishes; one of A/B wins the permit and starts the shared KDF.
+        // X finishes; one of A/B claims the gate and starts the shared KDF.
         release.send(()).unwrap();
         wait_until(&started, 2).await;
-        // Hold the shared KDF well past the loser's 200 ms permit deadline:
+        // Hold the shared KDF well past the loser's 200 ms gate wait:
         // it must have become a same-tag waiter, not a 503.
         tokio::time::sleep(Duration::from_millis(400)).await;
         assert!(
@@ -872,88 +936,86 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn after_the_gate_timeout_a_freed_permit_is_taken() {
-        // Nothing holds the permit by the time the wait expires: the request
-        // proceeds as the new holder instead of being refused.
+    async fn claim_slot_holds_the_free_gate_then_turns_it_busy_or_joinable() {
         let v = verifier(instant_kdf());
         let tag = tag_for(&v, PASSWORD);
-        assert!(matches!(
-            v.shared.after_gate_timeout(Some(&tag)).await,
-            Late::Permit(_)
-        ));
+        // The gate is free: the first claim holds it.
+        let Claim::Hold(held, _tx) = v.shared.claim_slot(Some(&tag)) else {
+            panic!("the free gate must be claimable as Hold");
+        };
+        // While it is held, a different credential is turned away as Busy...
+        let other = tag_for(&v, "another");
+        assert!(matches!(v.shared.claim_slot(Some(&other)), Claim::Busy));
+        // ...but the same credential joins the in-flight verification.
+        assert!(matches!(v.shared.claim_slot(Some(&tag)), Claim::Wait(_)));
+        // Dropping the guard frees the gate; it can be claimed afresh.
+        drop(held);
+        assert!(matches!(v.shared.claim_slot(Some(&tag)), Claim::Hold(..)));
     }
 
     #[tokio::test]
-    async fn after_the_gate_timeout_a_proved_credential_is_allowed() {
+    async fn claim_slot_serves_a_memoised_verdict_without_holding_the_gate() {
         let v = verifier(instant_kdf());
         assert_eq!(check(&v, USER, PASSWORD).await, Verdict::Allow);
-        let tag = tag_for(&v, PASSWORD);
-        let _held = Arc::clone(&v.shared.gate).acquire_owned().await.unwrap();
+        // The credential is in the positive memo: claiming re-checks it under
+        // the lock and answers Allow instead of holding the gate for a KDF.
         assert!(matches!(
-            v.shared.after_gate_timeout(Some(&tag)).await,
-            Late::Verdict(Verdict::Allow)
+            v.shared.claim_slot(Some(&tag_for(&v, PASSWORD))),
+            Claim::Allow
+        ));
+        assert_eq!(check(&v, USER, "wrong").await, Verdict::Deny);
+        assert!(matches!(
+            v.shared.claim_slot(Some(&tag_for(&v, "wrong"))),
+            Claim::Deny
         ));
     }
 
     #[tokio::test]
-    async fn after_the_gate_timeout_a_held_permit_for_another_credential_is_busy() {
-        let v = verifier(instant_kdf());
-        let tag = tag_for(&v, PASSWORD);
-        let _held = Arc::clone(&v.shared.gate).acquire_owned().await.unwrap();
-        assert!(matches!(
-            v.shared.after_gate_timeout(Some(&tag)).await,
-            Late::Busy
-        ));
-    }
-
-    #[tokio::test]
-    async fn after_the_gate_timeout_without_a_memo_only_the_permit_counts() {
+    async fn claim_slot_without_a_memo_always_holds_a_free_gate() {
+        // With no key the tag is None; two None tags never match, so a second
+        // request for a held gate is Busy, never a single-flight Wait.
         let v = Arc::new(Verifier::build(
             &config(STUB_PHC),
             instant_kdf(),
             None,
             Duration::from_millis(200),
         ));
-        assert!(matches!(
-            v.shared.after_gate_timeout(None).await,
-            Late::Permit(_)
-        ));
-        let _held = Arc::clone(&v.shared.gate).acquire_owned().await.unwrap();
-        assert!(matches!(
-            v.shared.after_gate_timeout(None).await,
-            Late::Busy
-        ));
+        let Claim::Hold(held, _tx) = v.shared.claim_slot(None) else {
+            panic!("a free gate must be claimable even without a memo");
+        };
+        assert!(matches!(v.shared.claim_slot(None), Claim::Busy));
+        drop(held);
+        assert!(matches!(v.shared.claim_slot(None), Claim::Hold(..)));
     }
 
     #[tokio::test]
-    async fn a_late_cleanup_leaves_a_successor_registration_for_the_same_tag_alone() {
-        // A KDF task that died releases the permit during unwinding, so a
-        // successor for the SAME tag can register before the dead task's
-        // cleanup runs. That cleanup must recognise the registration is no
-        // longer its own: identity is the channel, not the tag.
+    async fn release_slot_clears_only_its_own_registration() {
+        // A guard for a stale registration (a KDF task that already died) must
+        // not evict the successor that claimed the freed gate with a fresh id.
         let v = verifier(instant_kdf());
         let tag = tag_for(&v, PASSWORD);
-        let (_dead_tx, dead_rx) = watch::channel::<Option<bool>>(None);
-        let (_live_tx, live_rx) = watch::channel::<Option<bool>>(None);
-        *v.shared.lock_inflight() = Some(InFlight {
-            tag: tag.clone(),
-            outcome: live_rx,
-        });
-        v.shared.clear_inflight_if_registered(&dead_rx);
+        let Claim::Hold(successor, _tx) = v.shared.claim_slot(Some(&tag)) else {
+            panic!("expected Hold");
+        };
+        let successor_id = v.shared.lock_slot().as_ref().unwrap().id;
+        // A release for any other id is a no-op: the successor still holds it.
+        v.shared.release_slot(successor_id.wrapping_sub(1));
         assert!(
-            v.shared.same_tag_in_flight(&tag).is_some(),
-            "the successor's live registration must survive the dead task's cleanup"
+            v.shared.lock_slot().is_some(),
+            "a release for a stale id must not evict the live registration"
         );
-        let live_again = v.shared.same_tag_in_flight(&tag).unwrap();
-        v.shared.clear_inflight_if_registered(&live_again);
-        assert!(v.shared.same_tag_in_flight(&tag).is_none());
+        // The matching release — what the guard's Drop does — clears it.
+        drop(successor);
+        assert!(v.shared.lock_slot().is_none());
     }
 
     #[tokio::test]
-    async fn a_sibling_that_wins_the_permit_after_the_shared_kdf_finished_hits_the_memo() {
+    // See the note above: the timed sibling orchestration cannot run under Miri.
+    #[cfg_attr(miri, ignore)]
+    async fn a_sibling_that_claims_the_gate_after_the_shared_kdf_finished_hits_the_memo() {
         // Two cold requests for one credential queue behind a foreign KDF.
-        // The shared KDF finishes quickly, so the second sibling acquires the
-        // permit normally and must find the verdict in the memo (no second KDF).
+        // The shared KDF finishes quickly, so the second sibling claims the
+        // gate normally and must find the verdict in the memo (no second KDF).
         let (kdf, release, started) = blocking_kdf();
         let v = verifier(kdf);
         let x = tokio::spawn({
@@ -981,7 +1043,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_sibling_that_wins_the_permit_after_a_refuted_kdf_hits_the_negative_memo() {
+    // See the note above: the timed sibling orchestration cannot run under Miri.
+    #[cfg_attr(miri, ignore)]
+    async fn a_sibling_that_claims_the_gate_after_a_refuted_kdf_hits_the_negative_memo() {
         let (kdf, release, started) = blocking_kdf();
         let v = verifier(kdf);
         let x = tokio::spawn({
@@ -1009,26 +1073,6 @@ mod tests {
             2,
             "the repeated wrong password is answered from the negative memo"
         );
-    }
-
-    #[tokio::test]
-    async fn after_the_gate_timeout_a_refuted_credential_is_denied() {
-        let v = verifier(instant_kdf());
-        assert_eq!(check(&v, USER, "wrong").await, Verdict::Deny);
-        let tag = tag_for(&v, "wrong");
-        let _held = Arc::clone(&v.shared.gate).acquire_owned().await.unwrap();
-        assert!(matches!(
-            v.shared.after_gate_timeout(Some(&tag)).await,
-            Late::Verdict(Verdict::Deny)
-        ));
-    }
-
-    #[tokio::test]
-    async fn a_closed_gate_denies() {
-        let v = verifier(instant_kdf());
-        v.shared.gate.close();
-        assert_eq!(check(&v, USER, PASSWORD).await, Verdict::Deny);
-        assert_eq!(v.kdf_runs(), 0);
     }
 
     #[test]
