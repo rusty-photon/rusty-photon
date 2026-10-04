@@ -162,6 +162,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invalid_utf8_credentials_return_401() {
+        let (app, verifier) = router_with_kdf(Box::new(|_, _| true));
+        let encoded = BASE64.encode([0xffu8, 0xfe, b':', 0xff]);
+        let request = Request::builder()
+            .uri("/test")
+            .header("authorization", format!("Basic {encoded}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            verifier.kdf_runs(),
+            0,
+            "a header that cannot be decoded never reaches the KDF"
+        );
+    }
+
+    #[tokio::test]
     async fn a_repeated_credential_is_served_without_a_second_kdf() {
         let (app, verifier) = router_with_kdf(Box::new(|password, _| password == "pw"));
         for _ in 0..3 {

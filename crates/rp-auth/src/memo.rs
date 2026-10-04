@@ -107,15 +107,10 @@ struct Negative {
 }
 
 /// One positive slot plus a bounded negative ring.
+#[derive(Default)]
 pub struct Memo {
     positive: Option<Positive>,
     negative: VecDeque<Negative>,
-}
-
-impl Default for Memo {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl Memo {

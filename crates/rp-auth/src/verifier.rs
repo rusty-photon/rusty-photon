@@ -23,7 +23,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use argon2::password_hash::rand_core::{OsRng, RngCore};
-use argon2::password_hash::{Output, PasswordHash, Salt, SaltString};
+use argon2::password_hash::{PasswordHash, Salt};
+use base64::engine::general_purpose::STANDARD_NO_PAD as B64;
+use base64::Engine;
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest};
 use subtle::ConstantTimeEq;
@@ -203,7 +205,7 @@ impl Verifier {
                 Lookup::Miss => {}
             }
             if let Some(rx) = shared.same_tag_in_flight(tag) {
-                return shared.await_outcome(rx, tag).await;
+                return shared.await_outcome(rx).await;
             }
         }
 
@@ -233,7 +235,10 @@ impl Verifier {
             }
         }
 
+        // The channel doubles as the registration's identity: a successor for
+        // the same tag gets its own channel, so cleanup can tell them apart.
         let (tx, rx) = watch::channel(None);
+        let registration = rx.clone();
         if let Some(tag) = &tag {
             // With one permit the slot is ours; a stale entry left by a KDF
             // task that died is replaced here.
@@ -245,7 +250,6 @@ impl Verifier {
 
         let task_shared = Arc::clone(shared);
         let presented_username = digest(username.as_bytes());
-        let registered_tag = tag.clone();
         let handle = tokio::task::spawn_blocking(move || {
             // The permit, the password and the store all end with this
             // closure, not with the request that spawned it.
@@ -259,10 +263,9 @@ impl Verifier {
             Err(e) => {
                 error!(error = %e, "credential verification task failed; refusing the request");
                 // A panic released the permit during unwinding, so a successor
-                // may already have registered its own entry: clear only ours.
-                if let Some(tag) = &registered_tag {
-                    shared.clear_inflight_if_tag(tag);
-                }
+                // for the same tag may already have registered: clear only
+                // the registration that was ours.
+                shared.clear_inflight_if_registered(&registration);
                 Verdict::Deny
             }
         }
@@ -322,7 +325,7 @@ impl Shared {
                     Lookup::Miss => {}
                 }
                 if let Some(rx) = self.same_tag_in_flight(tag) {
-                    return Late::Verdict(self.await_outcome(rx, tag).await);
+                    return Late::Verdict(self.await_outcome(rx).await);
                 }
             }
             if let Ok(permit) = Arc::clone(&self.gate).try_acquire_owned() {
@@ -333,12 +336,14 @@ impl Shared {
         Late::Busy
     }
 
-    /// Clear the in-flight entry only if it is still the one for `tag`.
-    fn clear_inflight_if_tag(&self, tag: &Tag) {
+    /// Clear the in-flight entry only if it is the exact registration whose
+    /// channel `registration` belongs to. A successor for the same tag has a
+    /// different channel, so a late cleanup can never delete its live entry.
+    fn clear_inflight_if_registered(&self, registration: &watch::Receiver<Option<bool>>) {
         let mut guard = self.lock_inflight();
         let is_ours = guard
             .as_ref()
-            .is_some_and(|entry| bool::from(entry.tag.ct_eq(tag)));
+            .is_some_and(|entry| entry.outcome.same_channel(registration));
         if is_ours {
             *guard = None;
         }
@@ -346,15 +351,15 @@ impl Shared {
 
     /// Wait for the verdict of the KDF already running for this tag. A
     /// sender dropped without a verdict means that task died: fail closed and
-    /// clear the stale entry so the next presentation runs its own KDF.
-    async fn await_outcome(&self, mut rx: watch::Receiver<Option<bool>>, tag: &Tag) -> Verdict {
+    /// clear that registration so the next presentation runs its own KDF.
+    async fn await_outcome(&self, mut rx: watch::Receiver<Option<bool>>) -> Verdict {
         loop {
             let current = *rx.borrow_and_update();
             if let Some(ok) = current {
                 return if ok { Verdict::Allow } else { Verdict::Deny };
             }
             if rx.changed().await.is_err() {
-                self.clear_inflight_if_tag(tag);
+                self.clear_inflight_if_registered(&rx);
                 return Verdict::Deny;
             }
         }
@@ -424,8 +429,12 @@ fn digest(bytes: &[u8]) -> [u8; 32] {
 /// A fresh per-layer MAC key, or `None` when the OS RNG fails. Never a fixed
 /// or time-derived key: a memo keyed predictably would be worse than none.
 fn generate_key() -> Option<MacKey> {
+    generate_key_from(&mut OsRng)
+}
+
+fn generate_key_from(rng: &mut impl RngCore) -> Option<MacKey> {
     let mut key = Zeroizing::new([0u8; 64]);
-    match OsRng.try_fill_bytes(key.as_mut()) {
+    match rng.try_fill_bytes(key.as_mut()) {
         Ok(()) => Some(key),
         Err(e) => {
             error!(error = %e, "OS RNG failed while keying the verification memo");
@@ -471,16 +480,21 @@ fn stored_hash_usable(stored: &str) -> Result<(), String> {
 /// bytes with no known preimage, used when the configured hash can never
 /// verify so a miss still costs a full KDF. The verdict is forced to deny by
 /// [`Shared::hash_usable`] regardless; this only shapes the timing. If the
-/// RNG fails the fixed bytes below are used: the verdict is still forced.
+/// RNG fails, fixed bytes are used: the verdict is still forced.
 fn decoy_phc() -> String {
+    decoy_phc_from(&mut OsRng)
+}
+
+fn decoy_phc_from(rng: &mut impl RngCore) -> String {
     let mut salt = [0x42u8; 16];
     let mut hash = [0x24u8; 32];
-    if OsRng.try_fill_bytes(&mut salt).is_err() || OsRng.try_fill_bytes(&mut hash).is_err() {
+    if rng.try_fill_bytes(&mut salt).is_err() || rng.try_fill_bytes(&mut hash).is_err() {
         salt = [0x42u8; 16];
         hash = [0x24u8; 32];
     }
-    let salt = SaltString::encode_b64(&salt).map_or_else(|_| String::new(), |s| s.to_string());
-    let hash = Output::new(&hash).map_or_else(|_| String::new(), |h| h.to_string());
+    // PHC's B64 is the standard alphabet without padding.
+    let salt = B64.encode(salt);
+    let hash = B64.encode(hash);
     format!("$argon2id$v=19$m=19456,t=2,p=1${salt}${hash}")
 }
 
@@ -909,6 +923,170 @@ mod tests {
             v.shared.after_gate_timeout(None).await,
             Late::Busy
         ));
+    }
+
+    #[tokio::test]
+    async fn a_late_cleanup_leaves_a_successor_registration_for_the_same_tag_alone() {
+        // A KDF task that died releases the permit during unwinding, so a
+        // successor for the SAME tag can register before the dead task's
+        // cleanup runs. That cleanup must recognise the registration is no
+        // longer its own: identity is the channel, not the tag.
+        let v = verifier(instant_kdf());
+        let tag = tag_for(&v, PASSWORD);
+        let (_dead_tx, dead_rx) = watch::channel::<Option<bool>>(None);
+        let (_live_tx, live_rx) = watch::channel::<Option<bool>>(None);
+        *v.shared.lock_inflight() = Some(InFlight {
+            tag: tag.clone(),
+            outcome: live_rx,
+        });
+        v.shared.clear_inflight_if_registered(&dead_rx);
+        assert!(
+            v.shared.same_tag_in_flight(&tag).is_some(),
+            "the successor's live registration must survive the dead task's cleanup"
+        );
+        let live_again = v.shared.same_tag_in_flight(&tag).unwrap();
+        v.shared.clear_inflight_if_registered(&live_again);
+        assert!(v.shared.same_tag_in_flight(&tag).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_sibling_that_wins_the_permit_after_the_shared_kdf_finished_hits_the_memo() {
+        // Two cold requests for one credential queue behind a foreign KDF.
+        // The shared KDF finishes quickly, so the second sibling acquires the
+        // permit normally and must find the verdict in the memo (no second KDF).
+        let (kdf, release, started) = blocking_kdf();
+        let v = verifier(kdf);
+        let x = tokio::spawn({
+            let v = Arc::clone(&v);
+            async move { check(&v, USER, "stale-password").await }
+        });
+        wait_until(&started, 1).await;
+        let a = tokio::spawn({
+            let v = Arc::clone(&v);
+            async move { check(&v, USER, PASSWORD).await }
+        });
+        let b = tokio::spawn({
+            let v = Arc::clone(&v);
+            async move { check(&v, USER, PASSWORD).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        release.send(()).unwrap(); // X done
+        wait_until(&started, 2).await;
+        release.send(()).unwrap(); // the shared KDF, well inside the gate wait
+        assert_eq!(x.await.unwrap(), Verdict::Deny);
+        assert_eq!(a.await.unwrap(), Verdict::Allow);
+        assert_eq!(b.await.unwrap(), Verdict::Allow);
+        assert_eq!(v.kdf_runs(), 2);
+        assert_eq!(v.refusals(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_sibling_that_wins_the_permit_after_a_refuted_kdf_hits_the_negative_memo() {
+        let (kdf, release, started) = blocking_kdf();
+        let v = verifier(kdf);
+        let x = tokio::spawn({
+            let v = Arc::clone(&v);
+            async move { check(&v, USER, "stale-password").await }
+        });
+        wait_until(&started, 1).await;
+        let a = tokio::spawn({
+            let v = Arc::clone(&v);
+            async move { check(&v, USER, "another-wrong").await }
+        });
+        let b = tokio::spawn({
+            let v = Arc::clone(&v);
+            async move { check(&v, USER, "another-wrong").await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        release.send(()).unwrap();
+        wait_until(&started, 2).await;
+        release.send(()).unwrap();
+        assert_eq!(x.await.unwrap(), Verdict::Deny);
+        assert_eq!(a.await.unwrap(), Verdict::Deny);
+        assert_eq!(b.await.unwrap(), Verdict::Deny);
+        assert_eq!(
+            v.kdf_runs(),
+            2,
+            "the repeated wrong password is answered from the negative memo"
+        );
+    }
+
+    #[tokio::test]
+    async fn after_the_gate_timeout_a_refuted_credential_is_denied() {
+        let v = verifier(instant_kdf());
+        assert_eq!(check(&v, USER, "wrong").await, Verdict::Deny);
+        let tag = tag_for(&v, "wrong");
+        let _held = Arc::clone(&v.shared.gate).acquire_owned().await.unwrap();
+        assert!(matches!(
+            v.shared.after_gate_timeout(Some(&tag)).await,
+            Late::Verdict(Verdict::Deny)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_closed_gate_denies() {
+        let v = verifier(instant_kdf());
+        v.shared.gate.close();
+        assert_eq!(check(&v, USER, PASSWORD).await, Verdict::Deny);
+        assert_eq!(v.kdf_runs(), 0);
+    }
+
+    #[test]
+    fn refusals_are_counted_past_the_first_warning() {
+        let v = verifier(instant_kdf());
+        for _ in 0..3 {
+            v.shared.note_refusal();
+        }
+        assert_eq!(v.refusals(), 3);
+    }
+
+    /// An RNG whose every fill fails, standing in for a broken OS RNG.
+    struct FailingRng;
+
+    impl RngCore for FailingRng {
+        fn next_u32(&mut self) -> u32 {
+            0
+        }
+        fn next_u64(&mut self) -> u64 {
+            0
+        }
+        fn fill_bytes(&mut self, dest: &mut [u8]) {
+            dest.fill(0);
+        }
+        fn try_fill_bytes(
+            &mut self,
+            _dest: &mut [u8],
+        ) -> Result<(), argon2::password_hash::rand_core::Error> {
+            Err(argon2::password_hash::rand_core::Error::new(
+                "simulated RNG failure",
+            ))
+        }
+    }
+
+    #[test]
+    fn a_failing_rng_yields_no_key() {
+        assert!(generate_key_from(&mut FailingRng).is_none());
+        assert!(generate_key_from(&mut OsRng).is_some());
+    }
+
+    #[test]
+    fn a_failing_rng_still_yields_a_parseable_decoy() {
+        let decoy = decoy_phc_from(&mut FailingRng);
+        PasswordHash::new(&decoy).unwrap();
+        assert_eq!(
+            decoy,
+            decoy_phc_from(&mut FailingRng),
+            "the fallback is the fixed bytes"
+        );
+    }
+
+    #[test]
+    fn a_hash_with_an_unknown_argon2_version_is_unusable() {
+        let err = stored_hash_usable(
+            "$argon2id$v=18$m=19456,t=2,p=1$c29tZXNhbHQ$RdescudvJCsgt3ub+b+dWRWJTmaaJObG",
+        )
+        .unwrap_err();
+        assert!(err.contains("unsupported Argon2 version"), "{err}");
     }
 
     #[test]
