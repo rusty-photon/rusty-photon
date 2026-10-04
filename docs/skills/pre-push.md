@@ -588,9 +588,10 @@ security model, setup steps, and decommissioning procedure.
 
 ### publish-readiness.yml (rolling)
 
-Pre-publish verification for the four **dual-homed FFI crates** (`qhyccd-rs` +
-`libqhyccd-sys`, `zwo-rs` + `libzwo-sys`) — the published-in-isolation guarantees
-the in-workspace `check`/`test` jobs cannot give. Nightly cron (02:30 UTC) +
+Pre-publish verification for the six **dual-homed FFI crates** (`qhyccd-rs` +
+`libqhyccd-sys`, `zwo-rs` + `libzwo-sys`, `svbony-rs` + `libsvbony-sys`) — the
+published-in-isolation guarantees the in-workspace `check`/`test` jobs cannot
+give. Nightly cron (02:30 UTC) +
 `workflow_dispatch` + paths-filtered PR/push on the workflow and its script;
 **non-blocking** for ordinary PRs (a minimal-versions break usually comes from an
 upstream release, not the PR under review). Families are discovered dynamically via

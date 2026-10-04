@@ -72,9 +72,10 @@ jobs:
       - name: Discover publishable FFI crate families
         id: discover
         run: |
-          # Every crate with [package.metadata.publish-readiness] — i.e. the four
-          # dual-homed FFI crates and nothing else in the workspace. Emits the
-          # wrapper name, its nested sys crate, and whether the family needs libclang.
+          # Every crate with [package.metadata.publish-readiness] — i.e. the three
+          # dual-homed FFI wrappers (qhyccd-rs, zwo-rs, svbony-rs) and nothing
+          # else in the workspace. Emits the wrapper name, its nested sys crate,
+          # and whether the family needs libclang.
           CRATES=$(cargo metadata --format-version 1 --no-deps | \
             jq -c '[.packages[]
                     | select(.metadata["publish-readiness"]["sys-crate"])
