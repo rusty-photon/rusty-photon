@@ -762,8 +762,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   cache-served members, never reach the SDK (C8, GO1). A client that reads only
   those finds out at its next exposure, cooler read or capability probe. A
   capture in flight finds out by itself, but only when its frame is due. It
-  sleeps through the exposure, and the progress poll and readout that follow
-  are the calls that fail. And **bringing a camera back is not something this
+  sleeps through the exposure, and the progress poll that follows is the first
+  call to fail. A capture whose camera is found gone by then is not read out,
+  since there is no frame to read. And **bringing a camera back is not something this
   contract does on its own.** On Linux a plain reconnect found a camera that had
   been unplugged and plugged back in, with no scan and no reload, although it
   came back as a new USB device: `OpenQHYCCD` finds it by its id. A camera that
@@ -786,10 +787,10 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
   - **Windows.** On Windows the SDK was seen failing the probe only for
     `Cooler`, on rig2's QHY600M, which drops off USB with its 12 V.
-  - **A departure during the readout itself.** In the mid-exposure run the SDK
-    refused `get_image_size` before `GetQHYCCDSingleFrame` was entered, so
-    whether that call returns or hangs on a camera that vanishes inside it is
-    unmeasured.
+  - **A departure during the readout itself.** In the mid-exposure run the
+    progress poll was the first call to fail, and the readout is now skipped
+    once a poll has found the camera gone. So whether `GetQHYCCDSingleFrame`
+    returns or hangs on a camera that vanishes inside it is unmeasured.
 
   Where the SDK went on answering for a departed camera, the probe would find
   it present and the driver would behave as it did before this rule, so no
@@ -1924,7 +1925,9 @@ Layered per [`testing.md`](../skills/testing.md).
   Unit tests
   drive the device side through `MockCameraHandle::leave_bus` /
   `MockFilterWheelHandle::leave_bus`, which reproduce that rule on the mock's
-  own flags; the capture that loses its camera mid-frame, the abort whose SDK
+  own flags; the capture that loses its camera mid-frame, the departure a
+  progress poll meets (the frame is then not read out, which the mock's
+  `image_size_calls` counter pins), the abort whose SDK
   cancel fails on a departed camera, the withheld
   verdict while a transition holds the lock, and a close that fails on a
   departed camera are reached only there. Both doubles model what the SDK does
@@ -2079,7 +2082,9 @@ the "how" decisions made while building.
   the readout for the remainder, re-opening the window the split exists to close.
   Polling is capped at `EXPOSURE_POLL_INTERVAL` and the confirmation phase at
   `EXPOSURE_CONFIRM_TIMEOUT`, after which the readout is entered anyway so a
-  camera that never reports 0 cannot strand the frame. A cancel never waits for
+  camera that never reports 0 cannot strand the frame. A failed poll enters the
+  readout too, unless the C9 question it asks finds the camera gone; a departed
+  camera is not read out. A cancel never waits for
   a poll: the capture's cancel channel wakes the sleep immediately.
 - **SDK call serialization — the claim *is* the cancel channel.** The single
   in-flight capture is the one logical owner of the device's blocking SDK calls.

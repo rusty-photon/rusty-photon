@@ -2393,12 +2393,20 @@ async fn wait_for_exposure(
     let deadline = now.checked_add(EXPOSURE_CONFIRM_TIMEOUT).unwrap_or(now);
     while tokio::time::Instant::now() < deadline {
         let polled = Arc::clone(handle);
-        let Ok(Ok(remaining)) =
-            tokio::task::spawn_blocking(move || polled.get_remaining_exposure_us()).await
+        let Ok(Ok(remaining)) = tokio::task::spawn_blocking(move || {
+            let remaining = polled.get_remaining_exposure_us();
+            // A failed poll asks C9's question as any other SDK failure does.
+            if remaining.is_err() {
+                polled.verify_presence();
+            }
+            remaining
+        })
+        .await
         else {
             // A failed or panicking poll is not worth abandoning the frame
             // over: fall through to the readout, which blocks until the frame
-            // really is ready.
+            // really is ready. A camera the poll found gone is not read out
+            // (`capture_once`).
             break;
         };
         if remaining == 0 {
@@ -2445,6 +2453,14 @@ async fn capture_once(
 
     if !wait_for_exposure(handle, state, cancel).await {
         return Capture::Cancelled;
+    }
+    // A camera found gone during the wait (C9) is not read out: it has no frame
+    // to give, and how `GetQHYCCDSingleFrame` behaves on a departed camera is
+    // unmeasured.
+    if handle.is_lost() {
+        return Capture::Failed(
+            "the camera left the bus before its frame was read out".to_string(),
+        );
     }
 
     let reader = Arc::clone(handle);
@@ -8532,6 +8548,41 @@ mod tests {
         assert_eq!(
             device.camera_state().await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// A departure the progress poll is first to meet is judged there (C9), and
+    /// the frame is not read out: a camera found gone has no frame to give.
+    #[tokio::test]
+    async fn a_departure_the_progress_poll_meets_is_judged_before_any_readout() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        // A camera that keeps reporting time left holds the capture in its
+        // poll loop, so the departure is met by a poll, not by the start.
+        handle.set_remaining_exposure_us(500_000);
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        let polling = tokio::time::timeout(Duration::from_secs(30), async {
+            while handle.remaining_calls.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(polling, "the capture never reached its progress poll");
+
+        handle.leave_bus();
+
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert!(!device.connected().await.unwrap());
+        assert_eq!(
+            handle.image_size_calls.load(Ordering::SeqCst),
+            0,
+            "a camera found gone was read out"
         );
     }
 

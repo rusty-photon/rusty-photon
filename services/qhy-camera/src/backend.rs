@@ -1072,6 +1072,9 @@ pub(crate) mod mock {
         /// Counts `get_single_frame` calls, so a test can assert that an abort
         /// during the exposure skips the readout entirely.
         pub single_frame_calls: AtomicU32,
+        /// Counts `get_image_size` calls, a departed camera's refusals
+        /// included, so a test can assert that a readout was never entered.
+        pub image_size_calls: AtomicU32,
         /// Microseconds the camera claims are left. Non-zero keeps the driver in
         /// its cancellable wait, mimicking a camera still integrating.
         remaining_exposure_us: AtomicU32,
@@ -1198,6 +1201,7 @@ pub(crate) mod mock {
                 offset_range_held: AtomicBool::new(false),
                 in_offset_range: AtomicBool::new(false),
                 single_frame_calls: AtomicU32::new(0),
+                image_size_calls: AtomicU32::new(0),
                 remaining_exposure_us: AtomicU32::new(0),
                 remaining_calls: AtomicU32::new(0),
                 read_delay_us: AtomicU64::new(0),
@@ -1775,6 +1779,7 @@ pub(crate) mod mock {
             Ok(())
         }
         fn get_image_size(&self) -> BackendResult<usize> {
+            self.image_size_calls.fetch_add(1, Ordering::SeqCst);
             self.on_bus()?;
             let roi = *self.roi.lock();
             Ok((roi.width * roi.height * 2) as usize)
