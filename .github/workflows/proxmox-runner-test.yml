@@ -16,6 +16,12 @@
 # logs. All use of the cache here is read-only: no write credential exists
 # anywhere on the runner VM (ADR-020 layer 4) — LAN cache writes happen
 # only in bazel.yml's push-to-main jobs, via a GitHub Actions secret.
+#
+# The test steps pass --cache_test_results=no. This workflow exists to prove
+# the guest can run the suites, and a cached result proves nothing about the
+# guest: with the remote cache warm, a dispatch reports every test passed
+# without starting OmniSim once, so a template that cannot run it (a runner
+# in session 0 on Windows, a missing SDK) would still come back green.
 permissions:
   contents: read
 on:
@@ -52,7 +58,7 @@ jobs:
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
             FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
           fi
-          bazel test "${FLAGS[@]}" \
+          bazel test "${FLAGS[@]}" --cache_test_results=no \
             --test_tag_filters=-requires-cargo,-bdd,-conformu //...
 
       - name: bazel test (BDD)
@@ -61,8 +67,8 @@ jobs:
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
             FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
           fi
-          bazel test "${FLAGS[@]}" --test_tag_filters=bdd,-requires-cargo \
-            --test_output=all //...
+          bazel test "${FLAGS[@]}" --cache_test_results=no \
+            --test_tag_filters=bdd,-requires-cargo --test_output=all //...
 
   build-test-windows:
     runs-on: [self-hosted, Windows, X64, proxmox-ephemeral-windows]
@@ -125,7 +131,7 @@ jobs:
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
             FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
           fi
-          bazel test "${FLAGS[@]}" \
+          bazel test "${FLAGS[@]}" --cache_test_results=no \
             --test_tag_filters=-requires-cargo,-bdd,-conformu //...
 
       - name: bazel test (BDD)
@@ -134,5 +140,5 @@ jobs:
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
             FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
           fi
-          bazel test "${FLAGS[@]}" --test_tag_filters=bdd,-requires-cargo \
-            --test_output=all //...
+          bazel test "${FLAGS[@]}" --cache_test_results=no \
+            --test_tag_filters=bdd,-requires-cargo --test_output=all //...
