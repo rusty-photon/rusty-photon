@@ -877,9 +877,16 @@ dangerous combination. The rule bifurcates by runner kind
     warmup. Before capture, confirm the unit still reads `enabled` and the
     task `Ready`. `qm guest exec` waits for its command and times out, so
     run a long warmup detached: on Linux `systemd-run --unit=<name> -p
-    User=ci -p WorkingDirectory=/home/ci <script>`, which runs it as the job
-    account under the service manager's environment rather than root's; on
-    Windows, see the console-session bullet in the Windows notes below.
+    User=ci <script>`, which runs it as the job account under the service
+    manager's environment rather than root's; on Windows, see the
+    console-session bullet in the Windows notes below. Don't point the
+    unit's `WorkingDirectory=` at the checkout: the warmup is what creates
+    it, and systemd refuses to start a unit whose working directory is
+    missing. The script itself must source `/home/ci/actions-runner/.env`
+    (the runner-provided cache endpoint), check out to
+    `/home/ci/actions-runner/_work/rusty-photon/rusty-photon`, and `cd`
+    there before running Bazel, because that path keys the output base
+    every clone reads (the coverage-warmup bullet below).
   * **Rolling the VMID forward does not move the clones that are already
     running, and the pool's own startup line will not tell you otherwise.**
     The reconcile matches a clone by VMID and injection marker, never by
