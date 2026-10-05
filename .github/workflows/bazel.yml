@@ -323,7 +323,14 @@ jobs:
           # attempt instead of just the first one, which is what actually
           # lets PR builds converge on a cache-eviction wave. No need to set
           # it here too.
-          bazel build --config=ci "${REMOTE_FLAGS[@]}" //...
+          # Windows: keep this step's trace for the profile artifact uploaded
+          # below (what it records: build:profile in .bazelrc). Bazel resolves
+          # a relative --profile against the workspace root.
+          PROFILE_FLAGS=()
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            PROFILE_FLAGS=(--config=profile --profile=bazel-profile-build.json.gz)
+          fi
+          bazel build --config=ci "${REMOTE_FLAGS[@]}" "${PROFILE_FLAGS[@]}" //...
 
       - name: bazel test (fast)
         # The .bazelrc default filter includes bdd (for the local loop);
@@ -374,7 +381,12 @@ jobs:
           else
             REMOTE_FLAGS+=(--remote_upload_local_results=false)
           fi
-          bazel test --config=ci "${REMOTE_FLAGS[@]}" \
+          # Windows: this step's trace, as in the build step.
+          PROFILE_FLAGS=()
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            PROFILE_FLAGS=(--config=profile --profile=bazel-profile-test-fast.json.gz)
+          fi
+          bazel test --config=ci "${REMOTE_FLAGS[@]}" "${PROFILE_FLAGS[@]}" \
             --test_tag_filters=-requires-cargo,-bdd,-conformu //...
 
       - name: bazel test (BDD)
@@ -443,7 +455,13 @@ jobs:
           # //services/zwo-camera:bdd RUNS here too — `bdd`-tagged (not
           # `requires-cargo`), spawning the native-SDK sim binary the "Install ZWO
           # SDK" step above provisioned. Matches the coverage config in .bazelrc.
-          bazel test --config=ci "${REMOTE_FLAGS[@]}" --test_tag_filters=bdd,-requires-cargo \
+          # Windows: this step's trace, as in the build step.
+          PROFILE_FLAGS=()
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            PROFILE_FLAGS=(--config=profile --profile=bazel-profile-test-bdd.json.gz)
+          fi
+          bazel test --config=ci "${REMOTE_FLAGS[@]}" "${PROFILE_FLAGS[@]}" \
+            --test_tag_filters=bdd,-requires-cargo \
             --test_output=all \
             //...
 
@@ -464,6 +482,22 @@ jobs:
           path: |
             bazel-out/*/testlogs/**/test.log
             bazel-out/*/testlogs/**/test.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+      # The Windows build step on a PR made entirely of cache hits has taken
+      # anything from one minute to five, with nothing in the log to say why,
+      # and on the pool the clone that ran it is destroyed with the job. Keep
+      # the three steps' traces, on success as well as failure: a slow green
+      # run is the case worth reading, set against a fast one. `always()`
+      # keeps a failed run's traces too; a step killed outright (a timeout)
+      # can leave its trace unwritten, and the warning below says so.
+      - name: Upload Bazel profiles (Windows)
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: bazel-profiles-${{ matrix.os }}-attempt-${{ github.run_attempt }}
+          path: bazel-profile-*.json.gz
           if-no-files-found: warn
           retention-days: 14
 

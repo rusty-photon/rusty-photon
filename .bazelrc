@@ -659,6 +659,30 @@ test:browser --test_env=UI_BROWSER_TESTS=1
 build:browser --test_env=FIREFOX_BINARY
 build:browser --test_env=GECKODRIVER_BINARY
 
+# --- Profile config --------------------------------------------------------
+
+# Detail for the JSON trace profile Bazel writes for every command (to
+# `command.profile.gz` in the output base, or wherever --profile points).
+# bazel.yml's Windows leg passes --config=profile with a --profile path on
+# each Bazel step and uploads the traces, so a slow build can still be read
+# after the ephemeral clone that ran it is destroyed. Open one at
+# https://ui.perfetto.dev, or summarise it with `bazel analyze-profile`.
+#
+# A build made of cache hits spends its time in events that are each short:
+# one remote-cache lookup, one download, one file digest. The default slim
+# profile merges short events into anonymous "various events" spans, which
+# hides exactly that, so keep every event and name those tasks. The tasks
+# flag takes one task per occurrence; Bazel rejects a comma list. All of
+# these shape the trace only, so they change no action key and do not
+# discard the analysis cache between steps.
+build:profile --noslim_profile
+build:profile --experimental_profile_include_target_label
+build:profile --experimental_profile_include_primary_output
+build:profile --experimental_profile_additional_tasks=remote_cache_check
+build:profile --experimental_profile_additional_tasks=remote_download
+build:profile --experimental_profile_additional_tasks=remote_network
+build:profile --experimental_profile_additional_tasks=vfs_md5
+
 # --- Coverage config -------------------------------------------------------
 
 # Activate with: bazel coverage --config=coverage //...
