@@ -87,6 +87,10 @@ pub struct SimulatedCameraConfig {
     /// `None`**, the camera never leaves. Set with
     /// [`with_departure_file`](SimulatedCameraConfig::with_departure_file).
     pub departure_file: Option<PathBuf>,
+    /// A file whose existence makes `close` fail and keep the handle —
+    /// **default `None`**, a close always succeeds. Set with
+    /// [`with_close_failure_file`](SimulatedCameraConfig::with_close_failure_file).
+    pub close_failure_file: Option<PathBuf>,
 }
 
 impl Default for SimulatedCameraConfig {
@@ -166,6 +170,7 @@ impl Default for SimulatedCameraConfig {
             live_not_ready_probability: 0.0,
             even_extent_readout: true,
             departure_file: None,
+            close_failure_file: None,
         }
     }
 }
@@ -338,6 +343,17 @@ impl SimulatedCameraConfig {
         self.departure_file = Some(path.into());
         self
     }
+
+    /// Makes [`close`](crate::Camera::close) fail whenever `path` exists, the
+    /// way a failed `CloseQHYCCD` does: with `QHYError::Sdk { op: "close_camera" }`,
+    /// and with the handle kept, so the camera still reads open and a later
+    /// [`open`](crate::Camera::open) is a no-op on it. Checked on every close,
+    /// like the departure file.
+    #[must_use]
+    pub fn with_close_failure_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.close_failure_file = Some(path.into());
+        self
+    }
 }
 
 // ===== Runtime state for a simulated camera =====
@@ -483,6 +499,15 @@ impl SimulatedCameraState {
         !self
             .config
             .departure_file
+            .as_ref()
+            .is_some_and(|path| path.exists())
+    }
+
+    /// Whether a close fails right now (see
+    /// [`with_close_failure_file`](SimulatedCameraConfig::with_close_failure_file)).
+    pub fn close_fails(&self) -> bool {
+        self.config
+            .close_failure_file
             .as_ref()
             .is_some_and(|path| path.exists())
     }

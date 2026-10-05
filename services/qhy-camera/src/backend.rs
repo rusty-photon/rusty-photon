@@ -511,6 +511,7 @@ impl SharedCameraConnection {
             return Ok(());
         }
         if *refs == 0 {
+            self.release_stale_handle()?;
             self.camera.open().map_err(BackendError::from_err)?;
             // A fresh handle, so whatever the last one lost, this one has not.
             self.lost.store(false, Ordering::SeqCst);
@@ -554,6 +555,31 @@ impl SharedCameraConnection {
             self.camera.close().map_err(BackendError::from_err)?;
         }
         Ok(())
+    }
+
+    /// Free a handle the last close failed to, before a physical open (C9).
+    ///
+    /// A failed `CloseQHYCCD` keeps the SDK's handle, so the camera still reads
+    /// open with no device holding it, and `open` would answer "already open"
+    /// and hand the next connect that handle instead of a fresh one — after C9,
+    /// the departed one, with its lost mark about to be cleared. The close is
+    /// tried again; if the SDK still will not free it, there is no fresh handle
+    /// to give, and the connect is refused rather than handed the old one. A
+    /// restart releases it then.
+    fn release_stale_handle(&self) -> BackendResult<()> {
+        if !self.camera.is_open().map_err(BackendError::from_err)? {
+            return Ok(());
+        }
+        debug!(camera = %self.camera.id(), "a failed close left the SDK's handle open; closing it before a fresh open");
+        self.camera.close().map_err(|e| {
+            warn!(
+                camera = %self.camera.id(),
+                error = %e,
+                "connect refused: the SDK still holds a handle an earlier close failed to free; \
+                 a restart releases it"
+            );
+            BackendError::from_err(e)
+        })
     }
 
     /// Whether the device behind the open handle has left the bus (C9).
@@ -1799,6 +1825,7 @@ pub(crate) mod mock {
             Ok(self.remaining_exposure_us.load(Ordering::SeqCst))
         }
         fn abort_exposure_and_readout(&self) -> BackendResult<()> {
+            self.on_bus()?;
             if self.in_readout.load(Ordering::SeqCst) {
                 self.aborted_during_readout.store(true, Ordering::SeqCst);
             }
@@ -2281,5 +2308,44 @@ mod conn_tests {
         cam.open().unwrap_err();
 
         assert!(!cam.is_open().unwrap());
+    }
+
+    /// A camera that departs and whose close then fails leaves the SDK's handle
+    /// behind (C9). Reopened as it was, that handle would be the departed one
+    /// with its lost mark cleared, so the close is retried first, and the
+    /// connect refused while the SDK still will not free it.
+    #[test]
+    fn a_handle_a_failed_close_left_behind_is_freed_before_a_fresh_open() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let departure = dir.path().join("departed");
+        let close_fails = dir.path().join("close-fails");
+        let camera = qhyccd_rs::Camera::new_simulated(
+            qhyccd_rs::simulation::SimulatedCameraConfig::default()
+                .with_departure_file(&departure)
+                .with_close_failure_file(&close_fails),
+        );
+        let conn = SharedCameraConnection::new(camera);
+        let cam = QhyCameraHandle::new(conn.clone());
+        cam.open().unwrap();
+        std::fs::write(&departure, b"").unwrap();
+        cam.verify_presence();
+        assert!(cam.is_lost());
+        std::fs::write(&close_fails, b"").unwrap();
+        cam.close().unwrap_err();
+        assert!(!cam.is_open().unwrap(), "the device let go of its session");
+        assert!(conn.camera().is_open().unwrap(), "the SDK kept the handle");
+        std::fs::remove_file(&departure).unwrap();
+
+        cam.open().unwrap_err();
+        assert!(
+            cam.is_lost(),
+            "the departed handle was not handed back as fresh"
+        );
+        assert!(!cam.is_open().unwrap());
+
+        std::fs::remove_file(&close_fails).unwrap();
+        cam.open().unwrap();
+        assert!(!cam.is_lost(), "a fresh open clears the lost mark");
+        assert!(conn.camera().is_open().unwrap());
     }
 }

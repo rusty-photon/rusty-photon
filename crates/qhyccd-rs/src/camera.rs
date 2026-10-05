@@ -772,6 +772,11 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
+            // A failed `CloseQHYCCD` keeps the handle, so the camera still reads
+            // open (`HandleCell::close_with`).
+            if state.close_fails() {
+                return Err(QHYError::Sdk { op: "close_camera" });
+            }
             state.is_open = false;
             state.is_initialized = false;
             // Real `CloseQHYCCD` destroys the device handle; a later `open()`

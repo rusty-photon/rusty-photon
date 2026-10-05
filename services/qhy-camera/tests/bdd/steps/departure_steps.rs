@@ -3,16 +3,12 @@
 //! reconnect a client makes once it has gone.
 
 use cucumber::{given, then, when};
-use tempfile::TempDir;
 
 use crate::world::CameraWorld;
 
 #[given("the qhy-camera service running with a simulated camera that can leave the bus")]
 async fn service_with_a_departing_camera(world: &mut CameraWorld) {
-    let dir = world
-        .temp_dir
-        .get_or_insert_with(|| TempDir::new().expect("temp dir"));
-    world.departure_file = Some(dir.path().join("departed"));
+    world.departure_file = Some(world.scratch_dir().join("departed"));
     world.start().await;
 }
 

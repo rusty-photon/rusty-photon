@@ -714,7 +714,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   SDK stops answering for it once the device has gone. It is asked after any SDK
   call that fails, after every capability probe (whose "absent" is an answer
   rather than a failure, so the failure path alone would never ask it — E11),
-  and after a capture that fails (E9). A probe that answers "absent" marks the
+  after a capture that fails (E9), and after an abort's SDK cancel that fails
+  (the one call a capture cancelled in its wait makes). A probe that answers "absent" marks the
   **physical connection lost**, logged once at `warn`, and from that moment both
   ASCOM devices on it — the camera and its CFW (C8) — answer
   `Connected == false`, and every member that takes the connected check answers
@@ -746,6 +747,15 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   connect is refused while another device on the same physical connection still
   holds the lost handle (the CFW, say): the open would join a handle the SDK no
   longer answers for, so every device on it has to be released first.
+
+  A close that fails keeps the SDK's handle (`qhyccd_rs::Camera::close`), so the
+  camera still reads open with no device holding it. Left alone, the next
+  physical open would answer "already open" and hand that handle back as if it
+  were fresh, which after a departure means the departed handle with its lost
+  mark cleared. So **a physical open first frees a handle an earlier close left
+  behind**: it retries the close, and if the SDK still will not free the handle
+  the connect is refused (and logged at `warn`) rather than given the old
+  handle. A restart releases it then.
 
   **The check is lazy.** `Connected` turns false at the first SDK failure after
   the camera leaves, not when it leaves: the `Connected` read itself, and the
@@ -1908,10 +1918,14 @@ Layered per [`testing.md`](../skills/testing.md).
   `conn_tests` in `backend.rs` pin the check's rules against the same
   simulator — no verdict on a handle the device does not hold or while the
   lifecycle lock is held, one lost mark for both devices, a connect refused
-  from joining a lost connection, the mark cleared by a fresh open. Unit tests
+  from joining a lost connection, the mark cleared by a fresh open, and a
+  handle a failed close left behind freed before that open, or the connect
+  refused while the SDK keeps it (the simulator's `with_close_failure_file`).
+  Unit tests
   drive the device side through `MockCameraHandle::leave_bus` /
   `MockFilterWheelHandle::leave_bus`, which reproduce that rule on the mock's
-  own flags; the capture that loses its camera mid-frame, the withheld
+  own flags; the capture that loses its camera mid-frame, the abort whose SDK
+  cancel fails on a departed camera, the withheld
   verdict while a transition holds the lock, and a close that fails on a
   departed camera are reached only there. Both doubles model what the SDK does
   once a camera has gone, which is to fail every call and the capability probe

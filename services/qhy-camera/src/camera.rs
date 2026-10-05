@@ -1255,7 +1255,17 @@ impl QhyCameraDevice {
     /// capture is already out of the SDK, which is what the caller needed.
     async fn sdk_cancel(&self) {
         let handle = Arc::clone(&self.handle);
-        match tokio::task::spawn_blocking(move || handle.abort_exposure_and_readout()).await {
+        match tokio::task::spawn_blocking(move || {
+            let aborted = handle.abort_exposure_and_readout();
+            // An abort is the one SDK call a capture cancelled in its wait makes,
+            // so it asks C9's question as any other failure does.
+            if aborted.is_err() {
+                handle.verify_presence();
+            }
+            aborted
+        })
+        .await
+        {
             Ok(Ok(())) => {}
             Ok(Err(e)) => debug!(error = %e, "abort_exposure_and_readout failed"),
             Err(e) => warn!(error = %e, "abort task panicked"),
@@ -8582,5 +8592,28 @@ mod tests {
 
         assert!(device.connected().await.unwrap());
         device.ccd_temperature().await.unwrap();
+    }
+
+    /// A capture cancelled in its wait makes no SDK call of its own, so on a
+    /// camera that has left the bus the abort's SDK cancel is the one call that
+    /// fails, and it asks C9's question as any other failure does.
+    #[tokio::test]
+    async fn an_abort_on_a_departed_camera_reads_disconnected() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        // Long enough that the capture is still asleep in its wait, making no
+        // SDK call, when the camera leaves and the abort lands.
+        device
+            .start_exposure(Duration::from_secs(60), true)
+            .await
+            .unwrap();
+        handle.leave_bus();
+
+        device.abort_exposure().await.unwrap();
+
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert!(!device.connected().await.unwrap());
     }
 }

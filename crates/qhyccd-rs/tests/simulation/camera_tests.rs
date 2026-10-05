@@ -1768,12 +1768,13 @@ fn test_filter_wheel_methods_error_when_camera_has_no_cfw_control() {
     assert!(fw.set_fw_position(1).is_err());
 }
 
-/// A departure file no other test names: under `std::env::temp_dir()`, since
-/// this crate takes no temp-dir dependency, and unique per process and test so
-/// tests running side by side cannot take each other's camera away.
+/// A departure file no other test names: unique per process and test, so tests
+/// running side by side cannot take each other's camera away, and under Bazel's
+/// per-action `TEST_TMPDIR` when there is one, so a run that fails leaves nothing
+/// on the machine. This crate takes no temp-dir dependency.
 fn departure_file(test: &str) -> std::path::PathBuf {
-    let path =
-        std::env::temp_dir().join(format!("qhyccd-rs-departure-{}-{test}", std::process::id()));
+    let root = std::env::var_os("TEST_TMPDIR").map_or_else(std::env::temp_dir, Into::into);
+    let path = root.join(format!("qhyccd-rs-departure-{}-{test}", std::process::id()));
     let _ = std::fs::remove_file(&path);
     path
 }
@@ -1823,4 +1824,24 @@ fn a_departed_camera_cannot_be_opened_until_it_is_back() {
         camera.is_control_available(ControlType::CamSingleFrameMode),
         Some(0)
     );
+}
+
+#[test]
+fn a_failed_close_keeps_the_handle_and_a_reopen_is_a_no_op_on_it() {
+    let file = departure_file("close_fails");
+    let camera =
+        Camera::new_simulated(SimulatedCameraConfig::default().with_close_failure_file(&file));
+    camera.open().unwrap();
+    std::fs::write(&file, b"").unwrap();
+
+    let error = camera.close().unwrap_err();
+
+    assert!(
+        matches!(error, QHYError::Sdk { op: "close_camera" }),
+        "unexpected error: {error:?}"
+    );
+    assert!(camera.is_open().unwrap(), "a failed close keeps the handle");
+    std::fs::remove_file(&file).unwrap();
+    camera.close().unwrap();
+    assert!(!camera.is_open().unwrap());
 }
