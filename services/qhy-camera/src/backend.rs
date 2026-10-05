@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use qhyccd_rs::{CCDChipArea, CCDChipInfo, ControlType, StreamMode};
+use tracing::{debug, warn};
 
 /// A QHYCCD SDK call failed. Carries the underlying error message; the ASCOM
 /// device decides the `ASCOMError` per call site (the SDK error kind does not
@@ -82,6 +83,16 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// Never fails in either shipped handle — both answer from their own
     /// connected flag rather than asking the SDK.
     fn is_open(&self) -> BackendResult<bool>;
+    /// Whether the device behind this handle's physical connection has left the
+    /// bus since that connection was opened (C9). A lost handle may still be
+    /// [`open`](Self::is_open) — nothing closes it but a disconnect.
+    fn is_lost(&self) -> bool;
+    /// Ask whether the device is still on the bus, and mark the physical
+    /// connection lost if it is not (C9). Called after an SDK call fails and
+    /// after a capability probe, from the thread that made the call. Gives no
+    /// verdict on a handle that is not open, or while a connect, disconnect or
+    /// readout-mode change holds the [`lifecycle_lock`](Self::lifecycle_lock).
+    fn verify_presence(&self);
     /// The connect/disconnect lock for the *physical* connection behind this
     /// handle, shared with any other ASCOM device on it (C8).
     fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()>;
@@ -386,6 +397,12 @@ pub trait FilterWheelHandle: std::fmt::Debug + Send + Sync {
     /// Never fails in either shipped handle — both answer from their own
     /// connected flag rather than asking the SDK.
     fn is_open(&self) -> BackendResult<bool>;
+    /// Whether the camera the wheel hangs off has left the bus since its
+    /// physical connection was opened (C9, FW4).
+    fn is_lost(&self) -> bool;
+    /// [`CameraHandle::verify_presence`], asked from the wheel's side of the
+    /// shared connection.
+    fn verify_presence(&self);
     /// The connect/disconnect lock for the *physical* connection behind this
     /// handle, shared with the Camera device driven through it (C8).
     fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()>;
@@ -444,8 +461,14 @@ pub struct SharedCameraConnection {
     /// `tokio`'s rather than `parking_lot`'s because a connect handshake is
     /// awaited. It is taken by `set_connected` and by the camera's readout-mode
     /// change — which runs `InitQHYCCD` too — and by nothing else, so a
-    /// `Connected` read never queues behind it.
+    /// `Connected` read never queues behind it. [`Self::verify_presence`] only
+    /// tries it.
     lifecycle: tokio::sync::Mutex<()>,
+    /// Set once the device behind the open handle has left the bus (C9), and
+    /// cleared by the next physical open. Read by both devices' handles, so the
+    /// camera and the CFW go from connected to disconnected together whichever
+    /// of them noticed.
+    lost: AtomicBool,
 }
 
 impl SharedCameraConnection {
@@ -455,6 +478,7 @@ impl SharedCameraConnection {
             camera,
             refs: Mutex::new(0),
             lifecycle: tokio::sync::Mutex::new(()),
+            lost: AtomicBool::new(false),
         })
     }
 
@@ -488,6 +512,22 @@ impl SharedCameraConnection {
         }
         if *refs == 0 {
             self.camera.open().map_err(BackendError::from_err)?;
+            // A fresh handle, so whatever the last one lost, this one has not.
+            self.lost.store(false, Ordering::SeqCst);
+        } else if self.lost.load(Ordering::SeqCst) {
+            // Joining would hand this device a handle the SDK no longer answers
+            // for; only a fresh open can give it a working one, and that waits
+            // on the device still holding this one (C9).
+            warn!(
+                camera = %self.camera.id(),
+                "connect refused: the camera has left the bus and another device on its \
+                 connection still holds it; disconnect every device on it first"
+            );
+            return Err(BackendError(
+                "the camera has left the bus and another device on its connection still holds it; \
+                 disconnect every device on it before reconnecting"
+                    .to_string(),
+            ));
         }
         *refs = refs.saturating_add(1);
         connected.store(true, Ordering::SeqCst);
@@ -514,6 +554,51 @@ impl SharedCameraConnection {
             self.camera.close().map_err(BackendError::from_err)?;
         }
         Ok(())
+    }
+
+    /// Whether the device behind the open handle has left the bus (C9).
+    fn is_lost(&self) -> bool {
+        self.lost.load(Ordering::SeqCst)
+    }
+
+    /// Ask whether the device is still on the bus, on behalf of the device whose
+    /// flag is `connected`, and mark the connection lost if it is not (C9).
+    ///
+    /// The SDK has no "device removed" status, so the question is put as the
+    /// one probe every connect requires to pass (C1): a camera that answered for
+    /// `CamSingleFrameMode` at its handshake has the control, and the SDK stops
+    /// answering for it once the device has gone.
+    ///
+    /// No verdict while the lifecycle lock is held: a connect, a disconnect and
+    /// a readout-mode change run `OpenQHYCCD`, `InitQHYCCD` and `CloseQHYCCD`,
+    /// and a probe landing among them would be asking a camera in transition.
+    /// A false "lost" ends a live session, so it is withheld rather than risked
+    /// — a device that really has gone fails again outside those windows. Under
+    /// `refs`, the lock the open and the close take, so the probe judges the
+    /// physical handle the device's flag vouches for and no other.
+    fn verify_presence(&self, connected: &AtomicBool) {
+        let Ok(_transition) = self.lifecycle.try_lock() else {
+            debug!("connection in transition; no presence verdict");
+            return;
+        };
+        let refs = self.refs.lock();
+        if !connected.load(Ordering::SeqCst) || self.lost.load(Ordering::SeqCst) {
+            return;
+        }
+        if self
+            .camera
+            .is_control_available(ControlType::CamSingleFrameMode)
+            .is_some()
+        {
+            return;
+        }
+        self.lost.store(true, Ordering::SeqCst);
+        drop(refs);
+        warn!(
+            camera = %self.camera.id(),
+            "camera no longer answers for a control its connect required; it has left the bus, \
+             and every device on its connection now reads disconnected"
+        );
     }
 }
 
@@ -549,6 +634,12 @@ impl CameraHandle for QhyCameraHandle {
     }
     fn is_open(&self) -> BackendResult<bool> {
         Ok(self.connected.load(Ordering::SeqCst))
+    }
+    fn is_lost(&self) -> bool {
+        self.conn.is_lost()
+    }
+    fn verify_presence(&self) {
+        self.conn.verify_presence(&self.connected);
     }
     fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
         self.conn.lifecycle_lock()
@@ -729,6 +820,12 @@ impl FilterWheelHandle for QhyFilterWheelHandle {
     }
     fn is_open(&self) -> BackendResult<bool> {
         Ok(self.connected.load(Ordering::SeqCst))
+    }
+    fn is_lost(&self) -> bool {
+        self.conn.is_lost()
+    }
+    fn verify_presence(&self) {
+        self.conn.verify_presence(&self.connected);
     }
     fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
         self.conn.lifecycle_lock()
@@ -960,6 +1057,17 @@ pub(crate) mod mock {
         /// USB round-trip a real property read makes. A test uses it to make a
         /// read demonstrably slow, so where the driver runs it is observable.
         read_delay_us: AtomicU64,
+        /// The camera has left the bus (C9): its handle stays open, every SDK
+        /// call on it fails, `is_control_available` answers `None` for every
+        /// control, and it cannot be opened — the shape a camera whose power or
+        /// cable is cut leaves behind. Set through [`leave_bus`](Self::leave_bus).
+        departed: AtomicBool,
+        /// The connection's lost mark, kept and judged as
+        /// `SharedCameraConnection` keeps and judges it.
+        lost: AtomicBool,
+        /// Counts `verify_presence` calls, so a test can tell a request that
+        /// asked the question from one that did not.
+        pub presence_checks: AtomicU32,
     }
 
     impl Default for MockCameraHandle {
@@ -1067,6 +1175,9 @@ pub(crate) mod mock {
                 remaining_exposure_us: AtomicU32::new(0),
                 remaining_calls: AtomicU32::new(0),
                 read_delay_us: AtomicU64::new(0),
+                departed: AtomicBool::new(false),
+                lost: AtomicBool::new(false),
+                presence_checks: AtomicU32::new(0),
             }
         }
     }
@@ -1228,6 +1339,22 @@ pub(crate) mod mock {
         pub fn clear_calls(&self) {
             self.calls.lock().clear();
         }
+        /// Take the camera off the bus with its handle still open (C9).
+        pub fn leave_bus(&self) {
+            self.departed.store(true, Ordering::SeqCst);
+        }
+        /// Put the camera back on the bus. A handle the departure left behind
+        /// stays lost; only a fresh open clears that.
+        pub fn return_to_bus(&self) {
+            self.departed.store(false, Ordering::SeqCst);
+        }
+        /// The error every SDK call on a departed camera answers with.
+        fn on_bus(&self) -> BackendResult<()> {
+            if self.departed.load(Ordering::SeqCst) {
+                return Err(BackendError("simulated SDK error: no device".to_string()));
+            }
+            Ok(())
+        }
         fn record(&self, call: String) {
             self.calls.lock().push(call);
         }
@@ -1338,7 +1465,12 @@ pub(crate) mod mock {
                 std::thread::sleep(Duration::from_millis(1));
             }
             self.in_open.store(false, Ordering::SeqCst);
-            self.open.store(true, Ordering::SeqCst);
+            // `OpenQHYCCD` finds nothing for a camera that has left the bus.
+            self.on_bus()?;
+            // A fresh open is a fresh handle, as `SharedCameraConnection`'s is.
+            if !self.open.swap(true, Ordering::SeqCst) {
+                self.lost.store(false, Ordering::SeqCst);
+            }
             Ok(())
         }
         fn close(&self) -> BackendResult<()> {
@@ -1366,6 +1498,27 @@ pub(crate) mod mock {
         fn is_open(&self) -> BackendResult<bool> {
             Ok(self.open.load(Ordering::SeqCst))
         }
+        fn is_lost(&self) -> bool {
+            self.lost.load(Ordering::SeqCst)
+        }
+        /// `SharedCameraConnection::verify_presence`'s rule, on the mock's own
+        /// flags: no verdict while the lifecycle lock is held or on a handle
+        /// that is not open, and a probe of `CamSingleFrameMode` otherwise.
+        fn verify_presence(&self) {
+            self.presence_checks.fetch_add(1, Ordering::SeqCst);
+            let Ok(_transition) = self.lifecycle.try_lock() else {
+                return;
+            };
+            if !self.open.load(Ordering::SeqCst) || self.lost.load(Ordering::SeqCst) {
+                return;
+            }
+            if self
+                .is_control_available(ControlType::CamSingleFrameMode)
+                .is_none()
+            {
+                self.lost.store(true, Ordering::SeqCst);
+            }
+        }
         fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
             &self.lifecycle
         }
@@ -1376,6 +1529,7 @@ pub(crate) mod mock {
         /// Implementation notes). Gain, offset and the cooler survive unless a
         /// test asks for the models that do not keep them.
         fn init(&self) -> BackendResult<()> {
+            self.on_bus()?;
             self.record("init".to_string());
             self.init_calls.fetch_add(1, Ordering::SeqCst);
             self.in_init.store(true, Ordering::SeqCst);
@@ -1406,12 +1560,14 @@ pub(crate) mod mock {
             Ok(())
         }
         fn set_stream_mode_single(&self) -> BackendResult<()> {
+            self.on_bus()?;
             self.record("set_stream_mode_single".to_string());
             Ok(())
         }
         /// Records the mode and nothing else, as the SDK does: the camera is
         /// switched by the next [`init`](Self::init).
         fn set_readout_mode(&self, mode: u32) -> BackendResult<()> {
+            self.on_bus()?;
             self.record(format!("set_readout_mode({mode})"));
             if self.fail_set_controls.load(Ordering::SeqCst) {
                 return Err(BackendError(
@@ -1450,6 +1606,7 @@ pub(crate) mod mock {
             Ok(self.model.clone())
         }
         fn get_ccd_info(&self) -> BackendResult<CCDChipInfo> {
+            self.on_bus()?;
             if self.fail_handshake.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated handshake failure".to_string()));
             }
@@ -1460,6 +1617,7 @@ pub(crate) mod mock {
         /// the sensor. The origin scales with the sizes — at bin 2 the SDK
         /// manual's 40-pixel overscan border becomes a 20-pixel one.
         fn get_effective_area(&self) -> BackendResult<CCDChipArea> {
+            self.on_bus()?;
             let area = *self.effective_area.lock();
             let (bx, by) = *self.bin.lock();
             Ok(CCDChipArea {
@@ -1481,9 +1639,13 @@ pub(crate) mod mock {
             if self.close_during_probe.swap(false, Ordering::SeqCst) {
                 self.open.store(false, Ordering::SeqCst);
             }
+            if self.departed.load(Ordering::SeqCst) {
+                return None;
+            }
             self.controls.lock().get(&control).copied()
         }
         fn get_parameter(&self, control: ControlType) -> BackendResult<f64> {
+            self.on_bus()?;
             if self.fail_reads.lock().contains(&control) {
                 return Err(BackendError(format!("simulated {control:?} read failure")));
             }
@@ -1501,6 +1663,7 @@ pub(crate) mod mock {
             &self,
             control: ControlType,
         ) -> BackendResult<(f64, f64, f64)> {
+            self.on_bus()?;
             if control == ControlType::Offset && self.offset_range_held.load(Ordering::SeqCst) {
                 self.in_offset_range.store(true, Ordering::SeqCst);
                 // Same shape (and same runaway backstop) as the held close above.
@@ -1519,6 +1682,7 @@ pub(crate) mod mock {
                 .ok_or_else(|| BackendError(format!("no range for {control:?}")))
         }
         fn set_parameter(&self, control: ControlType, value: f64) -> BackendResult<()> {
+            self.on_bus()?;
             self.record(format!("set_parameter({control:?})"));
             if self.fail_writes.lock().contains(&control) {
                 return Err(BackendError(format!("simulated {control:?} write failure")));
@@ -1539,6 +1703,7 @@ pub(crate) mod mock {
             Ok(())
         }
         fn set_bin_mode(&self, bin_x: u32, bin_y: u32) -> BackendResult<()> {
+            self.on_bus()?;
             self.record(format!("set_bin_mode({bin_x}, {bin_y})"));
             if self.fail_set_controls.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated set_bin_mode failure".to_string()));
@@ -1547,6 +1712,7 @@ pub(crate) mod mock {
             Ok(())
         }
         fn set_roi(&self, area: CCDChipArea) -> BackendResult<()> {
+            self.on_bus()?;
             self.record("set_roi".to_string());
             self.in_set_roi.store(true, Ordering::SeqCst);
             // Same shape (and same runaway backstop) as the held close above.
@@ -1568,12 +1734,14 @@ pub(crate) mod mock {
             result
         }
         fn set_exposure_us(&self, exposure_us: f64) -> BackendResult<()> {
+            self.on_bus()?;
             if self.fail_set_exposure.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated set_exposure failure".to_string()));
             }
             self.set_parameter(ControlType::Exposure, exposure_us)
         }
         fn start_single_frame_exposure(&self) -> BackendResult<()> {
+            self.on_bus()?;
             if self.fail_start.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated exposure start failure".to_string()));
             }
@@ -1581,12 +1749,14 @@ pub(crate) mod mock {
             Ok(())
         }
         fn get_image_size(&self) -> BackendResult<usize> {
+            self.on_bus()?;
             let roi = *self.roi.lock();
             Ok((roi.width * roi.height * 2) as usize)
         }
         // Panicking mid-readout is the behaviour under test, not a defect.
         #[allow(clippy::panic_in_result_fn)]
         fn get_single_frame(&self, _buffer_size: usize) -> BackendResult<ImageData> {
+            self.on_bus()?;
             // The real `GetQHYCCDSingleFrame` is NOT cancellable: once the readout
             // starts it runs to completion, which is why the driver must never
             // issue an SDK cancel while this is in flight. Block for the full
@@ -1619,6 +1789,7 @@ pub(crate) mod mock {
             })
         }
         fn get_remaining_exposure_us(&self) -> BackendResult<u32> {
+            self.on_bus()?;
             self.remaining_calls.fetch_add(1, Ordering::SeqCst);
             if self.fail_remaining.load(Ordering::SeqCst) {
                 return Err(BackendError(
@@ -1682,6 +1853,12 @@ pub(crate) mod mock {
         /// then lands it.
         pub defer_move: AtomicBool,
         pending: Mutex<Option<u32>>,
+        /// The camera the wheel hangs off has left the bus (C9, FW4): every
+        /// wheel call fails and the wheel cannot be opened, while its handle
+        /// stays open. Set through [`leave_bus`](Self::leave_bus).
+        departed: AtomicBool,
+        /// The connection's lost mark, as the camera mock keeps it.
+        lost: AtomicBool,
     }
 
     impl MockFilterWheelHandle {
@@ -1701,7 +1878,23 @@ pub(crate) mod mock {
                 lifecycle: Arc::new(tokio::sync::Mutex::new(())),
                 defer_move: AtomicBool::new(false),
                 pending: Mutex::new(None),
+                departed: AtomicBool::new(false),
+                lost: AtomicBool::new(false),
             }
+        }
+
+        /// Take the camera the wheel hangs off off the bus, with the wheel's
+        /// handle still open (C9, FW4).
+        pub fn leave_bus(&self) {
+            self.departed.store(true, Ordering::SeqCst);
+        }
+
+        /// The error every wheel call answers with once the camera has gone.
+        fn on_bus(&self) -> BackendResult<()> {
+            if self.departed.load(Ordering::SeqCst) {
+                return Err(BackendError("simulated SDK error: no device".to_string()));
+            }
+            Ok(())
         }
 
         /// Seed the slot the wheel reports, so a handshake can be handed a
@@ -1769,7 +1962,10 @@ pub(crate) mod mock {
                 std::thread::sleep(Duration::from_millis(1));
             }
             self.in_open.store(false, Ordering::SeqCst);
-            self.open.store(true, Ordering::SeqCst);
+            self.on_bus()?;
+            if !self.open.swap(true, Ordering::SeqCst) {
+                self.lost.store(false, Ordering::SeqCst);
+            }
             Ok(())
         }
         fn close(&self) -> BackendResult<()> {
@@ -1787,11 +1983,25 @@ pub(crate) mod mock {
         fn is_open(&self) -> BackendResult<bool> {
             Ok(self.open.load(Ordering::SeqCst))
         }
+        fn is_lost(&self) -> bool {
+            self.lost.load(Ordering::SeqCst)
+        }
+        /// The camera mock's rule; the wheel has no control to probe, so the
+        /// departure itself is the answer the probe would give.
+        fn verify_presence(&self) {
+            let Ok(_transition) = self.lifecycle.try_lock() else {
+                return;
+            };
+            if self.open.load(Ordering::SeqCst) && self.departed.load(Ordering::SeqCst) {
+                self.lost.store(true, Ordering::SeqCst);
+            }
+        }
         fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
             &self.lifecycle
         }
         fn get_number_of_filters(&self) -> BackendResult<u32> {
             self.handshake_calls.fetch_add(1, Ordering::SeqCst);
+            self.on_bus()?;
             if self.fail_handshake.load(Ordering::SeqCst) {
                 return Err(BackendError("simulated handshake failure".to_string()));
             }
@@ -1799,9 +2009,11 @@ pub(crate) mod mock {
         }
         fn get_position(&self) -> BackendResult<u32> {
             self.get_position_calls.fetch_add(1, Ordering::SeqCst);
+            self.on_bus()?;
             Ok(*self.position.lock())
         }
         fn set_position(&self, position: u32) -> BackendResult<()> {
+            self.on_bus()?;
             if self.defer_move.load(Ordering::SeqCst) {
                 *self.pending.lock() = Some(position);
             } else {
@@ -1934,5 +2146,140 @@ mod conn_tests {
             "physical handle must be closed once both devices are disconnected — \
              a flag/refcount desync would leak it open"
         );
+    }
+
+    /// A simulated camera with a CFW that leaves the bus while `departure`
+    /// exists, and the camera and wheel handles on one connection over it.
+    fn departing_pair(
+        departure: &std::path::Path,
+    ) -> (
+        Arc<SharedCameraConnection>,
+        QhyCameraHandle,
+        QhyFilterWheelHandle,
+    ) {
+        let camera = qhyccd_rs::Camera::new_simulated(
+            qhyccd_rs::simulation::SimulatedCameraConfig::default()
+                .with_filter_wheel(7)
+                .with_departure_file(departure),
+        );
+        let conn = SharedCameraConnection::new(camera);
+        let cam = QhyCameraHandle::new(conn.clone());
+        let fw = QhyFilterWheelHandle::new(conn.clone());
+        (conn, cam, fw)
+    }
+
+    #[test]
+    fn a_camera_still_on_the_bus_is_not_marked_lost() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (_conn, cam, _fw) = departing_pair(&dir.path().join("departed"));
+        cam.open().unwrap();
+
+        cam.verify_presence();
+
+        assert!(!cam.is_lost());
+    }
+
+    #[test]
+    fn a_departed_camera_marks_the_connection_lost_for_both_devices() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let departure = dir.path().join("departed");
+        let (conn, cam, fw) = departing_pair(&departure);
+        cam.open().unwrap();
+        fw.open().unwrap();
+
+        std::fs::write(&departure, b"").unwrap();
+        fw.verify_presence();
+
+        assert!(cam.is_lost() && fw.is_lost());
+        // Lost is not closed: both devices still hold the handle, and nothing
+        // but their disconnects lets it go.
+        assert!(cam.is_open().unwrap() && fw.is_open().unwrap());
+        assert!(conn.camera().is_open().unwrap());
+    }
+
+    #[test]
+    fn presence_is_not_judged_for_a_device_that_does_not_hold_the_handle() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let departure = dir.path().join("departed");
+        let (_conn, cam, fw) = departing_pair(&departure);
+        fw.open().unwrap();
+
+        std::fs::write(&departure, b"").unwrap();
+        cam.verify_presence();
+
+        assert!(!cam.is_lost(), "the camera holds nothing to judge");
+    }
+
+    #[test]
+    fn presence_is_not_judged_while_a_transition_holds_the_lifecycle_lock() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let departure = dir.path().join("departed");
+        let (conn, cam, _fw) = departing_pair(&departure);
+        cam.open().unwrap();
+        std::fs::write(&departure, b"").unwrap();
+
+        let transition = conn.lifecycle_lock().try_lock().expect("lock free");
+        cam.verify_presence();
+        assert!(
+            !cam.is_lost(),
+            "a probe inside a transition gives no verdict"
+        );
+
+        drop(transition);
+        cam.verify_presence();
+        assert!(cam.is_lost());
+    }
+
+    #[test]
+    fn a_connect_cannot_join_a_connection_another_device_holds_lost() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let departure = dir.path().join("departed");
+        let (_conn, cam, fw) = departing_pair(&departure);
+        cam.open().unwrap();
+        fw.open().unwrap();
+        std::fs::write(&departure, b"").unwrap();
+        cam.verify_presence();
+        std::fs::remove_file(&departure).unwrap();
+
+        cam.close().unwrap();
+        let refused = cam.open().unwrap_err();
+
+        assert!(
+            refused.0.contains("left the bus"),
+            "unexpected refusal: {refused}"
+        );
+        assert!(!cam.is_open().unwrap());
+    }
+
+    #[test]
+    fn a_fresh_open_after_every_device_let_go_clears_the_lost_mark() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let departure = dir.path().join("departed");
+        let (conn, cam, fw) = departing_pair(&departure);
+        cam.open().unwrap();
+        fw.open().unwrap();
+        std::fs::write(&departure, b"").unwrap();
+        cam.verify_presence();
+        assert!(cam.is_lost());
+        cam.close().unwrap();
+        fw.close().unwrap();
+        assert!(!conn.camera().is_open().unwrap(), "physically closed");
+
+        std::fs::remove_file(&departure).unwrap();
+        cam.open().unwrap();
+
+        assert!(!cam.is_lost() && !fw.is_lost());
+    }
+
+    #[test]
+    fn a_departed_camera_cannot_be_reopened() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let departure = dir.path().join("departed");
+        let (_conn, cam, _fw) = departing_pair(&departure);
+        std::fs::write(&departure, b"").unwrap();
+
+        cam.open().unwrap_err();
+
+        assert!(!cam.is_open().unwrap());
     }
 }

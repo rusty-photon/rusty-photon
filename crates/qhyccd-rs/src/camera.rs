@@ -735,6 +735,12 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
+            // `OpenQHYCCD` finds no device for an id that has left the bus.
+            if !state.on_bus() {
+                let error = QHYError::Sdk { op: "open_camera" };
+                tracing::error!(error = ?error);
+                return Err(error);
+            }
             state.is_open = true;
             drop(state);
             Ok(())
@@ -810,7 +816,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             state.is_initialized = true;
@@ -891,7 +897,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             state.stream_mode = Some(mode);
@@ -926,7 +932,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             // An index this target cannot address is out of range by definition.
@@ -966,7 +972,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             state.binning = (bin_x, bin_y);
@@ -1000,7 +1006,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             state.debayer_enabled = on;
@@ -1040,7 +1046,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             state.roi = roi;
@@ -1102,7 +1108,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             Ok(state.roi)
@@ -1134,7 +1140,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             state.bit_depth = mode;
@@ -1190,7 +1196,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             Ok(state.config.model.clone())
@@ -1244,7 +1250,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             Ok(state.config.firmware_version.clone())
@@ -1282,7 +1288,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             Ok(state.config.camera_type)
@@ -1343,7 +1349,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             Ok(state.config.chip_info)
@@ -1397,7 +1403,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             Ok(state.config.overscan_area)
@@ -1451,7 +1457,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             Ok(state.config.effective_area)
@@ -1487,7 +1493,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             state.live_mode_active = true;
@@ -1523,7 +1529,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             state.live_mode_active = false;
@@ -1571,7 +1577,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             Ok(state.calculate_buffer_size())
@@ -1663,7 +1669,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             if !state.live_mode_active {
@@ -1798,7 +1804,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
 
@@ -1895,7 +1901,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             state.start_exposure();
@@ -1943,7 +1949,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             Ok(state.get_remaining_exposure_us())
@@ -1979,7 +1985,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             state.stop_exposure();
@@ -2016,7 +2022,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             state.abort_exposure();
@@ -2059,7 +2065,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return None;
             }
             // For CamColor the payload is the Bayer pattern value; for any other
@@ -2112,7 +2118,7 @@ impl Camera {
             // Write lock: reading `CONTROL_CURTEMP` advances the poll-based cooling
             // ramp (`SimulatedCameraState::update_temperature`).
             let mut state = self.state.write();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             // Handle special controls
@@ -2197,7 +2203,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             state
@@ -2240,7 +2246,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let mut state = self.state.write();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             // Handle special controls
@@ -2327,7 +2333,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             Ok(state.config.filter_wheel_slots > 0)
@@ -2540,7 +2546,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             // The real path reports the count in a `u32` out-parameter, so a
@@ -2600,7 +2606,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             let name = usize::try_from(index)
@@ -2648,7 +2654,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             let resolution = usize::try_from(index)
@@ -2695,7 +2701,7 @@ impl Camera {
         #[cfg(feature = "simulation")]
         {
             let state = self.state.read();
-            if !state.is_open {
+            if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
             Ok(state.readout_mode)

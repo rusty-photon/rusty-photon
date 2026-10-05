@@ -127,7 +127,8 @@ async fn try_read_exposure_member(world: &mut CameraWorld, member: String, _devi
         "LastExposureStartTime" => camera.last_exposure_start_time().await.err(),
         "LastExposureDuration" => camera.last_exposure_duration().await.err(),
         "ImageArray" => camera.image_array().await.err(),
-        other => panic!("unknown exposure-state member: {other}"),
+        "CCDTemperature" => camera.ccd_temperature().await.err(),
+        other => panic!("unknown member: {other}"),
     };
     world.last_error_code = error.map(|e| e.code.raw());
 }

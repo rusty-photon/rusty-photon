@@ -492,7 +492,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   back after the close reports the disconnect rather than a fabricated
   "no cooler" (E11). Serializing the probe against the close instead would mean
   holding the handle across a blocking USB call, which is what dispatching off
-  the executor exists to avoid. The members that never touch a device
+  the executor exists to avoid. The same "absent" from a handle that is still
+  open, on a camera that has left the bus, is C9's to catch. The members that never touch a device
   (`CanStopExposure`, `CanPulseGuide`, `CanAsymmetricBin`) answer throughout.
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
   camera does not affect the others enumerated on the same service.
@@ -689,7 +690,77 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   The lock spans the decision and the act, because splitting them is the race,
   and it is taken by `set_connected` and by a readout-mode change (RM1, which
   re-runs `InitQHYCCD`) alone, so a `Connected` read — the one every health poll
-  makes — never queues behind a close waiting out its drain.
+  makes — never queues behind a close waiting out its drain. (C9's presence
+  check only *tries* it, and gives no verdict when it is held.)
+- **C9.** **A camera that has left the bus reads disconnected.** A camera that
+  loses its power or its cable while open keeps its SDK handle, and nothing in
+  the handle says so: the flag `Connected` reads is this driver's own, set by a
+  connect and cleared by a disconnect. Left there, the driver answered
+  `Connected == true`, `CameraState == Idle` and every cached member — the
+  geometry, `BinX`, `Gain`, `Offset`, `ReadoutMode` — as though the camera were
+  present, while every member that reached the SDK failed, and failed as the
+  wrong thing: `IsQHYCCDControlAvailable` on a dead handle answers "not
+  available", so on a QHY600M whose 12 V had been cut `CanSetCCDTemperature`
+  read `false` and `CCDTemperature` / `CoolerOn` read `NOT_IMPLEMENTED` — a
+  camera reporting it has no cooler (observed on the Windows field rig,
+  2026-09-26). A client that reads capabilities at connect would plan a night
+  without cooling, and rp's reconnect supervisor, which takes `Connected == true`
+  as healthy, would never re-establish it.
+
+  So **an SDK failure asks whether the device is still there.** The QHY SDK has
+  no "device removed" status — every failure is the same `QHYCCD_ERROR` — so the
+  question is put as a probe of the one control every connect requires,
+  `CamSingleFrameMode` (C1): a camera that passed the handshake has it, and the
+  SDK stops answering for it once the device has gone. It is asked after any SDK
+  call that fails, after every capability probe (whose "absent" is an answer
+  rather than a failure, so the failure path alone would never ask it — E11),
+  and after a capture that fails (E9). A probe that answers "absent" marks the
+  **physical connection lost**, logged once at `warn`, and from that moment both
+  ASCOM devices on it — the camera and its CFW (C8) — answer
+  `Connected == false`, and every member that takes the connected check answers
+  `NOT_CONNECTED`, the cache-served ones included. The request that noticed
+  answers `NOT_CONNECTED` too, rather than whichever error its call site spells
+  a dead handle as.
+
+  The verdict is withheld in two places, because **a false "lost" costs more
+  than a late one**: it ends a live session, and the reconnect a supervisor
+  answers it with runs `InitQHYCCD`, which homes a CFW (C5). It is not given on
+  a handle this device no longer holds — that is the disconnect race C3 already
+  reports. Nor is it given while a connect, a disconnect or a readout-mode
+  change holds the connection's lifecycle lock (C8): those run `OpenQHYCCD`,
+  `InitQHYCCD` and `CloseQHYCCD`, and a probe landing among them would be asking
+  a camera in transition rather than one that has gone. A device that really
+  has gone is found out by the next failure outside those windows. The probe and
+  the mark are made under the lock the connection's open and close take, so a
+  probe cannot judge one physical handle and mark the next.
+
+  **Lost is not closed.** The driver closes nothing on its own: a capture may
+  still be inside the SDK on that handle, and closing under it is the
+  use-after-free C3 exists to prevent. The session ends when a client ends it.
+  `Connected = false` on a lost camera releases it through the ordinary
+  disconnect (C3) and succeeds once the device is released, whatever
+  `CloseQHYCCD` says about a device that is no longer there. `Connected = true`
+  releases it the same way and then connects afresh, so a client that sees
+  `Connected == false` and reconnects — rp's supervisor does exactly that — gets
+  either a working camera or the C2 failure, never the lost session back. A
+  connect is refused while another device on the same physical connection still
+  holds the lost handle (the CFW, say): the open would join a handle the SDK no
+  longer answers for, so every device on it has to be released first.
+
+  **The check is lazy.** `Connected` turns false at the first SDK failure after
+  the camera leaves, not when it leaves: the `Connected` read itself, and the
+  cache-served members, never reach the SDK (C8, GO1). A client that reads only
+  those finds out at its next exposure, cooler read or capability probe. And
+  **what brings a camera back is outside this contract.** The SDK finds cameras
+  when it scans (C0); whether `OpenQHYCCD` finds a camera that has dropped off
+  the bus and come back, without a scan, is unmeasured. A reload or a restart
+  re-enumerates (C0); hotplug re-enumeration is #1173's.
+
+  **Owed to hardware:** that the SDK stops answering `IsQHYCCDControlAvailable`
+  for *every* control once the device has gone was observed on Windows, for
+  `Cooler`; it has not been measured for `CamSingleFrameMode`, nor on Linux.
+  Where the SDK went on answering for a departed camera, the probe would find it
+  present and the driver would behave as it did before this rule — no worse.
 
 ### Geometry, binning, ROI
 
@@ -1493,6 +1564,12 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   adopted as the settled slot and the cache resumes serving it. Reporting the
   decoded number instead would have given `Names` an index it has no entry for.
 - **FW3.** `FocusOffsets` returns zeros per filter in v0.
+- **FW4.** The wheel shares its camera's physical connection, so it shares C9:
+  once the connection is marked lost — by the camera or by the wheel's own
+  failed SDK call, which asks the same question — the wheel reads
+  `Connected == false` and its members answer `NOT_CONNECTED`. `Connected =
+  false` releases it, and a reconnect is refused until the camera has been
+  released too.
 
 ---
 
@@ -1797,6 +1874,26 @@ Layered per [`testing.md`](../skills/testing.md).
   set while an exposure is in flight included — and what `Gain` and `Offset`
   then report; what an exposure arms, in what order and on every exposure
   (GO2, R2) is pinned by the unit tests against the mock's call log.
+- **A camera that leaves the bus (C9, FW4)** — `camera_departure.feature`
+  starts the `simulation` binary with the hidden `--simulation-departure-file
+  <path>` flag, which builds the default simulated camera
+  (`SimulatedCameraConfig::sdk_default()`) with `qhyccd-rs`'s departure file:
+  while the file exists the camera keeps its handle and answers every call as
+  a closed one does, `None` from `is_control_available` included, and cannot be
+  opened. The suite creates and removes the file, so the scenarios run the
+  shipped `SharedCameraConnection` and its presence check end to end. The
+  `conn_tests` in `backend.rs` pin the check's rules against the same
+  simulator — no verdict on a handle the device does not hold or while the
+  lifecycle lock is held, one lost mark for both devices, a connect refused
+  from joining a lost connection, the mark cleared by a fresh open. Unit tests
+  drive the device side through `MockCameraHandle::leave_bus` /
+  `MockFilterWheelHandle::leave_bus`, which reproduce that rule on the mock's
+  own flags; the capture that loses its camera mid-frame, the withheld
+  verdict while a transition holds the lock, and a close that fails on a
+  departed camera are reached only there. Both doubles model one hardware
+  observation — the SDK failing a capability probe on a camera whose 12 V was
+  cut — so, like the readout-mode knobs, they show the driver does what that
+  reading says until C9's probe has been measured on hardware.
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)
   — launches the production binary (built `--features conformu`, which pulls in
   `simulation`) via `bdd_infra::ServiceHandle::try_start` and drives the official
@@ -2191,6 +2288,13 @@ the "how" decisions made while building.
 - **Readout modes in the simulation.** The `qhyccd-rs` simulation has one mode
   and one geometry. The mode lists and the mode-5 geometry measured on rig2
   (RM1) are what it should be seeded from if it is to model modes.
+- **Noticing a departed camera without a failing call.** C9 is lazy: a client
+  that reads only `Connected` and the cache-served members never reaches the
+  SDK, so it is told at its next exposure or cooler read rather than when the
+  camera left. A presence check on a timer would close that gap, at the cost of
+  SDK traffic beside a capture — and its first question, whether
+  `CamSingleFrameMode` is a sound probe on every platform, is still owed to
+  hardware (C9).
 - **FastReadout** validation on real hardware.
 - **PulseGuide** / `CanPulseGuide`.
 - **Focuser consolidation.** `qhyccd-rs` also covers QHY focusers; a future

@@ -43,6 +43,9 @@ pub struct CameraWorld {
     // Config knobs set by Given steps before the service starts.
     pub filter_names: Option<Vec<String>>,
     pub empty_backend: bool,
+    /// The file whose existence takes the simulated camera off the bus (C9);
+    /// `None` starts a camera that never leaves.
+    pub departure_file: Option<std::path::PathBuf>,
 
     // Result stashes ("When does, Then asserts").
     pub last_error_code: Option<u16>,
@@ -122,6 +125,18 @@ impl CameraWorld {
             ServiceHandle::start_with_args(
                 env!("CARGO_PKG_NAME"),
                 &["--config", &config_path, "--simulation-empty"],
+            )
+            .await
+        } else if let Some(departure) = &self.departure_file {
+            let departure = departure.to_str().expect("utf8 departure path");
+            ServiceHandle::start_with_args(
+                env!("CARGO_PKG_NAME"),
+                &[
+                    "--config",
+                    &config_path,
+                    "--simulation-departure-file",
+                    departure,
+                ],
             )
             .await
         } else {
