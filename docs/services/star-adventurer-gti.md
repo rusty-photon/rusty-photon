@@ -1316,15 +1316,18 @@ runs for `duration` from the host's point of view.
 What the host cannot see is how the motor board applies a period
 change. Measured on the GTi (below), every rate change on a running
 axis advances the encoder a little **forward**, on top of the rate
-change itself: about +1.4 ticks net over an East pulse and +3.2 over a
-West one at the default guide rate — 0.03 and 0.08 s of RA, the West
-figure over ConformU's 0.07 s tolerance. The live-rate path cancels it
-by moving the restore: it runs the shifted rate for
-`duration − steps / (r_pulse − r_sidereal)` seconds, where `steps` is
-`mount.ra_pulse_edge_steps.east` / `.west` in encoder ticks and the
-rates are in ticks per second. With the defaults (the pier1
-measurements, 1.38 and 3.23 ticks) a West pulse ends 153 ms early and
-an East pulse 66 ms late. A West pulse shorter than its trim is run as
+change itself. Over a whole pulse at the default guide rate the board
+adds one of two amounts, about +0.65 or +2.4 ticks, East and West
+alike: up to 0.06 s of RA, against ConformU's 0.07 s tolerance. A pose
+keeps its level for minutes; what selects the level is not known. The
+live-rate path cancels the steps by moving the restore: it runs the
+shifted rate for `duration − steps / (r_pulse − r_sidereal)` seconds,
+where `steps` is `mount.ra_pulse_edge_steps.east` / `.west` in encoder
+ticks and the rates are in ticks per second. The defaults, 1.5 ticks
+each way, sit midway between the two levels, so a pulse is off by at
+most 0.9 tick (0.02 s of RA) at either. With them a West pulse ends
+71 ms early and an East pulse 71 ms late. A West pulse shorter than its
+trim is run as
 a shift immediately followed by the restore: it cannot be made shorter
 than that, and delivers the edge steps alone. The trim is clamped to
 ±0.5 s: it divides a few ticks by the pulse's rate difference, so a tiny
@@ -1437,7 +1440,43 @@ are on issue #1299:
   sidereal +1.69 ticks (means). A `:J1` sent to a running axis adds
   +1.43; one from standstill adds none (−0.25 ± 0.67). The live-rate
   pulse nets +1.38 ± 0.40 ticks (East) and +3.23 ± 0.20 (West), which
-  is what `ra_pulse_edge_steps` defaults to.
+  is what `ra_pulse_edge_steps` first defaulted to.
+
+That probe measured one pose. An operator-run session on 2026-10-05
+measured the edge steps across the arc, through the running service's
+Alpaca `PulseGuide`, reading them from its TRACE wire log: a
+fixed-slope fit through the send-dated `:j1` samples either side of
+each pulse. It pulsed RA 16 times (5 s and 1 s, East and West) at each
+of 11 poses at Dec 80, mech HA −10.5 to −1.5, on both pier sides. The
+edge steps take two levels, not a curve over the arc:
+
+| Mech HA (h) | East (ticks) | West (ticks) |
+|---|---|---|
+| −10.5 | +0.36 | +0.56 |
+| −9 (three visits) | +0.07 to +0.90 | +0.65 to +0.87 |
+| −7.5 | +1.00 | +0.39 |
+| −6 | +0.60 | +2.28 |
+| −4.5 | +0.50 | +2.50 |
+| −3 (three visits) | +2.11 to +2.51 | +2.26 to +2.63 |
+| −1.5 | +2.58 | +2.45 |
+
+Each cell is the mean of six 5 s pulses (SE 0.1–0.3 tick).
+
+- Pooled over all pulses, the levels are +0.64 ± 0.08 and
+  +2.44 ± 0.08 ticks East, and +0.65 ± 0.08 and +2.37 ± 0.07 West
+  (mean ± SE).
+- A pose holds its level through all 16 pulses, about two minutes, and
+  each revisit came back on the same level.
+- The pier side and the pulse length make no difference.
+- What selects the level is open. Every pose reached by a slew that
+  ran the RA count down read low, East and West; of the six reached by
+  one that ran it up, West read high at all six and East at four. The
+  session's order tied the pose to the slew that reached it, so it
+  cannot tell the two apart.
+- The probe's +3.23 West, at the park pose by another method, sits
+  above both levels.
+
+`ra_pulse_edge_steps` defaults to the midpoint, 1.5 ticks each way.
 
 **Dec sign convention.** `PulseGuide(guideNorth)` moves the OTA toward
 `+Dec` on both sides of the pier. The Dec encoder is not a proxy for
@@ -2305,7 +2344,7 @@ loudly at load instead of being silently ignored.
     "cw_exclusion_zone": { "min_hours": 0.95, "max_hours": 11.05 },
     "tracking_guard_margin_hours": 0.05,
     "min_altitude_degrees": 0.0,
-    "ra_pulse_edge_steps": { "east": 1.38, "west": 3.23 },
+    "ra_pulse_edge_steps": { "east": 1.5, "west": 1.5 },
     "park_ra_ticks": null,
     "park_dec_ticks": null,
     "flip_policy": {
@@ -2395,13 +2434,16 @@ Notes:
   pulse on a tracking axis, beyond the commanded rate change. The
   live-rate pulse moves its restore to cancel it; see "Timing, and the
   edge-step trim" under [§PulseGuide lifecycle](#pulseguide-lifecycle).
-  Defaults `{ "east": 1.38, "west": 3.23 }` were measured on the pier1
-  GTi (firmware 3.48) at the default 0.5 × guide rate. The steps vary
-  with the load on the mount, the firmware and the guide rate, so a rig
-  that guides at another rate, or reads its ConformU East/West legs
-  consistently off, should measure its own (issue #1362 tracks
-  measuring them with `doctor`). Each value must be finite in
-  `[-20, 20]`; `0` disables the trim for that direction.
+  Defaults `{ "east": 1.5, "west": 1.5 }` sit midway between the two
+  levels the pier1 GTi (firmware 3.48) runs at, at the default
+  0.5 × guide rate; see "What the rig measured" under
+  [§PulseGuide lifecycle](#pulseguide-lifecycle). The steps vary with
+  the load on the mount, the firmware and the guide rate, so a rig that
+  guides at another rate, or reads its ConformU East/West legs
+  consistently off, should measure its own, at more than one pose: a
+  single pose shows only one level (issue #1362 tracks measuring them
+  with `doctor`). Each value must be finite in `[-20, 20]`; `0`
+  disables the trim for that direction.
 - `park_ra_ticks` / `park_dec_ticks` are written by `SetPark` and read
   on every connect; absent (or `null`) at first run, populated once
   `SetPark` is called. Operators may set them by hand to pin a known
@@ -3203,6 +3245,18 @@ Historical baselines (`alpacaprotocol`-only or partial
 The evidence trail is [`docs/validation/`](../validation/README.md);
 this service's runs, newest first:
 
+- **2026-10-05 — RA pulse edge steps across the arc (for #1362)** on
+  the field rig, packaged arm64 nightly of `7d6f73b`, through the
+  running service's Alpaca `PulseGuide`, with the edge steps read from
+  its TRACE wire log. 176 East/West pulses at 11 poses, Dec 80, mech
+  HA −10.5 to −1.5 on both pier sides. It settled that the board's edge
+  steps over a pulse take one of two levels, about +0.65 and +2.4
+  ticks, rather than one constant per rig, and the
+  `ra_pulse_edge_steps` defaults moved to their midpoint. The table is
+  under "What the rig measured" in
+  [§PulseGuide lifecycle](#pulseguide-lifecycle). There is no record:
+  this was not a ConformU run.
+
 - **2026-10-03 — goto stop-coast probe (for #1287)** on the field rig,
   service stopped, starting from `ApPark3`, using
   `examples/probe_stop_coast.rs` over USB. 28 gotos of 30° were each
@@ -3227,7 +3281,7 @@ this service's runs, newest first:
   - a live `:I1` is accepted and applied at once (240/240);
   - a stray `:I1` never starts a stopped axis;
   - `:K1` stops a tracking axis in ~4 ms;
-  - every rate change adds a small forward step, which `ra_pulse_edge_steps` defaults to.
+  - every rate change adds a small forward step, which `ra_pulse_edge_steps` first defaulted to.
 
   The measurements are listed under "What the rig measured" in
   [§PulseGuide lifecycle](#pulseguide-lifecycle), and the full tables

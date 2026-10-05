@@ -48,8 +48,8 @@ const RESTORE_ATTEMPTS: u32 = 3;
 const RETRY_BACKOFF: Duration = Duration::from_millis(50);
 /// Largest shift, either way, the edge-step trim may make to a pulse's
 /// run. The trim divides a few ticks by the pulse's rate difference, so a
-/// tiny guide rate would stretch it without bound (1.38 ticks at 0.001 ×
-/// sidereal is 33 s); the `GTi`'s defaults trim by 66 and 153 ms.
+/// tiny guide rate would stretch it without bound (1.5 ticks at 0.001 ×
+/// sidereal is 36 s); the `GTi`'s defaults trim by 71 ms.
 const MAX_TRIM_SECONDS: f64 = 0.5;
 /// `:f` poll cadence while waiting for a pulse's axis to stop. There is
 /// no fixed wait before the first poll: on the `GTi` a `:K` from a
@@ -812,13 +812,13 @@ mod tests {
 
     #[test]
     fn the_default_trim_ends_a_west_pulse_early_and_an_east_pulse_late() {
-        // West: -3.23 ticks / (63.17 - 42.12 ticks/s) = -153 ms.
-        // East: -1.38 ticks / (21.06 - 42.12 ticks/s) = +66 ms.
+        // West: -1.5 ticks / (63.17 - 42.12 ticks/s) = -71 ms.
+        // East: -1.5 ticks / (21.06 - 42.12 ticks/s) = +71 ms.
         let steps = RaPulseEdgeSteps::default();
         let west = edge_step_trim_seconds(GuideDirection::West, WEST_HALF, SIDEREAL, TMR, steps);
         let east = edge_step_trim_seconds(GuideDirection::East, EAST_HALF, SIDEREAL, TMR, steps);
-        assert!((west + 0.1534).abs() < 0.001, "west trim {west}");
-        assert!((east - 0.0655).abs() < 0.001, "east trim {east}");
+        assert!((west + 0.0712).abs() < 0.001, "west trim {west}");
+        assert!((east - 0.0712).abs() < 0.001, "east trim {east}");
     }
 
     #[test]
@@ -834,7 +834,7 @@ mod tests {
 
     #[test]
     fn the_trim_is_clamped_for_tiny_guide_rates() {
-        // 0.001 × sidereal: the unclamped trim would be 1.38 / 0.042 s.
+        // 0.001 × sidereal: the unclamped trim would be 1.5 / 0.042 s.
         let steps = RaPulseEdgeSteps::default();
         let east_tiny = pulse_guide_step_period(SIDEREAL, 0.999);
         let trim = edge_step_trim_seconds(GuideDirection::East, east_tiny, SIDEREAL, TMR, steps);
