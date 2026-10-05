@@ -28,7 +28,7 @@ tracing = { workspace = true }
 # (docs/services/doctor.md "Serial ports"). Crate-local: nothing else reads
 # the registry. Every Windows service already links it through hyper-util.
 [target.'cfg(windows)'.dependencies]
-windows-registry = "0.6.1"
+windows-registry = "0.100.0"
 
 [dev-dependencies]
 tempfile = { workspace = true }
