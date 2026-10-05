@@ -849,13 +849,22 @@ dangerous combination. The rule bifurcates by runner kind
   purged (the bullet on self-patching below), wipe
   `/etc/machine-id`, run `cloud-init clean`, power off, and convert to the new
   template — then roll the template VMID forward in the host's slot table
-  (`/etc/rp-runner/slots`) and `systemctl restart rp-runner-pool`. Validate the new template
-  by dispatching `proxmox-runner-test.yml` **before** rolling the VMID
-  forward, and validate with the whole job: `bazel build` alone never spawns
-  OmniSim, so it cannot see a template that can build but cannot test. The
-  workflow's test steps force execution (`--cache_test_results=no`) for the
-  same reason: with the remote cache warm, a cached pass starts no OmniSim
-  at all.
+  (`/etc/rp-runner/slots`) and `systemctl restart rp-runner-pool`, keeping
+  the old template for rollback. There is no slot to try a template on
+  before the roll, so validation happens twice, at either end of it:
+  1. **Before capture**, inside the template copy: run the job's fast and
+     BDD test steps with `--cache_test_results=no` as the job account (the
+     warmup bullets below say how to run as that account on each OS). This
+     is the gate; a template that fails it is never captured.
+  2. **After the roll**, once every slot shows the new base (the lineage
+     check in the *Rolling the VMID forward* bullet below): dispatch
+     `proxmox-runner-test.yml`, which
+     runs the whole job on a real clone. `bazel build` alone never spawns
+     OmniSim, so it cannot see a template that can build but cannot test,
+     and the workflow's test steps force execution for the same reason,
+     since with the remote cache warm a cached pass starts no OmniSim at
+     all. A dispatch sent before the lineage check passes can land on a
+     clone of the old template and prove nothing.
   * **A booted template copy powers itself off 30 minutes after boot unless
     its one-job loop is stopped.** On both OSes the loop waits for a
     `.jitconfig` that a rebuild never injects, and its no-config deadline
@@ -914,8 +923,8 @@ dangerous combination. The rule bifurcates by runner kind
     A slot that has sat on the old template far longer than its peers is
     worth checking for this before anything else.
 
-    This is what makes "validate before rolling forward" easy to get wrong in
-    the other direction. A `proxmox-runner-test.yml` dispatched straight after
+    This is what makes the post-roll validation dispatch easy to get wrong.
+    A `proxmox-runner-test.yml` dispatched straight after
     the restart can land on a clone of the template being replaced and come
     back green without having touched the new one — a pass that proves
     nothing, and reads exactly like a pass that proves everything. Confirm
