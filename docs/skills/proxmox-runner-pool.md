@@ -852,7 +852,10 @@ dangerous combination. The rule bifurcates by runner kind
   (`/etc/rp-runner/slots`) and `systemctl restart rp-runner-pool`. Validate the new template
   by dispatching `proxmox-runner-test.yml` **before** rolling the VMID
   forward, and validate with the whole job: `bazel build` alone never spawns
-  OmniSim, so it cannot see a template that can build but cannot test.
+  OmniSim, so it cannot see a template that can build but cannot test. The
+  workflow's test steps force execution (`--cache_test_results=no`) for the
+  same reason: with the remote cache warm, a cached pass starts no OmniSim
+  at all.
   * **A booted template copy powers itself off 30 minutes after boot unless
     its one-job loop is stopped.** On both OSes the loop waits for a
     `.jitconfig` that a rebuild never injects, and its no-config deadline
