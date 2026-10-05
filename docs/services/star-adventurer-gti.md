@@ -1318,8 +1318,9 @@ change. Measured on the GTi (below), every rate change on a running
 axis advances the encoder a little **forward**, on top of the rate
 change itself. Over a whole pulse at the default guide rate the board
 adds one of two amounts, about +0.65 or +2.4 ticks, East and West
-alike: up to 0.06 s of RA, against ConformU's 0.07 s tolerance. A pose
-keeps its level for minutes; what selects the level is not known. The
+alike: up to 0.06 s of RA, against ConformU's 0.07 s tolerance. The
+RA axis position picks the level: on pier1, West switches from low to
+high between mech HA −7.5 and −6 h, East between −4.5 and −3 h. The
 live-rate path cancels the steps by moving the restore: it runs the
 shifted rate for `duration − steps / (r_pulse − r_sidereal)` seconds,
 where `steps` is `mount.ra_pulse_edge_steps.east` / `.west` in encoder
@@ -1468,13 +1469,35 @@ Each cell is the mean of six 5 s pulses (SE 0.1–0.3 tick).
 - A pose holds its level through all 16 pulses, about two minutes, and
   each revisit came back on the same level.
 - The pier side and the pulse length make no difference.
-- What selects the level is open. Every pose reached by a slew that
-  ran the RA count down read low, East and West; of the six reached by
-  one that ran it up, West read high at all six and East at four. The
-  session's order tied the pose to the slew that reached it, so it
-  cannot tell the two apart.
+- Every pose reached by a slew that ran the RA count down read low,
+  East and West, and most reached by one that ran it up read high. The
+  session's order tied the pose to the slew that reached it, so a
+  second session separated them (below).
 - The probe's +3.23 West, at the park pose by another method, sits
   above both levels.
+
+A second session later the same day crossed the pose with the slew
+that reached it: mech −9, −6 and −3 h, each reached by slews running
+the count up and down, from 0.2 to 7.5 h long (20 visits; each cell
+is the mean of four 5 s pulses, SE 0.1–0.5 tick):
+
+| Mech HA (h) | Slews that reached it (direction, hours) | East (ticks) | West (ticks) |
+|---|---|---|---|
+| −10.5 | down 1.7, down 4.5 | +0.72, +0.59 | +0.44, +1.23 |
+| −9 | down 3, down 6, up 1.5, down 6.2, down 3 | +0.13 to +0.76 | +0.38 to +0.91 |
+| −8.8 | up 0.2 | +0.70 | +0.60 |
+| −6 | down 3, up 3, down 4.5, down 3, up 3 | +0.77 to +1.68 | +2.35 to +3.04 |
+| −3 | up 6, up 3, down 1.5, up 7.5 | +2.38 to +2.77 | +2.46 to +2.71 |
+| −2.8 | up 0.2 | +3.06 | +2.61 |
+| −1.5 | up 7.5, up 4.5 | +2.85, +2.27 | +2.61, +2.63 |
+
+Every visit read its pose's level, whatever the slew: the level is set
+by the RA axis position, not by how the axis got there. West switches
+from low to high between mech −7.5 and −6 h, East between −4.5 and
+−3 h, though East at −7.5 and −6 read up to +1.2, above its low
+level. At the poses both sessions visited they agree within 0.25 tick,
+except at −6: East read +0.67 in the first and +1.21 in the second,
+West +2.37 and +2.75.
 
 `ra_pulse_edge_steps` defaults to the midpoint, 1.5 ticks each way.
 
@@ -3248,12 +3271,14 @@ this service's runs, newest first:
 - **2026-10-05 — RA pulse edge steps across the arc (for #1362)** on
   the field rig, packaged arm64 nightly of `7d6f73b`, through the
   running service's Alpaca `PulseGuide`, with the edge steps read from
-  its TRACE wire log. 176 East/West pulses at 11 poses, Dec 80, mech
-  HA −10.5 to −1.5 on both pier sides. It settled that the board's edge
+  its TRACE wire log. Two sessions: 176 East/West pulses at 11 poses,
+  Dec 80, mech HA −10.5 to −1.5 on both pier sides; then 160 pulses
+  over 20 visits that crossed the pose with the direction and length
+  of the slew that reached it. They settled that the board's edge
   steps over a pulse take one of two levels, about +0.65 and +2.4
-  ticks, rather than one constant per rig, and the
-  `ra_pulse_edge_steps` defaults moved to their midpoint. The table is
-  under "What the rig measured" in
+  ticks, picked by the RA axis position, rather than one constant per
+  rig; the `ra_pulse_edge_steps` defaults moved to their midpoint. The
+  tables are under "What the rig measured" in
   [§PulseGuide lifecycle](#pulseguide-lifecycle). There is no record:
   this was not a ConformU run.
 
