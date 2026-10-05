@@ -1478,8 +1478,9 @@ Each cell is the mean of six 5 s pulses (SE 0.1–0.3 tick).
 
 A second session later the same day crossed the pose with the slew
 that reached it: mech −9, −6 and −3 h, each reached by slews running
-the count up and down, from 0.2 to 7.5 h long (20 visits; each cell
-is the mean of four 5 s pulses, SE 0.1–0.5 tick):
+the count up and down, from 0.2 to 7.5 h long. There were 20 visits;
+each value below is one visit's mean of four 5 s pulses (SE 0.1–0.5
+tick), and a row with several visits lists each one or their range:
 
 | Mech HA (h) | Slews that reached it (direction, hours) | East (ticks) | West (ticks) |
 |---|---|---|---|
@@ -1494,10 +1495,11 @@ is the mean of four 5 s pulses, SE 0.1–0.5 tick):
 Every visit read its pose's level, whatever the slew: the level is set
 by the RA axis position, not by how the axis got there. West switches
 from low to high between mech −7.5 and −6 h, East between −4.5 and
-−3 h, though East at −7.5 and −6 read up to +1.2, above its low
-level. At the poses both sessions visited they agree within 0.25 tick,
-except at −6: East read +0.67 in the first and +1.21 in the second,
-West +2.37 and +2.75.
+−3 h. East at −7.5 and −6 sits above its low level, though: +1.0 at
+−7.5 in the first session, and +0.77 to +1.68 per visit at −6 in the
+second (+1.21 over all its pulses there). Per pose, the two sessions'
+means agree within 0.25 tick, except at −6: East +0.67 in the first
+and +1.21 in the second, West +2.37 and +2.75.
 
 `ra_pulse_edge_steps` defaults to the midpoint, 1.5 ticks each way.
 
