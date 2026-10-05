@@ -848,10 +848,26 @@ dangerous combination. The rule bifurcates by runner kind
   timers are still masked and `unattended-upgrades`/`needrestart` still
   purged (the bullet on self-patching below), wipe
   `/etc/machine-id`, run `cloud-init clean`, power off, and convert to the new
-  template — then roll the template VMID forward in `rp-runner-pool.sh`. Validate the new template
+  template — then roll the template VMID forward in the host's slot table
+  (`/etc/rp-runner/slots`) and `systemctl restart rp-runner-pool`. Validate the new template
   by dispatching `proxmox-runner-test.yml` **before** rolling the VMID
   forward, and validate with the whole job: `bazel build` alone never spawns
   OmniSim, so it cannot see a template that can build but cannot test.
+  * **A booted template copy powers itself off 30 minutes after boot unless
+    its one-job loop is stopped.** On both OSes the loop waits for a
+    `.jitconfig` that a rebuild never injects, and its no-config deadline
+    (`tools/ci/runner-guest/`) then powers the VM off — mid-warmup, if one is
+    running. Stop the loop without disabling it: on Linux `systemctl stop
+    gha-runner` (disabling it would leave every clone unable to take a job),
+    on Windows `Stop-ScheduledTask -TaskName gha-runner` (the task stays armed
+    for the next logon). Every boot re-arms it, so stop it again after any
+    reboot; a dist-upgrade that installs a kernel needs one before the
+    warmup. Before capture, confirm the unit still reads `enabled` and the
+    task `Ready`. `qm guest exec` waits for its command and times out, so
+    run a long warmup detached: on Linux `systemd-run --unit=<name> -p
+    User=ci -p WorkingDirectory=/home/ci <script>`, which runs it as the job
+    account under the service manager's environment rather than root's; on
+    Windows, see the console-session bullet in the Windows notes below.
   * **Rolling the VMID forward does not move the clones that are already
     running, and the pool's own startup line will not tell you otherwise.**
     The reconcile matches a clone by VMID and injection marker, never by
@@ -1353,6 +1369,38 @@ dangerous combination. The rule bifurcates by runner kind
     `one-job.ps1` — an old copy without the sweep reintroduces the hazard on
     the very rebuild that just refreshed the debris. Emptying the directory
     by hand before capture is optional tidiness, not the fix.
+  * **Warm the template as the job account, in the console session — not
+    through `qm guest exec`.** Guest-agent commands run as SYSTEM in session
+    0. There is no desktop there, so every OmniSim-backed BDD suite fails
+    exactly as it would under a SYSTEM runner (the interactive-session
+    bullet above), and Bazel puts its install base and repository cache
+    under SYSTEM's profile instead of
+    `C:\Users\Administrator\_bazel_Administrator`, where a job looks for
+    them. Drive the warmup through a one-shot scheduled task registered for
+    `Administrator` with `-LogonType Interactive`, which runs inside the
+    autologon session just as `gha-runner` does. Have it write a log file,
+    poll that with `qm guest exec`, and unregister the task before capture.
+
+    Reproduce the job's shell and action keys exactly: Git bash with
+    `--noprofile --norc` (how the runner invokes `shell: bash`), the
+    checkout at `C:\actions-runner\_work\rusty-photon\rusty-photon`,
+    `GITHUB_WORKSPACE` exported in that backslash spelling (every Windows
+    action key carries it; see the `GITHUB_WORKSPACE` bullet above),
+    `user.bazelrc` holding `startup --output_base=C:/b`, and the flags a PR
+    job passes. The validation half wants `--cache_test_results=no` on the
+    fast and BDD steps, because a cached pass validates nothing about the
+    guest.
+
+    Copy scripts in with
+    `qm guest exec <vmid> --pass-stdin 1 -- powershell -NoProfile -Command
+    "[IO.File]::WriteAllText('C:/path/x.sh', [Console]::In.ReadToEnd())"`,
+    which keeps LF line endings; Git bash will not run a script that picked
+    up CRLF. Delete the checkout before capture, since `actions/checkout`
+    recreates it. `Remove-Item -Recurse` on the checkout removed its
+    `bazel-*` junctions without following them on the last rebuild (the
+    output base under `C:\b` kept all 12 GB of its outputs), but check that
+    size after the delete all the same: a junction that is followed empties
+    the cache every clone inherits.
 * What lives where: **VMIDs are on the hypervisor**, in `/etc/rp-runner/slots`.
   They used to sit in the repo in a `SLOTS` array — defensible while the pool
   ran on one host, since a VMID is local to that host and meaningless
