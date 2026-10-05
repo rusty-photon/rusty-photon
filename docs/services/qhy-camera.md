@@ -750,17 +750,40 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   **The check is lazy.** `Connected` turns false at the first SDK failure after
   the camera leaves, not when it leaves: the `Connected` read itself, and the
   cache-served members, never reach the SDK (C8, GO1). A client that reads only
-  those finds out at its next exposure, cooler read or capability probe. And
-  **what brings a camera back is outside this contract.** The SDK finds cameras
-  when it scans (C0); whether `OpenQHYCCD` finds a camera that has dropped off
-  the bus and come back, without a scan, is unmeasured. A reload or a restart
-  re-enumerates (C0); hotplug re-enumeration is #1173's.
+  those finds out at its next exposure, cooler read or capability probe. A
+  capture in flight finds out by itself, but only when its frame is due. It
+  sleeps through the exposure, and the progress poll and readout that follow
+  are the calls that fail. And **bringing a camera back is not something this
+  contract does on its own.** On Linux a plain reconnect found a camera that had
+  been unplugged and plugged back in, with no scan and no reload, although it
+  came back as a new USB device: `OpenQHYCCD` finds it by its id. A camera that
+  was absent when the service started is a different case; finding it still
+  needs a reload or a restart (C0), and hotplug re-enumeration belongs to #1173.
 
-  **Owed to hardware:** that the SDK stops answering `IsQHYCCDControlAvailable`
-  for *every* control once the device has gone was observed on Windows, for
-  `Cooler`; it has not been measured for `CamSingleFrameMode`, nor on Linux.
-  Where the SDK went on answering for a departed camera, the probe would find it
-  present and the driver would behave as it did before this rule — no worse.
+  **Measured on hardware**, on Linux with SDK 26.06.04 (the
+  [2026-10-05 record](../validation/2026-10-05-qhy-camera-qhy178m-cfw-linux-departure/README.md)):
+
+  - **Cable pulled with the camera idle.** The SDK stops answering
+    `IsQHYCCDControlAvailable` for `CamSingleFrameMode`, and for `Cooler`. The
+    first SDK call after the pull reported the disconnect, after which both
+    devices read `Connected = false`.
+  - **Cable pulled mid-exposure.** The camera read disconnected about 31 s into
+    a 30 s frame, through the capture's own question and with no client call.
+  - **12 V cut, camera still on USB.** A QHY178M whose 12 V is cut stays on USB
+    and answers every call, and the probes run against it did not mark it lost.
+
+  **Still owed:**
+
+  - **Windows.** On Windows the SDK was seen failing the probe only for
+    `Cooler`, on rig2's QHY600M, which drops off USB with its 12 V.
+  - **A departure during the readout itself.** In the mid-exposure run the SDK
+    refused `get_image_size` before `GetQHYCCDSingleFrame` was entered, so
+    whether that call returns or hangs on a camera that vanishes inside it is
+    unmeasured.
+
+  Where the SDK went on answering for a departed camera, the probe would find
+  it present and the driver would behave as it did before this rule, so no
+  worse.
 
 ### Geometry, binning, ROI
 
@@ -1890,10 +1913,11 @@ Layered per [`testing.md`](../skills/testing.md).
   `MockFilterWheelHandle::leave_bus`, which reproduce that rule on the mock's
   own flags; the capture that loses its camera mid-frame, the withheld
   verdict while a transition holds the lock, and a close that fails on a
-  departed camera are reached only there. Both doubles model one hardware
-  observation — the SDK failing a capability probe on a camera whose 12 V was
-  cut — so, like the readout-mode knobs, they show the driver does what that
-  reading says until C9's probe has been measured on hardware.
+  departed camera are reached only there. Both doubles model what the SDK does
+  once a camera has gone, which is to fail every call and the capability probe
+  with them. That behaviour has been measured on Linux, for a cable pulled from
+  an idle camera and for one pulled mid-exposure (C9). Windows and a departure
+  inside the readout remain the reading alone.
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)
   — launches the production binary (built `--features conformu`, which pulls in
   `simulation`) via `bdd_infra::ServiceHandle::try_start` and drives the official
@@ -2292,9 +2316,8 @@ the "how" decisions made while building.
   that reads only `Connected` and the cache-served members never reaches the
   SDK, so it is told at its next exposure or cooler read rather than when the
   camera left. A presence check on a timer would close that gap, at the cost of
-  SDK traffic beside a capture — and its first question, whether
-  `CamSingleFrameMode` is a sound probe on every platform, is still owed to
-  hardware (C9).
+  SDK traffic beside a capture. Its probe, `CamSingleFrameMode`, has been
+  measured on Linux, but it is still owed on Windows (C9).
 - **FastReadout** validation on real hardware.
 - **PulseGuide** / `CanPulseGuide`.
 - **Focuser consolidation.** `qhyccd-rs` also covers QHY focusers; a future
