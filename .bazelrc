@@ -298,18 +298,26 @@ build:ci --disk_cache=
 # would make a fresh lock read as stale on Windows.
 common:ci --lockfile_mode=error
 
-# DIAGNOSTIC (PR #474/#473): windows-latest's `bazel build //...` step
-# deterministically fails a couple of ppba-driver rust_test binaries with
-# rustc E0463 "can't find crate", varying WHICH target loses the race across
-# reruns, even with the sandbox bypassed (build:windows --spawn_strategy=local
-# above) and even with --noremote_accept_cached. The dumped .params files show
-# correct --extern flags, so it isn't a deps/lockfile bug. Remaining
-# hypothesis: with --remote_download_outputs=toplevel above, intermediate
-# .rlib artifacts aren't downloaded upfront -- they're lazily fetched from the
-# remote CAS only when a local action needs them as input. If that per-action
-# JIT fetch is unreliable on Windows, a local compile action could start with
-# an incompletely-materialized dependency, exactly matching what's observed.
-# Force full downloads on Windows to test/rule this out.
+# Windows keeps every remote-cache-hit output on disk (`all`), where Linux
+# downloads `toplevel` (above) and macOS `minimal` (below). It went in as a
+# diagnostic for a ppba-driver E0463 "can't find crate", on the theory that
+# lazily fetched intermediate rlibs were unreliable on Windows. That theory was
+# ruled out: the E0463 was the duplicate `digest` chain behind the rust-embed
+# hold (docs/workspace.md). The setting stays for two measured reasons.
+#
+# It is load-bearing for the Windows doc tests. Under `toplevel` or `minimal`,
+# //crates/rusty-photon-camera-core:rusty-photon-camera-core_doc_test fails to
+# link with LNK1181, cannot open input file
+# 'external\...\librustls_platform_verifier-*.rlib': the doc test links a
+# dependency rlib that only `all` has put on disk by the time it runs.
+#
+# And dropping it would not make the Windows build faster. A clone's first
+# build spends most of its time re-hashing the files it reads, since a fresh
+# Bazel server has no digests, and about four fifths of that is the Rust
+# toolchain and the external crate sources, which every download mode hashes.
+# Only the outputs are what `all` adds. On clones of one warm template a no-op
+# build took 35-50 s under `all`, 75 s under `toplevel` and 53 s under
+# `minimal`.
 build:windows --remote_download_outputs=all
 
 # macOS: never bulk-download remote-cache-hit outputs. The recurring macOS
@@ -420,34 +428,33 @@ build:ci --remote_timeout=15
 test:ci --spawn_strategy=local
 
 # Bypass the sandbox on Windows for the plain `bazel build` step too (not just
-# `test:ci` above). Root-caused via PR #474/#473: windows-latest's `bazel build
-# //...` step deterministically (but non-repeatably as to WHICH target) failed
-# a couple of ppba-driver rust_test binaries (bdd, conformu_integration) with
-# rustc E0463 "can't find crate" for several of their `--extern` deps — the
-# dumped .params files showed the `--extern` flags were correct and complete,
-# so this isn't a deps/lockfile bug; it's the referenced .rlib not being
-# reliably present in the sandboxed input tree at execution time on Windows
-# (sandboxed input materialization on Windows is symlink/copy-fallback based
-# and known-fragile — see rules_rust's own acknowledged weak Windows support).
+# `test:ci` above). It went in while chasing a ppba-driver E0463 "can't find
+# crate" that looked like rlibs missing from the sandboxed input tree; that
+# E0463 turned out to be the duplicate `digest` chain behind the rust-embed
+# hold (docs/workspace.md), not sandboxing. The bypass stays because sandboxed
+# input materialization on Windows is symlink/copy-fallback based and
+# known-fragile — see rules_rust's own acknowledged weak Windows support.
 # `build:windows` (not `build:ci`) so it isn't gated to CI and stays scoped to
 # the one platform that showed the failure; Linux/macOS keep the sandbox on
 # `bazel build`.
 build:windows --spawn_strategy=local
 
-# --jobs on Windows: the E0463 "can't find crate" race above is a
-# low-probability per-file contention that compounds with the number of
-# actions staged concurrently (input file writes racing NTFS metadata lag
-# and antivirus scanning), not a bug against any one crate -- so Windows
-# wants a lower action ceiling than the `build:ci --jobs=64` that Linux and
-# macOS run. A fixed 8 was tuned against the 4-vCPU GitHub-hosted runner and
+# --jobs on Windows: a lower action ceiling than the `build:ci --jobs=64`
+# that Linux and macOS run, because Windows processes are heavier. The same
+# cold build and test measured about half again Linux's peak memory on
+# identical pool slots, with the peak at the link-heavy tail of `bazel build`,
+# where the most actions are live at once. (The ceiling was first set against
+# an E0463 "can't find crate" thought to be a concurrency race; that turned
+# out to be a dependency-graph bug, as the download-mode note above says, so
+# memory is the reason that stands.) A fixed 8 was tuned against the 4-vCPU GitHub-hosted runner and
 # is now a fossil: the self-hosted pool clones are 6-core, and their remote
 # cache is a LAN host co-located with the runners, so the cache-I/O overlap
 # that justifies over-subscribing --jobs past the core count (see build:ci
 # above) applies here even more strongly. HOST_CPUS*2 scales with the box:
 # 8 on the 4-vCPU hosted fallback (reproducing the value tuned there) and 12
-# on the 6-core pool clones. If the E0463 signature returns on Windows,
-# dial the multiplier down (HOST_CPUS*1.5, or plain HOST_CPUS) rather than
-# back to a fixed host-specific number.
+# on the 6-core pool clones. If Windows jobs run short of memory, dial the
+# multiplier down (HOST_CPUS*1.5, or plain HOST_CPUS) rather than back to a
+# fixed host-specific number.
 build:windows --jobs=HOST_CPUS*2
 
 # issue #676: the `test:ci --local_test_jobs=HOST_CPUS*1.25` cores+1
