@@ -222,8 +222,9 @@ pub struct MountConfig {
     /// the design doc's
     /// [§"`PulseGuide` lifecycle"](../../../docs/services/star-adventurer-gti.md#pulseguide-lifecycle).
     ///
-    /// Defaults are the pier1 measurements (firmware 3.48, default
-    /// 0.5 × guide rate). The steps vary with the load on the mount, the
+    /// Defaults are set from the pier1 measurements (firmware 3.48,
+    /// default 0.5 × guide rate), midway between the two levels the board
+    /// runs at there. The steps vary with the load on the mount, the
     /// firmware and the guide rate, so a rig can carry its own. Validated
     /// at deserialize time by [`RaPulseEdgeSteps`].
     #[serde(default)]
@@ -731,8 +732,8 @@ impl From<MinAltitudeDegrees> for f64 {
 // `#[serde(default)]` and no `default_*` free functions are needed.
 
 /// Largest `|steps|` [`RaPulseEdgeSteps`] accepts, in encoder ticks. The
-/// `GTi` measures 1.38 / 3.23; 20 ticks (≈ 7″) leaves room for a heavier
-/// rig without admitting a unit mistake such as arcseconds.
+/// `GTi` measures 0.6–2.4; 20 ticks (≈ 7″) leaves room for a heavier rig
+/// without admitting a unit mistake such as arcseconds.
 pub const MAX_RA_PULSE_EDGE_STEPS: f64 = 20.0;
 
 /// Net forward encoder ticks the motor board adds over one East and one
@@ -791,11 +792,12 @@ impl RaPulseEdgeSteps {
 }
 
 impl Default for RaPulseEdgeSteps {
-    /// Measured on the pier1 `GTi` (firmware 3.48) at the default
-    /// 0.5 × guide rate: +1.38 ± 0.40 ticks per East pulse and
-    /// +3.23 ± 0.20 per West one.
+    /// Midway between the two levels the pier1 `GTi` (firmware 3.48) runs
+    /// at, at the default 0.5 × guide rate: about +0.65 and +2.4 ticks per
+    /// pulse, East and West alike. Either level is then off by at most
+    /// 0.9 tick (0.02 s of RA).
     fn default() -> Self {
-        Self::new(1.38, 3.23)
+        Self::new(1.5, 1.5)
     }
 }
 
@@ -2303,9 +2305,9 @@ mod tests {
     }
 
     #[test]
-    fn ra_pulse_edge_steps_default_to_the_pier1_measurement() {
+    fn ra_pulse_edge_steps_default_to_midway_between_the_pier1_levels() {
         let steps = MountConfig::default().ra_pulse_edge_steps;
-        assert_eq!((steps.east(), steps.west()), (1.38, 3.23));
+        assert_eq!((steps.east(), steps.west()), (1.5, 1.5));
     }
 
     #[test]
