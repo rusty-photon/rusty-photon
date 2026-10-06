@@ -665,7 +665,12 @@ EAF; those belong to the other zwo services.)
   releases it the same way and then connects afresh. A client that reconnects,
   as rp's supervisor does, gets either a working camera or C2's failure, never
   the lost session back, and a fresh connect reseeds gain and offset (GO4) and
-  starts the exposure state clean.
+  starts the exposure state clean. A release is not idempotent the way an open
+  is, so connection changes run one at a time: `set_connected` reads the
+  session and acts on it under one lifecycle lock. Two `Connected = true`
+  requests after a departure, a supervisor's and a client's say, therefore open
+  one fresh session between them. The second finds it live, rather than
+  releasing it and running `ASIInitCamera` a second time.
 
   **The check is lazy.** `Connected` turns false at the first SDK call after the
   camera leaves, not at the moment it leaves. The `Connected` read and the
@@ -979,11 +984,12 @@ EAF; those belong to the other zwo services.)
     first SDK call and publishes only if it has not moved. A disconnect
     landing while a handshake runs therefore leaves the closed camera's
     cells empty, whatever point the handshake had reached.
-  - **The first handshake to publish wins.** Two concurrent connects can
-    each run a handshake — the open is idempotent, so nothing stops the
-    second — and a handshake publishes only into a cell that is still
-    empty, so the later one cannot replace the first one's seed, or a set a
-    client has made since, with its own older reading.
+  - **The first handshake to publish wins.** A handshake publishes only into
+    a cell that is still empty, so a later one cannot replace an earlier
+    one's seed, or a set a client has made since, with its own older
+    reading. Client requests no longer run two handshakes at once, since
+    `set_connected` runs connection changes one at a time (C6), but the
+    connect path keeps this guard rather than depending on that.
 
   The bin and ROI, which the handshake also resets, are not emptied: through
   a reconnect's handshake they still answer from the previous session. That
@@ -1365,7 +1371,7 @@ else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md). Phase E landed **45 unit tests**
 and **57 BDD scenarios** (all green), plus a full **ConformU** pass; the suite
-now stands at **138 unit tests** (with `--all-features`; 123 without, since the
+now stands at **139 unit tests** (with `--all-features`; 124 without, since the
 `simulation` feature gates `lib.rs`'s three `simulation_tests` and the twelve
 `backend::handle_tests` that drive the production handle against the `zwo-rs`
 simulation) and **85 BDD scenarios**.
@@ -1442,16 +1448,21 @@ simulation) and **85 BDD scenarios**.
   so when the removal leaves no mark (`answer_removals_unmarked`, the window
   in which a reconnect has cleared it); a failure from a camera still on the
   bus leaving the session alone; a camera that leaves partway through the
-  connect handshake (`leave_bus_after`) failing the connect; and the release
-  and reconnect. Both doubles model the SDK header's account of a removed
+  connect handshake (`leave_bus_after`) failing the connect; the release and
+  reconnect; and two concurrent reconnects opening one fresh session between
+  them (the mock's `opens` count), with the test holding the lifecycle lock
+  while both requests read the lost session. Both doubles model the SDK header's account of a removed
   camera, not a measured one (C6), so the hardware run C6 lists is what will
   confirm them. Mutation-checked: dropping the readout's mark fails the
   capture's handle test and BDD scenario; a readout abort that drops its
   stop's removal fails the readout handle test; a connected check that
   ignores the mark, a `set_connected` that does not release a lost session, a
-  member that takes its verdict from the mark rather than the answer, or a
-  connect that ignores a removal its handshake met, each fail the device
-  tests.
+  member that takes its verdict from the mark rather than the answer, a
+  connect that ignores a removal its handshake met, or a `set_connected` that
+  acts on the session it read before its blocking task, each fail the device
+  tests. One variant is not reliably caught: a read made inside the blocking
+  task but before the lock is taken. It races the first request's transition,
+  so whether the test sees it depends on thread scheduling.
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)
   — launches the production binary with `--features simulation` and runs
   `bdd_infra::run_conformu("camera", …)`. Skipped when

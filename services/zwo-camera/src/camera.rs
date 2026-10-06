@@ -239,6 +239,17 @@ struct DeviceState {
     /// Deadline of an in-flight ST4 guide pulse (asynchronous `PulseGuide`);
     /// `None` when not guiding. `IsPulseGuiding` is `now < deadline` (PG1/PG2).
     pulse_guide_until: Mutex<Option<SystemTime>>,
+    /// One connection change at a time. `set_connected` reads the handle's
+    /// session and acts on it under this lock, so a second request sees what
+    /// the first left behind. Without it, two `Connected = true` requests
+    /// after a departure would both see the lost session, and the second
+    /// would release the fresh one the first had just opened and run
+    /// `ASIInitCamera` again (C5, C6).
+    ///
+    /// **Lock order:** outermost. It is held across `connect` and
+    /// `disconnect`, which take the handle's camera lock and several of the
+    /// locks above, and nothing takes it while holding another.
+    lifecycle_lock: Mutex<()>,
 }
 
 impl DeviceState {
@@ -263,6 +274,7 @@ impl DeviceState {
             result_lock: Mutex::new(()),
             frame_setup_lock: Mutex::new(()),
             pulse_guide_until: Mutex::new(None),
+            lifecycle_lock: Mutex::new(()),
         }
     }
 
@@ -394,10 +406,37 @@ impl ZwoCamera {
             .ok_or_else(|| ASCOMError::invalid_value("readout mode index out of range"))
     }
 
+    /// Bring the device to `connected`: read the handle's session under
+    /// [`DeviceState::lifecycle_lock`] and act on it there, so concurrent
+    /// requests run one after another, each from what the last left behind.
+    ///
+    /// A camera that has left the bus is held but not connected (C6): its
+    /// handle is still open, and only a disconnect lets it go. Either way a
+    /// client asks, that release comes first. `Connected = false` ends there,
+    /// and `Connected = true` goes on to a fresh connect rather than taking
+    /// the lost session back.
+    fn transition(&self, connected: bool) -> ASCOMResult<()> {
+        let transition = self.state.lifecycle_lock.lock();
+        let session = self.handle.session();
+        let outcome = if already_there(session, connected) {
+            Ok(())
+        } else if session == SessionState::Lost {
+            debug!(camera = %self.unique_id, "releasing a session whose camera left the bus");
+            self.disconnect()
+                .and_then(|()| if connected { self.connect() } else { Ok(()) })
+        } else if connected {
+            self.connect()
+        } else {
+            self.disconnect()
+        };
+        drop(transition);
+        outcome
+    }
+
     fn connect(&self) -> ASCOMResult<()> {
-        // `set_connected`'s is_open check and this transition are not one
-        // atomic step, so two concurrent connects can both get here. That is
-        // safe without further guarding: `handle.open()` is check-then-open
+        // `set_connected` runs this under `lifecycle_lock`, having read the
+        // session there, so two client requests never both get here. The path
+        // would be safe for two anyway: `handle.open()` is check-then-open
         // under the handle's own lock (a redundant open is a no-op), and
         // `open_handshake` only reads SDK state and (re)writes the same
         // locally-cached values — nothing on this path is non-idempotent,
@@ -711,6 +750,18 @@ impl ZwoCamera {
     }
 }
 
+/// Whether a `Connected = connected` request finds nothing to change: the
+/// device already holds a live session, or holds none at all. A lost session
+/// (C6) always has something to change, its release.
+fn already_there(session: SessionState, connected: bool) -> bool {
+    session
+        == if connected {
+            SessionState::Live
+        } else {
+            SessionState::Closed
+        }
+}
+
 /// What a failed SDK call answers a client: `NOT_CONNECTED` when the SDK
 /// reported the camera removed (C6), and the call site's own `otherwise` for
 /// any other failure. Decided from the call's own error, never from the
@@ -1021,37 +1072,19 @@ impl Device for ZwoCamera {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // A camera that has left the bus is held but not connected (C6): its
-        // handle is still open, and only a disconnect lets it go. Either way a
-        // client asks, that release comes first — `Connected = false` ends
-        // there, and `Connected = true` goes on to a fresh connect rather than
-        // taking the lost session back.
-        let session = self.handle.session();
-        let lost = session == SessionState::Lost;
-        if (connected && session == SessionState::Live)
-            || (!connected && session == SessionState::Closed)
-        {
+        // A request that would change nothing returns here, without the
+        // lifecycle lock: `session()` is one reading, so the answer is one
+        // any request still in flight could have left too.
+        if already_there(self.handle.session(), connected) {
             return Ok(());
         }
         // `connect`/`disconnect` do blocking SDK I/O — `ASIOpenCamera` enumerates
         // over USB and the handshake reads `control_caps` — so offload them off
         // the executor (ZwoCamera is cheap to clone: it is `Arc`-backed).
         let this = self.clone();
-        tokio::task::spawn_blocking(move || {
-            if lost {
-                debug!(camera = %this.unique_id, "releasing a session whose camera left the bus");
-                this.disconnect()?;
-            }
-            if connected {
-                this.connect()
-            } else if lost {
-                Ok(())
-            } else {
-                this.disconnect()
-            }
-        })
-        .await
-        .map_err(|e| ASCOMError::invalid_operation(format!("connect task failed: {e}")))?
+        tokio::task::spawn_blocking(move || this.transition(connected))
+            .await
+            .map_err(|e| ASCOMError::invalid_operation(format!("connect task failed: {e}")))?
     }
 
     async fn description(&self) -> ASCOMResult<String> {
@@ -4109,6 +4142,43 @@ mod tests {
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
         assert!(!handle.is_open());
         assert!(!device.connected().await.unwrap());
+    }
+
+    /// Two `Connected = true` requests after a departure run one after the
+    /// other, and the second finds the session the first opened. One fresh
+    /// open, then, and not a second release with another `ASIInitCamera`
+    /// that would reset the cooler the first session had just come up with
+    /// (C5, C6). The test holds the lifecycle lock while both requests pass
+    /// their lock-free check, which reads the lost session, so both are
+    /// queued behind it when it is let go.
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "held across the yields on purpose, so both requests queue behind it; only their blocking tasks, on other threads, take it"
+    )]
+    async fn concurrent_reconnects_after_a_departure_open_one_fresh_session() {
+        let (device, handle) = departed_device();
+        device.ccd_temperature().await.unwrap_err();
+        handle.return_to_bus();
+        let opens = handle.opens();
+
+        let held = device.state.lifecycle_lock.lock();
+        let requests = [(), ()].map(|()| {
+            let device = device.clone();
+            tokio::spawn(async move { device.set_connected(true).await })
+        });
+        // Current-thread runtime: each yield runs both spawned requests up to
+        // their blocking transition, which waits on the lock held here.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        drop(held);
+        for request in requests {
+            request.await.expect("request task").unwrap();
+        }
+
+        assert_eq!(handle.opens(), opens + 1, "one fresh session, opened once");
+        assert!(device.connected().await.unwrap());
     }
 
     /// Once the camera is back, a reconnect is a fresh session: the gain is

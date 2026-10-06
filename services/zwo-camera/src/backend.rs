@@ -1183,6 +1183,8 @@ pub(crate) mod mock {
         /// Whether a `CAMERA_REMOVED` answer marks the session lost; off only
         /// through [`Self::answer_removals_unmarked`].
         marks_removals: AtomicBool,
+        /// How many opens have actually opened the camera ([`Self::opens`]).
+        opens: std::sync::atomic::AtomicUsize,
     }
 
     /// How one mock [`capture`](CameraHandle::capture) call ended.
@@ -1218,6 +1220,7 @@ pub(crate) mod mock {
                 lost: AtomicBool::new(false),
                 departs_after: Mutex::new(None),
                 marks_removals: AtomicBool::new(true),
+                opens: std::sync::atomic::AtomicUsize::new(0),
             }
         }
     }
@@ -1352,6 +1355,13 @@ pub(crate) mod mock {
             *self.departs_after.lock() = Some(calls);
         }
 
+        /// How many opens so far have actually opened the camera; an open of
+        /// an already open handle is a no-op and is not counted. Each counted
+        /// open stands for an `ASIInitCamera` on the production handle (C5).
+        pub fn opens(&self) -> usize {
+            self.opens.load(Ordering::SeqCst)
+        }
+
         /// Put the camera back on the bus.
         pub fn return_to_bus(&self) {
             self.departed.store(false, Ordering::SeqCst);
@@ -1474,6 +1484,7 @@ pub(crate) mod mock {
             }
             if !self.open.swap(true, Ordering::SeqCst) {
                 self.lost.store(false, Ordering::SeqCst);
+                self.opens.fetch_add(1, Ordering::SeqCst);
             }
             Ok(())
         }
