@@ -634,13 +634,20 @@ EAF; those belong to the other zwo services.)
   session lost**, logged once at `warn`. From then on `Connected == false`, and
   every member that takes the connected check answers `NOT_CONNECTED`, the
   cache-served ones included. The request that got the answer answers
-  `NOT_CONNECTED` as well, rather than the code its call site would give. Any
-  of these SDK calls can be the one: the members' reads and writes, the
-  connect handshake, a capture's arm, readout poll and download, the
-  `ASIStopExposure` an abort sends while the frame integrates, and the
-  pulse-guide on and off. The mark is made under the lock the call ran under,
+  `NOT_CONNECTED` as well, rather than the code its call site would give. It
+  decides that from the answer itself, not from the mark, so a reconnect that
+  clears the mark before the request returns cannot turn it back into the call
+  site's code. Any of these SDK calls can be the one: the members' reads and
+  writes, the connect handshake, a capture's arm, readout poll and download,
+  the `ASIStopExposure` an abort or a stop sends, and the pulse-guide on and
+  off. A connect whose handshake meets the answer fails with C2's error, even
+  when the read that met it is one the handshake can do without, such as the
+  gain or the offset. The mark is made under the lock the call ran under,
   which is the lock an open and a close take, so it lands on the camera that
-  answered and never on one a reconnect has opened since.
+  answered and never on one a reconnect has opened since. The connected check
+  reads the handle and its mark together under that lock: a close clears the
+  mark as it lets the camera go, so two separate reads could describe a live
+  session that never existed.
 
   **Only `CAMERA_REMOVED` counts.** A timeout, a general error, `CAMERA_CLOSED`
   or `INVALID_ID` stays the failure it is, and the session survives it. A false
@@ -913,7 +920,7 @@ EAF; those belong to the other zwo services.)
   Neither getters nor setters touch the SDK, so neither waits out an
   integration or is refused as busy. They are not free of the capture
   entirely: like every member they pass the connected check, whose
-  `is_open()` takes the camera lock a capture holds through its arm and
+  `session()` read takes the camera lock a capture holds through its arm and
   through its readout and download, so a call landing then waits for that to
   end, as any member's would.
 
@@ -1358,8 +1365,8 @@ else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md). Phase E landed **45 unit tests**
 and **57 BDD scenarios** (all green), plus a full **ConformU** pass; the suite
-now stands at **135 unit tests** (with `--all-features`; 121 without, since the
-`simulation` feature gates `lib.rs`'s three `simulation_tests` and the eleven
+now stands at **138 unit tests** (with `--all-features`; 123 without, since the
+`simulation` feature gates `lib.rs`'s three `simulation_tests` and the twelve
 `backend::handle_tests` that drive the production handle against the `zwo-rs`
 simulation) and **85 BDD scenarios**.
 
@@ -1422,21 +1429,29 @@ simulation) and **85 BDD scenarios**.
   `backend::handle_tests` pin the handle's half against the same simulator: a
   `CAMERA_REMOVED` answer marks the session lost and leaves the camera held,
   any other failure leaves the session alone, a close and a fresh open start
-  unmarked, and a capture whose camera leaves while it integrates fails as a
-  removal and marks the session from its readout. `backend::error_tests` pin
+  unmarked, a capture whose camera leaves while it integrates fails as a
+  removal and marks the session from its readout, and a stop that reaches the
+  readout poll on a departed camera fails the readout as a removal rather than
+  ending it quietly. `backend::error_tests` pin
   that `CAMERA_REMOVED` is the one SDK code that crosses the seam as a
   removal, and that a removal keeps its kind when the arm names the control
   that failed (GO2). The unit tests drive the device side through
   `MockCameraHandle::leave_bus`, which reproduces the handle's rule on the
   mock's own flags: every member that reaches the SDK answering
-  `NOT_CONNECTED` whatever code its call site gives other failures, a failure
-  from a camera still on the bus leaving the session alone, and the release
+  `NOT_CONNECTED` whatever code its call site gives other failures, and still
+  so when the removal leaves no mark (`answer_removals_unmarked`, the window
+  in which a reconnect has cleared it); a failure from a camera still on the
+  bus leaving the session alone; a camera that leaves partway through the
+  connect handshake (`leave_bus_after`) failing the connect; and the release
   and reconnect. Both doubles model the SDK header's account of a removed
   camera, not a measured one (C6), so the hardware run C6 lists is what will
   confirm them. Mutation-checked: dropping the readout's mark fails the
-  capture's handle test and BDD scenario; a connected check that ignores the
-  mark, or a `set_connected` that does not release a lost session, each fail
-  the device tests.
+  capture's handle test and BDD scenario; a readout abort that drops its
+  stop's removal fails the readout handle test; a connected check that
+  ignores the mark, a `set_connected` that does not release a lost session, a
+  member that takes its verdict from the mark rather than the answer, or a
+  connect that ignores a removal its handshake met, each fail the device
+  tests.
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)
   — launches the production binary with `--features simulation` and runs
   `bdd_infra::run_conformu("camera", …)`. Skipped when

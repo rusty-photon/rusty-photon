@@ -27,7 +27,7 @@ bus while connected reads `Connected = false` once the SDK answers a call with
 `ASI_ERROR_CAMERA_REMOVED` (design doc C6). Phase E landed
 validated by **45 unit tests** (against the in-crate mock seam), **57 BDD
 scenarios**, and a full **ConformU** pass (both `alpacaprotocol` and
-`conformance` suites); the suite now stands at **135 unit tests** (the mock
+`conformance` suites); the suite now stands at **138 unit tests** (the mock
 seam, and the production handle against the `zwo-rs` simulation) and **85 BDD
 scenarios** — see the design doc's *Testing* section. Roadmap:
 

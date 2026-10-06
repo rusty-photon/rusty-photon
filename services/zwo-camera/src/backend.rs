@@ -96,6 +96,19 @@ impl BackendError {
 
 pub type BackendResult<T> = std::result::Result<T, BackendError>;
 
+/// What a [`CameraHandle`] holds, read in one step (see
+/// [`CameraHandle::session`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionState {
+    /// No camera is open.
+    Closed,
+    /// A camera is open, and the SDK has not reported it removed.
+    Live,
+    /// A camera is open, but the SDK has reported it removed since the open
+    /// (C6). It stays held until a close.
+    Lost,
+}
+
 /// The ROI + exposure parameters for a single capture, validated by the device.
 #[derive(Debug, Clone)]
 pub struct CaptureRequest {
@@ -230,14 +243,23 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// The camera's enumeration [`CameraInfo`] (cached; no open required).
     fn info(&self) -> CameraInfo;
 
+    /// Whether the handle holds a camera, and whether the SDK has answered a
+    /// call on it with `ASI_ERROR_CAMERA_REMOVED` since it was opened (C6).
+    ///
+    /// The two are one reading, never two: a close clears the lost mark as it
+    /// lets the camera go, so "open" read before it and "not lost" read after
+    /// would describe a live session that never existed.
+    fn session(&self) -> SessionState;
     /// Whether the handle holds an open camera — including one that has since
-    /// left the bus, which stays held until a close (see
-    /// [`is_lost`](Self::is_lost)).
-    fn is_open(&self) -> bool;
-    /// Whether the SDK has answered a call on the open camera with
-    /// `ASI_ERROR_CAMERA_REMOVED` since it was opened (C6). The camera is
-    /// still held, so only a close lets it go; a fresh open starts unmarked.
-    fn is_lost(&self) -> bool;
+    /// left the bus, which stays held until a close.
+    fn is_open(&self) -> bool {
+        self.session() != SessionState::Closed
+    }
+    /// Whether the open camera has been reported removed. Only a close lets
+    /// it go; a fresh open starts unmarked.
+    fn is_lost(&self) -> bool {
+        self.session() == SessionState::Lost
+    }
     /// Open the camera (a no-op when already open).
     ///
     /// # Errors
@@ -356,9 +378,8 @@ pub struct ZwoCameraHandle {
     /// the answering call ran under (see [`Self::note_removal`]), the clears
     /// under the lock an open and a close change the camera under — so it
     /// always describes the camera in the slot, never one a reconnect has
-    /// replaced. Read without the lock: [`CameraHandle::is_lost`] then costs
-    /// a connected check nothing beyond the [`CameraHandle::is_open`] it
-    /// already makes.
+    /// replaced. [`CameraHandle::session`] reads it under that lock too, beside
+    /// the slot, so the two are never read from different sessions.
     lost: AtomicBool,
 }
 
@@ -447,12 +468,17 @@ impl CameraHandle for ZwoCameraHandle {
         self.info.clone()
     }
 
-    fn is_open(&self) -> bool {
-        self.camera.lock().is_some()
-    }
-
-    fn is_lost(&self) -> bool {
-        self.lost.load(Ordering::SeqCst)
+    fn session(&self) -> SessionState {
+        let guard = self.camera.lock();
+        let session = if guard.is_none() {
+            SessionState::Closed
+        } else if self.lost.load(Ordering::SeqCst) {
+            SessionState::Lost
+        } else {
+            SessionState::Live
+        };
+        drop(guard);
+        session
     }
 
     fn open(&self) -> BackendResult<()> {
@@ -608,8 +634,8 @@ impl CameraHandle for ZwoCameraHandle {
 
 /// The readout half of a capture: poll the camera to readout completion
 /// (unless the frame was gracefully stopped, `preserve`), then download it.
-/// `Ok(None)` when an abort arrives mid-poll. Run under the camera lock, by
-/// [`ZwoCameraHandle::capture`] alone.
+/// `Ok(None)` when an abort arrives mid-poll, unless its stop finds the camera
+/// removed. Run under the camera lock, by [`ZwoCameraHandle::capture`] alone.
 fn read_out(
     camera: &zwo_rs::Camera,
     request: &CaptureRequest,
@@ -628,11 +654,11 @@ fn read_out(
         loop {
             match request.stop.load() {
                 StopRequest::Abort => {
-                    let _ = camera.stop_exposure();
+                    stop_in_readout(camera)?;
                     return Ok(None);
                 }
                 StopRequest::Preserve => {
-                    let _ = camera.stop_exposure();
+                    stop_in_readout(camera)?;
                     break;
                 }
                 StopRequest::None => {}
@@ -663,6 +689,18 @@ fn read_out(
     let mut buf = vec![0u8; frame_len];
     camera.download_exposure(&mut buf)?;
     Ok(Some(buf))
+}
+
+/// The `ASIStopExposure` a stop sends from the readout poll. Best-effort, as
+/// the integration's is: a refused stop changes nothing the abort or the
+/// download has already settled. A removal is the exception. It is the answer
+/// C6 marks the session on, so it goes back to the capture rather than being
+/// dropped.
+fn stop_in_readout(camera: &zwo_rs::Camera) -> BackendResult<()> {
+    match camera.stop_exposure().map_err(BackendError::from) {
+        Err(e) if e.is_removed() => Err(e),
+        _ => Ok(()),
+    }
 }
 
 // --- test mock -----------------------------------------------------------------
@@ -965,6 +1003,30 @@ mod handle_tests {
         assert!(err.is_removed(), "{err}");
         assert!(handle.is_lost());
     }
+
+    /// C6: a stop that reaches the readout poll, on a camera that has left,
+    /// fails the readout as a removal, for the capture to mark its session
+    /// by. An abort there used to come back as an ordinary `Ok(None)`.
+    #[test]
+    fn production_handle_readout_stop_on_a_departed_camera_fails_as_removed() {
+        for preserve in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let departure = dir.path().join("departed");
+            let handle = departing_sim_handle(&departure);
+            handle.open().unwrap();
+            let stop = Arc::new(StopSignal::new());
+            let request = sim_request(Duration::ZERO, &stop);
+            stop.request(preserve);
+            std::fs::write(&departure, b"").unwrap();
+
+            let guard = handle.camera.lock();
+            let camera = guard.as_ref().expect("an open camera");
+            let err = read_out(camera, &request, false).unwrap_err();
+            drop(guard);
+
+            assert!(err.is_removed(), "preserve = {preserve}: {err}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1115,6 +1177,12 @@ pub(crate) mod mock {
         /// The open session met a `CAMERA_REMOVED` answer (C6) — the mock's
         /// copy of the production handle's mark, set by [`Self::reach`].
         lost: AtomicBool,
+        /// Calls still to reach the camera before it leaves the bus
+        /// ([`Self::leave_bus_after`]); `None` when no departure is scheduled.
+        departs_after: Mutex<Option<usize>>,
+        /// Whether a `CAMERA_REMOVED` answer marks the session lost; off only
+        /// through [`Self::answer_removals_unmarked`].
+        marks_removals: AtomicBool,
     }
 
     /// How one mock [`capture`](CameraHandle::capture) call ended.
@@ -1148,6 +1216,8 @@ pub(crate) mod mock {
                 refused_reads: Mutex::new(Vec::new()),
                 departed: AtomicBool::new(false),
                 lost: AtomicBool::new(false),
+                departs_after: Mutex::new(None),
+                marks_removals: AtomicBool::new(true),
             }
         }
     }
@@ -1275,9 +1345,23 @@ pub(crate) mod mock {
             self.departed.store(true, Ordering::SeqCst);
         }
 
+        /// Take the camera off the bus once `calls` more calls have reached
+        /// it, so the departure lands partway through a multi-call sequence
+        /// such as the connect handshake.
+        pub fn leave_bus_after(&self, calls: usize) {
+            *self.departs_after.lock() = Some(calls);
+        }
+
         /// Put the camera back on the bus.
         pub fn return_to_bus(&self) {
             self.departed.store(false, Ordering::SeqCst);
+        }
+
+        /// Answer a departed camera's calls `CAMERA_REMOVED` without marking
+        /// the session lost. What a caller finds when a reconnect clears the
+        /// mark between the SDK's answer and the caller's look at the session.
+        pub fn answer_removals_unmarked(&self) {
+            self.marks_removals.store(false, Ordering::SeqCst);
         }
 
         /// What every call that reaches the camera meets first. A departed
@@ -1285,10 +1369,20 @@ pub(crate) mod mock {
         /// session lost — the production handle's rule (C6), reproduced on
         /// the mock's own flags.
         fn reach(&self) -> BackendResult<()> {
+            let mut departs_after = self.departs_after.lock();
+            match *departs_after {
+                Some(0) => {
+                    self.departed.store(true, Ordering::SeqCst);
+                    *departs_after = None;
+                }
+                Some(calls) => *departs_after = Some(calls - 1),
+                None => {}
+            }
+            drop(departs_after);
             if !self.departed.load(Ordering::SeqCst) {
                 return Ok(());
             }
-            if self.open.load(Ordering::SeqCst) {
+            if self.open.load(Ordering::SeqCst) && self.marks_removals.load(Ordering::SeqCst) {
                 self.lost.store(true, Ordering::SeqCst);
             }
             Err(zwo_rs::Error::Asi(zwo_rs::AsiError::CameraRemoved).into())
@@ -1363,12 +1457,14 @@ pub(crate) mod mock {
             self.info.clone()
         }
 
-        fn is_open(&self) -> bool {
-            self.open.load(Ordering::SeqCst)
-        }
-
-        fn is_lost(&self) -> bool {
-            self.lost.load(Ordering::SeqCst)
+        fn session(&self) -> SessionState {
+            if !self.open.load(Ordering::SeqCst) {
+                SessionState::Closed
+            } else if self.lost.load(Ordering::SeqCst) {
+                SessionState::Lost
+            } else {
+                SessionState::Live
+            }
         }
 
         fn open(&self) -> BackendResult<()> {

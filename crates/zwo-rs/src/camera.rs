@@ -1641,16 +1641,20 @@ mod tests {
         cam.pulse_guide_off(GuideDirection::West).unwrap();
     }
 
-    /// A departure-file path in a directory this test alone uses, under
-    /// Bazel's per-test `TEST_TMPDIR` when there is one. The file itself is
-    /// not created.
+    /// A departure-file path in a fresh scratch directory, under Bazel's
+    /// per-test `TEST_TMPDIR` when there is one. The directory goes when the
+    /// returned guard drops, failed test or not. The file itself is not
+    /// created.
     #[cfg(feature = "simulation")]
-    fn departure_path(test: &str) -> std::path::PathBuf {
+    fn departure_path() -> (tempfile::TempDir, std::path::PathBuf) {
         let root = std::env::var_os("TEST_TMPDIR")
             .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
-        let dir = root.join(format!("zwo-rs-{test}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join("departed")
+        let dir = tempfile::Builder::new()
+            .prefix("zwo-rs-departure-")
+            .tempdir_in(root)
+            .unwrap();
+        let path = dir.path().join("departed");
+        (dir, path)
     }
 
     /// While the departure file exists, every call on an open camera answers
@@ -1658,7 +1662,7 @@ mod tests {
     #[cfg(feature = "simulation")]
     #[test]
     fn a_departed_camera_answers_every_call_with_camera_removed() {
-        let departure = departure_path("departed-camera-calls");
+        let (_dir, departure) = departure_path();
         let sdk = Sdk::new().unwrap().with_departure_file(&departure);
         let cam = sdk.open_camera(0).unwrap();
         cam.control_value(ControlType::Gain).unwrap();
@@ -1699,7 +1703,6 @@ mod tests {
         for (call, answer) in answers {
             assert_eq!(answer.as_ref(), Some(&removed), "{call}");
         }
-        std::fs::remove_dir_all(departure.parent().unwrap()).unwrap();
     }
 
     /// While the departure file exists the SDK sees no camera at all: none is
@@ -1708,7 +1711,7 @@ mod tests {
     #[cfg(feature = "simulation")]
     #[test]
     fn a_departed_camera_can_be_neither_enumerated_nor_opened_until_it_returns() {
-        let departure = departure_path("departed-camera-open");
+        let (_dir, departure) = departure_path();
         let sdk = Sdk::new().unwrap().with_departure_file(&departure);
         std::fs::write(&departure, b"").unwrap();
 
@@ -1729,6 +1732,5 @@ mod tests {
             .unwrap()
             .control_value(ControlType::Gain)
             .unwrap();
-        std::fs::remove_dir_all(departure.parent().unwrap()).unwrap();
     }
 }
