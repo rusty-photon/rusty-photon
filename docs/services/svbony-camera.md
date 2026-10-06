@@ -44,7 +44,9 @@
 > backend seam as a status rather than as text, and the first call it answers
 > marks the session lost: `Connected` reads `false`, every member answers
 > `NOT_CONNECTED`, and a client's `Connected = false` or `true` releases the
-> lost session, the latter then connecting afresh. **Unmeasured on hardware:**
+> lost session, the latter then connecting afresh. Connects, disconnects and
+> releases are now serialized per device, so no reconnect overtakes a
+> handshake still running (C7). **Unmeasured on hardware:**
 > whether the SDK really answers `CAMERA_REMOVED` after a cable pull is owed
 > on the pier1 SV605CC. See "Enumeration & connection lifecycle" (C6).
 >
@@ -572,7 +574,8 @@ graph TD;
   exposure control + the armed gain and offset + trigger + the
   `SVBGetVideoData` read deadline of step 2d), and pulse-guide. `is_open`
   and `is_lost` — the mark an SDK call answering `CAMERA_REMOVED` leaves
-  (C6) — are backed by their own atomics,
+  (C6), read before `is_open` by a caller asking both — are backed by their
+  own atomics,
   independent of the mutex `capture` holds, so connection-state reads stay
   responsive during an in-flight exposure — the mutex is released between
   `capture`'s ROI/control setup and its trigger + `SVBGetVideoData` call,
@@ -915,9 +918,11 @@ one core at load average 65, see "Real-hardware validation").
   shape as qhy-camera's `SharedCameraConnection`), so exactly one racing
   connect runs the post-open handshake — the trigger-camera video-capture
   arm is not idempotent, and a second handshake would fail with the SDK's
-  "video mode active". The losing duplicate returns success immediately
-  without waiting for the winner's handshake; until that handshake
-  completes, cached-property reads report `NOT_CONNECTED` (their existing
+  "video mode active". A duplicate that finds the device already open
+  returns success immediately, without waiting for the winner's handshake;
+  one that read it closed queues behind that handshake (C7) and then finds
+  it open. Until the handshake completes, cached-property reads report
+  `NOT_CONNECTED` (their existing
   unpopulated-cache fallback) — the gain and offset members excepted,
   which answer as for a control the camera does not advertise (GO4). Pinned by the
   `concurrent_connect_requests_arm_video_capture_exactly_once` unit test.
@@ -1013,10 +1018,12 @@ one core at load average 65, see "Real-hardware validation").
   the same way and then connects afresh, so a client that sees `Connected ==
   false` and reconnects — rp's supervisor does exactly that — gets either a
   working camera or C2's failure, never the lost session back. The release is
-  made only while the camera is still lost, decided under the lock a close
-  forgets the gain and offset under (GO4), so of two clients reconnecting a
-  departed camera at once the second finds the first's fresh session and
-  leaves it alone. An open is refused while the handle still holds a lost
+  decided, and made, under C7's lifecycle lock, so of two clients reconnecting
+  a departed camera at once the second finds the first's fresh session and
+  leaves it alone. `Connected` reads the lost mark before the open flag, which
+  a close clears first, so a read that a release lands in the middle of never
+  pairs an open flag from before the release with a mark the release cleared.
+  An open is refused while the handle still holds a lost
   camera, and a handshake that finds the camera gone fails even where the step
   that found it is advisory (C1a), since a session on a departed camera is
   not one to publish.
@@ -1050,6 +1057,30 @@ one core at load average 65, see "Real-hardware validation").
   - Whether `CAMERA_CLOSED` or `INVALID_ID` shows up instead after a re-plug,
     and whether a plain reconnect then finds the camera without a
     re-enumeration.
+- **C7.** **Connection transitions are serialized per device.** A connect
+  (the open, its handshake, and the close a failed handshake ends in), a
+  disconnect, and C6's release run one at a time, under a per-device
+  lifecycle lock that also covers the decision of which one a request needs.
+  Without it a request could overtake a handshake still running: once an
+  advisory handshake step had found the camera gone (C1a, C6), a second
+  client that saw `Connected == false` could release the camera and, the
+  camera back on the bus, open a fresh session, which the overtaken handshake
+  would go on configuring — arming a trigger camera's video capture a second
+  time — and would close if a later step failed. A plain disconnect and
+  reconnect could overtake a handshake the same way. So a request decides
+  only once it holds the lock, from what it finds then: a reconnect behind a
+  handshake that a departure interrupted waits for that handshake to fail and
+  close its own session, then connects afresh. The lock is taken on the
+  blocking thread that runs the transition, so it is held for as long as the
+  transition runs, even when the request that started it is dropped. A
+  request whose device is already where it asks — open and not lost for
+  `Connected = true`, closed for `Connected = false` — answers from two atomic
+  reads without taking the lock, which is what lets C1's duplicate connect
+  return without waiting. This is
+  [`qhy-camera`'s C8](qhy-camera.md#behavioral-contracts) for a driver whose
+  devices share no handle, so the lock is per device. Pinned by
+  `a_reconnect_waits_for_a_handshake_the_departure_interrupted` and
+  `a_transition_that_finds_a_fresh_session_leaves_it_alone`.
 
 ### Exposure (the soft-trigger video-capture state machine)
 
@@ -1412,7 +1443,9 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
     first SDK call and publishes only if it has not moved, and only into a
     cell that is still empty. A disconnect landing while a handshake runs
     therefore leaves the closed camera's cells empty, whatever point the
-    handshake had reached.
+    handshake had reached. Since C7 no disconnect lands there — it waits for
+    the handshake — so the epoch is the cells' own guard behind that order
+    rather than the only one.
 
   A set that passed `ensure_connected` before a disconnect and stores only
   after a whole reconnect is checked against the new session's bounds in
@@ -1679,7 +1712,7 @@ everything else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 139 no-features / 159 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 142 no-features / 162 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
@@ -1759,8 +1792,11 @@ Layered per [`testing.md`](../skills/testing.md).
   on the mock's own flags: every member refusing once the departure is known,
   a refusal from a camera still there staying that refusal, an exposure
   finding the departure by itself, the release and the fresh reconnect, a
-  departure during the handshake, and a release that finds the camera no
-  longer lost leaving the session alone. Both doubles model the SDK header's
+  departure during the handshake, a transition that finds a fresh session
+  leaving it alone, a reconnect waiting out a handshake the departure
+  interrupted (C7), and a release landing between the two state reads
+  (`MockCameraHandle::close_after_next_state_read`) reading neither as
+  connected. Both doubles model the SDK header's
   account of a removed camera, not a measurement: C6's hardware questions
   stay open until the pier1 run.
 - **ConformU** — `tests/conformu_integration.rs` (Phase F), mirroring

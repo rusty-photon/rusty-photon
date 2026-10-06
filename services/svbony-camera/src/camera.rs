@@ -205,6 +205,19 @@ struct Capabilities {
 /// Locks are never held across an `await`.
 #[derive(Debug)]
 struct DeviceState {
+    /// Serializes the device's connection transitions — a connect (the open,
+    /// its handshake, and a failed handshake's close), a disconnect, and the
+    /// release of a camera that has left the bus — together with the decision
+    /// of which one a request needs (C7). Without it a request could overtake
+    /// a handshake still running: close the camera under it and open a fresh
+    /// one, which the overtaken handshake would go on configuring — arming a
+    /// trigger camera's video capture a second time — and, were a later step
+    /// to fail it, close.
+    ///
+    /// **Lock order:** outermost. Taken only by `transition`, before any lock
+    /// a connect or a disconnect takes, and nothing holding another lock ever
+    /// takes it.
+    lifecycle: Mutex<()>,
     sensor: Mutex<Option<SensorInfo>>,
 
     /// Current symmetric bin (init 1).
@@ -237,9 +250,7 @@ struct DeviceState {
     /// that has been closed.
     ///
     /// **Lock order:** taken before [`Self::gain`] and [`Self::offset`],
-    /// never while either is held; and before [`Self::result_lock`], which
-    /// `release_lost` takes under it to cancel a departed camera's exposure
-    /// (C6) — nothing holding `result_lock` ever takes this one.
+    /// never while either is held.
     controls_epoch: Mutex<u64>,
     target_temperature: Mutex<Option<f64>>,
 
@@ -290,9 +301,7 @@ struct DeviceState {
     /// against `cancel_exposure`'s "bump generation + clear `image_ready`".
     ///
     /// **Lock order:** this one first, then [`Self::in_flight_capture`]
-    /// (`cancel_exposure`, `reset_exposure_state`) — never the reverse. Taken
-    /// under [`Self::controls_epoch`] by `release_lost`, and never held while
-    /// that one is taken.
+    /// (`cancel_exposure`, `reset_exposure_state`) — never the reverse.
     result_lock: Mutex<()>,
     /// Holds everything that describes the next frame still while
     /// `start_exposure` reads it and claims the device: the download format
@@ -331,6 +340,7 @@ struct DeviceState {
 impl DeviceState {
     const fn new() -> Self {
         Self {
+            lifecycle: Mutex::new(()),
             sensor: Mutex::new(None),
             bin: AtomicU8::new(1),
             readout_mode: AtomicU8::new(0),
@@ -441,8 +451,14 @@ impl SvbonyCamera {
     /// Whether this device holds a session on a camera still on the bus: the
     /// handle is open and no SDK call has found the camera gone (C6). Two
     /// atomic reads and no SDK call, so every request can afford it first.
+    ///
+    /// The mark is read first. A close clears the open flag before the mark,
+    /// so a read that finds the mark cleared by a close finds the camera
+    /// closed too; read the other way round, a release landing between the
+    /// two reads would pair the open flag from before it with the cleared
+    /// mark from after it, and report connected a session that never was.
     fn is_connected(&self) -> bool {
-        self.handle.is_open() && !self.handle.is_lost()
+        !self.handle.is_lost() && self.handle.is_open()
     }
 
     fn ensure_connected(&self) -> ASCOMResult<()> {
@@ -464,14 +480,16 @@ impl SvbonyCamera {
     }
 
     fn connect(&self) -> ASCOMResult<()> {
-        // `open()` is an atomic check-and-open under the handle's own lock
-        // (qhy-camera's `SharedCameraConnection` shape): of several racing
-        // connects, exactly one observes `true` and owns the post-open
-        // handshake below — the trigger-camera video-capture arm is not
-        // idempotent, so a second handshake must never run. The losers
-        // return Ok immediately, without waiting for the winner's
-        // handshake; until it completes, cached properties may still be
-        // unpopulated, which every cache read already treats as
+        // Run under the lifecycle lock (C7), so no other transition comes
+        // between the open, the handshake and a failed handshake's close.
+        // `open()` is still an atomic check-and-open under the handle's own
+        // lock (qhy-camera's `SharedCameraConnection` shape): a connect that
+        // finds the camera already open — a duplicate queued behind the one
+        // that opened it — returns Ok without a handshake of its own, since
+        // the trigger-camera video-capture arm is not idempotent and a
+        // second handshake must never run. Readers do not take the lifecycle
+        // lock: until the handshake completes, cached properties may still
+        // be unpopulated, which every cache read already treats as
         // NOT_CONNECTED (see `sensor()`'s fallback) — or, for the gain and
         // offset, as a control the camera does not advertise (GO4).
         let opened = self.handle.open().map_err(|e| {
@@ -757,27 +775,32 @@ impl SvbonyCamera {
         Ok(())
     }
 
-    /// End a session whose camera has left the bus (C6): the ordinary
-    /// disconnect (C3), made only while the camera is still lost. That is
-    /// decided under [`DeviceState::controls_epoch`] — the lock a close
-    /// forgets the gain and offset under — held through the close, and the
-    /// handle refuses to reopen a lost camera, so while it is held the lost
-    /// camera is the one in the handle. Of two clients reconnecting a departed
-    /// camera at once, the second therefore finds the release already made,
-    /// and the first one's fresh session if it has opened one, and leaves both
-    /// alone.
-    fn release_lost(&self) {
-        let mut epoch = self.state.controls_epoch.lock();
-        if !self.handle.is_lost() {
-            return;
+    /// Take the device to `connected` (C1, C3), first releasing a camera that
+    /// has left the bus, whichever way the client asks (C6). Deciding what
+    /// that needs and doing it are one step under [`DeviceState::lifecycle`]
+    /// (C7), so a reconnect cannot overtake a handshake still running and
+    /// leave it configuring, or closing, the session that replaced its own.
+    fn transition(&self, connected: bool) -> ASCOMResult<()> {
+        let _lifecycle = self.state.lifecycle.lock();
+        // Read here, under the lock, not taken from `set_connected`'s fast
+        // path: a request that held the lock first may have released and
+        // reconnected since. The mark first, as in `is_connected`.
+        let lost = self.handle.is_lost();
+        let held = self.handle.is_open();
+        if lost {
+            // The ordinary disconnect (C3). No connect can come between the
+            // read above and this close, and the handle refuses to reopen a
+            // lost camera, so the session it ends is the lost one.
+            self.disconnect()?;
+            debug!(camera = %self.unique_id, "released a camera that has left the bus");
         }
-        self.cancel_exposure();
-        self.forget_controls(&mut epoch);
-        if let Err(e) = self.handle.close() {
-            debug!(camera = %self.unique_id, error = %e, "closing a camera that has left the bus failed");
+        if connected {
+            self.connect()
+        } else if held && !lost {
+            self.disconnect()
+        } else {
+            Ok(())
         }
-        drop(epoch);
-        debug!(camera = %self.unique_id, "released a camera that has left the bus");
     }
 
     /// Close the handle, first forgetting the gain and offset this session
@@ -791,18 +814,11 @@ impl SvbonyCamera {
     /// before this close publishes nothing (see [`Self::publish_controls`]).
     fn close_handle(&self) -> BackendResult<()> {
         let mut epoch = self.state.controls_epoch.lock();
-        self.forget_controls(&mut epoch);
-        drop(epoch);
-        self.handle.close()
-    }
-
-    /// Forget the gain and offset this session would arm and move the epoch
-    /// (GO4), under the [`DeviceState::controls_epoch`] lock the caller holds
-    /// — `epoch` is its guard's value.
-    fn forget_controls(&self, epoch: &mut u64) {
         *epoch = epoch.wrapping_add(1);
         *self.state.gain.lock() = None;
         *self.state.offset.lock() = None;
+        drop(epoch);
+        self.handle.close()
     }
 
     /// Cancel any in-flight exposure (abort): bump the generation so the
@@ -1165,40 +1181,27 @@ impl Device for SvbonyCamera {
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        // A camera that has left the bus is held but not connected (C6): its
-        // handle is still open, and only a release lets it go. Either way a
-        // client asks, that release comes first — `Connected = false` ends
-        // there, and `Connected = true` goes on to a fresh connect rather than
-        // taking the lost session back.
-        //
-        // Otherwise this check is a best-effort fast path, not the connect
-        // guard: two concurrent `Connected=true` requests can both pass it.
-        // The authoritative check-and-transition is `connect`'s atomic
-        // `handle.open()` (one critical section in the handle), which lets
-        // exactly one racing connect run the non-idempotent handshake — the
-        // loser no-ops without waiting for it.
+        // A best-effort fast path, not the decision: a device already where
+        // the client asks answers without queueing behind a transition — a
+        // duplicate connect among them, while the first one's handshake is
+        // still running (C1). The mark is read first, as in `is_connected`.
+        // A camera that has left the bus is held but not connected (C6), so
+        // it never takes this path: whichever way a client asks, its release
+        // comes first.
+        let lost = self.handle.is_lost();
         let held = self.handle.is_open();
-        let lost = held && self.handle.is_lost();
         if connected == held && !lost {
             return Ok(());
         }
-        // `connect`/`disconnect` do blocking SDK I/O, so offload off the
-        // executor (SvbonyCamera is cheap to clone: it is `Arc`-backed).
+        // `transition` decides again under the lifecycle lock (C7) and does
+        // blocking SDK I/O, so it runs off the executor (SvbonyCamera is cheap
+        // to clone: it is `Arc`-backed). The lock is taken on that thread, so
+        // it is held for as long as the transition runs, even when this
+        // request is dropped.
         let this = self.clone();
-        tokio::task::spawn_blocking(move || {
-            if lost {
-                this.release_lost();
-            }
-            if connected {
-                this.connect()
-            } else if lost {
-                Ok(())
-            } else {
-                this.disconnect()
-            }
-        })
-        .await
-        .map_err(|e| ASCOMError::invalid_operation(format!("connect task failed: {e}")))?
+        tokio::task::spawn_blocking(move || this.transition(connected))
+            .await
+            .map_err(|e| ASCOMError::invalid_operation(format!("connect task failed: {e}")))?
     }
 
     async fn description(&self) -> ASCOMResult<String> {
@@ -4348,18 +4351,112 @@ mod tests {
         assert!(!handle.is_open(), "the failed handshake closed the camera");
     }
 
-    /// The release is made only while the camera is still lost (C6): a second
-    /// client's release, arriving once the first has already reconnected,
-    /// leaves the fresh session alone — its camera open and its gain kept.
+    /// A transition decides from what it finds under the lifecycle lock, not
+    /// from what its request saw before queueing (C6, C7): a second client's
+    /// reconnect of a departed camera, reaching the lock once the first has
+    /// already reconnected, leaves the fresh session alone — its camera open
+    /// and its gain kept.
     #[tokio::test]
-    async fn a_release_that_finds_the_camera_no_longer_lost_leaves_the_session_alone() {
+    async fn a_transition_that_finds_a_fresh_session_leaves_it_alone() {
         let (device, handle) = device_with_handle(MockCameraHandle::default());
         device.set_gain(222).await.unwrap();
 
-        device.release_lost();
+        device.transition(true).unwrap();
 
         assert!(handle.is_open());
         assert!(device.connected().await.unwrap());
         assert_eq!(device.gain().await.unwrap(), 222);
+    }
+
+    /// A reconnect does not overtake a handshake still running (C7). An
+    /// advisory step of the first client's handshake finds the camera gone,
+    /// so the device reads disconnected while that handshake still holds the
+    /// camera, and a second client reconnects once the camera is back. It
+    /// waits for the first handshake to fail and close its own session, then
+    /// connects afresh — never releasing the camera from under the handshake,
+    /// which would then go on to configure, and could close, the new session.
+    #[tokio::test]
+    async fn a_reconnect_waits_for_a_handshake_the_departure_interrupted() {
+        let handle = Arc::new(MockCameraHandle::default());
+        handle.leave_bus_at_write(ControlType::Exposure);
+        handle.set_mode_select_gate(true);
+        let device = SvbonyCamera::new(Arc::<MockCameraHandle>::clone(&handle), None);
+        let first = tokio::spawn({
+            let device = device.clone();
+            async move { device.set_connected(true).await }
+        });
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !handle.is_lost() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the handshake's exposure write never found the camera gone");
+        assert!(!device.connected().await.unwrap());
+
+        handle.return_to_bus();
+        let second = tokio::spawn({
+            let device = device.clone();
+            async move { device.set_connected(true).await }
+        });
+        // A window, not a nap (testing.md §6.9): the first handshake is held at
+        // its mode select throughout, so its camera must stay held — and lost —
+        // throughout.
+        for _ in 0..100 {
+            assert!(
+                handle.is_lost(),
+                "a reconnect released the camera from under a running handshake"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        handle.set_mode_select_gate(false);
+
+        assert_eq!(
+            first.await.unwrap().unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED,
+            "the interrupted handshake fails its own connect"
+        );
+        second.await.unwrap().unwrap();
+        assert!(device.connected().await.unwrap());
+        assert_eq!(
+            device.gain().await.unwrap(),
+            100,
+            "the second client's handshake published the fresh session's gain"
+        );
+    }
+
+    /// `Connected` reads the lost mark before the open flag (C6). A close
+    /// clears them the other way round, so a read that a release lands in the
+    /// middle of finds the mark or the close, and never pairs an open flag
+    /// from before the release with a mark cleared by it.
+    #[tokio::test]
+    async fn a_release_between_connecteds_two_reads_never_reads_connected() {
+        let (device, handle) = device_with_handle(MockCameraHandle::default());
+        handle.leave_bus();
+        device.ccd_temperature().await.unwrap_err();
+
+        handle.close_after_next_state_read();
+
+        assert!(
+            !device.connected().await.unwrap(),
+            "a departed camera, released mid-read, read connected"
+        );
+    }
+
+    /// `set_connected`'s fast path reads the two in the same order: a
+    /// `Connected = true` whose reads a release lands between goes on to
+    /// connect, rather than taking a session that was gone for one that is
+    /// connected already (C6, C7).
+    #[tokio::test]
+    async fn a_reconnect_whose_reads_straddle_a_release_still_connects() {
+        let (device, handle) = device_with_handle(MockCameraHandle::default());
+        handle.leave_bus();
+        device.ccd_temperature().await.unwrap_err();
+        handle.return_to_bus();
+
+        handle.close_after_next_state_read();
+        device.set_connected(true).await.unwrap();
+
+        assert!(device.connected().await.unwrap());
     }
 }

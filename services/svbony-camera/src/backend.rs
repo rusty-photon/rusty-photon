@@ -352,6 +352,10 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// `SVB_ERROR_CAMERA_REMOVED` (C6). A lost camera is still open — nothing
     /// closes it but [`close`](Self::close), which also clears the mark — and
     /// [`open`](Self::open) refuses it. Never waits on a capture.
+    ///
+    /// A caller asking both reads this before [`is_open`](Self::is_open): a
+    /// close clears the open flag first and the mark second, so a mark found
+    /// cleared by a close is followed by an open flag found cleared too.
     fn is_lost(&self) -> bool;
     /// Open the camera if it is closed. Returns `true` when THIS call
     /// performed the open — that caller owns the post-open handshake —
@@ -749,8 +753,10 @@ impl CameraHandle for SvbonyCameraHandle {
         // Dropping the `Camera` calls `SVBCloseCamera` — on a camera that has
         // left the bus too, which is how a lost session is released (C6).
         *guard = None;
-        // `open` before `lost`: `Connected` is "open and not lost", so in this
-        // order it never reads true for a camera on its way out.
+        // `open` before `lost`, and a reader loads them the other way round
+        // (see `CameraHandle::is_lost`): one that sees the mark cleared here
+        // then sees the camera closed too, so "open and not lost" never reads
+        // true for a camera on its way out.
         self.open.store(false, Ordering::Release);
         self.lost.store(false, Ordering::Release);
         drop(guard);
@@ -1779,15 +1785,22 @@ pub(crate) mod mock {
         /// answers `CAMERA_REMOVED` and `open()` fails, as `svbony-rs`'s
         /// simulated departure does. Set through [`leave_bus`](Self::leave_bus).
         departed: AtomicBool,
-        /// Take the camera off the bus as a write of this control reaches it —
-        /// a departure landing at one exact step of a sequence, such as the
-        /// connect handshake. Set through
-        /// [`leave_bus_at_write`](Self::leave_bus_at_write).
+        /// Take the camera off the bus as the next write of this control
+        /// reaches it — a departure landing at one exact step of a sequence,
+        /// such as the connect handshake. One-shot, so a later handshake's
+        /// same write finds the camera wherever the test has put it since. Set
+        /// through [`leave_bus_at_write`](Self::leave_bus_at_write).
         leave_at_write: Mutex<Option<ControlType>>,
         /// The production handle's lost mark, made by the same rule on the
         /// mock's own flags: a call answering `CAMERA_REMOVED` while the camera
         /// is open marks it, `open()` refuses it, and `close()` clears it.
         lost: AtomicBool,
+        /// Close the camera straight after the next `is_open` or `is_lost`
+        /// read, which still answers what it read: another client's release
+        /// landing between a caller's two reads of the connection state. Set
+        /// through
+        /// [`close_after_next_state_read`](Self::close_after_next_state_read).
+        close_after_state_read: AtomicBool,
 
         /// The SDK's auto-exposure state, mirrored from `svbony-rs`'s
         /// simulation: on after `open()` and after `restore_default_param`,
@@ -1833,6 +1846,12 @@ pub(crate) mod mock {
         /// flight" window while it drives a disconnect, a reconnect, and a
         /// second exposure — the interleaving a sleep can only approximate.
         capture_gate: AtomicBool,
+        /// While set, `set_camera_mode` — on a trigger camera the connect
+        /// handshake's mode select, its last step but the video arm — parks
+        /// before reaching the SDK until the gate is lowered, so a test can
+        /// hold a handshake in flight while it drives a second client's
+        /// request. Bounded by [`GATE_TIMEOUT`] like the capture gate.
+        mode_select_gate: AtomicBool,
         /// One entry per `capture` call, in call order: `None` while the call
         /// is still running, then how it ended. A test can assert that a
         /// superseded capture really saw its abort instead of running on to a
@@ -1875,6 +1894,7 @@ pub(crate) mod mock {
                 departed: AtomicBool::new(false),
                 leave_at_write: Mutex::new(None),
                 lost: AtomicBool::new(false),
+                close_after_state_read: AtomicBool::new(false),
                 auto_exposure: AtomicBool::new(true),
                 sdk_call_log: Mutex::new(Vec::new()),
                 gain: Mutex::new(100),
@@ -1887,6 +1907,7 @@ pub(crate) mod mock {
                 open_delay: Mutex::new(Duration::ZERO),
                 capture_delay: Mutex::new(Duration::ZERO),
                 capture_gate: AtomicBool::new(false),
+                mode_select_gate: AtomicBool::new(false),
                 capture_outcomes: Mutex::new(Vec::new()),
                 fail_capture: AtomicBool::new(false),
                 exceed_deadline: AtomicBool::new(false),
@@ -1966,6 +1987,11 @@ pub(crate) mod mock {
             self.capture_gate.store(closed, Ordering::SeqCst);
         }
 
+        /// Hold every `set_camera_mode` at the gate (or release the held ones).
+        pub fn set_mode_select_gate(&self, closed: bool) {
+            self.mode_select_gate.store(closed, Ordering::SeqCst);
+        }
+
         /// How each `capture` call so far ended, in call order; `None` for one
         /// still running (parked at the gate, say).
         pub fn capture_outcomes(&self) -> Vec<Option<CaptureOutcome>> {
@@ -2032,6 +2058,22 @@ pub(crate) mod mock {
         /// clears it, as on the production handle.
         pub fn return_to_bus(&self) {
             self.departed.store(false, Ordering::SeqCst);
+        }
+
+        /// Close the camera straight after the next read of `is_open` or
+        /// `is_lost`, so a release lands between that read and the caller's
+        /// next one.
+        pub fn close_after_next_state_read(&self) {
+            self.close_after_state_read.store(true, Ordering::SeqCst);
+        }
+
+        /// The close [`close_after_next_state_read`](Self::close_after_next_state_read)
+        /// asked for, made once.
+        fn close_if_asked(&self) {
+            if self.close_after_state_read.swap(false, Ordering::SeqCst) {
+                self.open.store(false, Ordering::SeqCst);
+                self.lost.store(false, Ordering::SeqCst);
+            }
         }
 
         /// What every call that would reach the SDK answers first: the SDK's
@@ -2125,11 +2167,15 @@ pub(crate) mod mock {
         }
 
         fn is_open(&self) -> bool {
-            self.open.load(Ordering::SeqCst)
+            let open = self.open.load(Ordering::SeqCst);
+            self.close_if_asked();
+            open
         }
 
         fn is_lost(&self) -> bool {
-            self.lost.load(Ordering::SeqCst)
+            let lost = self.lost.load(Ordering::SeqCst);
+            self.close_if_asked();
+            lost
         }
 
         fn open(&self) -> BackendResult<bool> {
@@ -2251,8 +2297,12 @@ pub(crate) mod mock {
                     .lock()
                     .push(format!("set_control_value({control:?}, {value})"));
             }
-            if *self.leave_at_write.lock() == Some(control) {
-                self.departed.store(true, Ordering::SeqCst);
+            {
+                let mut leave_at = self.leave_at_write.lock();
+                if *leave_at == Some(control) {
+                    *leave_at = None;
+                    self.departed.store(true, Ordering::SeqCst);
+                }
             }
             self.reach_sdk()?;
             if self.fail_controls.load(Ordering::SeqCst)
@@ -2288,6 +2338,12 @@ pub(crate) mod mock {
         }
 
         fn set_camera_mode(&self, _mode: CameraMode) -> BackendResult<()> {
+            let gate_start = Instant::now();
+            while self.mode_select_gate.load(Ordering::SeqCst)
+                && gate_start.elapsed() < GATE_TIMEOUT
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
             self.reach_sdk()
         }
 
