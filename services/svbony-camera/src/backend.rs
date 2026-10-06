@@ -1801,6 +1801,13 @@ pub(crate) mod mock {
         /// through
         /// [`close_after_next_state_read`](Self::close_after_next_state_read).
         close_after_state_read: AtomicBool,
+        /// The next call that reaches the SDK answers `CAMERA_REMOVED`, and
+        /// leaves no lost mark behind: another client's release and reconnect
+        /// landing straight after the call that found the departure, so the
+        /// device reads connected again — a fresh session — by the time that
+        /// call returns. Set through
+        /// [`leave_bus_for_one_call`](Self::leave_bus_for_one_call).
+        leave_for_one_call: AtomicBool,
 
         /// The SDK's auto-exposure state, mirrored from `svbony-rs`'s
         /// simulation: on after `open()` and after `restore_default_param`,
@@ -1895,6 +1902,7 @@ pub(crate) mod mock {
                 leave_at_write: Mutex::new(None),
                 lost: AtomicBool::new(false),
                 close_after_state_read: AtomicBool::new(false),
+                leave_for_one_call: AtomicBool::new(false),
                 auto_exposure: AtomicBool::new(true),
                 sdk_call_log: Mutex::new(Vec::new()),
                 gain: Mutex::new(100),
@@ -2060,6 +2068,12 @@ pub(crate) mod mock {
             self.departed.store(false, Ordering::SeqCst);
         }
 
+        /// Answer the next call that reaches the SDK with `CAMERA_REMOVED`, the
+        /// camera back and reconnected by the time that call returns.
+        pub fn leave_bus_for_one_call(&self) {
+            self.leave_for_one_call.store(true, Ordering::SeqCst);
+        }
+
         /// Close the camera straight after the next read of `is_open` or
         /// `is_lost`, so a release lands between that read and the caller's
         /// next one.
@@ -2080,6 +2094,9 @@ pub(crate) mod mock {
         /// `CAMERA_REMOVED` while the camera is off the bus, marking an open
         /// camera lost on the way (the production handle's `note_failure`).
         fn reach_sdk(&self) -> BackendResult<()> {
+            if self.leave_for_one_call.swap(false, Ordering::SeqCst) {
+                return Err(svbony_rs::Error::Svb(SvbError::CameraRemoved).into());
+            }
             if !self.departed.load(Ordering::SeqCst) {
                 return Ok(());
             }

@@ -1006,10 +1006,12 @@ one core at load average 65, see "Real-hardware validation").
   (step 4). The mark is logged once at `warn`. From that moment `Connected ==
   false`, and every member that takes the connected check answers
   `NOT_CONNECTED`, the cache-served ones included. The request that noticed
-  answers `NOT_CONNECTED` too: any SDK failure that leaves the device reading
-  disconnected — this, or a disconnect that closed the camera under the call —
-  is answered `NOT_CONNECTED`, rather than the code its call site would use
-  for a camera that is there.
+  answers `NOT_CONNECTED` too, rather than the code its call site would use
+  for a camera that is there — decided from that call's own status, not from
+  the device's state once it returns, since a reconnect may by then have
+  released the lost session and opened a fresh one. Any other SDK failure
+  that leaves the device reading disconnected — a disconnect that closed the
+  camera under the call — is answered `NOT_CONNECTED` as well.
 
   **Lost is not closed.** The driver closes nothing on its own: the session
   ends when a client ends it. `Connected = false` on a lost camera releases it
@@ -1712,7 +1714,7 @@ everything else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 142 no-features / 162 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 143 no-features / 163 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
@@ -1790,7 +1792,9 @@ Layered per [`testing.md`](../skills/testing.md).
   trigger, in its `SVBGetVideoData` poll or in its abort drain. The device
   side runs against `MockCameraHandle::leave_bus`, which reproduces that rule
   on the mock's own flags: every member refusing once the departure is known,
-  a refusal from a camera still there staying that refusal, an exposure
+  each member's own call that found it answering `NOT_CONNECTED` even past a
+  reconnect (`MockCameraHandle::leave_bus_for_one_call`), a refusal from a
+  camera still there staying that refusal, an exposure
   finding the departure by itself, the release and the fresh reconnect, a
   departure during the handshake, a transition that finds a fresh session
   leaving it alone, a reconnect waiting out a handshake the departure

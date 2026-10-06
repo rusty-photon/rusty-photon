@@ -955,11 +955,14 @@ impl SvbonyCamera {
     /// stall other Alpaca requests; offload them like the capture, connect,
     /// and pulse-guide paths.
     ///
-    /// A failure that leaves the device reading disconnected is answered
-    /// `NOT_CONNECTED`, whatever code the call site spells an SDK failure as:
-    /// either the call found the camera gone from the bus and marked it lost
-    /// (C6), or a disconnect closed the camera under it. Only failures are
-    /// rewritten — a call that succeeded answers for itself.
+    /// A failure that leaves the device reading disconnected — a disconnect
+    /// closed the camera under the call — is answered `NOT_CONNECTED`,
+    /// whatever code the call site spells an SDK failure as. Only failures are
+    /// rewritten — a call that succeeded answers for itself. A call that found
+    /// the camera gone from the bus does not rely on this: its own status
+    /// decides that (see [`member_err`]), since by the time it returns a
+    /// reconnect may already have released the lost session and opened a
+    /// fresh one (C6).
     async fn on_handle<T, F>(&self, f: F) -> ASCOMResult<T>
     where
         F: FnOnce(&dyn CameraHandle) -> ASCOMResult<T> + Send + 'static,
@@ -991,6 +994,24 @@ fn handshake_err(step: &'static str) -> impl FnOnce(crate::backend::BackendError
     move |e| {
         warn!(error = %e, "connect handshake failed at {step}");
         ASCOMError::NOT_CONNECTED
+    }
+}
+
+/// Map a member's SDK failure onto its ASCOM error: `NOT_CONNECTED` when the
+/// SDK answered that the camera has left the bus (C6), else what `otherwise`
+/// makes of it. Decided from the call's own status, not from the device's
+/// state once the call has returned: a reconnect may have released the lost
+/// session and opened a fresh one in between, and the call that found the
+/// departure would then answer as though the camera had merely refused it.
+fn member_err(
+    otherwise: impl FnOnce(crate::backend::BackendError) -> ASCOMError,
+) -> impl FnOnce(crate::backend::BackendError) -> ASCOMError {
+    move |e| {
+        if e.camera_removed() {
+            ASCOMError::NOT_CONNECTED
+        } else {
+            otherwise(e)
+        }
     }
 }
 
@@ -1600,12 +1621,12 @@ impl Camera for SvbonyCamera {
         self.on_handle(|h| {
             let raw = h
                 .control_value(ControlType::CurrentTemperature)
-                .map_err(|e| {
+                .map_err(member_err(|e| {
                     ASCOMError::new(
                         UNSPECIFIED_ERROR,
                         format!("failed to read sensor temperature: {e}"),
                     )
-                })?;
+                }))?;
             // A temperature outside `i32` is not a temperature; say so rather
             // than widen it lossily. Tenths of a degree (K3).
             i32::try_from(raw)
@@ -1632,9 +1653,9 @@ impl Camera for SvbonyCamera {
         self.on_handle(|h| {
             let raw = h
                 .control_value(ControlType::TargetTemperature)
-                .map_err(|e| {
+                .map_err(member_err(|e| {
                     ASCOMError::invalid_value(format!("failed to read target temperature: {e}"))
-                })?;
+                }))?;
             i32::try_from(raw)
                 .map(|t| f64::from(t) / 10.0)
                 .map_err(|_| {
@@ -1667,9 +1688,9 @@ impl Camera for SvbonyCamera {
         let tenths = (set_ccd_temperature * 10.0).round() as i64;
         self.on_handle(move |h| {
             h.set_control_value(ControlType::TargetTemperature, tenths)
-                .map_err(|e| {
+                .map_err(member_err(|e| {
                     ASCOMError::invalid_operation(format!("failed to set target temperature: {e}"))
-                })
+                }))
         })
         .await?;
         *self.state.target_temperature.lock() = Some(set_ccd_temperature);
@@ -1684,7 +1705,9 @@ impl Camera for SvbonyCamera {
         self.on_handle(|h| {
             h.control_value(ControlType::CoolerEnable)
                 .map(|v| v != 0)
-                .map_err(|e| ASCOMError::invalid_value(format!("failed to read cooler state: {e}")))
+                .map_err(member_err(|e| {
+                    ASCOMError::invalid_value(format!("failed to read cooler state: {e}"))
+                }))
         })
         .await
     }
@@ -1700,9 +1723,9 @@ impl Camera for SvbonyCamera {
         }
         self.on_handle(move |h| {
             h.set_control_value(ControlType::CoolerEnable, i64::from(cooler_on))
-                .map_err(|e| {
+                .map_err(member_err(|e| {
                     ASCOMError::invalid_operation(format!("failed to set cooler state: {e}"))
-                })
+                }))
         })
         .await
     }
@@ -1714,9 +1737,11 @@ impl Camera for SvbonyCamera {
         }
         // K4: SVB_COOLER_POWER is already a 0-100 percent, no normalization.
         self.on_handle(|h| {
-            let raw = h.control_value(ControlType::CoolerPower).map_err(|e| {
-                ASCOMError::invalid_value(format!("failed to read cooler power: {e}"))
-            })?;
+            let raw = h
+                .control_value(ControlType::CoolerPower)
+                .map_err(member_err(|e| {
+                    ASCOMError::invalid_value(format!("failed to read cooler power: {e}"))
+                }))?;
             i32::try_from(raw).map(f64::from).map_err(|_| {
                 ASCOMError::invalid_value(format!("camera reported cooler power {raw}"))
             })
@@ -2013,8 +2038,9 @@ impl Camera for SvbonyCamera {
         self.state.pulse_guiding.store(true, Ordering::Release);
         let result = self
             .on_handle(move |h| {
-                h.pulse_guide(dir, duration_ms)
-                    .map_err(|e| ASCOMError::invalid_operation(format!("pulse guide failed: {e}")))
+                h.pulse_guide(dir, duration_ms).map_err(member_err(|e| {
+                    ASCOMError::invalid_operation(format!("pulse guide failed: {e}"))
+                }))
             })
             .await;
         self.state.pulse_guiding.store(false, Ordering::Release);
@@ -4203,6 +4229,55 @@ mod tests {
                 "{member} on a departed camera"
             );
         }
+    }
+
+    /// The call that found the camera gone answers `NOT_CONNECTED` from its own
+    /// status, even when a reconnect has released the lost session and opened
+    /// a fresh one by the time it returns, so the device reads connected again
+    /// (C6). Each member's own call site, since each spells an SDK failure its
+    /// own way.
+    #[tokio::test]
+    async fn the_call_that_found_the_departure_answers_not_connected_past_a_reconnect() {
+        let (device, handle) = device_with_handle(MockCameraHandle::default().with_pulse_guide());
+        let mut answers = Vec::new();
+        handle.leave_bus_for_one_call();
+        answers.push(("CCDTemperature", device.ccd_temperature().await.err()));
+        handle.leave_bus_for_one_call();
+        answers.push((
+            "SetCCDTemperature",
+            device.set_ccd_temperature().await.err(),
+        ));
+        handle.leave_bus_for_one_call();
+        answers.push((
+            "SetCCDTemperature (write)",
+            device.set_set_ccd_temperature(-10.0).await.err(),
+        ));
+        handle.leave_bus_for_one_call();
+        answers.push(("CoolerOn", device.cooler_on().await.err()));
+        handle.leave_bus_for_one_call();
+        answers.push(("CoolerOn (write)", device.set_cooler_on(false).await.err()));
+        handle.leave_bus_for_one_call();
+        answers.push(("CoolerPower", device.cooler_power().await.err()));
+        handle.leave_bus_for_one_call();
+        answers.push((
+            "PulseGuide",
+            device
+                .pulse_guide(GuideDirection::North, Duration::from_millis(1))
+                .await
+                .err(),
+        ));
+
+        for (member, error) in answers {
+            assert_eq!(
+                error.map(|e| e.code),
+                Some(ASCOMErrorCode::NOT_CONNECTED),
+                "{member}, the call that found the camera gone"
+            );
+        }
+        assert!(
+            device.connected().await.unwrap(),
+            "the reconnect each call raced left the device connected"
+        );
     }
 
     /// A refusal from a camera that is still on the bus is that refusal: the
