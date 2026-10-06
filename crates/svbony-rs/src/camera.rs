@@ -453,6 +453,10 @@ pub struct Camera {
     property_ex: CameraPropertyEx,
     #[cfg(feature = "simulation")]
     state: std::sync::Mutex<SimState>,
+    /// The departure file of the [`Sdk`] that opened this camera (see
+    /// [`Sdk::with_departure_file`]).
+    #[cfg(feature = "simulation")]
+    departure_file: Option<std::path::PathBuf>,
     /// Makes `Camera` `!Sync` (see the type docs) while leaving it `Send`.
     _not_sync: std::marker::PhantomData<std::cell::Cell<()>>,
 }
@@ -505,7 +509,7 @@ impl Sdk {
         crate::with_sdk_lock(|| {
             #[cfg(feature = "simulation")]
             let camera = {
-                if index >= crate::SIM_CAMERA_COUNT {
+                if index >= crate::SIM_CAMERA_COUNT || departed(self.departure_file.as_deref()) {
                     return Err(Error::Svb(SvbError::InvalidIndex));
                 }
                 let info = sim_camera_info();
@@ -517,6 +521,7 @@ impl Sdk {
                     property,
                     property_ex,
                     state,
+                    departure_file: self.departure_file.clone(),
                     _not_sync: std::marker::PhantomData,
                 }
             };
@@ -591,7 +596,10 @@ impl Camera {
     /// Returns [`Error::Svb`] if the SDK fails to read the control list.
     pub fn control_caps(&self) -> Result<Vec<ControlCaps>> {
         #[cfg(feature = "simulation")]
-        let caps = sim_control_caps();
+        let caps = {
+            self.sim_on_bus()?;
+            sim_control_caps()
+        };
         #[cfg(not(feature = "simulation"))]
         let caps = {
             let mut n: c_int = 0;
@@ -792,11 +800,13 @@ impl Camera {
     /// image type.
     pub fn output_image_type(&self) -> Result<ImageType> {
         #[cfg(feature = "simulation")]
-        let t = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .output_image_type;
+        let t = {
+            self.sim_on_bus()?;
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .output_image_type
+        };
         #[cfg(not(feature = "simulation"))]
         let t = {
             let mut raw: sys::SvbImgType = 0;
@@ -814,6 +824,7 @@ impl Camera {
     pub fn set_output_image_type(&self, image_type: ImageType) -> Result<()> {
         #[cfg(feature = "simulation")]
         {
+            self.sim_on_bus()?;
             self.state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -831,11 +842,13 @@ impl Camera {
     /// Returns [`Error::Svb`] if the SDK call fails.
     pub fn roi_format(&self) -> Result<RoiFormat> {
         #[cfg(feature = "simulation")]
-        let roi = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .roi;
+        let roi = {
+            self.sim_on_bus()?;
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .roi
+        };
         #[cfg(not(feature = "simulation"))]
         let roi = {
             let mut sx: c_int = 0;
@@ -932,11 +945,13 @@ impl Camera {
     /// Returns [`Error::Svb`] if the SDK call fails.
     pub fn camera_mode(&self) -> Result<CameraMode> {
         #[cfg(feature = "simulation")]
-        let mode = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .camera_mode;
+        let mode = {
+            self.sim_on_bus()?;
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .camera_mode
+        };
         #[cfg(not(feature = "simulation"))]
         let mode = {
             let mut raw: sys::SvbCameraMode = 0;
@@ -954,6 +969,7 @@ impl Camera {
     pub fn set_camera_mode(&self, mode: CameraMode) -> Result<()> {
         #[cfg(feature = "simulation")]
         {
+            self.sim_on_bus()?;
             self.state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -972,12 +988,14 @@ impl Camera {
     /// Returns [`Error::Svb`] if the SDK call fails.
     pub fn support_modes(&self) -> Result<Vec<CameraMode>> {
         #[cfg(feature = "simulation")]
-        let modes = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .support_modes
-            .clone();
+        let modes = {
+            self.sim_on_bus()?;
+            self.state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .support_modes
+                .clone()
+        };
         #[cfg(not(feature = "simulation"))]
         let modes = {
             // SAFETY: POD struct filled by the SDK.
@@ -1000,7 +1018,10 @@ impl Camera {
     /// already running.
     pub fn start_video_capture(&self) -> Result<()> {
         #[cfg(feature = "simulation")]
-        self.sim_start_video_capture()?;
+        {
+            self.sim_on_bus()?;
+            self.sim_start_video_capture()?;
+        }
         #[cfg(not(feature = "simulation"))]
         // SAFETY: open camera id; starts video capture.
         svb_check(unsafe { sys::SVBStartVideoCapture(self.info.id) })?;
@@ -1047,7 +1068,10 @@ impl Camera {
     /// Returns [`Error::Svb`] if the call fails.
     pub fn stop_video_capture(&self) -> Result<()> {
         #[cfg(feature = "simulation")]
-        self.sim_stop_video_capture();
+        {
+            self.sim_on_bus()?;
+            self.sim_stop_video_capture();
+        }
         #[cfg(not(feature = "simulation"))]
         // SAFETY: open camera id; stops video capture.
         svb_check(unsafe { sys::SVBStopVideoCapture(self.info.id) })?;
@@ -1061,7 +1085,10 @@ impl Camera {
     /// in soft-trigger mode.
     pub fn send_soft_trigger(&self) -> Result<()> {
         #[cfg(feature = "simulation")]
-        self.sim_send_soft_trigger()?;
+        {
+            self.sim_on_bus()?;
+            self.sim_send_soft_trigger()?;
+        }
         #[cfg(not(feature = "simulation"))]
         // SAFETY: open camera id; requests one triggered frame.
         svb_check(unsafe { sys::SVBSendSoftTrigger(self.info.id) })?;
@@ -1108,14 +1135,12 @@ impl Camera {
     ///
     /// # Errors
     /// Returns [`Error::Svb`] if the call fails.
-    // Const only in the `simulation` shape: the real-FFI body makes SDK
-    // calls, and the signature must stay identical in both shapes (the
-    // sibling qhyccd-rs sim-twin convention); the expect is scoped to the
-    // sim shape, the only one where clippy sees a const-able body.
-    #[cfg_attr(feature = "simulation", expect(clippy::missing_const_for_fn))]
     pub fn can_pulse_guide(&self) -> Result<bool> {
         #[cfg(feature = "simulation")]
-        let can = self.property_ex.supports_pulse_guide;
+        let can = {
+            self.sim_on_bus()?;
+            self.property_ex.supports_pulse_guide
+        };
         #[cfg(not(feature = "simulation"))]
         let can = {
             let mut b: sys::SvbBool = 0;
@@ -1131,15 +1156,11 @@ impl Camera {
     ///
     /// # Errors
     /// Returns [`Error::Svb`] if the call fails.
-    // Const only in the `simulation` shape: the real-FFI body makes SDK
-    // calls, and the signature must stay identical in both shapes (the
-    // sibling qhyccd-rs sim-twin convention); the expect is scoped to the
-    // sim shape, the only one where clippy sees a const-able body.
-    #[cfg_attr(feature = "simulation", expect(clippy::missing_const_for_fn))]
     pub fn pulse_guide(&self, direction: GuideDirection, duration_ms: i32) -> Result<()> {
         #[cfg(feature = "simulation")]
         {
             let _ = (direction, duration_ms);
+            self.sim_on_bus()?;
         }
         #[cfg(not(feature = "simulation"))]
         // SAFETY: open camera id; issues a blocking guide pulse.
@@ -1151,14 +1172,12 @@ impl Camera {
     ///
     /// # Errors
     /// Returns [`Error::Svb`] if the call fails.
-    // Const only in the `simulation` shape: the real-FFI body makes SDK
-    // calls, and the signature must stay identical in both shapes (the
-    // sibling qhyccd-rs sim-twin convention); the expect is scoped to the
-    // sim shape, the only one where clippy sees a const-able body.
-    #[cfg_attr(feature = "simulation", expect(clippy::missing_const_for_fn))]
     pub fn pixel_size_microns(&self) -> Result<f32> {
         #[cfg(feature = "simulation")]
-        let size = SIM_PIXEL_SIZE_UM;
+        let size = {
+            self.sim_on_bus()?;
+            SIM_PIXEL_SIZE_UM
+        };
         #[cfg(not(feature = "simulation"))]
         let size = {
             let mut px: f32 = 0.0;
@@ -1185,7 +1204,10 @@ impl Camera {
     /// Returns [`Error::Svb`] if the SDK rejects the call.
     pub fn restore_default_param(&self) -> Result<()> {
         #[cfg(feature = "simulation")]
-        self.sim_restore_default_param();
+        {
+            self.sim_on_bus()?;
+            self.sim_restore_default_param();
+        }
         #[cfg(not(feature = "simulation"))]
         // SAFETY: open camera id; the SDK reloads and re-persists its
         // parameter block.
@@ -1208,7 +1230,10 @@ impl Camera {
     /// Returns [`Error::Svb`] if the SDK rejects the call.
     pub fn set_auto_save_param(&self, enable: bool) -> Result<()> {
         #[cfg(feature = "simulation")]
-        self.sim_set_auto_save_param(enable);
+        {
+            self.sim_on_bus()?;
+            self.sim_set_auto_save_param(enable);
+        }
         #[cfg(not(feature = "simulation"))]
         {
             let flag: sys::SvbBool = i32::from(enable);
@@ -1545,9 +1570,28 @@ impl SimState {
     }
 }
 
+/// Whether a camera whose departure file is `file` has left the bus (see
+/// [`Sdk::with_departure_file`]).
+#[cfg(feature = "simulation")]
+fn departed(file: Option<&std::path::Path>) -> bool {
+    file.is_some_and(std::path::Path::exists)
+}
+
 #[cfg(feature = "simulation")]
 impl Camera {
+    /// What every call that would reach the SDK answers first:
+    /// [`SvbError::CameraRemoved`] while the camera is off the bus (see
+    /// [`Sdk::with_departure_file`]).
+    fn sim_on_bus(&self) -> Result<()> {
+        if departed(self.departure_file.as_deref()) {
+            Err(Error::Svb(SvbError::CameraRemoved))
+        } else {
+            Ok(())
+        }
+    }
+
     fn sim_control_value(&self, control: ControlType) -> Result<ControlValue> {
+        self.sim_on_bus()?;
         let mut st = self
             .state
             .lock()
@@ -1599,6 +1643,7 @@ impl Camera {
     }
 
     fn sim_set_control_value(&self, control: ControlType, value: i64, auto: bool) -> Result<()> {
+        self.sim_on_bus()?;
         let mut st = self
             .state
             .lock()
@@ -1652,6 +1697,7 @@ impl Camera {
         height: u32,
         bin: u32,
     ) -> Result<()> {
+        self.sim_on_bus()?;
         if !self.property.supported_bins.contains(&bin) {
             return Err(Error::Svb(SvbError::InvalidSize));
         }
@@ -1856,6 +1902,134 @@ mod tests {
             sdk.open_camera(99).unwrap_err(),
             Error::Svb(SvbError::InvalidIndex)
         );
+    }
+
+    /// A departure file a test controls: absent until [`Self::leave`], and
+    /// removed again when the guard drops, so a failing test leaves nothing
+    /// behind. Named for the test and the process, under Bazel's per-action
+    /// `TEST_TMPDIR` when there is one, so concurrent runs never share it.
+    #[cfg(feature = "simulation")]
+    struct Departure(std::path::PathBuf);
+
+    #[cfg(feature = "simulation")]
+    impl Departure {
+        fn new(test: &str) -> Self {
+            let root = std::env::var_os("TEST_TMPDIR")
+                .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+            Self(root.join(format!("svbony-rs-{test}-{}", std::process::id())))
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+
+        fn leave(&self) {
+            std::fs::write(&self.0, b"").unwrap();
+        }
+
+        fn come_back(&self) {
+            std::fs::remove_file(&self.0).unwrap();
+        }
+    }
+
+    #[cfg(feature = "simulation")]
+    impl Drop for Departure {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// Every call that would reach the SDK answers `CameraRemoved` while the
+    /// camera is off the bus — a sweep, so a call added without the check
+    /// fails here — and what the handle cached at open still answers.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_departed_camera_answers_camera_removed_to_every_sdk_call() {
+        let departure = Departure::new("every-sdk-call");
+        let sdk = Sdk::new().unwrap().with_departure_file(departure.path());
+        let cam = sdk.open_camera(0).unwrap();
+        departure.leave();
+
+        let mut buf = vec![0u8; 16];
+        let calls: [(&str, Result<()>); 21] = [
+            ("control_caps", cam.control_caps().map(drop)),
+            (
+                "control_value",
+                cam.control_value(ControlType::Gain).map(drop),
+            ),
+            (
+                "set_control_value",
+                cam.set_control_value(ControlType::Exposure, 1_000, false),
+            ),
+            ("gain", cam.gain().map(drop)),
+            ("output_image_type", cam.output_image_type().map(drop)),
+            (
+                "set_output_image_type",
+                cam.set_output_image_type(ImageType::Raw8),
+            ),
+            ("roi_format", cam.roi_format().map(drop)),
+            ("set_roi_format", cam.set_roi_format(0, 0, 64, 64, 1)),
+            ("frame_buffer_len", cam.frame_buffer_len().map(drop)),
+            ("camera_mode", cam.camera_mode().map(drop)),
+            ("set_camera_mode", cam.set_camera_mode(CameraMode::TrigSoft)),
+            ("support_modes", cam.support_modes().map(drop)),
+            ("start_video_capture", cam.start_video_capture()),
+            ("stop_video_capture", cam.stop_video_capture()),
+            ("send_soft_trigger", cam.send_soft_trigger()),
+            ("get_video_data", cam.get_video_data(&mut buf, 0)),
+            ("can_pulse_guide", cam.can_pulse_guide().map(drop)),
+            ("pulse_guide", cam.pulse_guide(GuideDirection::North, 1)),
+            ("pixel_size_microns", cam.pixel_size_microns().map(drop)),
+            ("restore_default_param", cam.restore_default_param()),
+            ("set_auto_save_param", cam.set_auto_save_param(false)),
+        ];
+        for (call, result) in calls {
+            assert_eq!(
+                result,
+                Err(Error::Svb(SvbError::CameraRemoved)),
+                "{call} on a departed camera"
+            );
+        }
+
+        assert_eq!(cam.info().serial, "SVB0123456789AB");
+        assert_eq!(cam.property().max_width, 3008);
+        assert!(cam.property_ex().supports_control_temp);
+    }
+
+    /// A departed camera is the same handle once it is back: the calls that
+    /// answered `CameraRemoved` answer again, with its state as it was.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_departed_camera_answers_again_once_it_returns() {
+        let departure = Departure::new("returns");
+        let sdk = Sdk::new().unwrap().with_departure_file(departure.path());
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_control_value(ControlType::BlackLevel, 7, false)
+            .unwrap();
+
+        departure.leave();
+        cam.black_level().unwrap_err();
+        departure.come_back();
+
+        assert_eq!(cam.black_level().unwrap(), 7);
+    }
+
+    /// While the camera is off the bus there is nothing to open, and the
+    /// simulation answers as it does for any camera it does not have.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_departed_camera_cannot_be_opened_until_it_returns() {
+        let departure = Departure::new("unopenable");
+        let sdk = Sdk::new().unwrap().with_departure_file(departure.path());
+        departure.leave();
+
+        assert_eq!(
+            sdk.open_camera(0).unwrap_err(),
+            Error::Svb(SvbError::InvalidIndex)
+        );
+
+        departure.come_back();
+        sdk.open_camera(0).unwrap();
     }
 
     #[cfg(feature = "simulation")]

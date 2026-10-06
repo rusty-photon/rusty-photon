@@ -30,7 +30,9 @@
 //! `get_video_data` consumes it) and a cooling ramp that advances one step
 //! per poll (mirroring `zwo-rs`'s EAF focuser position ramp), so the
 //! `svbony-camera` service's exposure state machine can be exercised
-//! sim-side exactly as it will be against real hardware.
+//! sim-side exactly as it will be against real hardware. With
+//! `Sdk::with_departure_file` a simulated camera can also leave the bus and
+//! come back, answering [`SvbError::CameraRemoved`] while it is gone.
 //!
 //! ## Build requirements
 //!
@@ -69,7 +71,8 @@ pub const SIM_CAMERA_COUNT: usize = 1;
 /// handle's per-instance state, these entry points touch the SDK's
 /// process-global camera/handle table — so serializing them needs a
 /// process-wide lock, not a per-[`Sdk`]-instance one: [`Sdk`] is a cheap,
-/// freely-instantiated ZST (callers mint one per discovered camera, see
+/// freely-instantiated value, zero-sized outside the simulation (callers mint
+/// one per discovered camera, see
 /// `svbony-camera`'s `lib.rs`), so two independent `Sdk` values calling
 /// `SVBOpenCamera` concurrently would otherwise race with no synchronization
 /// at all.
@@ -121,6 +124,10 @@ pub(crate) fn camera_count_raw() -> usize {
 /// a per-`Sdk`-instance lock would not be enough.
 #[derive(Debug, Default)]
 pub struct Sdk {
+    /// The file whose existence takes every camera this `Sdk` opens off the
+    /// bus — see [`Sdk::with_departure_file`].
+    #[cfg(feature = "simulation")]
+    departure_file: Option<std::path::PathBuf>,
     _private: (),
 }
 
@@ -132,7 +139,28 @@ impl Sdk {
     /// can surface failures without an API break.
     pub fn new() -> Result<Self> {
         tracing::debug!("initialising SVBony SDK");
-        Ok(Self { _private: () })
+        Ok(Self::default())
+    }
+
+    /// Makes every camera this `Sdk` opens leave the bus whenever `path`
+    /// exists, and come back when it is gone — the state a camera is in when
+    /// its power or its cable is cut while a host holds it open.
+    ///
+    /// A departed camera keeps its handle, as a real one does, and still
+    /// answers what the handle cached at open ([`Camera::info`],
+    /// [`Camera::property`], [`Camera::property_ex`]). Every call that would
+    /// reach the SDK answers [`SvbError::CameraRemoved`], the SDK's own status
+    /// for a camera that has gone. [`Sdk::open_camera`] fails with
+    /// [`SvbError::InvalidIndex`], the simulation's answer for a camera it
+    /// does not have, until the camera is back; enumeration is unaffected.
+    /// The file is checked on every call, so another process — a test driving
+    /// a host built on this crate — can take the camera away and give it back
+    /// without a channel into the host. Simulation only.
+    #[cfg(feature = "simulation")]
+    #[must_use]
+    pub fn with_departure_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.departure_file = Some(path.into());
+        self
     }
 
     /// Number of connected `SVBony` cameras (`SVBGetNumOfConnectedCameras`).

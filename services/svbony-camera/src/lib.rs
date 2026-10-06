@@ -110,6 +110,11 @@ pub struct ServerBuilder {
     /// report — the test-only zero-camera startup path, mirroring
     /// `zwo-camera`'s `--simulation-empty` (contract C0).
     force_empty: bool,
+    /// The file whose existence takes the simulated cameras off the bus — the
+    /// test-only path exercising a camera that loses its power while connected
+    /// (contract C6). `None` builds cameras that never leave.
+    #[cfg(feature = "simulation")]
+    departure_file: Option<PathBuf>,
 }
 
 impl ServerBuilder {
@@ -150,6 +155,27 @@ impl ServerBuilder {
         self
     }
 
+    /// Build the simulated cameras so they leave the bus whenever `path`
+    /// exists, and come back when it is removed (`svbony-rs`'s
+    /// `Sdk::with_departure_file`) — the test-only path exercising a camera
+    /// that loses its power while connected (contract C6). `None` builds
+    /// cameras that never leave.
+    #[cfg(feature = "simulation")]
+    #[must_use]
+    pub fn with_departure_file(mut self, path: Option<PathBuf>) -> Self {
+        self.departure_file = path;
+        self
+    }
+
+    /// `sdk` with this builder's departure file, when there is one.
+    #[cfg(feature = "simulation")]
+    fn departing(&self, sdk: svbony_rs::Sdk) -> svbony_rs::Sdk {
+        if let Some(path) = &self.departure_file {
+            return sdk.with_departure_file(path);
+        }
+        sdk
+    }
+
     /// Enumerate the connected `SVBony` cameras, register each as an ASCOM
     /// device, and bind the Alpaca listener.
     ///
@@ -173,8 +199,11 @@ impl ServerBuilder {
 
         let mut server = Server::new(CargoServerInfo!());
         for cam in &cameras {
+            let sdk = svbony_rs::Sdk::new()?;
+            #[cfg(feature = "simulation")]
+            let sdk = self.departing(sdk);
             let handle: Arc<dyn CameraHandle> = Arc::new(SvbonyCameraHandle::new(
-                svbony_rs::Sdk::new()?,
+                sdk,
                 cam.index,
                 cam.info.clone(),
                 cam.unique_id.clone(),

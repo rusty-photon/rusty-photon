@@ -82,27 +82,53 @@
 //! responsive during an in-flight exposure. `Gain` and `Offset`, and their
 //! setters, never take the mutex either: the device answers them from its
 //! cache, and an exposure's `capture` is what sends them.
+//!
+//! **A camera that leaves the bus (C6).** [`BackendError`] keeps the SDK's
+//! status code beside its message, so `SVB_ERROR_CAMERA_REMOVED` survives this
+//! seam instead of being flattened into text. The production handle acts on it
+//! itself: an SDK call that answers it marks the handle lost, under the same
+//! lock the call ran under, so the mark belongs to the camera that call reached
+//! — never to one a reconnect opened since. Every SDK call goes through that
+//! lock ([`SvbonyCameraHandle::with_camera_epoch`], and the abort drain's own
+//! acquisition), so the mark is made wherever the call came from. Like `open`,
+//! the mark is an atomic beside the lock, so `is_lost` never waits on a
+//! capture. A lost camera is still open — the driver closes nothing on its own
+//! — and [`CameraHandle::open`] refuses it until a close has released it.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, MutexGuard};
 use svbony_rs::{
     CameraInfo, CameraMode, CameraProperty, CameraPropertyEx, ControlCaps, ControlType,
-    GuideDirection, ImageType,
+    GuideDirection, ImageType, SvbError,
 };
 
-/// A `svbony-rs` SDK call failed. Carries the underlying message; the ASCOM
-/// device decides the `ASCOMError` per call site.
+/// A `svbony-rs` SDK call failed, or this seam refused one.
+///
+/// Carries the message and, when the SDK answered with one, its status code,
+/// so a status the driver acts on rather than reports — `CAMERA_REMOVED` (C6)
+/// — survives the seam. The ASCOM device decides the `ASCOMError` per call
+/// site.
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("{0}")]
-pub struct BackendError(pub String);
+#[error("{message}")]
+pub struct BackendError {
+    message: String,
+    status: Option<SvbError>,
+}
 
-/// Collapse a [`svbony_rs::Error`] into the typed seam error.
+/// Convert a [`svbony_rs::Error`] into the seam error, keeping its status code.
 impl From<svbony_rs::Error> for BackendError {
     fn from(err: svbony_rs::Error) -> Self {
-        Self(err.to_string())
+        let status = match &err {
+            svbony_rs::Error::Svb(status) => Some(*status),
+            _ => None,
+        };
+        Self {
+            message: err.to_string(),
+            status,
+        }
     }
 }
 
@@ -112,12 +138,44 @@ impl From<svbony_rs::Error> for BackendError {
 const ABORTED_MESSAGE: &str = "exposure aborted";
 
 impl BackendError {
+    /// A failure of this seam's own, with no SDK status behind it.
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            status: None,
+        }
+    }
+
     fn closed() -> Self {
-        Self("camera not open".to_string())
+        Self::new("camera not open")
     }
 
     fn aborted() -> Self {
-        Self(ABORTED_MESSAGE.to_string())
+        Self::new(ABORTED_MESSAGE)
+    }
+
+    /// The message a log line, or an exposure's `last_error`, carries.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// Whether the SDK answered `SVB_ERROR_CAMERA_REMOVED`: the camera has
+    /// left the bus (C6). The one place that decides which statuses mean a
+    /// departure, so widening it to another the hardware turns out to answer
+    /// is a change here alone.
+    #[must_use]
+    pub const fn camera_removed(&self) -> bool {
+        matches!(self.status, Some(SvbError::CameraRemoved))
+    }
+
+    /// This error with `context` ahead of its message and its status kept, so
+    /// a step that names itself does not hide what the SDK said.
+    fn context(self, context: &str) -> Self {
+        Self {
+            message: format!("{context}: {}", self.message),
+            status: self.status,
+        }
     }
 }
 
@@ -207,12 +265,11 @@ fn arm_controls(
 ) -> BackendResult<()> {
     set_control_value(ControlType::Exposure, request.exposure_us)?;
     if let Some(gain) = request.gain {
-        set_control_value(ControlType::Gain, gain)
-            .map_err(|e| BackendError(format!("failed to set gain: {e}")))?;
+        set_control_value(ControlType::Gain, gain).map_err(|e| e.context("failed to set gain"))?;
     }
     if let Some(offset) = request.offset {
         set_control_value(ControlType::BlackLevel, offset)
-            .map_err(|e| BackendError(format!("failed to set offset: {e}")))?;
+            .map_err(|e| e.context("failed to set offset"))?;
     }
     tracing::debug!(
         gain = ?request.gain,
@@ -287,7 +344,15 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// The camera's enumeration [`CameraInfo`] (cached; no open required).
     fn info(&self) -> CameraInfo;
 
+    /// Whether this handle holds an open camera: a session no close has ended,
+    /// whether or not its camera is still on the bus (see
+    /// [`is_lost`](Self::is_lost)). Never waits on a capture.
     fn is_open(&self) -> bool;
+    /// Whether the open camera has left the bus: an SDK call on it answered
+    /// `SVB_ERROR_CAMERA_REMOVED` (C6). A lost camera is still open — nothing
+    /// closes it but [`close`](Self::close), which also clears the mark — and
+    /// [`open`](Self::open) refuses it. Never waits on a capture.
+    fn is_lost(&self) -> bool;
     /// Open the camera if it is closed. Returns `true` when THIS call
     /// performed the open — that caller owns the post-open handshake —
     /// and `false` when the handle was already open (a prior connect, or
@@ -299,10 +364,13 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns a [`BackendError`] if the SDK cannot open the camera; the
-    /// handle stays closed.
+    /// Returns a [`BackendError`] if the SDK cannot open the camera, the
+    /// handle staying closed; or if the handle still holds a camera that has
+    /// left the bus, which only a close releases — opening it "again" would
+    /// hand the lost session back as though it were fresh (C6).
     fn open(&self) -> BackendResult<bool>;
-    /// Close the camera (a no-op when already closed).
+    /// Close the camera (a no-op when already closed), releasing one that has
+    /// left the bus as well (C6).
     ///
     /// # Errors
     ///
@@ -444,7 +512,8 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
 
 /// Production [`CameraHandle`] over a real (or `svbony-rs`-simulated) camera.
 ///
-/// Holds the [`svbony_rs::Sdk`] (a ZST) and the enumeration `index` so it can
+/// Holds the [`svbony_rs::Sdk`] (a ZST outside the simulation) and the
+/// enumeration `index` so it can
 /// re-open the RAII [`svbony_rs::Camera`] on connect; the open handle lives
 /// behind a `Mutex<Option<…>>` because `Camera` is `Send + !Sync`.
 #[derive(Debug)]
@@ -462,6 +531,13 @@ pub struct SvbonyCameraHandle {
     /// first — those must stay responsive during an in-flight exposure, not
     /// block for its whole duration.
     open: AtomicBool,
+    /// Set when an SDK call on the open camera answers `CAMERA_REMOVED` — the
+    /// camera has left the bus (C6). Set only under the `camera` lock, against
+    /// the camera the failed call ran on (see [`Self::note_failure`]), and
+    /// cleared by the [`close`](CameraHandle::close) that releases that camera,
+    /// so it is never set while no camera is held. Readable without the lock,
+    /// like `open`.
+    lost: AtomicBool,
     /// Bumped by every [`open`](CameraHandle::open) that actually opens a
     /// camera, so a capture can tell that the camera it configured was closed
     /// and reopened underneath it (a reconnect). The open camera is then the
@@ -488,6 +564,7 @@ impl SvbonyCameraHandle {
             unique_id,
             camera: Mutex::new(None),
             open: AtomicBool::new(false),
+            lost: AtomicBool::new(false),
             open_epoch: AtomicU64::new(0),
         }
     }
@@ -520,12 +597,9 @@ impl SvbonyCameraHandle {
     }
 
     /// The shared body of [`Self::with_camera`] and [`Self::with_camera_at`]:
-    /// one lock acquisition covering both the epoch check and the SDK work it
-    /// guards, so the answer cannot go stale in between.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the camera reference borrows the handle guard to the closure's end; the guard scope is already minimal"
-    )]
+    /// one lock acquisition covering the epoch check, the SDK work it guards
+    /// and the lost mark that work's failure may leave (C6), so none of the
+    /// three can go stale between the others.
     fn with_camera_epoch<T>(
         &self,
         epoch: Option<u64>,
@@ -536,7 +610,27 @@ impl SvbonyCameraHandle {
             .as_ref()
             .filter(|_| epoch.is_none_or(|epoch| self.is_current(epoch)))
             .ok_or_else(BackendError::closed)?;
-        f(camera)
+        let outcome = f(camera);
+        if let Err(e) = &outcome {
+            self.note_failure(&guard, e);
+        }
+        drop(guard);
+        outcome
+    }
+
+    /// Mark the open camera lost if `error` is the SDK saying it has left the
+    /// bus (C6), logging the departure once. Takes the camera lock's guard as
+    /// proof that it is held: the failed call ran on the camera in that slot,
+    /// and while the lock is held no close or reopen can come between the two,
+    /// so the mark can never land on a camera a reconnect opened since.
+    fn note_failure(&self, held: &MutexGuard<'_, Option<svbony_rs::Camera>>, error: &BackendError) {
+        if error.camera_removed() && held.is_some() && !self.lost.swap(true, Ordering::AcqRel) {
+            tracing::warn!(
+                camera = %self.unique_id,
+                error = %error,
+                "the camera has left the bus; it reads disconnected until a client releases it"
+            );
+        }
     }
 
     /// Is the open camera still the instance `epoch` names, or has a reconnect
@@ -589,15 +683,23 @@ impl SvbonyCameraHandle {
     /// on. If a reconnect has replaced it there is nothing of this capture's
     /// left to discard, and stopping whichever camera *is* open would throw
     /// away the next exposure's frame instead.
+    ///
+    /// A drain that fails because the camera has left the bus marks it lost as
+    /// any other SDK call does (C6): for a capture cancelled in its wait, these
+    /// are the only SDK calls it makes.
     fn abort_capture(&self, request: &CaptureRequest, epoch: u64) -> BackendResult<Vec<u8>> {
         let guard = self.camera.lock();
         if let Some(camera) = guard.as_ref().filter(|_| self.is_current(epoch)) {
             if let Err(e) = camera.stop_video_capture() {
+                let e = BackendError::from(e);
                 tracing::warn!(error = %e, "stopping video capture after an abort failed");
+                self.note_failure(&guard, &e);
             }
             if request.is_trigger_cam {
                 if let Err(e) = camera.start_video_capture() {
+                    let e = BackendError::from(e);
                     tracing::warn!(error = %e, "re-arming video capture after an abort failed");
+                    self.note_failure(&guard, &e);
                 }
             }
         }
@@ -619,9 +721,18 @@ impl CameraHandle for SvbonyCameraHandle {
         self.open.load(Ordering::Acquire)
     }
 
+    fn is_lost(&self) -> bool {
+        self.lost.load(Ordering::Acquire)
+    }
+
     fn open(&self) -> BackendResult<bool> {
         let mut guard = self.camera.lock();
         if guard.is_some() {
+            if self.lost.load(Ordering::Acquire) {
+                return Err(BackendError::new(
+                    "the camera has left the bus; it must be released before it can be opened",
+                ));
+            }
             return Ok(false);
         }
         *guard = Some(self.sdk.open_camera(self.index)?);
@@ -634,9 +745,15 @@ impl CameraHandle for SvbonyCameraHandle {
     }
 
     fn close(&self) -> BackendResult<()> {
-        // Dropping the `Camera` calls `SVBCloseCamera`.
-        *self.camera.lock() = None;
+        let mut guard = self.camera.lock();
+        // Dropping the `Camera` calls `SVBCloseCamera` — on a camera that has
+        // left the bus too, which is how a lost session is released (C6).
+        *guard = None;
+        // `open` before `lost`: `Connected` is "open and not lost", so in this
+        // order it never reads true for a camera on its way out.
         self.open.store(false, Ordering::Release);
+        self.lost.store(false, Ordering::Release);
+        drop(guard);
         Ok(())
     }
 
@@ -739,9 +856,9 @@ impl CameraHandle for SvbonyCameraHandle {
             Ok(())
         })?;
 
-        let frame_len = request.frame_len().ok_or_else(|| {
-            BackendError("frame is too large to address on this target".to_string())
-        })?;
+        let frame_len = request
+            .frame_len()
+            .ok_or_else(|| BackendError::new("frame is too large to address on this target"))?;
         let mut buf = vec![0u8; frame_len];
 
         // Poll `SVBGetVideoData` in short slices instead of one blocking call
@@ -783,38 +900,43 @@ impl CameraHandle for SvbonyCameraHandle {
                 .unwrap_or(i32::MAX)
                 .min(remaining_ms)
                 .max(1);
-            let result =
-                self.with_camera_at(epoch, |camera| Ok(camera.get_video_data(&mut buf, poll_ms)))?;
-            match result {
-                Ok(()) => {
-                    // A frame that outlived the SDK's recommendation is worth
-                    // a line: on a short exposure it is the floor that saved
-                    // it, and a setup cost growing towards the floor shows up
-                    // here before it starts failing exposures. Which of the two
-                    // applies is left to the figures — the deadline exceeding
-                    // the recommendation is the floor being what carried this
-                    // read — since past the crossover the two are equal and a
-                    // frame can still land just after the deadline.
-                    let elapsed = poll_start.elapsed();
-                    if elapsed > recommended {
-                        // Both figures are computed here rather than inside the
-                        // macro: a field expression runs only when the callsite
-                        // is enabled, so a value written inline is dead code
-                        // whenever nothing is listening.
-                        let elapsed_ms = elapsed.as_millis();
-                        let recommended_ms = recommended.as_millis();
-                        tracing::debug!(
-                            elapsed_ms,
-                            recommended_ms,
-                            deadline_ms,
-                            exposure_us = request.exposure_us,
-                            "frame arrived after the SDK's recommended read deadline"
-                        );
-                    }
-                    return Ok(buf);
+            // Inside the closure, so a read that fails for real — a departed
+            // camera's `CAMERA_REMOVED` among them — fails the closure and is
+            // seen by the lost mark (C6); a short slice's `Timeout` is only
+            // "no frame yet" while the deadline has time left.
+            let frame = self.with_camera_at(epoch, |camera| {
+                match camera.get_video_data(&mut buf, poll_ms) {
+                    Ok(()) => Ok(true),
+                    Err(svbony_rs::Error::Svb(SvbError::Timeout)) if remaining_ms > 0 => Ok(false),
+                    Err(e) => Err(e.into()),
                 }
-                Err(svbony_rs::Error::Svb(svbony_rs::SvbError::Timeout)) if remaining_ms > 0 => {}
-                Err(e) => return Err(e.into()),
+            })?;
+            if frame {
+                // A frame that outlived the SDK's recommendation is worth
+                // a line: on a short exposure it is the floor that saved
+                // it, and a setup cost growing towards the floor shows up
+                // here before it starts failing exposures. Which of the two
+                // applies is left to the figures — the deadline exceeding
+                // the recommendation is the floor being what carried this
+                // read — since past the crossover the two are equal and a
+                // frame can still land just after the deadline.
+                let elapsed = poll_start.elapsed();
+                if elapsed > recommended {
+                    // Both figures are computed here rather than inside the
+                    // macro: a field expression runs only when the callsite
+                    // is enabled, so a value written inline is dead code
+                    // whenever nothing is listening.
+                    let elapsed_ms = elapsed.as_millis();
+                    let recommended_ms = recommended.as_millis();
+                    tracing::debug!(
+                        elapsed_ms,
+                        recommended_ms,
+                        deadline_ms,
+                        exposure_us = request.exposure_us,
+                        "frame arrived after the SDK's recommended read deadline"
+                    );
+                }
+                return Ok(buf);
             }
         }
     }
@@ -863,9 +985,9 @@ mod handle_tests {
             .set_control_value(ControlType::Gain, 222)
             .unwrap_err();
         assert!(
-            refused.0.contains("general error"),
+            refused.message().contains("general error"),
             "unexpected error: {}",
-            refused.0
+            refused.message()
         );
         handle
             .set_control_value(ControlType::Exposure, 1_000_000)
@@ -1050,7 +1172,11 @@ mod handle_tests {
         };
         let started = Instant::now();
         let err = handle.capture(request).unwrap_err();
-        assert!(err.0.contains("aborted"), "unexpected error: {}", err.0);
+        assert!(
+            err.message().contains("aborted"),
+            "unexpected error: {}",
+            err.message()
+        );
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "cancelled capture should drain promptly, took {:?}",
@@ -1219,7 +1345,7 @@ mod handle_tests {
         cancel.store(true, Ordering::SeqCst);
 
         let error = capturing.join().expect("capture thread").unwrap_err();
-        assert_eq!(error.0, ABORTED_MESSAGE);
+        assert_eq!(error.message(), ABORTED_MESSAGE);
         // One slice is the contract; the generous multiple is only to keep a
         // loaded runner from failing a test that is about the drain, not about
         // scheduling latency.
@@ -1309,7 +1435,8 @@ mod handle_tests {
 
         let error = capturing.join().expect("capture thread").unwrap_err();
         assert_eq!(
-            error.0, "camera not open",
+            error.message(),
+            "camera not open",
             "a capture must not read a frame off a camera reopened under it"
         );
         handle.close().unwrap();
@@ -1338,7 +1465,7 @@ mod handle_tests {
         cancel.store(true, Ordering::SeqCst);
 
         let error = capturing.join().expect("capture thread").unwrap_err();
-        assert_eq!(error.0, ABORTED_MESSAGE);
+        assert_eq!(error.message(), ABORTED_MESSAGE);
         let mut frame = vec![0u8; 64 * 64 * 2];
         handle
             .camera
@@ -1348,6 +1475,171 @@ mod handle_tests {
             .get_video_data(&mut frame, 0)
             .expect("the next exposure's frame must survive the superseded capture's abort");
         handle.close().unwrap();
+    }
+
+    // --- C6: a camera that has left the bus ------------------------------------
+
+    /// A simulated camera that leaves the bus whenever the returned path exists
+    /// (`svbony-rs`'s departure file), with the scratch directory holding that
+    /// path — under Bazel's per-action `TEST_TMPDIR` when there is one, and
+    /// removed when the guard drops.
+    fn departing_sim_handle() -> (SvbonyCameraHandle, std::path::PathBuf, tempfile::TempDir) {
+        let root = std::env::var_os("TEST_TMPDIR")
+            .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+        let dir = tempfile::Builder::new()
+            .prefix("svbony-departure-")
+            .tempdir_in(root)
+            .expect("scratch dir");
+        let departure = dir.path().join("departed");
+        let sdk = svbony_rs::Sdk::new()
+            .expect("simulation SDK")
+            .with_departure_file(&departure);
+        let info = sdk.cameras().expect("enumerate")[0].clone();
+        let handle =
+            SvbonyCameraHandle::new(sdk, 0, info, "SVBONY:Sim:0a1b2c3d4e5f6071".to_string());
+        (handle, departure, dir)
+    }
+
+    fn leave_bus(departure: &std::path::Path) {
+        std::fs::write(departure, b"").expect("write the departure file");
+    }
+
+    /// An SDK call answering `CAMERA_REMOVED` keeps that status across the seam
+    /// and marks the handle lost, without closing anything (C6).
+    #[test]
+    fn production_handle_marks_a_camera_that_left_the_bus_lost() {
+        let (handle, departure, _dir) = departing_sim_handle();
+        handle.open().unwrap();
+        leave_bus(&departure);
+        assert!(!handle.is_lost(), "nothing has asked the SDK yet");
+
+        let error = handle.control_value(ControlType::Gain).unwrap_err();
+
+        assert!(
+            error.camera_removed(),
+            "the SDK status did not survive the seam: {error}"
+        );
+        assert!(handle.is_lost());
+        assert!(handle.is_open(), "lost is not closed");
+    }
+
+    /// A refusal from a camera that is still on the bus marks nothing (C6).
+    #[test]
+    fn production_handle_does_not_mark_a_refusal_from_a_camera_still_there() {
+        let (handle, _departure, _dir) = departing_sim_handle();
+        handle.open().unwrap();
+
+        // Auto-exposure is on after an open, and the SDK refuses a gain then.
+        let error = handle.set_control_value(ControlType::Gain, 1).unwrap_err();
+
+        assert!(!error.camera_removed(), "{error}");
+        assert!(!handle.is_lost());
+    }
+
+    /// A lost camera is refused by `open` until a close releases it, and that
+    /// close clears the mark — so a reconnect is a fresh open, never the lost
+    /// session handed back (C6).
+    #[test]
+    fn production_handle_reopens_a_lost_camera_only_after_a_close() {
+        let (handle, departure, _dir) = departing_sim_handle();
+        handle.open().unwrap();
+        leave_bus(&departure);
+        handle.control_value(ControlType::Gain).unwrap_err();
+        std::fs::remove_file(&departure).expect("remove the departure file");
+
+        handle.open().unwrap_err();
+
+        handle.close().unwrap();
+        assert!(
+            !handle.is_lost(),
+            "the close that releases it clears the mark"
+        );
+        assert!(handle.open().unwrap(), "a fresh open after the release");
+        handle.control_value(ControlType::Gain).unwrap();
+    }
+
+    /// A capture whose camera leaves after it configured its frame finds out at
+    /// its trigger, the next SDK call it makes, and marks the camera lost (C6).
+    #[test]
+    fn production_handle_capture_marks_a_camera_that_left_mid_exposure() {
+        let (handle, departure, _dir) = departing_sim_handle();
+        let handle = Arc::new(handle);
+        handle.open().unwrap();
+        handle.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        handle.start_video_capture().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        // Long enough that the departure below always lands inside the
+        // (simulation-only) integration wait, however loaded the runner.
+        let request = sim_request(Duration::from_millis(500), &cancel);
+        let capturing = {
+            let handle = Arc::clone(&handle);
+            std::thread::spawn(move || handle.capture(request))
+        };
+        wait_until_configured(&handle, 64);
+
+        leave_bus(&departure);
+
+        let error = capturing.join().expect("capture thread").unwrap_err();
+        assert!(error.camera_removed(), "{error}");
+        assert!(handle.is_lost());
+    }
+
+    /// A capture already polling `SVBGetVideoData` when its camera leaves finds
+    /// out at its next slice, and marks the camera lost (C6) — a departure is
+    /// not the "no frame yet" a short slice's timeout is.
+    #[test]
+    fn production_handle_capture_marks_a_camera_that_left_mid_read() {
+        let (handle, departure, _dir) = departing_sim_handle();
+        let handle = Arc::new(handle);
+        handle.open().unwrap();
+        handle.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        handle.start_video_capture().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        // The non-trigger restart on a camera left in soft-trigger mode arms no
+        // frame, so the capture polls on, slice after slice, until something
+        // other than a timeout ends it (see the mid-poll abort test above).
+        let request = CaptureRequest {
+            exposure_us: 2_000_000,
+            is_trigger_cam: false,
+            ..sim_request(Duration::ZERO, &cancel)
+        };
+        let capturing = {
+            let handle = Arc::clone(&handle);
+            std::thread::spawn(move || handle.capture(request))
+        };
+        wait_until_video_data_polled(&handle, 1);
+
+        leave_bus(&departure);
+
+        let error = capturing.join().expect("capture thread").unwrap_err();
+        assert!(error.camera_removed(), "{error}");
+        assert!(handle.is_lost());
+    }
+
+    /// An abort drain whose stop fails because the camera has left marks it
+    /// lost as any other SDK call does (C6), and the capture still reports
+    /// itself aborted.
+    #[test]
+    fn production_handle_abort_drain_marks_a_departed_camera_lost() {
+        let (handle, departure, _dir) = departing_sim_handle();
+        let handle = Arc::new(handle);
+        handle.open().unwrap();
+        handle.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        handle.start_video_capture().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let request = sim_request(Duration::from_secs(30), &cancel);
+        let capturing = {
+            let handle = Arc::clone(&handle);
+            std::thread::spawn(move || handle.capture(request))
+        };
+        wait_until_configured(&handle, 64);
+
+        leave_bus(&departure);
+        cancel.store(true, Ordering::SeqCst);
+
+        let error = capturing.join().expect("capture thread").unwrap_err();
+        assert_eq!(error.message(), ABORTED_MESSAGE);
+        assert!(handle.is_lost());
     }
 }
 
@@ -1483,6 +1775,19 @@ pub(crate) mod mock {
         /// (E9), or a connect's seed read failing (GO1). Set through
         /// [`refuse_control`](Self::refuse_control).
         refused_control: Mutex<Option<ControlType>>,
+        /// The camera is off the bus (C6): every call that would reach the SDK
+        /// answers `CAMERA_REMOVED` and `open()` fails, as `svbony-rs`'s
+        /// simulated departure does. Set through [`leave_bus`](Self::leave_bus).
+        departed: AtomicBool,
+        /// Take the camera off the bus as a write of this control reaches it —
+        /// a departure landing at one exact step of a sequence, such as the
+        /// connect handshake. Set through
+        /// [`leave_bus_at_write`](Self::leave_bus_at_write).
+        leave_at_write: Mutex<Option<ControlType>>,
+        /// The production handle's lost mark, made by the same rule on the
+        /// mock's own flags: a call answering `CAMERA_REMOVED` while the camera
+        /// is open marks it, `open()` refuses it, and `close()` clears it.
+        lost: AtomicBool,
 
         /// The SDK's auto-exposure state, mirrored from `svbony-rs`'s
         /// simulation: on after `open()` and after `restore_default_param`,
@@ -1567,6 +1872,9 @@ pub(crate) mod mock {
                 fail_set_auto_save_param: AtomicBool::new(false),
                 fail_next_exposure_write: AtomicBool::new(false),
                 refused_control: Mutex::new(None),
+                departed: AtomicBool::new(false),
+                leave_at_write: Mutex::new(None),
+                lost: AtomicBool::new(false),
                 auto_exposure: AtomicBool::new(true),
                 sdk_call_log: Mutex::new(Vec::new()),
                 gain: Mutex::new(100),
@@ -1707,6 +2015,38 @@ pub(crate) mod mock {
             *self.device_defaults.lock() = (gain, black_level);
         }
 
+        /// Take the camera off the bus (C6): from now on every call that would
+        /// reach the SDK answers `CAMERA_REMOVED`, marking an open camera lost
+        /// as the production handle does, and `open()` fails.
+        pub fn leave_bus(&self) {
+            self.departed.store(true, Ordering::SeqCst);
+        }
+
+        /// Take the camera off the bus as the next write of `control` reaches
+        /// it, so that write is the first call to find it gone.
+        pub fn leave_bus_at_write(&self, control: ControlType) {
+            *self.leave_at_write.lock() = Some(control);
+        }
+
+        /// Put the camera back on the bus. A lost mark stays until a close
+        /// clears it, as on the production handle.
+        pub fn return_to_bus(&self) {
+            self.departed.store(false, Ordering::SeqCst);
+        }
+
+        /// What every call that would reach the SDK answers first: the SDK's
+        /// `CAMERA_REMOVED` while the camera is off the bus, marking an open
+        /// camera lost on the way (the production handle's `note_failure`).
+        fn reach_sdk(&self) -> BackendResult<()> {
+            if !self.departed.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            if self.open.load(Ordering::SeqCst) {
+                self.lost.store(true, Ordering::SeqCst);
+            }
+            Err(svbony_rs::Error::Svb(SvbError::CameraRemoved).into())
+        }
+
         /// The capture proper; [`CameraHandle::capture`] wraps it to record
         /// how it ended.
         fn run_capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>> {
@@ -1739,11 +2079,13 @@ pub(crate) mod mock {
             let deadline = Instant::now() + *self.capture_delay.lock();
             loop {
                 if request.cancel.load(Ordering::SeqCst) {
-                    // Mirror the production abort drain: stop, then re-arm
-                    // for a trigger camera (see SvbonyCameraHandle::abort_capture).
-                    self.stop_video_capture()?;
+                    // Mirror the production abort drain: stop, then re-arm for
+                    // a trigger camera, a failure of either left behind rather
+                    // than propagated (see SvbonyCameraHandle::abort_capture) —
+                    // on a departed camera both fail, marking it lost.
+                    let _ = self.stop_video_capture();
                     if request.is_trigger_cam {
-                        self.start_video_capture()?;
+                        let _ = self.start_video_capture();
                     }
                     return Err(BackendError::aborted());
                 }
@@ -1753,13 +2095,13 @@ pub(crate) mod mock {
                 }
                 std::thread::sleep(remaining.min(Duration::from_millis(5)));
             }
+            // The trigger, the first SDK call a capture makes after its wait.
+            self.reach_sdk()?;
             if self.fail_capture.load(Ordering::SeqCst) {
-                return Err(BackendError(
-                    "simulated mid-exposure SDK failure".to_string(),
-                ));
+                return Err(BackendError::new("simulated mid-exposure SDK failure"));
             }
             if self.exceed_deadline.load(Ordering::SeqCst) {
-                return Err(BackendError(format!(
+                return Err(BackendError::new(format!(
                     "SVBGetVideoData deadline exceeded ({}ms)",
                     exposure_timeout_ms(request.exposure_us)
                 )));
@@ -1786,13 +2128,25 @@ pub(crate) mod mock {
             self.open.load(Ordering::SeqCst)
         }
 
+        fn is_lost(&self) -> bool {
+            self.lost.load(Ordering::SeqCst)
+        }
+
         fn open(&self) -> BackendResult<bool> {
             let _section = self.open_section.lock();
             if self.fail_open.load(Ordering::SeqCst) {
-                return Err(BackendError("simulated open failure".to_string()));
+                return Err(BackendError::new("simulated open failure"));
             }
             if self.open.load(Ordering::SeqCst) {
+                if self.lost.load(Ordering::SeqCst) {
+                    return Err(BackendError::new(
+                        "the camera has left the bus; it must be released before it can be opened",
+                    ));
+                }
                 return Ok(false);
+            }
+            if self.departed.load(Ordering::SeqCst) {
+                return Err(svbony_rs::Error::Svb(SvbError::InvalidIndex).into());
             }
             let delay = *self.open_delay.lock();
             if !delay.is_zero() {
@@ -1808,6 +2162,7 @@ pub(crate) mod mock {
             self.sdk_call_log
                 .lock()
                 .push("restore_default_param".to_string());
+            self.reach_sdk()?;
             // The restore takes effect first — the device defaults leave
             // auto-exposure on — and only then can the SDK's follow-up
             // cfg-file write fail, which is the failure shape the injection
@@ -1817,9 +2172,8 @@ pub(crate) mod mock {
             *self.black_level.lock() = black_level;
             self.auto_exposure.store(true, Ordering::SeqCst);
             if self.fail_restore_default_param.load(Ordering::SeqCst) {
-                return Err(BackendError(
-                    "SVBony camera SDK error: general error (e.g. value out of valid range)"
-                        .to_string(),
+                return Err(BackendError::new(
+                    "SVBony camera SDK error: general error (e.g. value out of valid range)",
                 ));
             }
             Ok(())
@@ -1829,20 +2183,22 @@ pub(crate) mod mock {
             self.sdk_call_log
                 .lock()
                 .push(format!("set_auto_save_param({enable})"));
+            self.reach_sdk()?;
             if self.fail_set_auto_save_param.load(Ordering::SeqCst) {
-                return Err(BackendError("injected SDK failure".to_string()));
+                return Err(BackendError::new("injected SDK failure"));
             }
             Ok(())
         }
 
         fn close(&self) -> BackendResult<()> {
             self.open.store(false, Ordering::SeqCst);
+            self.lost.store(false, Ordering::SeqCst);
             Ok(())
         }
 
         fn property(&self) -> BackendResult<CameraProperty> {
             if self.fail_property.load(Ordering::SeqCst) {
-                return Err(BackendError("injected SDK failure".to_string()));
+                return Err(BackendError::new("injected SDK failure"));
             }
             Ok(self.property.lock().clone())
         }
@@ -1852,18 +2208,21 @@ pub(crate) mod mock {
         }
 
         fn pixel_size_microns(&self) -> BackendResult<f32> {
+            self.reach_sdk()?;
             Ok(3.76)
         }
 
         fn control_caps(&self) -> BackendResult<Vec<ControlCaps>> {
+            self.reach_sdk()?;
             Ok(self.caps.lock().clone())
         }
 
         fn control_value(&self, control: ControlType) -> BackendResult<i64> {
+            self.reach_sdk()?;
             if self.fail_controls.load(Ordering::SeqCst)
                 || *self.refused_control.lock() == Some(control)
             {
-                return Err(BackendError("injected SDK failure".to_string()));
+                return Err(BackendError::new("injected SDK failure"));
             }
             let value = match control {
                 ControlType::Gain => *self.gain.lock(),
@@ -1878,7 +2237,7 @@ pub(crate) mod mock {
                         0
                     }
                 }
-                _ => return Err(BackendError("invalid control type".to_string())),
+                _ => return Err(BackendError::new("invalid control type")),
             };
             Ok(value)
         }
@@ -1892,18 +2251,21 @@ pub(crate) mod mock {
                     .lock()
                     .push(format!("set_control_value({control:?}, {value})"));
             }
+            if *self.leave_at_write.lock() == Some(control) {
+                self.departed.store(true, Ordering::SeqCst);
+            }
+            self.reach_sdk()?;
             if self.fail_controls.load(Ordering::SeqCst)
                 || *self.refused_control.lock() == Some(control)
             {
-                return Err(BackendError("injected SDK failure".to_string()));
+                return Err(BackendError::new("injected SDK failure"));
             }
             match control {
                 // The SDK's gate (GO5): gain is refused while auto-exposure
                 // is on, with the SDK's catch-all error text.
                 ControlType::Gain if self.auto_exposure.load(Ordering::SeqCst) => {
-                    return Err(BackendError(
-                        "SVBony camera SDK error: general error (e.g. value out of valid range)"
-                            .to_string(),
+                    return Err(BackendError::new(
+                        "SVBony camera SDK error: general error (e.g. value out of valid range)",
                     ));
                 }
                 ControlType::Gain => *self.gain.lock() = value,
@@ -1914,30 +2276,30 @@ pub(crate) mod mock {
                 ControlType::TargetTemperature => *self.target_temp_tenths.lock() = value,
                 ControlType::Exposure => {
                     if self.fail_next_exposure_write.swap(false, Ordering::SeqCst) {
-                        return Err(BackendError("injected SDK failure".to_string()));
+                        return Err(BackendError::new("injected SDK failure"));
                     }
                     // This seam only ever writes manual (`bAuto = false`)
                     // values, which is the SDK's one auto-exposure-off path.
                     self.auto_exposure.store(false, Ordering::SeqCst);
                 }
-                _ => return Err(BackendError("invalid control type".to_string())),
+                _ => return Err(BackendError::new("invalid control type")),
             }
             Ok(())
         }
 
         fn set_camera_mode(&self, _mode: CameraMode) -> BackendResult<()> {
-            Ok(())
+            self.reach_sdk()
         }
 
         fn start_video_capture(&self) -> BackendResult<()> {
             self.start_video_capture_calls
                 .fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            self.reach_sdk()
         }
 
         fn stop_video_capture(&self) -> BackendResult<()> {
             self.stop_video_capture_calls.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            self.reach_sdk()
         }
 
         fn capture(&self, request: CaptureRequest) -> BackendResult<Vec<u8>> {
@@ -1949,7 +2311,7 @@ pub(crate) mod mock {
             let result = self.run_capture(request);
             let outcome = match &result {
                 Ok(_) => CaptureOutcome::Frame,
-                Err(e) if e.0 == ABORTED_MESSAGE => CaptureOutcome::Aborted,
+                Err(e) if e.message() == ABORTED_MESSAGE => CaptureOutcome::Aborted,
                 Err(_) => CaptureOutcome::Failed,
             };
             if let Some(slot) = self.capture_outcomes.lock().get_mut(call) {
@@ -1959,8 +2321,9 @@ pub(crate) mod mock {
         }
 
         fn pulse_guide(&self, _direction: GuideDirection, _duration_ms: i32) -> BackendResult<()> {
+            self.reach_sdk()?;
             if self.fail_controls.load(Ordering::SeqCst) {
-                return Err(BackendError("injected SDK failure".to_string()));
+                return Err(BackendError::new("injected SDK failure"));
             }
             Ok(())
         }
@@ -2017,5 +2380,41 @@ mod pure_fn_tests {
     #[test]
     fn exposure_timeout_saturates_instead_of_overflowing() {
         assert_eq!(exposure_timeout_ms(i64::MAX), i32::MAX);
+    }
+
+    /// A failure the arm names keeps the SDK's status behind the name, so a
+    /// departure that an exposure's gain write is the first to meet still
+    /// reads as one (C6).
+    #[test]
+    fn a_named_arm_failure_keeps_the_sdk_status() {
+        let request = CaptureRequest {
+            start_x: 0,
+            start_y: 0,
+            width: 64,
+            height: 64,
+            bin: 1,
+            exposure_us: 1_000,
+            is_trigger_cam: true,
+            image_type: ImageType::Raw16,
+            gain: Some(1),
+            offset: None,
+            duration: Duration::ZERO,
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+
+        let error = arm_controls(&request, |control, _| {
+            if control == ControlType::Gain {
+                Err(svbony_rs::Error::Svb(SvbError::CameraRemoved).into())
+            } else {
+                Ok(())
+            }
+        })
+        .unwrap_err();
+
+        assert!(
+            error.message().starts_with("failed to set gain: "),
+            "{error}"
+        );
+        assert!(error.camera_removed(), "{error}");
     }
 }

@@ -35,6 +35,19 @@
 > CI provisioning ([#720](https://github.com/rusty-photon/rusty-photon/issues/720)
 > Part 2) remains open.
 >
+> **Follow-up landed (issue #1412): a camera that has left the bus reads
+> disconnected.** `Connected` was the driver's own flag, so a camera whose
+> power or cable was cut went on answering `Connected = true` and every
+> cache-served member — `CanSetCCDTemperature` still `true` among them — and
+> rp's reconnect supervisor, which takes `Connected == true` as healthy, never
+> re-established it. The SDK's `SVB_ERROR_CAMERA_REMOVED` now crosses the
+> backend seam as a status rather than as text, and the first call it answers
+> marks the session lost: `Connected` reads `false`, every member answers
+> `NOT_CONNECTED`, and a client's `Connected = false` or `true` releases the
+> lost session, the latter then connecting afresh. **Unmeasured on hardware:**
+> whether the SDK really answers `CAMERA_REMOVED` after a cable pull is owed
+> on the pier1 SV605CC. See "Enumeration & connection lifecycle" (C6).
+>
 > **Follow-up landed (issue #1336): `Gain` and `Offset` are cached at the
 > setter and armed by `StartExposure`.** The setters used to write
 > `SVB_GAIN`/`SVB_BLACK_LEVEL` to the camera at once, with nothing keeping a
@@ -558,7 +571,8 @@ graph TD;
   start/stop, the soft-trigger `capture` composite (ROI + output format +
   exposure control + the armed gain and offset + trigger + the
   `SVBGetVideoData` read deadline of step 2d), and pulse-guide. `is_open`
-  is backed by its own atomic,
+  and `is_lost` — the mark an SDK call answering `CAMERA_REMOVED` leaves
+  (C6) — are backed by their own atomics,
   independent of the mutex `capture` holds, so connection-state reads stay
   responsive during an in-flight exposure — the mutex is released between
   `capture`'s ROI/control setup and its trigger + `SVBGetVideoData` call,
@@ -668,9 +682,9 @@ that stall to at most one poll slice (`backend::VIDEO_DATA_POLL_MS`, 250ms):
 it polls `SVBGetVideoData` in short slices instead of one blocking call for
 the whole deadline, releasing the mutex between polls (a `SvbError::Timeout`
 from a short slice just means "no frame yet," not a real failure). `is_open`/
-`Connected` do not share even that bounded stall — they are backed by an
-independent atomic specifically so basic connection-state polling stays
-responsive during an in-flight exposure. `Gain` and `Offset` do not share it
+`Connected` do not share even that bounded stall — they are backed by
+independent atomics (the open flag and C6's lost mark) specifically so basic
+connection-state polling stays responsive during an in-flight exposure. `Gain` and `Offset` do not share it
 either: both members answer from the cache and both setters only store
 (GO1/GO2), so none of the four waits on a capture.
 
@@ -876,7 +890,7 @@ scenario.
 Named, testable behaviours. ASCOM error names per
 [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md). Every
 contract below is real as of Phase E; the BDD feature files under
-`tests/features/` (83 scenarios, 391 steps) and the unit tests in
+`tests/features/` (89 scenarios, 432 steps) and the unit tests in
 `src/camera.rs`/`src/backend.rs` exercise them — see "Testing" below for
 which layer covers which contract (E9's two branches, the
 generation-counter abort race and E10 are unit-test-only, per the design's
@@ -957,6 +971,85 @@ one core at load average 65, see "Real-hardware validation").
   `open_handshake` (the sole connect-path function) contains no call to
   either control, and a unit test
   (`k5_connecting_never_enables_the_cooler`) pins the observable behaviour.
+- **C6.** **A camera that has left the bus reads disconnected.** (The same
+  contract as [`qhy-camera`'s C9](qhy-camera.md#behavioral-contracts), which
+  this follows; zwo-camera's is
+  [#1411](https://github.com/rusty-photon/rusty-photon/issues/1411).) A
+  camera that loses its power or its cable while open keeps its SDK handle,
+  and `Connected` is this driver's own flag, set by a connect and cleared by a
+  disconnect, so nothing in it changes when the camera goes. Left
+  there, the driver answered `Connected == true`, `CameraState == Idle` and
+  every cache-served member — the geometry, `BinX`, `Gain`, `Offset`,
+  `ReadoutMode`, and `CanSetCCDTemperature` / `CanGetCoolerPower`, cached
+  `true` at the handshake — as though the camera were present, while every
+  member that reached the SDK failed with the SDK's text under whichever code
+  its call site spells an SDK failure as (`UNSPECIFIED_ERROR`,
+  `INVALID_VALUE`, `INVALID_OPERATION`). rp's reconnect supervisor takes
+  `Connected == true` as healthy ([rp.md § Device Session
+  Recovery](rp.md#device-session-recovery)), so it never re-established such a
+  camera — and on the field rig the SV605CC is the imaging camera, with nobody
+  watching.
+
+  Unlike the QHY SDK, the SVBony SDK has a status for this case,
+  `SVB_ERROR_CAMERA_REMOVED`, and the driver keeps it: an SDK failure crosses
+  the backend seam with its status code beside its message, rather than
+  flattened to text. So **an SDK call that answers `CAMERA_REMOVED` marks the
+  session lost.** The handle makes the mark under the lock every SDK call
+  takes, against the camera that call ran on, so it is made wherever the call
+  came from: a member's own read or write, a capture's setup, trigger or
+  `SVBGetVideoData` slice (step 7), and an abort drain's stop and re-arm
+  (step 4). The mark is logged once at `warn`. From that moment `Connected ==
+  false`, and every member that takes the connected check answers
+  `NOT_CONNECTED`, the cache-served ones included. The request that noticed
+  answers `NOT_CONNECTED` too: any SDK failure that leaves the device reading
+  disconnected — this, or a disconnect that closed the camera under the call —
+  is answered `NOT_CONNECTED`, rather than the code its call site would use
+  for a camera that is there.
+
+  **Lost is not closed.** The driver closes nothing on its own: the session
+  ends when a client ends it. `Connected = false` on a lost camera releases it
+  through the ordinary disconnect (C3: an exposure in flight cancelled, the
+  gain and offset forgotten, the camera closed). `Connected = true` releases it
+  the same way and then connects afresh, so a client that sees `Connected ==
+  false` and reconnects — rp's supervisor does exactly that — gets either a
+  working camera or C2's failure, never the lost session back. The release is
+  made only while the camera is still lost, decided under the lock a close
+  forgets the gain and offset under (GO4), so of two clients reconnecting a
+  departed camera at once the second finds the first's fresh session and
+  leaves it alone. An open is refused while the handle still holds a lost
+  camera, and a handshake that finds the camera gone fails even where the step
+  that found it is advisory (C1a), since a session on a departed camera is
+  not one to publish.
+
+  **The check is lazy.** `Connected` turns false at the first SDK call after
+  the camera leaves, not when it leaves: the `Connected` read itself and the
+  cache-served members never reach the SDK. A client that reads only those
+  finds out at its next exposure, cooler read or temperature set. An exposure
+  in flight finds out by itself, at its next SDK call: on hardware the next
+  `SVBGetVideoData` slice, at most a quarter-second away (step 4) — if the SDK
+  answers `CAMERA_REMOVED` there, which is one of the open questions below —
+  and under the simulation, which waits out the integration before it
+  triggers, the trigger. And
+  **bringing a camera back is not this contract's job.** A camera absent when
+  the service started still needs a reload or a restart (C0), and hotplug
+  re-enumeration belongs to
+  [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173).
+
+  **Unmeasured on hardware.** This contract was written from the code and the
+  SDK header; no departure has been observed on a physical SVBony camera
+  ([#1412](https://github.com/rusty-photon/rusty-photon/issues/1412)). Owed,
+  on the pier1 SV605CC, with a USB unplug while it is connected:
+
+  - Whether the SDK answers `CAMERA_REMOVED` after a power or cable loss,
+    rather than a timeout or its general error. Where it answers something
+    else the driver behaves as it did before this rule — no worse — and
+    widening it is one predicate (`BackendError::camera_removed`).
+  - What `SVBGetVideoData` answers mid-exposure. A `TIMEOUT` would run the
+    capture out to its read deadline and fail it as step 7, leaving the mark to
+    the next call that reaches the SDK.
+  - Whether `CAMERA_CLOSED` or `INVALID_ID` shows up instead after a re-plug,
+    and whether a plain reconnect then finds the camera without a
+    re-enumeration.
 
 ### Exposure (the soft-trigger video-capture state machine)
 
@@ -1498,8 +1591,9 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 ## ASCOM Camera surface — v0 behaviour
 
 **Every member below that describes the camera or its session answers
-`NOT_CONNECTED` while the device is disconnected** unless its row says
-otherwise: a driver holding no device cannot describe one (state-machine
+`NOT_CONNECTED` while the device is disconnected** — which includes a camera
+that has left the bus once a call has found it gone (C6) — unless its row
+says otherwise: a driver holding no device cannot describe one (state-machine
 steps 9 and 10). Two groups are outside that rule: what this driver never
 implements, named in its rows; and the identity and health members in the
 last row (`Name`, `Description`, `DriverInfo`, `DriverVersion`, `Connected`,
@@ -1532,7 +1626,7 @@ device is there at all, so they answer throughout.
 | `StartExposure` / `AbortExposure` / `ImageReady` / `ImageArray` | Per the soft-trigger video-capture state machine above; all `NOT_CONNECTED` while disconnected (step 9) | **Real** |
 | `StopExposure` | `NOT_IMPLEMENTED`; never implemented, so answered at any time — the truth about a member no reconnect makes work (step 10) | **Real** |
 | `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session; `VALUE_NOT_SET` before its first exposure, `NOT_CONNECTED` while disconnected (step 9) | **Real** |
-| `Name` / `Description` / `DriverInfo` / `DriverVersion` / `Connected` / `UniqueID` | — | **Real** |
+| `Name` / `Description` / `DriverInfo` / `DriverVersion` / `Connected` / `UniqueID` | `Connected` is `false` once a call has found the camera gone from the bus, until a client releases it (C6) | **Real** |
 
 ---
 
@@ -1585,7 +1679,7 @@ everything else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 122 no-features / 135 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 139 no-features / 159 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
@@ -1632,15 +1726,16 @@ Layered per [`testing.md`](../skills/testing.md).
   `Camera::video_capture_starts`, a read-only count that tells the test the
   capture's own capture restart has run, so "the cancel landed in the poll
   loop" is a fact rather than a nap.
-- **BDD** (`bdd-infra::ServiceHandle`, nine feature files, 83 scenarios /
-  391 steps) — all genuinely green, including `enumeration_connection`'s
+- **BDD** (`bdd-infra::ServiceHandle`, ten feature files, 89 scenarios /
+  432 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
   behavioural feature (`exposure`, `binning_and_roi`, `cooling`,
   `gain_offset_readout`, `sensor_properties`) — see each file's header
   comment for the specific contracts it encodes. E9 and the
   generation-counter abort race are deliberately **not** BDD-covered — the
   design doc calls this out explicitly, since the `svbony-rs` simulation
-  cannot force an SDK error — and live in the unit-test layer above
+  cannot force an SDK error (its one, a departure, ends the session rather
+  than leaving it in `Error`, C6) — and live in the unit-test layer above
   instead. The `gain_offset_readout` scenarios check GO1-GO5 only as far
   as a client can see them through the simulation — a set accepted and
   reported while an exposure carries on, an exposure at the maximum gain
@@ -1649,6 +1744,25 @@ Layered per [`testing.md`](../skills/testing.md).
   on gain or offset, and a set that wrote the camera at once would answer
   them the same way, so which frame a value lands on is pinned in the
   unit-test layer only.
+- **A camera that leaves the bus (C6)** — `camera_departure.feature` starts
+  the `simulation` binary with the hidden `--simulation-departure-file
+  <path>` flag, which builds the simulated camera with `svbony-rs`'s
+  departure file (`Sdk::with_departure_file`): while the file exists, every
+  call on the camera answers `CAMERA_REMOVED` and it cannot be opened. The
+  suite creates and removes the file, so the scenarios run the shipped
+  `SvbonyCameraHandle` and its lost mark end to end. `backend::handle_tests`
+  pins the mark against the same simulation: a removal marks the camera lost
+  without closing it, another refusal marks nothing, an open is refused until
+  a close releases the camera, and a capture finds the departure at its
+  trigger, in its `SVBGetVideoData` poll or in its abort drain. The device
+  side runs against `MockCameraHandle::leave_bus`, which reproduces that rule
+  on the mock's own flags: every member refusing once the departure is known,
+  a refusal from a camera still there staying that refusal, an exposure
+  finding the departure by itself, the release and the fresh reconnect, a
+  departure during the handshake, and a release that finds the camera no
+  longer lost leaving the session alone. Both doubles model the SDK header's
+  account of a removed camera, not a measurement: C6's hardware questions
+  stay open until the pier1 run.
 - **ConformU** — `tests/conformu_integration.rs` (Phase F), mirroring
   `zwo-camera`'s: starts the `--features conformu` binary (real SDK link
   required, per "Native dependency & build gating" above — `conformu`
@@ -1783,6 +1897,12 @@ phases A–G:
   — see "Delivery phasing" Phase G for why it didn't land that phase.
   (`scripts/build-packages.sh` SDK-staging/RUNPATH support landed
   separately as issue #679.)
+- Noticing a departed camera without a failing call. C6 is lazy: a client
+  that reads only `Connected` and the cache-served members never reaches the
+  SDK, so it is told at its next exposure or cooler read rather than when the
+  camera left. A presence check on a timer would close that gap, at the cost
+  of SDK traffic beside a capture — and it needs the hardware answers C6
+  still owes first, since it would rest on the same status code.
 - A confirmed `mac_arm64` SVBony SDK blob — `scripts/build-tarballs.sh` and
   `scripts/generate-brew-formulas.sh` currently exclude `svbony-camera`
   outright (no macOS tarball/formula) rather than ship a
