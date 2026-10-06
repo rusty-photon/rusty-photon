@@ -1841,6 +1841,10 @@ fn a_failed_close_keeps_the_handle_and_a_reopen_is_a_no_op_on_it() {
         "unexpected error: {error:?}"
     );
     assert!(camera.is_open().unwrap(), "a failed close keeps the handle");
+    camera
+        .open()
+        .expect("a reopen is a no-op on the kept handle, not a failure");
+    assert!(camera.is_open().unwrap(), "the kept handle is still open");
     std::fs::remove_file(&file).unwrap();
     camera.close().unwrap();
     assert!(!camera.is_open().unwrap());
