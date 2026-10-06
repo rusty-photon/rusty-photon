@@ -104,6 +104,12 @@ the bulk `RngCore::fill_bytes` path), so even a full-frame 6248×4176 download
 returns in a few milliseconds — fast enough to stay inside conformance tools'
 `StartExposure` timeouts.
 
+`Sdk::with_departure_file(path)` takes the simulated camera off the bus while
+`path` exists, for testing a camera that loses its power or cable while
+connected: enumeration finds no camera, an open answers `InvalidIndex`, and
+every call on a camera that SDK already opened answers `CameraRemoved`
+(`ASI_ERROR_CAMERA_REMOVED`). Removing the file brings the camera back.
+
 ## License
 
 Dual-licensed under either of [MIT](LICENSE-MIT) or

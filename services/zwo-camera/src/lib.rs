@@ -100,6 +100,10 @@ pub struct ServerBuilder {
     reload: Option<ReloadSignal>,
     /// Register no cameras (the test-only zero-camera startup path, C0).
     force_empty: bool,
+    /// Test-only: the file whose existence takes the simulated camera off
+    /// the bus (C6). See [`Self::with_departure_file`].
+    #[cfg(feature = "simulation")]
+    departure_file: Option<PathBuf>,
 }
 
 impl ServerBuilder {
@@ -140,6 +144,18 @@ impl ServerBuilder {
         self
     }
 
+    /// Test-only: give every registered camera's SDK `zwo-rs`'s departure
+    /// file, so the simulated camera leaves the bus while `path` exists and
+    /// returns when it is removed — the camera that loses its power or cable
+    /// while connected (C6). `None` keeps a camera that never leaves.
+    /// Enumeration is unaffected: the file is created after startup.
+    #[cfg(feature = "simulation")]
+    #[must_use]
+    pub fn with_departure_file(mut self, path: Option<PathBuf>) -> Self {
+        self.departure_file = path;
+        self
+    }
+
     /// Enumerate the connected ASI cameras, register each as an ASCOM device,
     /// and bind the Alpaca listener.
     ///
@@ -161,8 +177,14 @@ impl ServerBuilder {
 
         let mut server = Server::new(CargoServerInfo!());
         for cam in &cameras {
+            let sdk = zwo_rs::Sdk::new()?;
+            #[cfg(feature = "simulation")]
+            let sdk = match &self.departure_file {
+                Some(path) => sdk.with_departure_file(path),
+                None => sdk,
+            };
             let handle: Arc<dyn CameraHandle> = Arc::new(ZwoCameraHandle::new(
-                zwo_rs::Sdk::new()?,
+                sdk,
                 cam.index,
                 cam.info.clone(),
                 cam.unique_id.clone(),

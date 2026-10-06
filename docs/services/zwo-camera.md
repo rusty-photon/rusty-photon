@@ -593,7 +593,8 @@ EAF; those belong to the other zwo services.)
   failure returns the mapped driver error and `Connected` stays `false`.
 - **C3.** `set_connected(false)` closes that device and returns `NOT_CONNECTED`
   for subsequent operations; an in-flight exposure on it is aborted. A reconnect
-  landing while that capture is still draining is E10.
+  landing while that capture is still draining is E10. A camera that leaves the
+  bus while connected is C6's.
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
   camera does not affect the others enumerated on the same service.
 - **C5.** No code path in this service pushes cooler state or any other
@@ -612,6 +613,80 @@ EAF; those belong to the other zwo services.)
   every enumerated camera at startup.) Gain and offset hold to the same rule:
   the connect handshake only *reads* them (GO1), and they are written only by
   the arm of an operator-started `StartExposure` (GO2).
+- **C6.** **A camera that has left the bus reads disconnected.** A camera that
+  loses its power or its cable while connected keeps its open SDK handle, and
+  `Connected` is this driver's own record of that handle: a connect sets it, a
+  disconnect clears it, and nothing else changes it. Left there, a departed
+  camera answered `Connected == true` and every member served from cache — the
+  geometry, `BinX`, `Gain`, `Offset`, `ReadoutMode`, and the capability flags
+  read from `ASI_CAMERA_INFO` (E12) — as though it were present. Meanwhile every
+  member that reached the SDK failed with whatever code its call site gives a
+  failure: `CCDTemperature` `UNSPECIFIED_ERROR`, `CoolerOn` and `CoolerPower`
+  `INVALID_VALUE`, the setters and `ElectronsPerADU` `INVALID_OPERATION`, and a
+  capture `CameraState == Error`. A client was told nothing was wrong until its
+  next exposure failed with a generic error, and rp's reconnect supervisor,
+  which takes `Connected == true` as healthy, would never re-establish it.
+
+  The ASI SDK names this case, where QHY's does not (qhy-camera
+  [C9](qhy-camera.md#behavioral-contracts) has to infer it from a probe):
+  `ASI_ERROR_CAMERA_REMOVED`, *"failed to find the camera, maybe the camera has
+  been removed"*. So **a call the SDK answers with `CAMERA_REMOVED` marks the
+  session lost**, logged once at `warn`. From then on `Connected == false`, and
+  every member that takes the connected check answers `NOT_CONNECTED`, the
+  cache-served ones included. The request that got the answer answers
+  `NOT_CONNECTED` as well, rather than the code its call site would give. Any
+  of these SDK calls can be the one: the members' reads and writes, the
+  connect handshake, a capture's arm, readout poll and download, the
+  `ASIStopExposure` an abort sends while the frame integrates, and the
+  pulse-guide on and off. The mark is made under the lock the call ran under,
+  which is the lock an open and a close take, so it lands on the camera that
+  answered and never on one a reconnect has opened since.
+
+  **Only `CAMERA_REMOVED` counts.** A timeout, a general error, `CAMERA_CLOSED`
+  or `INVALID_ID` stays the failure it is, and the session survives it. A false
+  "lost" costs more than a late one. It ends a live session, and the reconnect a
+  supervisor answers it with runs `ASIInitCamera`, which resets the camera's
+  controls, the cooler included, to the SDK defaults (C5). A departed camera
+  that fails some other way first is found out by the next call the SDK answers
+  `CAMERA_REMOVED`.
+
+  **Lost is not closed.** The driver closes nothing on its own. A capture may
+  still be integrating against the camera, with its lock released, and the
+  session ends when a client ends it. `Connected = false` releases a lost
+  session through the ordinary disconnect (C3): the in-flight capture is
+  cancelled, the camera is closed, and the call succeeds. `Connected = true`
+  releases it the same way and then connects afresh. A client that reconnects,
+  as rp's supervisor does, gets either a working camera or C2's failure, never
+  the lost session back, and a fresh connect reseeds gain and offset (GO4) and
+  starts the exposure state clean.
+
+  **The check is lazy.** `Connected` turns false at the first SDK call after the
+  camera leaves, not at the moment it leaves. The `Connected` read and the
+  cache-served members never reach the SDK, so a client that reads only those
+  finds out at its next exposure, cooler read or pulse. A capture in flight
+  finds out by itself, but only when its frame is due: the integration wait
+  holds no lock and makes no SDK call, so the readout poll after it is the first
+  call to fail. A camera the SDK reports as a failed exposure
+  (`ASI_EXP_FAILED`) rather than refusing the poll is E9's `Error`, and the next
+  call finds the departure. **Bringing a camera back is not something this
+  contract does.** `ASIOpenCamera` is reached through the enumeration index read
+  at startup (C0), and whether a plain reconnect finds a camera that was
+  unplugged and plugged back in, without the service re-enumerating, is
+  unmeasured. Hotplug re-enumeration belongs to
+  [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173).
+
+  **Not yet measured on hardware.** All of this rests on the SDK answering
+  `CAMERA_REMOVED` once a camera has gone, and that is the header's word, not a
+  measurement. Still owed, on the dev box's ASI1600MM-Cool with a USB pull while
+  connected:
+
+  - whether a cable or power loss gets `CAMERA_REMOVED`, rather than a timeout
+    or `GENERAL_ERROR`, and from which calls;
+  - whether `CAMERA_CLOSED` or `INVALID_ID` show up instead after a replug;
+  - whether a plain reconnect finds the replugged camera.
+
+  Where the SDK answers something else, the driver behaves as it did before this
+  rule, which is no worse.
 
 ### Geometry, binning, ROI
 
@@ -733,7 +808,9 @@ EAF; those belong to the other zwo services.)
   then answers `0x500` carrying the message. The arm (E5) runs inside the
   capture, after `StartExposure` has answered `Ok`, so a write the camera
   refuses there — a gain or offset included (GO2) — surfaces this way rather
-  than as a `StartExposure` error. The next `StartExposure` clears it.
+  than as a `StartExposure` error. The next `StartExposure` clears it. An error
+  that says the camera has left the bus is C6's instead: the camera then reads
+  disconnected, and `CameraState` answers `NOT_CONNECTED`.
 - **E10.** A disconnect and reconnect *during* an exposure aborts that capture
   and leaves the reconnected device `Idle`; the next `StartExposure` is accepted
   and returns its own frame. The superseded capture — which may still be draining
@@ -1199,7 +1276,9 @@ otherwise: a driver holding no device cannot describe one (E11, E12). Outside
 that rule: `CanAsymmetricBin`, which this driver never implements, and the
 ASCOM identity and health members (`Name`, `Description`, `DriverInfo`,
 `DriverVersion`, `Connected`, `UniqueID`), which describe the driver and are
-how a client asks whether a device is there at all.
+how a client asks whether a device is there at all. A session whose camera
+the SDK has reported removed counts as disconnected: `Connected` reads
+`false` and the members below answer `NOT_CONNECTED` (C6).
 
 | Property / Method | v0 behaviour (backed by `zwo-rs`) |
 |---|---|
@@ -1279,10 +1358,10 @@ else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md). Phase E landed **45 unit tests**
 and **57 BDD scenarios** (all green), plus a full **ConformU** pass; the suite
-now stands at **121 unit tests** (with `--all-features`; 111 without, since the
-`simulation` feature gates `lib.rs`'s three `simulation_tests` and the seven
+now stands at **135 unit tests** (with `--all-features`; 121 without, since the
+`simulation` feature gates `lib.rs`'s three `simulation_tests` and the eleven
 `backend::handle_tests` that drive the production handle against the `zwo-rs`
-simulation) and **79 BDD scenarios**.
+simulation) and **85 BDD scenarios**.
 
 - **Unit** (`src/*.rs` `#[cfg(test)]`) — config parse/newtype validation, ROI/
   binning geometry math (including the %8 / %2 alignment rules), the `Camera`
@@ -1332,6 +1411,32 @@ simulation) and **79 BDD scenarios**.
   capability surface a disconnected driver may not describe (E12), and
   config actions, driven against the `zwo-rs` `simulation` backend.
   (FilterWheel FW1–FW3 moved to the future `zwo-filterwheel` service — ADR-014.)
+- **A camera that leaves the bus (C6)** — `camera_departure.feature` starts the
+  `simulation` binary with the hidden `--simulation-departure-file <path>`
+  flag, which gives each camera's SDK `zwo-rs`'s `Sdk::with_departure_file`.
+  While the file exists the simulated camera answers every call on its open
+  handle with `CAMERA_REMOVED` and cannot be opened (`INVALID_INDEX`, what the
+  SDK answers for an index past the connected count). The suite creates and
+  removes the file, so the scenarios run the shipped `ZwoCameraHandle` end to
+  end, a capture that loses its camera mid-frame included. The
+  `backend::handle_tests` pin the handle's half against the same simulator: a
+  `CAMERA_REMOVED` answer marks the session lost and leaves the camera held,
+  any other failure leaves the session alone, a close and a fresh open start
+  unmarked, and a capture whose camera leaves while it integrates fails as a
+  removal and marks the session from its readout. `backend::error_tests` pin
+  that `CAMERA_REMOVED` is the one SDK code that crosses the seam as a
+  removal, and that a removal keeps its kind when the arm names the control
+  that failed (GO2). The unit tests drive the device side through
+  `MockCameraHandle::leave_bus`, which reproduces the handle's rule on the
+  mock's own flags: every member that reaches the SDK answering
+  `NOT_CONNECTED` whatever code its call site gives other failures, a failure
+  from a camera still on the bus leaving the session alone, and the release
+  and reconnect. Both doubles model the SDK header's account of a removed
+  camera, not a measured one (C6), so the hardware run C6 lists is what will
+  confirm them. Mutation-checked: dropping the readout's mark fails the
+  capture's handle test and BDD scenario; a connected check that ignores the
+  mark, or a `set_connected` that does not release a lost session, each fail
+  the device tests.
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)
   — launches the production binary with `--features simulation` and runs
   `bdd_infra::run_conformu("camera", …)`. Skipped when
@@ -1767,6 +1872,11 @@ driver itself). The FFI crate is the long pole (~40–50% of effort); once
   `qhyccd-rs` so `qhy-camera`'s default build can also be pure-Rust.
 - Per-serial connect-time tuning; `FullWellCapacity`; TLS / Basic Auth via
   `rusty-photon-tls` / `rp-auth`.
+- **Noticing a departed camera without a failing call.** C6 is lazy: a client
+  that reads only `Connected` and the cache-served members never reaches the
+  SDK, so it is told at its next exposure, cooler read or pulse rather than
+  when the camera left. A presence check on a timer would close that gap, at
+  the cost of SDK traffic beside a capture. Shared with qhy-camera's C9.
 
 ## Packaging
 

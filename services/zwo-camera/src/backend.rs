@@ -10,33 +10,87 @@
 //! `Send + !Sync`, so the production handle keeps it behind a `parking_lot::Mutex`
 //! and re-opens on connect from the cached enumeration `index`.
 
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use tracing::debug;
+use tracing::{debug, warn};
 use zwo_rs::{CameraInfo, ControlCaps, ControlType, GuideDirection, ImageType};
 
-/// A `zwo-rs` SDK call failed. Carries the underlying message; the ASCOM device
-/// decides the `ASCOMError` per call site (the SDK error kind does not map 1:1 to
-/// an ASCOM code).
+/// A `zwo-rs` SDK call failed: its message and its [`BackendErrorKind`].
+///
+/// The ASCOM device picks the `ASCOMError` per call site (the SDK error kind
+/// does not map 1:1 to an ASCOM code), except for a camera the SDK reports
+/// removed, which is a disconnect wherever it is met (C6).
 #[derive(Debug, Clone, thiserror::Error)]
-#[error("{0}")]
-pub struct BackendError(pub String);
+#[error("{message}")]
+pub struct BackendError {
+    message: String,
+    kind: BackendErrorKind,
+}
 
-/// Collapse a [`zwo_rs::Error`] into the typed seam error. The seam keeps only the
-/// message string (each call site picks the right `ASCOMError` code); this `From`
-/// impl lets `?` convert SDK errors automatically.
+/// What a [`BackendError`] says about the camera, beyond its message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendErrorKind {
+    /// `ASI_ERROR_CAMERA_REMOVED`: the SDK can no longer find the camera, so
+    /// it has left the bus (C6).
+    CameraRemoved,
+    /// Any other failure.
+    Other,
+}
+
+/// Collapse a [`zwo_rs::Error`] into the typed seam error: its message, and
+/// whether it is the SDK reporting the camera removed. This `From` impl lets
+/// `?` convert SDK errors automatically.
 impl From<zwo_rs::Error> for BackendError {
     fn from(err: zwo_rs::Error) -> Self {
-        Self(err.to_string())
+        let kind = if matches!(err, zwo_rs::Error::Asi(zwo_rs::AsiError::CameraRemoved)) {
+            BackendErrorKind::CameraRemoved
+        } else {
+            BackendErrorKind::Other
+        };
+        Self {
+            message: err.to_string(),
+            kind,
+        }
     }
 }
 
 impl BackendError {
+    /// A failure that says nothing about the camera's presence.
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            kind: BackendErrorKind::Other,
+        }
+    }
+
     fn closed() -> Self {
-        Self("camera not open".to_string())
+        Self::new("camera not open")
+    }
+
+    /// What this failure says about the camera.
+    #[must_use]
+    pub const fn kind(&self) -> BackendErrorKind {
+        self.kind
+    }
+
+    /// Whether the SDK reported the camera removed (C6).
+    #[must_use]
+    pub fn is_removed(&self) -> bool {
+        self.kind == BackendErrorKind::CameraRemoved
+    }
+
+    /// The same failure, its message prefixed with `context`. The kind is
+    /// kept, so a removal reported from inside a larger step still reads as
+    /// one.
+    #[must_use]
+    pub fn context(self, context: &str) -> Self {
+        Self {
+            message: format!("{context}: {}", self.message),
+            kind: self.kind,
+        }
     }
 }
 
@@ -155,12 +209,11 @@ fn arm_gain_and_offset(
     mut write: impl FnMut(ControlType, i64) -> BackendResult<()>,
 ) -> BackendResult<()> {
     if let Some(gain) = request.gain {
-        write(ControlType::Gain, i64::from(gain))
-            .map_err(|e| BackendError(format!("failed to set gain: {e}")))?;
+        write(ControlType::Gain, i64::from(gain)).map_err(|e| e.context("failed to set gain"))?;
     }
     if let Some(offset) = request.offset {
         write(ControlType::Offset, i64::from(offset))
-            .map_err(|e| BackendError(format!("failed to set offset: {e}")))?;
+            .map_err(|e| e.context("failed to set offset"))?;
     }
     debug!(gain = ?request.gain, offset = ?request.offset, "exposure armed its gain and offset");
     Ok(())
@@ -177,7 +230,14 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// The camera's enumeration [`CameraInfo`] (cached; no open required).
     fn info(&self) -> CameraInfo;
 
+    /// Whether the handle holds an open camera — including one that has since
+    /// left the bus, which stays held until a close (see
+    /// [`is_lost`](Self::is_lost)).
     fn is_open(&self) -> bool;
+    /// Whether the SDK has answered a call on the open camera with
+    /// `ASI_ERROR_CAMERA_REMOVED` since it was opened (C6). The camera is
+    /// still held, so only a close lets it go; a fresh open starts unmarked.
+    fn is_lost(&self) -> bool;
     /// Open the camera (a no-op when already open).
     ///
     /// # Errors
@@ -289,6 +349,17 @@ pub struct ZwoCameraHandle {
     /// see [`ZwoCameraHandle::is_current`], which gates every SDK call a capture
     /// makes after it starts its exposure.
     open_epoch: AtomicU64,
+    /// Set when the SDK answers a call on the open camera with
+    /// `ASI_ERROR_CAMERA_REMOVED` (C6); cleared by an open or a close.
+    ///
+    /// Written only while holding [`Self::camera`] — the mark under the lock
+    /// the answering call ran under (see [`Self::note_removal`]), the clears
+    /// under the lock an open and a close change the camera under — so it
+    /// always describes the camera in the slot, never one a reconnect has
+    /// replaced. Read without the lock: [`CameraHandle::is_lost`] then costs
+    /// a connected check nothing beyond the [`CameraHandle::is_open`] it
+    /// already makes.
+    lost: AtomicBool,
 }
 
 impl ZwoCameraHandle {
@@ -303,6 +374,7 @@ impl ZwoCameraHandle {
             unique_id,
             camera: Mutex::new(None),
             open_epoch: AtomicU64::new(0),
+            lost: AtomicBool::new(false),
         }
     }
 
@@ -314,7 +386,8 @@ impl ZwoCameraHandle {
     fn stop_at_sdk(&self, epoch: u64) {
         let guard = self.camera.lock();
         if let Some(camera) = guard.as_ref().filter(|_| self.is_current(epoch)) {
-            let _ = camera.stop_exposure();
+            let stopped = camera.stop_exposure().map_err(BackendError::from);
+            self.note_removal(&stopped);
         }
         drop(guard);
     }
@@ -332,7 +405,28 @@ impl ZwoCameraHandle {
     ) -> BackendResult<T> {
         let guard = self.camera.lock();
         let camera = guard.as_ref().ok_or_else(BackendError::closed)?;
-        f(camera)
+        let result = f(camera);
+        // Still under the guard the call ran under (C6).
+        self.note_removal(&result);
+        result
+    }
+
+    /// Mark the session lost if `result` is the SDK reporting the camera
+    /// removed (C6), logging the first such answer of a session at `warn`.
+    ///
+    /// Call it while still holding [`Self::camera`] from the SDK call that
+    /// produced `result`: an open and a close change the camera only under
+    /// that lock, so the mark lands on the camera that answered. Made after
+    /// the guard was dropped, it could land on a camera a reconnect opened in
+    /// between, ending a session nothing is wrong with.
+    fn note_removal<T>(&self, result: &BackendResult<T>) {
+        let removed = result.as_ref().is_err_and(BackendError::is_removed);
+        if removed && !self.lost.swap(true, Ordering::SeqCst) {
+            warn!(
+                camera = %self.unique_id,
+                "the SDK reports the camera removed; it reads disconnected until a client releases it"
+            );
+        }
     }
 
     /// Is the open camera still the instance `epoch` names, or has a reconnect
@@ -357,6 +451,10 @@ impl CameraHandle for ZwoCameraHandle {
         self.camera.lock().is_some()
     }
 
+    fn is_lost(&self) -> bool {
+        self.lost.load(Ordering::SeqCst)
+    }
+
     fn open(&self) -> BackendResult<()> {
         let mut guard = self.camera.lock();
         if guard.is_none() {
@@ -364,14 +462,20 @@ impl CameraHandle for ZwoCameraHandle {
             // Under the same lock as the open itself, so no capture can read an
             // epoch that does not match the camera it is about to configure.
             self.open_epoch.fetch_add(1, Ordering::SeqCst);
+            // A camera just opened has answered nothing yet (C6).
+            self.lost.store(false, Ordering::SeqCst);
         }
         drop(guard);
         Ok(())
     }
 
     fn close(&self) -> BackendResult<()> {
-        // Dropping the `Camera` calls `ASICloseCamera`.
-        *self.camera.lock() = None;
+        let mut guard = self.camera.lock();
+        // Dropping the `Camera` calls `ASICloseCamera`, whatever the SDK
+        // makes of a camera that has left the bus (C6).
+        *guard = None;
+        self.lost.store(false, Ordering::SeqCst);
+        drop(guard);
         Ok(())
     }
 
@@ -486,57 +590,11 @@ impl CameraHandle for ZwoCameraHandle {
         let Some(camera) = guard.as_ref().filter(|_| self.is_current(epoch)) else {
             return Ok(None);
         };
-        if !preserve {
-            // Poll the SDK to readout completion against a real-clock DEADLINE,
-            // for the same reason as the integration wait above: a fixed nap
-            // count drifts unpredictably under blocking-pool oversubscription.
-            let readout_start = std::time::Instant::now();
-            let readout_deadline = readout_start
-                .checked_add(READOUT_TIMEOUT)
-                .unwrap_or(readout_start);
-            let step = Duration::from_millis(10);
-            loop {
-                match request.stop.load() {
-                    StopRequest::Abort => {
-                        let _ = camera.stop_exposure();
-                        return Ok(None);
-                    }
-                    StopRequest::Preserve => {
-                        let _ = camera.stop_exposure();
-                        break;
-                    }
-                    StopRequest::None => {}
-                }
-                match camera.exposure_status()? {
-                    zwo_rs::ExposureStatus::Success | zwo_rs::ExposureStatus::Idle => break,
-                    zwo_rs::ExposureStatus::Failed => {
-                        return Err(BackendError("exposure failed".to_string()))
-                    }
-                    zwo_rs::ExposureStatus::Working => {
-                        let now = std::time::Instant::now();
-                        if now >= readout_deadline {
-                            break;
-                        }
-                        std::thread::sleep(
-                            step.min(readout_deadline.saturating_duration_since(now)),
-                        );
-                    }
-                }
-            }
-        }
-
-        // Size the buffer from the SDK's own view of the ROI, which is
-        // exactly what `download_exposure` checks it against. That view now
-        // includes the format set above, so the non-Raw16 path this guarded
-        // against — an 8-bit readout mode (RM1/RM2) — needs no second
-        // bytes-per-pixel constant here.
-        let frame_len = camera.roi_format()?.buffer_len().ok_or_else(|| {
-            BackendError("frame is too large to address on this target".to_string())
-        })?;
-        let mut buf = vec![0u8; frame_len];
-        camera.download_exposure(&mut buf)?;
+        let frame = read_out(camera, &request, preserve);
+        // Still under the guard the readout ran under (C6).
+        self.note_removal(&frame);
         drop(guard);
-        Ok(Some(buf))
+        frame
     }
 
     fn pulse_guide_on(&self, direction: GuideDirection) -> BackendResult<()> {
@@ -546,6 +604,65 @@ impl CameraHandle for ZwoCameraHandle {
     fn pulse_guide_off(&self, direction: GuideDirection) -> BackendResult<()> {
         self.with_camera(|camera| Ok(camera.pulse_guide_off(direction)?))
     }
+}
+
+/// The readout half of a capture: poll the camera to readout completion
+/// (unless the frame was gracefully stopped, `preserve`), then download it.
+/// `Ok(None)` when an abort arrives mid-poll. Run under the camera lock, by
+/// [`ZwoCameraHandle::capture`] alone.
+fn read_out(
+    camera: &zwo_rs::Camera,
+    request: &CaptureRequest,
+    preserve: bool,
+) -> BackendResult<Option<Vec<u8>>> {
+    if !preserve {
+        // Poll the SDK to readout completion against a real-clock DEADLINE,
+        // for the same reason as the capture's integration wait: a fixed
+        // nap count drifts unpredictably under blocking-pool
+        // oversubscription.
+        let readout_start = std::time::Instant::now();
+        let readout_deadline = readout_start
+            .checked_add(READOUT_TIMEOUT)
+            .unwrap_or(readout_start);
+        let step = Duration::from_millis(10);
+        loop {
+            match request.stop.load() {
+                StopRequest::Abort => {
+                    let _ = camera.stop_exposure();
+                    return Ok(None);
+                }
+                StopRequest::Preserve => {
+                    let _ = camera.stop_exposure();
+                    break;
+                }
+                StopRequest::None => {}
+            }
+            match camera.exposure_status()? {
+                zwo_rs::ExposureStatus::Success | zwo_rs::ExposureStatus::Idle => break,
+                zwo_rs::ExposureStatus::Failed => return Err(BackendError::new("exposure failed")),
+                zwo_rs::ExposureStatus::Working => {
+                    let now = std::time::Instant::now();
+                    if now >= readout_deadline {
+                        break;
+                    }
+                    std::thread::sleep(step.min(readout_deadline.saturating_duration_since(now)));
+                }
+            }
+        }
+    }
+
+    // Size the buffer from the SDK's own view of the ROI, which is exactly
+    // what `download_exposure` checks it against. That view now includes the
+    // format the capture's arm set, so the non-Raw16 path this guarded
+    // against — an 8-bit readout mode (RM1/RM2) — needs no second
+    // bytes-per-pixel constant here.
+    let frame_len = camera
+        .roi_format()?
+        .buffer_len()
+        .ok_or_else(|| BackendError::new("frame is too large to address on this target"))?;
+    let mut buf = vec![0u8; frame_len];
+    camera.download_exposure(&mut buf)?;
+    Ok(Some(buf))
 }
 
 // --- test mock -----------------------------------------------------------------
@@ -758,6 +875,132 @@ mod handle_tests {
         );
         handle.close().unwrap();
     }
+
+    /// A handle over a simulated camera that is off the bus while `departure`
+    /// exists (C6).
+    fn departing_sim_handle(departure: &std::path::Path) -> ZwoCameraHandle {
+        let sdk = zwo_rs::Sdk::new()
+            .expect("simulation SDK")
+            .with_departure_file(departure);
+        let info = sdk.cameras().expect("enumerate")[0].clone();
+        ZwoCameraHandle::new(sdk, 0, info, "ZWO:Sim:0a1b2c3d4e5f6071".to_string())
+    }
+
+    /// C6: a call the SDK answers `CAMERA_REMOVED` comes back as a removal
+    /// and marks the session lost, while the camera stays held.
+    #[test]
+    fn production_handle_marks_its_session_lost_when_the_sdk_reports_the_camera_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let departure = dir.path().join("departed");
+        let handle = departing_sim_handle(&departure);
+        handle.open().unwrap();
+        std::fs::write(&departure, b"").unwrap();
+
+        let err = handle.control_value(ControlType::Gain).unwrap_err();
+
+        assert!(err.is_removed(), "{err}");
+        assert!(handle.is_lost());
+        assert!(handle.is_open(), "lost is not closed");
+    }
+
+    /// C6: only the removal marks the session; any other failure leaves it.
+    #[test]
+    fn production_handle_keeps_a_session_that_fails_some_other_way() {
+        let handle = sim_handle();
+        handle.open().unwrap();
+
+        // The simulated `Temperature` control is read-only.
+        let err = handle
+            .set_control_value(ControlType::Temperature, 1)
+            .unwrap_err();
+
+        assert!(!err.is_removed(), "{err}");
+        assert!(!handle.is_lost());
+    }
+
+    /// C6: a close releases the lost session, an open is refused while the
+    /// camera is gone, and the session a fresh open starts is unmarked.
+    #[test]
+    fn production_handle_starts_each_session_unmarked() {
+        let dir = tempfile::tempdir().unwrap();
+        let departure = dir.path().join("departed");
+        let handle = departing_sim_handle(&departure);
+        handle.open().unwrap();
+        std::fs::write(&departure, b"").unwrap();
+        handle.temperature_celsius().unwrap_err();
+
+        handle.close().unwrap();
+        assert!(!handle.is_lost());
+        assert!(!handle.is_open());
+        handle.open().unwrap_err();
+        assert!(!handle.is_open());
+
+        std::fs::remove_file(&departure).unwrap();
+        handle.open().unwrap();
+        assert!(!handle.is_lost());
+        handle.control_value(ControlType::Gain).unwrap();
+        handle.close().unwrap();
+    }
+
+    /// C6, the capture path: a camera that leaves while its frame integrates
+    /// is found out by the readout poll, under the lock that poll holds, and
+    /// the capture fails as a removal.
+    #[test]
+    fn production_handle_capture_whose_camera_leaves_mid_frame_fails_as_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let departure = dir.path().join("departed");
+        let handle = Arc::new(departing_sim_handle(&departure));
+        handle.open().unwrap();
+        let stop = Arc::new(StopSignal::new());
+        let request = sim_request(Duration::from_millis(500), &stop);
+        let capturing = {
+            let handle = Arc::clone(&handle);
+            std::thread::spawn(move || handle.capture(request))
+        };
+        wait_until_exposing(&handle);
+
+        std::fs::write(&departure, b"").unwrap();
+
+        let err = capturing.join().expect("capture thread").unwrap_err();
+        assert!(err.is_removed(), "{err}");
+        assert!(handle.is_lost());
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod error_tests {
+    use super::*;
+
+    /// C6 rests on the removal surviving the seam: the SDK's
+    /// `CAMERA_REMOVED` is the one kind kept, and every other code is `Other`.
+    #[test]
+    fn only_a_camera_removed_answer_crosses_the_seam_as_a_removal() {
+        let removed = BackendError::from(zwo_rs::Error::Asi(zwo_rs::AsiError::CameraRemoved));
+        assert_eq!(removed.kind(), BackendErrorKind::CameraRemoved);
+        for other in [
+            zwo_rs::AsiError::CameraClosed,
+            zwo_rs::AsiError::InvalidId,
+            zwo_rs::AsiError::Timeout,
+            zwo_rs::AsiError::GeneralError,
+        ] {
+            let err = BackendError::from(zwo_rs::Error::Asi(other));
+            assert_eq!(err.kind(), BackendErrorKind::Other, "{other:?}");
+        }
+    }
+
+    /// The arm reports a refused gain or offset with the control's name in
+    /// front (GO2); a removal reported that way must still read as one (C6).
+    #[test]
+    fn context_names_the_step_and_keeps_the_kind() {
+        let err = BackendError::from(zwo_rs::Error::Asi(zwo_rs::AsiError::CameraRemoved))
+            .context("failed to set gain");
+        assert!(err.is_removed());
+        assert_eq!(
+            err.to_string(),
+            "failed to set gain: ASI camera SDK error: camera removed"
+        );
+    }
 }
 
 /// A configurable in-memory [`CameraHandle`] for the crate's unit tests, so the
@@ -767,7 +1010,6 @@ mod handle_tests {
 #[cfg(test)]
 pub(crate) mod mock {
     use super::*;
-    use std::sync::atomic::AtomicBool;
 
     /// Build the `ASI2600MM-Pro-Simulated` control set (Gain, Exposure, Offset,
     /// Temperature, `CoolerOn`, `TargetTemp`), mirroring `zwo-rs`'s `sim_control_caps`.
@@ -867,6 +1109,12 @@ pub(crate) mod mock {
         /// Controls whose reads the camera refuses, so a connect seeding one
         /// (GO1), and a getter that must not read one, can be exercised.
         refused_reads: Mutex<Vec<ControlType>>,
+        /// The camera is off the bus ([`Self::leave_bus`]): every call that
+        /// reaches it answers `CAMERA_REMOVED`, and it cannot be opened.
+        departed: AtomicBool,
+        /// The open session met a `CAMERA_REMOVED` answer (C6) — the mock's
+        /// copy of the production handle's mark, set by [`Self::reach`].
+        lost: AtomicBool,
     }
 
     /// How one mock [`capture`](CameraHandle::capture) call ended.
@@ -898,6 +1146,8 @@ pub(crate) mod mock {
                 control_writes: Mutex::new(Vec::new()),
                 refused_writes: Mutex::new(Vec::new()),
                 refused_reads: Mutex::new(Vec::new()),
+                departed: AtomicBool::new(false),
+                lost: AtomicBool::new(false),
             }
         }
     }
@@ -1020,6 +1270,30 @@ pub(crate) mod mock {
             *self.capture_delay.lock() = delay;
         }
 
+        /// Take the camera off the bus, as a cut cable or power does (C6).
+        pub fn leave_bus(&self) {
+            self.departed.store(true, Ordering::SeqCst);
+        }
+
+        /// Put the camera back on the bus.
+        pub fn return_to_bus(&self) {
+            self.departed.store(false, Ordering::SeqCst);
+        }
+
+        /// What every call that reaches the camera meets first. A departed
+        /// camera answers `CAMERA_REMOVED`, and the answer marks the open
+        /// session lost — the production handle's rule (C6), reproduced on
+        /// the mock's own flags.
+        fn reach(&self) -> BackendResult<()> {
+            if !self.departed.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            if self.open.load(Ordering::SeqCst) {
+                self.lost.store(true, Ordering::SeqCst);
+            }
+            Err(zwo_rs::Error::Asi(zwo_rs::AsiError::CameraRemoved).into())
+        }
+
         /// The capture proper; [`CameraHandle::capture`] wraps it to record how
         /// it ended.
         fn run_capture(&self, request: CaptureRequest) -> BackendResult<Option<Vec<u8>>> {
@@ -1038,6 +1312,8 @@ pub(crate) mod mock {
             while self.capture_gate.load(Ordering::SeqCst) && gate_start.elapsed() < GATE_TIMEOUT {
                 std::thread::sleep(Duration::from_millis(1));
             }
+            // The arm's first SDK call, as on the production handle.
+            self.reach()?;
             // Arm the frame's gain and offset where the production handle does
             // — before the integration — and through the same sequence, so the
             // registers (and the ElectronsPerADU derived from the gain) hold
@@ -1063,8 +1339,11 @@ pub(crate) mod mock {
                 }
                 std::thread::sleep(step.min(deadline.saturating_duration_since(now)));
             }
+            // The readout poll: the first SDK call after the integration, and
+            // so where a camera that left mid-frame is found out.
+            self.reach()?;
             if self.fail_capture.load(Ordering::SeqCst) {
-                return Err(BackendError("simulated capture failure".to_string()));
+                return Err(BackendError::new("simulated capture failure"));
             }
             Ok(Some(vec![
                 0u8;
@@ -1088,21 +1367,34 @@ pub(crate) mod mock {
             self.open.load(Ordering::SeqCst)
         }
 
+        fn is_lost(&self) -> bool {
+            self.lost.load(Ordering::SeqCst)
+        }
+
         fn open(&self) -> BackendResult<()> {
-            self.open.store(true, Ordering::SeqCst);
+            if self.departed.load(Ordering::SeqCst) {
+                // What the SDK answers for an index past the connected count.
+                return Err(zwo_rs::Error::Asi(zwo_rs::AsiError::InvalidIndex).into());
+            }
+            if !self.open.swap(true, Ordering::SeqCst) {
+                self.lost.store(false, Ordering::SeqCst);
+            }
             Ok(())
         }
 
         fn close(&self) -> BackendResult<()> {
             self.open.store(false, Ordering::SeqCst);
+            self.lost.store(false, Ordering::SeqCst);
             Ok(())
         }
 
         fn control_caps(&self) -> BackendResult<Vec<ControlCaps>> {
+            self.reach()?;
             Ok(self.caps.clone())
         }
 
         fn electrons_per_adu(&self) -> BackendResult<f32> {
+            self.reach()?;
             // Mirrors a modern body's SDK response: the gain-0 figure scaled by
             // the gain register in 0.1 dB units. Real models differ (the legacy
             // ASI120MC-S uses another law), hence the live read in the driver.
@@ -1112,8 +1404,9 @@ pub(crate) mod mock {
         }
 
         fn control_value(&self, control: ControlType) -> BackendResult<i64> {
+            self.reach()?;
             if self.refused_reads.lock().contains(&control) {
-                return Err(BackendError("simulated read refusal".to_string()));
+                return Err(BackendError::new("simulated read refusal"));
             }
             let value = match control {
                 ControlType::Gain => *self.gain.lock(),
@@ -1135,14 +1428,15 @@ pub(crate) mod mock {
                     };
                     celsius * 10
                 }
-                _ => return Err(BackendError("invalid control type".to_string())),
+                _ => return Err(BackendError::new("invalid control type")),
             };
             Ok(value)
         }
 
         fn set_control_value(&self, control: ControlType, value: i64) -> BackendResult<()> {
+            self.reach()?;
             if self.refused_writes.lock().contains(&control) {
-                return Err(BackendError("simulated write refusal".to_string()));
+                return Err(BackendError::new("simulated write refusal"));
             }
             match control {
                 ControlType::Gain => *self.gain.lock() = value,
@@ -1150,7 +1444,7 @@ pub(crate) mod mock {
                 ControlType::TargetTemp => *self.target_temp.lock() = value,
                 ControlType::CoolerOn => self.cooler_on.store(value != 0, Ordering::SeqCst),
                 ControlType::Exposure => {}
-                _ => return Err(BackendError("invalid control type".to_string())),
+                _ => return Err(BackendError::new("invalid control type")),
             }
             self.control_writes.lock().push((control, value));
             Ok(())
@@ -1179,11 +1473,11 @@ pub(crate) mod mock {
         }
 
         fn pulse_guide_on(&self, _direction: GuideDirection) -> BackendResult<()> {
-            Ok(())
+            self.reach()
         }
 
         fn pulse_guide_off(&self, _direction: GuideDirection) -> BackendResult<()> {
-            Ok(())
+            self.reach()
         }
     }
 }

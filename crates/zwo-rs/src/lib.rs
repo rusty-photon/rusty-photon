@@ -123,6 +123,10 @@ pub const SIM_FOCUSER_COUNT: usize = 1;
 /// never called (though it is still linked — see the crate docs).
 #[derive(Debug, Default)]
 pub struct Sdk {
+    /// Simulation only: while this file exists the simulated camera is off
+    /// the bus. See [`Sdk::with_departure_file`].
+    #[cfg(all(feature = "simulation", feature = "camera"))]
+    departure_file: Option<std::path::PathBuf>,
     _private: (),
 }
 
@@ -134,7 +138,26 @@ impl Sdk {
     /// (e.g. SDK version checks) can surface failures without an API break.
     pub fn new() -> Result<Self> {
         tracing::debug!("initialising ZWO SDK");
-        Ok(Self { _private: () })
+        Ok(Self::default())
+    }
+
+    /// Simulation only: take the simulated camera off the bus whenever `path`
+    /// exists, and put it back when the file is removed.
+    ///
+    /// Models a camera that loses its power or its cable while connected.
+    /// While the file exists this SDK reports no camera: enumeration finds
+    /// none, and an open answers [`AsiError::InvalidIndex`], as
+    /// `ASIGetCameraProperty` does for an index past the connected count. A
+    /// [`Camera`] this SDK opened keeps its handle, and every call on it
+    /// answers [`AsiError::CameraRemoved`] (`ASI_ERROR_CAMERA_REMOVED`, which
+    /// the SDK header describes as *"failed to find the camera, maybe the
+    /// camera has been removed"*). That is the header's account of a removed
+    /// camera, not a measurement of what one does.
+    #[cfg(all(feature = "simulation", feature = "camera"))]
+    #[must_use]
+    pub fn with_departure_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.departure_file = Some(path.into());
+        self
     }
 
     /// Number of connected ASI cameras (`ASIGetNumOfConnectedCameras`).
@@ -142,11 +165,13 @@ impl Sdk {
     /// # Errors
     /// Infallible today; returns [`Result`] for forward compatibility.
     #[cfg(feature = "camera")]
-    // Const only under the simulation cfg; the real body calls into the SDK.
-    #[allow(clippy::missing_const_for_fn)]
     pub fn camera_count(&self) -> Result<usize> {
         #[cfg(feature = "simulation")]
-        let count = SIM_CAMERA_COUNT;
+        let count = if self.sim_camera_departed() {
+            0
+        } else {
+            SIM_CAMERA_COUNT
+        };
         #[cfg(not(feature = "simulation"))]
         let count = {
             // SAFETY: `ASIGetNumOfConnectedCameras` takes no arguments and
@@ -156,6 +181,15 @@ impl Sdk {
             usize::try_from(n).unwrap_or(0)
         };
         Ok(count)
+    }
+
+    /// Whether the simulated camera is off the bus: a departure file is set
+    /// ([`Sdk::with_departure_file`]) and exists.
+    #[cfg(all(feature = "simulation", feature = "camera"))]
+    fn sim_camera_departed(&self) -> bool {
+        self.departure_file
+            .as_deref()
+            .is_some_and(std::path::Path::exists)
     }
 
     /// Number of connected EFW filter wheels (`EFWGetNum`).

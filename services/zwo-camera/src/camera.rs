@@ -367,11 +367,18 @@ impl ZwoCamera {
     }
 
     fn ensure_connected(&self) -> ASCOMResult<()> {
-        if self.handle.is_open() {
+        if self.is_connected() {
             Ok(())
         } else {
             Err(ASCOMError::NOT_CONNECTED)
         }
+    }
+
+    /// Whether this device holds a session on a camera still on the bus: the
+    /// handle is open, and the SDK has not reported the camera removed since
+    /// (C6). Answered from the handle's own state, never from the SDK.
+    fn is_connected(&self) -> bool {
+        self.handle.is_open() && !self.handle.is_lost()
     }
 
     /// The download format the current `ReadoutMode` selects (RM2). The index is
@@ -656,16 +663,35 @@ impl ZwoCamera {
     /// Run a blocking SDK-seam call off the async executor. The ASI FFI calls
     /// (`control_value`, `set_control_value`, `temperature_celsius`, …) do USB
     /// I/O, so running them directly on a Tokio worker could stall other Alpaca
-    /// requests; offload them like the capture, connect and pulse-guide paths.
+    /// requests; offload them like the capture and connect paths.
+    ///
+    /// A failure on a device that is no longer connected answers
+    /// `NOT_CONNECTED`, whatever code `f` gave it: either a disconnect closed
+    /// the camera under the call (C3), or the call itself was the one the SDK
+    /// answered `CAMERA_REMOVED`, which marked the session lost (C6). That is
+    /// the disconnect it is, rather than the `INVALID_OPERATION` or
+    /// `UNSPECIFIED_ERROR` the call site would spell a failure as. A call that
+    /// succeeded answers for itself.
     async fn on_handle<T, F>(&self, f: F) -> ASCOMResult<T>
     where
         F: FnOnce(&dyn CameraHandle) -> ASCOMResult<T> + Send + 'static,
         T: Send + 'static,
     {
         let handle = Arc::clone(&self.handle);
-        tokio::task::spawn_blocking(move || f(handle.as_ref()))
+        let outcome = tokio::task::spawn_blocking(move || f(handle.as_ref()))
             .await
-            .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?
+            .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?;
+        match outcome {
+            Err(e) if !self.is_connected() => {
+                debug!(
+                    camera = %self.unique_id,
+                    error = %e,
+                    "SDK call failed on a camera that is closed or has left the bus"
+                );
+                Err(ASCOMError::NOT_CONNECTED)
+            }
+            outcome => outcome,
+        }
     }
 }
 
@@ -925,8 +951,8 @@ async fn run_exposure(
                 // Aborted: discard the frame, leave no Error state (E7).
                 Ok(Ok(None)) => {}
                 Ok(Err(e)) => {
-                    warn!(error = %e.0, "mid-exposure SDK error");
-                    *state.last_error.lock() = Some(e.0);
+                    warn!(error = %e, "mid-exposure SDK error");
+                    *state.last_error.lock() = Some(e.to_string());
                 }
                 Err(join_err) => {
                     warn!(error = %join_err, "exposure task panicked");
@@ -959,12 +985,21 @@ impl Device for ZwoCamera {
         &self.unique_id
     }
 
+    /// `false` for a session whose camera the SDK has reported removed, though
+    /// its handle is still open (C6).
     async fn connected(&self) -> ASCOMResult<bool> {
-        Ok(self.handle.is_open())
+        Ok(self.is_connected())
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        if self.handle.is_open() == connected {
+        let held = self.handle.is_open();
+        // A camera that has left the bus is held but not connected (C6): its
+        // handle is still open, and only a disconnect lets it go. Either way a
+        // client asks, that release comes first — `Connected = false` ends
+        // there, and `Connected = true` goes on to a fresh connect rather than
+        // taking the lost session back.
+        let lost = held && self.handle.is_lost();
+        if connected == held && !lost {
             return Ok(());
         }
         // `connect`/`disconnect` do blocking SDK I/O — `ASIOpenCamera` enumerates
@@ -972,8 +1007,14 @@ impl Device for ZwoCamera {
         // the executor (ZwoCamera is cheap to clone: it is `Arc`-backed).
         let this = self.clone();
         tokio::task::spawn_blocking(move || {
+            if lost {
+                debug!(camera = %this.unique_id, "releasing a session whose camera left the bus");
+                this.disconnect()?;
+            }
             if connected {
                 this.connect()
+            } else if lost {
+                Ok(())
             } else {
                 this.disconnect()
             }
@@ -1727,11 +1768,11 @@ impl Camera for ZwoCamera {
         // detached task to end it after `duration`. Blocking it for the whole
         // pulse would exceed ConformU's 1 s response target and stall an
         // autoguider. `IsPulseGuiding` is true until the recorded deadline.
-        let on_handle = Arc::clone(&self.handle);
-        tokio::task::spawn_blocking(move || on_handle.pulse_guide_on(dir))
-            .await
-            .map_err(|e| ASCOMError::invalid_operation(format!("pulse guide task failed: {e}")))?
-            .map_err(|e| ASCOMError::invalid_operation(format!("pulse guide failed: {e}")))?;
+        self.on_handle(move |h| {
+            h.pulse_guide_on(dir)
+                .map_err(|e| ASCOMError::invalid_operation(format!("pulse guide failed: {e}")))
+        })
+        .await?;
 
         // A guide pulse is milliseconds long, so this cannot overflow the clock;
         // falling back to `now` would simply report the pulse as already done.
@@ -3805,6 +3846,192 @@ mod tests {
         assert_eq!(
             device.is_pulse_guiding().await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    // --- C6: a camera that has left the bus ---------------------------------
+
+    /// A connected device whose camera has just left the bus, and the mock
+    /// behind it. Nothing has reached the SDK since.
+    fn departed_device() -> (ZwoCamera, Arc<MockCameraHandle>) {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
+        handle.leave_bus();
+        (device, handle)
+    }
+
+    /// `Connected` is the driver's own record of the handle, so nothing
+    /// changes the moment the camera goes: the members that never reach the
+    /// SDK go on answering (C6's lazy check).
+    #[tokio::test]
+    async fn a_departed_camera_reads_connected_until_a_call_reaches_the_sdk() {
+        let (device, _handle) = departed_device();
+        assert!(device.connected().await.unwrap());
+        assert_eq!(device.gain().await.unwrap(), 100);
+    }
+
+    /// The first SDK call after the camera leaves answers `NOT_CONNECTED`
+    /// rather than its call site's code, and from then on the camera reads
+    /// disconnected and the members served from cache refuse too (C6).
+    #[tokio::test]
+    async fn a_departed_camera_reads_disconnected_after_its_next_sdk_call() {
+        let (device, _handle) = departed_device();
+
+        assert_eq!(
+            device.ccd_temperature().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+
+        assert!(!device.connected().await.unwrap());
+        assert_eq!(
+            device.gain().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.camera_x_size().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.camera_state().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.can_set_ccd_temperature().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// Every member that reaches the SDK reports a departure as the
+    /// disconnect it is, whatever code its call site gives any other failure
+    /// (C6) — `INVALID_VALUE` for the cooler reads, `INVALID_OPERATION` for
+    /// the setters, `ElectronsPerADU` and `PulseGuide`. Each on a fresh
+    /// device, since the first one to answer ends the session for the rest.
+    #[tokio::test]
+    async fn every_member_that_reaches_the_sdk_reports_a_departure_as_not_connected() {
+        let (device, _h) = departed_device();
+        let cooler_on = device.cooler_on().await.unwrap_err();
+        let (device, _h) = departed_device();
+        let cooler_power = device.cooler_power().await.unwrap_err();
+        let (device, _h) = departed_device();
+        let set_cooler_on = device.set_cooler_on(true).await.unwrap_err();
+        let (device, _h) = departed_device();
+        let target = device.set_ccd_temperature().await.unwrap_err();
+        let (device, _h) = departed_device();
+        let set_target = device.set_set_ccd_temperature(-10.0).await.unwrap_err();
+        let (device, _h) = departed_device();
+        let electrons = device.electrons_per_adu().await.unwrap_err();
+        let (device, _h) = departed_device();
+        let pulse = device
+            .pulse_guide(GuideDirection::North, Duration::from_millis(1))
+            .await
+            .unwrap_err();
+
+        for (member, err) in [
+            ("CoolerOn", cooler_on),
+            ("CoolerPower", cooler_power),
+            ("set CoolerOn", set_cooler_on),
+            ("SetCCDTemperature", target),
+            ("set SetCCDTemperature", set_target),
+            ("ElectronsPerADU", electrons),
+            ("PulseGuide", pulse),
+        ] {
+            assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED, "{member}");
+        }
+    }
+
+    /// The other side of the rule: a failure that is not the SDK reporting
+    /// the camera removed is that failure, and the session survives it (C6).
+    #[tokio::test]
+    async fn an_sdk_failure_on_a_camera_still_on_the_bus_leaves_it_connected() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
+        handle.refuse_reads(ControlType::Temperature, true);
+
+        let err = device.ccd_temperature().await.unwrap_err();
+
+        assert_eq!(err.code, UNSPECIFIED_ERROR);
+        assert!(device.connected().await.unwrap());
+    }
+
+    /// A capture whose camera leaves mid-frame finds out when its readout
+    /// reaches the SDK, and the session reads disconnected with no client
+    /// call — rather than `CameraState == Error` on a camera that is not
+    /// there (C6, E9).
+    #[tokio::test]
+    async fn a_capture_whose_camera_leaves_mid_frame_reads_disconnected() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
+        handle.set_capture_delay(Duration::from_millis(300));
+        device.set_num_x(64).await.unwrap();
+        device.set_num_y(48).await.unwrap();
+        device
+            .start_exposure(Duration::from_millis(300), true)
+            .await
+            .unwrap();
+        // The arm's gain and offset writes: the camera leaves after them,
+        // inside the integration, not before the capture reached it.
+        wait_control_writes(&handle, 2).await;
+
+        handle.leave_bus();
+
+        wait_captures_finished(&handle, 1).await;
+        assert_eq!(
+            handle.capture_outcomes(),
+            vec![Some(CaptureOutcome::Failed)]
+        );
+        assert!(!device.connected().await.unwrap());
+        assert_eq!(
+            device.camera_state().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// `Connected = false` on a departed camera releases it and succeeds
+    /// (C6): the driver closes nothing on its own, so this is what lets the
+    /// handle go.
+    #[tokio::test]
+    async fn disconnecting_a_departed_camera_releases_it() {
+        let (device, handle) = departed_device();
+        device.ccd_temperature().await.unwrap_err();
+        assert!(handle.is_open(), "lost is not closed");
+
+        device.set_connected(false).await.unwrap();
+
+        assert!(!handle.is_open());
+        assert!(!device.connected().await.unwrap());
+    }
+
+    /// `Connected = true` on a departed camera releases the lost session and
+    /// connects afresh, which fails while the camera is gone (C2) — never
+    /// answering `Ok` with the lost session still held (C6).
+    #[tokio::test]
+    async fn reconnecting_a_departed_camera_fails_while_it_is_gone() {
+        let (device, handle) = departed_device();
+        device.ccd_temperature().await.unwrap_err();
+
+        let err = device.set_connected(true).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(!handle.is_open());
+        assert!(!device.connected().await.unwrap());
+    }
+
+    /// Once the camera is back, a reconnect is a fresh session: the gain is
+    /// reseeded from the camera rather than kept from the lost one (GO4), and
+    /// the session is not marked lost (C6).
+    #[tokio::test]
+    async fn reconnecting_once_the_camera_returns_starts_a_fresh_session() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default());
+        device.set_gain(300).await.unwrap();
+        handle.leave_bus();
+        device.ccd_temperature().await.unwrap_err();
+        handle.return_to_bus();
+
+        device.set_connected(true).await.unwrap();
+
+        assert!(device.connected().await.unwrap());
+        assert!(!handle.is_lost());
+        assert_eq!(
+            device.gain().await.unwrap(),
+            100,
+            "the lost session's unarmed gain must not survive the reconnect"
         );
     }
 }

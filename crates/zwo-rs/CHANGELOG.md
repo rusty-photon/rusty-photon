@@ -40,6 +40,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `Sdk::with_departure_file(path)` (`simulation` + `camera` only): the
+  simulated camera leaves the bus while `path` exists and returns when it is
+  removed. While it is gone, `camera_count` is 0, `cameras` is empty,
+  `open_camera` and `open_uninitialised` answer `AsiError::InvalidIndex`, and
+  every call on a `Camera` that SDK already opened answers
+  `AsiError::CameraRemoved` — the SDK header's account of a removed camera,
+  not a measured one. Lets a consumer test a camera that loses its power or
+  cable while connected.
 - Initial repository scaffold for `zwo-rs` (safe wrapper) and `libzwo-sys` (raw
   FFI), sibling to `qhyccd-rs`.
 - `libzwo-sys`: `bindgen`-generated bindings (build-time) from the vendored MIT
