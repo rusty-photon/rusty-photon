@@ -1251,9 +1251,10 @@ impl QhyCameraDevice {
     /// not send back the image data. Host software must not readout the data"*,
     /// so it may never overlap a `GetQHYCCDSingleFrame`.
     ///
-    /// A refusal is logged rather than propagated: by the time this runs the
-    /// capture is already out of the SDK, which is what the caller needed.
-    async fn sdk_cancel(&self) {
+    /// Returns whether the SDK took the cancel. A refusal is logged rather than
+    /// raised: by the time this runs the capture is already out of the SDK,
+    /// which is what the caller needed.
+    async fn sdk_cancel(&self) -> bool {
         let handle = Arc::clone(&self.handle);
         match tokio::task::spawn_blocking(move || {
             let aborted = handle.abort_exposure_and_readout();
@@ -1266,9 +1267,15 @@ impl QhyCameraDevice {
         })
         .await
         {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => debug!(error = %e, "abort_exposure_and_readout failed"),
-            Err(e) => warn!(error = %e, "abort task panicked"),
+            Ok(Ok(())) => true,
+            Ok(Err(e)) => {
+                debug!(error = %e, "abort_exposure_and_readout failed");
+                false
+            }
+            Err(e) => {
+                warn!(error = %e, "abort task panicked");
+                false
+            }
         }
     }
 
@@ -1403,9 +1410,10 @@ impl QhyCameraDevice {
         Ok(())
     }
 
-    /// Cancel the in-flight exposure and leave the device quiescent. Returns
-    /// `false` if the capture task could not be got out of the SDK, in which
-    /// case no SDK cancel was issued.
+    /// Cancel the in-flight exposure and leave the device quiescent. Fails if
+    /// the capture task could not be got out of the SDK, in which case no SDK
+    /// cancel was issued, and answers `NOT_CONNECTED` if the SDK cancel found
+    /// the camera gone (C9).
     ///
     /// **Ordering is the whole point.** The SDK cancel may not overlap a readout
     /// (see [`Self::sdk_cancel`]), so this signals the in-flight capture's own
@@ -1418,16 +1426,16 @@ impl QhyCameraDevice {
     /// takes it once its blocking chain has drained, so a new exposure cannot
     /// start and race the still-running SDK calls (the design's "one logical
     /// owner per device").
-    async fn cancel_exposure(&self) -> bool {
+    async fn cancel_exposure(&self) -> ASCOMResult<()> {
         let Some(claim) = self.signal_owner() else {
-            return true;
+            return Ok(());
         };
         if claim.is_geometry_write {
             // A geometry write (B4) owns the device. There is no exposure to
             // abort, so this succeeds having changed nothing — issuing the SDK
             // cancel would stop a camera that is not exposing, and waiting for
             // the write would make an abort block on an unrelated request.
-            return true;
+            return Ok(());
         }
         if !self.wait_until_released(&claim, self.drain_timeout).await {
             warn!(
@@ -1436,7 +1444,9 @@ impl QhyCameraDevice {
                 "capture task still inside the SDK; withholding the SDK cancel \
                  rather than issuing it under a live readout"
             );
-            return false;
+            return Err(ASCOMError::invalid_operation(
+                "the exposure could not be aborted; the SDK did not return",
+            ));
         }
         // Claim the device before touching it. The capture task gave it back as
         // it drained, so without this a concurrent `start_exposure` could slip in
@@ -1446,15 +1456,20 @@ impl QhyCameraDevice {
         // disconnect takes the opposite view (see [`Self::seize_device`]): it is
         // closing the device, so it drains the newcomer too.
         let Some(mine) = self.try_claim(CaptureCancel::for_capture()) else {
-            return true;
+            return Ok(());
         };
         // Safe now: nothing is inside the SDK for this device. On a cancel taken
         // during the exposure this stops the integration; on one that arrived
         // during the readout the frame has already been read out and this is the
         // harmless pre-close reset the SDK's own SingleFrameSample performs.
         let _guard = ClaimGuard::new(&self.state, &mine);
-        self.sdk_cancel().await;
-        true
+        // A refused cancel on a camera still present leaves nothing undone: the
+        // capture is already out of the SDK. One that found the camera gone
+        // answers for the departure, as any request that notices one does (C9).
+        if !self.sdk_cancel().await && self.ensure_connected().is_err() {
+            return Err(ASCOMError::NOT_CONNECTED);
+        }
+        Ok(())
     }
 
     /// Cache `bin` as the one the next exposure arms (B1), on behalf of a
@@ -3383,16 +3398,7 @@ impl Camera for QhyCameraDevice {
         // it runs where dropping this request cannot leave it half-done (see
         // [`Self::detached`]).
         let device = self.clone();
-        let cancelled = Self::detached(tokio::spawn(
-            async move { Ok(device.cancel_exposure().await) },
-        ))
-        .await?;
-        if !cancelled {
-            return Err(ASCOMError::invalid_operation(
-                "the exposure could not be aborted; the SDK did not return",
-            ));
-        }
-        Ok(())
+        Self::detached(tokio::spawn(async move { device.cancel_exposure().await })).await
     }
 
     async fn stop_exposure(&self) -> ASCOMResult<()> {
@@ -8647,9 +8653,10 @@ mod tests {
 
     /// A capture cancelled in its wait makes no SDK call of its own, so on a
     /// camera that has left the bus the abort's SDK cancel is the one call that
-    /// fails, and it asks C9's question as any other failure does.
+    /// fails. It asks C9's question as any other failure does, and the abort,
+    /// being the request that noticed, answers `NOT_CONNECTED`.
     #[tokio::test]
-    async fn an_abort_on_a_departed_camera_reads_disconnected() {
+    async fn an_abort_that_finds_the_camera_gone_answers_not_connected() {
         let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
         // Long enough that the capture is still asleep in its wait, making no
         // SDK call, when the camera leaves and the abort lands.
@@ -8657,10 +8664,21 @@ mod tests {
             .start_exposure(Duration::from_secs(60), true)
             .await
             .unwrap();
+        // The start runs on the capture task, after `start_exposure` returns;
+        // a departure that beat it would be noticed there and not by the abort.
+        let started = tokio::time::timeout(Duration::from_secs(30), async {
+            while handle.exposures_started.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(started, "the capture never started its exposure");
         handle.leave_bus();
 
-        device.abort_exposure().await.unwrap();
+        let aborted = device.abort_exposure().await;
 
+        assert_eq!(aborted.unwrap_err().code, ASCOMErrorCode::NOT_CONNECTED);
         assert!(
             device.wait_until_drained(Duration::from_secs(30)).await,
             "capture task did not drain in time"

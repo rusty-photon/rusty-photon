@@ -996,6 +996,9 @@ pub(crate) mod mock {
         /// Latches once `abort_exposure_and_readout` has been issued, so a test
         /// can assert the SDK cancel *did* reach the device (just not too early).
         pub aborted: AtomicBool,
+        /// Counts exposures the camera accepted, so a test can wait for a
+        /// capture to be past its start before changing what the camera does.
+        pub exposures_started: AtomicU32,
         /// Set while `get_single_frame` is executing, so a test can catch an SDK
         /// cancel issued under a live readout — the exact contract violation
         /// (`qhyccd.h`: "Host software must not readout the data") this backend
@@ -1183,6 +1186,7 @@ pub(crate) mod mock {
                 in_set_roi: AtomicBool::new(false),
                 fail_set_exposure: AtomicBool::new(false),
                 aborted: AtomicBool::new(false),
+                exposures_started: AtomicU32::new(0),
                 in_readout: AtomicBool::new(false),
                 readout_held: AtomicBool::new(false),
                 aborted_during_readout: AtomicBool::new(false),
@@ -1776,6 +1780,7 @@ pub(crate) mod mock {
                 return Err(BackendError("simulated exposure start failure".to_string()));
             }
             self.aborted.store(false, Ordering::SeqCst);
+            self.exposures_started.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
         fn get_image_size(&self) -> BackendResult<usize> {

@@ -1167,7 +1167,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   `Exposing` reaches the capture that is exposing: it cancels the capture it was
   issued against and no other, and it waits for *that* capture rather than for
   the device to fall idle. An abort on an idle device is a no-op that returns
-  `OK`.
+  `OK`. A cancel the SDK refuses on a camera still present is logged and the
+  abort still succeeds, since the capture is already out of the SDK by then;
+  one whose refusal finds the camera gone answers `NOT_CONNECTED` (C9).
 - **E8.** `StopExposure` returns `NOT_IMPLEMENTED`; `CanStopExposure = false`.
 - **E9.** A mid-exposure SDK error transitions `CameraState = Error`, sets
   `last_error`, leaves `ImageReady = false`, logged at `warn!`.
