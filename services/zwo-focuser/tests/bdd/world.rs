@@ -78,10 +78,7 @@ impl FocuserWorld {
             // line on stdout by ServiceHandle.
             "server": { "port": 0 },
         });
-        let dir = self
-            .temp_dir
-            .get_or_insert_with(|| TempDir::new().expect("temp dir"));
-        let path = dir.path().join("zwo-focuser.json");
+        let path = self.scratch_dir().join("zwo-focuser.json");
         std::fs::write(
             &path,
             serde_json::to_string_pretty(&config).expect("serialize config"),
@@ -153,11 +150,14 @@ impl FocuserWorld {
         );
     }
 
-    /// The scenario's scratch directory (the config and the departure file
-    /// live here).
+    /// The scenario's scratch directory, created on first use under Bazel's
+    /// per-action `TEST_TMPDIR` when there is one (testing.md §5.1): the config
+    /// and the departure file live here, read by the service under test.
     pub fn scratch_dir(&mut self) -> std::path::PathBuf {
         self.temp_dir
-            .get_or_insert_with(|| TempDir::new().expect("temp dir"))
+            .get_or_insert_with(|| {
+                bdd_infra::scratch::new_dir("zwo-focuser-bdd-").expect("scratch dir")
+            })
             .path()
             .to_path_buf()
     }

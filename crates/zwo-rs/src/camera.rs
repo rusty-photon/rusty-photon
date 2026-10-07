@@ -539,7 +539,8 @@ impl CameraList<'_> {
                 info,
                 state,
                 departure: self.sdk.departure_file.clone().map(|file| SimDeparture {
-                    rescans_at_open: crate::sim_listing(&file).rescans_while_gone,
+                    rescans_at_open: crate::sim_listing(crate::SimList::Cameras, &file)
+                        .rescans_while_gone,
                     file,
                 }),
                 _not_sync: std::marker::PhantomData,
@@ -574,10 +575,9 @@ impl Sdk {
     /// the list the last rescan left and runs no rescan of its own.
     #[cfg(feature = "simulation")]
     fn sim_openable(&self, index: usize) -> Result<()> {
-        let listed = self
-            .departure_file
-            .as_deref()
-            .is_none_or(|path| !path.exists() && crate::sim_listing(path).listed);
+        let listed = self.departure_file.as_deref().is_none_or(|path| {
+            !path.exists() && crate::sim_listing(crate::SimList::Cameras, path).listed
+        });
         if index >= crate::SIM_CAMERA_COUNT || !listed {
             return Err(Error::Asi(AsiError::InvalidIndex));
         }
@@ -1247,7 +1247,9 @@ impl Camera {
             return SimBus::Present;
         };
         let gone = departure.file.exists();
-        if crate::sim_listing(&departure.file).rescans_while_gone > departure.rescans_at_open {
+        if crate::sim_listing(crate::SimList::Cameras, &departure.file).rescans_while_gone
+            > departure.rescans_at_open
+        {
             SimBus::Forgotten { returned: !gone }
         } else if gone {
             SimBus::Hidden

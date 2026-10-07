@@ -141,7 +141,8 @@ impl FocuserList<'_> {
                 info: sim_focuser_info(),
                 state: std::sync::Mutex::new(SimFocuserState::default()),
                 departure: self.sdk.departure_file.clone().map(|file| SimDeparture {
-                    rescans_at_open: crate::sim_listing(&file).rescans_while_gone,
+                    rescans_at_open: crate::sim_listing(crate::SimList::Focusers, &file)
+                        .rescans_while_gone,
                     file,
                 }),
                 _not_sync: std::marker::PhantomData,
@@ -182,7 +183,7 @@ pub fn rescan(sdk: &Sdk) -> usize {
         .departure_file
         .as_deref()
         .map_or(crate::SIM_FOCUSER_COUNT, |path| {
-            if crate::sim_rescan(path) {
+            if crate::sim_rescan(crate::SimList::Focusers, path) {
                 crate::SIM_FOCUSER_COUNT
             } else {
                 0
@@ -205,10 +206,9 @@ impl Sdk {
     /// the bus and the last rescan listed it. Like the real open, it reads the
     /// list the last rescan left and runs no rescan of its own.
     fn sim_focuser_openable(&self, index: usize) -> Result<()> {
-        let listed = self
-            .departure_file
-            .as_deref()
-            .is_none_or(|path| !path.exists() && crate::sim_listing(path).listed);
+        let listed = self.departure_file.as_deref().is_none_or(|path| {
+            !path.exists() && crate::sim_listing(crate::SimList::Focusers, path).listed
+        });
         if index >= crate::SIM_FOCUSER_COUNT || !listed {
             return Err(Error::Eaf(EafError::InvalidIndex));
         }
@@ -616,7 +616,9 @@ impl Focuser {
         }
         let departed = st.departed;
         drop(st);
-        if crate::sim_listing(&departure.file).rescans_while_gone > departure.rescans_at_open {
+        if crate::sim_listing(crate::SimList::Focusers, &departure.file).rescans_while_gone
+            > departure.rescans_at_open
+        {
             Err(Error::Eaf(EafError::InvalidId))
         } else if departed {
             Err(Error::Eaf(EafError::Removed))
@@ -998,6 +1000,29 @@ mod departure_tests {
         assert_eq!(list.rescan().unwrap().len(), 1);
         let focuser = list.open_focuser(0).unwrap();
         assert_eq!(focuser.position().unwrap(), 0);
+    }
+
+    /// The ASI and EAF SDKs keep separate lists, so with one departure file
+    /// taking both devices off the bus, a camera rescan drops nothing from the
+    /// focuser list: an open focuser still answers `REMOVED`, not the
+    /// `INVALID_ID` only an EAF rescan earns it.
+    #[cfg(feature = "camera")]
+    #[test]
+    fn a_camera_rescan_leaves_the_focuser_list_alone() {
+        let (_dir, departure) = departure_path();
+        let sdk = Sdk::new().unwrap().with_departure_file(&departure);
+        let focuser = sdk.open_focuser(0).unwrap();
+        std::fs::write(&departure, b"").unwrap();
+        assert_eq!(sdk.camera_count().unwrap(), 0);
+        assert_eq!(
+            focuser.position().unwrap_err(),
+            Error::Eaf(EafError::Removed)
+        );
+        assert_eq!(sdk.focuser_count().unwrap(), 0);
+        assert_eq!(
+            focuser.position().unwrap_err(),
+            Error::Eaf(EafError::InvalidId)
+        );
     }
 
     #[test]

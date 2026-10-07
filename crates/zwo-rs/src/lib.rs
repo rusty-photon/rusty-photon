@@ -151,9 +151,25 @@ pub(crate) fn lock_focuser_list() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Simulation only: what the process's rescans have made of the device behind
-/// one departure file. The real SDKs keep one device list per process, so this
-/// is process-wide too (see [`Sdk::with_departure_file`]).
+/// Simulation only: which SDK's device list a rescan rebuilds. The ASI and EAF
+/// SDKs keep separate lists (`ASIGetNumOfConnectedCameras` and `EAFGetNum`
+/// rebuild only their own), so one departure file is tracked once per list:
+/// a camera rescan must not make an open focuser read as dropped, nor the
+/// other way round.
+#[cfg(all(feature = "simulation", any(feature = "camera", feature = "focuser")))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum SimList {
+    /// The ASI camera list.
+    #[cfg(feature = "camera")]
+    Cameras,
+    /// The EAF focuser list.
+    #[cfg(feature = "focuser")]
+    Focusers,
+}
+
+/// Simulation only: what the process's rescans of one SDK's list have made of
+/// the device behind one departure file. The real SDKs keep one device list
+/// per process, so this is process-wide too (see [`Sdk::with_departure_file`]).
 #[cfg(all(feature = "simulation", any(feature = "camera", feature = "focuser")))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SimListing {
@@ -175,33 +191,35 @@ impl SimListing {
     };
 }
 
-/// Simulation only: [`SimListing`] per departure file.
+/// Simulation only: [`SimListing`] per SDK list and departure file.
 #[cfg(all(feature = "simulation", any(feature = "camera", feature = "focuser")))]
-static SIM_LISTINGS: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, SimListing>> =
-    std::sync::Mutex::new(std::collections::BTreeMap::new());
+static SIM_LISTINGS: std::sync::Mutex<
+    std::collections::BTreeMap<(SimList, std::path::PathBuf), SimListing>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-/// Simulation only: what the rescans so far have made of `path`'s device.
+/// Simulation only: what the rescans of `list` so far have made of `path`'s
+/// device.
 #[cfg(all(feature = "simulation", any(feature = "camera", feature = "focuser")))]
-pub(crate) fn sim_listing(path: &std::path::Path) -> SimListing {
+pub(crate) fn sim_listing(list: SimList, path: &std::path::Path) -> SimListing {
     SIM_LISTINGS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .get(path)
+        .get(&(list, path.to_path_buf()))
         .copied()
         .unwrap_or(SimListing::UNSEEN)
 }
 
-/// Simulation only: a rescan of the bus `path` models, with the list lock
-/// already held. A device gone at the rescan is dropped from the list, and one
-/// on the bus is listed. Returns whether it is listed.
+/// Simulation only: a rescan of `list` on the bus `path` models, with that
+/// list's lock already held. A device gone at the rescan is dropped from the
+/// list, and one on the bus is listed. Returns whether it is listed.
 #[cfg(all(feature = "simulation", any(feature = "camera", feature = "focuser")))]
-pub(crate) fn sim_rescan(path: &std::path::Path) -> bool {
+pub(crate) fn sim_rescan(list: SimList, path: &std::path::Path) -> bool {
     let gone = path.exists();
     let mut listings = SIM_LISTINGS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let listing = listings
-        .entry(path.to_path_buf())
+        .entry((list, path.to_path_buf()))
         .or_insert(SimListing::UNSEEN);
     if gone {
         listing.rescans_while_gone = listing.rescans_while_gone.saturating_add(1);
@@ -220,7 +238,7 @@ pub(crate) fn rescan(sdk: &Sdk) -> usize {
         .departure_file
         .as_deref()
         .map_or(SIM_CAMERA_COUNT, |path| {
-            if sim_rescan(path) {
+            if sim_rescan(SimList::Cameras, path) {
                 SIM_CAMERA_COUNT
             } else {
                 0

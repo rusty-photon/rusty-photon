@@ -274,15 +274,17 @@ impl EafError {
     ///
     /// Measured on Linux with EAF SDK 1.7.7 (rusty-photon issue #1431): from
     /// the moment an open EAF leaves, every call that needs its session
-    /// answers [`Self::Removed`]. Once a rescan ([`crate::Sdk::focuser_count`]
-    /// and the like) has run, its ID answers [`Self::InvalidId`], or
-    /// [`Self::Closed`] when the EAF has come back and been listed again under
-    /// the same ID, which then names a fresh, unopened entry. All three mean
-    /// the session's ID no longer names a focuser it holds.
+    /// answers [`Self::Removed`]. Once a rescan (`EAFGetNum`) has run, its ID
+    /// answers [`Self::InvalidId`], or [`Self::Closed`] when the EAF has come
+    /// back and been listed again under the same ID, which then names a
+    /// fresh, unopened entry. All three mean the session's ID no longer names
+    /// a focuser it holds.
     ///
-    /// Only for an open focuser: [`Self::Removed`] from an open means the
-    /// `/dev/hidraw*` node is not accessible, and [`Self::Closed`] from a
-    /// focuser never opened means just that.
+    /// Do not apply it to a failed **`EAFOpen`**. There, [`Self::Removed`]
+    /// usually means the EAF is on the bus but its `/dev/hidraw*` node is not
+    /// accessible, which is a permissions problem, not a departure. Nor to a
+    /// call on a focuser that was never opened, where [`Self::Closed`] means
+    /// just that.
     #[must_use]
     pub const fn left_the_bus(self) -> bool {
         matches!(self, Self::Removed | Self::InvalidId | Self::Closed)
