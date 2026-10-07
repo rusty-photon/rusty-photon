@@ -97,12 +97,14 @@ async fn utc_date_within(world: &mut BridgeWorld, seconds: u64) {
     // between a read taken before the request and one taken after the reply,
     // each widened by the tolerance. A single read after the reply would
     // charge however long the call took, a stalled host included, to the
-    // device's clock.
+    // device's clock. The call itself is timed on the monotonic clock, so a
+    // step of the wall clock cannot disguise how long it took.
     let tolerance = Duration::from_secs(seconds);
     let before = SystemTime::now();
+    let started = Instant::now();
     let device_utc = world.telescope().utc_date().await.unwrap();
+    let call = started.elapsed();
     let after = SystemTime::now();
-    let call = after.duration_since(before).unwrap_or_default();
     if let Ok(behind) = before.duration_since(device_utc) {
         assert!(
             behind <= tolerance,
