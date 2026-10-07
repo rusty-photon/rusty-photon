@@ -858,18 +858,22 @@ impl QhyCameraDevice {
         T: Send + 'static,
     {
         let handle = Arc::clone(&self.handle);
-        let (outcome, lost) = tokio::task::spawn_blocking(move || {
+        let (outcome, gone) = tokio::task::spawn_blocking(move || {
+            let generation = handle.generation();
             let outcome = f(handle.as_ref());
             // The verdict is this request's answer. Read again once the task
             // is back, the connection may already belong to a session another
-            // client's release and reconnect opened since.
-            let lost = outcome.is_err() && handle.verify_presence();
-            (outcome, lost)
+            // client's release and reconnect opened since. A reconnect that
+            // landed before the question was put means the handle this call
+            // failed on is gone too, whatever the fresh one answers.
+            let gone =
+                outcome.is_err() && (handle.verify_presence() || handle.generation() != generation);
+            (outcome, gone)
         })
         .await
         .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?;
         match outcome {
-            Err(e) if lost || self.ensure_connected().is_err() => {
+            Err(e) if gone || self.ensure_connected().is_err() => {
                 debug!(error = %e, "SDK call failed on a handle that is closed or whose camera has left the bus");
                 Err(ASCOMError::NOT_CONNECTED)
             }
@@ -904,11 +908,12 @@ impl QhyCameraDevice {
         self.ensure_connected()?;
         let probed = self
             .on_handle(move |h| {
+                let generation = h.generation();
                 let probed = f(h);
-                // A probe that answered from a handle the question finds lost
-                // answered for a departed camera, not for the one a reconnect
-                // may have opened by the time this request returns.
-                if probed.is_ok() && h.verify_presence() {
+                // A probe that answered from a handle the question finds lost,
+                // or that a reconnect has replaced since, answered for a
+                // departed camera, not for the one the connection holds now.
+                if probed.is_ok() && (h.verify_presence() || h.generation() != generation) {
                     return Err(ASCOMError::NOT_CONNECTED);
                 }
                 probed
@@ -8519,6 +8524,42 @@ mod tests {
         handle.leave_bus();
         handle
             .reconnect_lands_after_verdict
+            .store(true, Ordering::SeqCst);
+
+        let error = device.can_set_ccd_temperature().await.unwrap_err();
+
+        assert_eq!(error.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    /// A reconnect can also land between a request's failed SDK call and its
+    /// question, and the question then goes to the fresh handle, which answers
+    /// "present". The handle the call failed on is gone all the same, so the
+    /// request answers `NOT_CONNECTED`, not the error its call site spells a
+    /// dead handle as (C9).
+    #[tokio::test]
+    async fn a_failure_on_a_handle_replaced_before_its_question_answers_not_connected() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+        handle
+            .reconnect_lands_before_verdict
+            .store(true, Ordering::SeqCst);
+
+        let error = device.ccd_temperature().await.unwrap_err();
+
+        assert_eq!(error.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(
+            !handle.is_lost(),
+            "the fresh handle was not marked lost for the old one's failure"
+        );
+    }
+
+    /// The probe rule's half of the same race (C9, E11).
+    #[tokio::test]
+    async fn a_probe_on_a_handle_replaced_before_its_question_answers_not_connected() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+        handle
+            .reconnect_lands_before_verdict
             .store(true, Ordering::SeqCst);
 
         let error = device.can_set_ccd_temperature().await.unwrap_err();

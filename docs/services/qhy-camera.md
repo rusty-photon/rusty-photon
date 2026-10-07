@@ -735,7 +735,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   a dead handle as. It answers from the verdict its own question returned, not
   from a later read of the connection. Another client's release and reconnect
   may have replaced that connection by then, and reading it would turn a dead
-  handle's "absent" into a statement about the fresh session.
+  handle's "absent" into a statement about the fresh session. The connection
+  counts its physical opens (its generation), and a request compares that
+  count across its SDK call and its question. A reconnect that lands between
+  them means the handle the call failed on is gone, so the request answers
+  `NOT_CONNECTED` whatever the fresh handle tells the question.
 
   The verdict is withheld in two places, because **a false "lost" costs more
   than a late one**: it ends a live session, and the reconnect a supervisor
@@ -1952,7 +1956,8 @@ Layered per [`testing.md`](../skills/testing.md).
   `conn_tests` in `backend.rs` pin the check's rules against the same
   simulator — no verdict on a handle the device does not hold or while the
   lifecycle lock is held, a concurrent check waiting for the verdict in
-  progress, one lost mark for both devices, a connect refused
+  progress, the generation moving on a fresh physical open only, one lost mark
+  for both devices, a connect refused
   from joining a lost connection, the mark cleared by a fresh open, and a
   handle a failed close left behind freed before that open, or the connect
   refused while the SDK keeps it (the simulator's `with_close_failure_file`).
@@ -1967,7 +1972,8 @@ Layered per [`testing.md`](../skills/testing.md).
   (published) and a frame with data in it (no presence probe at all, the
   mock's `frame_fill`), a failure and a probe that answer from their own
   verdict although a reconnect lands right after it (the mocks'
-  `reconnect_lands_after_verdict`), the abort whose SDK
+  `reconnect_lands_after_verdict`) or between the failed call and the question
+  (`reconnect_lands_before_verdict`), the abort whose SDK
   cancel fails on a departed camera, the withheld
   verdict while a transition holds the lock, and a close that fails on a
   departed camera are reached only there. Both doubles model what the SDK does

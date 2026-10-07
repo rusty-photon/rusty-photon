@@ -10,7 +10,7 @@
 //! vocabulary in one place. Production impls wrap the real `qhyccd-rs` handles
 //! (which are `Clone` over an internal `Arc`, so cloning shares the open camera).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -98,6 +98,10 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// the connection, which a release and reconnect by another client may
     /// already have replaced.
     fn verify_presence(&self) -> bool;
+    /// Which physical open the connection behind this handle is on. A request
+    /// compares it across its SDK call and its question, so a failure on a
+    /// handle a reconnect has since replaced is not judged by the new one.
+    fn generation(&self) -> u64;
     /// The connect/disconnect lock for the *physical* connection behind this
     /// handle, shared with any other ASCOM device on it (C8).
     fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()>;
@@ -408,6 +412,8 @@ pub trait FilterWheelHandle: std::fmt::Debug + Send + Sync {
     /// [`CameraHandle::verify_presence`], asked from the wheel's side of the
     /// shared connection.
     fn verify_presence(&self) -> bool;
+    /// [`CameraHandle::generation`], for the wheel.
+    fn generation(&self) -> u64;
     /// The connect/disconnect lock for the *physical* connection behind this
     /// handle, shared with the Camera device driven through it (C8).
     fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()>;
@@ -481,6 +487,11 @@ pub struct SharedCameraConnection {
     /// the lifecycle lock, never by a transition, so a real transition is
     /// still refused without waiting.
     presence: Mutex<()>,
+    /// Counts physical opens (C9). A request that failed on one handle and
+    /// asks its question after a release and reconnect would be judging the
+    /// next; comparing this before and after tells it the handle it failed on
+    /// is gone.
+    generation: AtomicU64,
 }
 
 impl SharedCameraConnection {
@@ -492,7 +503,13 @@ impl SharedCameraConnection {
             lifecycle: tokio::sync::Mutex::new(()),
             lost: AtomicBool::new(false),
             presence: Mutex::new(()),
+            generation: AtomicU64::new(0),
         })
+    }
+
+    /// Which physical open the connection is on (C9).
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
     }
 
     /// The shared `qhyccd-rs` camera both ASCOM devices operate through. The CFW
@@ -528,6 +545,7 @@ impl SharedCameraConnection {
             self.camera.open().map_err(BackendError::from_err)?;
             // A fresh handle, so whatever the last one lost, this one has not.
             self.lost.store(false, Ordering::SeqCst);
+            self.generation.fetch_add(1, Ordering::SeqCst);
         } else if self.lost.load(Ordering::SeqCst) {
             // Joining would hand this device a handle the SDK no longer answers
             // for; only a fresh open can give it a working one, and that waits
@@ -687,6 +705,9 @@ impl CameraHandle for QhyCameraHandle {
     }
     fn verify_presence(&self) -> bool {
         self.conn.verify_presence(&self.connected)
+    }
+    fn generation(&self) -> u64 {
+        self.conn.generation()
     }
     fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
         self.conn.lifecycle_lock()
@@ -873,6 +894,9 @@ impl FilterWheelHandle for QhyFilterWheelHandle {
     }
     fn verify_presence(&self) -> bool {
         self.conn.verify_presence(&self.connected)
+    }
+    fn generation(&self) -> u64 {
+        self.conn.generation()
     }
     fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
         self.conn.lifecycle_lock()
@@ -1172,6 +1196,12 @@ pub(crate) mod mock {
         pub reconnect_lands_after_verdict: AtomicBool,
         /// Serializes presence checks, as `SharedCameraConnection` does.
         presence: Mutex<()>,
+        /// Counts fresh opens, as `SharedCameraConnection::generation` does.
+        generation: AtomicU64,
+        /// One shot: a release and reconnect by another client landing after a
+        /// request's SDK call failed but before its presence question, so the
+        /// question would be put to the fresh handle.
+        pub reconnect_lands_before_verdict: AtomicBool,
     }
 
     impl Default for MockCameraHandle {
@@ -1287,6 +1317,8 @@ pub(crate) mod mock {
                 presence_checks: AtomicU32::new(0),
                 reconnect_lands_after_verdict: AtomicBool::new(false),
                 presence: Mutex::new(()),
+                generation: AtomicU64::new(0),
+                reconnect_lands_before_verdict: AtomicBool::new(false),
             }
         }
     }
@@ -1605,6 +1637,7 @@ pub(crate) mod mock {
             // A fresh open is a fresh handle, as `SharedCameraConnection`'s is.
             if !self.open.swap(true, Ordering::SeqCst) {
                 self.lost.store(false, Ordering::SeqCst);
+                self.generation.fetch_add(1, Ordering::SeqCst);
             }
             Ok(())
         }
@@ -1641,6 +1674,16 @@ pub(crate) mod mock {
         /// that is not open, and a probe of `CamSingleFrameMode` otherwise.
         fn verify_presence(&self) -> bool {
             self.presence_checks.fetch_add(1, Ordering::SeqCst);
+            if self
+                .reconnect_lands_before_verdict
+                .swap(false, Ordering::SeqCst)
+            {
+                // The camera is back and freshly opened: a new handle, which
+                // has lost nothing.
+                self.departed.store(false, Ordering::SeqCst);
+                self.lost.store(false, Ordering::SeqCst);
+                self.generation.fetch_add(1, Ordering::SeqCst);
+            }
             let lost = self.verdict();
             if lost && self.reconnect_lands_after_verdict.load(Ordering::SeqCst) {
                 // Another client's release and reconnect, landing between the
@@ -1648,6 +1691,9 @@ pub(crate) mod mock {
                 self.lost.store(false, Ordering::SeqCst);
             }
             lost
+        }
+        fn generation(&self) -> u64 {
+            self.generation.load(Ordering::SeqCst)
         }
         fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
             &self.lifecycle
@@ -1999,6 +2045,12 @@ pub(crate) mod mock {
         pub reconnect_lands_after_verdict: AtomicBool,
         /// Serializes presence checks, as `SharedCameraConnection` does.
         presence: Mutex<()>,
+        /// Counts fresh opens, as `SharedCameraConnection::generation` does.
+        generation: AtomicU64,
+        /// One shot: a release and reconnect by another client landing after a
+        /// request's SDK call failed but before its presence question, so the
+        /// question would be put to the fresh handle.
+        pub reconnect_lands_before_verdict: AtomicBool,
     }
 
     impl MockFilterWheelHandle {
@@ -2022,6 +2074,8 @@ pub(crate) mod mock {
                 lost: AtomicBool::new(false),
                 reconnect_lands_after_verdict: AtomicBool::new(false),
                 presence: Mutex::new(()),
+                generation: AtomicU64::new(0),
+                reconnect_lands_before_verdict: AtomicBool::new(false),
             }
         }
 
@@ -2114,6 +2168,7 @@ pub(crate) mod mock {
             self.on_bus()?;
             if !self.open.swap(true, Ordering::SeqCst) {
                 self.lost.store(false, Ordering::SeqCst);
+                self.generation.fetch_add(1, Ordering::SeqCst);
             }
             Ok(())
         }
@@ -2138,6 +2193,14 @@ pub(crate) mod mock {
         /// The camera mock's rule; the wheel has no control to probe, so the
         /// departure itself is the answer the probe would give.
         fn verify_presence(&self) -> bool {
+            if self
+                .reconnect_lands_before_verdict
+                .swap(false, Ordering::SeqCst)
+            {
+                self.departed.store(false, Ordering::SeqCst);
+                self.lost.store(false, Ordering::SeqCst);
+                self.generation.fetch_add(1, Ordering::SeqCst);
+            }
             let lost = {
                 let _check = self.presence.lock();
                 let Ok(_transition) = self.lifecycle.try_lock() else {
@@ -2152,6 +2215,9 @@ pub(crate) mod mock {
                 self.lost.store(false, Ordering::SeqCst);
             }
             lost
+        }
+        fn generation(&self) -> u64 {
+            self.generation.load(Ordering::SeqCst)
         }
         fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
             &self.lifecycle
@@ -2352,6 +2418,28 @@ mod conn_tests {
         // but their disconnects lets it go.
         assert!(cam.is_open().unwrap() && fw.is_open().unwrap());
         assert!(conn.camera().is_open().unwrap());
+    }
+
+    /// The generation names the physical open (C9): it moves when the handle is
+    /// opened afresh, and not when a second device joins the open one or one
+    /// of two lets go.
+    #[test]
+    fn a_fresh_physical_open_starts_a_new_generation() {
+        let conn = SharedCameraConnection::new(sim_camera());
+        let cam = QhyCameraHandle::new(conn.clone());
+        let fw = QhyFilterWheelHandle::new(conn.clone());
+        let before = conn.generation();
+
+        cam.open().unwrap();
+        let first = conn.generation();
+        fw.open().unwrap();
+        fw.close().unwrap();
+
+        assert_eq!(first, before + 1, "a physical open starts a generation");
+        assert_eq!(conn.generation(), first, "joining and leaving do not");
+        cam.close().unwrap();
+        cam.open().unwrap();
+        assert_eq!(conn.generation(), first + 1, "the next physical open does");
     }
 
     /// Two requests failing at once on a departed camera both answer from the

@@ -112,18 +112,22 @@ impl QhyFilterWheelDevice {
         T: Send + 'static,
     {
         let handle = Arc::clone(&self.handle);
-        let (outcome, lost) = tokio::task::spawn_blocking(move || {
+        let (outcome, gone) = tokio::task::spawn_blocking(move || {
+            let generation = handle.generation();
             let outcome = f(handle.as_ref());
             // The verdict is this request's answer. Read again once the task
             // is back, the connection may already belong to a session another
-            // client's release and reconnect opened since.
-            let lost = outcome.is_err() && handle.verify_presence();
-            (outcome, lost)
+            // client's release and reconnect opened since. A reconnect that
+            // landed before the question was put means the handle this call
+            // failed on is gone too, whatever the fresh one answers.
+            let gone =
+                outcome.is_err() && (handle.verify_presence() || handle.generation() != generation);
+            (outcome, gone)
         })
         .await
         .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?;
         match outcome {
-            Err(e) if lost || self.ensure_connected().is_err() => {
+            Err(e) if gone || self.ensure_connected().is_err() => {
                 debug!(error = %e, "SDK call failed on a handle that is closed or whose camera has left the bus");
                 Err(ASCOMError::NOT_CONNECTED)
             }
@@ -770,6 +774,24 @@ mod tests {
             device.connected().await.unwrap(),
             "the connection reads healthy again, as after a reconnect"
         );
+    }
+
+    /// A wheel request whose handle a reconnect replaced between its failed
+    /// call and its question answers `NOT_CONNECTED` (C9, FW4).
+    #[tokio::test]
+    async fn a_wheel_failure_on_a_handle_replaced_before_its_question_answers_not_connected() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        let device =
+            QhyFilterWheelDevice::new(Arc::<MockFilterWheelHandle>::clone(&handle), None, None);
+        device.set_connected(true).await.unwrap();
+        handle.leave_bus();
+        handle
+            .reconnect_lands_before_verdict
+            .store(true, Ordering::SeqCst);
+
+        let err = device.set_position(3).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
     }
 
     /// `Connected = false` releases a wheel whose camera has gone (FW4).
