@@ -13,7 +13,10 @@ Feature: Focuser movement
   ~640 steps-per-second travel); Halt freezes the position mid-travel. TempComp/
   TempCompAvailable/SetTempComp stay stubbed, matching qhy-focuser/
   pa-scops-oag; Temperature returns the live EAFGetTemp reading, unlike
-  pa-scops-oag which has no sensor.
+  pa-scops-oag which has no sensor. Every member read from the device,
+  MaxStep and MaxIncrement included, needs a connection (M14); the members
+  the driver fixes (Absolute, TempComp, TempCompAvailable) answer without
+  one.
 
   Background:
     Given the zwo-focuser service running with the simulation backend
@@ -22,8 +25,17 @@ Feature: Focuser movement
     Then focuser device 0 reports Absolute as true
 
   Scenario: MaxStep and MaxIncrement report the working travel limit
+    Given focuser device 0 is connected
     Then focuser device 0 reports MaxStep as 60000
     And focuser device 0 reports MaxIncrement as 60000
+
+  Scenario: MaxStep and MaxIncrement while disconnected are rejected
+    Then reading these members from focuser device 0 is rejected with ASCOM NOT_CONNECTED:
+      | member       |
+      | MaxStep      |
+      | MaxIncrement |
+      | Temperature  |
+      | IsMoving     |
 
   Scenario: Moving to a position within range starts the move
     Given focuser device 0 is connected

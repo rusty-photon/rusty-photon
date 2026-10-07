@@ -23,8 +23,10 @@ pub struct FocuserWorld {
     pub focuser: Option<Arc<dyn Focuser>>,
     pub temp_dir: Option<TempDir>,
 
-    // Config knob set by a Given step before the service starts.
+    // Config knobs set by a Given step before the service starts.
     pub empty_backend: bool,
+    /// While this file exists the simulated EAF is off the bus (C5).
+    pub departure_file: Option<std::path::PathBuf>,
 
     // Result stashes ("When does, Then asserts").
     pub last_error_code: Option<u16>,
@@ -97,6 +99,18 @@ impl FocuserWorld {
                 &["--config", &config_path, "--simulation-empty"],
             )
             .await
+        } else if let Some(departure) = &self.departure_file {
+            let departure = departure.to_str().expect("utf8 departure path");
+            ServiceHandle::start_with_args(
+                env!("CARGO_PKG_NAME"),
+                &[
+                    "--config",
+                    &config_path,
+                    "--simulation-departure-file",
+                    departure,
+                ],
+            )
+            .await
         } else {
             ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await
         };
@@ -137,6 +151,15 @@ impl FocuserWorld {
             self.empty_backend,
             "zwo-focuser did not register a Focuser device within 20s"
         );
+    }
+
+    /// The scenario's scratch directory (the config and the departure file
+    /// live here).
+    pub fn scratch_dir(&mut self) -> std::path::PathBuf {
+        self.temp_dir
+            .get_or_insert_with(|| TempDir::new().expect("temp dir"))
+            .path()
+            .to_path_buf()
     }
 
     pub fn focuser(&self) -> Arc<dyn Focuser> {

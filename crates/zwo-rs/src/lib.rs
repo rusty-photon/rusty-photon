@@ -102,7 +102,7 @@ pub use camera::{
 pub use efw::{FilterWheel, FilterWheelInfo};
 pub use error::{asi_check, eaf_check, efw_check, AsiError, EafError, EfwError, Error, Result};
 #[cfg(feature = "focuser")]
-pub use focuser::{Focuser, FocuserInfo};
+pub use focuser::{Focuser, FocuserInfo, FocuserList};
 
 /// Number of simulated ASI cameras presented when the `simulation` feature is on.
 #[cfg(all(feature = "simulation", feature = "camera"))]
@@ -133,24 +133,42 @@ pub(crate) fn lock_camera_list() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Simulation only: what the process's rescans have made of the camera behind
-/// one departure file. The real SDK keeps one camera list per process, so this
+/// The EAF SDK keeps one focuser list per process: `EAFGetNum` rebuilds it,
+/// renumbering the indices `EAFGetID` reads and, for a focuser that has come
+/// back, handing out a new ID. Every call that rebuilds or reads that list
+/// takes this lock, so a rescan on one thread never renumbers the list under
+/// another's lookup.
+#[cfg(feature = "focuser")]
+static FOCUSER_LIST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Hold [`FOCUSER_LIST`] for one rescan, or for a [`FocuserList`]. A panic
+/// while holding it leaves nothing inconsistent on the Rust side, so a
+/// poisoned lock is taken as is.
+#[cfg(feature = "focuser")]
+pub(crate) fn lock_focuser_list() -> std::sync::MutexGuard<'static, ()> {
+    FOCUSER_LIST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Simulation only: what the process's rescans have made of the device behind
+/// one departure file. The real SDKs keep one device list per process, so this
 /// is process-wide too (see [`Sdk::with_departure_file`]).
-#[cfg(all(feature = "simulation", feature = "camera"))]
+#[cfg(all(feature = "simulation", any(feature = "camera", feature = "focuser")))]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SimListing {
-    /// Rescans that ran while the camera was gone. The first one drops the
-    /// camera from the list for good, for every handle opened before it.
+    /// Rescans that ran while the device was gone. The first one drops the
+    /// device from the list for good, for every handle opened before it.
     pub(crate) rescans_while_gone: u64,
-    /// Whether the last rescan listed the camera. An open reads that list, so
-    /// a camera a rescan dropped cannot be opened until another rescan has
+    /// Whether the last rescan listed the device. An open reads that list, so
+    /// a device a rescan dropped cannot be opened until another rescan has
     /// listed it again, even once it is back on the bus.
     pub(crate) listed: bool,
 }
 
-#[cfg(all(feature = "simulation", feature = "camera"))]
+#[cfg(all(feature = "simulation", any(feature = "camera", feature = "focuser")))]
 impl SimListing {
-    /// A departure file no rescan has seen yet: its camera is listed.
+    /// A departure file no rescan has seen yet: its device is listed.
     const UNSEEN: Self = Self {
         rescans_while_gone: 0,
         listed: true,
@@ -158,12 +176,12 @@ impl SimListing {
 }
 
 /// Simulation only: [`SimListing`] per departure file.
-#[cfg(all(feature = "simulation", feature = "camera"))]
+#[cfg(all(feature = "simulation", any(feature = "camera", feature = "focuser")))]
 static SIM_LISTINGS: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, SimListing>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
 
-/// Simulation only: what the rescans so far have made of `path`'s camera.
-#[cfg(all(feature = "simulation", feature = "camera"))]
+/// Simulation only: what the rescans so far have made of `path`'s device.
+#[cfg(all(feature = "simulation", any(feature = "camera", feature = "focuser")))]
 pub(crate) fn sim_listing(path: &std::path::Path) -> SimListing {
     SIM_LISTINGS
         .lock()
@@ -171,6 +189,26 @@ pub(crate) fn sim_listing(path: &std::path::Path) -> SimListing {
         .get(path)
         .copied()
         .unwrap_or(SimListing::UNSEEN)
+}
+
+/// Simulation only: a rescan of the bus `path` models, with the list lock
+/// already held. A device gone at the rescan is dropped from the list, and one
+/// on the bus is listed. Returns whether it is listed.
+#[cfg(all(feature = "simulation", any(feature = "camera", feature = "focuser")))]
+pub(crate) fn sim_rescan(path: &std::path::Path) -> bool {
+    let gone = path.exists();
+    let mut listings = SIM_LISTINGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let listing = listings
+        .entry(path.to_path_buf())
+        .or_insert(SimListing::UNSEEN);
+    if gone {
+        listing.rescans_while_gone = listing.rescans_while_gone.saturating_add(1);
+    }
+    listing.listed = !gone;
+    drop(listings);
+    !gone
 }
 
 /// `ASIGetNumOfConnectedCameras`, with [`camera_list`] already held: rebuild
@@ -182,22 +220,10 @@ pub(crate) fn rescan(sdk: &Sdk) -> usize {
         .departure_file
         .as_deref()
         .map_or(SIM_CAMERA_COUNT, |path| {
-            let gone = path.exists();
-            let mut listings = SIM_LISTINGS
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let listing = listings
-                .entry(path.to_path_buf())
-                .or_insert(SimListing::UNSEEN);
-            if gone {
-                listing.rescans_while_gone = listing.rescans_while_gone.saturating_add(1);
-            }
-            listing.listed = !gone;
-            drop(listings);
-            if gone {
-                0
-            } else {
+            if sim_rescan(path) {
                 SIM_CAMERA_COUNT
+            } else {
+                0
             }
         });
     #[cfg(not(feature = "simulation"))]
@@ -219,9 +245,9 @@ pub(crate) fn rescan(sdk: &Sdk) -> usize {
 /// never called (though it is still linked — see the crate docs).
 #[derive(Debug, Default)]
 pub struct Sdk {
-    /// Simulation only: while this file exists the simulated camera is off
-    /// the bus. See [`Sdk::with_departure_file`].
-    #[cfg(all(feature = "simulation", feature = "camera"))]
+    /// Simulation only: while this file exists the simulated camera and
+    /// focuser are off the bus. See [`Sdk::with_departure_file`].
+    #[cfg(all(feature = "simulation", any(feature = "camera", feature = "focuser")))]
     departure_file: Option<std::path::PathBuf>,
     _private: (),
 }
@@ -237,27 +263,43 @@ impl Sdk {
         Ok(Self::default())
     }
 
-    /// Simulation only: take the simulated camera off the bus whenever `path`
-    /// exists, and put it back when the file is removed.
+    /// Simulation only: take the simulated camera and focuser off the bus whenever
+    /// `path` exists, and put them back when the file is removed.
     ///
     /// Models a camera that loses its power or its cable while connected, as
     /// ASI SDK 1.41 was measured to on Linux (rusty-photon issue #1411). While
     /// the file exists this SDK finds no camera: a rescan counts none, and an
-    /// open answers [`AsiError::InvalidIndex`]. A [`Camera`] opened before
+    /// open answers `AsiError::InvalidIndex`. A `Camera` opened before
     /// the departure keeps its handle, and until a rescan runs the SDK hides
-    /// the departure: reads answer from memory, [`Camera::set_control_value`]
-    /// and the guide pulses fail with [`AsiError::GeneralError`], an exposure
-    /// ends [`ExposureStatus::Failed`], and a download succeeds with every
+    /// the departure: reads answer from memory, `Camera::set_control_value`
+    /// and the guide pulses fail with `AsiError::GeneralError`, an exposure
+    /// ends `ExposureStatus::Failed`, and a download succeeds with every
     /// pixel zero (that last one is unmeasured on ASI: a QHY readout was seen
     /// to do it on Windows). No call ever answers
-    /// [`AsiError::CameraRemoved`]. The first rescan that runs while the camera
-    /// is gone ([`Sdk::camera_count`], [`Sdk::cameras`], [`Sdk::still_connected`],
+    /// `AsiError::CameraRemoved`. The first rescan that runs while the camera
+    /// is gone (`Sdk::camera_count`, `Sdk::cameras`, `Sdk::still_connected`,
     /// from any SDK in the process that shares the file) drops it for good:
-    /// every call on the old handle answers [`AsiError::InvalidId`], and
-    /// [`Sdk::still_connected`] reports it gone, even once the file is removed.
+    /// every call on the old handle answers `AsiError::InvalidId`, and
+    /// `Sdk::still_connected` reports it gone, even once the file is removed.
     /// Like the real open, an open reads the list the last rescan left: a
     /// camera a rescan dropped opens again only after a rescan has listed it.
-    #[cfg(all(feature = "simulation", feature = "camera"))]
+    ///
+    /// The simulated EAF focuser leaves with it, as EAF SDK 1.7.7 was measured
+    /// to on Linux (rusty-photon issue #1431). Unlike the ASI SDK, the EAF SDK
+    /// says so at once: from the first call that sees the file, every call on
+    /// a `Focuser` opened before the departure answers `EafError::Removed`,
+    /// and once a rescan has run while it was gone, `EafError::InvalidId`
+    /// (the real SDK answers `EafError::Closed` instead once the EAF is back
+    /// and listed under its old ID; either means gone). A focuser opened
+    /// before the departure never works again. A rescan
+    /// (`Sdk::focuser_count`, `Sdk::focusers`, `FocuserList::rescan`)
+    /// counts none while the file exists, and an open finds the EAF only while
+    /// it is on the bus and the last rescan listed it. Not modelled: a
+    /// departure and return that no call observed (the real SDK answers
+    /// `Removed` after one), and the new ID a returned EAF can be listed under.
+    // Code spans, not links, above: this builds with either device feature
+    // alone, so a link to the other device's items would dangle.
+    #[cfg(all(feature = "simulation", any(feature = "camera", feature = "focuser")))]
     #[must_use]
     pub fn with_departure_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.departure_file = Some(path.into());
@@ -359,23 +401,16 @@ impl Sdk {
         Ok(version)
     }
 
-    /// Number of connected EAF focusers (`EAFGetNum`).
+    /// Number of connected EAF focusers (`EAFGetNum`, which rescans the bus
+    /// and rebuilds the SDK's focuser list).
     ///
     /// # Errors
     /// Infallible today; returns [`Result`] for forward compatibility.
     #[cfg(feature = "focuser")]
-    // Const only under the simulation cfg; the real body calls into the SDK.
-    #[allow(clippy::missing_const_for_fn)]
     pub fn focuser_count(&self) -> Result<usize> {
-        #[cfg(feature = "simulation")]
-        let count = SIM_FOCUSER_COUNT;
-        #[cfg(not(feature = "simulation"))]
-        let count = {
-            // SAFETY: `EAFGetNum` takes no arguments and returns the connected
-            // focuser count; always safe to call. Negative is clamped.
-            let n = unsafe { sys::EAFGetNum() };
-            usize::try_from(n).unwrap_or(0)
-        };
+        let list = lock_focuser_list();
+        let count = focuser::rescan(self);
+        drop(list);
         Ok(count)
     }
 
@@ -574,6 +609,20 @@ mod tests {
             eaf_check(42).unwrap_err(),
             Error::Eaf(EafError::Unknown(42))
         );
+    }
+
+    #[test]
+    fn only_removed_invalid_id_and_closed_mean_an_open_focuser_left_the_bus() {
+        let departed: Vec<i32> = (1..=11)
+            .filter(|&code| EafError::from_code(code).left_the_bus())
+            .collect();
+        // INVALID_ID, REMOVED and CLOSED, as measured on a departed EAF.
+        assert_eq!(departed, [2, 4, 9]);
+        assert!(
+            !EafError::Moving.left_the_bus(),
+            "a refused move is not a departure"
+        );
+        assert!(!EafError::Unknown(42).left_the_bus());
     }
 
     #[cfg(feature = "simulation")]

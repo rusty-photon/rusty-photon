@@ -42,41 +42,93 @@ pub struct Focuser {
     info: FocuserInfo,
     #[cfg(feature = "simulation")]
     state: std::sync::Mutex<SimFocuserState>,
+    /// Simulation only: the departure file this focuser can leave the bus by,
+    /// and the rescans-while-gone count when it was opened.
+    #[cfg(feature = "simulation")]
+    departure: Option<SimDeparture>,
     /// Makes `Focuser` `!Sync` (see the type docs) while leaving it `Send`.
     _not_sync: std::marker::PhantomData<std::cell::Cell<()>>,
 }
 
+/// A hold on the SDK's focuser list, so a rescan, a lookup and an open run as
+/// one step: no other rescan can renumber the list until this is dropped
+/// ([`Sdk::focuser_list`]).
+///
+/// Holding it blocks every other caller that reads or rebuilds the list, in
+/// any thread, so keep the hold short and make no other `Sdk` list call while
+/// holding it: the lock is not re-entrant. [`Focuser`]'s own methods never
+/// take it.
+#[derive(Debug)]
+pub struct FocuserList<'a> {
+    sdk: &'a Sdk,
+    _held: std::sync::MutexGuard<'static, ()>,
+}
+
 impl Sdk {
-    /// Enumerate every connected EAF's [`FocuserInfo`].
+    /// Hold the SDK's focuser list for a sequence that must see one list, such
+    /// as opening the listed focusers in turn to find one by its serial. A
+    /// rescan elsewhere would renumber the indices in between.
+    #[must_use]
+    pub fn focuser_list(&self) -> FocuserList<'_> {
+        FocuserList {
+            sdk: self,
+            _held: crate::lock_focuser_list(),
+        }
+    }
+
+    /// Rescan and enumerate every connected EAF's [`FocuserInfo`]
+    /// ([`FocuserList::rescan`] under a hold of its own).
     ///
     /// # Errors
     /// Returns [`Error::Eaf`] if the SDK fails to read a focuser's id or
     /// property.
     pub fn focusers(&self) -> Result<Vec<FocuserInfo>> {
+        self.focuser_list().rescan()
+    }
+
+    /// Open the EAF at enumeration `index` in the list the last rescan left
+    /// ([`FocuserList::open_focuser`] under a hold of its own).
+    ///
+    /// # Errors
+    /// Returns [`Error::Eaf`] if the index is out of range or the SDK fails to
+    /// open the focuser.
+    pub fn open_focuser(&self, index: usize) -> Result<Focuser> {
+        self.focuser_list().open_focuser(index)
+    }
+}
+
+impl FocuserList<'_> {
+    /// Rescan the bus (`EAFGetNum`) and list every connected EAF's
+    /// [`FocuserInfo`] without opening it. The list's order is the index order
+    /// [`Self::open_focuser`] takes while this hold lasts.
+    ///
+    /// A rescan leaves an open focuser that is still on the bus alone (its ID
+    /// and session hold), drops one that has left, and can list one that came
+    /// back under a new ID.
+    ///
+    /// # Errors
+    /// Returns [`Error::Eaf`] if the SDK fails to read a focuser's id or
+    /// property.
+    pub fn rescan(&self) -> Result<Vec<FocuserInfo>> {
+        let count = rescan(self.sdk);
         #[cfg(feature = "simulation")]
-        let infos = (0..crate::SIM_FOCUSER_COUNT)
-            .map(|_| sim_focuser_info())
-            .collect();
+        let infos = (0..count).map(|_| sim_focuser_info()).collect();
         #[cfg(not(feature = "simulation"))]
-        let infos = {
-            let n = self.focuser_count()?;
-            (0..n)
-                .map(|index| {
-                    let idx =
-                        i32::try_from(index).map_err(|_| Error::Eaf(EafError::InvalidIndex))?;
-                    let id = read_focuser_id(idx)?;
-                    read_focuser_property(id)
-                })
-                .collect::<Result<Vec<_>>>()?
-        };
+        let infos = (0..count)
+            .map(|index| {
+                let idx = i32::try_from(index).map_err(|_| Error::Eaf(EafError::InvalidIndex))?;
+                let id = read_focuser_id(idx)?;
+                read_focuser_property(id)
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(infos)
     }
 
-    /// Open the EAF at enumeration `index`.
+    /// Open the EAF at enumeration `index` in the list the last rescan left.
     ///
     /// On the real path this calls `EAFGetID` + `EAFOpen` + `EAFGetProperty` (so
     /// the returned info carries the real `MaxStep`); the [`Focuser`] closes the
-    /// device on drop.
+    /// device on drop. Opening an EAF moves nothing.
     ///
     /// # Errors
     /// Returns [`Error::Eaf`] if the index is out of range or the SDK fails to
@@ -84,12 +136,14 @@ impl Sdk {
     pub fn open_focuser(&self, index: usize) -> Result<Focuser> {
         #[cfg(feature = "simulation")]
         let focuser = {
-            if index >= crate::SIM_FOCUSER_COUNT {
-                return Err(Error::Eaf(EafError::InvalidIndex));
-            }
+            self.sdk.sim_focuser_openable(index)?;
             Focuser {
                 info: sim_focuser_info(),
                 state: std::sync::Mutex::new(SimFocuserState::default()),
+                departure: self.sdk.departure_file.clone().map(|file| SimDeparture {
+                    rescans_at_open: crate::sim_listing(&file).rescans_while_gone,
+                    file,
+                }),
                 _not_sync: std::marker::PhantomData,
             }
         };
@@ -120,6 +174,48 @@ impl Sdk {
     }
 }
 
+/// `EAFGetNum`, with the focuser list already held: rebuild the SDK's focuser
+/// list and count it.
+pub fn rescan(sdk: &Sdk) -> usize {
+    #[cfg(feature = "simulation")]
+    let count = sdk
+        .departure_file
+        .as_deref()
+        .map_or(crate::SIM_FOCUSER_COUNT, |path| {
+            if crate::sim_rescan(path) {
+                crate::SIM_FOCUSER_COUNT
+            } else {
+                0
+            }
+        });
+    #[cfg(not(feature = "simulation"))]
+    let count = {
+        let _ = sdk;
+        // SAFETY: `EAFGetNum` takes no arguments and returns the connected
+        // focuser count; always safe to call. Negative is clamped.
+        let n = unsafe { sys::EAFGetNum() };
+        usize::try_from(n).unwrap_or(0)
+    };
+    count
+}
+
+#[cfg(feature = "simulation")]
+impl Sdk {
+    /// Simulation only: an open of `index` finds the EAF only while it is on
+    /// the bus and the last rescan listed it. Like the real open, it reads the
+    /// list the last rescan left and runs no rescan of its own.
+    fn sim_focuser_openable(&self, index: usize) -> Result<()> {
+        let listed = self
+            .departure_file
+            .as_deref()
+            .is_none_or(|path| !path.exists() && crate::sim_listing(path).listed);
+        if index >= crate::SIM_FOCUSER_COUNT || !listed {
+            return Err(Error::Eaf(EafError::InvalidIndex));
+        }
+        Ok(())
+    }
+}
+
 impl Focuser {
     /// The focuser's cached [`FocuserInfo`].
     #[must_use]
@@ -133,6 +229,25 @@ impl Focuser {
         self.info.id
     }
 
+    /// Whether this open focuser is still on the bus, asked with one read
+    /// that needs the session (`EAFGetPosition`), which moves nothing.
+    ///
+    /// The EAF SDK reports a departure without a rescan: from the moment the
+    /// EAF leaves, a call on its session answers `EAF_ERROR_REMOVED`, and
+    /// after a rescan `INVALID_ID` or `CLOSED` (see [`EafError::left_the_bus`]).
+    /// Any of those is `Ok(false)`.
+    ///
+    /// # Errors
+    /// Returns [`Error::Eaf`] for any other failure, which says nothing either
+    /// way.
+    pub fn still_connected(&self) -> Result<bool> {
+        match self.position() {
+            Ok(_) => Ok(true),
+            Err(Error::Eaf(e)) if e.left_the_bus() => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     /// The working travel limit (`EAFGetMaxStep`) — the position the firmware
     /// actually stops at, user-settable via ZWO's tooling (factory default
     /// 60000). Distinct from [`FocuserInfo::max_step`] (`EAF_INFO::MaxStep`,
@@ -143,11 +258,12 @@ impl Focuser {
     /// # Errors
     /// Returns [`Error::Eaf`] if the SDK call fails (the focuser must be
     /// open — `EAF_ERROR_CLOSED` otherwise).
-    // Const only under the simulation cfg; the real body calls into the SDK.
-    #[allow(clippy::missing_const_for_fn)]
     pub fn max_step(&self) -> Result<u32> {
         #[cfg(feature = "simulation")]
-        let max_step = SIM_MAX_STEP;
+        let max_step = {
+            self.sim_answered()?;
+            SIM_MAX_STEP
+        };
         #[cfg(not(feature = "simulation"))]
         let max_step = {
             let mut v: c_int = 0;
@@ -166,7 +282,10 @@ impl Focuser {
     /// Returns [`Error::Eaf`] if the SDK call fails.
     pub fn position(&self) -> Result<i32> {
         #[cfg(feature = "simulation")]
-        let pos = self.sim_position();
+        let pos = {
+            self.sim_answered()?;
+            self.sim_position()
+        };
         #[cfg(not(feature = "simulation"))]
         let pos = {
             let mut p: c_int = 0;
@@ -187,7 +306,10 @@ impl Focuser {
     /// Returns [`Error::Eaf`] if the SDK call fails.
     pub fn is_moving(&self) -> Result<bool> {
         #[cfg(feature = "simulation")]
-        let moving = self.sim_is_moving();
+        let moving = {
+            self.sim_answered()?;
+            self.sim_is_moving()
+        };
         #[cfg(not(feature = "simulation"))]
         let moving = {
             let mut moving = false;
@@ -213,7 +335,10 @@ impl Focuser {
     /// fails.
     pub fn move_to(&self, position: i32) -> Result<()> {
         #[cfg(feature = "simulation")]
-        self.sim_move_to(position)?;
+        {
+            self.sim_answered()?;
+            self.sim_move_to(position)?;
+        }
         #[cfg(not(feature = "simulation"))]
         {
             // SAFETY: open focuser id; the SDK validates/starts the move.
@@ -228,7 +353,10 @@ impl Focuser {
     /// Returns [`Error::Eaf`] if the SDK call fails.
     pub fn stop(&self) -> Result<()> {
         #[cfg(feature = "simulation")]
-        self.sim_stop();
+        {
+            self.sim_answered()?;
+            self.sim_stop();
+        }
         #[cfg(not(feature = "simulation"))]
         // SAFETY: open focuser id; stops any in-progress move.
         eaf_check(unsafe { sys::EAFStop(self.info.id) })?;
@@ -242,7 +370,10 @@ impl Focuser {
     /// currently unusable — see the header's `EAFGetTemp` docs).
     pub fn temperature(&self) -> Result<f32> {
         #[cfg(feature = "simulation")]
-        let temp = self.sim_temperature();
+        let temp = {
+            self.sim_answered()?;
+            self.sim_temperature()
+        };
         #[cfg(not(feature = "simulation"))]
         let temp = {
             let mut t: f32 = 0.0;
@@ -259,7 +390,10 @@ impl Focuser {
     /// Returns [`Error::Eaf`] if the SDK call fails.
     pub fn reverse(&self) -> Result<bool> {
         #[cfg(feature = "simulation")]
-        let reverse = self.sim_reverse();
+        let reverse = {
+            self.sim_answered()?;
+            self.sim_reverse()
+        };
         #[cfg(not(feature = "simulation"))]
         let reverse = {
             let mut r = false;
@@ -276,7 +410,10 @@ impl Focuser {
     /// Returns [`Error::Eaf`] if the SDK call fails.
     pub fn set_reverse(&self, reverse: bool) -> Result<()> {
         #[cfg(feature = "simulation")]
-        self.sim_set_reverse(reverse);
+        {
+            self.sim_answered()?;
+            self.sim_set_reverse(reverse);
+        }
         #[cfg(not(feature = "simulation"))]
         // SAFETY: open focuser id; sets the moving direction.
         eaf_check(unsafe { sys::EAFSetReverse(self.info.id, reverse) })?;
@@ -291,7 +428,10 @@ impl Focuser {
     /// Returns [`Error::Eaf`] if the SDK call fails.
     pub fn reset_position(&self, position: i32) -> Result<()> {
         #[cfg(feature = "simulation")]
-        self.sim_reset_position(position);
+        {
+            self.sim_answered()?;
+            self.sim_reset_position(position);
+        }
         #[cfg(not(feature = "simulation"))]
         // SAFETY: open focuser id; sets the position counter without moving.
         eaf_check(unsafe { sys::EAFResetPostion(self.info.id, position) })?;
@@ -305,7 +445,10 @@ impl Focuser {
     /// (`EAF_ERROR_NOT_SUPPORTED` on older firmware).
     pub fn serial(&self) -> Result<String> {
         #[cfg(feature = "simulation")]
-        let serial = SIM_EAF_SERIAL.to_owned();
+        let serial = {
+            self.sim_answered()?;
+            SIM_EAF_SERIAL.to_owned()
+        };
         #[cfg(not(feature = "simulation"))]
         let serial = {
             // SAFETY: `EAF_SN` is a POD `[u8; 8]`; the SDK fills it on success.
@@ -320,11 +463,12 @@ impl Focuser {
     ///
     /// # Errors
     /// Returns [`Error::Eaf`] if the SDK call fails.
-    // Const only under the simulation cfg; the real body calls into the SDK.
-    #[allow(clippy::missing_const_for_fn)]
     pub fn firmware_version(&self) -> Result<(u8, u8, u8)> {
         #[cfg(feature = "simulation")]
-        let version = (1, 0, 0);
+        let version = {
+            self.sim_answered()?;
+            (1, 0, 0)
+        };
         #[cfg(not(feature = "simulation"))]
         let version = {
             let mut major: u8 = 0;
@@ -423,6 +567,9 @@ struct SimFocuserState {
     moving: bool,
     reverse: bool,
     temperature: f32,
+    /// A call on this session has seen the EAF off the bus. The real SDK never
+    /// reattaches a session to a returned EAF, so it stays set.
+    departed: bool,
 }
 
 #[cfg(feature = "simulation")]
@@ -434,12 +581,50 @@ impl Default for SimFocuserState {
             moving: false,
             reverse: false,
             temperature: 20.0,
+            departed: false,
         }
     }
 }
 
+/// Simulation only: how a [`Focuser`] can leave the bus (see
+/// [`Sdk::with_departure_file`]).
+#[cfg(feature = "simulation")]
+#[derive(Debug)]
+struct SimDeparture {
+    /// While this exists the EAF is off the bus.
+    file: std::path::PathBuf,
+    /// The process's rescans-while-gone count when this focuser was opened. A
+    /// higher count now means a rescan has dropped its ID.
+    rescans_at_open: u64,
+}
+
 #[cfg(feature = "simulation")]
 impl Focuser {
+    /// What the measured SDK answers a call on this session once the EAF has
+    /// left: `INVALID_ID` after a rescan that ran while it was gone,
+    /// `REMOVED` before one. A session whose EAF never left answers normally.
+    fn sim_answered(&self) -> Result<()> {
+        let Some(departure) = &self.departure else {
+            return Ok(());
+        };
+        let mut st = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if departure.file.exists() {
+            st.departed = true;
+        }
+        let departed = st.departed;
+        drop(st);
+        if crate::sim_listing(&departure.file).rescans_while_gone > departure.rescans_at_open {
+            Err(Error::Eaf(EafError::InvalidId))
+        } else if departed {
+            Err(Error::Eaf(EafError::Removed))
+        } else {
+            Ok(())
+        }
+    }
+
     fn sim_position(&self) -> i32 {
         // The in-flight position: a real EAF's `EAFGetPosition` reports the
         // live step count that ramps toward the target while moving (it never
@@ -702,5 +887,127 @@ mod tests {
         focuser.reset_position(42).unwrap();
         assert_eq!(focuser.position().unwrap(), 42);
         assert!(!focuser.is_moving().unwrap());
+    }
+}
+
+/// A focuser that leaves the bus, against the simulation's departure file
+/// ([`Sdk::with_departure_file`]), which models what EAF SDK 1.7.7 was measured
+/// to answer on Linux.
+#[cfg(test)]
+#[cfg(feature = "simulation")]
+mod departure_tests {
+    use super::*;
+
+    /// A departure file in a directory of its own. The simulation keeps what
+    /// the rescans made of each file process-wide, as the SDK keeps one list,
+    /// so no two tests may share one.
+    fn departure_path() -> (tempfile::TempDir, std::path::PathBuf) {
+        let root = std::env::var_os("TEST_TMPDIR")
+            .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+        let dir = tempfile::Builder::new()
+            .prefix("zwo-rs-eaf-departure-")
+            .tempdir_in(root)
+            .unwrap();
+        let path = dir.path().join("departed");
+        (dir, path)
+    }
+
+    #[test]
+    fn a_departed_focuser_answers_removed_until_a_rescan_then_invalid_id() {
+        let (_dir, departure) = departure_path();
+        let sdk = Sdk::new().unwrap().with_departure_file(&departure);
+        let focuser = sdk.open_focuser(0).unwrap();
+        assert_eq!(focuser.position().unwrap(), 0);
+
+        std::fs::write(&departure, b"").unwrap();
+        let removed = Error::Eaf(EafError::Removed);
+        assert_eq!(focuser.position().unwrap_err(), removed);
+        assert_eq!(focuser.is_moving().unwrap_err(), removed);
+        assert_eq!(focuser.temperature().unwrap_err(), removed);
+        assert_eq!(focuser.max_step().unwrap_err(), removed);
+        assert_eq!(focuser.stop().unwrap_err(), removed);
+        assert_eq!(focuser.move_to(100).unwrap_err(), removed);
+        // The cached info needs no session, as `EAFGetProperty` needs none.
+        assert_eq!(focuser.info().name, "EAF-Simulated");
+
+        assert_eq!(sdk.focuser_count().unwrap(), 0);
+        assert_eq!(
+            focuser.position().unwrap_err(),
+            Error::Eaf(EafError::InvalidId)
+        );
+    }
+
+    #[test]
+    fn a_returned_focuser_does_not_rejoin_the_session_it_left() {
+        let (_dir, departure) = departure_path();
+        let sdk = Sdk::new().unwrap().with_departure_file(&departure);
+        let focuser = sdk.open_focuser(0).unwrap();
+        std::fs::write(&departure, b"").unwrap();
+        assert_eq!(
+            focuser.position().unwrap_err(),
+            Error::Eaf(EafError::Removed)
+        );
+        std::fs::remove_file(&departure).unwrap();
+        assert_eq!(
+            focuser.position().unwrap_err(),
+            Error::Eaf(EafError::Removed),
+            "back on the bus, but the old session never works again"
+        );
+    }
+
+    #[test]
+    fn still_connected_tells_a_departed_focuser_from_a_present_one() {
+        let (_dir, departure) = departure_path();
+        let sdk = Sdk::new().unwrap().with_departure_file(&departure);
+        let focuser = sdk.open_focuser(0).unwrap();
+        assert!(focuser.still_connected().unwrap());
+
+        std::fs::write(&departure, b"").unwrap();
+        assert!(!focuser.still_connected().unwrap());
+        sdk.focuser_count().unwrap();
+        assert!(!focuser.still_connected().unwrap(), "after a rescan too");
+
+        std::fs::remove_file(&departure).unwrap();
+        assert!(
+            !focuser.still_connected().unwrap(),
+            "the old session is not the returned focuser"
+        );
+        sdk.focuser_count().unwrap();
+        let fresh = sdk.open_focuser(0).unwrap();
+        assert!(fresh.still_connected().unwrap());
+    }
+
+    #[test]
+    fn a_departed_focuser_can_be_neither_enumerated_nor_opened_until_it_is_listed_again() {
+        let (_dir, departure) = departure_path();
+        let sdk = Sdk::new().unwrap().with_departure_file(&departure);
+        std::fs::write(&departure, b"").unwrap();
+        assert_eq!(sdk.focusers().unwrap(), Vec::new());
+        assert_eq!(
+            sdk.open_focuser(0).unwrap_err(),
+            Error::Eaf(EafError::InvalidIndex)
+        );
+
+        std::fs::remove_file(&departure).unwrap();
+        assert_eq!(
+            sdk.open_focuser(0).unwrap_err(),
+            Error::Eaf(EafError::InvalidIndex),
+            "the open reads the list the last rescan left, which dropped it"
+        );
+        let list = sdk.focuser_list();
+        assert_eq!(list.rescan().unwrap().len(), 1);
+        let focuser = list.open_focuser(0).unwrap();
+        assert_eq!(focuser.position().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_rescan_leaves_a_present_focuser_alone() {
+        let (_dir, departure) = departure_path();
+        let sdk = Sdk::new().unwrap().with_departure_file(&departure);
+        let focuser = sdk.open_focuser(0).unwrap();
+        assert_eq!(sdk.focuser_count().unwrap(), 1);
+        focuser.move_to(640).unwrap();
+        assert!(focuser.is_moving().unwrap());
+        assert_eq!(focuser.position().unwrap(), 640);
     }
 }
