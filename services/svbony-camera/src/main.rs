@@ -125,7 +125,7 @@ fn main() -> ServiceResult {
     // deliberate: ASCOM UniqueIDs are derived from the camera SDK serials at
     // enumeration, not minted into config (see the design doc "Device
     // identity").
-    let config_path = rusty_photon_config::resolve_and_init(
+    let config_path = rusty_photon_config::resolve_and_init::<svbony_camera::Config>(
         "svbony-camera",
         args.config,
         &serde_json::to_value(svbony_camera::Config::default())?,

@@ -32,6 +32,8 @@ pub struct Config {
     pub server: AlpacaServerConfig,
 }
 
+impl rusty_photon_config::ConfigFile for Config {}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -103,12 +105,7 @@ pub fn load_effective_config(
     path: &Path,
     overrides: &CliOverrides,
 ) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
-    let mut config = match std::fs::read_to_string(path) {
-        Ok(content) => serde_json::from_str(&content)
-            .map_err(|e| format!("config file {} is not valid JSON: {e}", path.display()))?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
-        Err(e) => return Err(format!("could not read config file {}: {e}", path.display()).into()),
-    };
+    let mut config = rusty_photon_config::load_file::<Config>(path)?.unwrap_or_default();
     overrides.apply(&mut config);
     Ok(config)
 }

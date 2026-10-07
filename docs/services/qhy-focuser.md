@@ -160,7 +160,14 @@ the identity pointer `/focuser/unique_id`. That bootstrap:
   transient `--port` / `--server-port` override is never baked into the file;
 - **writes the config file if it is absent**, scaffolding it from the defaults
   before minting the id. First run therefore creates the config file at the
-  resolved path when none exists.
+  resolved path when none exists;
+- fills in a `focuser` section the file leaves out, copying it from the
+  defaults so it arrives with its `name` and `description`;
+- writes the file **only when the result loads**: a file the driver would refuse
+  (an unknown key, a section missing a required field) is left byte for byte as
+  it was, and the start fails with
+  `config file <path> is valid JSON but not a valid configuration: <detail>`
+  (see [docs/crates/rusty-photon-config.md](../crates/rusty-photon-config.md)).
 
 Because the id is durable once written, set an explicit `unique_id` in the
 config only when you need to pin a known value (e.g. migrating an existing

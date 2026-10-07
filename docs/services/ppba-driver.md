@@ -272,6 +272,13 @@ Every block (`Config` and each nested config struct) rejects unknown keys at
 deserialize (`deny_unknown_fields`), so a typo or a key removed by a schema
 change fails loudly at load instead of being silently ignored.
 
+`serial` and `server` are required. Either device section (`switch`,
+`observingconditions`) may be left out of the file entirely. The startup
+bootstrap fills it in from the defaults below and mints its `unique_id` (see
+[Device identity](#device-identity-uniqueid)). So a hand-written file holding
+only `serial` and `server` loads. A device section that *is* present must carry
+`name` and `description`. The other device fields fall back to their defaults.
+
 ### Configuration Options
 
 | Section | Field | Description | Default |
@@ -318,6 +325,17 @@ with the default scaffold and the two freshly-minted UUIDs. CLI overrides
 (`--port`, `--server-port`, `--enable-switch`, `--enable-observingconditions`)
 are applied to the in-memory config *after* loading and are never written back
 to disk.
+
+A device section left out of an existing file is copied in from the defaults
+before its id is minted. The file is written only when the result loads. If
+the driver would refuse the file anyway — an unknown key, a device section
+without its `name`, a value of the wrong type — the file is left byte for byte
+as it was. The start then fails with the error for the file as written:
+`config file <path> is valid JSON but not a valid configuration: <detail>`,
+where `<detail>` is serde's message with its line and column.
+`config file <path> is not valid JSON: <detail>` is kept for a syntax error.
+[docs/crates/rusty-photon-config.md](../crates/rusty-photon-config.md)
+documents the bootstrap that every minting driver shares.
 
 ### `AveragePeriod`, staleness, and the meaning of zero
 
@@ -530,6 +548,7 @@ ppba-driver/
 │   │       ├── switch_error_steps.rs
 │   │       ├── sensor_steps.rs
 │   │       ├── oc_steps.rs           # ObservingConditions steps
+│   │       ├── config_file_steps.rs  # Startup bootstrap of the config file
 │   │       └── server_steps.rs       # Server registration
 │   ├── features/
 │   │   ├── connection_lifecycle.feature
@@ -538,6 +557,7 @@ ppba-driver/
 │   │   ├── switch_errors.feature
 │   │   ├── sensor_readings.feature
 │   │   ├── observing_conditions.feature
+│   │   ├── config_file.feature
 │   │   └── server_registration.feature
 │   └── conformu_integration.rs       # ASCOM ConformU compliance tests
 │   # Unit and mock-based tests are in src/ as #[cfg(test)] modules

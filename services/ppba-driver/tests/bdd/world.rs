@@ -39,6 +39,16 @@ pub struct PpbaWorld {
     pub last_response: Option<serde_json::Value>,
     /// Result of the last `supported_actions` query.
     pub last_supported_actions: Option<Vec<String>>,
+
+    /// Raw config file text for a scenario that needs a file `config` cannot
+    /// express (one that is not JSON at all). Takes precedence over `config`.
+    pub config_file_text: Option<String>,
+    /// Scratch directory holding the config file a bootstrap scenario staged.
+    pub config_dir: Option<tempfile::TempDir>,
+    /// The staged config file, and its bytes as written before the driver ran.
+    pub config_file: Option<(std::path::PathBuf, Vec<u8>)>,
+    /// Exit status and output of a start the driver refused.
+    pub refused_start: Option<std::process::Output>,
 }
 
 impl bdd_infra::doctor_smoke::DoctorSmokeWorld for PpbaWorld {

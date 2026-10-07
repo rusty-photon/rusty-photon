@@ -131,6 +131,7 @@ tracing-subscriber = { workspace = true }
 ascom-alpaca = { workspace = true, features = ["client", "switch", "observing_conditions"] }
 bdd-infra = { workspace = true, features = ["conformu", "tls-auth"] }
 tokio-test = { workspace = true }
+tempfile = { workspace = true }
 reqwest = { workspace = true }
 cucumber = { workspace = true }
 cargo-husky = { workspace = true }

@@ -2540,10 +2540,10 @@ Notes:
 - `flip_policy.flip_range_hours` was **removed** 2026-09 (issue
   #1301). A config still carrying it fails to load with the field
   named — see [§Flip policy](#flip-policy) for the migration.
-- `unpark_from_ap_position` is **required** (no default in the schema
-  sense, but the ship default is `"ap_park_0"` — the field is the
-  operator's declared physical position assumption, and "current
-  position" is the only honest value when nothing was declared).
+- `unpark_from_ap_position` is optional and defaults to `"ap_park_0"`
+  when omitted. The field is the operator's declared physical position
+  assumption, and "current position" is the only honest value when
+  nothing was declared.
   One of `"ap_park_0"` through `"ap_park_5"`. A named park
   (`ap_park_1..ap_park_5`) tells the driver to seed the firmware
   encoder via `:E1` / `:E2` on every fresh-power-up connect to the
@@ -2602,7 +2602,17 @@ On startup, before loading its configuration, the driver:
    overwritten. On a *fresh install* (no file yet) the default scaffold
    written out is the serialized `Config::default()` with the minted id
    filled in, so the operator gets a complete, valid config file to
-   edit.
+   edit. A file with no `mount` section at all gets the default `mount`
+   block copied in before the id is minted. That block carries a
+   `site_latitude_deg` / `site_longitude_deg` of 0.0, exactly as a
+   fresh install does, and the operator replaces them. The file is
+   written **only when the result loads**: it must parse as `Config`
+   and pass the auto-flip offset rule (see [§Flip policy](#flip-policy)),
+   which `Config`'s `ConfigFile::check` runs. A file the driver would
+   refuse is left byte for byte as it was, and the start fails with
+   `config file <path> is valid JSON but not a valid configuration:
+   <detail>`. See
+   [docs/crates/rusty-photon-config.md](../crates/rusty-photon-config.md).
 3. **Loads the config** from that path (which now always exists) and
    applies the CLI overrides (`--transport`, `--port`, `--baud`,
    `--server-port`).
@@ -2610,8 +2620,9 @@ On startup, before loading its configuration, the driver:
 The materialize step operates **only on the on-disk file**, never on a
 CLI-override-applied effective config, so a transient `--port` is never
 baked into the persisted file. It touches only the `/mount/unique_id`
-pointer; like `SetPark`, it reads the document as a `serde_json::Value`
-and preserves every other field. The two writers never clobber each
+pointer — plus, when the file has no `mount` section, the default
+section that pointer lives in. Like `SetPark`, it reads the document as
+a `serde_json::Value` and preserves every other field. The two writers never clobber each
 other: the identity minting runs once at startup and `SetPark`'s
 `write_mount_fields_to_config` runs at runtime, both read-modify-write
 the same file as a `Value`, each mutate only their own keys

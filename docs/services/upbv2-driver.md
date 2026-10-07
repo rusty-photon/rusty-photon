@@ -383,7 +383,10 @@ Shape, defaults and semantics follow [`ppba-driver`](ppba-driver.md#configuratio
 exactly: the shared `AlpacaServerConfig` from `rusty-photon-server-config`
 (ADR-016), `deny_unknown_fields` on every block, empty `unique_id` meaning
 "mint a UUIDv4 on first run" via `rusty_photon_config::resolve_and_init`,
-and humantime durations. The platform default serial port stays the repo's
+and humantime durations. That includes the bootstrap: a `switch` or
+`observingconditions` section left out of the file is filled in from the
+defaults, and a file the driver would refuse is never written (see
+[docs/crates/rusty-photon-config.md](../crates/rusty-photon-config.md)). The platform default serial port stays the repo's
 placeholder convention (`/dev/ttyUSB0` / `COM3`), which the operator edits.
 
 ### `AveragePeriod` and the meaning of zero

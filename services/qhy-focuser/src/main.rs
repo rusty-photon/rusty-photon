@@ -129,11 +129,11 @@ fn main() -> ServiceResult {
     // focuser's persisted, spec-compliant `UniqueID`. Minting is idempotent,
     // never overwrites an existing id, and operates on the on-disk file only,
     // so a transient `--port`/`--server-port` override is never baked in.
-    let config_path = rusty_photon_config::resolve_and_init(
+    let config_path = rusty_photon_config::resolve_and_init::<Config>(
         "qhy-focuser",
         args.config,
         &serde_json::to_value(Config::default())?,
-        &["/focuser/unique_id"],
+        qhy_focuser::config::IDENTITY_POINTERS,
     )?;
     debug!("Resolved configuration path: {:?}", config_path);
 

@@ -25,6 +25,18 @@ pub struct Config {
     pub server: AlpacaServerConfig,
 }
 
+impl rusty_photon_config::ConfigFile for Config {
+    /// The follow-mode rules [`load_config`] applies, so the startup
+    /// bootstrap never writes a minted id into a file the load then refuses.
+    fn check(&self) -> Result<(), String> {
+        validate(self)
+    }
+}
+
+/// Where the device's ASCOM `UniqueID` lives in the config file: the JSON
+/// pointer the startup bootstrap mints into.
+pub const IDENTITY_POINTERS: &[&str] = &["/device/unique_id"];
+
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceConfig {
@@ -161,26 +173,20 @@ fn default_survey_endpoint() -> String {
 pub async fn load_config(path: &Path) -> Result<Config, SkySurveyCameraError> {
     let bytes = tokio::fs::read(path).await?;
     let config: Config = serde_json::from_slice(&bytes)?;
-    validate(&config)?;
+    validate(&config).map_err(SkySurveyCameraError::ConfigInvalid)?;
     Ok(config)
 }
 
-fn validate(config: &Config) -> Result<(), SkySurveyCameraError> {
+fn validate(config: &Config) -> Result<(), String> {
     if let Some(t) = &config.pointing.telescope {
         if !t.offset_ra_arcsec.is_finite() {
-            return Err(SkySurveyCameraError::ConfigInvalid(
-                "pointing.telescope.offset_ra_arcsec must be finite".into(),
-            ));
+            return Err("pointing.telescope.offset_ra_arcsec must be finite".into());
         }
         if !t.offset_dec_arcsec.is_finite() {
-            return Err(SkySurveyCameraError::ConfigInvalid(
-                "pointing.telescope.offset_dec_arcsec must be finite".into(),
-            ));
+            return Err("pointing.telescope.offset_dec_arcsec must be finite".into());
         }
         if t.request_timeout.is_zero() {
-            return Err(SkySurveyCameraError::ConfigInvalid(
-                "pointing.telescope.request_timeout must be > 0".into(),
-            ));
+            return Err("pointing.telescope.request_timeout must be > 0".into());
         }
     }
     // The rotator only feeds `rotation_deg` inside follow mode's
@@ -188,15 +194,11 @@ fn validate(config: &Config) -> Result<(), SkySurveyCameraError> {
     // (rotation comes from the static value / POST). Reject the orphan
     // config rather than silently ignore it.
     if config.pointing.rotator.is_some() && config.pointing.telescope.is_none() {
-        return Err(SkySurveyCameraError::ConfigInvalid(
-            "pointing.rotator requires pointing.telescope (rotator-driven rotation only applies in follow mode)".into(),
-        ));
+        return Err("pointing.rotator requires pointing.telescope (rotator-driven rotation only applies in follow mode)".into());
     }
     if let Some(r) = &config.pointing.rotator {
         if r.request_timeout.is_zero() {
-            return Err(SkySurveyCameraError::ConfigInvalid(
-                "pointing.rotator.request_timeout must be > 0".into(),
-            ));
+            return Err("pointing.rotator.request_timeout must be > 0".into());
         }
     }
     Ok(())
@@ -283,7 +285,7 @@ mod tests {
         let mut t = telescope_config();
         t.offset_ra_arcsec = f64::NAN;
         let err = validate(&base_config_with_telescope(Some(t))).unwrap_err();
-        assert!(format!("{err}").contains("offset_ra_arcsec"));
+        assert!(err.contains("offset_ra_arcsec"));
     }
 
     #[test]
@@ -291,7 +293,7 @@ mod tests {
         let mut t = telescope_config();
         t.offset_dec_arcsec = f64::INFINITY;
         let err = validate(&base_config_with_telescope(Some(t))).unwrap_err();
-        assert!(format!("{err}").contains("offset_dec_arcsec"));
+        assert!(err.contains("offset_dec_arcsec"));
     }
 
     #[test]
@@ -299,7 +301,7 @@ mod tests {
         let mut t = telescope_config();
         t.request_timeout = Duration::ZERO;
         let err = validate(&base_config_with_telescope(Some(t))).unwrap_err();
-        assert!(format!("{err}").contains("request_timeout"));
+        assert!(err.contains("request_timeout"));
     }
 
     #[test]
@@ -341,6 +343,40 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_leaves_a_file_the_follow_mode_rules_refuse_untouched() {
+        // `load_config` would refuse the orphan rotator, so the bootstrap
+        // must not mint an id into the file first.
+        let mut written = serde_json::to_value(config_with_telescope_and_rotator(
+            None,
+            Some(rotator_config()),
+        ))
+        .unwrap();
+        written["device"]
+            .as_object_mut()
+            .unwrap()
+            .remove("unique_id");
+        let written = written.to_string();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, &written).unwrap();
+
+        let err = rusty_photon_config::materialize_identity::<Config>(
+            &path,
+            &serde_json::json!({}),
+            IDENTITY_POINTERS,
+        )
+        .err()
+        .unwrap();
+
+        assert!(
+            err.to_string()
+                .contains("pointing.rotator requires pointing.telescope"),
+            "{err}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+    }
+
+    #[test]
     fn validate_accepts_rotator_with_telescope() {
         validate(&config_with_telescope_and_rotator(
             Some(telescope_config()),
@@ -356,7 +392,7 @@ mod tests {
             Some(rotator_config()),
         ))
         .unwrap_err();
-        let msg = format!("{err}");
+        let msg = err;
         assert!(
             msg.contains("pointing.rotator requires pointing.telescope"),
             "unexpected message: {msg}"
@@ -372,7 +408,7 @@ mod tests {
             Some(r),
         ))
         .unwrap_err();
-        assert!(format!("{err}").contains("pointing.rotator.request_timeout"));
+        assert!(err.contains("pointing.rotator.request_timeout"));
     }
 
     #[test]

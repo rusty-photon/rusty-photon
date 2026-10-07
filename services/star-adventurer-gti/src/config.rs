@@ -21,6 +21,23 @@ pub struct Config {
     pub mount: MountConfig,
 }
 
+impl rusty_photon_config::ConfigFile for Config {
+    /// One rule spans two config blocks and so cannot live in a newtype:
+    /// an auto-flip offset has to name a point where a flip is actually
+    /// possible, which the CW exclusion zone and the tracking-guard margin
+    /// decide. Checked here, it fails [`load_config`] like everything else
+    /// and keeps the startup bootstrap from writing a file that load would
+    /// refuse. `config_actions::validate` checks it again so a runtime
+    /// `config.apply` cannot install what startup would have refused.
+    fn check(&self) -> Result<(), String> {
+        self.mount.auto_flip_offset_error().map_or(Ok(()), Err)
+    }
+}
+
+/// Where each device's ASCOM `UniqueID` lives in the config file: the JSON
+/// pointers the startup bootstrap mints into.
+pub const IDENTITY_POINTERS: &[&str] = &["/mount/unique_id"];
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -1280,38 +1297,65 @@ impl Default for MountConfig {
 
 /// Load a [`Config`] from a JSON file.
 ///
+/// Validation is construct-time: the config newtypes
+/// (`CwExclusionZone`, `MinAltitudeDegrees`, `TrackingGuardMarginHours`)
+/// reject out-of-range values during deserialize, with the offending field
+/// named in the error — so a bad config fails here at load rather than at
+/// slew/track time. The one rule that spans blocks runs in `Config`'s
+/// `ConfigFile::check`.
+///
 /// # Errors
 ///
-/// Returns the I/O error if `path` cannot be read, or the JSON error if its
-/// contents do not deserialize as a [`Config`] — an out-of-range value in
-/// one of the validating newtypes included, with the field named.
+/// Returns a message naming the file if it is absent or unreadable, is not
+/// valid JSON, does not deserialize as a [`Config`] (an out-of-range value
+/// in one of the validating newtypes included, with the field named), or
+/// breaks the auto-flip offset rule.
 pub fn load_config(
     path: &Path,
 ) -> std::result::Result<Config, Box<dyn std::error::Error + Send + Sync>> {
-    let content = std::fs::read_to_string(path)?;
-    // Validation is construct-time: the config newtypes
-    // (`CwExclusionZone`, `MinAltitudeDegrees`,
-    // `TrackingGuardMarginHours`) reject out-of-range values during
-    // deserialize, with the offending field named in the error — so a
-    // bad config fails here at load rather than at slew/track time.
-    let config: Config = serde_json::from_str(&content)?;
-    // One rule spans two config blocks and so cannot live in a
-    // newtype: an auto-flip offset has to name a point where a flip is
-    // actually possible, which the CW exclusion zone and the
-    // tracking-guard margin decide. Checked here so it fails at load
-    // like everything else, and again in `config_actions::validate` so
-    // a runtime `config.apply` cannot install what startup would have
-    // refused.
-    if let Some(msg) = config.mount.auto_flip_offset_error() {
-        return Err(msg.into());
-    }
-    Ok(config)
+    rusty_photon_config::load_file::<Config>(path)?
+        .ok_or_else(|| format!("config file {} does not exist", path.display()).into())
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    /// A hand-written file that leaves out the device sections gains each
+    /// one from the defaults, with a minted id, and then loads.
+    #[test]
+    fn bootstrap_fills_left_out_device_sections_from_the_defaults() {
+        let default = serde_json::to_value(Config::default()).unwrap();
+        let sections: Vec<&str> = IDENTITY_POINTERS
+            .iter()
+            .map(|pointer| pointer.split('/').nth(1).unwrap())
+            .collect();
+        let mut written = default.clone();
+        for section in &sections {
+            written.as_object_mut().unwrap().remove(*section).unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, written.to_string()).unwrap();
+
+        rusty_photon_config::materialize_identity::<Config>(&path, &default, IDENTITY_POINTERS)
+            .unwrap();
+
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        for section in sections {
+            let mut got = on_disk[section].clone();
+            let id = got.as_object_mut().unwrap().remove("unique_id").unwrap();
+            assert!(!id.as_str().unwrap().is_empty(), "{section}: {id}");
+            let mut want = default[section].clone();
+            want.as_object_mut().unwrap().remove("unique_id");
+            assert_eq!(got, want, "{section}");
+        }
+        rusty_photon_config::load_file::<Config>(&path)
+            .unwrap()
+            .unwrap();
+    }
 
     #[test]
     fn config_defaults_match_the_design_doc() {
@@ -2197,6 +2241,50 @@ mod tests {
         let mut cfg = auto_flip_at(6.0);
         cfg.cw_exclusion_zone = CwExclusionZone::Disabled;
         assert!(cfg.auto_flip_offset_error().is_none(), "zone disabled");
+    }
+
+    #[test]
+    fn load_config_reports_a_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.json");
+
+        let err = load_config(&path).unwrap_err();
+
+        assert!(err.to_string().contains("does not exist"), "{err}");
+    }
+
+    #[test]
+    fn bootstrap_leaves_a_file_the_auto_flip_rule_refuses_untouched() {
+        // The rule is no newtype's, so only `ConfigFile::check` can keep the
+        // bootstrap from minting an id into a file the load then refuses.
+        let mut written = serde_json::to_value(Config {
+            mount: auto_flip_at(0.95),
+            ..Config::default()
+        })
+        .unwrap();
+        written["mount"]
+            .as_object_mut()
+            .unwrap()
+            .remove("unique_id");
+        let written = written.to_string();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, &written).unwrap();
+
+        let err = rusty_photon_config::materialize_identity::<Config>(
+            &path,
+            &serde_json::to_value(Config::default()).unwrap(),
+            IDENTITY_POINTERS,
+        )
+        .err()
+        .unwrap();
+
+        assert!(
+            err.to_string()
+                .contains("auto_flip_at_meridian_offset_hours"),
+            "{err}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
     }
 
     #[test]
