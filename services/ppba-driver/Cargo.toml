@@ -134,6 +134,7 @@ bdd-infra = { workspace = true, features = ["conformu", "tls-auth"] }
 tokio-test = { workspace = true }
 mockall = { workspace = true }
 proptest = { workspace = true }
+tempfile = { workspace = true }
 reqwest = { workspace = true }
 cucumber = { workspace = true }
 cargo-husky = { workspace = true }

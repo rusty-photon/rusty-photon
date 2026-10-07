@@ -8,7 +8,10 @@
 //! and never overwrites an id that already exists.
 //!
 //! The helpers operate on `serde_json::Value` + JSON pointers so they apply uniformly across the
-//! heterogeneous driver config shapes (one device or several, at different pointers).
+//! heterogeneous driver config shapes (one device or several, at different pointers). Each service
+//! names its own configuration type through [`ConfigFile`]: the bootstrap writes to a file only
+//! when the result loads as that type, and [`load_file`] reads a file as one. See
+//! `docs/crates/rusty-photon-config.md`.
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
@@ -40,6 +43,7 @@ pub mod actions;
 
 use std::path::{Path, PathBuf};
 
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -55,6 +59,18 @@ pub enum ConfigError {
         path: PathBuf,
         source: serde_json::Error,
     },
+    /// The config file is valid JSON but does not deserialize as the
+    /// service's configuration: a field is missing, unknown, of the wrong
+    /// type or out of range.
+    #[error("config file {path} is valid JSON but not a valid configuration: {source}")]
+    InvalidConfig {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    /// The config file deserializes, but the service's
+    /// [`ConfigFile::check`] refuses it.
+    #[error("config file {path} is valid JSON but not a valid configuration: {reason}")]
+    Rejected { path: PathBuf, reason: String },
     /// The config file could not be read.
     #[error("could not read config file {path}: {source}")]
     Read {
@@ -67,6 +83,26 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
+}
+
+/// A service's configuration type: what its config file must hold.
+///
+/// [`load_file`] reads a file as one, and the bootstrap ([`resolve_and_init`],
+/// [`materialize_identity`]) writes to a file only when the result is one — so
+/// the bootstrap never leaves behind a file the service would refuse. A file
+/// "loads" when it deserializes as the type and passes [`check`](Self::check).
+pub trait ConfigFile: DeserializeOwned {
+    /// The rules a parse cannot express, such as one spanning several
+    /// blocks. A service whose loader enforces such a rule must express it
+    /// here, or the bootstrap could write a file the loader then refuses. The
+    /// default accepts every configuration that deserializes.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the configuration is refused.
+    fn check(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Resolve the config-file path.
@@ -145,17 +181,77 @@ fn program_data_root(program_data: Option<std::ffi::OsString>) -> PathBuf {
 /// parse, and [`ConfigError::Read`] for any read failure other than the
 /// file being absent.
 pub fn read_file_value(path: &Path, default: &Value) -> Result<Value, ConfigError> {
+    read_text(path)?.map_or_else(|| Ok(default.clone()), |text| parse_json(path, &text))
+}
+
+/// Load the config file at `path` as the service's configuration `C`, or
+/// `None` when there is no file — whether that means "run on defaults" or
+/// "refuse to start" is the caller's policy.
+///
+/// # Errors
+///
+/// Returns [`ConfigError::InvalidJson`] for a syntax error,
+/// [`ConfigError::InvalidConfig`] for valid JSON that does not deserialize
+/// as `C`, [`ConfigError::Rejected`] when [`ConfigFile::check`] refuses it,
+/// and [`ConfigError::Read`] for any read failure other than the file being
+/// absent.
+pub fn load_file<C: ConfigFile>(path: &Path) -> Result<Option<C>, ConfigError> {
+    read_text(path)?
+        .map(|text| parse_config(path, &text))
+        .transpose()
+}
+
+/// The file's contents, or `None` when it does not exist.
+fn read_text(path: &Path) -> Result<Option<String>, ConfigError> {
     match std::fs::read_to_string(path) {
-        Ok(content) => serde_json::from_str(&content).map_err(|source| ConfigError::InvalidJson {
-            path: path.to_path_buf(),
-            source,
-        }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(default.clone()),
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(ConfigError::Read {
             path: path.to_path_buf(),
             source,
         }),
     }
+}
+
+/// Parse `text`, the contents of the file at `path`, as a JSON `Value`.
+fn parse_json(path: &Path, text: &str) -> Result<Value, ConfigError> {
+    serde_json::from_str(text).map_err(|source| ConfigError::InvalidJson {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Parse `text`, the contents of the file at `path`, as `C`. A syntax error
+/// and valid JSON of the wrong shape are told apart, so a missing field is
+/// never reported as invalid JSON.
+fn parse_config<C: ConfigFile>(path: &Path, text: &str) -> Result<C, ConfigError> {
+    let config = serde_json::from_str(text).map_err(|source| {
+        let path = path.to_path_buf();
+        if source.is_data() {
+            ConfigError::InvalidConfig { path, source }
+        } else {
+            ConfigError::InvalidJson { path, source }
+        }
+    })?;
+    checked(path, config)
+}
+
+/// Deserialize `value`, meant for the file at `path`, as `C`.
+fn parse_value<C: ConfigFile>(path: &Path, value: &Value) -> Result<C, ConfigError> {
+    let config = C::deserialize(value).map_err(|source| ConfigError::InvalidConfig {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    checked(path, config)
+}
+
+/// Apply `C`'s [`ConfigFile::check`] to a deserialized `config`.
+fn checked<C: ConfigFile>(path: &Path, config: C) -> Result<C, ConfigError> {
+    config.check().map_err(|reason| ConfigError::Rejected {
+        path: path.to_path_buf(),
+        reason,
+    })?;
+    Ok(config)
 }
 
 /// Stage `value` as pretty JSON in a synced temp file next to `path` (same
@@ -314,7 +410,10 @@ pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigE
 ///    empty receives a fresh `UUIDv4` ([`materialize_identity`]), persisted to
 ///    the resolved path — explicit **or** default, because a minted ASCOM
 ///    `UniqueID` is only an identity if the service re-reads the same value on
-///    every future start. Minting is the one step that will create a missing
+///    every future start. A section the file leaves out is filled in from
+///    `default` first, and the file is written only when the result loads as
+///    `C` — a file the service would refuse is left exactly as it was.
+///    Minting is the one step that will create a missing
 ///    explicit file — and only when it actually fills an id: a `default`
 ///    whose pointers already hold non-empty ids has nothing to persist, so a
 ///    missing explicit file stays absent. Minting runs before step 3 so a
@@ -336,9 +435,10 @@ pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigE
 /// # Errors
 ///
 /// Returns a [`ConfigError`] if the path cannot be resolved, the
-/// existing file is unreadable or corrupt, or writing the minted /
-/// default file fails.
-pub fn resolve_and_init(
+/// existing file is unreadable or corrupt, minting would leave a file that
+/// does not load as `C` (the error is the one the file as written produces),
+/// or writing the minted / default file fails.
+pub fn resolve_and_init<C: ConfigFile>(
     service: &str,
     explicit: Option<PathBuf>,
     default: &Value,
@@ -350,7 +450,7 @@ pub fn resolve_and_init(
     // scaffold once, with the ids already filled, and the init step below
     // finds the file present.
     if !identity_pointers.is_empty() {
-        let outcome = materialize_identity(&path, default, identity_pointers)?;
+        let outcome = materialize_identity::<C>(&path, default, identity_pointers)?;
         if outcome.wrote {
             tracing::debug!(
                 "Minted device UniqueID(s) {:?} into {}",
@@ -381,21 +481,34 @@ pub struct MaterializeOutcome {
 /// `UniqueID` in the **file layer**, minting a fresh `UUIDv4` for any
 /// that are absent, non-string, or empty.
 ///
+/// A section the file leaves out is copied from the same place in
+/// `default_value` before the id goes in, so it arrives with the fields the
+/// service needs instead of holding the id alone. Where something other than
+/// an object stands in the way, nothing is minted there: that is the
+/// operator's to fix, and the load reports it.
+///
 /// Idempotent (only fills empties; never overwrites an existing id) and
-/// persists only when it actually filled something. Operates solely on
-/// the on-disk file (never a CLI-override-applied effective config), so a
-/// transient `--port` is never baked in.
+/// persists only when it actually filled something **and** the result loads
+/// as `C` — so a file the service would refuse is never written. Operates
+/// solely on the on-disk file (never a CLI-override-applied effective
+/// config), so a transient `--port` is never baked in.
 ///
 /// # Errors
 ///
-/// Returns a [`ConfigError`] if the existing file is unreadable or
-/// corrupt, or if persisting the minted ids fails.
-pub fn materialize_identity(
+/// Returns a [`ConfigError`] if the existing file is unreadable or not
+/// valid JSON, if the minted result would not load as `C` — the error is
+/// then the one the file as written produces, which names the operator's
+/// line and column — or if persisting the minted ids fails.
+pub fn materialize_identity<C: ConfigFile>(
     path: &Path,
     default_value: &Value,
     identity_pointers: &[&str],
 ) -> Result<MaterializeOutcome, ConfigError> {
-    let mut value = read_file_value(path, default_value)?;
+    let text = read_text(path)?;
+    let mut value = match &text {
+        Some(text) => parse_json(path, text)?,
+        None => default_value.clone(),
+    };
     let mut filled = Vec::new();
 
     for ptr in identity_pointers {
@@ -403,8 +516,7 @@ pub fn materialize_identity(
             Some(Value::String(s)) => s.trim().is_empty(),
             _ => true, // absent, null, or non-string
         };
-        if needs {
-            insert_at_pointer(&mut value, ptr, Value::String(Uuid::new_v4().to_string()));
+        if needs && insert_identity(&mut value, default_value, ptr, fresh_id()) {
             filled.push((*ptr).to_string());
         }
     }
@@ -412,6 +524,16 @@ pub fn materialize_identity(
     let wrote = if filled.is_empty() {
         false
     } else {
+        // Write only a file the service will load. A refusal is reported
+        // against the file as written: that is the text the operator opens
+        // to fix, and its error carries their line and column. The minted
+        // result's own error stands in only where there is no such text.
+        if let Err(refused) = parse_value::<C>(path, &value) {
+            return Err(match text.map(|text| parse_config::<C>(path, &text)) {
+                Some(Err(as_written)) => as_written,
+                _ => refused,
+            });
+        }
         save(path, &value).map_err(|source| ConfigError::Write {
             path: path.to_path_buf(),
             source,
@@ -426,37 +548,51 @@ pub fn materialize_identity(
     })
 }
 
-/// Set `new` at the RFC-6901 JSON `pointer`, creating intermediate objects as needed (unlike
-/// `Value::pointer_mut`, which returns `None` for a missing key).
-fn insert_at_pointer(root: &mut Value, pointer: &str, new: Value) {
-    let tokens: Vec<String> = pointer
-        .split('/')
-        .skip(1)
-        .map(|t| t.replace("~1", "/").replace("~0", "~"))
-        .collect();
+/// Set `id` at the RFC-6901 JSON `pointer`, creating the objects missing on
+/// the way (unlike `Value::pointer_mut`, which returns `None` for a missing
+/// key). A missing object is copied from the same place in `default` when the
+/// default holds an object there, and starts empty otherwise.
+///
+/// Returns `false` when something other than an object stands in the way —
+/// the root, or a section on the path — and replaces nothing.
+fn insert_identity(root: &mut Value, default: &Value, pointer: &str, id: Value) -> bool {
+    let tokens: Vec<&str> = pointer.split('/').skip(1).collect();
     let Some((last, parents)) = tokens.split_last() else {
-        return;
+        return false;
     };
 
     let mut cur = root;
-    for tok in parents {
-        if !cur.is_object() {
-            *cur = Value::Object(serde_json::Map::new());
-        }
+    let mut at = String::new();
+    for token in parents {
+        at.push('/');
+        at.push_str(token);
         let Some(map) = cur.as_object_mut() else {
-            return;
+            return false;
         };
-        cur = map
-            .entry(tok.clone())
-            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        cur = map.entry(unescape(token)).or_insert_with(|| {
+            default
+                .pointer(&at)
+                .filter(|section| section.is_object())
+                .cloned()
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new()))
+        });
     }
 
-    if !cur.is_object() {
-        *cur = Value::Object(serde_json::Map::new());
-    }
-    if let Some(map) = cur.as_object_mut() {
-        map.insert(last.clone(), new);
-    }
+    let Some(map) = cur.as_object_mut() else {
+        return false;
+    };
+    map.insert(unescape(last), id);
+    true
+}
+
+/// A freshly minted `UniqueID`.
+fn fresh_id() -> Value {
+    Value::String(Uuid::new_v4().to_string())
+}
+
+/// Decode one RFC-6901 reference token: `~1` is `/`, then `~0` is `~`.
+fn unescape(token: &str) -> String {
+    token.replace("~1", "/").replace("~0", "~")
 }
 
 #[cfg(test)]
@@ -464,6 +600,44 @@ fn insert_at_pointer(root: &mut Value, pointer: &str, new: Value) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Any JSON loads: the minting mechanics under test, with no shape to
+    /// check.
+    impl ConfigFile for Value {}
+
+    /// A device section the way the drivers declare one: `name` required,
+    /// the id defaulted so a file without one still deserializes.
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Device {
+        name: String,
+        #[serde(default)]
+        unique_id: String,
+    }
+
+    /// A service configuration with a required device section and one rule
+    /// the parse cannot express.
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Typed {
+        port: u16,
+        device: Device,
+    }
+
+    impl ConfigFile for Typed {
+        fn check(&self) -> Result<(), String> {
+            if self.port == 0 {
+                Err("port must not be 0".to_string())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// `Typed`'s default: a complete device section with an empty id.
+    fn typed_default() -> Value {
+        json!({ "port": 1, "device": { "name": "Default Cam", "unique_id": "" } })
+    }
 
     #[test]
     fn resolve_uses_explicit_path() {
@@ -666,7 +840,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("typo.json");
 
-        let p = resolve_and_init("dsd-fp2", Some(missing.clone()), &json!({}), &[]).unwrap();
+        let p =
+            resolve_and_init::<Value>("dsd-fp2", Some(missing.clone()), &json!({}), &[]).unwrap();
 
         assert_eq!(p, missing);
         assert!(
@@ -681,7 +856,7 @@ mod tests {
         let path = dir.path().join("c.json");
         let default = json!({ "device": { "unique_id": "" } });
 
-        let p = resolve_and_init(
+        let p = resolve_and_init::<Value>(
             "dsd-fp2",
             Some(path.clone()),
             &default,
@@ -707,7 +882,7 @@ mod tests {
         let path = dir.path().join("c.json");
         std::fs::write(&path, r#"{"device":{"unique_id":"keep-me"},"port":9}"#).unwrap();
 
-        resolve_and_init(
+        resolve_and_init::<Value>(
             "dsd-fp2",
             Some(path.clone()),
             &json!({ "device": { "unique_id": "" }, "port": 1 }),
@@ -766,7 +941,7 @@ mod tests {
         let _env = EnvGuard::set("XDG_CONFIG_HOME", dir.path());
         let default = json!({ "server": { "port": 11111 } });
 
-        let p = resolve_and_init("xdg-init-test", None, &default, &[]).unwrap();
+        let p = resolve_and_init::<Value>("xdg-init-test", None, &default, &[]).unwrap();
 
         assert!(p.starts_with(dir.path()), "{p:?}");
         let on_disk: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
@@ -783,7 +958,8 @@ mod tests {
         let _env = EnvGuard::set("XDG_CONFIG_HOME", dir.path());
         let default = json!({ "server": { "port": 1 }, "device": { "unique_id": "" } });
 
-        let p = resolve_and_init("xdg-mint-test", None, &default, &["/device/unique_id"]).unwrap();
+        let p = resolve_and_init::<Value>("xdg-mint-test", None, &default, &["/device/unique_id"])
+            .unwrap();
 
         let on_disk: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(on_disk.pointer("/server/port"), Some(&json!(1)));
@@ -800,7 +976,8 @@ mod tests {
         let path = dir.path().join("c.json");
         let default = json!({ "cover_calibrator": { "unique_id": "" } });
 
-        let out = materialize_identity(&path, &default, &["/cover_calibrator/unique_id"]).unwrap();
+        let out = materialize_identity::<Value>(&path, &default, &["/cover_calibrator/unique_id"])
+            .unwrap();
 
         assert!(out.wrote);
         assert_eq!(out.filled, vec!["/cover_calibrator/unique_id".to_string()]);
@@ -819,7 +996,7 @@ mod tests {
         let path = dir.path().join("c.json");
         let default = json!({ "d": { "unique_id": "" } });
 
-        let first = materialize_identity(&path, &default, &["/d/unique_id"]).unwrap();
+        let first = materialize_identity::<Value>(&path, &default, &["/d/unique_id"]).unwrap();
         assert!(first.wrote);
         let id1 = first
             .value
@@ -828,7 +1005,7 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let second = materialize_identity(&path, &default, &["/d/unique_id"]).unwrap();
+        let second = materialize_identity::<Value>(&path, &default, &["/d/unique_id"]).unwrap();
         assert!(!second.wrote);
         assert_eq!(second.filled, Vec::<String>::new());
         let id2 = second
@@ -851,7 +1028,8 @@ mod tests {
         .unwrap();
 
         let out =
-            materialize_identity(&path, &json!({}), &["/a/unique_id", "/b/unique_id"]).unwrap();
+            materialize_identity::<Value>(&path, &json!({}), &["/a/unique_id", "/b/unique_id"])
+                .unwrap();
 
         assert!(out.wrote);
         assert_eq!(out.filled, vec!["/b/unique_id".to_string()]);
@@ -874,7 +1052,7 @@ mod tests {
         let path = dir.path().join("missing.json");
         let default = json!({ "serial": { "port": "/dev/ttyACM0" }, "d": { "unique_id": "" } });
 
-        let out = materialize_identity(&path, &default, &["/d/unique_id"]).unwrap();
+        let out = materialize_identity::<Value>(&path, &default, &["/d/unique_id"]).unwrap();
 
         assert!(out.wrote);
         let on_disk: Value =
@@ -897,7 +1075,7 @@ mod tests {
         // Present file whose device object lacks `unique_id` entirely.
         std::fs::write(&path, r#"{"device":{"name":"cam"}}"#).unwrap();
 
-        let out = materialize_identity(&path, &json!({}), &["/device/unique_id"]).unwrap();
+        let out = materialize_identity::<Value>(&path, &json!({}), &["/device/unique_id"]).unwrap();
 
         assert!(out.wrote);
         let on_disk: Value =
@@ -973,7 +1151,7 @@ mod tests {
         std::fs::set_permissions(&ro, std::fs::Permissions::from_mode(0o555)).unwrap();
         let path = ro.join("c.json");
 
-        let result = materialize_identity(
+        let result = materialize_identity::<Value>(
             &path,
             &json!({ "d": { "unique_id": "" } }),
             &["/d/unique_id"],
@@ -998,7 +1176,7 @@ mod tests {
         let path = dir.path().join("c.json");
         std::fs::write(&path, r#"{"d":{"unique_id":123}}"#).unwrap();
 
-        let out = materialize_identity(&path, &json!({}), &["/d/unique_id"]).unwrap();
+        let out = materialize_identity::<Value>(&path, &json!({}), &["/d/unique_id"]).unwrap();
 
         assert!(out.wrote);
         assert_eq!(out.filled, vec!["/d/unique_id".to_string()]);
@@ -1017,7 +1195,7 @@ mod tests {
         let path = dir.path().join("c.json");
         std::fs::write(&path, "{\"d\":{\"unique_id\":\"   \"}}").unwrap();
 
-        let out = materialize_identity(&path, &json!({}), &["/d/unique_id"]).unwrap();
+        let out = materialize_identity::<Value>(&path, &json!({}), &["/d/unique_id"]).unwrap();
 
         assert!(out.wrote);
         assert_eq!(out.filled, vec!["/d/unique_id".to_string()]);
@@ -1030,43 +1208,221 @@ mod tests {
     }
 
     #[test]
-    fn materialize_replaces_non_object_root() {
-        // A corrupt file whose root is an array (not an object) is rebuilt into
-        // the object scaffold the pointer needs.
+    fn materialize_mints_nothing_through_a_non_object_root() {
+        // A root that is an array is the operator's to fix; replacing it would
+        // throw their content away. It stays, for the load to report.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.json");
         std::fs::write(&path, "[1,2,3]").unwrap();
 
-        let out = materialize_identity(&path, &json!({}), &["/d/unique_id"]).unwrap();
+        let out = materialize_identity::<Value>(&path, &json!({}), &["/d/unique_id"]).unwrap();
 
-        assert!(out.wrote);
-        let on_disk: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let id = on_disk
-            .pointer("/d/unique_id")
-            .and_then(Value::as_str)
-            .unwrap();
-        Uuid::parse_str(id).unwrap();
+        assert!(!out.wrote);
+        assert_eq!(out.filled, Vec::<String>::new());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[1,2,3]");
     }
 
     #[test]
-    fn materialize_replaces_non_object_at_pointer_parent() {
-        // The parent of the pointer exists but is a scalar; it is replaced with
-        // an object so the id can be inserted.
+    fn materialize_mints_nothing_through_a_non_object_section() {
+        // A section the operator wrote as a scalar is not replaced by an object.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.json");
         std::fs::write(&path, r#"{"device":"oops"}"#).unwrap();
 
-        let out = materialize_identity(&path, &json!({}), &["/device/unique_id"]).unwrap();
+        let out = materialize_identity::<Value>(&path, &json!({}), &["/device/unique_id"]).unwrap();
+
+        assert!(!out.wrote);
+        assert_eq!(out.filled, Vec::<String>::new());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"device":"oops"}"#
+        );
+    }
+
+    #[test]
+    fn materialize_fills_a_left_out_section_from_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, r#"{"port": 9}"#).unwrap();
+
+        let out =
+            materialize_identity::<Typed>(&path, &typed_default(), &["/device/unique_id"]).unwrap();
 
         assert!(out.wrote);
-        let on_disk: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let id = on_disk
-            .pointer("/device/unique_id")
-            .and_then(Value::as_str)
+        let loaded = load_file::<Typed>(&path).unwrap().unwrap();
+        assert_eq!(loaded.port, 9);
+        assert_eq!(loaded.device.name, "Default Cam");
+        Uuid::parse_str(&loaded.device.unique_id).unwrap();
+    }
+
+    #[test]
+    fn materialize_starts_a_section_empty_where_the_default_has_no_object() {
+        // A default holding a scalar where the section would be is no section
+        // to copy; the id gets an empty object of its own.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, "{}").unwrap();
+
+        let out =
+            materialize_identity::<Value>(&path, &json!({ "d": 5 }), &["/d/unique_id"]).unwrap();
+
+        assert!(out.wrote);
+        let d = out.value.pointer("/d").and_then(Value::as_object).unwrap();
+        assert_eq!(d.keys().collect::<Vec<_>>(), ["unique_id"]);
+    }
+
+    #[test]
+    fn materialize_leaves_a_file_that_would_not_load_untouched() {
+        // A device section without its required `name` is the operator's to
+        // fix: no id is written into it, and the error is the one their own
+        // file produces, line and column included.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let written = "{\"port\": 9,\n\"device\": {}}";
+        std::fs::write(&path, written).unwrap();
+
+        let err = materialize_identity::<Typed>(&path, &typed_default(), &["/device/unique_id"])
+            .err()
             .unwrap();
-        Uuid::parse_str(id).unwrap();
+
+        assert!(matches!(err, ConfigError::InvalidConfig { .. }), "{err:?}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("is valid JSON but not a valid configuration: missing field `name`"),
+            "{msg}"
+        );
+        assert!(msg.contains("line 2"), "{msg}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+    }
+
+    #[test]
+    fn materialize_leaves_a_file_its_check_refuses_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let written = r#"{"port": 0, "device": {"name": "cam"}}"#;
+        std::fs::write(&path, written).unwrap();
+
+        let err = materialize_identity::<Typed>(&path, &typed_default(), &["/device/unique_id"])
+            .err()
+            .unwrap();
+
+        assert!(matches!(err, ConfigError::Rejected { .. }), "{err:?}");
+        assert!(
+            err.to_string()
+                .contains("is valid JSON but not a valid configuration: port must not be 0"),
+            "{err}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+    }
+
+    #[test]
+    fn materialize_refuses_a_default_that_would_not_load_and_writes_nothing() {
+        // No file to report against: the error is the minted result's own.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing.json");
+
+        let err = materialize_identity::<Typed>(
+            &path,
+            &json!({ "port": 1, "device": { "unique_id": "" } }),
+            &["/device/unique_id"],
+        )
+        .err()
+        .unwrap();
+
+        assert!(matches!(err, ConfigError::InvalidConfig { .. }), "{err:?}");
+        assert!(!path.exists(), "a refused default must not be written");
+    }
+
+    #[test]
+    fn materialize_refuses_a_file_that_is_not_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, "{ not json").unwrap();
+
+        let err = materialize_identity::<Value>(&path, &json!({}), &["/d/unique_id"])
+            .err()
+            .unwrap();
+
+        assert!(matches!(err, ConfigError::InvalidJson { .. }), "{err:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+    }
+
+    #[test]
+    fn load_file_absent_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let loaded = load_file::<Typed>(&dir.path().join("missing.json")).unwrap();
+
+        assert!(loaded.is_none());
+    }
+
+    #[test]
+    fn load_file_reads_a_valid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(
+            &path,
+            r#"{"port": 9, "device": {"name": "cam", "unique_id": "id"}}"#,
+        )
+        .unwrap();
+
+        let loaded = load_file::<Typed>(&path).unwrap().unwrap();
+
+        assert_eq!(loaded.port, 9);
+        assert_eq!(loaded.device.name, "cam");
+        assert_eq!(loaded.device.unique_id, "id");
+    }
+
+    #[test]
+    fn load_file_reports_a_syntax_error_as_not_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, r#"{"port": 9,"#).unwrap();
+
+        let err = load_file::<Typed>(&path).err().unwrap();
+
+        assert!(matches!(err, ConfigError::InvalidJson { .. }), "{err:?}");
+        assert!(err.to_string().contains("is not valid JSON"), "{err}");
+    }
+
+    #[test]
+    fn load_file_reports_a_missing_field_as_an_invalid_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, r#"{"port": 9, "device": {}}"#).unwrap();
+
+        let err = load_file::<Typed>(&path).err().unwrap();
+
+        assert!(matches!(err, ConfigError::InvalidConfig { .. }), "{err:?}");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("is valid JSON but not a valid configuration: missing field `name`"),
+            "{msg}"
+        );
+        assert!(!msg.contains("not valid JSON"), "{msg}");
+    }
+
+    #[test]
+    fn load_file_reports_what_check_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        std::fs::write(&path, r#"{"port": 0, "device": {"name": "cam"}}"#).unwrap();
+
+        let err = load_file::<Typed>(&path).err().unwrap();
+
+        assert!(matches!(err, ConfigError::Rejected { .. }), "{err:?}");
+        assert!(err.to_string().contains("port must not be 0"), "{err}");
+    }
+
+    #[test]
+    fn load_file_read_error_when_path_is_a_directory() {
+        // As `read_file_value_read_error_when_path_is_a_directory`: a directory
+        // is the portable way to force a read error other than NotFound.
+        let dir = tempfile::tempdir().unwrap();
+
+        let err = load_file::<Typed>(dir.path()).err().unwrap();
+
+        assert!(matches!(err, ConfigError::Read { .. }), "{err:?}");
     }
 
     #[test]
@@ -1075,7 +1431,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("c.json");
 
-        let out = materialize_identity(&path, &json!({}), &["/a~1b/unique_id"]).unwrap();
+        let out = materialize_identity::<Value>(&path, &json!({}), &["/a~1b/unique_id"]).unwrap();
 
         assert!(out.wrote);
         let on_disk: Value =
@@ -1088,10 +1444,10 @@ mod tests {
     }
 
     #[test]
-    fn insert_at_pointer_empty_pointer_is_noop() {
+    fn insert_identity_refuses_an_empty_pointer() {
         // An empty pointer has no tokens, so the value is left untouched.
         let mut v = json!({ "a": 1 });
-        insert_at_pointer(&mut v, "", json!("x"));
+        assert!(!insert_identity(&mut v, &json!({}), "", json!("x")));
         assert_eq!(v, json!({ "a": 1 }));
     }
 

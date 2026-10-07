@@ -57,6 +57,8 @@ pub struct Config {
     pub server: AlpacaServerConfig,
 }
 
+impl rusty_photon_config::ConfigFile for Config {}
+
 /// `deny_unknown_fields` so typoed or removed keys fail loudly at load
 /// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]

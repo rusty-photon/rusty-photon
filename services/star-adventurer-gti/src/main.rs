@@ -134,11 +134,11 @@ fn main() -> ServiceResult {
     // `Config::default()` with a spec-compliant UUIDv4 minted into
     // `mount.unique_id` — on its very first launch; an existing id is
     // never overwritten.
-    let config_path = rusty_photon_config::resolve_and_init(
+    let config_path = rusty_photon_config::resolve_and_init::<Config>(
         "star-adventurer-gti",
         args.config.clone(),
         &serde_json::to_value(Config::default())?,
-        &["/mount/unique_id"],
+        star_adventurer_gti::config::IDENTITY_POINTERS,
     )?;
     debug!("Resolved config path: {:?}", config_path);
 

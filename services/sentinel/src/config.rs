@@ -107,6 +107,8 @@ pub struct Config {
     pub operation_watchdog: Option<OperationWatchdogConfig>,
 }
 
+impl rusty_photon_config::ConfigFile for Config {}
+
 impl Default for Config {
     fn default() -> Self {
         Self {

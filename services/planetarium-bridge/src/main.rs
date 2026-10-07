@@ -107,11 +107,11 @@ fn main() -> ServiceResult {
     // dir), materialize the default config on first start, and mint the
     // device's persisted, spec-compliant `UniqueID`. Minting is idempotent
     // and never overwrites an existing id.
-    let config_path = rusty_photon_config::resolve_and_init(
+    let config_path = rusty_photon_config::resolve_and_init::<Config>(
         "planetarium-bridge",
         args.config,
         &serde_json::to_value(Config::default())?,
-        &["/device/unique_id"],
+        planetarium_bridge::config::IDENTITY_POINTERS,
     )?;
     debug!("Resolved configuration path: {:?}", config_path);
 

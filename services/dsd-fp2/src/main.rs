@@ -119,11 +119,11 @@ fn main() -> ServiceResult {
     // the device's stable ASCOM `UniqueID` into `cover_calibrator.unique_id`,
     // before the reload loop reads the config — so the id is on disk by the time
     // the server reads it.
-    let config_path = rusty_photon_config::resolve_and_init(
+    let config_path = rusty_photon_config::resolve_and_init::<dsd_fp2::Config>(
         "dsd-fp2",
         args.config,
         &serde_json::to_value(dsd_fp2::Config::default())?,
-        &["/cover_calibrator/unique_id"],
+        dsd_fp2::config::IDENTITY_POINTERS,
     )?;
     let overrides = CliOverrides {
         serial_port: args.port,

@@ -131,11 +131,11 @@ fn main() -> ServiceResult {
     // idempotent, never overwrites an existing id, and operates on the on-disk
     // file only, so a transient `--port`/`--server-port` override is never
     // baked in.
-    let config_path = rusty_photon_config::resolve_and_init(
+    let config_path = rusty_photon_config::resolve_and_init::<Config>(
         "pa-falcon-rotator",
         args.config,
         &serde_json::to_value(Config::default())?,
-        &["/rotator/unique_id", "/switch/unique_id"],
+        pa_falcon_rotator::config::IDENTITY_POINTERS,
     )?;
     debug!("Resolved configuration path: {:?}", config_path);
 

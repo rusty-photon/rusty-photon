@@ -141,6 +141,8 @@ pub struct Config {
     pub ca_cert: Option<String>,
 }
 
+impl rusty_photon_config::ConfigFile for Config {}
+
 impl Config {
     /// [`Config::ca_cert`] as a `Path`, for `rusty_photon_tls::client`.
     pub fn ca_cert_path(&self) -> Option<&Path> {

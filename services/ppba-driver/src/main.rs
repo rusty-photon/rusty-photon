@@ -173,14 +173,15 @@ fn main() -> ServiceResult {
     );
 
     // Bootstrap the config file: materialize the default on first start and mint
-    // a UUIDv4 `UniqueID` for each device, so the subsequent load always
-    // succeeds. Minting is idempotent — it only fills empty/absent ids and
-    // never overwrites an existing one.
-    let config_path = rusty_photon_config::resolve_and_init(
+    // a UUIDv4 `UniqueID` for each device, filling in from the defaults a device
+    // section the file leaves out. Minting is idempotent — it only fills
+    // empty/absent ids and never overwrites an existing one — and writes the
+    // file only when the result loads, so a refused start never edits it.
+    let config_path = rusty_photon_config::resolve_and_init::<Config>(
         "ppba-driver",
         args.config,
         &serde_json::to_value(Config::default())?,
-        &["/switch/unique_id", "/observingconditions/unique_id"],
+        ppba_driver::config::IDENTITY_POINTERS,
     )?;
     tracing::debug!("Resolved configuration path: {:?}", config_path);
 
