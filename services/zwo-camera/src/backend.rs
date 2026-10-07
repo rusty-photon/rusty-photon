@@ -537,9 +537,19 @@ impl ZwoCameraHandle {
     /// and a presence check the first and the last, so no cycle forms.
     fn open_by_identity(&self) -> BackendResult<zwo_rs::Camera> {
         let mut held = self.held.lock();
+        let camera = self.open_listed(&held)?;
+        held.insert(camera.id());
+        drop(held);
+        Ok(camera)
+    }
+
+    /// The camera-list half of [`Self::open_by_identity`]: rescan, choose
+    /// this handle's camera among those `held` leaves free, and open it, all
+    /// under one hold of the list, which the open ends.
+    fn open_listed(&self, held: &std::collections::BTreeSet<i32>) -> BackendResult<zwo_rs::Camera> {
         let list = self.sdk.camera_list();
-        let listed = list.rescan()?;
-        let mut candidates: Vec<usize> = listed
+        let mut candidates: Vec<usize> = list
+            .rescan()?
             .iter()
             .enumerate()
             .filter(|(_, info)| info.name == self.info.name && !held.contains(&info.id))
@@ -555,11 +565,7 @@ impl ZwoCameraHandle {
             debug!(camera = %self.unique_id, "camera not on the bus");
             return Err(zwo_rs::Error::Asi(zwo_rs::AsiError::InvalidIndex).into());
         };
-        let camera = list.open_camera(index)?;
-        drop(list);
-        held.insert(camera.id());
-        drop(held);
-        Ok(camera)
+        Ok(list.open_camera(index)?)
     }
 
     /// Whether the camera at `index` in `list` reads `want` as its serial,
@@ -622,12 +628,19 @@ impl CameraHandle for ZwoCameraHandle {
 
     fn close(&self) -> BackendResult<()> {
         let mut guard = self.camera.lock();
-        if let Some(camera) = guard.as_ref() {
-            self.held.lock().remove(&camera.id());
+        if let Some(camera) = guard.take() {
+            // The reservation outlives the close: a sibling's open locks the
+            // held set first, so it cannot take this ID until the camera is
+            // closed. Otherwise it could open the ID afresh in between, and
+            // this drop, which is `ASICloseCamera`, would close its session
+            // (C6). The close goes ahead whatever the SDK makes of a camera
+            // that has left the bus.
+            let mut held = self.held.lock();
+            let id = camera.id();
+            drop(camera);
+            held.remove(&id);
+            drop(held);
         }
-        // Dropping the `Camera` calls `ASICloseCamera`, whatever the SDK
-        // makes of a camera that has left the bus (C6).
-        *guard = None;
         self.lost.store(false, Ordering::SeqCst);
         drop(guard);
         Ok(())

@@ -48,8 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `Sdk::camera_list()` → `CameraList`: holds that lock across a sequence
   that must see one list, such as finding a camera by its serial and opening
   it (`rescan`, `open_uninitialised` and `open_camera` under the one hold).
-  `Sdk::cameras`, `open_camera` and `open_uninitialised` are now one-shot
-  holds of it.
+  `CameraList::open_camera` consumes the hold, since some `Camera` methods take
+  the lock themselves. `Sdk::cameras`, `open_camera` and `open_uninitialised`
+  are now one-shot holds of it.
 - `Sdk::still_connected(&camera)`: rescans the bus and asks for the camera's
   properties by its ID; `Ok(false)` once its ID answers `INVALID_ID` or
   `CAMERA_CLOSED`. Measured on Linux with ASI SDK 1.41, the SDK never answers
@@ -64,6 +65,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `ExposureStatus::Failed`, and a download answers a blank frame, until a
   rescan (from any SDK in the process sharing the file) drops the camera.
   Every call on it then answers `AsiError::InvalidId`, even after it returns.
+  As on the real SDK, an open reads the list the last rescan left, so a camera
+  a rescan dropped opens again only once another rescan has listed it.
 - Initial repository scaffold for `zwo-rs` (safe wrapper) and `libzwo-sys` (raw
   FFI), sibling to `qhyccd-rs`.
 - `libzwo-sys`: `bindgen`-generated bindings (build-time) from the vendored MIT

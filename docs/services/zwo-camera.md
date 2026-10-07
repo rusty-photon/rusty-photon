@@ -726,7 +726,9 @@ EAF; those belong to the other zwo services.)
   SDK's camera list (`zwo_rs::CameraList`) from the rescan to the open. A
   presence check's rescan therefore cannot renumber the list between the
   choice and the open, two devices opening at once cannot take one camera, and
-  no camera but the chosen one is ever initialised. So a camera that left and came back reconnects
+  no camera but the chosen one is ever initialised. A close keeps its camera
+  reserved until `ASICloseCamera` has run, so a sibling cannot open the ID
+  afresh in between and then have its session closed by that drop. So a camera that left and came back reconnects
   with a plain `Connected = true` and no reload, as measured. A camera that is
   still gone fails the open with C2's error.
 
@@ -1488,7 +1490,8 @@ simulation) and **85 BDD scenarios**.
   control writes and guide pulses fail with `GENERAL_ERROR`, an exposure ends
   failed, and a download answers a blank frame (the last unmeasured on ASI). A
   rescan while the file exists drops the camera, process-wide: every call on
-  its handle then answers `INVALID_ID`, even once the file is gone. While the
+  its handle then answers `INVALID_ID`, even once the file is gone, and an open
+  finds it again only after a rescan has listed it. While the
   file exists the camera cannot be opened (`INVALID_INDEX`). So the scenarios
   run the shipped `ZwoCameraHandle` end to end: a read that still answers, a
   failing write that finds the departure, a capture that loses its camera

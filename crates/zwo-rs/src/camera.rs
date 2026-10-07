@@ -518,15 +518,18 @@ impl CameraList<'_> {
         Ok(camera)
     }
 
-    /// Open and initialise the camera at enumeration `index`.
+    /// Open and initialise the camera at enumeration `index`, ending the hold.
     ///
     /// On the real path this calls `ASIOpenCamera` + `ASIInitCamera`; the
-    /// returned [`Camera`] closes the device on drop.
+    /// returned [`Camera`] closes the device on drop. The hold ends with this
+    /// call, since some [`Camera`] methods take the list lock themselves
+    /// ([`Camera::electrons_per_adu`]), and calling one under the hold would
+    /// deadlock.
     ///
     /// # Errors
     /// Returns [`Error::Asi`] if the index is out of range or the SDK fails to
     /// open/initialise the camera.
-    pub fn open_camera(&self, index: usize) -> Result<Camera> {
+    pub fn open_camera(self, index: usize) -> Result<Camera> {
         #[cfg(feature = "simulation")]
         let camera = {
             self.sdk.sim_openable(index)?;
@@ -536,7 +539,7 @@ impl CameraList<'_> {
                 info,
                 state,
                 departure: self.sdk.departure_file.clone().map(|file| SimDeparture {
-                    rescans_at_open: crate::sim_rescans_while_gone(&file),
+                    rescans_at_open: crate::sim_listing(&file).rescans_while_gone,
                     file,
                 }),
                 _not_sync: std::marker::PhantomData,
@@ -567,15 +570,15 @@ impl CameraList<'_> {
 
 impl Sdk {
     /// Simulation only: an open of `index` finds the camera only while it is
-    /// on the bus. Like the real open, it reads the list the last rescan left
-    /// and runs no rescan of its own.
+    /// on the bus and the last rescan listed it. Like the real open, it reads
+    /// the list the last rescan left and runs no rescan of its own.
     #[cfg(feature = "simulation")]
     fn sim_openable(&self, index: usize) -> Result<()> {
-        let gone = self
+        let listed = self
             .departure_file
             .as_deref()
-            .is_some_and(std::path::Path::exists);
-        if index >= crate::SIM_CAMERA_COUNT || gone {
+            .is_none_or(|path| !path.exists() && crate::sim_listing(path).listed);
+        if index >= crate::SIM_CAMERA_COUNT || !listed {
             return Err(Error::Asi(AsiError::InvalidIndex));
         }
         Ok(())
@@ -1244,7 +1247,7 @@ impl Camera {
             return SimBus::Present;
         };
         let gone = departure.file.exists();
-        if crate::sim_rescans_while_gone(&departure.file) > departure.rescans_at_open {
+        if crate::sim_listing(&departure.file).rescans_while_gone > departure.rescans_at_open {
             SimBus::Forgotten { returned: !gone }
         } else if gone {
             SimBus::Hidden
@@ -1894,6 +1897,31 @@ mod tests {
         std::fs::remove_file(&departure).unwrap();
         assert_eq!(cam.control_value(ControlType::Gain).unwrap_err(), invalid);
         assert_eq!(cam.stop_exposure().unwrap_err(), invalid);
+    }
+
+    /// An open reads the list the last rescan left: a camera a rescan dropped
+    /// stays unopenable after it returns until another rescan lists it, as on
+    /// the real SDK.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_returned_camera_opens_only_after_a_rescan_lists_it() {
+        let (_dir, departure) = departure_path();
+        let sdk = Sdk::new().unwrap().with_departure_file(&departure);
+        std::fs::write(&departure, b"").unwrap();
+        assert_eq!(sdk.camera_count().unwrap(), 0);
+        std::fs::remove_file(&departure).unwrap();
+
+        assert_eq!(
+            sdk.open_camera(0).unwrap_err(),
+            Error::Asi(AsiError::InvalidIndex)
+        );
+        assert_eq!(
+            sdk.open_uninitialised(0).unwrap_err(),
+            Error::Asi(AsiError::InvalidIndex)
+        );
+
+        assert_eq!(sdk.camera_count().unwrap(), crate::SIM_CAMERA_COUNT);
+        sdk.open_camera(0).unwrap();
     }
 
     /// `still_connected` rescans and asks for the camera by its ID: present

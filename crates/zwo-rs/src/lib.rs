@@ -133,24 +133,44 @@ pub(crate) fn lock_camera_list() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Simulation only: per departure file, how many rescans have run while the
-/// camera behind it was off the bus. The real SDK drops a departed camera from
-/// its one per-process list at the first rescan that misses it, for every
-/// caller at once, so this is process-wide too (see [`Sdk::with_departure_file`]).
+/// Simulation only: what the process's rescans have made of the camera behind
+/// one departure file. The real SDK keeps one camera list per process, so this
+/// is process-wide too (see [`Sdk::with_departure_file`]).
 #[cfg(all(feature = "simulation", feature = "camera"))]
-static SIM_RESCANS_WHILE_GONE: std::sync::Mutex<
-    std::collections::BTreeMap<std::path::PathBuf, u64>,
-> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SimListing {
+    /// Rescans that ran while the camera was gone. The first one drops the
+    /// camera from the list for good, for every handle opened before it.
+    pub(crate) rescans_while_gone: u64,
+    /// Whether the last rescan listed the camera. An open reads that list, so
+    /// a camera a rescan dropped cannot be opened until another rescan has
+    /// listed it again, even once it is back on the bus.
+    pub(crate) listed: bool,
+}
 
-/// Simulation only: the rescans run so far while `path`'s camera was gone.
 #[cfg(all(feature = "simulation", feature = "camera"))]
-pub(crate) fn sim_rescans_while_gone(path: &std::path::Path) -> u64 {
-    SIM_RESCANS_WHILE_GONE
+impl SimListing {
+    /// A departure file no rescan has seen yet: its camera is listed.
+    const UNSEEN: Self = Self {
+        rescans_while_gone: 0,
+        listed: true,
+    };
+}
+
+/// Simulation only: [`SimListing`] per departure file.
+#[cfg(all(feature = "simulation", feature = "camera"))]
+static SIM_LISTINGS: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, SimListing>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Simulation only: what the rescans so far have made of `path`'s camera.
+#[cfg(all(feature = "simulation", feature = "camera"))]
+pub(crate) fn sim_listing(path: &std::path::Path) -> SimListing {
+    SIM_LISTINGS
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .get(path)
         .copied()
-        .unwrap_or(0)
+        .unwrap_or(SimListing::UNSEEN)
 }
 
 /// `ASIGetNumOfConnectedCameras`, with [`camera_list`] already held: rebuild
@@ -158,15 +178,28 @@ pub(crate) fn sim_rescans_while_gone(path: &std::path::Path) -> u64 {
 #[cfg(feature = "camera")]
 pub(crate) fn rescan(sdk: &Sdk) -> usize {
     #[cfg(feature = "simulation")]
-    let count = sdk.sim_departed_file().map_or(SIM_CAMERA_COUNT, |path| {
-        let mut rescans = SIM_RESCANS_WHILE_GONE
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let missed = rescans.entry(path.to_path_buf()).or_insert(0);
-        *missed = missed.saturating_add(1);
-        drop(rescans);
-        0
-    });
+    let count = sdk
+        .departure_file
+        .as_deref()
+        .map_or(SIM_CAMERA_COUNT, |path| {
+            let gone = path.exists();
+            let mut listings = SIM_LISTINGS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let listing = listings
+                .entry(path.to_path_buf())
+                .or_insert(SimListing::UNSEEN);
+            if gone {
+                listing.rescans_while_gone = listing.rescans_while_gone.saturating_add(1);
+            }
+            listing.listed = !gone;
+            drop(listings);
+            if gone {
+                0
+            } else {
+                SIM_CAMERA_COUNT
+            }
+        });
     #[cfg(not(feature = "simulation"))]
     let count = {
         let _ = sdk;
@@ -222,6 +255,8 @@ impl Sdk {
     /// from any SDK in the process that shares the file) drops it for good:
     /// every call on the old handle answers [`AsiError::InvalidId`], and
     /// [`Sdk::still_connected`] reports it gone, even once the file is removed.
+    /// Like the real open, an open reads the list the last rescan left: a
+    /// camera a rescan dropped opens again only after a rescan has listed it.
     #[cfg(all(feature = "simulation", feature = "camera"))]
     #[must_use]
     pub fn with_departure_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
@@ -239,13 +274,6 @@ impl Sdk {
         let count = rescan(self);
         drop(list);
         Ok(count)
-    }
-
-    /// The departure file, while it exists: the simulated camera is off the
-    /// bus ([`Sdk::with_departure_file`]).
-    #[cfg(all(feature = "simulation", feature = "camera"))]
-    fn sim_departed_file(&self) -> Option<&std::path::Path> {
-        self.departure_file.as_deref().filter(|path| path.exists())
     }
 
     /// Whether `camera` is still on the bus: rescan it
