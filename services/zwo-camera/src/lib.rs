@@ -79,7 +79,7 @@ use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 use zwo_rs::CameraInfo;
 
-use crate::backend::{CameraHandle, ZwoCameraHandle};
+use crate::backend::{CameraHandle, HeldCameras, ZwoCameraHandle};
 
 /// One camera discovered at enumeration: its index, [`CameraInfo`], the bare
 /// SDK `serial` (the key for `devices` config overrides), and the
@@ -87,7 +87,11 @@ use crate::backend::{CameraHandle, ZwoCameraHandle};
 struct EnumeratedCamera {
     index: usize,
     info: CameraInfo,
+    /// The hardware serial, or the `noserial-{index}` stand-in; the key the
+    /// `devices` overrides use.
     serial: String,
+    /// The hardware serial alone, which an open matches its camera by (C6).
+    hardware_serial: Option<String>,
     unique_id: String,
 }
 
@@ -176,6 +180,7 @@ impl ServerBuilder {
         }
 
         let mut server = Server::new(CargoServerInfo!());
+        let held = HeldCameras::default();
         for cam in &cameras {
             let sdk = zwo_rs::Sdk::new()?;
             #[cfg(feature = "simulation")]
@@ -188,6 +193,8 @@ impl ServerBuilder {
                 cam.index,
                 cam.info.clone(),
                 cam.unique_id.clone(),
+                cam.hardware_serial.clone(),
+                Arc::clone(&held),
             ));
             // `devices` overrides are keyed by the bare SDK serial (matching the
             // config-actions `devices.{serial}` paths), NOT the prefixed
@@ -359,11 +366,13 @@ async fn enumerate_cameras() -> Result<Vec<EnumeratedCamera>, ZwoCameraError> {
                         "camera exposes no hardware serial or flash ID; using a position-based identity"
                     );
                 }
+                let hardware_serial = serial_result.as_ref().ok().cloned();
                 let (serial, unique_id) = mint_identity(serial_result, &info.name, index);
                 out.push(EnumeratedCamera {
                     index,
                     info,
                     serial,
+                    hardware_serial,
                     unique_id,
                 });
             }

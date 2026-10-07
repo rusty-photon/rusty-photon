@@ -109,6 +109,7 @@ async fn member_reads_rejected(world: &mut CameraWorld, step: &Step, _device: u3
             "CameraXSize" => camera.camera_x_size().await.err(),
             "CameraState" => camera.camera_state().await.err(),
             "ImageReady" => camera.image_ready().await.err(),
+            "CCDTemperature" => camera.ccd_temperature().await.err(),
             other => panic!("unknown member: {other}"),
         };
         let error =

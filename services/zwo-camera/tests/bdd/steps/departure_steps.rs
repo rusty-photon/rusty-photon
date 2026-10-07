@@ -49,6 +49,14 @@ async fn short_exposure_in_flight(world: &mut CameraWorld, seconds: f64, _device
         .await;
 }
 
+#[then("the read succeeds")]
+async fn the_read_succeeds(world: &mut CameraWorld) {
+    assert_eq!(
+        world.last_error_code, None,
+        "the read was refused instead of answering"
+    );
+}
+
 #[then(regex = r"^camera device (\d+) reports Connected as false once the frame is due$")]
 async fn disconnected_once_the_frame_is_due(world: &mut CameraWorld, _device: u32) {
     world.wait_disconnected().await;

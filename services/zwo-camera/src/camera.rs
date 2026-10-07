@@ -768,7 +768,7 @@ fn already_there(session: SessionState, connected: bool) -> bool {
 /// session's mark, which a reconnect may have cleared by the time
 /// [`ZwoCamera::on_handle`] looks.
 fn sdk_failure(e: &BackendError, otherwise: ASCOMError) -> ASCOMError {
-    if e.is_removed() {
+    if e.is_departed() {
         ASCOMError::NOT_CONNECTED
     } else {
         otherwise

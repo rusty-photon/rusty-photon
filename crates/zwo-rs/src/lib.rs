@@ -116,6 +116,69 @@ pub const SIM_FILTER_WHEEL_COUNT: usize = 1;
 #[cfg(all(feature = "simulation", feature = "focuser"))]
 pub const SIM_FOCUSER_COUNT: usize = 1;
 
+/// The ASI SDK keeps one camera list per process: `ASIGetNumOfConnectedCameras`
+/// rebuilds it, renumbering the indices `ASIGetCameraProperty` and the opens
+/// read. Every call that rebuilds or reads that list takes this lock, so a
+/// rescan on one thread never renumbers the list under another's lookup.
+#[cfg(feature = "camera")]
+static CAMERA_LIST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Hold [`CAMERA_LIST`] for one rescan-and-read. A panic while holding it
+/// leaves nothing inconsistent on the Rust side, so a poisoned lock is taken
+/// as is.
+#[cfg(feature = "camera")]
+pub(crate) fn camera_list() -> std::sync::MutexGuard<'static, ()> {
+    CAMERA_LIST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Simulation only: per departure file, how many rescans have run while the
+/// camera behind it was off the bus. The real SDK drops a departed camera from
+/// its one per-process list at the first rescan that misses it, for every
+/// caller at once, so this is process-wide too (see [`Sdk::with_departure_file`]).
+#[cfg(all(feature = "simulation", feature = "camera"))]
+static SIM_RESCANS_WHILE_GONE: std::sync::Mutex<
+    std::collections::BTreeMap<std::path::PathBuf, u64>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// Simulation only: the rescans run so far while `path`'s camera was gone.
+#[cfg(all(feature = "simulation", feature = "camera"))]
+pub(crate) fn sim_rescans_while_gone(path: &std::path::Path) -> u64 {
+    SIM_RESCANS_WHILE_GONE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(path)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// `ASIGetNumOfConnectedCameras`, with [`camera_list`] already held: rebuild
+/// the SDK's camera list and count it.
+#[cfg(feature = "camera")]
+pub(crate) fn rescan(sdk: &Sdk) -> usize {
+    #[cfg(feature = "simulation")]
+    let count = sdk.sim_departed_file().map_or(SIM_CAMERA_COUNT, |path| {
+        let mut rescans = SIM_RESCANS_WHILE_GONE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let missed = rescans.entry(path.to_path_buf()).or_insert(0);
+        *missed = missed.saturating_add(1);
+        drop(rescans);
+        0
+    });
+    #[cfg(not(feature = "simulation"))]
+    let count = {
+        let _ = sdk;
+        // SAFETY: `ASIGetNumOfConnectedCameras` takes no arguments and
+        // returns the connected-camera count (it probes USB and is always
+        // safe to call). A negative return is clamped to zero.
+        let n = unsafe { sys::ASIGetNumOfConnectedCameras() };
+        usize::try_from(n).unwrap_or(0)
+    };
+    count
+}
+
 /// Entry point to the ZWO SDK.
 ///
 /// Enumerates connected ASI cameras and EFW filter wheels. With the `simulation`
@@ -144,15 +207,21 @@ impl Sdk {
     /// Simulation only: take the simulated camera off the bus whenever `path`
     /// exists, and put it back when the file is removed.
     ///
-    /// Models a camera that loses its power or its cable while connected.
-    /// While the file exists this SDK reports no camera: enumeration finds
-    /// none, and an open answers [`AsiError::InvalidIndex`], as
-    /// `ASIGetCameraProperty` does for an index past the connected count. A
-    /// [`Camera`] this SDK opened keeps its handle, and every call on it
-    /// answers [`AsiError::CameraRemoved`] (`ASI_ERROR_CAMERA_REMOVED`, which
-    /// the SDK header describes as *"failed to find the camera, maybe the
-    /// camera has been removed"*). That is the header's account of a removed
-    /// camera, not a measurement of what one does.
+    /// Models a camera that loses its power or its cable while connected, as
+    /// ASI SDK 1.41 was measured to on Linux (rusty-photon issue #1411). While
+    /// the file exists this SDK finds no camera: a rescan counts none, and an
+    /// open answers [`AsiError::InvalidIndex`]. A [`Camera`] opened before
+    /// the departure keeps its handle, and until a rescan runs the SDK hides
+    /// the departure: reads answer from memory, [`Camera::set_control_value`]
+    /// and the guide pulses fail with [`AsiError::GeneralError`], an exposure
+    /// ends [`ExposureStatus::Failed`], and a download succeeds with every
+    /// pixel zero (that last one is unmeasured on ASI: a QHY readout was seen
+    /// to do it on Windows). No call ever answers
+    /// [`AsiError::CameraRemoved`]. The first rescan that runs while the camera
+    /// is gone ([`Sdk::camera_count`], [`Sdk::cameras`], [`Sdk::still_connected`],
+    /// from any SDK in the process that shares the file) drops it for good:
+    /// every call on the old handle answers [`AsiError::InvalidId`], and
+    /// [`Sdk::still_connected`] reports it gone, even once the file is removed.
     #[cfg(all(feature = "simulation", feature = "camera"))]
     #[must_use]
     pub fn with_departure_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
@@ -166,30 +235,44 @@ impl Sdk {
     /// Infallible today; returns [`Result`] for forward compatibility.
     #[cfg(feature = "camera")]
     pub fn camera_count(&self) -> Result<usize> {
-        #[cfg(feature = "simulation")]
-        let count = if self.sim_camera_departed() {
-            0
-        } else {
-            SIM_CAMERA_COUNT
-        };
-        #[cfg(not(feature = "simulation"))]
-        let count = {
-            // SAFETY: `ASIGetNumOfConnectedCameras` takes no arguments and
-            // returns the connected-camera count (it probes USB and is always
-            // safe to call). A negative return is clamped to zero.
-            let n = unsafe { sys::ASIGetNumOfConnectedCameras() };
-            usize::try_from(n).unwrap_or(0)
-        };
+        let list = camera_list();
+        let count = rescan(self);
+        drop(list);
         Ok(count)
     }
 
-    /// Whether the simulated camera is off the bus: a departure file is set
-    /// ([`Sdk::with_departure_file`]) and exists.
+    /// The departure file, while it exists: the simulated camera is off the
+    /// bus ([`Sdk::with_departure_file`]).
     #[cfg(all(feature = "simulation", feature = "camera"))]
-    fn sim_camera_departed(&self) -> bool {
-        self.departure_file
-            .as_deref()
-            .is_some_and(std::path::Path::exists)
+    fn sim_departed_file(&self) -> Option<&std::path::Path> {
+        self.departure_file.as_deref().filter(|path| path.exists())
+    }
+
+    /// Whether `camera` is still on the bus: rescan it
+    /// (`ASIGetNumOfConnectedCameras`), then ask the SDK for the camera's
+    /// properties by its ID (`ASIGetCameraPropertyByID`).
+    ///
+    /// A departed camera is invisible until a rescan: the SDK goes on
+    /// answering for it from memory. The rescan drops it, and from then on its
+    /// ID answers `INVALID_ID`, or `CAMERA_CLOSED` once the camera has come back
+    /// and a later rescan has listed it afresh. Either means this handle's
+    /// camera has gone, and `Ok(false)` says so. Measured on Linux with ASI SDK
+    /// 1.41 (rusty-photon issue #1411): no call answers `CAMERA_REMOVED`.
+    ///
+    /// A rescan leaves present cameras, their IDs and their exposures alone,
+    /// but it renumbers the list the enumeration indices read, so an index
+    /// taken before it may name another camera after it.
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] for any other answer, which says nothing either
+    /// way.
+    #[cfg(feature = "camera")]
+    pub fn still_connected(&self, camera: &Camera) -> Result<bool> {
+        let list = camera_list();
+        rescan(self);
+        let listed = camera.listed();
+        drop(list);
+        listed
     }
 
     /// Number of connected EFW filter wheels (`EFWGetNum`).

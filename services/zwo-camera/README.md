@@ -23,11 +23,12 @@ machine (start; abort *discards* / graceful stop *preserves*; `ImageArray`,
 `CameraState`, `PercentCompleted`, mid-exposure `Error` — all of which report
 the **running** session and answer `NOT_CONNECTED` outside one), plus serial-derived
 identity and the `config.get`/`apply`/`schema` actions. A camera that leaves the
-bus while connected reads `Connected = false` once the SDK answers a call with
-`ASI_ERROR_CAMERA_REMOVED` (design doc C6). Phase E landed
+bus while connected reads `Connected = false` once a call on it fails and a
+rescan no longer finds it; a reconnect finds it again by its serial once it is
+back (design doc C6). Phase E landed
 validated by **45 unit tests** (against the in-crate mock seam), **57 BDD
 scenarios**, and a full **ConformU** pass (both `alpacaprotocol` and
-`conformance` suites); the suite now stands at **139 unit tests** (the mock
+`conformance` suites); the suite now stands at **144 unit tests** (the mock
 seam, and the production handle against the `zwo-rs` simulation) and **85 BDD
 scenarios** — see the design doc's *Testing* section. Roadmap:
 
