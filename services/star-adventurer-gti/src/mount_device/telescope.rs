@@ -665,6 +665,19 @@ impl Telescope for MountDevice {
                 "sync refused: an axis is still running a goto; retry once it has stopped",
             ));
         }
+        // That read took each axis' count before its status, so a coast
+        // that ended between Dec's two paired a count from before its end
+        // with a status that reads stopped. Read Dec's count again, after
+        // the status: that count is from after any coast, and the side is
+        // classified from it.
+        let dec_now = self
+            .with_session(async |session| {
+                self.manager
+                    .position_now(session, Axis::Dec)
+                    .await
+                    .map_err(ASCOMError::from)
+            })
+            .await?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(ASCOMError::from)?;
         // Sync writes the encoder pair for the side the mount is
@@ -684,7 +697,7 @@ impl Telescope for MountDevice {
         // mechanical envelope stays: a bad sync lets the *next*
         // tracking step push the OTA into a hard stop.
         let current_side = side_of_pier_calc(
-            DecTicks::new(now.dec.position_ticks),
+            DecTicks::new(dec_now),
             Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );

@@ -774,6 +774,27 @@ impl MountManager {
         Ok(snap)
     }
 
+    /// Round-trip `:j` for `axis` via the caller's session and return
+    /// the count. Not cached: for a caller that needs a count read
+    /// *after* a status it has already seen, which
+    /// [`Self::poll_axes_now`] cannot give — it reads each axis' count
+    /// before its status.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Self::send`]'s failure, or [`StarAdvError::Transport`]
+    /// if the reply is not a position.
+    pub async fn position_now(
+        &self,
+        session: &Session<SkywatcherCodec>,
+        axis: Axis,
+    ) -> Result<i32> {
+        let (pos, _) = self
+            .request_timed(session, Command::InquirePosition(axis))
+            .await?;
+        expect_position_runtime(pos)
+    }
+
     /// Update the cached snapshot's RA position.
     ///
     /// Used by `SyncToCoordinates` to publish the just-written encoder

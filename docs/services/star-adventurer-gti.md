@@ -2000,14 +2000,18 @@ The CW-exclusion-zone and altitude gates then run against that side's
 A mount whose side reads `Unknown` (no Dec CPR) is treated as CW-down.
 
 **Sync reads the axes from the mount, not from the poll.** Holding
-`axis_ownership`, it re-reads both axes (`:j` / `:f`) on the wire and
-classifies the side from that reading. The cached poll sample can be a
-poll behind the wire, and in one place operators actually reach that
-is enough to pick the wrong side: a mount stopped partway through a
-flip by `AbortSlew` has no well-defined side until it has stopped, and
-the poll that would show where it stopped can come after the sync.
-The four extra frames cost a sync a few round trips, and a sync is
-rare.
+`axis_ownership`, it re-reads both axes (`:j` / `:f`) on the wire, then
+reads Dec's count (`:j2`) once more and classifies the side from that.
+The cached poll sample can be a poll behind the wire, and in one place
+operators actually reach that is enough to pick the wrong side: a
+mount stopped partway through a flip by `AbortSlew` has no
+well-defined side until it has stopped, and the poll that would show
+where it stopped can come after the sync. The second Dec read is
+there because each axis' count is read before its status: a coast
+that ends between the two pairs a count from before its end with a
+status that reads stopped. Read after that status, the count is from
+after any coast. The five extra frames cost a sync a few round trips,
+and a sync is rare.
 
 **Sync refuses while either axis is running a goto** with
 `INVALID_OPERATION`, even when no slew or park holds the slew slot.

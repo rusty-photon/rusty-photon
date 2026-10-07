@@ -6729,6 +6729,47 @@ async fn a_sync_takes_the_pier_side_from_the_wire_not_the_last_poll() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_sync_takes_the_pier_side_from_a_count_read_after_the_coast_ended() {
+    // The wire read takes each axis' count before its status. A coast
+    // that ends between Dec's two pairs a count from before the end with
+    // a status that reads stopped; here the count is short of the pole
+    // and the mount comes to rest just past it.
+    const REPLY: Duration = Duration::from_millis(100);
+    let (d, mock) = pier1_like_device(CwExclusionZone::Disabled).await;
+    let _paused = d.manager.pause_background_polling();
+    let quarter = mock.lock().await.cpr_dec.cast_signed() / 4;
+    let rest = quarter + 5;
+    mid_goto(
+        &mut mock.lock().await.dec,
+        rest - PIER1_DEC_COAST.ticks.cast_signed(),
+        skywatcher_motor_protocol::Direction::Cw,
+    );
+    d.abort_slew().await.unwrap();
+    // Each frame acts one reply after the last: `:j1` `:f1` `:j2` `:f2`.
+    // Start the sync so Dec's `:j` acts half a reply before the coast
+    // ends and its `:f` half a reply after.
+    mock.lock().await.reply_delay = REPLY;
+    tokio::time::sleep(PIER1_DEC_COAST.duration.checked_sub(REPLY * 5 / 2).unwrap()).await;
+    let lst = d.sidereal_time().await.unwrap();
+
+    d.sync_to_coordinates(lst, 45.0).await.unwrap();
+
+    let m = mock.lock().await;
+    let (_, want_dec) = target_encoder_flipped(
+        Ra::new(lst),
+        Dec::new(45.0),
+        Lst::new(lst),
+        Cpr::new(m.cpr_ra),
+        Cpr::new(m.cpr_dec),
+    );
+    assert_eq!(
+        m.dec.position_ticks,
+        want_dec.value(),
+        "the sync must write the pierEast Dec encoder"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_sync_is_refused_while_an_aborted_goto_coasts() {
     // `AbortSlew` empties the slew slot, but its `:L` does not stop a
     // goto: the `GTi` coasts on for up to 1.5 s. A position written in
