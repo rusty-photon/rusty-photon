@@ -563,8 +563,11 @@ fn decoy_phc_from(rng: &mut impl RngCore) -> String {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
+    use std::future::Future;
+    use std::pin::{pin, Pin};
     use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
+    use std::task::{Context, Poll, Waker};
 
     use tokio::task::JoinHandle;
 
@@ -649,6 +652,12 @@ mod tests {
             tokio::task::yield_now().await;
         }
         panic!("the request never reached the gate");
+    }
+
+    /// Poll `request` once by hand, so the test alone decides when it runs:
+    /// its wakeups go nowhere, and it moves only when polled again.
+    fn poll_once<F: Future>(request: Pin<&mut F>) -> Poll<F::Output> {
+        request.poll(&mut Context::from_waker(Waker::noop()))
     }
 
     #[test]
@@ -1032,8 +1041,12 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_sibling_that_claims_the_gate_after_the_shared_kdf_finished_hits_the_memo() {
         // Two cold requests for one credential queue behind a foreign KDF.
-        // The shared KDF finishes quickly, so the second sibling claims the
-        // gate normally and must find the verdict in the memo (no second KDF).
+        // Siblings woken by the same free run back to back, and the second
+        // joins the first one's KDF. So the test polls B by hand and holds it
+        // back until the shared KDF has finished and freed the gate, an order
+        // a busy multi-thread runtime can produce. B then claims the free gate
+        // and must find the verdict in the memo under the claim's lock, with
+        // no second KDF.
         let (kdf, release, started) = blocking_kdf();
         let v = verifier(kdf);
         let x = tokio::spawn({
@@ -1042,19 +1055,26 @@ mod tests {
         });
         wait_until(&started, 1).await;
         let a = spawn_queued(&v, PASSWORD).await;
-        let b = spawn_queued(&v, PASSWORD).await;
-        release.send(()).unwrap(); // X done
+        let mut b = pin!(check(&v, USER, PASSWORD));
+        assert!(poll_once(b.as_mut()).is_pending(), "B must queue behind X");
+        release.send(()).unwrap(); // X done: A claims the gate
         wait_until(&started, 2).await;
-        release.send(()).unwrap(); // the shared KDF, well inside the gate wait
+        release.send(()).unwrap(); // the shared KDF
         assert_eq!(x.await.unwrap(), Verdict::Deny);
         assert_eq!(a.await.unwrap(), Verdict::Allow);
-        assert_eq!(b.await.unwrap(), Verdict::Allow);
-        assert_eq!(v.kdf_runs(), 2);
+        assert!(
+            v.shared.lock_slot().is_none(),
+            "the shared KDF must have finished and freed the gate"
+        );
+        assert_eq!(poll_once(b.as_mut()), Poll::Ready(Verdict::Allow));
+        assert_eq!(v.kdf_runs(), 2, "B must be answered from the memo");
         assert_eq!(v.refusals(), 0);
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_sibling_that_claims_the_gate_after_a_refuted_kdf_hits_the_negative_memo() {
+        // As above, for a wrong password: B claims the free gate after the
+        // shared KDF refuted it and must find the negative verdict in the memo.
         let (kdf, release, started) = blocking_kdf();
         let v = verifier(kdf);
         let x = tokio::spawn({
@@ -1063,18 +1083,24 @@ mod tests {
         });
         wait_until(&started, 1).await;
         let a = spawn_queued(&v, "another-wrong").await;
-        let b = spawn_queued(&v, "another-wrong").await;
+        let mut b = pin!(check(&v, USER, "another-wrong"));
+        assert!(poll_once(b.as_mut()).is_pending(), "B must queue behind X");
         release.send(()).unwrap();
         wait_until(&started, 2).await;
         release.send(()).unwrap();
         assert_eq!(x.await.unwrap(), Verdict::Deny);
         assert_eq!(a.await.unwrap(), Verdict::Deny);
-        assert_eq!(b.await.unwrap(), Verdict::Deny);
+        assert!(
+            v.shared.lock_slot().is_none(),
+            "the shared KDF must have finished and freed the gate"
+        );
+        assert_eq!(poll_once(b.as_mut()), Poll::Ready(Verdict::Deny));
         assert_eq!(
             v.kdf_runs(),
             2,
             "the repeated wrong password is answered from the negative memo"
         );
+        assert_eq!(v.refusals(), 0);
     }
 
     #[test]
