@@ -11,13 +11,22 @@ its high level respectively, so the run covers the trim at both.
 **This is a scoped record, filed by decision.** The
 [all-zero rule](../../skills/hardware-validation.md) is not met: `conformance`
 reports **1 issue**. It is not in the behaviour under test. All eight
-East/West legs pass. The issue is an RA *reading* taken during a Dec pulse,
-the cross-axis read noise that the open issue
-[#1371](https://github.com/rusty-photon/rusty-photon/issues/1371) carries.
-The decision to file is recorded there:
-[#1371 comment](https://github.com/rusty-photon/rusty-photon/issues/1371#issuecomment-6032439259).
-A clean two-suite record is still owed. It needs #1371's multi-sample
-`RightAscension` read to land first.
+East/West legs pass. The issue is an RA *reading* taken during a Dec pulse:
+the cross-axis read noise of
+[#1371](https://github.com/rusty-photon/rusty-photon/issues/1371).
+
+The decision to file is recorded there
+([#1371 comment](https://github.com/rusty-photon/rusty-photon/issues/1371#issuecomment-6032439259)).
+
+**This record departs from one scoped-record condition, also by decision.**
+- **The condition:** the issue that carries the finding stays open.
+- **What happened:** #1371 was closed as *not planned* on 2026-10-07
+  ([closing comment](https://github.com/rusty-photon/rusty-photon/issues/1371#issuecomment-6032764994)).
+- **Why:** the finding is accepted as a limitation of reading this mount's RA
+  from one sample. The multi-sample `RightAscension` read that would remove
+  it will not be built.
+- **The consequence:** no clean two-suite record is planned. Reopening #1371
+  would make one owed again.
 
 ## What was tested
 
@@ -91,9 +100,9 @@ trace shows this:
 - **With a 5- or 10-sample fixed-slope read at the same instants:** +0.020 to
   +0.025 s, inside the tolerance.
 
-That is the failure #1371 describes. Its remaining direction is a
-multi-sample `RightAscension` read. It is not the trim (a Dec pulse never
-changes the RA rate), and not #1406.
+That is the failure #1371 describes, now closed as *not planned*. Its
+unbuilt direction is a multi-sample `RightAscension` read. It is not the
+trim (a Dec pulse never changes the RA rate), and not #1406.
 
 Single-sample read noise has failed a leg in earlier rig runs too, but not
 in every run:

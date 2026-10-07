@@ -806,7 +806,10 @@ count — the send gap plus the link, about a millisecond over USB and
 more over Wi-Fi — plus half a tick of rounding (one RA tick is 0.024 s), against
 ConformU's 0.07 s tolerance; and on top of both, the step count's own
 jitter (about a tick, with occasional larger lumps), which a single
-sample cannot average out (issue #1371 tracks that). The raw sample is
+sample cannot average out. That residual is accepted: a multi-sample
+read was considered under issue #1371 and closed as not planned. It can
+still fail an occasional ConformU cross-axis or East/West leg. The raw
+sample is
 still what `Slewing`, `SideOfPier`, the PulseGuide side and the
 tracking guard read: they use the encoder alone, not against an LST,
 and a poll of motion is immaterial to them.
@@ -3282,9 +3285,10 @@ this service's runs, newest first:
     0.07 s.
   - **The one issue:** a cross-axis RA read during the HA +3 North pulse
     (+0.10 s). A replay of the wire trace puts it down to the single-sample
-    `RightAscension` read, which open #1371 carries.
-  - **Filing:** a **scoped record** by decision. A clean two-suite record is
-    owed once #1371's multi-sample read lands.
+    `RightAscension` read, the residual of #1371.
+  - **Filing:** a **scoped record** by decision. #1371 was then closed as
+    not planned, which accepts the finding as a limitation of this mount;
+    no clean run is planned.
 
 - **2026-10-05 — RA pulse edge steps across the arc (for #1362)** on
   the field rig, packaged arm64 nightly of `7d6f73b`, through the
