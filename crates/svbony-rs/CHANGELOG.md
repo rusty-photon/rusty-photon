@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   carries the setting, so it is no longer zero-sized under `simulation`.
   Simulation only.
 
+- `Sdk::open_listed(pick)` rescans the bus and opens the camera `pick`
+  chooses from the fresh list in one critical section on the process-wide
+  SDK lock, so no other thread's rescan can renumber the camera table
+  between the two. An index from `Sdk::cameras` handed to
+  `Sdk::open_camera` in a separate call can be stale by then.
+
 - A simulated readout can stall into a blank frame:
   `Sdk::with_blank_frame_file(path)` makes every frame a camera that `Sdk`
   opens delivers read back all zero whenever `path` exists, as an SDK can

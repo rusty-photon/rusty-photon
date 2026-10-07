@@ -1068,7 +1068,12 @@ one core at load average 65, see "Real-hardware validation").
   **An open rescans first** and finds the camera by serial, because the SDK's
   camera table changes only on a rescan: without one, a camera that left and
   came back is never opened again (measured below). So the plain reconnect a
-  supervisor makes opens a camera that has come back, with no reload. A camera
+  supervisor makes opens a camera that has come back, with no reload. The
+  rescan, the lookup and the open are one critical section on `svbony-rs`'s
+  process-wide SDK lock (`Sdk::open_listed`): a rescan renumbers the camera
+  table, so another device's rescan landing between them — its camera
+  failing, or reconnecting — could otherwise leave the index stale, failing
+  the open or opening a different camera. A camera
   absent when the service started is another matter; finding it still needs a
   reload or a restart (C0), and hotplug re-enumeration belongs to
   [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173).

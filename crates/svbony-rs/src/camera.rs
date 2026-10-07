@@ -476,6 +476,13 @@ impl Sdk {
     /// # Errors
     /// Returns [`Error::Svb`] if the SDK fails to read a camera's info.
     pub fn cameras(&self) -> Result<Vec<CameraInfo>> {
+        self.rescanned(Ok)
+    }
+
+    /// Rescan the bus under `SDK_CALL_LOCK` and hand what it lists to
+    /// `then`, still under the lock — the body of [`Sdk::cameras`] and of
+    /// [`Sdk::open_listed`].
+    fn rescanned<T>(&self, then: impl FnOnce(Vec<CameraInfo>) -> Result<T>) -> Result<T> {
         crate::with_sdk_lock(|| {
             #[cfg(feature = "simulation")]
             let infos = if self.rescan_finds_departed() {
@@ -487,6 +494,8 @@ impl Sdk {
             };
             #[cfg(not(feature = "simulation"))]
             let infos = {
+                // Only the simulation keeps state on the `Sdk`.
+                let _ = self;
                 // `crate::camera_count_raw`, not `self.camera_count()`: the
                 // latter takes `SDK_CALL_LOCK` itself, and it is not
                 // reentrant.
@@ -499,7 +508,7 @@ impl Sdk {
                     })
                     .collect::<Result<Vec<_>>>()?
             };
-            Ok(infos)
+            then(infos)
         })
     }
 
@@ -519,66 +528,93 @@ impl Sdk {
         // discovered camera, minted freely by callers) opening different
         // cameras concurrently would otherwise race with no synchronization
         // at all.
-        crate::with_sdk_lock(|| {
-            #[cfg(feature = "simulation")]
-            let camera = {
-                if index >= crate::SIM_CAMERA_COUNT
-                    || departed(self.departure_file.as_deref())
-                    || self.delisted()
-                {
-                    return Err(Error::Svb(SvbError::InvalidIndex));
-                }
-                let info = sim_camera_info();
-                let property = sim_camera_property();
-                let property_ex = sim_camera_property_ex();
-                let state = std::sync::Mutex::new(SimState::new(&property));
-                Camera {
-                    info,
-                    property,
-                    property_ex,
-                    state,
-                    departure_file: self.departure_file.clone(),
-                    blank_frame_file: self.blank_frame_file.clone(),
-                    _not_sync: std::marker::PhantomData,
+        crate::with_sdk_lock(|| self.open_at(index))
+    }
+
+    /// Rescan the bus and open the camera `pick` chooses from what the
+    /// rescan lists, or `Ok(None)` when it chooses none.
+    ///
+    /// The rescan, the pick and the open are one critical section on the
+    /// process-wide `SDK_CALL_LOCK`. A rescan renumbers the SDK's camera
+    /// table, so an index taken from [`Sdk::cameras`] and handed to
+    /// [`Sdk::open_camera`] in a separate call can be stale by then, when
+    /// another thread's rescan has seen a camera leave or arrive in between.
+    /// It then fails, or opens a different camera. Here no other rescan can
+    /// come between them.
+    ///
+    /// # Errors
+    /// Returns [`Error::Svb`] if the rescan fails, or if the SDK fails to
+    /// open the chosen camera or read its properties.
+    pub fn open_listed(
+        &self,
+        pick: impl FnOnce(&[CameraInfo]) -> Option<usize>,
+    ) -> Result<Option<Camera>> {
+        self.rescanned(|cameras| pick(&cameras).map(|index| self.open_at(index)).transpose())
+    }
+
+    /// The body of [`Sdk::open_camera`], for a caller that already holds
+    /// `SDK_CALL_LOCK`.
+    fn open_at(&self, index: usize) -> Result<Camera> {
+        #[cfg(feature = "simulation")]
+        let camera = {
+            if index >= crate::SIM_CAMERA_COUNT
+                || departed(self.departure_file.as_deref())
+                || self.delisted()
+            {
+                return Err(Error::Svb(SvbError::InvalidIndex));
+            }
+            let info = sim_camera_info();
+            let property = sim_camera_property();
+            let property_ex = sim_camera_property_ex();
+            let state = std::sync::Mutex::new(SimState::new(&property));
+            Camera {
+                info,
+                property,
+                property_ex,
+                state,
+                departure_file: self.departure_file.clone(),
+                blank_frame_file: self.blank_frame_file.clone(),
+                _not_sync: std::marker::PhantomData,
+            }
+        };
+        #[cfg(not(feature = "simulation"))]
+        let camera = {
+            // Only the simulation keeps state on the `Sdk`.
+            let _ = self;
+            let idx = i32::try_from(index).map_err(|_| Error::Svb(SvbError::InvalidIndex))?;
+            let info = read_camera_info(idx)?;
+            // SAFETY: `info.id` is a valid CameraID from enumeration; open it.
+            svb_check(unsafe { sys::SVBOpenCamera(info.id) })?;
+            let property = match read_camera_property(info.id) {
+                Ok(p) => p,
+                Err(e) => {
+                    // SAFETY: closing what was just successfully opened, on
+                    // the property-read failure path, so the handle is not
+                    // leaked.
+                    unsafe {
+                        let _ = sys::SVBCloseCamera(info.id);
+                    }
+                    return Err(e);
                 }
             };
-            #[cfg(not(feature = "simulation"))]
-            let camera = {
-                let idx = i32::try_from(index).map_err(|_| Error::Svb(SvbError::InvalidIndex))?;
-                let info = read_camera_info(idx)?;
-                // SAFETY: `info.id` is a valid CameraID from enumeration; open it.
-                svb_check(unsafe { sys::SVBOpenCamera(info.id) })?;
-                let property = match read_camera_property(info.id) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        // SAFETY: closing what was just successfully opened, on
-                        // the property-read failure path, so the handle is not
-                        // leaked.
-                        unsafe {
-                            let _ = sys::SVBCloseCamera(info.id);
-                        }
-                        return Err(e);
+            let property_ex = match read_camera_property_ex(info.id) {
+                Ok(p) => p,
+                Err(e) => {
+                    // SAFETY: as above.
+                    unsafe {
+                        let _ = sys::SVBCloseCamera(info.id);
                     }
-                };
-                let property_ex = match read_camera_property_ex(info.id) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        // SAFETY: as above.
-                        unsafe {
-                            let _ = sys::SVBCloseCamera(info.id);
-                        }
-                        return Err(e);
-                    }
-                };
-                Camera {
-                    info,
-                    property,
-                    property_ex,
-                    _not_sync: std::marker::PhantomData,
+                    return Err(e);
                 }
             };
-            Ok(camera)
-        })
+            Camera {
+                info,
+                property,
+                property_ex,
+                _not_sync: std::marker::PhantomData,
+            }
+        };
+        Ok(camera)
     }
 }
 
@@ -2483,6 +2519,57 @@ mod tests {
         let sdk = Sdk::new().unwrap();
         let cam = sdk.open_camera(0).unwrap();
         assert!((cam.pixel_size_microns().unwrap() - 3.76).abs() < f32::EPSILON);
+    }
+
+    /// `open_listed` opens the camera its pick chooses from the rescan, and
+    /// nothing when the pick chooses none.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn open_listed_opens_the_camera_the_pick_chooses() {
+        let sdk = Sdk::new().unwrap();
+
+        let camera = sdk
+            .open_listed(|cameras| {
+                cameras
+                    .iter()
+                    .position(|c| c.serial == sim_camera_info().serial)
+            })
+            .unwrap()
+            .expect("the pick chose the simulated camera");
+        assert_eq!(camera.info(), &sim_camera_info());
+
+        assert!(sdk.open_listed(|_| None).unwrap().is_none());
+    }
+
+    /// No other rescan runs while `open_listed` picks: the rescan it picks
+    /// from is still the camera table's when it opens.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn open_listed_keeps_other_rescans_out_until_it_has_opened() {
+        let sdk = Sdk::new().unwrap();
+        let (rescanned_tx, rescanned_rx) = std::sync::mpsc::channel();
+        let mut rescanner = None;
+
+        let camera = sdk
+            .open_listed(|_| {
+                rescanner = Some(std::thread::spawn(move || {
+                    Sdk::new().unwrap().cameras().unwrap();
+                    rescanned_tx.send(()).unwrap();
+                }));
+                // A window, not a nap (testing.md §6.9): the other rescan must
+                // stay shut out for all of it.
+                assert!(
+                    rescanned_rx
+                        .recv_timeout(std::time::Duration::from_millis(200))
+                        .is_err(),
+                    "another rescan ran between this one and its open"
+                );
+                Some(0)
+            })
+            .unwrap();
+
+        assert!(camera.is_some());
+        rescanner.expect("the pick ran").join().unwrap();
     }
 
     /// While the blank-frame file exists, a delivered frame reads back blank,

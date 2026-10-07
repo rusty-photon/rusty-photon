@@ -875,11 +875,14 @@ impl CameraHandle for SvbonyCameraHandle {
         }
         // Rescanned first, and found by serial: the SDK's camera table changes
         // only on a rescan, so without one a camera that left and came back
-        // is never opened again (measured on SDK 1.13.4).
-        let index = self
-            .find_on_bus()?
+        // is never opened again (measured on SDK 1.13.4). The rescan and the
+        // open are one SDK critical section, so another device's rescan
+        // cannot renumber the table between the two.
+        let camera = self
+            .sdk
+            .open_listed(|cameras| locate(cameras, &self.info))?
             .ok_or_else(|| BackendError::new("the camera is not on the bus"))?;
-        *guard = Some(self.sdk.open_camera(index)?);
+        *guard = Some(camera);
         // Under the same lock as the open itself, so no capture can read an
         // epoch that does not match the camera it is about to configure.
         self.open_epoch.fetch_add(1, Ordering::SeqCst);
