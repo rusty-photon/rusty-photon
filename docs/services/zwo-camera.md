@@ -692,8 +692,9 @@ EAF; those belong to the other zwo services.)
   no lock and makes no SDK call, and the readout poll after it is the first
   call to find the exposure failed. A readout the camera left in the middle of
   can also come back a success with every pixel zero, as a QHY readout was seen
-  to on Windows (unmeasured on ASI), so a downloaded frame that is all zeros
-  asks too. From a camera that has gone it is discarded and the capture fails
+  to on Windows, so a downloaded frame that is all zeros asks too. No ASI
+  readout has been seen to, on Linux or on Windows, where power cuts were swept
+  through the readout of a full frame. From a camera that has gone it is discarded and the capture fails
   as a departure; from one still there it is published as it is. The scan stops
   at the first byte that is not zero, so a real frame costs nothing. qhy-camera
   ([C9](qhy-camera.md#behavioral-contracts)) and svbony-camera follow the same
@@ -754,8 +755,17 @@ EAF; those belong to the other zwo services.)
     session ends. A reconnect then works. The cost is one failed exposure.
   - The control camera on USB3 kept its session and took frames throughout.
 
-  **Still owed:** Windows, and the blank frame on ASI hardware. No ASI
-  readout was seen to return one; the rule is there because a QHY readout did.
+  **Windows answers the same**, on the same three cameras and SDK 1.41, in a
+  KVM guest (the
+  [2026-10-07 record](../validation/2026-10-07-zwo-camera-departure-windows/README.md)).
+  The power cut was paired with a hypervisor detach, because QEMU passes a
+  host-side unplug to the guest only once an I/O on the camera fails. All
+  five probes behaved as on Linux, failure for failure. A sweep of cuts
+  across a full-frame exposure, from the integration through its readout,
+  always surfaced as `ASI_EXP_FAILED` before any download.
+
+  **The blank frame is unobserved on ASI hardware**, on both platforms; the
+  rule is there because a QHY readout returned one.
 
 ### Geometry, binning, ROI
 
@@ -1488,7 +1498,8 @@ simulation) and **85 BDD scenarios**.
   The suite creates and removes the file, and the simulated camera behaves as
   ASI SDK 1.41 was measured to. Until a rescan, reads answer from memory,
   control writes and guide pulses fail with `GENERAL_ERROR`, an exposure ends
-  failed, and a download answers a blank frame (the last unmeasured on ASI). A
+  failed, and a download answers a blank frame. No ASI hardware has answered
+  one; the simulator does so that the blank-frame rule is exercised. A
   rescan while the file exists drops the camera, process-wide: every call on
   its handle then answers `INVALID_ID`, even once the file is gone, and an open
   finds it again only after a rescan has listed it. While the
@@ -1536,8 +1547,8 @@ simulation) and **85 BDD scenarios**.
     `opens` count), with the test holding the lifecycle lock while both
     requests read the lost session.
 
-  The simulator models the dev-box measurements, not every ASI model or
-  platform. Windows is unmeasured.
+  The simulator models the dev-box measurements, not every ASI model. Windows
+  was measured to answer the same as Linux.
 
   Mutation-checked:
   - a presence check that never finds the camera gone fails five handle tests;
