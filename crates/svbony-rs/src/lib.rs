@@ -32,7 +32,9 @@
 //! `svbony-camera` service's exposure state machine can be exercised
 //! sim-side exactly as it will be against real hardware. With
 //! `Sdk::with_departure_file` a simulated camera can also leave the bus and
-//! come back, answering [`SvbError::CameraRemoved`] while it is gone.
+//! come back. As SDK 1.13.4 was measured doing, its handle goes on answering
+//! while it is gone and only its frames stop coming (`get_video_data`
+//! answers [`SvbError::Timeout`]); the departure shows only in enumeration.
 //!
 //! ## Build requirements
 //!

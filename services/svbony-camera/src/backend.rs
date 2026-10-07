@@ -192,6 +192,23 @@ impl BackendError {
 
 pub type BackendResult<T> = std::result::Result<T, BackendError>;
 
+/// Where `held` — a camera as it was enumerated — is in a fresh rescan of the
+/// bus, or `None` when the rescan does not list it (C6). Found by serial, the
+/// identity that survives an unplug and a replug. A camera that reports no
+/// serial (`mint_identity`'s `noserial` case) is matched on everything else
+/// the SDK reports for it, its SDK camera id included, and never on position
+/// alone: with another camera in the roster, the one at its old index may be
+/// a different camera, which would keep a departed session connected and
+/// could be opened in its place. A changed roster therefore reads as the
+/// camera gone.
+fn locate(cameras: &[CameraInfo], held: &CameraInfo) -> Option<usize> {
+    if held.serial.is_empty() {
+        cameras.iter().position(|c| c == held)
+    } else {
+        cameras.iter().position(|c| c.serial == held.serial)
+    }
+}
+
 /// The ROI + exposure parameters for a single soft-trigger capture, computed
 /// and validated by the device (R1-R3, E3).
 #[derive(Debug, Clone)]
@@ -544,13 +561,12 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
 /// Production [`CameraHandle`] over a real (or `svbony-rs`-simulated) camera.
 ///
 /// Holds the [`svbony_rs::Sdk`] (a ZST outside the simulation) and the
-/// enumeration `index` so it can
-/// re-open the RAII [`svbony_rs::Camera`] on connect; the open handle lives
+/// camera's [`CameraInfo`] as it was enumerated, by which every open finds the
+/// camera again (see [`locate`]); the open RAII [`svbony_rs::Camera`] lives
 /// behind a `Mutex<Option<…>>` because `Camera` is `Send + !Sync`.
 #[derive(Debug)]
 pub struct SvbonyCameraHandle {
     sdk: svbony_rs::Sdk,
-    index: usize,
     info: CameraInfo,
     unique_id: String,
     camera: Mutex<Option<svbony_rs::Camera>>,
@@ -581,18 +597,12 @@ pub struct SvbonyCameraHandle {
 }
 
 impl SvbonyCameraHandle {
-    /// Build a handle for the camera at enumeration `index`, with its cached
-    /// [`CameraInfo`] and the serial-derived `unique_id` read at enumeration.
+    /// Build a handle for the camera enumerated as `info`, with the
+    /// serial-derived `unique_id` read at enumeration.
     #[must_use]
-    pub const fn new(
-        sdk: svbony_rs::Sdk,
-        index: usize,
-        info: CameraInfo,
-        unique_id: String,
-    ) -> Self {
+    pub const fn new(sdk: svbony_rs::Sdk, info: CameraInfo, unique_id: String) -> Self {
         Self {
             sdk,
-            index,
             info,
             unique_id,
             camera: Mutex::new(None),
@@ -680,16 +690,9 @@ impl SvbonyCameraHandle {
     }
 
     /// This camera's index in a fresh rescan of the bus, or `None` when it is
-    /// not there. Found by serial, the identity that survives an unplug and a
-    /// replug, or by the index it was enumerated at for a camera that reports
-    /// none (`mint_identity`'s `noserial` case).
+    /// not there (see [`locate`]).
     fn find_on_bus(&self) -> BackendResult<Option<usize>> {
-        let cameras = self.sdk.cameras()?;
-        Ok(if self.info.serial.is_empty() {
-            (self.index < cameras.len()).then_some(self.index)
-        } else {
-            cameras.iter().position(|c| c.serial == self.info.serial)
-        })
+        Ok(locate(&self.sdk.cameras()?, &self.info))
     }
 
     /// Is the open camera still the instance `epoch` names, or has a reconnect
@@ -1051,7 +1054,7 @@ mod handle_tests {
     fn sim_handle() -> SvbonyCameraHandle {
         let sdk = svbony_rs::Sdk::new().expect("simulation SDK");
         let info = sdk.cameras().expect("enumerate")[0].clone();
-        SvbonyCameraHandle::new(sdk, 0, info, "SVBONY:Sim:0a1b2c3d4e5f6071".to_string())
+        SvbonyCameraHandle::new(sdk, info, "SVBONY:Sim:0a1b2c3d4e5f6071".to_string())
     }
 
     #[test]
@@ -1591,8 +1594,7 @@ mod handle_tests {
             .expect("simulation SDK")
             .with_departure_file(&departure);
         let info = sdk.cameras().expect("enumerate")[0].clone();
-        let handle =
-            SvbonyCameraHandle::new(sdk, 0, info, "SVBONY:Sim:0a1b2c3d4e5f6071".to_string());
+        let handle = SvbonyCameraHandle::new(sdk, info, "SVBONY:Sim:0a1b2c3d4e5f6071".to_string());
         (handle, departure, dir)
     }
 
@@ -2554,6 +2556,46 @@ pub(crate) mod mock {
 #[allow(clippy::expect_used)]
 mod pure_fn_tests {
     use super::*;
+
+    fn camera(id: i32, serial: &str) -> CameraInfo {
+        CameraInfo {
+            id,
+            friendly_name: "SVBONY SV605CC".to_string(),
+            serial: serial.to_string(),
+            port_type: "USB3.0".to_string(),
+            device_id: 4865,
+        }
+    }
+
+    /// A camera with a serial is found by it, wherever the rescan lists it
+    /// and whatever id the SDK gave it this time (C6).
+    #[test]
+    fn a_camera_is_located_by_its_serial_wherever_the_rescan_lists_it() {
+        let held = camera(1, "0123481353808C03EE2512150035");
+        let rescan = [
+            camera(2, "OTHER"),
+            camera(7, "0123481353808C03EE2512150035"),
+        ];
+
+        assert_eq!(locate(&rescan, &held), Some(1));
+        assert_eq!(locate(&rescan[..1], &held), None);
+    }
+
+    /// A camera with no serial is found only where everything else it reported
+    /// at enumeration still matches — never by position alone, so the camera
+    /// now at its old index is not taken for it (C6).
+    #[test]
+    fn a_serial_less_camera_is_located_only_by_everything_else_it_reports() {
+        let held = camera(1, "");
+
+        assert_eq!(locate(&[camera(2, "OTHER"), camera(1, "")], &held), Some(1));
+        assert_eq!(
+            locate(&[camera(2, "")], &held),
+            None,
+            "a different serial-less camera at the old index"
+        );
+        assert_eq!(locate(&[camera(1, "OTHER")], &held), None);
+    }
 
     #[test]
     fn the_sdk_recommendation_is_double_the_exposure_plus_500ms() {

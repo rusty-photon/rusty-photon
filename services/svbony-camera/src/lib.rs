@@ -204,7 +204,6 @@ impl ServerBuilder {
             let sdk = self.departing(sdk);
             let handle: Arc<dyn CameraHandle> = Arc::new(SvbonyCameraHandle::new(
                 sdk,
-                cam.index,
                 cam.info.clone(),
                 cam.unique_id.clone(),
             ));

@@ -10,8 +10,10 @@ Feature: A camera that leaves the bus
   every member that needs a session answers NOT_CONNECTED, the members
   served from cache included. That takes in the capabilities cached true at
   connect, so a departed cooled camera is not described as one that still
-  has its cooler. An exposure in flight stops instead of waiting out its
-  read deadline.
+  has its cooler. An exposure in flight does not hold the session open;
+  its capture also stops rather than waiting out its read deadline, which
+  the unit tests pin, since a client cannot see a disconnected camera's
+  capture.
 
   Disconnecting a departed camera succeeds. Reconnecting it fails while it is
   gone and connects afresh once it is back, never taking the lost session
@@ -42,7 +44,7 @@ Feature: A camera that leaves the bus
       | CameraXSize          |
       | CameraState          |
 
-  Scenario: An exposure in flight when the camera leaves ends with the session
+  Scenario: An exposure in flight does not keep a departed camera connected
     When I StartExposure on camera device 0 with BinX 1 BinY 1 NumX 64 NumY 48 StartX 0 StartY 0 Duration 30 Light true
     Then the exposure is accepted
     When camera device 0 leaves the bus

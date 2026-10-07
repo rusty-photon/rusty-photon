@@ -1003,8 +1003,11 @@ one core at load average 65, see "Real-hardware validation").
   a camera leaves is the SDK's camera table, and only on a rescan
   (`SVBGetNumOfConnectedCameras`). Every second while a session is connected,
   the driver rescans and looks for the camera's serial — or, for a camera that
-  reports none, the index it was enumerated at — and a camera the rescan does
-  not find marks the session lost, logged once at `warn`. The rescan takes a
+  reports none, everything else the SDK reported for it at enumeration, its
+  SDK camera id included, never its position alone, since with another camera
+  in the roster the one now at its old index may be a different camera — and a
+  camera the rescan does not find marks the session lost, logged once at
+  `warn`. An open finds the camera the same way. The rescan takes a
   few tens of milliseconds and does not disturb a capture in flight (measured
   with it landing mid-exposure and at readout). No verdict is given while a
   connect, a disconnect or a release holds C7's lifecycle lock, since a check
@@ -1747,7 +1750,7 @@ everything else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 146 no-features / 167 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 148 no-features / 169 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
