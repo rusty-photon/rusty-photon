@@ -3270,6 +3270,22 @@ Historical baselines (`alpacaprotocol`-only or partial
 The evidence trail is [`docs/validation/`](../validation/README.md);
 this service's runs, newest first:
 
+- **2026-10-06 — RA pulse edge-step trim defaults on the field rig**
+  ([record](../validation/2026-10-06-star-adventurer-gti-gti-rig-pulse-trim/README.md)).
+  - **Build:** packaged arm64 nightly of `7700ee97`, with no
+    `ra_pulse_edge_steps` override.
+  - **ConformU:** 4.5.0 over the production TLS+auth endpoint.
+  - **Verdicts:** `alpacaprotocol` 0 / 0. `conformance` 0 errors / 1 issue /
+    0 alerts / 0 timing issues.
+  - **The trim defaults hold:** all eight East/West legs pass at both
+    edge-step levels (mech −9 h low, −3 h high), the worst 0.03 s against
+    0.07 s.
+  - **The one issue:** a cross-axis RA read during the HA +3 North pulse
+    (+0.10 s). A replay of the wire trace puts it down to the single-sample
+    `RightAscension` read, which open #1371 carries.
+  - **Filing:** a **scoped record** by decision. A clean two-suite record is
+    owed once #1371's multi-sample read lands.
+
 - **2026-10-05 — RA pulse edge steps across the arc (for #1362)** on
   the field rig, packaged arm64 nightly of `7d6f73b`, through the
   running service's Alpaca `PulseGuide`, with the edge steps read from

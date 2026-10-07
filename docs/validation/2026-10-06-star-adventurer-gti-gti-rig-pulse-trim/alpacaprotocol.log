@@ -1,0 +1,34 @@
+23:05:11.793 Check Alpaca Protocol - Conform Universal 4.5.0 (Build 53834.49ab847) 
+23:05:11.794                                     
+23:05:11.795 Test Telescope device:  - 127.0.0.1:18117 through URL: http://127.0.0.1:18117 
+23:05:11.795                                     
+23:05:11.805 OK messages are suppressed, they can be enabled through the Alpaca and COM settings page. 
+23:05:11.806                                     
+23:05:11.806 Connecting to device...             
+23:05:11.898                                     
+23:05:11.898 Successfully connected to device, disconnecting in order to test that connection using a different PUT parameter order is successful... 
+23:05:11.951                                     
+23:05:11.951 Successfully disconnected from device, re-connecting using re-ordered PUT parameters... 
+23:05:11.951                                     
+23:05:12.001 Successfully connected to device using re-ordered PUT parameters, testing device... 
+23:05:12.001                                     
+23:05:12.059 Device exposes interface version 4  
+23:05:56.817 PUT Park                            INFO     Good ID casing + extra parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+23:05:56.869 PUT Park                            INFO     Bad ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+23:05:56.917 PUT Park                            INFO     Bad ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+23:07:29.933                                     
+23:07:30.002                                     
+23:07:30.053 Successfully disconnected from device. 
+23:07:30.053                                     
+23:07:30.053 Found 0 errors, 0 issues and 3 information messages. 
+23:07:30.053                                     
+23:07:30.053 Information Message Summary         
+23:07:30.053 PUT Park ==> Good ID casing + extra parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 345. Error message: park refused: slew already in progress
+ 
+23:07:30.053 PUT Park ==> Bad ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 346. Error message: park refused: slew already in progress
+ 
+23:07:30.053 PUT Park ==> Bad ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 0, server transaction: 347. Error message: park refused: slew already in progress
+ 
