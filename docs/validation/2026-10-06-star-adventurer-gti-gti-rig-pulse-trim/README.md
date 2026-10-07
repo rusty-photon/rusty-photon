@@ -8,7 +8,7 @@ override**, so the East/West legs measure the shipped defaults. ConformU
 pulses at mechanical HA −9 h and −3 h, where the board sits at its low and
 its high level respectively, so the run covers the trim at both.
 
-**This is a scoped record, filed by decision.** The
+**This is a scoped record, accepted limitation, filed by decision.** The
 [all-zero rule](../../skills/hardware-validation.md) is not met: `conformance`
 reports **1 issue**. It is not in the behaviour under test. All eight
 East/West legs pass. The issue is an RA *reading* taken during a Dec pulse:
@@ -18,15 +18,15 @@ the cross-axis read noise of
 The decision to file is recorded there
 ([#1371 comment](https://github.com/rusty-photon/rusty-photon/issues/1371#issuecomment-6032439259)).
 
-**This record departs from one scoped-record condition, also by decision.**
-- **The condition:** the issue that carries the finding stays open.
-- **What happened:** #1371 was closed as *not planned* on 2026-10-07
+**The finding is an accepted limitation**, in the sense of
+[hardware-validation.md § Scoped records](../../skills/hardware-validation.md#scoped-records--the-one-exception-and-what-it-must-carry).
+- **The decision:** #1371 was closed as *not planned* on 2026-10-07
   ([closing comment](https://github.com/rusty-photon/rusty-photon/issues/1371#issuecomment-6032764994)).
-- **Why:** the finding is accepted as a limitation of reading this mount's RA
+- **What it accepts:** the occasional failure from reading this mount's RA
   from one sample. The multi-sample `RightAscension` read that would remove
   it will not be built.
 - **The consequence:** no clean two-suite record is planned. Reopening #1371
-  would make one owed again.
+  makes one owed again.
 
 ## What was tested
 
