@@ -29,6 +29,7 @@ use crate::{BayerPattern, CCDChipArea, CCDChipInfo, ControlType, QHYError, Resul
 use rand::{Rng, RngExt};
 use rayon::prelude::*;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Instant;
 
 // ===== Simulated camera configuration =====
@@ -82,6 +83,14 @@ pub struct SimulatedCameraConfig {
     /// an odd region should meet this here rather than at a telescope, and off
     /// is for a simulated sensor that genuinely reads an odd region whole.
     pub even_extent_readout: bool,
+    /// A file whose existence means the camera has left the bus — **default
+    /// `None`**, the camera never leaves. Set with
+    /// [`with_departure_file`](SimulatedCameraConfig::with_departure_file).
+    pub departure_file: Option<PathBuf>,
+    /// A file whose existence makes `close` fail and keep the handle —
+    /// **default `None`**, a close always succeeds. Set with
+    /// [`with_close_failure_file`](SimulatedCameraConfig::with_close_failure_file).
+    pub close_failure_file: Option<PathBuf>,
 }
 
 impl Default for SimulatedCameraConfig {
@@ -160,11 +169,26 @@ impl Default for SimulatedCameraConfig {
             firmware_version: "Firmware version: 2024_1_1".to_string(),
             live_not_ready_probability: 0.0,
             even_extent_readout: true,
+            departure_file: None,
+            close_failure_file: None,
         }
     }
 }
 
 impl SimulatedCameraConfig {
+    /// The camera [`Sdk::new`](crate::Sdk::new) fabricates under `simulation`:
+    /// a QHY178M with a 7-position filter wheel and a cooler. A starting point
+    /// for a host that wants that camera with one setting changed — its
+    /// [departure file](Self::with_departure_file), say.
+    #[must_use]
+    pub fn sdk_default() -> Self {
+        Self::default()
+            .with_id("SIM-QHY178M")
+            .with_model("QHY178M-Simulated")
+            .with_filter_wheel(7)
+            .with_cooler()
+    }
+
     /// Creates a new configuration with a custom ID
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
@@ -303,6 +327,33 @@ impl SimulatedCameraConfig {
         self.supported_controls.insert(control, (min, max, step));
         self
     }
+
+    /// Makes the camera leave the bus whenever `path` exists, and come back when
+    /// it is gone — the state a camera is in when its power or its cable is cut
+    /// while a host holds it open.
+    ///
+    /// A departed camera keeps whatever handle it had, as the real SDK's does,
+    /// and answers every call on it as a closed one does: an error, or `None`
+    /// from [`is_control_available`](crate::Camera::is_control_available). It
+    /// cannot be opened until it is back. The file is checked on every call, so
+    /// another process — a test driving a host built on this crate — can take
+    /// the camera away and give it back without a channel into the host.
+    #[must_use]
+    pub fn with_departure_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.departure_file = Some(path.into());
+        self
+    }
+
+    /// Makes [`close`](crate::Camera::close) fail whenever `path` exists, the
+    /// way a failed `CloseQHYCCD` does: with `QHYError::Sdk { op: "close_camera" }`,
+    /// and with the handle kept, so the camera still reads open and a later
+    /// [`open`](crate::Camera::open) is a no-op on it. Checked on every close,
+    /// like the departure file.
+    #[must_use]
+    pub fn with_close_failure_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.close_failure_file = Some(path.into());
+        self
+    }
 }
 
 // ===== Runtime state for a simulated camera =====
@@ -439,6 +490,32 @@ impl SimulatedCameraState {
             filter_wheel_target: 0,
             filter_wheel_settle_polls: 0,
         }
+    }
+
+    /// Whether the camera is on the bus: always, unless its configured
+    /// departure file exists (see
+    /// [`with_departure_file`](SimulatedCameraConfig::with_departure_file)).
+    pub fn on_bus(&self) -> bool {
+        !self
+            .config
+            .departure_file
+            .as_ref()
+            .is_some_and(|path| path.exists())
+    }
+
+    /// Whether a close fails right now (see
+    /// [`with_close_failure_file`](SimulatedCameraConfig::with_close_failure_file)).
+    pub fn close_fails(&self) -> bool {
+        self.config
+            .close_failure_file
+            .as_ref()
+            .is_some_and(|path| path.exists())
+    }
+
+    /// Whether a call on the camera's handle gets an answer: it is open, and it
+    /// has not left the bus since.
+    pub fn answers(&self) -> bool {
+        self.is_open && self.on_bus()
     }
 
     /// Gets the current image dimensions accounting for ROI

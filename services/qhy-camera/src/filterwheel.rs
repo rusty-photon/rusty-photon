@@ -14,7 +14,7 @@ use ascom_alpaca::{ASCOMError, ASCOMResult};
 use parking_lot::Mutex;
 use tracing::debug;
 
-use crate::backend::FilterWheelHandle;
+use crate::backend::{FilterWheelHandle, Verdict};
 
 /// Slots are `usize` throughout because that is what every consumer is: the
 /// ASCOM `Position`, and the `Names` / `FocusOffsets` lengths that must match
@@ -69,10 +69,21 @@ impl QhyFilterWheelDevice {
     }
 
     fn ensure_connected(&self) -> ASCOMResult<()> {
-        match self.handle.is_open() {
-            Ok(true) => Ok(()),
-            _ => Err(ASCOMError::NOT_CONNECTED),
+        if self.is_connected() {
+            Ok(())
+        } else {
+            Err(ASCOMError::NOT_CONNECTED)
         }
+    }
+
+    /// Whether the wheel holds a session on a camera still on the bus: the
+    /// handle is open and the shared connection has not been marked lost (C9,
+    /// FW4). A handle whose `is_open` fails counts as closed.
+    fn is_connected(&self) -> bool {
+        self.handle.is_open().unwrap_or_else(|e| {
+            debug!(filter_wheel = %self.unique_id, error = %e, "is_open() failed; reporting disconnected");
+            false
+        }) && !self.handle.is_lost()
     }
 
     fn filter_count(&self) -> ASCOMResult<usize> {
@@ -91,18 +102,33 @@ impl QhyFilterWheelDevice {
     /// [`Self::ensure_connected`] runs before the hop and is a check, not a
     /// guard, so a slot read that lands after the close would otherwise report
     /// `INVALID_OPERATION` purely because of where in the race it fell.
+    ///
+    /// A failure also asks whether the camera is still on the bus, as the
+    /// camera's does (C9, FW4), so a wheel whose camera has gone answers
+    /// `NOT_CONNECTED` too.
     async fn on_handle<T, F>(&self, f: F) -> ASCOMResult<T>
     where
         F: FnOnce(&dyn FilterWheelHandle) -> ASCOMResult<T> + Send + 'static,
         T: Send + 'static,
     {
         let handle = Arc::clone(&self.handle);
-        let outcome = tokio::task::spawn_blocking(move || f(handle.as_ref()))
-            .await
-            .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?;
+        let (outcome, gone) = tokio::task::spawn_blocking(move || {
+            let generation = handle.generation();
+            let outcome = f(handle.as_ref());
+            // The verdict is this request's answer. Read again once the task
+            // is back, the connection may already belong to a session another
+            // client's release and reconnect opened since. A reconnect that
+            // landed before the question was put means the handle this call
+            // failed on is gone too, whatever the fresh one answers.
+            let gone = outcome.is_err()
+                && (handle.verify_presence() == Verdict::Lost || handle.generation() != generation);
+            (outcome, gone)
+        })
+        .await
+        .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?;
         match outcome {
-            Err(e) if self.ensure_connected().is_err() => {
-                debug!(error = %e, "SDK call failed on a handle that is no longer open");
+            Err(e) if gone || self.ensure_connected().is_err() => {
+                debug!(error = %e, "SDK call failed on a handle that is closed or whose camera has left the bus");
                 Err(ASCOMError::NOT_CONNECTED)
             }
             outcome => outcome,
@@ -199,6 +225,19 @@ impl QhyFilterWheelDevice {
         self.on_handle(|h| h.close().map_err(|_| ASCOMError::NOT_CONNECTED))
             .await
     }
+
+    /// End a session whose camera has left the bus, judged by whether the wheel
+    /// let go of the connection rather than by what `CloseQHYCCD` said about a
+    /// device that is no longer there — the camera's rule (C9, FW4).
+    async fn release_lost(&self) -> ASCOMResult<()> {
+        match self.disconnect().await {
+            Err(e) if !self.handle.is_open().unwrap_or(true) => {
+                debug!(filter_wheel = %self.unique_id, error = %e, "close of a wheel whose camera has left the bus failed; its session is released regardless");
+                Ok(())
+            }
+            released => released,
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -218,11 +257,9 @@ impl Device for QhyFilterWheelDevice {
         // current backend (it reads an atomic), so the fallback is purely
         // defensive — the *mutating* `set_connected` below intentionally still
         // propagates the error, since a misread there would drive a wrong
-        // open/close.
-        Ok(self.handle.is_open().unwrap_or_else(|e| {
-            debug!(filter_wheel = %self.unique_id, error = %e, "is_open() failed; reporting disconnected");
-            false
-        }))
+        // open/close. A wheel whose camera has left the bus reads false while
+        // its handle is still open (C9, FW4).
+        Ok(self.is_connected())
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
@@ -238,15 +275,23 @@ impl Device for QhyFilterWheelDevice {
             // on this physical connection takes rather than one of the wheel's
             // own.
             let _lifecycle = device.handle.lifecycle_lock().lock().await;
-            let current = device
+            let held = device
                 .handle
                 .is_open()
                 .map_err(|_| ASCOMError::NOT_CONNECTED)?;
-            if current == connected {
+            // Held but not connected once the camera has left the bus, and
+            // released before anything else either way — the camera's rule (C9).
+            let lost = held && device.handle.is_lost();
+            if connected == held && !lost {
                 return Ok(());
+            }
+            if lost {
+                device.release_lost().await?;
             }
             if connected {
                 device.connect().await
+            } else if lost {
+                Ok(())
             } else {
                 device.disconnect().await
             }
@@ -365,7 +410,7 @@ impl FilterWheel for QhyFilterWheelDevice {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::backend::mock::MockFilterWheelHandle;
+    use crate::backend::mock::{drop_once_parked, MockFilterWheelHandle};
     use ascom_alpaca::ASCOMErrorCode;
     use std::sync::atomic::Ordering;
 
@@ -381,16 +426,8 @@ mod tests {
         let device =
             QhyFilterWheelDevice::new(Arc::<MockFilterWheelHandle>::clone(&handle), None, None);
 
-        handle.hold_open();
-        let cancelled = tokio::time::timeout(
-            std::time::Duration::from_millis(250),
-            device.set_connected(true),
-        )
-        .await;
-        assert!(
-            cancelled.is_err(),
-            "the connect should still have been parked, not finished"
-        );
+        let hold = handle.hold_open_until_dropped();
+        drop_once_parked(device.set_connected(true), || handle.is_in_open()).await;
         assert!(
             lifecycle.try_lock().is_err(),
             "a cancelled request must not give the connection back while the handshake it guards is still running"
@@ -399,7 +436,7 @@ mod tests {
         // Wait for the handshake to publish, not for `Connected`: `open()` makes
         // the handle report open before the slot count behind it is cached, so
         // gating on `Connected` would race the assertions below.
-        handle.release_open();
+        drop(hold);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while device.names().await.is_err() {
             assert!(
@@ -692,5 +729,84 @@ mod tests {
     async fn unique_id_is_prefixed() {
         let device = connected(None).await;
         assert_eq!(device.unique_id(), "CFW-SIM-QHY178M");
+    }
+
+    // --- FW4: a wheel whose camera has left the bus ---------------------------
+
+    /// The wheel's own failed call asks C9's question too, so a wheel whose
+    /// camera has gone reads disconnected rather than answering slot errors.
+    #[tokio::test]
+    async fn a_wheel_whose_camera_left_the_bus_reads_disconnected_after_its_next_failure() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        let device =
+            QhyFilterWheelDevice::new(Arc::<MockFilterWheelHandle>::clone(&handle), None, None);
+        device.set_connected(true).await.unwrap();
+        handle.leave_bus();
+
+        let err = device.set_position(3).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(!device.connected().await.unwrap());
+        assert_eq!(
+            device.names().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// A failed wheel request answers from the verdict its own question
+    /// returned (C9, FW4), not from a read of the connection a reconnect may
+    /// already have replaced.
+    #[tokio::test]
+    async fn a_wheel_failure_answers_from_its_own_verdict_even_if_a_reconnect_lands_after_it() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        let device =
+            QhyFilterWheelDevice::new(Arc::<MockFilterWheelHandle>::clone(&handle), None, None);
+        device.set_connected(true).await.unwrap();
+        handle.leave_bus();
+        handle
+            .reconnect_lands_after_verdict
+            .store(true, Ordering::SeqCst);
+
+        let err = device.set_position(3).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(
+            device.connected().await.unwrap(),
+            "the connection reads healthy again, as after a reconnect"
+        );
+    }
+
+    /// A wheel request whose handle a reconnect replaced between its failed
+    /// call and its question answers `NOT_CONNECTED` (C9, FW4).
+    #[tokio::test]
+    async fn a_wheel_failure_on_a_handle_replaced_before_its_question_answers_not_connected() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        let device =
+            QhyFilterWheelDevice::new(Arc::<MockFilterWheelHandle>::clone(&handle), None, None);
+        device.set_connected(true).await.unwrap();
+        handle.leave_bus();
+        handle
+            .reconnect_lands_before_verdict
+            .store(true, Ordering::SeqCst);
+
+        let err = device.set_position(3).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    /// `Connected = false` releases a wheel whose camera has gone (FW4).
+    #[tokio::test]
+    async fn disconnecting_a_wheel_whose_camera_left_releases_it() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        let device =
+            QhyFilterWheelDevice::new(Arc::<MockFilterWheelHandle>::clone(&handle), None, None);
+        device.set_connected(true).await.unwrap();
+        handle.leave_bus();
+        device.set_position(3).await.unwrap_err();
+
+        device.set_connected(false).await.unwrap();
+
+        assert!(!handle.is_open().unwrap());
+        assert!(!device.connected().await.unwrap());
     }
 }
