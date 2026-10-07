@@ -743,12 +743,8 @@ pub(crate) mod mock {
         /// failing call and the device's look at the session (C5).
         departure_unmarked_once: AtomicBool,
         opens: AtomicUsize,
-        /// Closes begun, held ones included.
         closes: AtomicUsize,
-        /// While set, a close waits inside, before it lets the EAF go, until
-        /// [`Self::release_closes`].
-        closes_held: Mutex<bool>,
-        closes_released: parking_lot::Condvar,
+        session_reads: AtomicUsize,
         position: AtomicI32,
         moving: AtomicBool,
         reverse: AtomicBool,
@@ -768,8 +764,7 @@ pub(crate) mod mock {
                 departure_unmarked_once: AtomicBool::new(false),
                 opens: AtomicUsize::new(0),
                 closes: AtomicUsize::new(0),
-                closes_held: Mutex::new(false),
-                closes_released: parking_lot::Condvar::new(),
+                session_reads: AtomicUsize::new(0),
                 position: AtomicI32::new(0),
                 moving: AtomicBool::new(false),
                 reverse: AtomicBool::new(false),
@@ -807,20 +802,14 @@ pub(crate) mod mock {
             self.opens.load(Ordering::SeqCst)
         }
 
-        /// How many closes have begun, held ones included.
+        /// How many closes have run.
         pub fn closes(&self) -> usize {
             self.closes.load(Ordering::SeqCst)
         }
 
-        /// Hold every close inside, before it lets the EAF go.
-        pub fn hold_closes(&self) {
-            *self.closes_held.lock() = true;
-        }
-
-        /// Let held closes, and later ones, finish.
-        pub fn release_closes(&self) {
-            *self.closes_held.lock() = false;
-            self.closes_released.notify_all();
+        /// How many times the device has read the session.
+        pub fn session_reads(&self) -> usize {
+            self.session_reads.load(Ordering::SeqCst)
         }
 
         /// What a call on the session meets before it reaches the "SDK".
@@ -853,6 +842,7 @@ pub(crate) mod mock {
         }
 
         fn session(&self) -> SessionState {
+            self.session_reads.fetch_add(1, Ordering::SeqCst);
             if !self.open.load(Ordering::SeqCst) {
                 SessionState::Closed
             } else if self.lost.load(Ordering::SeqCst) {
@@ -877,11 +867,6 @@ pub(crate) mod mock {
 
         fn close(&self) -> BackendResult<()> {
             self.closes.fetch_add(1, Ordering::SeqCst);
-            let mut held = self.closes_held.lock();
-            while *held {
-                self.closes_released.wait(&mut held);
-            }
-            drop(held);
             self.open.store(false, Ordering::SeqCst);
             self.lost.store(false, Ordering::SeqCst);
             Ok(())

@@ -459,46 +459,45 @@ mod tests {
         d.position().await.unwrap();
     }
 
+    /// Two `Connected = true` requests after a departure run one after the
+    /// other, and the second finds the session the first opened: one release
+    /// and one fresh open between them (C5). The test holds the lifecycle lock
+    /// while both requests pass their lock-free check, which reads the lost
+    /// session, so both are queued behind it when it is let go. A transition
+    /// that acted on that unlocked reading, rather than reading the session
+    /// again under the lock, would release the first request's fresh session
+    /// and open another.
     #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "held across the yields on purpose, so both requests queue behind it; only their blocking tasks, on other threads, take it"
+    )]
     async fn two_reconnects_after_a_departure_release_once_and_open_one_fresh_session() {
         let (d, handle) = connected().await;
         handle.leave_bus();
         d.position().await.unwrap_err();
         handle.return_to_bus();
+        let reads = handle.session_reads();
 
-        // Hold the first reconnect inside its release, so the second arrives
-        // while the session still reads lost.
-        handle.hold_closes();
-        let first = tokio::spawn({
+        let held = d.lifecycle.lock();
+        let requests = [(), ()].map(|()| {
             let d = d.clone();
-            async move { d.set_connected(true).await }
+            tokio::spawn(async move { d.set_connected(true).await })
         });
-        for _ in 0..5_000 {
-            if handle.closes() > 0 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        // Current-thread runtime: each yield runs both spawned requests up to
+        // their blocking transition, which waits on the lock held here.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
         }
         assert_eq!(
-            handle.closes(),
-            1,
-            "the first reconnect never began its release"
+            handle.session_reads() - reads,
+            2,
+            "both requests read the lost session, and neither has acted on it"
         );
-        let second = tokio::spawn({
-            let d = d.clone();
-            async move { d.set_connected(true).await }
-        });
-        // Without the lifecycle lock the second would read the lost session
-        // and begin a release of its own; give it the chance to.
-        for _ in 0..100 {
-            if handle.closes() > 1 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        drop(held);
+        for request in requests {
+            request.await.unwrap().unwrap();
         }
-        handle.release_closes();
-        first.await.unwrap().unwrap();
-        second.await.unwrap().unwrap();
 
         assert_eq!(
             handle.closes(),
