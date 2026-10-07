@@ -261,6 +261,10 @@ for _ in $(seq 1 90); do   # ~90 min at the 60 s poll at the foot of the loop
   # proves nothing about CI — see "When no checks appear at all".
   mergeable=$(gh pr view "$1" --json mergeable --jq .mergeable)
   [ "${mergeable:-UNKNOWN}" = "CONFLICTING" ] && { echo "PR is CONFLICTING: no CI will run — merge origin/main (step 3)"; exit 0; }
+  # Every `--paginate` read slurps (`jq -s`): gh emits one array per page,
+  # and `.[][]` reaches the reviews only once those arrays are gathered into
+  # one. Without `-s` the second `[]` walks each review's fields, and jq
+  # fails on the first number ("Cannot index number with string").
   rounds=$(gh api --paginate "repos/{owner}/{repo}/pulls/$1/reviews" \
     | jq -s '[.[][] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | length')
   failed=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "fail")] | length')
@@ -282,7 +286,7 @@ for _ in $(seq 1 90); do   # ~90 min at the 60 s poll at the foot of the loop
   # Print the newest review's opening so a quota or error notice — a review
   # object that reviewed nothing — is seen for what it is (step 7).
   [ "${rounds:-0}" -gt "$2" ]  && { echo "new Copilot round:"; gh api --paginate "repos/{owner}/{repo}/pulls/$1/reviews" \
-    | jq -r '[.[][] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | last | .body[0:160]'; exit 0; }
+    | jq -s -r '[.[][] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | last | .body[0:160]'; exit 0; }
   [ "${pending:-1}" -eq 0 ]    && { echo "no checks pending"; exit 0; }
   sleep 60
 done
