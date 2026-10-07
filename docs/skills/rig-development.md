@@ -64,6 +64,13 @@ written back to the rig.
 - **This is live hardware on a telescope.** A local service you're debugging
   can slew the mount, move the focuser, or rotate the imaging train. Know
   what your code will command before pointing it at the rig.
+- **A re-plug can knock another camera off the bus.** Plugging pier1's
+  SV605CC back in (2026-10-07) dropped the QHY715 guide camera for about a
+  second, most likely through a hub or supply the two share. It came back
+  through its firmware loader, and a qhy-camera build that predates its
+  departure handling kept its stale session until the service was restarted.
+  After any physical re-plug, check that every camera is still held by its
+  driver: `lsusb -t` shows `Driver=usbfs` under each.
 - **Serial device paths on the rig must be `/dev/serial/by-id/...`**, never
   `/dev/ttyUSB<n>` — enumeration order is not stable across boots or
   re-plugs, and with several FTDI adapters on one hub the `ttyUSBn` numbers

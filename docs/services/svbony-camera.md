@@ -48,9 +48,11 @@
 > exposure. A camera the rescan no longer finds reads `Connected = false`,
 > every member answers `NOT_CONNECTED`, and a client's `Connected = false` or
 > `true` releases the lost session, the latter then connecting afresh — to a
-> camera that has come back too, since an open now rescans first. Connects, disconnects and releases are serialized per device,
-> so no reconnect overtakes a handshake still running (C7). See "Enumeration
-> & connection lifecycle" (C6).
+> camera that has come back too, since an open now rescans first. Connects,
+> disconnects and releases are serialized per device, so no reconnect
+> overtakes a handshake still running (C7). Validated end to end on pier1's
+> SV605CC, a hand-pulled USB cable included (2026-10-07); Windows is still
+> owed. See "Enumeration & connection lifecycle" (C6).
 >
 > **Follow-up landed (issue #1336): `Gain` and `Offset` are cached at the
 > setter and armed by `StartExposure`.** The setters used to write
@@ -1123,10 +1125,36 @@ one core at load average 65, see "Real-hardware validation").
     answered `NOT_CONNECTED`; after its return, a plain reconnect with no
     reload connected in 1.7 s and exposed normally.
 
-  Still owed: the failure-triggered check run end to end on the rig (a
-  departed camera's next exposure failing at its deadline, and that
-  failure's rescan finding it gone), a cable pull that also cuts the
-  camera's power, and Windows.
+  **This contract, end to end** on the same rig and SDK (2026-10-07), built
+  from `639cf009`, the merged change, with the port disabled as above:
+
+  - **Gone while idle.** `Connected` stayed `true` through 9 s of reads, and
+    `CCDTemperature`, `CanSetCCDTemperature`, `Gain` and `CameraState` all
+    answered from the cache: nothing had failed, so nothing asked, and nothing
+    was logged.
+  - **The next exposure.** A 0.5 s exposure's read timed out at its 5 s
+    deadline, the rescan that timeout asked for no longer listed the camera,
+    and the session was marked lost 5.0 s after `StartExposure`, logged once:
+    `why=SVBony camera SDK error: timeout, and a rescan of the bus no longer
+    finds it`. `Connected` then read `false`, and `CameraState`,
+    `CCDTemperature`, `CanSetCCDTemperature` and `ImageReady` answered
+    `NOT_CONNECTED`.
+  - **Gone mid-exposure.** A camera taken away 3.3 s into a 10 s exposure was
+    found gone 20.5 s after `StartExposure`: the exposure's read deadline.
+  - **Reconnecting.** A reconnect while the camera was gone answered
+    `NOT_CONNECTED`. After its return, a plain reconnect with no reload
+    connected in 1.7 s and exposed normally.
+
+  **A cable pull** on the same build: the USB cable pulled by hand at the
+  camera, its 12 V supply left in, so the camera lost its power as well as its
+  link. It behaved exactly as the port disable did. `Connected`, the cooler
+  reads, `CanSetCCDTemperature` and `CameraState` answered from the cache, and
+  a `SetCCDTemperature` write succeeded. The next 0.5 s exposure marked the
+  session lost 5.0 s after `StartExposure`. A reconnect while unplugged
+  answered `NOT_CONNECTED`, and after the cable went back in a plain
+  reconnect connected in 3.8 s and exposed normally.
+
+  Still owed: Windows.
 - **C7.** **Connection transitions are serialized per device.** A connect
   (the open, its handshake, and the close a failed handshake ends in), a
   disconnect, and C6's release run one at a time, under a per-device
