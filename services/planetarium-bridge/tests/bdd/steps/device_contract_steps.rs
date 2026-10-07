@@ -93,14 +93,28 @@ async fn no_axis_rates(world: &mut BridgeWorld) {
 
 #[then(expr = "UTCDate should read within {int} seconds of the harness clock")]
 async fn utc_date_within(world: &mut BridgeWorld, seconds: u64) {
+    // Bracket the call with the harness clock: the device's reading must fall
+    // between a read taken before the request and one taken after the reply,
+    // each widened by the tolerance. A single read after the reply would
+    // charge however long the call took, a stalled host included, to the
+    // device's clock.
+    let tolerance = Duration::from_secs(seconds);
+    let before = SystemTime::now();
     let device_utc = world.telescope().utc_date().await.unwrap();
-    let drift = SystemTime::now()
-        .duration_since(device_utc)
-        .unwrap_or_else(|e| e.duration());
-    assert!(
-        drift <= Duration::from_secs(seconds),
-        "UTCDate drifted {drift:?} from the harness clock"
-    );
+    let after = SystemTime::now();
+    let call = after.duration_since(before).unwrap_or_default();
+    if let Ok(behind) = before.duration_since(device_utc) {
+        assert!(
+            behind <= tolerance,
+            "UTCDate read {behind:?} behind the harness clock at the request (the call took {call:?})"
+        );
+    }
+    if let Ok(ahead) = device_utc.duration_since(after) {
+        assert!(
+            ahead <= tolerance,
+            "UTCDate read {ahead:?} ahead of the harness clock at the reply (the call took {call:?})"
+        );
+    }
 }
 
 #[when("I try to set the device UTC date")]
