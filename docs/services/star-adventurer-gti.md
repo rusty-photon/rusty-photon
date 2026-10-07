@@ -707,7 +707,7 @@ So every sample carries what is needed to bring it to the read
 instant, and the reads that pair the encoder with the current LST
 (`RightAscension`, and `Azimuth` / `Altitude` through it;
 `Declination`; the current pointing `SetSideOfPier` flips about; the
-current side and `mech_HA` the slew and sync planners and
+current side and `mech_HA` the slew planner and
 `DestinationSideOfPier` start from; the slew watcher's pickup-loop
 residual) use the sample **projected to now**:
 
@@ -812,7 +812,9 @@ still fail an occasional ConformU cross-axis or East/West leg. The raw
 sample is
 still what `Slewing`, `SideOfPier`, the PulseGuide side and the
 tracking guard read: they use the encoder alone, not against an LST,
-and a poll of motion is immaterial to them.
+and a poll of motion is immaterial to them. `SyncToCoordinates` uses
+neither: it reads both axes from the wire before it writes; see
+[§Sync and pier side](#sync-and-pier-side).
 
 ### Slew lifecycle
 
@@ -1997,21 +1999,41 @@ The CW-exclusion-zone and altitude gates then run against that side's
 `mech_HA`. Sync issues no motion, so the RA path check does not apply.
 A mount whose side reads `Unknown` (no Dec CPR) is treated as CW-down.
 
-Because the side comes from the cached snapshot, it carries the same
-one-`polling_interval` lag every other side-dependent read does
-(`SideOfPier`, `DestinationSideOfPier`, the slew planner, the tracking
-guard). That matters in one place operators actually reach: a mount
-stopped partway through a flip by `AbortSlew` has no well-defined side
-at all, and for up to one poll the snapshot still shows the side it
-started from. The recovery sequence the driver's own procedures point
-at — plate-solve, then `SyncToCoordinates` to ground-truth the frame —
-should let the poll catch up first (200 ms on the shipped
-`polling_interval`). The driver does not refuse the sync: after an
-aborted flip a sync is the tool the operator needs, and refusing it
-would leave the documented recovery with no way to run.
+**Sync reads the axes from the mount, not from the poll.** Holding
+`axis_ownership`, it re-reads both axes (`:j` / `:f`) on the wire and
+classifies the side from that reading. The cached poll sample can be a
+poll behind the wire, and in one place operators actually reach that
+is enough to pick the wrong side: a mount stopped partway through a
+flip by `AbortSlew` has no well-defined side until it has stopped, and
+the poll that would show where it stopped can come after the sync.
+The four extra frames cost a sync a few round trips, and a sync is
+rare.
+
+**Sync refuses while either axis is running a goto** with
+`INVALID_OPERATION`, even when no slew or park holds the slew slot.
+Two ordinary sequences leave a goto running that nothing owns:
+
+- `AbortSlew`. Its `:L` stops do not stop a goto at once: the `GTi`
+  coasts on for up to 1.5 s (see
+  [§Safety stop at startup](#safety-stop-at-startup)).
+- A client that disconnects mid-slew and reconnects before the slew's
+  watcher has noticed. Disconnect voids the slew's claim, and the
+  watcher gives up without stopping the goto. The last-disconnect
+  safety stop does not run either, because the reconnected client's
+  session kept the transport open. The goto runs on to its target.
+
+In both, the position a sync would write is not where the axis will
+stop. The refusal does not block the recovery the driver's procedures
+point at after an aborted flip — plate-solve, then
+`SyncToCoordinates` to ground-truth the frame. It only defers the sync
+until the axes have stopped, which the plate-solve exposure needs
+anyway. `Slewing` reports the same running goto once the poll has
+read it, so a client that waits for `Slewing` to clear before syncing
+is not refused.
 
 **Sync takes the axes for its duration** and refuses with
-`INVALID_OPERATION` when a slew or park already owns them. The side is read from the cached snapshot, and an
+`INVALID_OPERATION` when a slew or park already owns them. A sync
+decides the side from a reading of the Dec axis, and an
 asynchronous slew returns as soon as its completion watcher is
 spawned: a sync landing in that window — after a flip is issued,
 before it lands — would resolve the *old* side and write its encoder
@@ -2036,7 +2058,10 @@ it *falsifies* the flag: it clears `slew_in_progress` before awaiting
 the stops, so for a moment the flag says idle while the mount is still
 moving. Inside the lock the flag check is then sound — nothing can
 acquire or falsify it while the lock is held, so a `false` reading
-cannot go stale. A sync is not
+cannot go stale. A clear slot does not mean still axes, though: an
+abort's coast and a goto a disconnect left behind both run with the
+slot empty, and those are what the wire read and the goto refusal
+above are for. A sync is not
 motion and so does not set `slew_in_progress`: `Slewing` stays `false`
 throughout, as ASCOM expects.
 
@@ -2185,12 +2210,20 @@ pierEast) is outside the CW exclusion zone.
 = false`, and follows the standard `NOT_CONNECTED` /
 `INVALID_WHILE_PARKED` / `INVALID_OPERATION` (already-slewing) gate.
 After a successful flip the next encoder snapshot's `SideOfPier` reads
-the new value (the Dec encoder has moved past the pole);
-`TargetRightAscension` / `TargetDeclination` remain unchanged.
+the new value (the Dec encoder has moved past the pole).
+`TargetRightAscension` / `TargetDeclination` are set to the pointing
+the flip keeps, as any slew sets them to its target.
 
-The current side and the pointing to keep are read when
-`SetSideOfPier` is called. The flip slew itself is planned like any
-other slew: from where the axes come to rest after its stop (see
+The current side is read when `SetSideOfPier` is called. The pointing
+to keep is read once the flip has claimed the slew slot. A
+`SyncToCoordinates` can land between the call and the claim, since it
+holds `axis_ownership`, which the claim waits for. The flip then keeps
+the pointing the sync set rather than slewing back to the one it
+replaced, which would move the OTA by the sync's correction. No sync
+can land after the claim: a sync refuses while a slew holds the slot.
+The auto-flip goes through `SetSideOfPier`, so the same holds for it.
+The flip slew itself is planned like any other slew: from where the
+axes come to rest after its stop (see
 [§Slew lifecycle](#slew-lifecycle)).
 
 #### Through-wrap slew routing

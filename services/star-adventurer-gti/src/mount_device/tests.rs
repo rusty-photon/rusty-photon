@@ -4849,6 +4849,43 @@ async fn set_side_of_pier_to_opposite_side_starts_a_flip_slew() {
     );
 }
 
+#[tokio::test(start_paused = true)]
+async fn set_side_of_pier_keeps_the_pointing_a_sync_ahead_of_it_wrote() {
+    // A sync holding the axes when `SetSideOfPier` is called rewrites
+    // the frame before the flip can claim the slot. The flip must keep
+    // the pointing the sync set: flipping about the pointing read before
+    // the sync would carry the OTA back by the sync's correction.
+    let d = flip_enabled_connected_device().await;
+    let lst = d.sidereal_time().await.unwrap();
+    let (synced_ra, synced_dec) = ((lst + 1.0).rem_euclid(24.0), 20.0);
+    let held = d.axis_ownership.lock().await;
+    let sync = tokio::spawn({
+        let d = d.clone();
+        async move { d.sync_to_coordinates(synced_ra, synced_dec).await }
+    });
+    // The sync is waiting for the axes...
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    let flip = tokio::spawn({
+        let d = d.clone();
+        async move { d.set_side_of_pier(PierSide::East).await }
+    });
+    // ...and the flip has been called behind it.
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    drop(held);
+    sync.await.unwrap().unwrap();
+    flip.await.unwrap().unwrap();
+
+    let s = d.state.read().await;
+    let (ra, dec) = (s.target_ra_hours.unwrap(), s.target_dec_degrees.unwrap());
+    let ra_off = ((ra - synced_ra + 12.0).rem_euclid(24.0) - 12.0).abs();
+    assert!(
+        ra_off < 1e-3 && (dec - synced_dec).abs() < 1e-3,
+        "the flip must keep the synced pointing ({synced_ra} h, {synced_dec}°), \
+         kept ({ra} h, {dec}°)"
+    );
+    assert_eq!(s.target_pier_side, Some(PierSide::East));
+}
+
 // ---- watcher_poll_with_retry --------------------------------------
 //
 // The slew/park watchers' transport-error path used to exit on the
@@ -6642,6 +6679,118 @@ async fn a_slew_takes_its_pier_side_from_where_the_axes_came_to_rest() {
         m.dec.goto_target_ticks,
         want_dec.value(),
         "the Dec goto must aim at the pierEast pose"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_sync_takes_the_pier_side_from_the_wire_not_the_last_poll() {
+    // An abort stops Dec just short of the pole and it coasts across.
+    // The driver's last sample predates the coast, so it still reads
+    // pierWest while the mount is pierEast. Writing the pierWest pair
+    // would relabel the mount as counterweight-down for every later
+    // slew.
+    let (d, mock) = pier1_like_device(CwExclusionZone::Disabled).await;
+    let quarter = mock.lock().await.cpr_dec.cast_signed() / 4;
+    mid_goto(
+        &mut mock.lock().await.dec,
+        quarter - 15_000,
+        skywatcher_motor_protocol::Direction::Cw,
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    // No poll from here on, as while a slew's watcher holds the poll
+    // paused: the driver's sample stays the one taken before the coast.
+    let _paused = d.manager.pause_background_polling();
+    d.abort_slew().await.unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(
+        d.side_of_pier().await.unwrap(),
+        PierSide::West,
+        "precondition: the driver's sample still reads short of the pole"
+    );
+
+    let lst = d.sidereal_time().await.unwrap();
+    d.sync_to_coordinates(lst, 45.0).await.unwrap();
+
+    let m = mock.lock().await;
+    let (_, want_dec) = target_encoder_flipped(
+        Ra::new(lst),
+        Dec::new(45.0),
+        Lst::new(lst),
+        Cpr::new(m.cpr_ra),
+        Cpr::new(m.cpr_dec),
+    );
+    assert_eq!(
+        m.dec.position_ticks,
+        want_dec.value(),
+        "the sync must write the pierEast Dec encoder"
+    );
+    drop(m);
+    assert_eq!(d.side_of_pier().await.unwrap(), PierSide::East);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_sync_is_refused_while_an_aborted_goto_coasts() {
+    // `AbortSlew` empties the slew slot, but its `:L` does not stop a
+    // goto: the `GTi` coasts on for up to 1.5 s. A position written in
+    // that window is not where the axis comes to rest.
+    let (d, mock) = pier1_like_device(CwExclusionZone::Disabled).await;
+    mid_goto(
+        &mut mock.lock().await.dec,
+        200_000,
+        skywatcher_motor_protocol::Direction::Cw,
+    );
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    d.abort_slew().await.unwrap();
+    let from = mock.lock().await.command_log.len();
+    let lst = d.sidereal_time().await.unwrap();
+
+    let err = d.sync_to_coordinates(lst, 45.0).await.unwrap_err();
+
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from),
+        Vec::<String>::new(),
+        "a refused sync must write nothing"
+    );
+    // Once the coast is over, the same sync goes through.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    d.sync_to_coordinates(lst, 45.0).await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_sync_is_refused_while_a_goto_runs_on_after_a_quick_reconnect() {
+    // Disconnect voids a slew's claim, and its watcher gives up without
+    // stopping the goto. A client that reconnects before the watcher has
+    // noticed keeps the transport open, so the last-disconnect safety
+    // stop does not run either: the goto runs on with no slew holding
+    // the slot.
+    let (d, mock) = capturing_connected_device().await;
+    let lst = d.sidereal_time().await.unwrap();
+    d.slew_to_coordinates_async((lst - 6.0).rem_euclid(24.0), 60.0)
+        .await
+        .unwrap();
+    d.set_connected(false).await.unwrap();
+    d.set_connected(true).await.unwrap();
+    assert!(
+        !d.slew_in_progress.is_held(),
+        "precondition: no slew holds the slot"
+    );
+    let from = {
+        let m = mock.lock().await;
+        assert!(
+            m.ra.running && m.dec.running,
+            "precondition: the goto is still running after the reconnect"
+        );
+        m.command_log.len()
+    };
+
+    let err = d.sync_to_coordinates(lst, 45.0).await.unwrap_err();
+
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from),
+        Vec::<String>::new(),
+        "a refused sync must write nothing"
     );
 }
 

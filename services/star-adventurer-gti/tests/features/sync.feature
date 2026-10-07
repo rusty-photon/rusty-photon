@@ -4,6 +4,13 @@ Feature: Sync to coordinates
   sync offset so subsequent RA / Dec reads reflect the new alignment.
   SyncToTarget syncs to the most-recent TargetRightAscension / Declination.
 
+  A sync reads both axes from the mount before it writes, and refuses
+  with INVALID_OPERATION while either axis is still running a goto,
+  whether or not a slew owns it. Two ordinary sequences leave such a
+  goto running: an AbortSlew, whose stops coast the axes on, or a client
+  that reconnects mid-slew, which leaves the goto to run to its target.
+  The position a sync would write there is not where the axis stops.
+
   Scenario: SyncToCoordinates fails while disconnected
     Given a running star-adventurer service
     When I try to sync to RA 6.0 hours and Dec 30.0 degrees
@@ -26,6 +33,29 @@ Feature: Sync to coordinates
     And the device is parked
     When I try to sync to RA 6.0 hours and Dec 30.0 degrees
     Then the operation should fail with invalid-while-parked
+
+  Scenario: SyncToCoordinates is refused while an axis is still running a goto
+    # The seeded gotos stand in for one no slew owns, such as an aborted
+    # slew's coast. Slewing reads true first, so the goto is on the wire
+    # before the sync is tried.
+    Given a running star-adventurer service
+    And the mount is slewing
+    When I connect the device
+    Then Slewing should be true
+    When I try to sync to RA 6.0 hours and Dec 30.0 degrees
+    Then the operation should fail with invalid-operation
+    And the mount should not have received an encoder-seed command
+
+  Scenario: SyncToCoordinates succeeds once the goto has stopped
+    Given a running star-adventurer service
+    And the mount is slewing
+    When I connect the device
+    Then Slewing should be true
+    When the mount reports both axes stopped in goto mode
+    Then Slewing should eventually be false within 5 seconds
+    When I sync to RA 6.0 hours and Dec 30.0 degrees
+    Then RightAscension should be 6.0 hours within 0.001
+    And Declination should be 30.0 degrees within 0.001
 
   Scenario: SyncToCoordinates issues :E on both axes
     Given a running star-adventurer service
