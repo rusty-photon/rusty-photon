@@ -141,7 +141,18 @@ pub struct Config {
     pub ca_cert: Option<String>,
 }
 
-impl rusty_photon_config::ConfigFile for Config {}
+impl rusty_photon_config::ConfigFile for Config {
+    /// The field rules `PUT /api/config` applies, reported as startup
+    /// reports them: the first offending field. [`load_config`] runs them
+    /// through here, so the startup bootstrap holds a scaffold it is about
+    /// to write to the same rules the load will.
+    fn check(&self) -> std::result::Result<(), String> {
+        validate_config(self)
+            .into_iter()
+            .next()
+            .map_or(Ok(()), |err| Err(format!("{} {}", err.path, err.msg)))
+    }
+}
 
 impl Config {
     /// [`Config::ca_cert`] as a `Path`, for `rusty_photon_tls::client`.
@@ -875,9 +886,7 @@ pub fn load_config(path: &Path) -> Result<Config> {
     })?;
     // Same field validation as `PUT /api/config`; startup keeps its
     // pre-REST behaviour of aborting on the first offending field.
-    if let Some(err) = validate_config(&config).into_iter().next() {
-        return Err(RpError::Config(format!("{} {}", err.path, err.msg)));
-    }
+    rusty_photon_config::ConfigFile::check(&config).map_err(RpError::Config)?;
     Ok(config)
 }
 
@@ -1621,6 +1630,21 @@ mod tests {
                 "must name the entry and the migration: {error}"
             );
         }
+    }
+
+    #[test]
+    fn config_file_check_is_the_startup_field_validation() {
+        use rusty_photon_config::ConfigFile as _;
+        let mut config: Config = serde_json::from_value(default_scaffold()).unwrap();
+        config.check().unwrap();
+
+        config.site = Some(crate::config::SiteConfig {
+            latitude_degrees: 91.0,
+            longitude_degrees: 0.0,
+        });
+
+        let err = config.check().unwrap_err();
+        assert!(err.starts_with("site.latitude_degrees "), "{err}");
     }
 
     /// The other half of the retired surface: the state file the

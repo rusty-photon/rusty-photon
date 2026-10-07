@@ -26,8 +26,11 @@ and this document does not.
 Each service's top-level configuration type implements `ConfigFile`. It is a
 `serde` type, plus an optional `check()` for rules a parse cannot express — a
 rule that spans several blocks, for example. Most services have none and
-implement the trait with an empty body. `star-adventurer-gti`'s auto-flip offset
-rule and `sky-survey-camera`'s follow-mode rules are the two that do.
+implement the trait with an empty body. Three services do have such rules:
+`star-adventurer-gti`'s auto-flip offset rule, `sky-survey-camera`'s follow-mode
+rules, and `rp`'s field validation (the rules `PUT /api/config` applies). In
+each, the loader and `check()` share one implementation, so the bootstrap and
+the load cannot disagree about them.
 
 A file "loads" when it is valid JSON, deserializes as the type, and passes
 `check()`. Both the loader and the bootstrap use this one definition, so they
