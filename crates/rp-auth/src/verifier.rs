@@ -239,7 +239,10 @@ impl Verifier {
         // Subscribe before first inspecting the slot, so a free notification
         // that lands between an inspection and the wait is not lost.
         let mut freed = shared.freed.subscribe();
-        let started = Instant::now();
+        // tokio's clock, the one the wait below runs on: the same instant as
+        // std's in production, and a test on paused time can then drive the
+        // gate wait instead of racing the host's scheduling.
+        let started = tokio::time::Instant::now();
         loop {
             match shared.claim_slot(tag.as_ref()) {
                 Claim::Allow => return Verdict::Allow,
@@ -560,8 +563,10 @@ fn decoy_phc_from(rng: &mut impl RngCore) -> String {
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize};
+    use std::sync::atomic::AtomicBool;
     use std::sync::mpsc;
+
+    use tokio::task::JoinHandle;
 
     use super::*;
 
@@ -588,13 +593,13 @@ mod tests {
 
     /// A KDF that blocks until the test sends on the returned channel, and
     /// counts how many times it has started.
-    fn blocking_kdf() -> (Box<Kdf>, mpsc::Sender<()>, Arc<AtomicUsize>) {
+    fn blocking_kdf() -> (Box<Kdf>, mpsc::Sender<()>, Arc<watch::Sender<usize>>) {
         let (release_tx, release_rx) = mpsc::channel::<()>();
         let release_rx = Mutex::new(release_rx);
-        let started = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(watch::Sender::new(0usize));
         let started_in_kdf = Arc::clone(&started);
         let kdf: Box<Kdf> = Box::new(move |password, _phc| {
-            started_in_kdf.fetch_add(1, Ordering::SeqCst);
+            started_in_kdf.send_modify(|n| *n = n.saturating_add(1));
             let _ = release_rx.lock().unwrap().recv();
             password == PASSWORD
         });
@@ -615,14 +620,35 @@ mod tests {
             .await
     }
 
-    async fn wait_until(counter: &AtomicUsize, value: usize) {
-        for _ in 0..500 {
-            if counter.load(Ordering::SeqCst) >= value {
-                return;
+    /// Wait until the KDF has started `value` times. The KDF wakes this wait
+    /// itself: on paused time no timer fires while a KDF holds the blocking
+    /// pool, so a polling sleep would never return. The timeout is a backstop
+    /// for a KDF that never starts.
+    async fn wait_until(started: &watch::Sender<usize>, value: usize) {
+        let mut started = started.subscribe();
+        tokio::time::timeout(Duration::from_secs(5), started.wait_for(|&n| n >= value))
+            .await
+            .unwrap_or_else(|_| panic!("the KDF never started {value} times"))
+            .unwrap();
+    }
+
+    /// Spawn a request for `password` and yield until it is waiting at the
+    /// held gate. A request subscribes to the gate's free notifications just
+    /// before it first inspects the slot, with no await in between, so once
+    /// the subscription count rises it has found the gate held.
+    async fn spawn_queued(v: &Arc<Verifier>, password: &'static str) -> JoinHandle<Verdict> {
+        let subscribed = v.shared.freed.receiver_count();
+        let request = tokio::spawn({
+            let v = Arc::clone(v);
+            async move { check(&v, USER, password).await }
+        });
+        for _ in 0..100 {
+            if v.shared.freed.receiver_count() > subscribed {
+                return request;
             }
-            tokio::time::sleep(Duration::from_millis(2)).await;
+            tokio::task::yield_now().await;
         }
-        panic!("counter never reached {value}");
+        panic!("the request never reached the gate");
     }
 
     #[test]
@@ -738,7 +764,7 @@ mod tests {
         // Give the second request time to reach the single-flight wait.
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(
-            started.load(Ordering::SeqCst),
+            *started.borrow(),
             1,
             "the second request must not start a KDF"
         );
@@ -807,7 +833,7 @@ mod tests {
         // The gate must still be held by the detached KDF: a different
         // credential cannot get in.
         assert_eq!(check(&v, USER, "another-guess").await, Verdict::Busy);
-        assert_eq!(started.load(Ordering::SeqCst), 1);
+        assert_eq!(*started.borrow(), 1);
         release.send(()).unwrap();
         // The cancelled request's KDF completed and warmed the slot.
         for _ in 0..500 {
@@ -853,11 +879,11 @@ mod tests {
         // A KDF that blocks, then panics when released.
         let (release_tx, release_rx) = mpsc::channel::<()>();
         let release_rx = Mutex::new(release_rx);
-        let started = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(watch::Sender::new(0usize));
         let kdf: Box<Kdf> = Box::new({
             let started = Arc::clone(&started);
             move |_password, _phc| {
-                started.fetch_add(1, Ordering::SeqCst);
+                started.send_modify(|n| *n = n.saturating_add(1));
                 let _ = release_rx.lock().unwrap().recv();
                 panic!("simulated KDF panic after release");
             }
@@ -880,17 +906,14 @@ mod tests {
         assert!(!v.shared.lock_memo().has_positive());
     }
 
-    #[tokio::test]
-    // Orchestrates a foreign credential holding the gate while two same-credential
-    // siblings queue through the bounded Busy-wait; Miri's ~100x slowdown lets the
-    // short test gate wait elapse before the siblings re-claim, so the real-time
-    // interleaving cannot be reproduced. The claim-and-publish atomicity this
-    // guards is covered under Miri by the synchronous claim_slot/release_slot tests.
-    #[cfg_attr(miri, ignore)]
+    // The sibling tests run on paused time: the 200 ms gate wait passes only
+    // when the test advances the clock, so a host that stalls the test cannot
+    // let it expire while the gate is changing hands.
+    #[tokio::test(start_paused = true)]
     async fn a_same_credential_request_that_queued_for_the_gate_is_never_refused() {
         let (kdf, release, started) = blocking_kdf();
-        let v = verifier(kdf); // gate wait 200 ms
-                               // X: a different credential holds the gate.
+        let v = verifier(kdf);
+        // X: a different credential holds the gate.
         let x = tokio::spawn({
             let v = Arc::clone(&v);
             async move { check(&v, USER, "stale-password").await }
@@ -898,21 +921,17 @@ mod tests {
         wait_until(&started, 1).await;
         // A and B: the same correct credential, both cold, both queue for
         // the gate because X's tag is the one in flight.
-        let a = tokio::spawn({
-            let v = Arc::clone(&v);
-            async move { check(&v, USER, PASSWORD).await }
-        });
-        let b = tokio::spawn({
-            let v = Arc::clone(&v);
-            async move { check(&v, USER, PASSWORD).await }
-        });
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        let a = spawn_queued(&v, PASSWORD).await;
+        let b = spawn_queued(&v, PASSWORD).await;
         // X finishes; one of A/B claims the gate and starts the shared KDF.
         release.send(()).unwrap();
         wait_until(&started, 2).await;
         // Hold the shared KDF well past the loser's 200 ms gate wait:
-        // it must have become a same-tag waiter, not a 503.
-        tokio::time::sleep(Duration::from_millis(400)).await;
+        // it must have become a same-tag waiter, not a 503. The advance fires
+        // any wait that came due, but the test body is polled again before
+        // the request that wait woke; the yield lets that request run first.
+        tokio::time::advance(Duration::from_millis(400)).await;
+        tokio::task::yield_now().await;
         assert!(
             !a.is_finished() && !b.is_finished(),
             "both must wait for the shared verdict"
@@ -1010,9 +1029,7 @@ mod tests {
         assert!(v.shared.lock_slot().is_none());
     }
 
-    #[tokio::test]
-    // See the note above: the timed sibling orchestration cannot run under Miri.
-    #[cfg_attr(miri, ignore)]
+    #[tokio::test(start_paused = true)]
     async fn a_sibling_that_claims_the_gate_after_the_shared_kdf_finished_hits_the_memo() {
         // Two cold requests for one credential queue behind a foreign KDF.
         // The shared KDF finishes quickly, so the second sibling claims the
@@ -1024,15 +1041,8 @@ mod tests {
             async move { check(&v, USER, "stale-password").await }
         });
         wait_until(&started, 1).await;
-        let a = tokio::spawn({
-            let v = Arc::clone(&v);
-            async move { check(&v, USER, PASSWORD).await }
-        });
-        let b = tokio::spawn({
-            let v = Arc::clone(&v);
-            async move { check(&v, USER, PASSWORD).await }
-        });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let a = spawn_queued(&v, PASSWORD).await;
+        let b = spawn_queued(&v, PASSWORD).await;
         release.send(()).unwrap(); // X done
         wait_until(&started, 2).await;
         release.send(()).unwrap(); // the shared KDF, well inside the gate wait
@@ -1043,9 +1053,7 @@ mod tests {
         assert_eq!(v.refusals(), 0);
     }
 
-    #[tokio::test]
-    // See the note above: the timed sibling orchestration cannot run under Miri.
-    #[cfg_attr(miri, ignore)]
+    #[tokio::test(start_paused = true)]
     async fn a_sibling_that_claims_the_gate_after_a_refuted_kdf_hits_the_negative_memo() {
         let (kdf, release, started) = blocking_kdf();
         let v = verifier(kdf);
@@ -1054,15 +1062,8 @@ mod tests {
             async move { check(&v, USER, "stale-password").await }
         });
         wait_until(&started, 1).await;
-        let a = tokio::spawn({
-            let v = Arc::clone(&v);
-            async move { check(&v, USER, "another-wrong").await }
-        });
-        let b = tokio::spawn({
-            let v = Arc::clone(&v);
-            async move { check(&v, USER, "another-wrong").await }
-        });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let a = spawn_queued(&v, "another-wrong").await;
+        let b = spawn_queued(&v, "another-wrong").await;
         release.send(()).unwrap();
         wait_until(&started, 2).await;
         release.send(()).unwrap();
