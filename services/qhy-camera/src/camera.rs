@@ -39,7 +39,7 @@ use rusty_photon_camera_core::{
 use rusty_photon_driver::ConfigActionCtx;
 use tracing::{debug, warn};
 
-use crate::backend::{BackendError, CameraHandle, ImageData};
+use crate::backend::{BackendError, CameraHandle, ImageData, Verdict};
 use crate::config::DeviceOverride;
 use crate::config_actions::QhyCameraDriver;
 
@@ -798,14 +798,26 @@ impl QhyCameraDevice {
         self
     }
 
-    /// Answered from the handle's own connected flag, not from the SDK — the
-    /// one handle call cheap enough to make on the async executor, which is why
-    /// every request can afford it as its first line.
+    /// Answered from the handle's own connected flag and its connection's lost
+    /// mark (C9), not from the SDK — the one handle question cheap enough to
+    /// ask on the async executor, which is why every request can afford it as
+    /// its first line.
     fn ensure_connected(&self) -> ASCOMResult<()> {
-        match self.handle.is_open() {
-            Ok(true) => Ok(()),
-            _ => Err(ASCOMError::NOT_CONNECTED),
+        if self.is_connected() {
+            Ok(())
+        } else {
+            Err(ASCOMError::NOT_CONNECTED)
         }
+    }
+
+    /// Whether this camera holds a session on a device still on the bus: the
+    /// handle is open and its connection has not been marked lost (C9). A
+    /// handle whose `is_open` fails counts as closed.
+    fn is_connected(&self) -> bool {
+        self.handle.is_open().unwrap_or_else(|e| {
+            debug!(camera = %self.unique_id, error = %e, "is_open() failed; reporting disconnected");
+            false
+        }) && !self.handle.is_lost()
     }
 
     /// Run one SDK-touching step off the async executor.
@@ -833,18 +845,36 @@ impl QhyCameraDevice {
     /// landed. Only *failures* are rewritten: a call that succeeded answers for
     /// itself. A probe that reports absence as an `Option` rather than an error
     /// never reaches that rewrite — see [`Self::probe_handle`].
+    ///
+    /// A failure also asks whether the camera is still on the bus, in the same
+    /// hop and before the result is judged (C9). One that has left marks its
+    /// connection lost, so the connected check below fails and the request
+    /// answers `NOT_CONNECTED` — the disconnect it is, rather than the
+    /// `INVALID_OPERATION` or `NOT_IMPLEMENTED` its call site would otherwise
+    /// spell a dead handle as.
     async fn on_handle<T, F>(&self, f: F) -> ASCOMResult<T>
     where
         F: FnOnce(&dyn CameraHandle) -> ASCOMResult<T> + Send + 'static,
         T: Send + 'static,
     {
         let handle = Arc::clone(&self.handle);
-        let outcome = tokio::task::spawn_blocking(move || f(handle.as_ref()))
-            .await
-            .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?;
+        let (outcome, gone) = tokio::task::spawn_blocking(move || {
+            let generation = handle.generation();
+            let outcome = f(handle.as_ref());
+            // The verdict is this request's answer. Read again once the task
+            // is back, the connection may already belong to a session another
+            // client's release and reconnect opened since. A reconnect that
+            // landed before the question was put means the handle this call
+            // failed on is gone too, whatever the fresh one answers.
+            let gone = outcome.is_err()
+                && (handle.verify_presence() == Verdict::Lost || handle.generation() != generation);
+            (outcome, gone)
+        })
+        .await
+        .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?;
         match outcome {
-            Err(e) if self.ensure_connected().is_err() => {
-                debug!(error = %e, "SDK call failed on a handle that is no longer open");
+            Err(e) if gone || self.ensure_connected().is_err() => {
+                debug!(error = %e, "SDK call failed on a handle that is closed or whose camera has left the bus");
                 Err(ASCOMError::NOT_CONNECTED)
             }
             outcome => outcome,
@@ -865,13 +895,42 @@ impl QhyCameraDevice {
     /// exists to avoid. What remains is a probe that answered while the device
     /// was still open and lost the race by a hair, which C3 already settles:
     /// a call that succeeded answers for itself.
+    ///
+    /// The same `None` comes back from a handle that is still open on a camera
+    /// that has left the bus, so a probe that answered also asks C9's question
+    /// before its answer is used: `on_handle` asks it only of a failure, and a
+    /// probe's "absent" is not one.
     async fn probe_handle<T, F>(&self, f: F) -> ASCOMResult<T>
     where
         F: FnOnce(&dyn CameraHandle) -> ASCOMResult<T> + Send + 'static,
         T: Send + 'static,
     {
         self.ensure_connected()?;
-        let probed = self.on_handle(f).await?;
+        let probed = self
+            .on_handle(move |h| {
+                let generation = h.generation();
+                let answer = f(h)?;
+                match h.verify_presence() {
+                    // A probe that answered from a handle the question finds
+                    // lost, or that a reconnect has replaced since, answered
+                    // for a departed camera, not for the one the connection
+                    // holds now.
+                    Verdict::Lost => Err(ASCOMError::NOT_CONNECTED),
+                    Verdict::Present if h.generation() != generation => {
+                        Err(ASCOMError::NOT_CONNECTED)
+                    }
+                    Verdict::Present => Ok(answer),
+                    // With no verdict, an "absent" is no more a fact than one
+                    // from a departed camera, so the probe's answer is not
+                    // published; the client asks again once the transition
+                    // is over.
+                    Verdict::Withheld => Err(ASCOMError::invalid_operation(
+                        "the camera is in a connect, disconnect or readout-mode change and \
+                         cannot be asked what it has; ask again",
+                    )),
+                }
+            })
+            .await?;
         self.ensure_connected()?;
         Ok(probed)
     }
@@ -1213,14 +1272,31 @@ impl QhyCameraDevice {
     /// not send back the image data. Host software must not readout the data"*,
     /// so it may never overlap a `GetQHYCCDSingleFrame`.
     ///
-    /// A refusal is logged rather than propagated: by the time this runs the
-    /// capture is already out of the SDK, which is what the caller needed.
-    async fn sdk_cancel(&self) {
+    /// Returns whether the SDK took the cancel. A refusal is logged rather than
+    /// raised: by the time this runs the capture is already out of the SDK,
+    /// which is what the caller needed.
+    async fn sdk_cancel(&self) -> bool {
         let handle = Arc::clone(&self.handle);
-        match tokio::task::spawn_blocking(move || handle.abort_exposure_and_readout()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => debug!(error = %e, "abort_exposure_and_readout failed"),
-            Err(e) => warn!(error = %e, "abort task panicked"),
+        match tokio::task::spawn_blocking(move || {
+            let aborted = handle.abort_exposure_and_readout();
+            // An abort is the one SDK call a capture cancelled in its wait makes,
+            // so it asks C9's question as any other failure does.
+            if aborted.is_err() {
+                handle.verify_presence();
+            }
+            aborted
+        })
+        .await
+        {
+            Ok(Ok(())) => true,
+            Ok(Err(e)) => {
+                debug!(error = %e, "abort_exposure_and_readout failed");
+                false
+            }
+            Err(e) => {
+                warn!(error = %e, "abort task panicked");
+                false
+            }
         }
     }
 
@@ -1291,6 +1367,21 @@ impl QhyCameraDevice {
         Self::detached(tokio::spawn(async move { device.seize_and_close().await })).await
     }
 
+    /// End a session whose camera has left the bus (C9): the ordinary
+    /// disconnect, judged by whether it released the device rather than by what
+    /// `CloseQHYCCD` said about a device that is no longer there. A disconnect
+    /// that could not get a capture out of the SDK has released nothing, and
+    /// still fails.
+    async fn release_lost(&self) -> ASCOMResult<()> {
+        match self.disconnect().await {
+            Err(e) if !self.handle.is_open().unwrap_or(true) => {
+                debug!(camera = %self.unique_id, error = %e, "close of a camera that has left the bus failed; its session is released regardless");
+                Ok(())
+            }
+            released => released,
+        }
+    }
+
     async fn seize_and_close(&self) -> ASCOMResult<()> {
         // The session this disconnect is ending, read before it takes the
         // device: what it closes is what it read, and nothing later.
@@ -1340,9 +1431,10 @@ impl QhyCameraDevice {
         Ok(())
     }
 
-    /// Cancel the in-flight exposure and leave the device quiescent. Returns
-    /// `false` if the capture task could not be got out of the SDK, in which
-    /// case no SDK cancel was issued.
+    /// Cancel the in-flight exposure and leave the device quiescent. Fails if
+    /// the capture task could not be got out of the SDK, in which case no SDK
+    /// cancel was issued, and answers `NOT_CONNECTED` if the SDK cancel found
+    /// the camera gone (C9).
     ///
     /// **Ordering is the whole point.** The SDK cancel may not overlap a readout
     /// (see [`Self::sdk_cancel`]), so this signals the in-flight capture's own
@@ -1355,16 +1447,16 @@ impl QhyCameraDevice {
     /// takes it once its blocking chain has drained, so a new exposure cannot
     /// start and race the still-running SDK calls (the design's "one logical
     /// owner per device").
-    async fn cancel_exposure(&self) -> bool {
+    async fn cancel_exposure(&self) -> ASCOMResult<()> {
         let Some(claim) = self.signal_owner() else {
-            return true;
+            return Ok(());
         };
         if claim.is_geometry_write {
             // A geometry write (B4) owns the device. There is no exposure to
             // abort, so this succeeds having changed nothing — issuing the SDK
             // cancel would stop a camera that is not exposing, and waiting for
             // the write would make an abort block on an unrelated request.
-            return true;
+            return Ok(());
         }
         if !self.wait_until_released(&claim, self.drain_timeout).await {
             warn!(
@@ -1373,7 +1465,9 @@ impl QhyCameraDevice {
                 "capture task still inside the SDK; withholding the SDK cancel \
                  rather than issuing it under a live readout"
             );
-            return false;
+            return Err(ASCOMError::invalid_operation(
+                "the exposure could not be aborted; the SDK did not return",
+            ));
         }
         // Claim the device before touching it. The capture task gave it back as
         // it drained, so without this a concurrent `start_exposure` could slip in
@@ -1383,15 +1477,20 @@ impl QhyCameraDevice {
         // disconnect takes the opposite view (see [`Self::seize_device`]): it is
         // closing the device, so it drains the newcomer too.
         let Some(mine) = self.try_claim(CaptureCancel::for_capture()) else {
-            return true;
+            return Ok(());
         };
         // Safe now: nothing is inside the SDK for this device. On a cancel taken
         // during the exposure this stops the integration; on one that arrived
         // during the readout the frame has already been read out and this is the
         // harmless pre-close reset the SDK's own SingleFrameSample performs.
         let _guard = ClaimGuard::new(&self.state, &mine);
-        self.sdk_cancel().await;
-        true
+        // A refused cancel on a camera still present leaves nothing undone: the
+        // capture is already out of the SDK. One that found the camera gone
+        // answers for the departure, as any request that notices one does (C9).
+        if !self.sdk_cancel().await && self.ensure_connected().is_err() {
+            return Err(ASCOMError::NOT_CONNECTED);
+        }
+        Ok(())
     }
 
     /// Cache `bin` as the one the next exposure arms (B1), on behalf of a
@@ -2330,12 +2429,20 @@ async fn wait_for_exposure(
     let deadline = now.checked_add(EXPOSURE_CONFIRM_TIMEOUT).unwrap_or(now);
     while tokio::time::Instant::now() < deadline {
         let polled = Arc::clone(handle);
-        let Ok(Ok(remaining)) =
-            tokio::task::spawn_blocking(move || polled.get_remaining_exposure_us()).await
+        let Ok(Ok(remaining)) = tokio::task::spawn_blocking(move || {
+            let remaining = polled.get_remaining_exposure_us();
+            // A failed poll asks C9's question as any other SDK failure does.
+            if remaining.is_err() {
+                polled.verify_presence();
+            }
+            remaining
+        })
+        .await
         else {
             // A failed or panicking poll is not worth abandoning the frame
             // over: fall through to the readout, which blocks until the frame
-            // really is ready.
+            // really is ready. A camera the poll found gone is not read out
+            // (`capture_once`).
             break;
         };
         if remaining == 0 {
@@ -2365,7 +2472,16 @@ async fn capture_once(
     cancel: &CaptureCancel,
 ) -> Capture {
     let starter = Arc::clone(handle);
-    match tokio::task::spawn_blocking(move || starter.start_single_frame_exposure()).await {
+    match tokio::task::spawn_blocking(move || {
+        let start = starter.start_single_frame_exposure();
+        // A capture that fails asks C9's question as any other SDK failure does.
+        if start.is_err() {
+            starter.verify_presence();
+        }
+        start
+    })
+    .await
+    {
         Ok(Ok(())) => {}
         Ok(Err(e)) => return Capture::Failed(e.0),
         Err(e) => return Capture::Failed(format!("exposure task failed: {e}")),
@@ -2374,27 +2490,58 @@ async fn capture_once(
     if !wait_for_exposure(handle, state, cancel).await {
         return Capture::Cancelled;
     }
+    // A camera found gone during the wait (C9) is not read out: it has no frame
+    // to give, and a readout of a departed camera can only produce a bad one.
+    if handle.is_lost() {
+        return Capture::Failed(
+            "the camera left the bus before its frame was read out".to_string(),
+        );
+    }
 
     let reader = Arc::clone(handle);
-    match tokio::task::spawn_blocking(move || -> Result<ImageData, BackendError> {
-        let size = reader.get_image_size()?;
-        let image = reader.get_single_frame(size)?;
-        debug!(
-            width = image.width,
-            height = image.height,
-            bits_per_pixel = image.bits_per_pixel,
-            channels = image.channels,
-            buffer_bytes = size,
-            "frame read"
-        );
-        Ok(image)
+    match tokio::task::spawn_blocking(move || {
+        let read = read_frame(reader.as_ref());
+        // A readout that fails asks C9's question, and so does one that comes
+        // back blank: a camera that stops answering inside
+        // `GetQHYCCDSingleFrame` can make it report success with an all-zero
+        // frame.
+        if read.as_ref().map_or(true, is_blank) {
+            reader.verify_presence();
+        }
+        read
     })
     .await
     {
+        // A frame read from a camera found gone is not published.
+        Ok(Ok(_)) if handle.is_lost() => Capture::Failed(
+            "the camera left the bus during its readout; the frame was discarded".to_string(),
+        ),
         Ok(Ok(image)) => Capture::Frame(image),
         Ok(Err(e)) => Capture::Failed(e.0),
         Err(e) => Capture::Failed(format!("exposure task failed: {e}")),
     }
+}
+
+/// Whether every byte of a frame is zero: what `GetQHYCCDSingleFrame` hands
+/// back, as a success, for a camera that stopped answering inside it. A real
+/// frame almost never is, so the scan normally ends within its first bytes.
+fn is_blank(image: &ImageData) -> bool {
+    image.data.iter().all(|&byte| byte == 0)
+}
+
+/// Size the frame and read it out — the readout half of [`capture_once`].
+fn read_frame(reader: &dyn CameraHandle) -> Result<ImageData, BackendError> {
+    let size = reader.get_image_size()?;
+    let image = reader.get_single_frame(size)?;
+    debug!(
+        width = image.width,
+        height = image.height,
+        bits_per_pixel = image.bits_per_pixel,
+        channels = image.channels,
+        buffer_bytes = size,
+        "frame read"
+    );
+    Ok(image)
 }
 
 /// The detached capture task: runs one capture, then stores the image (or
@@ -2474,11 +2621,9 @@ impl Device for QhyCameraDevice {
         // fails rather than erroring. `is_open()` is infallible in every current
         // backend (it reads an atomic), so the fallback is purely defensive — the
         // *mutating* `set_connected` below intentionally still propagates the error,
-        // since a misread there would drive a wrong open/close.
-        Ok(self.handle.is_open().unwrap_or_else(|e| {
-            debug!(camera = %self.unique_id, error = %e, "is_open() failed; reporting disconnected");
-            false
-        }))
+        // since a misread there would drive a wrong open/close. A camera that
+        // has left the bus reads false while its handle is still open (C9).
+        Ok(self.is_connected())
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
@@ -2504,15 +2649,26 @@ impl Device for QhyCameraDevice {
             // `OpenQHYCCD` handshake alongside it, which is the race rather than
             // a smaller version of it.
             let _lifecycle = device.handle.lifecycle_lock().lock().await;
-            let current = device
+            let held = device
                 .handle
                 .is_open()
                 .map_err(|_| ASCOMError::NOT_CONNECTED)?;
-            if current == connected {
+            // A camera that has left the bus is held but not connected (C9):
+            // its handle is still open, and only a disconnect lets it go. Either
+            // way a client asks, that release comes first — `Connected = false`
+            // ends there, and `Connected = true` goes on to a fresh connect
+            // rather than taking the lost session back.
+            let lost = held && device.handle.is_lost();
+            if connected == held && !lost {
                 return Ok(());
+            }
+            if lost {
+                device.release_lost().await?;
             }
             if connected {
                 device.connect().await
+            } else if lost {
+                Ok(())
             } else {
                 device.disconnect().await
             }
@@ -3277,16 +3433,7 @@ impl Camera for QhyCameraDevice {
         // it runs where dropping this request cannot leave it half-done (see
         // [`Self::detached`]).
         let device = self.clone();
-        let cancelled = Self::detached(tokio::spawn(
-            async move { Ok(device.cancel_exposure().await) },
-        ))
-        .await?;
-        if !cancelled {
-            return Err(ASCOMError::invalid_operation(
-                "the exposure could not be aborted; the SDK did not return",
-            ));
-        }
-        Ok(())
+        Self::detached(tokio::spawn(async move { device.cancel_exposure().await })).await
     }
 
     async fn stop_exposure(&self) -> ASCOMResult<()> {
@@ -3298,7 +3445,7 @@ impl Camera for QhyCameraDevice {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::backend::mock::{MockCameraHandle, MockFilterWheelHandle};
+    use crate::backend::mock::{drop_once_parked, MockCameraHandle, MockFilterWheelHandle};
     use crate::filterwheel::QhyFilterWheelDevice;
     use qhyccd_rs::CCDChipInfo;
     use std::sync::atomic::Ordering;
@@ -3765,14 +3912,8 @@ mod tests {
 
         // Drop the request future while the handshake is parked in the SDK —
         // which is what an Alpaca client going away does to it.
-        handle.hold_open();
-        let cancelled =
-            tokio::time::timeout(Duration::from_millis(250), device.set_connected(true)).await;
-        assert!(
-            cancelled.is_err(),
-            "the connect should still have been parked, not finished"
-        );
-        assert!(handle.is_in_open(), "and parked inside the SDK");
+        let hold = handle.hold_open_until_dropped();
+        drop_once_parked(device.set_connected(true), || handle.is_in_open()).await;
         assert!(
             lifecycle.try_lock().is_err(),
             "a cancelled request must not give the connection back while the handshake it guards is still running"
@@ -3784,7 +3925,7 @@ mod tests {
         // anything (C6), so waiting on `Connected` would race the publication the
         // assertions below read — `init_calls` still 0, `BinX` still unset.
         // `BinX` answering at all is the commit, so it is the honest gate.
-        handle.release_open();
+        drop(hold);
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while device.bin_x().await.is_err() {
             assert!(
@@ -8312,5 +8453,457 @@ mod tests {
             0,
             "the readout must not run while the camera says it is still exposing"
         );
+    }
+
+    // --- C9: a camera that has left the bus ----------------------------------
+
+    /// `Connected` is the driver's own flag, so nothing changes the moment the
+    /// camera goes: the next SDK failure is what finds out (C9). From then on
+    /// the camera reads disconnected, and the members served from cache refuse
+    /// rather than describe a camera that is not there.
+    #[tokio::test]
+    async fn a_camera_that_left_the_bus_reads_disconnected_after_its_next_sdk_failure() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+        assert!(
+            device.connected().await.unwrap(),
+            "nothing has asked the SDK yet"
+        );
+
+        assert_eq!(
+            device.ccd_temperature().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+
+        assert!(!device.connected().await.unwrap());
+        assert_eq!(
+            device.gain().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.camera_x_size().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            device.camera_state().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// The cooler probe on a departed camera answers "absent" — an answer, not
+    /// a failure — so without C9's question it reads as "this camera has no
+    /// cooler" (E11's fabricated negative, on a handle that is still open).
+    #[tokio::test]
+    async fn a_departed_camera_is_not_described_as_having_no_cooler() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+
+        assert_eq!(
+            device.can_set_ccd_temperature().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert!(!device.connected().await.unwrap());
+    }
+
+    /// A failed request answers from the verdict its own question returned
+    /// (C9). Another client may release and reconnect the moment that verdict
+    /// is in, and a read of the connection afterwards would then vouch for a
+    /// session the failure never touched, so the call site's own error (here,
+    /// "no cooler") would leak out.
+    #[tokio::test]
+    async fn a_failure_answers_from_its_own_verdict_even_if_a_reconnect_lands_after_it() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+        handle
+            .reconnect_lands_after_verdict
+            .store(true, Ordering::SeqCst);
+
+        let error = device.ccd_temperature().await.unwrap_err();
+
+        assert_eq!(error.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(
+            device.connected().await.unwrap(),
+            "the connection reads healthy again, as after a reconnect"
+        );
+    }
+
+    /// The probe rule's half of the same race: a probe whose question found the
+    /// camera gone answers `NOT_CONNECTED`, never the dead handle's "absent" as
+    /// a fact about the session a reconnect opened (C9, E11).
+    #[tokio::test]
+    async fn a_probe_answers_from_its_own_verdict_even_if_a_reconnect_lands_after_it() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+        handle
+            .reconnect_lands_after_verdict
+            .store(true, Ordering::SeqCst);
+
+        let error = device.can_set_ccd_temperature().await.unwrap_err();
+
+        assert_eq!(error.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    /// A reconnect can also land between a request's failed SDK call and its
+    /// question, and the question then goes to the fresh handle, which answers
+    /// "present". The handle the call failed on is gone all the same, so the
+    /// request answers `NOT_CONNECTED`, not the error its call site spells a
+    /// dead handle as (C9).
+    #[tokio::test]
+    async fn a_failure_on_a_handle_replaced_before_its_question_answers_not_connected() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+        handle
+            .reconnect_lands_before_verdict
+            .store(true, Ordering::SeqCst);
+
+        let error = device.ccd_temperature().await.unwrap_err();
+
+        assert_eq!(error.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(
+            !handle.is_lost(),
+            "the fresh handle was not marked lost for the old one's failure"
+        );
+    }
+
+    /// The probe rule's half of the same race (C9, E11).
+    #[tokio::test]
+    async fn a_probe_on_a_handle_replaced_before_its_question_answers_not_connected() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+        handle
+            .reconnect_lands_before_verdict
+            .store(true, Ordering::SeqCst);
+
+        let error = device.can_set_ccd_temperature().await.unwrap_err();
+
+        assert_eq!(error.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    /// A probe whose question is withheld, because a transition holds the
+    /// connection, does not publish its answer (C9, E11): an "absent" heard
+    /// then may come from a departed camera, and publishing it is the "no
+    /// cooler" C9 exists to prevent. The request asks again afterwards, when
+    /// the question is answered.
+    #[tokio::test]
+    async fn a_probe_whose_question_is_withheld_does_not_publish_its_answer() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+
+        let transition = handle.lifecycle_lock().lock().await;
+        let withheld = device.can_set_ccd_temperature().await.unwrap_err();
+        drop(transition);
+
+        assert_eq!(withheld.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(
+            device.can_set_ccd_temperature().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// The same holds for a camera that is present: its "absent" is held back
+    /// while the question cannot be put, and published once it can.
+    #[tokio::test]
+    async fn a_present_cameras_absent_is_published_once_its_question_is_answered() {
+        let (device, handle) = connected_device_with_handle(
+            MockCameraHandle::default().without_control(ControlType::Cooler),
+        )
+        .await;
+
+        let transition = handle.lifecycle_lock().lock().await;
+        let withheld = device.can_set_ccd_temperature().await.unwrap_err();
+        drop(transition);
+
+        assert_eq!(withheld.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(!device.can_set_ccd_temperature().await.unwrap());
+        assert!(device.connected().await.unwrap());
+    }
+
+    /// The other side of the probe rule: "absent" from a camera still on the
+    /// bus is the answer, and leaves the session alone (C9).
+    #[tokio::test]
+    async fn a_camera_without_a_cooler_says_so_and_stays_connected() {
+        let (device, handle) = connected_device_with_handle(
+            MockCameraHandle::default().without_control(ControlType::Cooler),
+        )
+        .await;
+
+        assert!(!device.can_set_ccd_temperature().await.unwrap());
+
+        assert!(device.connected().await.unwrap());
+        assert!(
+            handle.presence_checks.load(Ordering::SeqCst) >= 1,
+            "the probe must have asked whether the camera is there"
+        );
+    }
+
+    /// An SDK refusal from a camera that is still there is that refusal, not a
+    /// disconnect (C9).
+    #[tokio::test]
+    async fn an_sdk_failure_on_a_camera_still_on_the_bus_leaves_it_connected() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.fail_set_controls.store(true, Ordering::SeqCst);
+
+        let err = device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(device.connected().await.unwrap());
+        assert!(
+            handle.presence_checks.load(Ordering::SeqCst) >= 1,
+            "the failure must have asked whether the camera is there"
+        );
+    }
+
+    /// Since GO1 the cached members never reach the SDK, so `StartExposure` is
+    /// as likely as anything to be the call that finds a departed camera out.
+    #[tokio::test]
+    async fn a_start_exposure_on_a_departed_camera_answers_not_connected() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+
+        let err = device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(!device.connected().await.unwrap());
+    }
+
+    /// A capture whose camera leaves mid-frame asks the question as any other
+    /// SDK failure does (C9, E9), so the session that hit it reads disconnected
+    /// rather than `Error` on a camera that is not there.
+    #[tokio::test]
+    async fn a_capture_cut_short_by_the_camera_leaving_reads_disconnected() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        // A camera that keeps reporting time left holds the capture in its wait,
+        // so the departure lands inside the capture rather than racing its frame.
+        handle.set_remaining_exposure_us(500_000);
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+
+        handle.leave_bus();
+
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert!(!device.connected().await.unwrap());
+        assert_eq!(
+            device.camera_state().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// A departure the progress poll is first to meet is judged there (C9), and
+    /// the frame is not read out: a camera found gone has no frame to give.
+    #[tokio::test]
+    async fn a_departure_the_progress_poll_meets_is_judged_before_any_readout() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        // A camera that keeps reporting time left holds the capture in its
+        // poll loop, so the departure is met by a poll, not by the start.
+        handle.set_remaining_exposure_us(500_000);
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        let polling = tokio::time::timeout(Duration::from_secs(30), async {
+            while handle.remaining_calls.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(polling, "the capture never reached its progress poll");
+
+        handle.leave_bus();
+
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert!(!device.connected().await.unwrap());
+        assert_eq!(
+            handle.image_size_calls.load(Ordering::SeqCst),
+            0,
+            "a camera found gone was read out"
+        );
+    }
+
+    /// A camera that stops answering inside its readout can make the SDK report
+    /// success with an all-zero frame. A blank frame counts as a failed
+    /// readout, so it asks C9's question, and a frame from a camera found gone
+    /// is discarded rather than published as `ImageReady`.
+    #[tokio::test]
+    async fn a_blank_frame_from_a_camera_that_left_during_its_readout_is_not_published() {
+        let handle = MockCameraHandle::default();
+        handle.hold_readout();
+        let (device, handle) = connected_device_with_handle(handle).await;
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        // The mock checks the bus as the readout starts and then returns its
+        // blank frame regardless, as the SDK did for a camera that left inside it.
+        await_readout(&handle).await;
+        handle.leave_bus();
+        handle.release_readout();
+
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert_eq!(handle.single_frame_calls.load(Ordering::SeqCst), 1);
+        assert!(!device.connected().await.unwrap());
+        assert!(
+            device.state.last_image.lock().is_none(),
+            "a frame from a camera that left during its readout was published"
+        );
+        assert!(!device.state.image_ready.load(Ordering::Acquire));
+    }
+
+    /// Only a failure asks C9's question (C9), and a frame with data in it is
+    /// not one: a real readout makes no presence probe of its own.
+    #[tokio::test]
+    async fn a_frame_with_data_in_it_asks_no_presence_question() {
+        let handle = MockCameraHandle::default();
+        handle.frame_fill.store(0x11, Ordering::SeqCst);
+        let (device, handle) = connected_device_with_handle(handle).await;
+        let checks_before = handle.presence_checks.load(Ordering::SeqCst);
+
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+
+        assert_eq!(handle.presence_checks.load(Ordering::SeqCst), checks_before);
+        assert!(device.image_ready().await.unwrap());
+    }
+
+    /// A blank frame asks C9's question, but a camera still on the bus answers
+    /// it, so its frame is published as the camera gave it and the session
+    /// carries on.
+    #[tokio::test]
+    async fn a_blank_frame_from_a_camera_still_on_the_bus_is_published() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        let checks_before = handle.presence_checks.load(Ordering::SeqCst);
+
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+
+        assert_eq!(
+            handle.presence_checks.load(Ordering::SeqCst),
+            checks_before + 1
+        );
+        assert!(device.image_ready().await.unwrap());
+        assert!(device.connected().await.unwrap());
+    }
+
+    /// A failure while a transition holds the connection gives no verdict
+    /// (C9): a connect, a disconnect and a readout-mode change run the SDK's
+    /// open, init and close, and a failure among them is not evidence that the
+    /// camera has gone. The next failure outside the window is.
+    #[tokio::test]
+    async fn no_presence_verdict_is_given_while_a_transition_holds_the_connection() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+
+        let transition = handle.lifecycle_lock().lock().await;
+        device.ccd_temperature().await.unwrap_err();
+        assert!(device.connected().await.unwrap());
+        drop(transition);
+
+        assert_eq!(
+            device.ccd_temperature().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert!(!device.connected().await.unwrap());
+    }
+
+    /// `Connected = false` on a departed camera is the ordinary disconnect, and
+    /// it succeeds once the device is let go, whatever the close says about a
+    /// device that is no longer there (C9).
+    #[tokio::test]
+    async fn disconnecting_a_departed_camera_succeeds_even_when_its_close_fails() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+        device.ccd_temperature().await.unwrap_err();
+        handle.fail_close.store(true, Ordering::SeqCst);
+
+        device.set_connected(false).await.unwrap();
+
+        assert!(!handle.is_open().unwrap(), "the lost session was released");
+        assert_eq!(handle.close_calls.load(Ordering::SeqCst), 1);
+        assert!(!device.connected().await.unwrap());
+    }
+
+    /// `Connected = true` on a departed camera is a fresh connect, never the
+    /// lost session back: refused while the camera is gone (C2), and a working
+    /// camera once it has returned (C9).
+    #[tokio::test]
+    async fn reconnecting_a_departed_camera_connects_afresh_once_it_is_back() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+        device.ccd_temperature().await.unwrap_err();
+
+        let refused = device.set_connected(true).await.unwrap_err();
+        assert_eq!(refused.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(!device.connected().await.unwrap());
+        assert!(!handle.is_open().unwrap(), "the lost session was released");
+
+        handle.return_to_bus();
+        device.set_connected(true).await.unwrap();
+
+        assert!(device.connected().await.unwrap());
+        device.ccd_temperature().await.unwrap();
+    }
+
+    /// A capture cancelled in its wait makes no SDK call of its own, so on a
+    /// camera that has left the bus the abort's SDK cancel is the one call that
+    /// fails. It asks C9's question as any other failure does, and the abort,
+    /// being the request that noticed, answers `NOT_CONNECTED`.
+    #[tokio::test]
+    async fn an_abort_that_finds_the_camera_gone_answers_not_connected() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        // Long enough that the capture is still asleep in its wait, making no
+        // SDK call, when the camera leaves and the abort lands.
+        device
+            .start_exposure(Duration::from_secs(60), true)
+            .await
+            .unwrap();
+        // The start runs on the capture task, after `start_exposure` returns;
+        // a departure that beat it would be noticed there and not by the abort.
+        let started = tokio::time::timeout(Duration::from_secs(30), async {
+            while handle.exposures_started.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .is_ok();
+        assert!(started, "the capture never started its exposure");
+        handle.leave_bus();
+
+        let aborted = device.abort_exposure().await;
+
+        assert_eq!(aborted.unwrap_err().code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert!(!device.connected().await.unwrap());
     }
 }

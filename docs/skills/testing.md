@@ -1998,6 +1998,58 @@ whole point and there is nothing that can go wrong. The trigger is the work
 the expression does, not the coverage line it leaves: do not churn existing
 adapter call sites to buy patch percentage.
 
+#### 6.12 A Test of a Deadline Runs on Paused Time
+
+When the code under test has a deadline (a bounded wait, a timeout, a retry
+budget), a test that exercises it on real time bets that the host never
+stalls for longer than the test's slack. A pool VM loses that bet. When the
+host deschedules the VM, every guest thread stops at once, the test's sleep
+and the code's deadline come due together, and whichever task the runtime
+polls first decides the verdict. rp-auth's gate tests queued two requests
+behind a 200 ms gate wait, then gave the request ahead of them 100–150 ms of
+real time to finish. On a Windows pool VM under host contention the wait
+expired first, and the test got a correct `Busy` it did not expect
+(`crates/rp-auth/src/verifier.rs`).
+
+Put the deadline on tokio's clock and the test on paused time:
+
+- **In the code**, measure the deadline with `tokio::time::Instant`, the
+  clock its `timeout` already runs on. It is `std::time::Instant` in
+  production. Under `#[tokio::test(start_paused = true)]` it follows the
+  paused clock, so the deadline passes only when the test advances it;
+  `std::time::Instant` silently ignores `tokio::time::advance()`.
+  `crates/rusty-photon-tls/src/server.rs` does the same.
+- **In the test**, move time with `tokio::time::advance()` and wait on
+  events, not sleeps. While a `spawn_blocking` task is in flight on the
+  current-thread runtime, the paused clock does not auto-advance, so a
+  `tokio::time::sleep` in the test never returns. Have the blocking work wake
+  the wait instead, for example with a `watch` counter it bumps.
+- **After `advance()`, yield once more before asserting a negative.** The
+  advance fires the timers that came due, but the test body is polled again
+  before the tasks those timers woke. Without an extra `yield_now()` the
+  assertion samples too early, which is §6.9's failure in virtual time. With
+  a "queued request never joins the in-flight check" bug reintroduced, the
+  rp-auth test caught it in 63 of 100 runs without the yield and in 100 of
+  100 with it.
+
+A CPU hog does not reproduce this class of flake, because the scheduler still
+runs a waking thread promptly: forty busy loops on the test's CPU gave 0
+failures in 20 runs. Freeze the whole process instead, which is what the
+hypervisor does to the VM:
+
+```sh
+"$BIN" "$TEST" &
+pid=$!
+while kill -0 "$pid" 2>/dev/null; do
+  kill -STOP "$pid"; sleep 0.15; kill -CONT "$pid"; sleep 0.06
+done
+wait "$pid"
+```
+
+With 150 ms freezes every 60 ms, the real-time gate tests failed 8 of 100
+runs. The paused-time rewrite passed 100 of 100, and 40 of 40 with 500 ms
+freezes.
+
 ---
 
 ### 7. Migration Strategy: From Integration Tests to BDD

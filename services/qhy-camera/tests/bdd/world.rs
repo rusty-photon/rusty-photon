@@ -43,6 +43,9 @@ pub struct CameraWorld {
     // Config knobs set by Given steps before the service starts.
     pub filter_names: Option<Vec<String>>,
     pub empty_backend: bool,
+    /// The file whose existence takes the simulated camera off the bus (C9);
+    /// `None` starts a camera that never leaves.
+    pub departure_file: Option<std::path::PathBuf>,
 
     // Result stashes ("When does, Then asserts").
     pub last_error_code: Option<u16>,
@@ -103,16 +106,25 @@ impl CameraWorld {
             // line on stdout by ServiceHandle.
             "server": { "port": 0 },
         });
-        let dir = self
-            .temp_dir
-            .get_or_insert_with(|| TempDir::new().expect("temp dir"));
-        let path = dir.path().join("qhy-camera.json");
+        let path = self.scratch_dir().join("qhy-camera.json");
         std::fs::write(
             &path,
             serde_json::to_string_pretty(&config).expect("serialize config"),
         )
         .expect("write config");
         path.to_str().expect("utf8 config path").to_string()
+    }
+
+    /// The scenario's scratch directory, created on first use under Bazel's
+    /// per-action `TEST_TMPDIR` when there is one (testing.md §5.1): the config
+    /// and the departure file live here, read by the service under test.
+    pub fn scratch_dir(&mut self) -> std::path::PathBuf {
+        self.temp_dir
+            .get_or_insert_with(|| {
+                bdd_infra::scratch::new_dir("qhy-camera-bdd-").expect("scratch dir")
+            })
+            .path()
+            .to_path_buf()
     }
 
     /// Spawn the service binary and acquire the typed device clients.
@@ -122,6 +134,18 @@ impl CameraWorld {
             ServiceHandle::start_with_args(
                 env!("CARGO_PKG_NAME"),
                 &["--config", &config_path, "--simulation-empty"],
+            )
+            .await
+        } else if let Some(departure) = &self.departure_file {
+            let departure = departure.to_str().expect("utf8 departure path");
+            ServiceHandle::start_with_args(
+                env!("CARGO_PKG_NAME"),
+                &[
+                    "--config",
+                    &config_path,
+                    "--simulation-departure-file",
+                    departure,
+                ],
             )
             .await
         } else {

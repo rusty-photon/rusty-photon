@@ -9,6 +9,7 @@
 //! green.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -39,8 +40,11 @@ pub struct CameraWorld {
     pub camera: Option<Arc<dyn Camera>>,
     pub temp_dir: Option<TempDir>,
 
-    // Config knob set by a Given step before the service starts.
+    // Config knobs set by Given steps before the service starts.
     pub empty_backend: bool,
+    /// The file whose existence takes the simulated camera off the bus (C6);
+    /// `None` starts a camera that never leaves.
+    pub departure_file: Option<PathBuf>,
 
     // Result stashes ("When does, Then asserts").
     pub last_error_code: Option<u16>,
@@ -92,16 +96,25 @@ impl CameraWorld {
             // line on stdout by ServiceHandle.
             "server": { "port": 0 },
         });
-        let dir = self
-            .temp_dir
-            .get_or_insert_with(|| TempDir::new().expect("temp dir"));
-        let path = dir.path().join("svbony-camera.json");
+        let path = self.scratch_dir().join("svbony-camera.json");
         std::fs::write(
             &path,
             serde_json::to_string_pretty(&config).expect("serialize config"),
         )
         .expect("write config");
         path.to_str().expect("utf8 config path").to_string()
+    }
+
+    /// The scenario's scratch directory, created on first use under Bazel's
+    /// per-action `TEST_TMPDIR` when there is one (testing.md §5.1): the config
+    /// and the departure file live here, read by the service under test.
+    pub fn scratch_dir(&mut self) -> PathBuf {
+        self.temp_dir
+            .get_or_insert_with(|| {
+                bdd_infra::scratch::new_dir("svbony-camera-bdd-").expect("scratch dir")
+            })
+            .path()
+            .to_path_buf()
     }
 
     /// Spawn the service binary and acquire the typed Camera client.
@@ -111,6 +124,18 @@ impl CameraWorld {
             ServiceHandle::start_with_args(
                 env!("CARGO_PKG_NAME"),
                 &["--config", &config_path, "--simulation-empty"],
+            )
+            .await
+        } else if let Some(departure) = &self.departure_file {
+            let departure = departure.to_str().expect("utf8 departure path");
+            ServiceHandle::start_with_args(
+                env!("CARGO_PKG_NAME"),
+                &[
+                    "--config",
+                    &config_path,
+                    "--simulation-departure-file",
+                    departure,
+                ],
             )
             .await
         } else {
@@ -220,6 +245,31 @@ impl CameraWorld {
             assert!(
                 waited < IMAGE_READY_BUDGET,
                 "exposure did not complete within {IMAGE_READY_BUDGET:?} (waited {waited:?})"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    /// Poll `Connected` until it reads false, or [`IMAGE_READY_BUDGET`] runs
+    /// out.
+    ///
+    /// The same budget as [`Self::wait_image_ready`], because the wait is for
+    /// the same thing: a capture reaching its next SDK call, which is where an
+    /// exposure on a camera that has left the bus finds out (C6). A failed
+    /// read is "not yet", kept so the panic can tell a service that never
+    /// answered from one that kept answering `true` (testing.md §5.9).
+    pub async fn wait_disconnected(&self) {
+        let start = Instant::now();
+        loop {
+            let read = self.camera().connected().await;
+            if matches!(read, Ok(false)) {
+                return;
+            }
+            let waited = start.elapsed();
+            assert!(
+                waited < IMAGE_READY_BUDGET,
+                "Connected did not turn false within {IMAGE_READY_BUDGET:?} \
+                 (waited {waited:?}; last read {read:?})"
             );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
