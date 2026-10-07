@@ -1,0 +1,52 @@
+18:00:14  [start] rescan n=3 (18.5 ms) [(0, 'ZWO ASI1600MM-Cool', 0), (1, 'ZWO ASI120MC-S', 1), (2, 'ZWO ASI178MM', 2)]
+18:00:14    OpenCamera ZWO ASI120MC-S id 1               SUCCESS
+18:00:14    InitCamera ZWO ASI120MC-S id 1               SUCCESS
+18:00:14    OpenCamera ZWO ASI178MM id 2                 SUCCESS
+18:00:15    InitCamera ZWO ASI178MM id 2                 SUCCESS
+18:00:15  PPBA setswitch USB Hub=False       value=None         err=0x0 ''  (28.9 ms)
+18:00:16  PPBA getswitch Id=0 (FTDI alive?)  value=True         err=0x0 ''  (1.1 ms)
+18:00:16  lsusb ZWO: ['Bus 002 Device 008: ID 03c3:1603 ZWO ASI1600MM-Cool']
+18:00:16  lsusb ZWO: ['Bus 002 Device 008: ID 03c3:1603 ZWO ASI1600MM-Cool']
+--- departed: before any rescan ---
+    id 1 (ZWO ASI120MC-S) -> ZWO ASI120MC-S
+18:00:18    ASI120MC-S departed, no rescan: SetROIFormat 64x64 SUCCESS
+18:00:18    ASI120MC-S departed, no rescan: SetControlValue(EXPOSURE 1000 us) GENERAL_ERROR
+18:00:18    ASI120MC-S departed, no rescan: StartExposure SUCCESS
+18:00:19    ASI120MC-S departed, no rescan: status FAILED after 1.20 s
+    id 2 (ZWO ASI178MM) -> ZWO ASI178MM
+18:00:19    ASI178MM departed, no rescan: SetROIFormat 64x64 SUCCESS
+18:00:19    ASI178MM departed, no rescan: SetControlValue(EXPOSURE 1000 us) GENERAL_ERROR
+18:00:19    ASI178MM departed, no rescan: StartExposure  SUCCESS
+18:00:20    ASI178MM departed, no rescan: status FAILED after 1.20 s
+18:00:20  [departed] rescan n=1 (320.5 ms) [(0, 'ZWO ASI1600MM-Cool', 0)]
+    id 1 (ZWO ASI120MC-S) -> INVALID_ID
+    id 2 (ZWO ASI178MM) -> INVALID_ID
+18:00:20  PPBA setswitch USB Hub=True        value=None         err=0x0 ''  (17.1 ms)
+18:00:21  PPBA getswitch Id=0 (FTDI alive?)  value=True         err=0x0 ''  (1.1 ms)
+18:00:21  lsusb ZWO: ['Bus 001 Device 037: ID 03c3:178c ZWO ASI178MM', 'Bus 002 Device 008: ID 03c3:1603 ZWO ASI1600MM-Cool']
+18:00:22  lsusb ZWO: ['Bus 001 Device 037: ID 03c3:178c ZWO ASI178MM', 'Bus 001 Device 038: ID 03c3:120e ZWO ASI120MC-S Planetary Camera', 'Bus 002 Device 008: ID 03c3:1603 ZWO ASI1600MM-Cool']
+18:00:22  lsusb ZWO: ['Bus 001 Device 037: ID 03c3:178c ZWO ASI178MM', 'Bus 001 Device 038: ID 03c3:120e ZWO ASI120MC-S Planetary Camera', 'Bus 002 Device 008: ID 03c3:1603 ZWO ASI1600MM-Cool']
+--- returned: before any rescan ---
+    id 1 (ZWO ASI120MC-S) -> INVALID_ID
+    id 2 (ZWO ASI178MM) -> INVALID_ID
+18:00:26  [returned] rescan n=3 (18.1 ms) [(0, 'ZWO ASI1600MM-Cool', 0), (1, 'ZWO ASI120MC-S', 1), (2, 'ZWO ASI178MM', 2)]
+    old id 1 (ZWO ASI120MC-S) -> CAMERA_CLOSED
+18:00:26    CloseCamera old ZWO ASI120MC-S               SUCCESS
+    old id 2 (ZWO ASI178MM) -> CAMERA_CLOSED
+18:00:26    CloseCamera old ZWO ASI178MM                 SUCCESS
+18:00:26    OpenCamera ZWO ASI120MC-S id 1               SUCCESS
+18:00:26    InitCamera ZWO ASI120MC-S id 1               SUCCESS
+18:00:26    OpenCamera ZWO ASI178MM id 2                 SUCCESS
+18:00:26    InitCamera ZWO ASI178MM id 2                 SUCCESS
+18:00:26    ASI120MC-S reopened after the return: SetROIFormat 64x64 SUCCESS
+18:00:26    ASI120MC-S reopened after the return: SetControlValue(EXPOSURE 1000 us) SUCCESS
+18:00:26    ASI120MC-S reopened after the return: StartExposure SUCCESS
+18:00:27    ASI120MC-S reopened after the return: status SUCCESS after 0.25 s
+18:00:27    ASI120MC-S reopened after the return: GetDataAfterExp SUCCESS
+18:00:27    CloseCamera ZWO ASI120MC-S                   SUCCESS
+18:00:27    ASI178MM reopened after the return: SetROIFormat 64x64 SUCCESS
+18:00:27    ASI178MM reopened after the return: SetControlValue(EXPOSURE 1000 us) SUCCESS
+18:00:27    ASI178MM reopened after the return: StartExposure SUCCESS
+18:00:27    ASI178MM reopened after the return: status SUCCESS after 0.25 s
+18:00:27    ASI178MM reopened after the return: GetDataAfterExp SUCCESS
+18:00:27    CloseCamera ZWO ASI178MM                     SUCCESS

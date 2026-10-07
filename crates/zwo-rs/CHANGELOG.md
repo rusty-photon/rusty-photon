@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `Sdk::cameras` and every call that reads or rebuilds the SDK's camera list
+  (`camera_count`, `open_camera`, `open_uninitialised`, `still_connected`,
+  and `Camera::electrons_per_adu`, which reads it by ID) now take one
+  process-wide lock, so a rescan on one thread cannot renumber the list under
+  another's lookup.
 - **Breaking:** `asi_check` takes the bindgen `ASI_ERROR_CODE` alias (`c_uint`
   on LP64, `c_int` on Windows) instead of `i32`, `AsiError::from_code` takes
   `i64`, and `AsiError::Unknown` stores `i64` — a raw code outside the vendored
@@ -40,6 +45,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `Sdk::camera_list()` → `CameraList`: holds that lock across a sequence
+  that must see one list, such as finding a camera by its serial and opening
+  it (`rescan`, `open_uninitialised` and `open_camera` under the one hold).
+  `CameraList::open_camera` consumes the hold, since some `Camera` methods take
+  the lock themselves. `Sdk::cameras`, `open_camera` and `open_uninitialised`
+  are now one-shot holds of it.
+- `Sdk::still_connected(&camera)`: rescans the bus and asks for the camera's
+  properties by its ID; `Ok(false)` once its ID answers `INVALID_ID` or
+  `CAMERA_CLOSED`. Measured on Linux with ASI SDK 1.41, the SDK never answers
+  `CAMERA_REMOVED` for a camera that has left the bus and hides the departure
+  until something rescans, so this is how a consumer can tell.
+- `Sdk::with_departure_file(path)` (`simulation` + `camera` only): the
+  simulated camera leaves the bus while `path` exists and returns when it is
+  removed, behaving as ASI SDK 1.41 was measured to. While it is gone a rescan
+  finds no camera and an open answers `AsiError::InvalidIndex`. On a `Camera`
+  opened before, reads answer from memory, control writes and guide pulses
+  fail with `AsiError::GeneralError`, an exposure ends
+  `ExposureStatus::Failed`, and a download answers a blank frame, until a
+  rescan (from any SDK in the process sharing the file) drops the camera.
+  Every call on it then answers `AsiError::InvalidId`, even after it returns.
+  As on the real SDK, an open reads the list the last rescan left, so a camera
+  a rescan dropped opens again only once another rescan has listed it.
 - Initial repository scaffold for `zwo-rs` (safe wrapper) and `libzwo-sys` (raw
   FFI), sibling to `qhyccd-rs`.
 - `libzwo-sys`: `bindgen`-generated bindings (build-time) from the vendored MIT

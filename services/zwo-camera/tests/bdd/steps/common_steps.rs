@@ -81,22 +81,18 @@ async fn camera_reports_bool(
 }
 
 /// One scenario with a data table rather than a `Scenario Outline`: the
-/// contract is about the capability surface as a whole — one member answering
-/// while its neighbours refuse is the contradiction the check exists to remove
-/// — and an outline pays a service start per member, the cost that pushed
-/// `sky-survey-camera`'s suite past its 60s Bazel budget on Windows. The
-/// members stay named in the feature file, per testing.md §2.5.
+/// contract is about a surface as a whole — the capability members (E12), or
+/// the cache-served ones of a camera that has left the bus (C6) — and one
+/// member answering while its neighbours refuse is the contradiction the check
+/// exists to remove. An outline pays a service start per member, the cost
+/// that pushed `sky-survey-camera`'s suite past its 60s Bazel budget on
+/// Windows. The members stay named in the feature file, per testing.md §2.5.
 #[then(regex = r"^reading these members from camera device (\d+) is rejected with ASCOM (\w+):$")]
-async fn capability_reads_rejected(
-    world: &mut CameraWorld,
-    step: &Step,
-    _device: u32,
-    code: String,
-) {
+async fn member_reads_rejected(world: &mut CameraWorld, step: &Step, _device: u32, code: String) {
     let camera = world.camera();
     let table = step
         .table()
-        .expect("capability refusal step needs a data table of member names");
+        .expect("refusal step needs a data table of member names");
     for row in table.rows.iter().skip(1) {
         let member = &row[0];
         let error = match member.as_str() {
@@ -107,7 +103,14 @@ async fn capability_reads_rejected(
             "CanStopExposure" => camera.can_stop_exposure().await.err(),
             "CanPulseGuide" => camera.can_pulse_guide().await.err(),
             "IsPulseGuiding" => camera.is_pulse_guiding().await.err(),
-            other => panic!("unknown capability member: {other}"),
+            "Gain" => camera.gain().await.err(),
+            "Offset" => camera.offset().await.err(),
+            "BinX" => camera.bin_x().await.err(),
+            "CameraXSize" => camera.camera_x_size().await.err(),
+            "CameraState" => camera.camera_state().await.err(),
+            "ImageReady" => camera.image_ready().await.err(),
+            "CCDTemperature" => camera.ccd_temperature().await.err(),
+            other => panic!("unknown member: {other}"),
         };
         let error =
             error.unwrap_or_else(|| panic!("{member} answered instead of refusing with {code}"));

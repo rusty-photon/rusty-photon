@@ -104,6 +104,16 @@ the bulk `RngCore::fill_bytes` path), so even a full-frame 6248×4176 download
 returns in a few milliseconds — fast enough to stay inside conformance tools'
 `StartExposure` timeouts.
 
+`Sdk::with_departure_file(path)` takes the simulated camera off the bus while
+`path` exists, for testing a camera that loses its power or cable while
+connected. It behaves as ASI SDK 1.41 was measured to on Linux: no call ever
+answers `CameraRemoved`. Until a rescan, reads answer from memory, control
+writes and guide pulses fail with `GeneralError`, an exposure ends `Failed`
+and a download answers a blank frame. A rescan drops the camera, after which
+every call on it answers `InvalidId`. Removing the file brings the camera
+back, to a fresh open. `Sdk::still_connected` is the presence check this
+calls for: a rescan, then a lookup by the camera's ID.
+
 ## License
 
 Dual-licensed under either of [MIT](LICENSE-MIT) or
