@@ -539,9 +539,9 @@ pub fn resolve_and_init<C: ConfigFile>(
         // The scaffold is held to the same rule as a minted file: a default
         // the service would refuse is a bug to report, not a file to leave.
         parse_value::<C>(&path, default)?;
-        if init_file_if_absent(&path, default)? {
-            tracing::info!("Created default config at {}", path.display());
-        }
+    }
+    if !is_explicit && init_file_if_absent(&path, default)? {
+        tracing::info!("Created default config at {}", path.display());
     }
     Ok(path)
 }
