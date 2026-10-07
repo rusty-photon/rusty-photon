@@ -725,6 +725,31 @@ EAF; those belong to the other zwo services.)
   with a plain `Connected = true` and no reload, as measured. A camera that is
   still gone fails the open with C2's error.
 
+  **Measured on hardware**, on the dev box's ASI120MC-S and ASI178MM, with the
+  ASI1600MM-Cool on USB3 as the control (the
+  [2026-10-06 record](../validation/2026-10-06-zwo-camera-departure-linux/README.md)):
+
+  - **Idle.** With the cameras gone and the sessions held, `Connected`,
+    `CCDTemperature` and `Gain` answered as before. Each camera's next
+    exposure failed in its arm, the check found it gone, and it read
+    disconnected about a second later. The first camera's check found it
+    through `GENERAL_ERROR`. The second found it through `INVALID_ID`, since
+    the first check's rescan had already dropped it.
+  - **Mid-exposure.** A camera that left 3 s into a 10 s frame read
+    disconnected at 11 s, through the capture's own readout poll and with no
+    client call.
+  - **Back.** A plain reconnect found each camera by its identity, each device
+    opening its own body (told apart by `GainMax`).
+  - **Switched off and on with nothing failing in between.** On the build
+    before this rule, a session held across such a blink failed every
+    capture with `GENERAL_ERROR` until a client reconnected. Now its next
+    exposure fails, the check finds its ID answering `CAMERA_CLOSED`, and the
+    session ends. A reconnect then works. The cost is one failed exposure.
+  - The control camera on USB3 kept its session and took frames throughout.
+
+  **Still owed:** Windows, and the blank frame on ASI hardware. No ASI
+  readout was seen to return one; the rule is there because a QHY readout did.
+
 ### Geometry, binning, ROI
 
 - **G1.** `CameraXSize`/`CameraYSize`/`PixelSizeX`/`PixelSizeY` reflect the cached

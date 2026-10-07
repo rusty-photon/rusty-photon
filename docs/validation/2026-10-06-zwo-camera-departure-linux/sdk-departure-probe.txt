@@ -1,0 +1,217 @@
+SDK version 1, 41, 0, 0
+17:59:10  lsusb ZWO: ['Bus 001 Device 027: ID 03c3:178c ZWO ASI178MM', 'Bus 001 Device 028: ID 03c3:120e ZWO ASI120MC-S Planetary Camera', 'Bus 002 Device 008: ID 03c3:1603 ZWO ASI1600MM-Cool']
+17:59:10  [start] ASIGetNumOfConnectedCameras=3 (18.2 ms): [(0, 'ZWO ASI1600MM-Cool', 0, 'SUCCESS'), (1, 'ZWO ASI120MC-S', 1, 'SUCCESS'), (2, 'ZWO ASI178MM', 2, 'SUCCESS')]
+17:59:10    ASIOpenCamera(ZWO ASI120MC-S)      SUCCESS          (   22.5 ms)
+17:59:11    ASIInitCamera(ZWO ASI120MC-S)      SUCCESS          (  597.0 ms)
+17:59:11    ASIOpenCamera(ZWO ASI178MM)        SUCCESS          (   23.3 ms)
+17:59:11    ASIInitCamera(ZWO ASI178MM)        SUCCESS          (  210.4 ms)
+17:59:11  --- ZWO ASI120MC-S (id 1): present (baseline) ---
+17:59:11    ASIGetCameraPropertyByID           SUCCESS          (    0.0 ms)  ZWO ASI120MC-S
+17:59:11    ASIGetControlValue(TEMPERATURE)    SUCCESS          (    0.9 ms)  28.2 C
+17:59:11    ASIGetControlValue(GAIN)           SUCCESS          (    0.0 ms)  100
+17:59:11    ASISetControlValue(GAIN, same)     SUCCESS          (    3.7 ms)
+17:59:11    ASIGetNumOfControls                SUCCESS          (    0.6 ms)  14
+17:59:11    ASIGetROIFormat                    SUCCESS          (    0.0 ms)  1280x960 bin1 type0
+17:59:11    ASISetROIFormat(64x64 bin1 RAW8)   SUCCESS          (    5.9 ms)
+17:59:11    ASIGetID                           GENERAL_ERROR    (    1.1 ms)
+17:59:11    ASIGetSerialNumber                 SUCCESS          (    0.4 ms)  1f19470620070900
+17:59:11    ASIGetDroppedFrames                SUCCESS          (    0.0 ms)  0
+17:59:11    ASIGetExpStatus                    SUCCESS          (    0.0 ms)  IDLE
+17:59:11    ASISetControlValue(EXPOSURE, 1 ms) SUCCESS          (    0.7 ms)
+17:59:11    ASIStartExposure                   SUCCESS          (    0.0 ms)
+17:59:11    ASIGetExpStatus (after start)      SUCCESS          (    0.0 ms)  SUCCESS
+17:59:11    ASIGetExpStatus (after start)      SUCCESS          (    0.0 ms)  SUCCESS
+17:59:12    ASIGetExpStatus (after start)      SUCCESS          (    0.0 ms)  SUCCESS
+17:59:12    ASIGetDataAfterExp                 SUCCESS          (    0.0 ms)
+17:59:12    ASIStopExposure                    SUCCESS          (    0.0 ms)
+17:59:12  --- ZWO ASI178MM (id 2): present (baseline) ---
+17:59:12    ASIGetCameraPropertyByID           SUCCESS          (    0.0 ms)  ZWO ASI178MM
+17:59:12    ASIGetControlValue(TEMPERATURE)    SUCCESS          (    0.8 ms)  35.8 C
+17:59:12    ASIGetControlValue(GAIN)           SUCCESS          (    0.0 ms)  510
+17:59:12    ASISetControlValue(GAIN, same)     SUCCESS          (    3.1 ms)
+17:59:12    ASIGetNumOfControls                SUCCESS          (    1.7 ms)  11
+17:59:12    ASIGetROIFormat                    SUCCESS          (    0.0 ms)  3096x2080 bin1 type0
+17:59:12    ASISetROIFormat(64x64 bin1 RAW8)   SUCCESS          (   41.4 ms)
+17:59:12    ASIGetID                           SUCCESS          (    1.2 ms)  0000000000000000
+17:59:12    ASIGetSerialNumber                 SUCCESS          (    0.4 ms)  1915d5081b090900
+17:59:12    ASIGetDroppedFrames                SUCCESS          (    0.0 ms)  0
+17:59:12    ASIGetExpStatus                    SUCCESS          (    0.0 ms)  IDLE
+17:59:12    ASISetControlValue(EXPOSURE, 1 ms) SUCCESS          (    9.0 ms)
+17:59:12    ASIStartExposure                   SUCCESS          (    0.0 ms)
+17:59:12    ASIGetExpStatus (after start)      SUCCESS          (    0.0 ms)  SUCCESS
+17:59:12    ASIGetExpStatus (after start)      SUCCESS          (    0.0 ms)  SUCCESS
+17:59:13    ASIGetExpStatus (after start)      SUCCESS          (    0.0 ms)  SUCCESS
+17:59:13    ASIGetDataAfterExp                 SUCCESS          (    0.0 ms)
+17:59:13    ASIStopExposure                    SUCCESS          (    0.0 ms)
+17:59:13  PPBA setswitch USB Hub=False       value=None         err=0x0 ''  (32.9 ms)
+17:59:14  PPBA getswitch Id=0 (FTDI alive?)  value=True         err=0x0 ''  (1.1 ms)
+17:59:14  lsusb ZWO: ['Bus 002 Device 008: ID 03c3:1603 ZWO ASI1600MM-Cool']
+17:59:17  [departed, cameras still open] ASIGetNumOfConnectedCameras=1 (319.3 ms): [(0, 'ZWO ASI1600MM-Cool', 0, 'SUCCESS')]
+17:59:17  --- ZWO ASI120MC-S (id 1): departed, +3 s ---
+17:59:17    ASIGetCameraPropertyByID           INVALID_ID       (    0.0 ms)
+17:59:17    ASIGetControlValue(TEMPERATURE)    INVALID_ID       (    0.0 ms)
+17:59:17    ASIGetControlValue(GAIN)           INVALID_ID       (    0.0 ms)
+17:59:17    ASISetControlValue(GAIN, same)     INVALID_ID       (    0.0 ms)
+17:59:17    ASIGetNumOfControls                INVALID_ID       (    0.0 ms)
+17:59:17    ASIGetROIFormat                    INVALID_ID       (    0.0 ms)
+17:59:17    ASISetROIFormat(64x64 bin1 RAW8)   INVALID_ID       (    0.0 ms)
+17:59:17    ASIGetID                           INVALID_ID       (    0.0 ms)
+17:59:17    ASIGetSerialNumber                 INVALID_ID       (    0.0 ms)
+17:59:17    ASIGetDroppedFrames                INVALID_ID       (    0.0 ms)
+17:59:17    ASIGetExpStatus                    INVALID_ID       (    0.0 ms)
+17:59:17    ASISetControlValue(EXPOSURE, 1 ms) INVALID_ID       (    0.0 ms)
+17:59:17    ASIStartExposure                   INVALID_ID       (    0.0 ms)
+17:59:17    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:18    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:18    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:18    ASIGetDataAfterExp                 INVALID_ID       (    0.0 ms)
+17:59:18    ASIStopExposure                    INVALID_ID       (    0.0 ms)
+17:59:18  --- ZWO ASI178MM (id 2): departed, +3 s ---
+17:59:18    ASIGetCameraPropertyByID           INVALID_ID       (    0.0 ms)
+17:59:18    ASIGetControlValue(TEMPERATURE)    INVALID_ID       (    0.0 ms)
+17:59:18    ASIGetControlValue(GAIN)           INVALID_ID       (    0.0 ms)
+17:59:18    ASISetControlValue(GAIN, same)     INVALID_ID       (    0.0 ms)
+17:59:18    ASIGetNumOfControls                INVALID_ID       (    0.0 ms)
+17:59:18    ASIGetROIFormat                    INVALID_ID       (    0.0 ms)
+17:59:18    ASISetROIFormat(64x64 bin1 RAW8)   INVALID_ID       (    0.0 ms)
+17:59:18    ASIGetID                           INVALID_ID       (    0.0 ms)
+17:59:18    ASIGetSerialNumber                 INVALID_ID       (    0.0 ms)
+17:59:18    ASIGetDroppedFrames                INVALID_ID       (    0.0 ms)
+17:59:18    ASIGetExpStatus                    INVALID_ID       (    0.0 ms)
+17:59:18    ASISetControlValue(EXPOSURE, 1 ms) INVALID_ID       (    0.0 ms)
+17:59:18    ASIStartExposure                   INVALID_ID       (    0.0 ms)
+17:59:18    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:19    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:19    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:19    ASIGetDataAfterExp                 INVALID_ID       (    0.0 ms)
+17:59:19    ASIStopExposure                    INVALID_ID       (    0.0 ms)
+17:59:29  [departed, +15 s] ASIGetNumOfConnectedCameras=1 (16.7 ms): [(0, 'ZWO ASI1600MM-Cool', 0, 'SUCCESS')]
+17:59:29  --- ZWO ASI120MC-S (id 1): departed, +15 s ---
+17:59:29    ASIGetCameraPropertyByID           INVALID_ID       (    0.0 ms)
+17:59:29    ASIGetControlValue(TEMPERATURE)    INVALID_ID       (    0.0 ms)
+17:59:29    ASIGetControlValue(GAIN)           INVALID_ID       (    0.0 ms)
+17:59:29    ASISetControlValue(GAIN, same)     INVALID_ID       (    0.0 ms)
+17:59:29    ASIGetNumOfControls                INVALID_ID       (    0.0 ms)
+17:59:29    ASIGetROIFormat                    INVALID_ID       (    0.0 ms)
+17:59:29    ASISetROIFormat(64x64 bin1 RAW8)   INVALID_ID       (    0.0 ms)
+17:59:29    ASIGetID                           INVALID_ID       (    0.0 ms)
+17:59:29    ASIGetSerialNumber                 INVALID_ID       (    0.0 ms)
+17:59:29    ASIGetDroppedFrames                INVALID_ID       (    0.0 ms)
+17:59:29    ASIGetExpStatus                    INVALID_ID       (    0.0 ms)
+17:59:29    ASISetControlValue(EXPOSURE, 1 ms) INVALID_ID       (    0.0 ms)
+17:59:29    ASIStartExposure                   INVALID_ID       (    0.0 ms)
+17:59:29    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:29    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:30    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:30    ASIGetDataAfterExp                 INVALID_ID       (    0.0 ms)
+17:59:30    ASIStopExposure                    INVALID_ID       (    0.0 ms)
+17:59:30  --- ZWO ASI178MM (id 2): departed, +15 s ---
+17:59:30    ASIGetCameraPropertyByID           INVALID_ID       (    0.0 ms)
+17:59:30    ASIGetControlValue(TEMPERATURE)    INVALID_ID       (    0.0 ms)
+17:59:30    ASIGetControlValue(GAIN)           INVALID_ID       (    0.0 ms)
+17:59:30    ASISetControlValue(GAIN, same)     INVALID_ID       (    0.0 ms)
+17:59:30    ASIGetNumOfControls                INVALID_ID       (    0.0 ms)
+17:59:30    ASIGetROIFormat                    INVALID_ID       (    0.0 ms)
+17:59:30    ASISetROIFormat(64x64 bin1 RAW8)   INVALID_ID       (    0.0 ms)
+17:59:30    ASIGetID                           INVALID_ID       (    0.0 ms)
+17:59:30    ASIGetSerialNumber                 INVALID_ID       (    0.0 ms)
+17:59:30    ASIGetDroppedFrames                INVALID_ID       (    0.0 ms)
+17:59:30    ASIGetExpStatus                    INVALID_ID       (    0.0 ms)
+17:59:30    ASISetControlValue(EXPOSURE, 1 ms) INVALID_ID       (    0.0 ms)
+17:59:30    ASIStartExposure                   INVALID_ID       (    0.0 ms)
+17:59:30    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:30    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:31    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:31    ASIGetDataAfterExp                 INVALID_ID       (    0.0 ms)
+17:59:31    ASIStopExposure                    INVALID_ID       (    0.0 ms)
+17:59:31    ASIOpenCamera(ZWO ASI120MC-S) while departed INVALID_ID       (    0.0 ms)
+17:59:31    ASIOpenCamera(ZWO ASI178MM) while departed INVALID_ID       (    0.0 ms)
+17:59:31  PPBA setswitch USB Hub=True        value=None         err=0x0 ''  (20.1 ms)
+17:59:32  PPBA getswitch Id=0 (FTDI alive?)  value=True         err=0x0 ''  (1.0 ms)
+17:59:32  lsusb ZWO: ['Bus 001 Device 034: ID 03c3:178c ZWO ASI178MM', 'Bus 002 Device 008: ID 03c3:1603 ZWO ASI1600MM-Cool']
+17:59:33  lsusb ZWO: ['Bus 001 Device 034: ID 03c3:178c ZWO ASI178MM', 'Bus 001 Device 035: ID 03c3:120e ZWO ASI120MC-S Planetary Camera', 'Bus 002 Device 008: ID 03c3:1603 ZWO ASI1600MM-Cool']
+17:59:36  --- ZWO ASI120MC-S (id 1): returned, old session not reopened ---
+17:59:36    ASIGetCameraPropertyByID           INVALID_ID       (    0.0 ms)
+17:59:36    ASIGetControlValue(TEMPERATURE)    INVALID_ID       (    0.0 ms)
+17:59:36    ASIGetControlValue(GAIN)           INVALID_ID       (    0.0 ms)
+17:59:36    ASISetControlValue(GAIN, same)     INVALID_ID       (    0.0 ms)
+17:59:36    ASIGetNumOfControls                INVALID_ID       (    0.0 ms)
+17:59:36    ASIGetROIFormat                    INVALID_ID       (    0.0 ms)
+17:59:36    ASISetROIFormat(64x64 bin1 RAW8)   INVALID_ID       (    0.0 ms)
+17:59:36    ASIGetID                           INVALID_ID       (    0.0 ms)
+17:59:36    ASIGetSerialNumber                 INVALID_ID       (    0.0 ms)
+17:59:36    ASIGetDroppedFrames                INVALID_ID       (    0.0 ms)
+17:59:36    ASIGetExpStatus                    INVALID_ID       (    0.0 ms)
+17:59:36    ASISetControlValue(EXPOSURE, 1 ms) INVALID_ID       (    0.0 ms)
+17:59:36    ASIStartExposure                   INVALID_ID       (    0.0 ms)
+17:59:36    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:36    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:37    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:37    ASIGetDataAfterExp                 INVALID_ID       (    0.0 ms)
+17:59:37    ASIStopExposure                    INVALID_ID       (    0.0 ms)
+17:59:37  --- ZWO ASI178MM (id 2): returned, old session not reopened ---
+17:59:37    ASIGetCameraPropertyByID           INVALID_ID       (    0.0 ms)
+17:59:37    ASIGetControlValue(TEMPERATURE)    INVALID_ID       (    0.0 ms)
+17:59:37    ASIGetControlValue(GAIN)           INVALID_ID       (    0.0 ms)
+17:59:37    ASISetControlValue(GAIN, same)     INVALID_ID       (    0.0 ms)
+17:59:37    ASIGetNumOfControls                INVALID_ID       (    0.0 ms)
+17:59:37    ASIGetROIFormat                    INVALID_ID       (    0.0 ms)
+17:59:37    ASISetROIFormat(64x64 bin1 RAW8)   INVALID_ID       (    0.0 ms)
+17:59:37    ASIGetID                           INVALID_ID       (    0.0 ms)
+17:59:37    ASIGetSerialNumber                 INVALID_ID       (    0.0 ms)
+17:59:37    ASIGetDroppedFrames                INVALID_ID       (    0.0 ms)
+17:59:37    ASIGetExpStatus                    INVALID_ID       (    0.0 ms)
+17:59:37    ASISetControlValue(EXPOSURE, 1 ms) INVALID_ID       (    0.0 ms)
+17:59:37    ASIStartExposure                   INVALID_ID       (    0.0 ms)
+17:59:37    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:37    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:38    ASIGetExpStatus (after start)      INVALID_ID       (    0.0 ms)
+17:59:38    ASIGetDataAfterExp                 INVALID_ID       (    0.0 ms)
+17:59:38    ASIStopExposure                    INVALID_ID       (    0.0 ms)
+17:59:38  [returned] ASIGetNumOfConnectedCameras=3 (19.6 ms): [(0, 'ZWO ASI1600MM-Cool', 0, 'SUCCESS'), (1, 'ZWO ASI120MC-S', 1, 'SUCCESS'), (2, 'ZWO ASI178MM', 2, 'SUCCESS')]
+17:59:38    ASICloseCamera(ZWO ASI120MC-S) old SUCCESS          (    0.0 ms)
+17:59:38    ASICloseCamera(ZWO ASI178MM) old   SUCCESS          (    0.0 ms)
+17:59:38    ASIOpenCamera(ZWO ASI120MC-S) fresh id 1 SUCCESS          (   23.0 ms)
+17:59:38    ASIInitCamera(ZWO ASI120MC-S)      SUCCESS          (  595.7 ms)
+17:59:38  --- ZWO ASI120MC-S (id 1): returned, reopened ---
+17:59:38    ASIGetCameraPropertyByID           SUCCESS          (    0.0 ms)  ZWO ASI120MC-S
+17:59:38    ASIGetControlValue(TEMPERATURE)    SUCCESS          (    0.9 ms)  27.5 C
+17:59:38    ASIGetControlValue(GAIN)           SUCCESS          (    0.0 ms)  100
+17:59:38    ASISetControlValue(GAIN, same)     SUCCESS          (    3.7 ms)
+17:59:38    ASIGetNumOfControls                SUCCESS          (    0.6 ms)  14
+17:59:38    ASIGetROIFormat                    SUCCESS          (    0.0 ms)  1280x960 bin1 type0
+17:59:38    ASISetROIFormat(64x64 bin1 RAW8)   SUCCESS          (    5.9 ms)
+17:59:38    ASIGetID                           GENERAL_ERROR    (    1.1 ms)
+17:59:38    ASIGetSerialNumber                 SUCCESS          (    0.4 ms)  1f19470620070900
+17:59:38    ASIGetDroppedFrames                SUCCESS          (    0.0 ms)  0
+17:59:38    ASIGetExpStatus                    SUCCESS          (    0.0 ms)  IDLE
+17:59:38    ASISetControlValue(EXPOSURE, 1 ms) SUCCESS          (    0.7 ms)
+17:59:38    ASIStartExposure                   SUCCESS          (    0.0 ms)
+17:59:39    ASIGetExpStatus (after start)      SUCCESS          (    0.0 ms)  SUCCESS
+17:59:39    ASIGetExpStatus (after start)      SUCCESS          (    0.0 ms)  SUCCESS
+17:59:39    ASIGetExpStatus (after start)      SUCCESS          (    0.0 ms)  SUCCESS
+17:59:39    ASIGetDataAfterExp                 SUCCESS          (    0.0 ms)
+17:59:39    ASIStopExposure                    SUCCESS          (    0.0 ms)
+17:59:39    ASICloseCamera(ZWO ASI120MC-S)     SUCCESS          (    0.8 ms)
+17:59:39    ASIOpenCamera(ZWO ASI178MM) fresh id 2 SUCCESS          (   23.8 ms)
+17:59:39    ASIInitCamera(ZWO ASI178MM)        SUCCESS          (  209.2 ms)
+17:59:39  --- ZWO ASI178MM (id 2): returned, reopened ---
+17:59:39    ASIGetCameraPropertyByID           SUCCESS          (    0.0 ms)  ZWO ASI178MM
+17:59:39    ASIGetControlValue(TEMPERATURE)    SUCCESS          (    0.8 ms)  35.8 C
+17:59:39    ASIGetControlValue(GAIN)           SUCCESS          (    0.0 ms)  510
+17:59:39    ASISetControlValue(GAIN, same)     SUCCESS          (    3.1 ms)
+17:59:39    ASIGetNumOfControls                SUCCESS          (    1.7 ms)  11
+17:59:39    ASIGetROIFormat                    SUCCESS          (    0.0 ms)  3096x2080 bin1 type0
+17:59:39    ASISetROIFormat(64x64 bin1 RAW8)   SUCCESS          (   41.4 ms)
+17:59:39    ASIGetID                           SUCCESS          (    1.1 ms)  0000000000000000
+17:59:39    ASIGetSerialNumber                 SUCCESS          (    0.4 ms)  1915d5081b090900
+17:59:39    ASIGetDroppedFrames                SUCCESS          (    0.0 ms)  0
+17:59:39    ASIGetExpStatus                    SUCCESS          (    0.0 ms)  IDLE
+17:59:39    ASISetControlValue(EXPOSURE, 1 ms) SUCCESS          (    9.0 ms)
+17:59:39    ASIStartExposure                   SUCCESS          (    0.0 ms)
+17:59:40    ASIGetExpStatus (after start)      SUCCESS          (    0.0 ms)  SUCCESS
+17:59:40    ASIGetExpStatus (after start)      SUCCESS          (    0.0 ms)  SUCCESS
+17:59:40    ASIGetExpStatus (after start)      SUCCESS          (    0.0 ms)  SUCCESS
+17:59:40    ASIGetDataAfterExp                 SUCCESS          (    0.0 ms)
+17:59:40    ASIStopExposure                    SUCCESS          (    0.0 ms)
+17:59:40    ASICloseCamera(ZWO ASI178MM)       SUCCESS          (    1.9 ms)
