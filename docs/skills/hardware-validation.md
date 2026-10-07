@@ -138,8 +138,9 @@ It is an exception by decision, not a softer default, and it holds only
 when every one of these is true:
 
 - **Every remaining error or issue is attributable to an open issue that
-  already exists**, named in the record's README. A finding with no issue
-  is a failed run, and gets one filed instead of a record.
+  already exists**, named in the record's README. The one alternative is
+  an accepted limitation (below). A finding with no issue is a failed
+  run, and gets one filed instead of a record.
 - **None of the remaining findings is in the behaviour the run set out to
   validate.** A scoped record proves one thing and says which; it does
   not quietly narrow what "pass" means.
@@ -156,12 +157,35 @@ when every one of these is true:
   for an all-zero proof.
 - **A clean run is still owed**, and the README says what has to land
   before it can be made. Filing the scoped record does not discharge
-  that.
+  that. The one alternative, again, is an accepted limitation.
 
 The first such record is
 [2026-09-26-star-adventurer-gti-gti-rig](../validation/2026-09-26-star-adventurer-gti-gti-rig/README.md):
 the counterweight-up PulseGuide direction, with the RA-axis findings all
 carried by two open issues.
+
+**Accepted limitations.** Sometimes the repository owner closes the issue
+that carries a finding as *not planned*. That accepts the finding as a
+limitation of the device or its protocol, which no planned change will
+remove. A scoped record whose findings are all of this kind changes two
+conditions:
+
+- **Instead of an open issue,** the README names the closed issue and
+  links the owner's closing decision on it.
+- **Instead of a clean run being owed,** the README says none is planned.
+  Reopening the issue makes one owed again.
+
+Every other condition holds unchanged. In particular:
+- the finding must still be outside the behaviour the run set out to
+  validate;
+- configuration alerts and timing issues must still be 0;
+- the README's first paragraphs and the index row must say "scoped
+  record, accepted limitation".
+
+The first such record is
+[2026-10-06-star-adventurer-gti-gti-rig-pulse-trim](../validation/2026-10-06-star-adventurer-gti-gti-rig-pulse-trim/README.md):
+the GTi's RA pulse trim defaults, with one cross-axis reading from the
+single-sample RA read that #1371 was closed on.
 
 Working against the field rig rather than a local device:
 [rig-development.md](rig-development.md).

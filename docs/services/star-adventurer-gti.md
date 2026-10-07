@@ -806,7 +806,10 @@ count — the send gap plus the link, about a millisecond over USB and
 more over Wi-Fi — plus half a tick of rounding (one RA tick is 0.024 s), against
 ConformU's 0.07 s tolerance; and on top of both, the step count's own
 jitter (about a tick, with occasional larger lumps), which a single
-sample cannot average out (issue #1371 tracks that). The raw sample is
+sample cannot average out. That residual is accepted: a multi-sample
+read was considered under issue #1371 and closed as not planned. It can
+still fail an occasional ConformU cross-axis or East/West leg. The raw
+sample is
 still what `Slewing`, `SideOfPier`, the PulseGuide side and the
 tracking guard read: they use the encoder alone, not against an LST,
 and a poll of motion is immaterial to them.
@@ -3269,6 +3272,23 @@ Historical baselines (`alpacaprotocol`-only or partial
 
 The evidence trail is [`docs/validation/`](../validation/README.md);
 this service's runs, newest first:
+
+- **2026-10-06 — RA pulse edge-step trim defaults on the field rig**
+  ([record](../validation/2026-10-06-star-adventurer-gti-gti-rig-pulse-trim/README.md)).
+  - **Build:** packaged arm64 nightly of `7700ee97`, with no
+    `ra_pulse_edge_steps` override.
+  - **ConformU:** 4.5.0 over the production TLS+auth endpoint.
+  - **Verdicts:** `alpacaprotocol` 0 / 0. `conformance` 0 errors / 1 issue /
+    0 alerts / 0 timing issues.
+  - **The trim defaults hold:** all eight East/West legs pass at both
+    edge-step levels (mech −9 h low, −3 h high), the worst 0.03 s against
+    0.07 s.
+  - **The one issue:** a cross-axis RA read during the HA +3 North pulse
+    (+0.10 s). A replay of the wire trace puts it down to the single-sample
+    `RightAscension` read, the residual of #1371.
+  - **Filing:** a **scoped record** by decision. #1371 was then closed as
+    not planned, which accepts the finding as a limitation of this mount;
+    no clean run is planned.
 
 - **2026-10-05 — RA pulse edge steps across the arc (for #1362)** on
   the field rig, packaged arm64 nightly of `7d6f73b`, through the

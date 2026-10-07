@@ -1,0 +1,389 @@
+{
+  "ErrorCount": 0,
+  "IssueCount": 1,
+  "ConfigurationAlertCount": 0,
+  "TimingIssuesCount": 0,
+  "TimingCount": 93,
+  "Errors": [],
+  "Issues": [
+    {
+      "Key": "PulseGuide \u002B3.0 North",
+      "Value": "East-West movement was outside test tolerance: RA change (HMS): \u002B00:00:00.10, Expected: \u002B00:00:00.00, Tolerance: \u002B00:00:00.07"
+    }
+  ],
+  "ConfigurationAlerts": [],
+  "Timings": [
+    {
+      "Key": "Connect",
+      "Value": "At 23:07:32.205 Connect                                    0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "InterfaceVersion",
+      "Value": "At 23:07:32.217 InterfaceVersion                           0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Connected",
+      "Value": "At 23:07:32.218 Connected                                  0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Description",
+      "Value": "At 23:07:32.222 Description                                0.003 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DriverInfo",
+      "Value": "At 23:07:32.223 DriverInfo                                 0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DriverVersion",
+      "Value": "At 23:07:32.224 DriverVersion                              0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Name",
+      "Value": "At 23:07:32.225 Name                                       0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SupportedActions",
+      "Value": "At 23:07:32.229 SupportedActions                           0.003 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DeviceState",
+      "Value": "At 23:07:32.254 DeviceState                                0.015 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanFindHome",
+      "Value": "At 23:07:32.263 CanFindHome                                0.002 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanPark",
+      "Value": "At 23:07:32.264 CanPark                                    0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanPulseGuide",
+      "Value": "At 23:07:32.265 CanPulseGuide                              0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanSetDeclinationRate",
+      "Value": "At 23:07:32.266 CanSetDeclinationRate                      0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanSetGuideRates",
+      "Value": "At 23:07:32.266 CanSetGuideRates                           0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanSetPark",
+      "Value": "At 23:07:32.267 CanSetPark                                 0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanSetPierSide",
+      "Value": "At 23:07:32.268 CanSetPierSide                             0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanSetRightAscensionRate",
+      "Value": "At 23:07:32.268 CanSetRightAscensionRate                   0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanSetTracking",
+      "Value": "At 23:07:32.269 CanSetTracking                             0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanSlew",
+      "Value": "At 23:07:32.270 CanSlew                                    0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanSlewltAz",
+      "Value": "At 23:07:32.271 CanSlewltAz                                0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanSlewAltAzAsync",
+      "Value": "At 23:07:32.271 CanSlewAltAzAsync                          0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanSlewAsync",
+      "Value": "At 23:07:32.276 CanSlewAsync                               0.004 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanSync",
+      "Value": "At 23:07:32.277 CanSync                                    0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanSyncAltAz",
+      "Value": "At 23:07:32.277 CanSyncAltAz                               0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanUnPark",
+      "Value": "At 23:07:32.278 CanUnPark                                  0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "AlignmentMode",
+      "Value": "At 23:07:32.517 AlignmentMode                              0.027 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Altitude",
+      "Value": "At 23:07:32.519 Altitude                                   0.003 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "AtHome",
+      "Value": "At 23:07:32.528 AtHome                                     0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "AtPark",
+      "Value": "At 23:07:32.529 AtPark                                     0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Azimuth",
+      "Value": "At 23:07:32.530 Azimuth                                    0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Declination",
+      "Value": "At 23:07:32.531 Declination                                0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DeclinationRate Read",
+      "Value": "At 23:07:32.532 DeclinationRate Read                       0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DoesRefraction Read",
+      "Value": "At 23:07:32.534 DoesRefraction Read                        0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "EquatorialSystem",
+      "Value": "At 23:07:32.562 EquatorialSystem                           0.026 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GuideRateDeclination Read",
+      "Value": "At 23:07:32.565 GuideRateDeclination Read                  0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GuideRateDeclination Write",
+      "Value": "At 23:07:32.566 GuideRateDeclination Write                 0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "GuideRateRightAscension Read",
+      "Value": "At 23:07:32.567 GuideRateRightAscension Read               0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "GuideRateRightAscension Write",
+      "Value": "At 23:07:32.568 GuideRateRightAscension Write              0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "IsPulseGuiding",
+      "Value": "At 23:07:32.568 IsPulseGuiding                             0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "RightAscension",
+      "Value": "At 23:07:32.569 RightAscension                             0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "RightAscensionRate Read",
+      "Value": "At 23:07:32.570 RightAscensionRate Read                    0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SiteElevation Read",
+      "Value": "At 23:07:32.572 SiteElevation Read                         0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SiteLatitude Read",
+      "Value": "At 23:07:32.578 SiteLatitude Read                          0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SiteLongitude Read",
+      "Value": "At 23:07:32.582 SiteLongitude Read                         0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Slewing",
+      "Value": "At 23:07:32.586 Slewing                                    0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SlewSettleTime Read",
+      "Value": "At 23:07:32.588 SlewSettleTime Read                        0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SlewSettleTime Write",
+      "Value": "At 23:07:32.591 SlewSettleTime Write                       0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SideOfPier Read",
+      "Value": "At 23:07:32.617 SideOfPier Read                            0.026 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SiderealTime",
+      "Value": "At 23:07:32.618 SiderealTime                               0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Tracking Read",
+      "Value": "At 23:07:32.620 Tracking Read                              0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Tracking Write",
+      "Value": "At 23:07:32.622 Tracking Write                             0.002 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Tracking Write",
+      "Value": "At 23:07:34.745 Tracking Write                             0.012 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "UTCDate Read",
+      "Value": "At 23:07:34.870 UTCDate Read                               0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanMoveAxis:Primary",
+      "Value": "At 23:07:34.882 CanMoveAxis:Primary                        0.002 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanMoveAxis:Secondary",
+      "Value": "At 23:07:34.882 CanMoveAxis:Secondary                      0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "CanMoveAxis:Tertiary",
+      "Value": "At 23:07:34.882 CanMoveAxis:Tertiary                       0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Park",
+      "Value": "At 23:07:52.454 Park                                       0.217 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Unpark",
+      "Value": "At 23:08:07.993 Unpark                                     0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "AbortSlew",
+      "Value": "At 23:08:09.978 AbortSlew                                  0.005 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide East 2s",
+      "Value": "At 23:08:11.326 PulseGuide East 2s                         0.004 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide North 2s",
+      "Value": "At 23:08:13.842 PulseGuide North 2s                        0.008 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide North 5s",
+      "Value": "At 23:08:36.728 PulseGuide North 5s                        0.007 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide South 5s",
+      "Value": "At 23:08:42.239 PulseGuide South 5s                        0.007 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide East 5s",
+      "Value": "At 23:08:47.744 PulseGuide East 5s                         0.003 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide West 5s",
+      "Value": "At 23:08:53.250 PulseGuide West 5s                         0.003 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide North 5s",
+      "Value": "At 23:09:26.116 PulseGuide North 5s                        0.007 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide South 5s",
+      "Value": "At 23:09:31.627 PulseGuide South 5s                        0.007 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide East 5s",
+      "Value": "At 23:09:37.133 PulseGuide East 5s                         0.003 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide West 5s",
+      "Value": "At 23:09:42.646 PulseGuide West 5s                         0.003 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide North 5s",
+      "Value": "At 23:10:04.512 PulseGuide North 5s                        0.010 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide South 5s",
+      "Value": "At 23:10:10.023 PulseGuide South 5s                        0.008 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide East 5s",
+      "Value": "At 23:10:15.529 PulseGuide East 5s                         0.003 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide West 5s",
+      "Value": "At 23:10:21.036 PulseGuide West 5s                         0.004 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide North 5s",
+      "Value": "At 23:10:53.891 PulseGuide North 5s                        0.007 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide South 5s",
+      "Value": "At 23:10:59.403 PulseGuide South 5s                        0.007 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide East 5s",
+      "Value": "At 23:11:04.911 PulseGuide East 5s                         0.004 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "PulseGuide West 5s",
+      "Value": "At 23:11:10.417 PulseGuide West 5s                         0.003 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SlewToCoordinates",
+      "Value": "At 23:11:30.833 SlewToCoordinates                          15.298 seconds. \u2713 (EXTENDED)"
+    },
+    {
+      "Key": "SlewToCoordinatesAsync",
+      "Value": "At 23:11:31.175 SlewToCoordinatesAsync                     0.220 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SyncToCoordinates",
+      "Value": "At 23:11:49.525 SyncToCoordinates                          0.002 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SyncToCoordinates",
+      "Value": "At 23:11:54.865 SyncToCoordinates                          0.002 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SlewToTarget",
+      "Value": "At 23:12:09.383 SlewToTarget                               9.069 seconds. \u2713 (EXTENDED)"
+    },
+    {
+      "Key": "SlewToTargetAsync",
+      "Value": "At 23:12:09.718 SlewToTargetAsync                          0.221 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "DestinationSideOfPier",
+      "Value": "At 23:12:33.575 DestinationSideOfPier                      0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DestinationSideOfPier",
+      "Value": "At 23:12:33.577 DestinationSideOfPier                      0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SyncToTarget",
+      "Value": "At 23:12:46.138 SyncToTarget                               0.002 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SyncToTarget",
+      "Value": "At 23:12:51.472 SyncToTarget                               0.002 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "SideOfPier Write Normal",
+      "Value": "At 23:20:55.333 SideOfPier Write Normal                    0.219 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "DestinatitonSideOfPier",
+      "Value": "At 23:22:20.722 DestinatitonSideOfPier                     0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DestinatitonSideOfPier",
+      "Value": "At 23:22:43.381 DestinatitonSideOfPier                     0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DestinatitonSideOfPier",
+      "Value": "At 23:23:37.545 DestinatitonSideOfPier                     0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DestinatitonSideOfPier",
+      "Value": "At 23:24:38.205 DestinatitonSideOfPier                     0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Disconnect",
+      "Value": "At 23:24:57.541 Disconnect                                 0.001 seconds. \u2713 (STANDARD)"
+    }
+  ]
+}
