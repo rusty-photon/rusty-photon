@@ -121,8 +121,12 @@ fn main() -> ServiceResult {
 fn run_serve(config: Option<PathBuf>, service_mode: bool) -> ServiceResult {
     // Self-creation applies only to the XDG default path — an explicit
     // `--config` naming a missing file stays a hard error.
-    let config_path =
-        rusty_photon_config::resolve_and_init("rp", config, &rp::config::default_scaffold(), &[])?;
+    let config_path = rusty_photon_config::resolve_and_init::<rp::config::Config>(
+        "rp",
+        config,
+        &rp::config::default_scaffold(),
+        &[],
+    )?;
     ServiceRunner::new("rp")
         .scm_mode(service_mode)
         .run(move |shutdown: Shutdown| async move {

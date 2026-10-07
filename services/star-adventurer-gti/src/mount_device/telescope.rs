@@ -27,7 +27,7 @@ use crate::coordinates::{
 use crate::manager::MountParameters;
 use crate::units::{Cpr, Dec, DecTicks, Ra, RaTicks};
 
-use super::inherent::{validate_guide_rate, SideChoice};
+use super::inherent::{validate_guide_rate, SideChoice, SlewTarget};
 use super::park_persistence::write_park_to_config;
 use super::slew::enable_sidereal_tracking_ra;
 use super::watchers::spawn_park_completion_watcher;
@@ -501,28 +501,24 @@ impl Telescope for MountDevice {
         self.ensure_unparked().await?;
         // Refuse mid-slew. The slew planner also self-refuses via its
         // own `slew_in_progress` check, but rejecting here yields a
-        // cleaner error before we read the snapshot and compute a
-        // stale celestial target.
+        // cleaner error before we read the snapshot.
         if self.slew_in_progress.is_held() {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
                 "SetSideOfPier refused: slew already in progress",
             ));
         }
-        // Compute the mount's current celestial position from the
-        // encoder snapshot + LST. A flip slew keeps the OTA on this
-        // same celestial direction while landing on the requested
-        // pier side.
         let params = self
             .manager
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
-        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-            .map_err(ASCOMError::from)?;
-        let snap = self.manager.snapshot_now().await;
+        // The side may be read before the slew claims the slot: only a
+        // slew or park carries Dec across the pole, and one in flight
+        // refuses this flip. A sync writes the encoder pair for the side
+        // the mount is already on.
         let current_side = side_of_pier_calc(
-            DecTicks::new(snap.dec.position_ticks),
+            DecTicks::new(self.manager.snapshot_now().await.dec.position_ticks),
             Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );
@@ -532,27 +528,22 @@ impl Telescope for MountDevice {
             // the in-memory target.
             return Ok(());
         }
-        // Read the *celestial* current pointing from the snapshot —
-        // `encoder_to_celestial` applies the post-flip RA/Dec mapping
-        // when the Dec encoder is past the pole.
-        // `execute_slew` will re-compute the target
-        // encoder for the chosen side.
-        let (cur_ra, cur_dec) = encoder_to_celestial(
-            RaTicks::new(snap.ra.position_ticks),
-            DecTicks::new(snap.dec.position_ticks),
-            lst,
-            Cpr::new(params.cpr_ra),
-            Cpr::new(params.cpr_dec),
-            self.config.site_latitude_deg,
-        );
-        let (cur_ra, cur_dec) = (cur_ra.value(), cur_dec.value());
+        // A flip slew keeps the OTA on the celestial direction it points
+        // at while landing on the requested pier side. That pointing is
+        // read by `execute_slew` once it has claimed the slot, not here:
+        // a sync landing in between would otherwise have the flip carry
+        // the OTA back to the pointing the sync replaced.
+        //
         // Drive the slew with the chosen-side encoder math directly,
         // bypassing the policy decision tree. The selector's
         // stay-on-current preference is correct for slew_to_coordinates
         // but wrong for an explicit SetSideOfPier — the user pinned the
         // side, honour it.
-        self.execute_slew(cur_ra, cur_dec, SideChoice::Pinned(side_of_pier))
-            .await
+        self.execute_slew(
+            SlewTarget::CurrentPointing,
+            SideChoice::Pinned(side_of_pier),
+        )
+        .await
     }
 
     // ---- Target setters ----
@@ -602,13 +593,13 @@ impl Telescope for MountDevice {
         Self::validate_coordinates(ra, dec)?;
         self.ensure_unparked().await?;
         // Take the axes for the duration, the way `Park` does. The
-        // encoder pair written below is chosen from the *cached* pier
-        // side, and an async slew (a flip most of all) returns as soon
-        // as its completion watcher is spawned. A sync overlapping that
-        // window reads the pre-flip Dec encoder, resolves the
-        // counterweight-down solution, and writes it to a mount already
-        // on its way to the other side — re-labelling it, so every
-        // later slew plans from a false position. That is the
+        // encoder pair written below is chosen from the pier side the
+        // Dec encoder reads, and an async slew (a flip most of all)
+        // returns as soon as its completion watcher is spawned. A sync
+        // overlapping that window reads the pre-flip Dec encoder,
+        // resolves the counterweight-down solution, and writes it to a
+        // mount already on its way to the other side — re-labelling it,
+        // so every later slew plans from a false position. That is the
         // corruption this method's side-awareness exists to prevent,
         // arriving through the back door.
         //
@@ -626,8 +617,10 @@ impl Telescope for MountDevice {
         // reservation. The flag check below is then sound: while this
         // lock is held no *new* slew can acquire, so a `true` reading
         // means one is already under way and a `false` one cannot go
-        // stale. A sync is not motion, so it deliberately does not set
-        // the flag — `Slewing` stays honest.
+        // stale. A `false` one does not mean the axes are still, though;
+        // the goto check after the wire read below covers that. A sync
+        // is not motion, so it deliberately does not set the flag —
+        // `Slewing` stays honest.
         //
         // A guide pulse in flight is left alone: what it restores does
         // not depend on the encoder position, and its wire bursts take
@@ -644,6 +637,47 @@ impl Telescope for MountDevice {
             .parameters()
             .await
             .ok_or(ASCOMError::NOT_CONNECTED)?;
+        // Read both axes from the wire, not from the poll's sample. The
+        // sample can be a poll behind, and a mount that `AbortSlew`
+        // stopped partway through a flip may since have come to rest on
+        // the other side of the pole. Under `axis_ownership`, so no slew
+        // or park can start between this reading and the `:E` writes.
+        let now = self
+            .with_session(async |session| {
+                self.manager
+                    .poll_axes_now(session)
+                    .await
+                    .map_err(ASCOMError::from)
+            })
+            .await?;
+        // A goto can run with no slew holding the slot: an abort's stops
+        // coast on from goto speed, and a client that reconnected
+        // mid-slew left that slew's goto running to its target. Its axis
+        // is not where it will stop, so a position written now would be
+        // wrong once it does.
+        if [&now.ra, &now.dec]
+            .iter()
+            .any(|axis| axis.running() && axis.goto())
+        {
+            debug!(ra = ?now.ra.status, dec = ?now.dec.status, "sync refused: a goto is running");
+            return Err(ASCOMError::new(
+                ASCOMErrorCode::INVALID_OPERATION,
+                "sync refused: an axis is still running a goto; retry once it has stopped",
+            ));
+        }
+        // That read took each axis' count before its status, so a coast
+        // that ended between Dec's two paired a count from before its end
+        // with a status that reads stopped. Read Dec's count again, after
+        // the status: that count is from after any coast, and the side is
+        // classified from it.
+        let dec_now = self
+            .with_session(async |session| {
+                self.manager
+                    .position_now(session, Axis::Dec)
+                    .await
+                    .map_err(ASCOMError::from)
+            })
+            .await?;
         let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
             .map_err(ASCOMError::from)?;
         // Sync writes the encoder pair for the side the mount is
@@ -662,9 +696,8 @@ impl Telescope for MountDevice {
         // Rejecting a sync that would put the encoder outside the safe
         // mechanical envelope stays: a bad sync lets the *next*
         // tracking step push the OTA into a hard stop.
-        let snap = self.manager.snapshot_now().await;
         let current_side = side_of_pier_calc(
-            DecTicks::new(snap.dec.position_ticks),
+            DecTicks::new(dec_now),
             Cpr::new(params.cpr_dec),
             self.config.site_latitude_deg,
         );
@@ -760,7 +793,8 @@ impl Telescope for MountDevice {
         // [§"Meridian flip"](../../../../docs/services/star-adventurer-gti.md#meridian-flip).
         // The choice is made with the rest of the plan, from where the
         // mount stands.
-        self.execute_slew(ra, dec, SideChoice::FlipPolicy).await
+        self.execute_slew(SlewTarget::Coordinates { ra, dec }, SideChoice::FlipPolicy)
+            .await
     }
 
     async fn slew_to_target_async(&self) -> ASCOMResult<()> {

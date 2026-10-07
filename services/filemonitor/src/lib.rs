@@ -57,6 +57,8 @@ pub struct Config {
     pub server: AlpacaServerConfig,
 }
 
+impl rusty_photon_config::ConfigFile for Config {}
+
 /// `deny_unknown_fields` so typoed or removed keys fail loudly at load
 /// instead of being silently ignored.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
@@ -1198,6 +1200,20 @@ mod default_config_tests {
         .unwrap_err()
         .to_string();
         assert!(err.contains("paterns"), "{err}");
+    }
+
+    #[test]
+    fn default_scaffold_round_trips_through_load() {
+        // The startup bootstrap writes `Config::default()` to the platform
+        // path on first start, and only once it loads as `Config`.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("filemonitor.json");
+        let scaffold = serde_json::to_string_pretty(&Config::default()).unwrap();
+        std::fs::write(&path, scaffold).unwrap();
+
+        let c = load_config(&path).unwrap();
+
+        assert_eq!(c.server.port, 11111);
     }
 
     #[test]

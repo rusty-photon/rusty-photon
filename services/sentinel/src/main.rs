@@ -106,7 +106,7 @@ fn main() -> ServiceResult {
         args.log_level
     );
 
-    let config_path = rusty_photon_config::resolve_and_init(
+    let config_path = rusty_photon_config::resolve_and_init::<Config>(
         "sentinel",
         args.config,
         &serde_json::to_value(Config::default())?,

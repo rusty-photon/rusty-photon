@@ -38,6 +38,8 @@ pub struct Config {
     pub server: AlpacaServerConfig,
 }
 
+impl rusty_photon_config::ConfigFile for Config {}
+
 impl Default for Config {
     fn default() -> Self {
         Self {

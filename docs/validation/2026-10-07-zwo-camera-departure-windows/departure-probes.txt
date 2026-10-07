@@ -1,0 +1,249 @@
+# zwo-camera departure probes on Windows, 2026-10-07 (issue #1411)
+#
+# Client: walpaca.py / probes.py on the Fedora host. Every camera request runs
+# inside the win11 guest (PowerShell Invoke-RestMethod against
+# 127.0.0.1:11122) through the QEMU guest agent; the ms figure is the guest-side
+# HTTP round trip. Times are host local time (UTC-7). The guest's clock, which
+# stamps the service log in UTC, ran about 1.0 s behind the host's.
+#
+# Devices in this enumeration: 0 = ASI1600MM-Cool (USB3, the control),
+# 1 = ASI178MM, 2 = ASI120MC-S (both on the PPBA's switched USB2 port).
+#
+# A departure is the PPBA `USB Hub` switch (PU) cut through ppba-driver on the
+# host, then, as soon as the cameras are gone from the host's lsusb, a
+# `virsh detach-device` of each one's hostdev, so the guest sees the surprise
+# removal at once. The way back is the PU switch on, then a fresh
+# `virsh attach-device` (a hostdev is pinned to the host device number it was
+# attached with). `guest PnP` lines are Get-PnpDevice -PresentOnly in the guest.
+
+## Baseline: every camera connects and takes a frame (fresh service)
+
+08:25:11  host lsusb ZWO: ['03c3:178c ZWO ASI178MM', '03c3:120e ZWO ASI120MC-S Planetary Camera', '03c3:1603 ZWO ASI1600MM-Cool']
+08:25:11  guest PnP ZWO: ['OK ZWO ASI120MC-S Camera', 'OK ZWO ASI178MM Camera', 'OK ZWO ASI1600MM COOL Camera']
+08:25:12  PUT 0/connected {'Connected': 'true'} value=None         err=0x0 ''  (653.8 ms)
+08:25:13  GET 0/connected                    value=True         err=0x0 ''  (88.3 ms)
+08:25:13  PUT 1/connected {'Connected': 'true'} value=None         err=0x0 ''  (380.4 ms)
+08:25:14  GET 1/connected                    value=True         err=0x0 ''  (90.5 ms)
+08:25:15  PUT 2/connected {'Connected': 'true'} value=None         err=0x0 ''  (740.8 ms)
+08:25:15  GET 2/connected                    value=True         err=0x0 ''  (88.8 ms)
+08:25:15  GET 0/gainmax                      value=600          err=0x0 ''  (90.2 ms)
+    identity: device 0 GainMax 600
+08:25:16  PUT 0/startexposure 0.1 s          value=None         err=0x0 ''  (90.3 ms)
+08:25:16  t+  0.0s 0/camerastate             value=2            err=0x0 ''  (385.6 ms)
+08:25:17  t+  1.1s 0/camerastate             value=0            err=0x0 ''  (91.0 ms)
+08:25:17  GET 0/imageready                   value=True         err=0x0 ''  (91.0 ms)
+08:25:18  GET 1/gainmax                      value=510          err=0x0 ''  (94.6 ms)
+    identity: device 1 GainMax 510
+08:25:18  PUT 1/startexposure 0.1 s          value=None         err=0x0 ''  (85.1 ms)
+08:25:19  t+  0.0s 1/camerastate             value=2            err=0x0 ''  (595.0 ms)
+08:25:20  t+  1.3s 1/camerastate             value=0            err=0x0 ''  (85.7 ms)
+08:25:20  GET 1/imageready                   value=True         err=0x0 ''  (90.5 ms)
+08:25:21  GET 2/gainmax                      value=100          err=0x0 ''  (84.9 ms)
+    identity: device 2 GainMax 100
+08:25:21  PUT 2/startexposure 0.1 s          value=None         err=0x0 ''  (86.0 ms)
+08:25:21  t+  0.0s 2/camerastate             value=0            err=0x0 ''  (85.6 ms)
+08:25:21  GET 2/imageready                   value=True         err=0x0 ''  (94.1 ms)
+
+## Phase 1: idle departure (USB2 port cut, guest told at once)
+
+08:25:22  GET 0/connected                    value=True         err=0x0 ''  (92.5 ms)
+08:25:22  GET 1/connected                    value=True         err=0x0 ''  (91.5 ms)
+08:25:23  GET 2/connected                    value=True         err=0x0 ''  (99.3 ms)
+08:25:23  PPBA setswitch USB Hub=False       value=None         err=0x0 ''  (27.1 ms)
+08:25:24  PPBA getswitch Id=0 (FTDI alive?)  value=False        err=0x0 ''  (1.2 ms)
+08:25:24  host lsusb ZWO: ['03c3:1603 ZWO ASI1600MM-Cool']
+08:25:24  host lsusb ZWO: ['03c3:1603 ZWO ASI1600MM-Cool']
+08:25:24  virsh detach-device ASI178MM: Device detached successfully
+08:25:24  virsh detach-device ASI120MC-S: Device detached successfully
+08:25:24  guest PnP ZWO: ['OK ZWO ASI1600MM COOL Camera']
+--- reads on a hidden departure: answered, and nothing asks ---
+08:25:25  GET 1/ccdtemperature               value=0.0          err=0x0 ''  (93.9 ms)
+08:25:25  GET 1/gain                         value=0            err=0x0 ''  (85.7 ms)
+08:25:25  GET 1/connected                    value=True         err=0x0 ''  (84.8 ms)
+08:25:26  GET 2/ccdtemperature               value=26.7         err=0x0 ''  (90.5 ms)
+08:25:26  GET 2/gain                         value=0            err=0x0 ''  (94.1 ms)
+08:25:26  GET 2/connected                    value=True         err=0x0 ''  (89.8 ms)
+--- the first failure: an exposure's arm ---
+08:25:27  PUT 1/startexposure {'Duration': 0.1, 'Light': 'true'} value=None         err=0x0 ''  (89.9 ms)
+08:25:29  GET 1/connected                    value=False        err=0x0 ''  (88.9 ms)
+08:25:29  GET 1/camerastate                  value=None         err=0x407 'The communications channel is not connected.'  (99.0 ms)
+08:25:29  GET 1/gain                         value=None         err=0x407 'The communications channel is not connected.'  (95.9 ms)
+08:25:30  PUT 2/startexposure {'Duration': 0.1, 'Light': 'true'} value=None         err=0x0 ''  (90.7 ms)
+08:25:32  GET 2/connected                    value=False        err=0x0 ''  (89.0 ms)
+08:25:32  GET 2/camerastate                  value=None         err=0x407 'The communications channel is not connected.'  (92.1 ms)
+08:25:32  GET 2/gain                         value=None         err=0x407 'The communications channel is not connected.'  (91.2 ms)
+--- control: the ASI1600MM-Cool on USB3 ---
+08:25:33  GET 0/connected                    value=True         err=0x0 ''  (92.2 ms)
+08:25:33  GET 0/ccdtemperature               value=28.1         err=0x0 ''  (98.3 ms)
+08:25:33  PUT 0/startexposure 0.1 s (control) value=None         err=0x0 ''  (98.1 ms)
+08:25:34  t+  0.0s 0/camerastate             value=2            err=0x0 ''  (320.1 ms)
+08:25:35  t+  1.1s 0/camerastate             value=0            err=0x0 ''  (97.8 ms)
+08:25:35  GET 0/imageready                   value=True         err=0x0 ''  (91.9 ms)
+--- release, then reconnect while still gone ---
+08:25:36  PUT 1/connected {'Connected': 'false'} value=None         err=0x0 ''  (90.7 ms)
+08:25:36  PUT 1/connected {'Connected': 'true'} value=None         err=0x407 'The communications channel is not connected.'  (95.5 ms)
+08:25:36  GET 1/connected                    value=False        err=0x0 ''  (97.3 ms)
+08:25:37  PUT 2/connected {'Connected': 'false'} value=None         err=0x0 ''  (95.8 ms)
+08:25:37  PUT 2/connected {'Connected': 'true'} value=None         err=0x407 'The communications channel is not connected.'  (97.2 ms)
+08:25:38  GET 2/connected                    value=False        err=0x0 ''  (90.2 ms)
+
+## Phase 2: back, a plain reconnect by identity
+
+08:26:06  PPBA setswitch USB Hub=True        value=None         err=0x0 ''  (24.3 ms)
+08:26:07  PPBA getswitch Id=0 (FTDI alive?)  value=False        err=0x0 ''  (1.2 ms)
+08:26:07  host lsusb ZWO: ['03c3:178c ZWO ASI178MM', '03c3:120e ZWO ASI120MC-S Planetary Camera', '03c3:1603 ZWO ASI1600MM-Cool']
+08:26:07  host lsusb ZWO: ['03c3:178c ZWO ASI178MM', '03c3:120e ZWO ASI120MC-S Planetary Camera', '03c3:1603 ZWO ASI1600MM-Cool']
+08:26:07  virsh attach-device ASI178MM: Device attached successfully
+08:26:07  virsh attach-device ASI120MC-S: Device attached successfully
+08:26:07  guest PnP ZWO: ['OK ZWO ASI120MC-S Camera', 'OK ZWO ASI178MM Camera', 'OK ZWO ASI1600MM COOL Camera']
+08:26:10  PUT 1/connected {'Connected': 'true'} value=None         err=0x0 ''  (380.1 ms)
+08:26:10  GET 1/connected                    value=True         err=0x0 ''  (92.3 ms)
+08:26:11  GET 1/gainmax                      value=510          err=0x0 ''  (99.4 ms)
+    identity: device 1 GainMax 510, its own body has 510
+08:26:11  PUT 1/startexposure 0.1 s          value=None         err=0x0 ''  (95.4 ms)
+08:26:12  t+  0.0s 1/camerastate             value=2            err=0x0 ''  (600.5 ms)
+08:26:13  t+  1.4s 1/camerastate             value=0            err=0x0 ''  (95.7 ms)
+08:26:13  GET 1/imageready                   value=True         err=0x0 ''  (96.0 ms)
+08:26:14  PUT 2/connected {'Connected': 'true'} value=None         err=0x0 ''  (751.3 ms)
+08:26:15  GET 2/connected                    value=True         err=0x0 ''  (90.0 ms)
+08:26:15  GET 2/gainmax                      value=100          err=0x0 ''  (93.6 ms)
+    identity: device 2 GainMax 100, its own body has 100
+08:26:15  PUT 2/startexposure 0.1 s          value=None         err=0x0 ''  (88.9 ms)
+08:26:16  t+  0.0s 2/camerastate             value=0            err=0x0 ''  (92.1 ms)
+08:26:16  GET 2/imageready                   value=True         err=0x0 ''  (89.6 ms)
+--- control: the ASI1600MM-Cool on USB3 ---
+08:26:16  GET 0/connected                    value=True         err=0x0 ''  (93.5 ms)
+08:26:17  GET 0/ccdtemperature               value=28.1         err=0x0 ''  (91.6 ms)
+08:26:17  PUT 0/startexposure 0.1 s (control) value=None         err=0x0 ''  (92.8 ms)
+08:26:18  t+  0.0s 0/camerastate             value=2            err=0x0 ''  (768.3 ms)
+08:26:19  t+  1.5s 0/camerastate             value=0            err=0x0 ''  (90.0 ms)
+08:26:19  GET 0/imageready                   value=True         err=0x0 ''  (94.9 ms)
+
+## Phase 3: departure 3 s into a 10 s exposure on the ASI178MM
+
+08:26:42  GET 1/connected                    value=True         err=0x0 ''  (89.2 ms)
+08:26:42  PUT 1/startexposure {'Duration': 10, 'Light': 'true'} value=None         err=0x0 ''  (95.7 ms)
+08:26:45  PPBA setswitch USB Hub=False       value=None         err=0x0 ''  (38.6 ms)
+08:26:46  PPBA getswitch Id=0 (FTDI alive?)  value=False        err=0x0 ''  (1.2 ms)
+08:26:46  host lsusb ZWO: ['03c3:1603 ZWO ASI1600MM-Cool']
+08:26:46  host lsusb ZWO: ['03c3:1603 ZWO ASI1600MM-Cool']
+08:26:46  virsh detach-device ASI178MM: Device detached successfully
+08:26:46  virsh detach-device ASI120MC-S: Device detached successfully
+08:26:47  guest PnP ZWO: ['OK ZWO ASI1600MM COOL Camera']
+08:26:47  t+  4.7s 1/connected               value=True         err=0x0 ''  (94.4 ms)
+08:26:48  t+  6.1s 1/connected               value=True         err=0x0 ''  (86.2 ms)
+08:26:50  t+  7.5s 1/connected               value=True         err=0x0 ''  (101.5 ms)
+08:26:51  t+  8.9s 1/connected               value=True         err=0x0 ''  (88.6 ms)
+08:26:53  t+ 10.2s 1/connected               value=False        err=0x0 ''  (177.7 ms)
+08:26:53  GET 1/camerastate                  value=None         err=0x407 'The communications channel is not connected.'  (88.6 ms)
+08:26:53  GET 1/imageready                   value=None         err=0x407 'The communications channel is not connected.'  (91.1 ms)
+08:26:54  2/connected (idle, nothing failed yet) value=True         err=0x0 ''  (90.5 ms)
+--- control: the ASI1600MM-Cool on USB3 ---
+08:26:54  GET 0/connected                    value=True         err=0x0 ''  (91.0 ms)
+08:26:54  GET 0/ccdtemperature               value=28.1         err=0x0 ''  (93.2 ms)
+08:26:55  PUT 0/startexposure 0.1 s (control) value=None         err=0x0 ''  (92.3 ms)
+08:26:55  t+  0.0s 0/camerastate             value=2            err=0x0 ''  (316.3 ms)
+08:26:56  t+  1.1s 0/camerastate             value=0            err=0x0 ''  (98.1 ms)
+08:26:57  GET 0/imageready                   value=True         err=0x0 ''  (173.6 ms)
+
+## Phase 4: back, with the ASI120MC-S's session held across the departure
+
+08:27:18  PPBA setswitch USB Hub=True        value=None         err=0x0 ''  (20.7 ms)
+08:27:19  PPBA getswitch Id=0 (FTDI alive?)  value=False        err=0x0 ''  (1.0 ms)
+08:27:19  host lsusb ZWO: ['03c3:178c ZWO ASI178MM', '03c3:1603 ZWO ASI1600MM-Cool']
+08:27:19  host lsusb ZWO: ['03c3:178c ZWO ASI178MM', '03c3:1603 ZWO ASI1600MM-Cool']
+08:27:20  host lsusb ZWO: ['03c3:178c ZWO ASI178MM', '03c3:120e ZWO ASI120MC-S Planetary Camera', '03c3:1603 ZWO ASI1600MM-Cool']
+08:27:20  host lsusb ZWO: ['03c3:178c ZWO ASI178MM', '03c3:120e ZWO ASI120MC-S Planetary Camera', '03c3:1603 ZWO ASI1600MM-Cool']
+08:27:20  virsh attach-device ASI178MM: Device attached successfully
+08:27:20  virsh attach-device ASI120MC-S: Device attached successfully
+08:27:20  guest PnP ZWO: ['OK ZWO ASI120MC-S Camera', 'OK ZWO ASI178MM Camera', 'OK ZWO ASI1600MM COOL Camera']
+--- device 2 was never told; device 1 was released by the mid-exposure phase ---
+08:27:23  GET 2/connected                    value=True         err=0x0 ''  (161.8 ms)
+08:27:23  PUT 2/startexposure {'Duration': 0.1, 'Light': 'true'} value=None         err=0x0 ''  (142.4 ms)
+08:27:25  GET 2/connected                    value=False        err=0x0 ''  (98.7 ms)
+08:27:26  GET 2/camerastate                  value=None         err=0x407 'The communications channel is not connected.'  (101.2 ms)
+08:27:26  PUT 1/connected {'Connected': 'false'} value=None         err=0x0 ''  (99.5 ms)
+08:27:27  PUT 1/connected {'Connected': 'true'} value=None         err=0x0 ''  (411.6 ms)
+08:27:27  GET 1/gainmax                      value=510          err=0x0 ''  (92.8 ms)
+    identity: device 1 GainMax 510, its own body has 510
+08:27:28  PUT 1/startexposure 0.1 s          value=None         err=0x0 ''  (95.8 ms)
+08:27:28  t+  0.0s 1/camerastate             value=2            err=0x0 ''  (592.3 ms)
+08:27:29  t+  1.4s 1/camerastate             value=0            err=0x0 ''  (89.0 ms)
+08:27:30  GET 1/imageready                   value=True         err=0x0 ''  (106.1 ms)
+08:27:30  PUT 2/connected {'Connected': 'false'} value=None         err=0x0 ''  (107.1 ms)
+08:27:31  PUT 2/connected {'Connected': 'true'} value=None         err=0x0 ''  (748.3 ms)
+08:27:31  GET 2/gainmax                      value=100          err=0x0 ''  (91.2 ms)
+    identity: device 2 GainMax 100, its own body has 100
+08:27:32  PUT 2/startexposure 0.1 s          value=None         err=0x0 ''  (93.8 ms)
+08:27:32  t+  0.0s 2/camerastate             value=0            err=0x0 ''  (98.2 ms)
+08:27:33  GET 2/imageready                   value=True         err=0x0 ''  (100.9 ms)
+--- control: the ASI1600MM-Cool on USB3 ---
+08:27:33  GET 0/connected                    value=True         err=0x0 ''  (92.3 ms)
+08:27:33  GET 0/ccdtemperature               value=28.1         err=0x0 ''  (93.3 ms)
+08:27:34  PUT 0/startexposure 0.1 s (control) value=None         err=0x0 ''  (99.3 ms)
+08:27:34  t+  0.0s 0/camerastate             value=2            err=0x0 ''  (351.4 ms)
+08:27:35  t+  1.1s 0/camerastate             value=0            err=0x0 ''  (102.5 ms)
+08:27:35  GET 0/imageready                   value=True         err=0x0 ''  (94.2 ms)
+
+## Phase 5: off and on again with nothing failing in between
+
+08:27:43  guest PnP ZWO: ['OK ZWO ASI120MC-S Camera', 'OK ZWO ASI178MM Camera', 'OK ZWO ASI1600MM COOL Camera']
+08:27:43  PUT 1/connected {'Connected': 'false'} value=None         err=0x0 ''  (95.8 ms)
+08:27:44  PUT 1/connected {'Connected': 'true'} value=None         err=0x0 ''  (359.8 ms)
+08:27:44  PUT 1/startexposure 0.1 s (baseline) value=None         err=0x0 ''  (92.7 ms)
+08:27:45  t+  0.0s 1/camerastate             value=2            err=0x0 ''  (612.3 ms)
+08:27:46  t+  1.4s 1/camerastate             value=0            err=0x0 ''  (93.8 ms)
+08:27:46  GET 1/imageready                   value=True         err=0x0 ''  (93.4 ms)
+08:27:46  PUT 2/connected {'Connected': 'false'} value=None         err=0x0 ''  (90.4 ms)
+08:27:47  PUT 2/connected {'Connected': 'true'} value=None         err=0x0 ''  (753.3 ms)
+08:27:48  PUT 2/startexposure 0.1 s (baseline) value=None         err=0x0 ''  (91.9 ms)
+08:27:48  t+  0.0s 2/camerastate             value=0            err=0x0 ''  (98.8 ms)
+08:27:49  GET 2/imageready                   value=True         err=0x0 ''  (132.4 ms)
+08:27:49  PPBA setswitch USB Hub=False       value=None         err=0x0 ''  (43.9 ms)
+08:27:50  PPBA getswitch Id=0 (FTDI alive?)  value=False        err=0x0 ''  (1.1 ms)
+08:27:50  host lsusb ZWO: ['03c3:1603 ZWO ASI1600MM-Cool']
+08:27:50  host lsusb ZWO: ['03c3:1603 ZWO ASI1600MM-Cool']
+08:27:50  virsh detach-device ASI178MM: Device detached successfully
+08:27:50  virsh detach-device ASI120MC-S: Device detached successfully
+08:27:50  guest PnP ZWO: ['OK ZWO ASI1600MM COOL Camera']
+08:27:53  PPBA setswitch USB Hub=True        value=None         err=0x0 ''  (24.6 ms)
+08:27:54  PPBA getswitch Id=0 (FTDI alive?)  value=False        err=0x0 ''  (1.0 ms)
+08:27:54  host lsusb ZWO: ['03c3:178c ZWO ASI178MM', '03c3:1603 ZWO ASI1600MM-Cool']
+08:27:54  host lsusb ZWO: ['03c3:178c ZWO ASI178MM', '03c3:1603 ZWO ASI1600MM-Cool']
+08:27:55  host lsusb ZWO: ['03c3:178c ZWO ASI178MM', '03c3:120e ZWO ASI120MC-S Planetary Camera', '03c3:1603 ZWO ASI1600MM-Cool']
+08:27:55  host lsusb ZWO: ['03c3:178c ZWO ASI178MM', '03c3:120e ZWO ASI120MC-S Planetary Camera', '03c3:1603 ZWO ASI1600MM-Cool']
+08:27:55  virsh attach-device ASI178MM: Device attached successfully
+08:27:56  virsh attach-device ASI120MC-S: Device attached successfully
+08:27:56  guest PnP ZWO: ['OK ZWO ASI120MC-S Camera', 'OK ZWO ASI178MM Camera', 'OK ZWO ASI1600MM COOL Camera']
+08:27:58  GET 1/connected                    value=True         err=0x0 ''  (91.5 ms)
+08:27:59  PUT 1/startexposure 0.1 s (after the blink) value=None         err=0x0 ''  (98.7 ms)
+08:27:59  t+  0.0s 1/camerastate             value=None         err=0x407 'The communications channel is not connected.'  (189.8 ms)
+08:28:00  GET 1/imageready                   value=None         err=0x407 'The communications channel is not connected.'  (94.0 ms)
+08:28:00  GET 1/connected                    value=False        err=0x0 ''  (93.9 ms)
+08:28:00  GET 2/connected                    value=True         err=0x0 ''  (95.7 ms)
+08:28:01  PUT 2/startexposure 0.1 s (after the blink) value=None         err=0x0 ''  (98.4 ms)
+08:28:01  t+  0.0s 2/camerastate             value=None         err=0x407 'The communications channel is not connected.'  (94.2 ms)
+08:28:01  GET 2/imageready                   value=None         err=0x407 'The communications channel is not connected.'  (93.9 ms)
+08:28:02  GET 2/connected                    value=False        err=0x0 ''  (99.8 ms)
+08:28:02  PUT 1/connected {'Connected': 'false'} value=None         err=0x0 ''  (161.8 ms)
+08:28:03  PUT 1/connected {'Connected': 'true'} value=None         err=0x0 ''  (417.6 ms)
+08:28:03  GET 1/gainmax                      value=510          err=0x0 ''  (89.1 ms)
+    identity: device 1 GainMax 510, its own body has 510
+08:28:04  PUT 1/startexposure 0.1 s          value=None         err=0x0 ''  (94.3 ms)
+08:28:05  t+  0.0s 1/camerastate             value=2            err=0x0 ''  (601.6 ms)
+08:28:06  t+  1.4s 1/camerastate             value=0            err=0x0 ''  (95.7 ms)
+08:28:06  GET 1/imageready                   value=True         err=0x0 ''  (92.4 ms)
+08:28:06  PUT 2/connected {'Connected': 'false'} value=None         err=0x0 ''  (94.4 ms)
+08:28:07  PUT 2/connected {'Connected': 'true'} value=None         err=0x0 ''  (739.2 ms)
+08:28:08  GET 2/gainmax                      value=100          err=0x0 ''  (92.0 ms)
+    identity: device 2 GainMax 100, its own body has 100
+08:28:08  PUT 2/startexposure 0.1 s          value=None         err=0x0 ''  (83.5 ms)
+08:28:08  t+  0.0s 2/camerastate             value=0            err=0x0 ''  (89.0 ms)
+08:28:09  GET 2/imageready                   value=True         err=0x0 ''  (91.3 ms)
+--- control: the ASI1600MM-Cool on USB3 ---
+08:28:09  GET 0/connected                    value=True         err=0x0 ''  (92.6 ms)
+08:28:10  GET 0/ccdtemperature               value=28.1         err=0x0 ''  (94.2 ms)
+08:28:10  PUT 0/startexposure 0.1 s (control) value=None         err=0x0 ''  (111.7 ms)
+08:28:11  t+  0.0s 0/camerastate             value=2            err=0x0 ''  (361.2 ms)
+08:28:11  t+  1.1s 0/camerastate             value=0            err=0x0 ''  (105.7 ms)
+08:28:12  GET 0/imageready                   value=True         err=0x0 ''  (98.3 ms)

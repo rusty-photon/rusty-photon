@@ -93,7 +93,7 @@ fn main() -> ServiceResult {
         args.config, args.log_level, args.service
     );
 
-    let config_path = rusty_photon_config::resolve_and_init(
+    let config_path = rusty_photon_config::resolve_and_init::<Config>(
         "filemonitor",
         args.config,
         &serde_json::to_value(Config::default())?,

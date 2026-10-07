@@ -33,6 +33,12 @@ pub struct Config {
     pub spool: SpoolConfig,
 }
 
+impl rusty_photon_config::ConfigFile for Config {}
+
+/// Where each device's ASCOM `UniqueID` lives in the config file: the JSON
+/// pointers the startup bootstrap mints into.
+pub const IDENTITY_POINTERS: &[&str] = &["/device/unique_id"];
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -373,22 +379,54 @@ impl TryFrom<u64> for MaxEntries {
 ///
 /// # Errors
 ///
-/// Returns an error naming the path if the file cannot be read or does
-/// not parse as a [`Config`].
+/// Returns an error naming the path if the file is absent or unreadable,
+/// is not valid JSON, or is JSON that does not parse as a [`Config`].
 pub fn load_config(
     path: &std::path::Path,
 ) -> Result<Config, Box<dyn std::error::Error + Send + Sync>> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("could not read config file {}: {e}", path.display()))?;
-    let config: Config = serde_json::from_str(&content)
-        .map_err(|e| format!("config file {} is invalid: {e}", path.display()))?;
-    Ok(config)
+    rusty_photon_config::load_file::<Config>(path)?
+        .ok_or_else(|| format!("config file {} does not exist", path.display()).into())
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    /// A hand-written file that leaves out the device sections gains each
+    /// one from the defaults, with a minted id, and then loads.
+    #[test]
+    fn bootstrap_fills_left_out_device_sections_from_the_defaults() {
+        let default = serde_json::to_value(Config::default()).unwrap();
+        let sections: Vec<&str> = IDENTITY_POINTERS
+            .iter()
+            .map(|pointer| pointer.split('/').nth(1).unwrap())
+            .collect();
+        let mut written = default.clone();
+        for section in &sections {
+            written.as_object_mut().unwrap().remove(*section).unwrap();
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, written.to_string()).unwrap();
+
+        rusty_photon_config::materialize_identity::<Config>(&path, &default, IDENTITY_POINTERS)
+            .unwrap();
+
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        for section in sections {
+            let mut got = on_disk[section].clone();
+            let id = got.as_object_mut().unwrap().remove("unique_id").unwrap();
+            assert!(!id.as_str().unwrap().is_empty(), "{section}: {id}");
+            let mut want = default[section].clone();
+            want.as_object_mut().unwrap().remove("unique_id");
+            assert_eq!(got, want, "{section}");
+        }
+        rusty_photon_config::load_file::<Config>(&path)
+            .unwrap()
+            .unwrap();
+    }
 
     #[test]
     fn default_config_matches_the_design_doc() {

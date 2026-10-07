@@ -285,7 +285,7 @@ fn resolve_config(
         return load_config(config_path);
     }
     if is_serve && host.is_none() && port.is_none() {
-        let path = rusty_photon_config::resolve_and_init(
+        let path = rusty_photon_config::resolve_and_init::<Config>(
             "phd2-guider",
             None,
             &serde_json::to_value(Config::default())?,

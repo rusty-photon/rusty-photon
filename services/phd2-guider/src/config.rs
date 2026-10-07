@@ -24,6 +24,8 @@ pub struct Config {
     pub settling: SettleParams,
 }
 
+impl rusty_photon_config::ConfigFile for Config {}
+
 impl Default for Config {
     fn default() -> Self {
         Self {

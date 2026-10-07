@@ -97,10 +97,10 @@ pub async fn run(
     // failure. The call is brief blocking I/O at startup; doing it
     // directly before the load `await` is acceptable.
     if config_path.exists() {
-        let outcome = rusty_photon_config::materialize_identity(
+        let outcome = rusty_photon_config::materialize_identity::<Config>(
             config_path,
             &serde_json::Value::Object(serde_json::Map::new()),
-            &["/device/unique_id"],
+            config::IDENTITY_POINTERS,
         )?;
         tracing::debug!(
             path = ?config_path,
@@ -136,10 +136,10 @@ pub async fn run_reloadable(
     // Mint a spec-compliant ASCOM UniqueID on first run (idempotent). Only when
     // the file exists — a missing config is a hard error in `load_config`.
     if config_path.exists() {
-        let outcome = rusty_photon_config::materialize_identity(
+        let outcome = rusty_photon_config::materialize_identity::<Config>(
             config_path,
             &serde_json::Value::Object(serde_json::Map::new()),
-            &["/device/unique_id"],
+            config::IDENTITY_POINTERS,
         )?;
         tracing::debug!(path = ?config_path, wrote = outcome.wrote, filled = ?outcome.filled, "materialized device identity");
     }

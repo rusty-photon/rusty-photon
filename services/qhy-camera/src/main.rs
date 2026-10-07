@@ -125,7 +125,7 @@ fn main() -> ServiceResult {
     // default path on first start). The empty identity-pointer list is
     // deliberate: ASCOM UniqueIDs are derived from the camera/CFW SDK serials
     // at enumeration (see docs/services/qhy-camera.md), not minted.
-    let config_path = rusty_photon_config::resolve_and_init(
+    let config_path = rusty_photon_config::resolve_and_init::<qhy_camera::Config>(
         "qhy-camera",
         args.config,
         &serde_json::to_value(qhy_camera::Config::default())?,

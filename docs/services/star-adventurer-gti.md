@@ -707,7 +707,7 @@ So every sample carries what is needed to bring it to the read
 instant, and the reads that pair the encoder with the current LST
 (`RightAscension`, and `Azimuth` / `Altitude` through it;
 `Declination`; the current pointing `SetSideOfPier` flips about; the
-current side and `mech_HA` the slew and sync planners and
+current side and `mech_HA` the slew planner and
 `DestinationSideOfPier` start from; the slew watcher's pickup-loop
 residual) use the sample **projected to now**:
 
@@ -812,7 +812,9 @@ still fail an occasional ConformU cross-axis or East/West leg. The raw
 sample is
 still what `Slewing`, `SideOfPier`, the PulseGuide side and the
 tracking guard read: they use the encoder alone, not against an LST,
-and a poll of motion is immaterial to them.
+and a poll of motion is immaterial to them. `SyncToCoordinates` uses
+neither: it reads both axes from the wire before it writes; see
+[§Sync and pier side](#sync-and-pier-side).
 
 ### Slew lifecycle
 
@@ -1997,21 +1999,45 @@ The CW-exclusion-zone and altitude gates then run against that side's
 `mech_HA`. Sync issues no motion, so the RA path check does not apply.
 A mount whose side reads `Unknown` (no Dec CPR) is treated as CW-down.
 
-Because the side comes from the cached snapshot, it carries the same
-one-`polling_interval` lag every other side-dependent read does
-(`SideOfPier`, `DestinationSideOfPier`, the slew planner, the tracking
-guard). That matters in one place operators actually reach: a mount
-stopped partway through a flip by `AbortSlew` has no well-defined side
-at all, and for up to one poll the snapshot still shows the side it
-started from. The recovery sequence the driver's own procedures point
-at — plate-solve, then `SyncToCoordinates` to ground-truth the frame —
-should let the poll catch up first (200 ms on the shipped
-`polling_interval`). The driver does not refuse the sync: after an
-aborted flip a sync is the tool the operator needs, and refusing it
-would leave the documented recovery with no way to run.
+**Sync reads the axes from the mount, not from the poll.** Holding
+`axis_ownership`, it re-reads both axes (`:j` / `:f`) on the wire, then
+reads Dec's count (`:j2`) once more and classifies the side from that.
+The cached poll sample can be a poll behind the wire, and in one place
+operators actually reach that is enough to pick the wrong side: a
+mount stopped partway through a flip by `AbortSlew` has no
+well-defined side until it has stopped, and the poll that would show
+where it stopped can come after the sync. The second Dec read is
+there because each axis' count is read before its status: a coast
+that ends between the two pairs a count from before its end with a
+status that reads stopped. Read after that status, the count is from
+after any coast. The five extra frames cost a sync a few round trips,
+and a sync is rare.
+
+**Sync refuses while either axis is running a goto** with
+`INVALID_OPERATION`, even when no slew or park holds the slew slot.
+Two ordinary sequences leave a goto running that nothing owns:
+
+- `AbortSlew`. Its `:L` stops do not stop a goto at once: the `GTi`
+  coasts on for up to 1.5 s (see
+  [§Safety stop at startup](#safety-stop-at-startup)).
+- A client that disconnects mid-slew and reconnects before the slew's
+  watcher has noticed. Disconnect voids the slew's claim, and the
+  watcher gives up without stopping the goto. The last-disconnect
+  safety stop does not run either, because the reconnected client's
+  session kept the transport open. The goto runs on to its target.
+
+In both, the position a sync would write is not where the axis will
+stop. The refusal does not block the recovery the driver's procedures
+point at after an aborted flip — plate-solve, then
+`SyncToCoordinates` to ground-truth the frame. It only defers the sync
+until the axes have stopped, which the plate-solve exposure needs
+anyway. `Slewing` reports the same running goto once the poll has
+read it, so a client that waits for `Slewing` to clear before syncing
+is not refused.
 
 **Sync takes the axes for its duration** and refuses with
-`INVALID_OPERATION` when a slew or park already owns them. The side is read from the cached snapshot, and an
+`INVALID_OPERATION` when a slew or park already owns them. A sync
+decides the side from a reading of the Dec axis, and an
 asynchronous slew returns as soon as its completion watcher is
 spawned: a sync landing in that window — after a flip is issued,
 before it lands — would resolve the *old* side and write its encoder
@@ -2036,7 +2062,10 @@ it *falsifies* the flag: it clears `slew_in_progress` before awaiting
 the stops, so for a moment the flag says idle while the mount is still
 moving. Inside the lock the flag check is then sound — nothing can
 acquire or falsify it while the lock is held, so a `false` reading
-cannot go stale. A sync is not
+cannot go stale. A clear slot does not mean still axes, though: an
+abort's coast and a goto a disconnect left behind both run with the
+slot empty, and those are what the wire read and the goto refusal
+above are for. A sync is not
 motion and so does not set `slew_in_progress`: `Slewing` stays `false`
 throughout, as ASCOM expects.
 
@@ -2185,12 +2214,20 @@ pierEast) is outside the CW exclusion zone.
 = false`, and follows the standard `NOT_CONNECTED` /
 `INVALID_WHILE_PARKED` / `INVALID_OPERATION` (already-slewing) gate.
 After a successful flip the next encoder snapshot's `SideOfPier` reads
-the new value (the Dec encoder has moved past the pole);
-`TargetRightAscension` / `TargetDeclination` remain unchanged.
+the new value (the Dec encoder has moved past the pole).
+`TargetRightAscension` / `TargetDeclination` are set to the pointing
+the flip keeps, as any slew sets them to its target.
 
-The current side and the pointing to keep are read when
-`SetSideOfPier` is called. The flip slew itself is planned like any
-other slew: from where the axes come to rest after its stop (see
+The current side is read when `SetSideOfPier` is called. The pointing
+to keep is read once the flip has claimed the slew slot. A
+`SyncToCoordinates` can land between the call and the claim, since it
+holds `axis_ownership`, which the claim waits for. The flip then keeps
+the pointing the sync set rather than slewing back to the one it
+replaced, which would move the OTA by the sync's correction. No sync
+can land after the claim: a sync refuses while a slew holds the slot.
+The auto-flip goes through `SetSideOfPier`, so the same holds for it.
+The flip slew itself is planned like any other slew: from where the
+axes come to rest after its stop (see
 [§Slew lifecycle](#slew-lifecycle)).
 
 #### Through-wrap slew routing
@@ -2503,10 +2540,10 @@ Notes:
 - `flip_policy.flip_range_hours` was **removed** 2026-09 (issue
   #1301). A config still carrying it fails to load with the field
   named — see [§Flip policy](#flip-policy) for the migration.
-- `unpark_from_ap_position` is **required** (no default in the schema
-  sense, but the ship default is `"ap_park_0"` — the field is the
-  operator's declared physical position assumption, and "current
-  position" is the only honest value when nothing was declared).
+- `unpark_from_ap_position` is optional and defaults to `"ap_park_0"`
+  when omitted. The field is the operator's declared physical position
+  assumption, and "current position" is the only honest value when
+  nothing was declared.
   One of `"ap_park_0"` through `"ap_park_5"`. A named park
   (`ap_park_1..ap_park_5`) tells the driver to seed the firmware
   encoder via `:E1` / `:E2` on every fresh-power-up connect to the
@@ -2565,7 +2602,17 @@ On startup, before loading its configuration, the driver:
    overwritten. On a *fresh install* (no file yet) the default scaffold
    written out is the serialized `Config::default()` with the minted id
    filled in, so the operator gets a complete, valid config file to
-   edit.
+   edit. A file with no `mount` section at all gets the default `mount`
+   block copied in before the id is minted. That block carries a
+   `site_latitude_deg` / `site_longitude_deg` of 0.0, exactly as a
+   fresh install does, and the operator replaces them. The file is
+   written **only when the result loads**: it must parse as `Config`
+   and pass the auto-flip offset rule (see [§Flip policy](#flip-policy)),
+   which `Config`'s `ConfigFile::check` runs. A file the driver would
+   refuse is left byte for byte as it was, and the start fails with
+   `config file <path> is valid JSON but not a valid configuration:
+   <detail>`. See
+   [docs/crates/rusty-photon-config.md](../crates/rusty-photon-config.md).
 3. **Loads the config** from that path (which now always exists) and
    applies the CLI overrides (`--transport`, `--port`, `--baud`,
    `--server-port`).
@@ -2573,8 +2620,9 @@ On startup, before loading its configuration, the driver:
 The materialize step operates **only on the on-disk file**, never on a
 CLI-override-applied effective config, so a transient `--port` is never
 baked into the persisted file. It touches only the `/mount/unique_id`
-pointer; like `SetPark`, it reads the document as a `serde_json::Value`
-and preserves every other field. The two writers never clobber each
+pointer — plus, when the file has no `mount` section, the default
+section that pointer lives in. Like `SetPark`, it reads the document as
+a `serde_json::Value` and preserves every other field. The two writers never clobber each
 other: the identity minting runs once at startup and `SetPark`'s
 `write_mount_fields_to_config` runs at runtime, both read-modify-write
 the same file as a `Value`, each mutate only their own keys

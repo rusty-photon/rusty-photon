@@ -125,7 +125,7 @@ fn main() -> ServiceResult {
     // deliberate: the ASCOM UniqueID is derived from the EAF SDK serial at
     // enumeration, not minted into config (see the design doc "Device
     // identity").
-    let config_path = rusty_photon_config::resolve_and_init(
+    let config_path = rusty_photon_config::resolve_and_init::<zwo_focuser::Config>(
         "zwo-focuser",
         args.config,
         &serde_json::to_value(zwo_focuser::Config::default())?,
