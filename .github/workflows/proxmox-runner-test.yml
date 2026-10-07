@@ -111,6 +111,37 @@ jobs:
           command -v git >/dev/null || { echo "::error::git missing"; fail=1; }
           exit $fail
 
+      # Task Scheduler starts the gha-runner task at below-normal CPU, Low I/O
+      # and memory priority 2 unless it is told otherwise, and every job
+      # process inherits them. At Low I/O, Windows does no read-ahead, which
+      # roughly triples what a fresh Bazel server spends re-hashing the output
+      # base. one-job.ps1 resets all three; this proves the reset reached the
+      # job (docs/skills/proxmox-runner-pool.md has the measurements).
+      - name: Verify the job runs at normal priority
+        shell: pwsh
+        run: |
+          Add-Type -TypeDefinition @'
+          using System;
+          using System.Runtime.InteropServices;
+          public static class RpPriorityCheck {
+            // Class 33 is ProcessIoPriority; class 0 is ProcessMemoryPriority.
+            [DllImport("ntdll.dll")]
+            public static extern int NtQueryInformationProcess(IntPtr process, int infoClass, ref int info, int length, out int returned);
+            [DllImport("kernel32.dll", SetLastError = true)]
+            public static extern bool GetProcessInformation(IntPtr process, int infoClass, ref uint info, int size);
+          }
+          '@
+          $self = Get-Process -Id $PID
+          $io = -1; $returned = 0; $memory = [uint32]0
+          [void][RpPriorityCheck]::NtQueryInformationProcess($self.Handle, 33, [ref]$io, 4, [ref]$returned)
+          [void][RpPriorityCheck]::GetProcessInformation($self.Handle, 0, [ref]$memory, 4)
+          $seen = "cpu=$($self.PriorityClass) io=$io memory=$memory"
+          Write-Output $seen
+          if ($self.PriorityClass -ne 'Normal' -or $io -ne 2 -or $memory -ne 5) {
+            Write-Output "::error::job runs at $seen; expected cpu=Normal io=2 memory=5"
+            exit 1
+          }
+
       - uses: actions/checkout@v7
 
       - name: Shorten Bazel output base
