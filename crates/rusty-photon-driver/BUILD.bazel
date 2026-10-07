@@ -1,5 +1,5 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_test")
 
 exports_files(
     ["Cargo.toml"],
@@ -39,4 +39,12 @@ rust_test(
         normal = True,
         normal_dev = True,
     ),
+)
+
+# `connected_transition` carries a runnable example, the shortest statement of
+# its contract, so it is compiled and run here rather than left to the nightly
+# Cargo safety net.
+rust_doc_test(
+    name = "rusty-photon-driver_doc_test",
+    crate = ":rusty-photon-driver",
 )

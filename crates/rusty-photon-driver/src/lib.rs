@@ -15,6 +15,8 @@
 //! - [`ConfigActionCtx`] + [`dispatch`] + [`supported_actions`] — the generic
 //!   `config.get` / `config.apply` / `config.schema` action dispatch, including the
 //!   fire-after-response in-process reload.
+//! - [`connected_transition`] — what an ASCOM `Connected` write does on a device
+//!   whose session may have been lost to a device that left the bus.
 //!
 //! A driver invokes [`driver_error!`] for its error type and delegates
 //! `Device::action` / `Device::supported_actions` to the functions here. See
@@ -48,9 +50,11 @@
 )]
 
 pub mod actions;
+pub mod connection;
 pub mod discovery;
 pub mod error;
 mod macros;
 
 pub use actions::{dispatch, supported_actions, ConfigActionCtx, RELOAD_AFTER_RESPONSE_DELAY};
+pub use connection::{connected_transition, ConnectedTransition};
 pub use error::apply_error_to_ascom;

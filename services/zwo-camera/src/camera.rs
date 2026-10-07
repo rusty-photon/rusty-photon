@@ -34,8 +34,7 @@ use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use parking_lot::Mutex;
 use rusty_photon_camera_core::{
-    self as camera_core, connected_transition, unbinned, Alignment, ConnectedTransition,
-    PixelDepth, Roi, UnbinnedRoi,
+    self as camera_core, unbinned, Alignment, PixelDepth, Roi, UnbinnedRoi,
 };
 use tracing::{debug, warn};
 use zwo_rs::{BayerPattern, CameraInfo, ControlCaps, ControlType, ImageType};
@@ -45,7 +44,7 @@ use crate::backend::{
 };
 use crate::config::{DeviceOverride, MaxAduReporting};
 use crate::config_actions::ZwoCameraDriver;
-use rusty_photon_driver::ConfigActionCtx;
+use rusty_photon_driver::{connected_transition, ConfigActionCtx, ConnectedTransition};
 
 /// 0x500 — driver-specific catch-all for an asynchronous capture failure
 /// surfaced lazily via `image_array` (E9).
@@ -753,7 +752,7 @@ impl ZwoCamera {
 }
 
 /// What a `Connected = requested` write has to do from `session`: the rule
-/// qhy-camera and svbony-camera share (`rusty-photon-camera-core`), fed this
+/// svbony-camera and zwo-focuser share (`rusty-photon-driver`), fed this
 /// handle's session. A lost session (C6) always has something to do, its
 /// release.
 const fn transition_for(session: SessionState, requested: bool) -> ConnectedTransition {
