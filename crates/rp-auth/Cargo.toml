@@ -31,4 +31,7 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }
+# test-util: unlocks paused tokio time (start_paused), so the verifier's gate
+# tests drive the gate wait instead of racing the host's scheduling.
+tokio = { workspace = true, features = ["test-util"] }
 tower = { workspace = true }
