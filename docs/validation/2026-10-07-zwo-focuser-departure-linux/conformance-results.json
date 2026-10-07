@@ -1,0 +1,92 @@
+{
+  "ErrorCount": 0,
+  "IssueCount": 0,
+  "ConfigurationAlertCount": 0,
+  "TimingIssuesCount": 0,
+  "TimingCount": 20,
+  "Errors": [],
+  "Issues": [],
+  "ConfigurationAlerts": [],
+  "Timings": [
+    {
+      "Key": "Connect",
+      "Value": "At 16:03:51.509 Connect                  0.001 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "InterfaceVersion",
+      "Value": "At 16:03:52.029 InterfaceVersion         0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Connected",
+      "Value": "At 16:03:52.031 Connected                0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Description",
+      "Value": "At 16:03:52.038 Description              0.005 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DriverInfo",
+      "Value": "At 16:03:52.040 DriverInfo               0.002 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DriverVersion",
+      "Value": "At 16:03:52.041 DriverVersion            0.002 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Name",
+      "Value": "At 16:03:52.043 Name                     0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SupportedActions",
+      "Value": "At 16:03:52.048 SupportedActions         0.005 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DeviceState",
+      "Value": "At 16:03:52.085 DeviceState              0.023 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Absolute",
+      "Value": "At 16:03:52.094 Absolute                 0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "IsMoving",
+      "Value": "At 16:03:52.098 IsMoving                 0.003 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MaxStep",
+      "Value": "At 16:03:52.133 MaxStep                  0.035 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "MaxIncrement",
+      "Value": "At 16:03:52.134 MaxIncrement             0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Position",
+      "Value": "At 16:03:52.137 Position                 0.003 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "TempCompAvailable",
+      "Value": "At 16:03:52.208 TempCompAvailable        0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "TempComp Read",
+      "Value": "At 16:03:52.210 TempComp Read            0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Temperature",
+      "Value": "At 16:03:52.221 Temperature              0.008 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Halt",
+      "Value": "At 16:03:52.227 Halt                     0.004 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to 40637",
+      "Value": "At 16:03:52.462 Move to 40637            0.203 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Disconnect",
+      "Value": "At 16:04:16.699 Disconnect               0.001 seconds. \u2713 (STANDARD)"
+    }
+  ]
+}

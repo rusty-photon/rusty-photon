@@ -180,6 +180,14 @@ there is no in-flight-task cancellation/invalidation machinery to build.
   scope*).
 - **`EAFGetPosition`** has no moving sentinel — it always returns the live
   (ramping) step count, whether or not the focuser is currently moving.
+- **The SDK writes its own log, and aborts the process when it cannot.** EAF
+  SDK 1.7.7 logs to `/tmp/zwo/log/eaf_sdk/` through spdlog. When that
+  directory is not writable, the first SDK call ends the process with an
+  uncaught C++ exception (`spdlog::spdlog_ex` … `Permission denied`), which
+  Rust cannot catch. The packaged unit runs with `PrivateTmp=yes` and never
+  sees another user's `/tmp/zwo`. A hand-run service or the doctor
+  subcommand, run as a different user from whoever created `/tmp/zwo` on a
+  shared `/tmp`, dies this way (measured on the field rig, 2026-10-07).
 
 ## ASCOM Focuser Mapping
 
@@ -575,6 +583,12 @@ probe attached, on a Linux dev box (`cargo run -p zwo-focuser`, real build, no
 - **Temperature**: 20.5 °C on the bench — ambient-plausible (probe reading).
 - **Position persistence**: the step counter survives power cycles (stored in
   the focuser, not the host).
+
+**Performed 2026-10-07** on the field rig (Raspberry Pi 5, aarch64) for C5, an
+EAF that leaves the bus: a `ctypes` probe of EAF SDK 1.7.7, five departure
+phases through the service, and ConformU 4.5.0 `alpacaprotocol` and
+`conformance`, both clean. Record:
+[`docs/validation/2026-10-07-zwo-focuser-departure-linux/`](../validation/2026-10-07-zwo-focuser-departure-linux/README.md).
 
 ## Packaging
 
