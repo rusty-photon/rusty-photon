@@ -692,8 +692,9 @@ EAF; those belong to the other zwo services.)
   no lock and makes no SDK call, and the readout poll after it is the first
   call to find the exposure failed. A readout the camera left in the middle of
   can also come back a success with every pixel zero, as a QHY readout was seen
-  to on Windows (unmeasured on ASI), so a downloaded frame that is all zeros
-  asks too. From a camera that has gone it is discarded and the capture fails
+  to on Windows, so a downloaded frame that is all zeros asks too. No ASI
+  readout has been seen to, on Linux or on Windows, where power cuts were swept
+  through the readout of a full frame. From a camera that has gone it is discarded and the capture fails
   as a departure; from one still there it is published as it is. The scan stops
   at the first byte that is not zero, so a real frame costs nothing. qhy-camera
   ([C9](qhy-camera.md#behavioral-contracts)) and svbony-camera follow the same
@@ -1497,7 +1498,8 @@ simulation) and **85 BDD scenarios**.
   The suite creates and removes the file, and the simulated camera behaves as
   ASI SDK 1.41 was measured to. Until a rescan, reads answer from memory,
   control writes and guide pulses fail with `GENERAL_ERROR`, an exposure ends
-  failed, and a download answers a blank frame (the last unmeasured on ASI). A
+  failed, and a download answers a blank frame. No ASI hardware has answered
+  one; the simulator does so that the blank-frame rule is exercised. A
   rescan while the file exists drops the camera, process-wide: every call on
   its handle then answers `INVALID_ID`, even once the file is gone, and an open
   finds it again only after a rescan has listed it. While the
