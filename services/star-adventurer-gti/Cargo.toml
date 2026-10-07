@@ -43,21 +43,18 @@ erfars = { workspace = true }
 chrono = { workspace = true }
 tempfile = { workspace = true }
 
-# Intentionally NOT opting in to the nightly ConformU workflow via
-# `[package.metadata.conformu]` yet. The in-tree conformu_integration
-# test runs ConformU's full test set (bdd_infra::run_conformu drives the
-# URL-argument verbs, which call SetFullTest()) with
-# `flip_policy.enabled = true` in its mock config: under the shipped
-# default ConformU's extended pulse-guide leg at mechanical HA +9 h lies
-# inside the counterweight exclusion zone, the driver refuses the slew,
-# and ConformU abandons `CheckMethods`. The flip reaches HA +9 through
-# the pole and turns on ConformU's seven-minute meridian-flip test, so a
-# full run takes about 11 minutes.
-#
-# Re-add `[package.metadata.conformu]` after one clean full run against
-# the mock on all three CI OSes with a measured duration.
-# Until then, run ConformU manually — see
-# `docs/services/star-adventurer-gti.md` §"Running ConformU manually".
+# The in-tree conformu_integration test runs ConformU's full test set
+# (bdd_infra::run_conformu drives the URL-argument verbs, which call
+# SetFullTest()) with `flip_policy.enabled = true` in its mock config:
+# under the shipped default ConformU's extended pulse-guide leg at
+# mechanical HA +9 h lies inside the counterweight exclusion zone, the
+# driver refuses the slew, and ConformU abandons `CheckMethods`. The flip
+# reaches HA +9 through the pole and turns on ConformU's seven-minute
+# meridian-flip test, so a full run takes about 12 minutes, the longest
+# suite in the rotation. See `docs/services/star-adventurer-gti.md`
+# §"Running ConformU manually".
+[package.metadata.conformu]
+command = "cargo test -p star-adventurer-gti --features conformu --test conformu_integration -- --nocapture"
 
 # Enable the Windows Service Control Manager dispatch only on Windows;
 # on Unix the `scm` feature would pull in `windows-service` for no

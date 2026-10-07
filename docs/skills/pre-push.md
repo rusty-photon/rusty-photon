@@ -553,17 +553,15 @@ cargo metadata --format-version 1 --no-deps | \
   jq -r '.packages[] | select(.metadata.conformu.command) | "\(.name): \(.metadata.conformu.command)"'
 ```
 
-Current services (13), every one with the same command shape,
+Current services (14), every one with the same command shape,
 `cargo test -p <service> --features conformu --test conformu_integration -- --nocapture`:
 dsd-fp2, filemonitor, pa-falcon-rotator, pa-scops-oag, planetarium-bridge,
-ppba-driver, qhy-camera, qhy-focuser, sky-survey-camera, svbony-camera,
-upbv2-driver, zwo-camera, zwo-focuser. The tests self-skip unless
-`CONFORMU_PATH` is set, which is what keeps them inert in the ordinary
-suites. star-adventurer-gti carries the test (and the Bazel `conformu`
-tag, so `bazel test --config=conformu //...` runs it — clean against the
-mock, about 12 minutes) but no `[package.metadata.conformu]` yet, so the
-nightly rotation never discovers it until #1344 adds it after a measured
-three-OS run — see its design doc §"Running ConformU manually". The runner
+ppba-driver, qhy-camera, qhy-focuser, sky-survey-camera,
+star-adventurer-gti, svbony-camera, upbv2-driver, zwo-camera, zwo-focuser.
+The tests self-skip unless `CONFORMU_PATH` is set, which is what keeps them
+inert in the ordinary suites. star-adventurer-gti is the long pole at about
+12 minutes, seven of them ConformU's fixed wait while the mount tracks
+through the meridian — see its design doc §"Running ConformU manually". The runner
 contract (full test set through `bdd_infra::run_conformu`, selection only
 through `run_conformu_from_settings`) is in
 [testing.md §1.4](testing.md#14-conformu-integration-tests).

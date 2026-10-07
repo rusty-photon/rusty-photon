@@ -7,8 +7,8 @@
 //! verbs, which call `SetFullTest()`, and it exposes no test selection. The
 //! mount config's `site_latitude_deg` is device configuration — that is
 //! honoured, and keeps the site above `ConformU`'s 10° gate so the
-//! side-of-pier model tests are not skipped. Against the mock the run is not
-//! green while the RA pulse-guide offset is open; the design doc's section
+//! side-of-pier model tests are not skipped. Against the mock the run is
+//! clean — no error, issue or configuration alert; the design doc's section
 //! on running `ConformU` manually carries the expected report.
 #![cfg(feature = "conformu")]
 #![allow(clippy::await_holding_lock)]
@@ -73,7 +73,9 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
     // through the pole: under the shipped default that leg lies inside the
     // counterweight exclusion zone, the driver refuses the slew, and
     // ConformU abandons `CheckMethods`. It is the config the hardware
-    // record ran, and it switches on ConformU's meridian-flip test.
+    // record ran, and it switches on ConformU's meridian-flip test, whose
+    // seven-minute wait while the mount tracks through the meridian is
+    // most of the run's twelve minutes.
     //
     // `ra_pulse_edge_steps` is zero because the mock's motor board adds no
     // forward step at a rate change (its `rate_change_step_ticks` defaults
