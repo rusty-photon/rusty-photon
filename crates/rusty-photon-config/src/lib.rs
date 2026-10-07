@@ -490,10 +490,11 @@ pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigE
 ///    whose pointers already hold non-empty ids has nothing to persist, so a
 ///    missing explicit file stays absent. Minting runs before step 3 so a
 ///    pointered first start writes the scaffold once, ids already filled.
-/// 3. When the path is the platform default and no file exists yet, persist
-///    `default` there, so a packaged install materializes an editable file on
-///    first start — and so same-host consumers that derive facts from the
-///    file (sentinel's health probes, doctor) can read it. An explicit path
+/// 3. When the path is the platform default and no file exists yet, check
+///    that `default` loads as `C` and persist it there, so a packaged install
+///    materializes an editable file on first start — and so same-host
+///    consumers that derive facts from the file (sentinel's health probes,
+///    doctor) can read it. An explicit path
 ///    is never self-created by this step: what a missing explicit file means
 ///    is the caller's policy — strict-config services treat it as a hard load
 ///    error (a typo'd `--config` must not silently run on defaults), while
@@ -509,7 +510,8 @@ pub fn init_file_if_absent(path: &Path, default: &Value) -> Result<bool, ConfigE
 /// Returns a [`ConfigError`] if the path cannot be resolved, the
 /// existing file is unreadable or corrupt, minting would leave a file that
 /// does not load as `C` (the error is the one the file as written produces),
-/// or writing the minted / default file fails.
+/// `default` itself does not load as `C` when it is about to be written, or
+/// writing the minted / default file fails.
 pub fn resolve_and_init<C: ConfigFile>(
     service: &str,
     explicit: Option<PathBuf>,
@@ -533,8 +535,13 @@ pub fn resolve_and_init<C: ConfigFile>(
             tracing::debug!("Device UniqueID(s) already present; not minting");
         }
     }
-    if !is_explicit && init_file_if_absent(&path, default)? {
-        tracing::info!("Created default config at {}", path.display());
+    if !is_explicit && !path.exists() {
+        // The scaffold is held to the same rule as a minted file: a default
+        // the service would refuse is a bug to report, not a file to leave.
+        parse_value::<C>(&path, default)?;
+        if init_file_if_absent(&path, default)? {
+            tracing::info!("Created default config at {}", path.display());
+        }
     }
     Ok(path)
 }
@@ -1023,6 +1030,27 @@ mod tests {
         assert!(p.starts_with(dir.path()), "{p:?}");
         let on_disk: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(on_disk, default);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolve_and_init_refuses_a_default_that_would_not_load() {
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = tempfile::tempdir().unwrap();
+        let _env = EnvGuard::set("XDG_CONFIG_HOME", dir.path());
+
+        let err = resolve_and_init::<Typed>("xdg-refuse-test", None, &json!({ "port": 1 }), &[])
+            .err()
+            .unwrap();
+
+        assert!(matches!(err, ConfigError::InvalidConfig { .. }), "{err:?}");
+        let p = resolve_config_path("xdg-refuse-test", None).unwrap();
+        assert!(
+            !p.exists(),
+            "a default that would not load must not be written"
+        );
     }
 
     #[cfg(target_os = "linux")]

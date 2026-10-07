@@ -1087,6 +1087,20 @@ mod persisted_config_shape {
 
     use super::Config;
 
+    #[test]
+    fn default_scaffold_round_trips_through_load() {
+        // The startup bootstrap writes `Config::default()` to the platform
+        // path on first start, and only once it loads as `Config`.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sentinel.json");
+        let scaffold = serde_json::to_string_pretty(&Config::default()).unwrap();
+        std::fs::write(&path, scaffold).unwrap();
+
+        let c = crate::load_config(&path).unwrap();
+
+        assert_eq!(c.server.port, 11114);
+    }
+
     /// An unset optional field is spelled by its key's absence, never by an
     /// explicit `null` — see [`rusty_photon_server_config::unset`] for why.
     /// A field that grows without `skip_serializing_if` trips here rather

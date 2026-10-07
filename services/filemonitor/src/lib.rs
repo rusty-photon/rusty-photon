@@ -1203,6 +1203,20 @@ mod default_config_tests {
     }
 
     #[test]
+    fn default_scaffold_round_trips_through_load() {
+        // The startup bootstrap writes `Config::default()` to the platform
+        // path on first start, and only once it loads as `Config`.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("filemonitor.json");
+        let scaffold = serde_json::to_string_pretty(&Config::default()).unwrap();
+        std::fs::write(&path, scaffold).unwrap();
+
+        let c = load_config(&path).unwrap();
+
+        assert_eq!(c.server.port, 11111);
+    }
+
+    #[test]
     fn default_server_config_is_plain_http_on_all_interfaces() {
         let c = Config::default();
         assert_eq!(c.server.port, 11111);

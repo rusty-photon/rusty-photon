@@ -229,11 +229,13 @@ the operator to hand-write a unique string.
   applied in memory first, and the file is saved only if the result
   parses as `Config` and passes the same rules `load_config` applies
   (`Config`'s `ConfigFile::check`). There is no default to fill a
-  missing section from. So a file without a `device` section, or one
-  that breaks a follow-mode rule, is left byte for byte as it was, and
-  the start fails with
+  missing section from. So when an id has to be minted, a file without
+  a `device` section, or one that breaks a follow-mode rule, is left
+  byte for byte as it was, and the start fails with
   `config file <path> is valid JSON but not a valid configuration:
-  <detail>`.
+  <detail>`. A file that already holds its id needs no write.
+  `load_config` then reports the same problems in its own words
+  (`config parse: …`, `invalid config: …`).
 
 This is shared behaviour provided by the `rusty-photon-config` crate,
 identical across the rusty-photon drivers (see

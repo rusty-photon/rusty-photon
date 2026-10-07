@@ -102,7 +102,10 @@ replaced. The load reports the wrong type.
 ### First start
 
 When the path is the platform default and no file exists yet, the default
-config is written there, with its ids already minted. Same-host consumers
+config is written there, with its ids already minted. It too is written only
+once it loads as `C`. A default the service would refuse is a bug in that
+service: it fails the start rather than becoming a file. Each service's own
+tests keep its default loadable. Same-host consumers
 (sentinel's health probes, doctor) can then read it. An explicit `--config`
 path is created only when minting has an id to write. What a missing explicit
 file means otherwise is up to each service. Strict-config services treat it as
