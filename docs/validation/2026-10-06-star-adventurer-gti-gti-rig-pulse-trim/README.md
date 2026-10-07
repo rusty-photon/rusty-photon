@@ -117,8 +117,11 @@ in every run:
 
 ## Files
 
-- [`alpacaprotocol.log`](alpacaprotocol.log): unmodified. The device under
-  test appears as the loopback proxy (`127.0.0.1:18117`).
+- [`alpacaprotocol.log`](alpacaprotocol.log): unmodified in content. The
+  device under test appears as the loopback proxy (`127.0.0.1:18117`).
+  ConformU wrote six CR characters inside its multi-line `Response:`
+  entries; the repository's `.gitattributes` stores every file with LF line
+  endings, so those CRs are not in the committed copy.
 - [`conformance.log`](conformance.log): unmodified **except lines 5 and 7**.
   There the rig's hostname is replaced by the placeholder `<rig-host>`,
   because the rig's address must not appear in this public repository.
