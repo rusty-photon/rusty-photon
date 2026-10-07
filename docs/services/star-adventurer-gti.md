@@ -2957,7 +2957,7 @@ ConformU verifies ASCOM compliance.
 | Service unit tests (`#[cfg(test)]` per module) | `coordinates`: encoder ↔ RA/Dec across edge cases (poles, meridian, hemisphere flip); `config`: defaults, JSON round-trips, CLI overrides; `error`: ASCOM mapping |
 | Service BDD (cucumber) | every behaviour table-row above as a scenario, with the mock transport |
 | Service `test_lib.rs` (gated on `mock`) | server starts, binds the configured port, exposes the configured device |
-| `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance via `bdd_infra::run_conformu` — ConformU's URL-argument verbs, so both the `alpacaprotocol` and `conformance` suites run with ConformU's **full** test set; the runner exposes no test selection. **Currently NOT wired into the nightly `conformu` workflow**: its mock config now enables the flip policy and runs clean, and re-entry waits on one clean full run on all three CI OSes with a measured duration ([#1344](https://github.com/rusty-photon/rusty-photon/issues/1344)); the RA pulse-guide offset that kept the mock run red ([#1299](https://github.com/rusty-photon/rusty-photon/issues/1299)) is fixed. See [§"Running ConformU manually"](#running-conformu-manually) and [§"Expected ConformU report"](#expected-conformu-report). |
+| `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance via `bdd_infra::run_conformu` — ConformU's URL-argument verbs, so both the `alpacaprotocol` and `conformance` suites run with ConformU's **full** test set; the runner exposes no test selection. In the nightly `conformu` workflow rotation through `[package.metadata.conformu]`; its mock config enables the flip policy and runs clean on all three CI OSes ([#1344](https://github.com/rusty-photon/rusty-photon/issues/1344)). See [§"Running ConformU manually"](#running-conformu-manually) and [§"Expected ConformU report"](#expected-conformu-report). |
 
 **The BDD baseline runs the shipped safety config.** Its
 `cw_exclusion_zone` is the default `(0.95, 11.05)`, not `null`, so
@@ -3035,8 +3035,9 @@ feature-gated mock so the binary itself runs against a fake mount.
 
 ### Running ConformU manually
 
-This service is deliberately **not** in the nightly `conformu`
-workflow rotation. The in-tree integration test runs ConformU through
+This service is in the nightly `conformu` workflow rotation: its
+`Cargo.toml` carries the `[package.metadata.conformu]` command the
+workflow discovers. The in-tree integration test runs ConformU through
 `bdd_infra::run_conformu` — the URL-argument verbs, which call
 ConformU's `SetFullTest()` — so it is always the **full** test set:
 `alpacaprotocol` then `conformance`, every test group enabled except
@@ -3048,11 +3049,10 @@ write carry only timeouts and delays (`bdd_infra::FullRunSettings`);
 this test passes none, so the run is on ConformU's defaults. Its mock
 config enables the flip policy, and with it both phases are clean
 against the mock: `alpacaprotocol` 0 errors / 0 issues,
-`conformance` 0 errors / 0 issues (measured 2026-09-29 with ConformU
-4.5.0, 706 s). What keeps the package out of the nightly rotation is
-issue #1344's one clean run on all three CI OSes with a measured
-duration, not a finding. Other configs show three findings, one of
-them now fixed:
+`conformance` 0 errors / 0 issues / 0 configuration alerts (measured
+2026-09-29 with ConformU 4.5.0, 706 s, and again on 2026-10-07, 705 s;
+the CI runs are under [§In the nightly rotation](#in-the-nightly-rotation)).
+Other configs show three findings, one of them now fixed:
 
 1. **The HA +9 pulse-guide leg aborts CheckMethods.** With
    `TelescopeExtendedPulseGuideTests` forced on, ConformU's
@@ -3214,6 +3214,20 @@ it ConformU's fixed wait while the mount tracks through the meridian for
 the `SideOfPier Write` test. The same config with the flip policy at its
 shipped default (`enabled = false`; the trim still zeroed) gives
 0 errors / 1 issue (the abandon) in 95 s.
+
+#### In the nightly rotation
+
+The `conformu` workflow runs the same command nightly on Linux, macOS
+and Windows. The mock measures pulse angles in wall time, as ConformU
+does, so the RA East/West legs are the part a slow host can bend: a
+pulse that ends late moves RA further. Their margin on an idle host,
+measured 2026-10-07 on the commit this section was written against: all
+eight legs within 0.00–0.03 s of the expected ±2.51 s, against
+ConformU's 0.07 s tolerance (worst: HA −9 West, −2.48 s); North/South
+within 0.1″ of 37.6″, against 1″. On Linux and macOS the workflow runs
+every service's suite at once on one runner, and these legs fall
+1–4 minutes into the run, while the other suites are still going;
+on Windows each service has its own job.
 
 ### Expected ConformU report
 
