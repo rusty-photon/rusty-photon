@@ -28,7 +28,7 @@ rescan no longer finds it; a reconnect finds it again by its serial once it is
 back (design doc C6). Phase E landed
 validated by **45 unit tests** (against the in-crate mock seam), **57 BDD
 scenarios**, and a full **ConformU** pass (both `alpacaprotocol` and
-`conformance` suites); the suite now stands at **143 unit tests** (the mock
+`conformance` suites); the suite now stands at **144 unit tests** (the mock
 seam, and the production handle against the `zwo-rs` simulation) and **85 BDD
 scenarios** — see the design doc's *Testing* section. Roadmap:
 

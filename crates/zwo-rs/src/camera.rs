@@ -401,18 +401,71 @@ impl Drop for UninitialisedCamera {
     }
 }
 
+/// The SDK's camera list, held so that a rescan, the lookups after it and an
+/// open run as one step: no other rescan can renumber the list until this is
+/// dropped ([`Sdk::camera_list`]).
+///
+/// Holding it blocks every other caller that reads or rebuilds the list, in
+/// any thread, so keep the hold short and make no other `Sdk` list call while
+/// holding it: the lock is not re-entrant.
+#[derive(Debug)]
+pub struct CameraList<'a> {
+    sdk: &'a Sdk,
+    _held: std::sync::MutexGuard<'static, ()>,
+}
+
 impl Sdk {
-    /// Enumerate every connected camera's [`CameraInfo`] without opening it.
+    /// Hold the SDK's camera list for a sequence that must see one list, such
+    /// as finding a camera by its serial and then opening it. A rescan
+    /// elsewhere would renumber the indices between the two.
+    #[must_use]
+    pub fn camera_list(&self) -> CameraList<'_> {
+        CameraList {
+            sdk: self,
+            _held: crate::lock_camera_list(),
+        }
+    }
+
+    /// Enumerate every connected camera's [`CameraInfo`] without opening it
+    /// ([`CameraList::rescan`] under a hold of its own).
     ///
     /// # Errors
     /// Returns [`Error::Asi`] if the SDK fails to read a camera's properties.
-    ///
-    /// Rescans first (`ASIGetNumOfConnectedCameras`), so the list describes the
-    /// bus now, and its order is the index order [`Sdk::open_camera`] and
-    /// [`Sdk::open_uninitialised`] take until the next rescan.
     pub fn cameras(&self) -> Result<Vec<CameraInfo>> {
-        let list = crate::camera_list();
-        let count = crate::rescan(self);
+        self.camera_list().rescan()
+    }
+
+    /// Open the camera at enumeration `index` **without initialising it**
+    /// ([`CameraList::open_uninitialised`] under a hold of its own).
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the index is out of range or the SDK fails
+    /// to open the camera.
+    pub fn open_uninitialised(&self, index: usize) -> Result<UninitialisedCamera> {
+        self.camera_list().open_uninitialised(index)
+    }
+
+    /// Open and initialise the camera at enumeration `index`
+    /// ([`CameraList::open_camera`] under a hold of its own).
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the index is out of range or the SDK fails to
+    /// open/initialise the camera.
+    pub fn open_camera(&self, index: usize) -> Result<Camera> {
+        self.camera_list().open_camera(index)
+    }
+}
+
+impl CameraList<'_> {
+    /// Rescan the bus (`ASIGetNumOfConnectedCameras`) and list every connected
+    /// camera's [`CameraInfo`] without opening it. The list's order is the
+    /// index order [`Self::open_camera`] and [`Self::open_uninitialised`] take
+    /// while this hold lasts.
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the SDK fails to read a camera's properties.
+    pub fn rescan(&self) -> Result<Vec<CameraInfo>> {
+        let count = crate::rescan(self.sdk);
         #[cfg(feature = "simulation")]
         let infos = (0..count).map(|_| sim_camera_info()).collect();
         #[cfg(not(feature = "simulation"))]
@@ -422,14 +475,13 @@ impl Sdk {
                 read_camera_property(idx)
             })
             .collect::<Result<Vec<_>>>()?;
-        drop(list);
         Ok(infos)
     }
 
     /// Open the camera at enumeration `index` **without initialising it**
     /// (`ASIOpenCamera` only).
     ///
-    /// Unlike [`Sdk::open_camera`] (which also runs `ASIInitCamera`,
+    /// Unlike [`Self::open_camera`] (which also runs `ASIInitCamera`,
     /// resetting controls such as the cooler to SDK defaults), this leaves
     /// the camera untouched — `ASIOpenCamera` is documented as not affecting
     /// a capturing camera. Used to read a camera's serial from a passive path
@@ -444,10 +496,9 @@ impl Sdk {
     /// caller (unlike a subsequent [`UninitialisedCamera::serial`] failure,
     /// which just means the camera has no stable identity).
     pub fn open_uninitialised(&self, index: usize) -> Result<UninitialisedCamera> {
-        let list = crate::camera_list();
         #[cfg(feature = "simulation")]
         let camera = {
-            self.sim_openable(index)?;
+            self.sdk.sim_openable(index)?;
             UninitialisedCamera {
                 _not_sync: std::marker::PhantomData,
             }
@@ -464,7 +515,6 @@ impl Sdk {
                 _not_sync: std::marker::PhantomData,
             }
         };
-        drop(list);
         Ok(camera)
     }
 
@@ -477,16 +527,15 @@ impl Sdk {
     /// Returns [`Error::Asi`] if the index is out of range or the SDK fails to
     /// open/initialise the camera.
     pub fn open_camera(&self, index: usize) -> Result<Camera> {
-        let list = crate::camera_list();
         #[cfg(feature = "simulation")]
         let camera = {
-            self.sim_openable(index)?;
+            self.sdk.sim_openable(index)?;
             let info = sim_camera_info();
             let state = std::sync::Mutex::new(SimState::new(&info));
             Camera {
                 info,
                 state,
-                departure: self.departure_file.clone().map(|file| SimDeparture {
+                departure: self.sdk.departure_file.clone().map(|file| SimDeparture {
                     rescans_at_open: crate::sim_rescans_while_gone(&file),
                     file,
                 }),
@@ -512,10 +561,11 @@ impl Sdk {
                 _not_sync: std::marker::PhantomData,
             }
         };
-        drop(list);
         Ok(camera)
     }
+}
 
+impl Sdk {
     /// Simulation only: an open of `index` finds the camera only while it is
     /// on the bus. Like the real open, it reads the list the last rescan left
     /// and runs no rescan of its own.
@@ -804,7 +854,13 @@ impl Camera {
             // camera, which is what the *ByID* variant takes (the plain
             // `ASIGetCameraProperty` wants an enumeration index instead).
             let mut raw: sys::ASI_CAMERA_INFO = unsafe { std::mem::zeroed() };
-            asi_check(unsafe { sys::ASIGetCameraPropertyByID(self.info.id, &raw mut raw) })?;
+            // The SDK's camera list, read by ID: under its lock, like every
+            // other reader, so a rescan cannot rebuild it underneath.
+            let list = crate::lock_camera_list();
+            let read =
+                asi_check(unsafe { sys::ASIGetCameraPropertyByID(self.info.id, &raw mut raw) });
+            drop(list);
+            read?;
             raw.ElecPerADU
         };
         Ok(value)

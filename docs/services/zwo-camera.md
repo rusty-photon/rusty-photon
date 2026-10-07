@@ -721,7 +721,12 @@ EAF; those belong to the other zwo services.)
   candidate's serial the way C0 does, through an open without
   `ASIInitCamera`, and it never opens a camera another device of this service
   holds. A camera without a serial (`noserial-{index}`) is matched by its name,
-  preferring its startup index. So a camera that left and came back reconnects
+  preferring its startup index. The search is one step: the service's set of
+  held cameras stays locked from the first look to the reservation, and the
+  SDK's camera list (`zwo_rs::CameraList`) from the rescan to the open. A
+  presence check's rescan therefore cannot renumber the list between the
+  choice and the open, two devices opening at once cannot take one camera, and
+  no camera but the chosen one is ever initialised. So a camera that left and came back reconnects
   with a plain `Connected = true` and no reload, as measured. A camera that is
   still gone fails the open with C2's error.
 
@@ -1422,8 +1427,8 @@ else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md). Phase E landed **45 unit tests**
 and **57 BDD scenarios** (all green), plus a full **ConformU** pass; the suite
-now stands at **143 unit tests** (with `--all-features`; 125 without, since the
-`simulation` feature gates `lib.rs`'s three `simulation_tests` and the fifteen
+now stands at **144 unit tests** (with `--all-features`; 125 without, since the
+`simulation` feature gates `lib.rs`'s three `simulation_tests` and the sixteen
 `backend::handle_tests` that drive the production handle against the `zwo-rs`
 simulation) and **85 BDD scenarios**.
 
@@ -1499,7 +1504,8 @@ simulation) and **85 BDD scenarios**.
   - a close releases a lost session, an open is refused while the camera is
     gone, and an open after it returns finds it by identity and starts
     unmarked;
-  - an open never takes a camera a sibling device holds;
+  - an open never takes a camera a sibling device holds, and two devices
+    opening at once never both take one camera;
   - a capture whose camera leaves mid-frame fails as a departure;
   - a stop that reaches the readout poll on a dropped camera fails the
     readout as a departure;
@@ -1533,6 +1539,8 @@ simulation) and **85 BDD scenarios**.
   Mutation-checked:
   - a presence check that never finds the camera gone fails five handle tests;
   - an open that ignores the cameras siblings hold fails the sibling test;
+  - an open that reserves its camera only after the open (a snapshot of the
+    held set) fails the concurrent-open test, every run;
   - dropping the blank-frame check fails the blank-frame test;
   - a readout stop that does not ask fails the readout-stop test.
 

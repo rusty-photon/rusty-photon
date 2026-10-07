@@ -515,7 +515,8 @@ impl ZwoCameraHandle {
         }
     }
 
-    /// Find this handle's camera on the bus as it is now and open it (C6).
+    /// Find this handle's camera on the bus as it is now, open it, and
+    /// reserve it in [`HeldCameras`] (C6).
     ///
     /// A rescan renumbers the SDK's camera list, so the index read at startup
     /// may name another camera, or none, once one has run. This rescans,
@@ -523,9 +524,21 @@ impl ZwoCameraHandle {
     /// device holds, the startup index first, and opens the first whose serial
     /// matches. A serial is read without `ASIInitCamera`, as at enumeration
     /// (C0, C5). A camera without a serial is taken by its name alone.
+    ///
+    /// All of that is one step. The held set is locked from the first look at
+    /// it to the reservation, and the SDK's camera list from the rescan to the
+    /// open. A presence check's rescan therefore cannot renumber the list
+    /// between the choice and the open, and a sibling's open cannot pick the
+    /// same camera. Nothing but the chosen camera is ever opened initialised,
+    /// and a sibling's camera is never opened at all.
+    ///
+    /// Lock order: the handle's own [`Self::camera`] (held by the caller),
+    /// then the held set, then the camera list. A close takes the first two,
+    /// and a presence check the first and the last, so no cycle forms.
     fn open_by_identity(&self) -> BackendResult<zwo_rs::Camera> {
-        let listed = self.sdk.cameras()?;
-        let held = self.held.lock().clone();
+        let mut held = self.held.lock();
+        let list = self.sdk.camera_list();
+        let listed = list.rescan()?;
         let mut candidates: Vec<usize> = listed
             .iter()
             .enumerate()
@@ -533,31 +546,33 @@ impl ZwoCameraHandle {
             .map(|(index, _)| index)
             .collect();
         candidates.sort_by_key(|&index| index != self.index);
-        for index in candidates {
-            if let Some(want) = &self.serial {
-                match self.sdk.open_uninitialised(index).and_then(|c| c.serial()) {
-                    Ok(serial) if &serial == want => {}
-                    Ok(_) => continue,
-                    Err(e) => {
-                        debug!(camera = %self.unique_id, index, error = %e, "candidate camera unreadable; skipped");
-                        continue;
-                    }
-                }
+        let chosen = candidates.into_iter().find(|&index| {
+            self.serial
+                .as_ref()
+                .is_none_or(|want| self.reads_serial(&list, index, want))
+        });
+        let Some(index) = chosen else {
+            debug!(camera = %self.unique_id, "camera not on the bus");
+            return Err(zwo_rs::Error::Asi(zwo_rs::AsiError::InvalidIndex).into());
+        };
+        let camera = list.open_camera(index)?;
+        drop(list);
+        held.insert(camera.id());
+        drop(held);
+        Ok(camera)
+    }
+
+    /// Whether the camera at `index` in `list` reads `want` as its serial,
+    /// through an open without `ASIInitCamera`. A camera whose serial cannot
+    /// be read is not this one.
+    fn reads_serial(&self, list: &zwo_rs::CameraList<'_>, index: usize, want: &str) -> bool {
+        match list.open_uninitialised(index).and_then(|c| c.serial()) {
+            Ok(serial) => serial == want,
+            Err(e) => {
+                debug!(camera = %self.unique_id, index, error = %e, "candidate camera unreadable; skipped");
+                false
             }
-            let camera = self.sdk.open_camera(index)?;
-            // The list can be rebuilt between the read above and this open;
-            // check the camera opened is the one asked for.
-            let same = self.serial.as_ref().map_or_else(
-                || camera.info().name == self.info.name,
-                |want| camera.serial().is_ok_and(|serial| &serial == want),
-            );
-            if same {
-                return Ok(camera);
-            }
-            debug!(camera = %self.unique_id, index, "the camera list moved under the open; closed again");
         }
-        debug!(camera = %self.unique_id, "camera not on the bus");
-        Err(zwo_rs::Error::Asi(zwo_rs::AsiError::InvalidIndex).into())
     }
 
     /// Is the open camera still the instance `epoch` names, or has a reconnect
@@ -594,9 +609,7 @@ impl CameraHandle for ZwoCameraHandle {
     fn open(&self) -> BackendResult<()> {
         let mut guard = self.camera.lock();
         if guard.is_none() {
-            let camera = self.open_by_identity()?;
-            self.held.lock().insert(camera.id());
-            *guard = Some(camera);
+            *guard = Some(self.open_by_identity()?);
             // Under the same lock as the open itself, so no capture can read an
             // epoch that does not match the camera it is about to configure.
             self.open_epoch.fetch_add(1, Ordering::SeqCst);
@@ -1166,6 +1179,46 @@ mod handle_tests {
         first.close().unwrap();
         second.open().unwrap();
         second.close().unwrap();
+    }
+
+    /// C6: two devices opening at once never both take one camera. The held
+    /// set stays locked from the first look at it to the reservation, so the
+    /// second open sees the first's. A barrier starts both together, and the
+    /// race is run many times, since a broken reservation loses it only
+    /// sometimes.
+    #[test]
+    fn production_handle_concurrent_opens_never_take_one_camera_twice() {
+        for _ in 0..50 {
+            let held = HeldCameras::default();
+            let handles = [(); 2].map(|()| {
+                Arc::new(sim_handle_on(
+                    zwo_rs::Sdk::new().unwrap(),
+                    Arc::clone(&held),
+                ))
+            });
+            let start = Arc::new(std::sync::Barrier::new(2));
+            // An array's `map` is eager: both threads are spawned before
+            // either is joined, which the barrier needs.
+            let opens = handles.each_ref().map(|handle| {
+                let handle = Arc::clone(handle);
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    handle.open().is_ok()
+                })
+            });
+
+            let opened = opens
+                .into_iter()
+                .map(|open| open.join().expect("open thread"))
+                .filter(|&ok| ok)
+                .count();
+
+            assert_eq!(opened, 1, "the one simulated camera opened {opened} times");
+            for handle in &handles {
+                handle.close().unwrap();
+            }
+        }
     }
 
     /// C6, the capture path: a camera that leaves while its frame integrates

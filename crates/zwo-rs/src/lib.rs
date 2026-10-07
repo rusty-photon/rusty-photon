@@ -95,8 +95,8 @@ mod ffi_util;
 mod focuser;
 #[cfg(feature = "camera")]
 pub use camera::{
-    BayerPattern, Camera, CameraInfo, ControlCaps, ControlType, ControlValue, ExposureStatus,
-    GuideDirection, ImageType, RoiFormat,
+    BayerPattern, Camera, CameraInfo, CameraList, ControlCaps, ControlType, ControlValue,
+    ExposureStatus, GuideDirection, ImageType, RoiFormat,
 };
 #[cfg(feature = "efw")]
 pub use efw::{FilterWheel, FilterWheelInfo};
@@ -123,11 +123,11 @@ pub const SIM_FOCUSER_COUNT: usize = 1;
 #[cfg(feature = "camera")]
 static CAMERA_LIST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Hold [`CAMERA_LIST`] for one rescan-and-read. A panic while holding it
+/// Hold [`CAMERA_LIST`] for one rescan-and-read, or for a [`CameraList`]. A panic while holding it
 /// leaves nothing inconsistent on the Rust side, so a poisoned lock is taken
 /// as is.
 #[cfg(feature = "camera")]
-pub(crate) fn camera_list() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) fn lock_camera_list() -> std::sync::MutexGuard<'static, ()> {
     CAMERA_LIST
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -235,7 +235,7 @@ impl Sdk {
     /// Infallible today; returns [`Result`] for forward compatibility.
     #[cfg(feature = "camera")]
     pub fn camera_count(&self) -> Result<usize> {
-        let list = camera_list();
+        let list = lock_camera_list();
         let count = rescan(self);
         drop(list);
         Ok(count)
@@ -268,7 +268,7 @@ impl Sdk {
     /// way.
     #[cfg(feature = "camera")]
     pub fn still_connected(&self, camera: &Camera) -> Result<bool> {
-        let list = camera_list();
+        let list = lock_camera_list();
         rescan(self);
         let listed = camera.listed();
         drop(list);

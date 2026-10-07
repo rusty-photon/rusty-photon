@@ -10,9 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - `Sdk::cameras` and every call that reads or rebuilds the SDK's camera list
-  (`camera_count`, `open_camera`, `open_uninitialised`, `still_connected`)
-  now take one process-wide lock, so a rescan on one thread cannot renumber
-  the list under another's lookup.
+  (`camera_count`, `open_camera`, `open_uninitialised`, `still_connected`,
+  and `Camera::electrons_per_adu`, which reads it by ID) now take one
+  process-wide lock, so a rescan on one thread cannot renumber the list under
+  another's lookup.
 - **Breaking:** `asi_check` takes the bindgen `ASI_ERROR_CODE` alias (`c_uint`
   on LP64, `c_int` on Windows) instead of `i32`, `AsiError::from_code` takes
   `i64`, and `AsiError::Unknown` stores `i64` — a raw code outside the vendored
@@ -44,6 +45,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `Sdk::camera_list()` → `CameraList`: holds that lock across a sequence
+  that must see one list, such as finding a camera by its serial and opening
+  it (`rescan`, `open_uninitialised` and `open_camera` under the one hold).
+  `Sdk::cameras`, `open_camera` and `open_uninitialised` are now one-shot
+  holds of it.
 - `Sdk::still_connected(&camera)`: rescans the bus and asks for the camera's
   properties by its ID; `Ok(false)` once its ID answers `INVALID_ID` or
   `CAMERA_CLOSED`. Measured on Linux with ASI SDK 1.41, the SDK never answers
