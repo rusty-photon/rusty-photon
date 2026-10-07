@@ -11,14 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - A simulated camera can leave the bus and come back:
   `Sdk::with_departure_file(path)` takes every camera that `Sdk` opens away
-  whenever `path` exists. A departed camera keeps its handle, as a real one
-  whose power or cable is cut does, and still answers what the handle cached
-  at open (`info`, `property`, `property_ex`); every call that would reach the
-  SDK answers `SvbError::CameraRemoved`, the SDK's own status for it, and
-  `open_camera` fails with `SvbError::InvalidIndex` until the camera is back.
-  The file is checked on every call, so a test can take the camera away from
-  another process. `Sdk` carries the setting, so it is no longer zero-sized
-  under `simulation`. Simulation only.
+  whenever `path` exists, modelled on what SDK 1.13.4 was measured doing when
+  an SV605CC's USB port was disabled under an open handle. The handle keeps
+  answering every call, never with `SvbError::CameraRemoved`, and only
+  `get_video_data` answers `SvbError::Timeout` because no frame comes. The
+  camera drops out of `cameras` and `camera_count`, and `open_camera` fails
+  with `SvbError::InvalidIndex` while it is gone; once a rescan has missed it,
+  that lasts until a rescan finds it again. The file is checked on every
+  call, so a test can take the camera away from another process. `Sdk`
+  carries the setting, so it is no longer zero-sized under `simulation`.
+  Simulation only.
 
 - `Camera::restore_default_param` (`SVBRestoreDefaultParam`) and
   `Camera::set_auto_save_param` (`SVBSetAutoSaveParam`) safe wrappers. The

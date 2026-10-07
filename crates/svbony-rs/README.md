@@ -117,11 +117,13 @@ The simulated `SV605CC-Simulated` camera models the full control set
   the simulation persists nothing across opens.
 - **A camera that leaves the bus**: `Sdk::with_departure_file(path)` takes
   every camera that `Sdk` opens away whenever `path` exists, the state a
-  camera is in when its power or cable is cut while it is open. The handle
-  stays, and still answers what it cached at open; every call that would
-  reach the SDK answers `SvbError::CameraRemoved`, and `open_camera` fails
-  until the file is removed. A test can take the camera away from another
-  process, which is how `svbony-camera`'s BDD suite drives it.
+  camera is in when its power or cable is cut while it is open. As on
+  hardware (SDK 1.13.4), the handle keeps answering every call and only its
+  frames stop coming (`get_video_data` answers `Timeout`); the camera drops
+  out of `cameras` and `camera_count`, and `open_camera` fails while it is
+  gone and, once a rescan has missed it, until a rescan finds it again. A
+  test can take the camera away from another process, which is how
+  `svbony-camera`'s BDD suite drives it.
 
 Frames are filled with sensor noise via a seeded xorshift64 fill (the same
 approach `zwo-rs`'s `fill_noise` settled on after the lessons recorded in its

@@ -128,6 +128,11 @@ pub struct Sdk {
     /// bus — see [`Sdk::with_departure_file`].
     #[cfg(feature = "simulation")]
     departure_file: Option<std::path::PathBuf>,
+    /// Whether the last rescan ([`Sdk::cameras`], [`Sdk::camera_count`]) found
+    /// the camera gone: the SDK's camera table changes only on a rescan, so
+    /// until another finds it again it stays unopenable, back or not.
+    #[cfg(feature = "simulation")]
+    delisted: std::sync::atomic::AtomicBool,
     _private: (),
 }
 
@@ -146,16 +151,19 @@ impl Sdk {
     /// exists, and come back when it is gone — the state a camera is in when
     /// its power or its cable is cut while a host holds it open.
     ///
-    /// A departed camera keeps its handle, as a real one does, and still
-    /// answers what the handle cached at open ([`Camera::info`],
-    /// [`Camera::property`], [`Camera::property_ex`]). Every call that would
-    /// reach the SDK answers [`SvbError::CameraRemoved`], the SDK's own status
-    /// for a camera that has gone. [`Sdk::open_camera`] fails with
-    /// [`SvbError::InvalidIndex`], the simulation's answer for a camera it
-    /// does not have, until the camera is back; enumeration is unaffected.
-    /// The file is checked on every call, so another process — a test driving
-    /// a host built on this crate — can take the camera away and give it back
-    /// without a channel into the host. Simulation only.
+    /// The model is what SDK 1.13.4 was measured doing on Linux when an
+    /// SV605CC's USB port was disabled under an open handle. The handle keeps
+    /// answering every call, from what the SDK cached, and never with
+    /// [`SvbError::CameraRemoved`]; only a frame never comes, so
+    /// [`Camera::get_video_data`] answers [`SvbError::Timeout`]. The camera
+    /// drops out of [`Sdk::cameras`] and [`Sdk::camera_count`], which is the
+    /// one place a departure shows, and [`Sdk::open_camera`] fails with
+    /// [`SvbError::InvalidIndex`] until it is back — and, once a rescan has
+    /// found it gone, until a rescan finds it again, since the SDK's camera
+    /// table changes only on a rescan. The file is checked on
+    /// every call, so another process — a test driving a host built on this
+    /// crate — can take the camera away and give it back without a channel
+    /// into the host. Simulation only.
     #[cfg(feature = "simulation")]
     #[must_use]
     pub fn with_departure_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
@@ -169,8 +177,32 @@ impl Sdk {
     /// Infallible today; returns [`Result`] for forward compatibility.
     pub fn camera_count(&self) -> Result<usize> {
         let count = with_sdk_lock(camera_count_raw);
+        #[cfg(feature = "simulation")]
+        let count = if self.rescan_finds_departed() {
+            0
+        } else {
+            count
+        };
         tracing::debug!(count, "queried connected SVBony camera count");
         Ok(count)
+    }
+
+    /// The simulation's rescan: whether the camera has left the bus, recorded
+    /// as the camera table's verdict until the next rescan (see
+    /// [`Sdk::with_departure_file`]).
+    #[cfg(feature = "simulation")]
+    pub(crate) fn rescan_finds_departed(&self) -> bool {
+        let departed = camera::departed(self.departure_file.as_deref());
+        self.delisted
+            .store(departed, std::sync::atomic::Ordering::Release);
+        departed
+    }
+
+    /// Whether the camera table, as the last rescan left it, lists no camera
+    /// (see [`Sdk::with_departure_file`]).
+    #[cfg(feature = "simulation")]
+    pub(crate) fn delisted(&self) -> bool {
+        self.delisted.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// `SVBony` camera SDK version string (`SVBGetSDKVersion`), e.g.
