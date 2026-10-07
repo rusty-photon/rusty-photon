@@ -474,6 +474,13 @@ pub struct SharedCameraConnection {
     /// camera and the CFW go from connected to disconnected together whichever
     /// of them noticed.
     lost: AtomicBool,
+    /// Serializes presence checks (C9). A check holds the lifecycle lock while
+    /// its probe runs, so a second check that only tried that lock would read
+    /// the first as a connect in progress, give no verdict, and leak its own
+    /// error before the first check marked the connection lost. Taken before
+    /// the lifecycle lock, never by a transition, so a real transition is
+    /// still refused without waiting.
+    presence: Mutex<()>,
 }
 
 impl SharedCameraConnection {
@@ -484,6 +491,7 @@ impl SharedCameraConnection {
             refs: Mutex::new(0),
             lifecycle: tokio::sync::Mutex::new(()),
             lost: AtomicBool::new(false),
+            presence: Mutex::new(()),
         })
     }
 
@@ -612,6 +620,9 @@ impl SharedCameraConnection {
     /// read under the same locks, so it is the verdict for this handle and not
     /// for one a later reconnect opened.
     fn verify_presence(&self, connected: &AtomicBool) -> bool {
+        // A concurrent check waits for this one's verdict rather than reading
+        // its hold on the lifecycle lock as a transition.
+        let _check = self.presence.lock();
         let Ok(_transition) = self.lifecycle.try_lock() else {
             debug!("connection in transition; no presence verdict");
             return self.lost.load(Ordering::SeqCst);
@@ -1159,6 +1170,8 @@ pub(crate) mod mock {
         /// would, so a test can check the asking request still answers from
         /// its own verdict.
         pub reconnect_lands_after_verdict: AtomicBool,
+        /// Serializes presence checks, as `SharedCameraConnection` does.
+        presence: Mutex<()>,
     }
 
     impl Default for MockCameraHandle {
@@ -1273,6 +1286,7 @@ pub(crate) mod mock {
                 lost: AtomicBool::new(false),
                 presence_checks: AtomicU32::new(0),
                 reconnect_lands_after_verdict: AtomicBool::new(false),
+                presence: Mutex::new(()),
             }
         }
     }
@@ -1438,6 +1452,7 @@ pub(crate) mod mock {
         /// no verdict under the lifecycle lock or on a handle that is not open,
         /// and a probe of `CamSingleFrameMode` otherwise.
         fn verdict(&self) -> bool {
+            let _check = self.presence.lock();
             let Ok(_transition) = self.lifecycle.try_lock() else {
                 return self.lost.load(Ordering::SeqCst);
             };
@@ -1982,6 +1997,8 @@ pub(crate) mod mock {
         lost: AtomicBool,
         /// [`MockCameraHandle::reconnect_lands_after_verdict`], for the wheel.
         pub reconnect_lands_after_verdict: AtomicBool,
+        /// Serializes presence checks, as `SharedCameraConnection` does.
+        presence: Mutex<()>,
     }
 
     impl MockFilterWheelHandle {
@@ -2004,6 +2021,7 @@ pub(crate) mod mock {
                 departed: AtomicBool::new(false),
                 lost: AtomicBool::new(false),
                 reconnect_lands_after_verdict: AtomicBool::new(false),
+                presence: Mutex::new(()),
             }
         }
 
@@ -2121,6 +2139,7 @@ pub(crate) mod mock {
         /// departure itself is the answer the probe would give.
         fn verify_presence(&self) -> bool {
             let lost = {
+                let _check = self.presence.lock();
                 let Ok(_transition) = self.lifecycle.try_lock() else {
                     return self.lost.load(Ordering::SeqCst);
                 };
@@ -2333,6 +2352,56 @@ mod conn_tests {
         // but their disconnects lets it go.
         assert!(cam.is_open().unwrap() && fw.is_open().unwrap());
         assert!(conn.camera().is_open().unwrap());
+    }
+
+    /// Two requests failing at once on a departed camera both answer from the
+    /// verdict (C9). The first check holds the lifecycle lock while its probe
+    /// runs; the second waits for that verdict instead of reading the hold as
+    /// a transition and answering "not lost" before the first marks it.
+    #[test]
+    fn a_concurrent_presence_check_waits_for_the_verdict_in_progress() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let departure = dir.path().join("departed");
+        let (conn, cam, fw) = departing_pair(&departure);
+        cam.open().unwrap();
+        fw.open().unwrap();
+        std::fs::write(&departure, b"").unwrap();
+        let (cam, fw) = (Arc::new(cam), Arc::new(fw));
+
+        // Park the first check after it has taken the lifecycle lock: its
+        // probe runs under `refs`, which the test holds.
+        let refs = conn.refs.lock();
+        let first = std::thread::spawn({
+            let cam = Arc::clone(&cam);
+            move || cam.verify_presence()
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while conn.lifecycle.try_lock().is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the first check never took the lifecycle lock"
+            );
+            std::thread::yield_now();
+        }
+        let second = std::thread::spawn({
+            let fw = Arc::clone(&fw);
+            move || fw.verify_presence()
+        });
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(
+            !second.is_finished(),
+            "the second check answered before the verdict in progress was in"
+        );
+
+        drop(refs);
+        assert!(
+            first.join().unwrap(),
+            "the first check found the camera gone"
+        );
+        assert!(
+            second.join().unwrap(),
+            "the second check answered from that verdict"
+        );
     }
 
     #[test]

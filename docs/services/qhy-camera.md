@@ -747,7 +747,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   a camera in transition rather than one that has gone. A device that really
   has gone is found out by the next failure outside those windows. The probe and
   the mark are made under the lock the connection's open and close take, so a
-  probe cannot judge one physical handle and mark the next.
+  probe cannot judge one physical handle and mark the next. Presence checks are
+  serialized among themselves, on a lock no transition takes. A check that
+  finds another in progress waits for that verdict instead of reading the other
+  check's hold on the lifecycle lock as a transition and answering "not lost"
+  before the mark is made.
 
   **Lost is not closed.** The driver closes nothing on its own: a capture may
   still be inside the SDK on that handle, and closing under it is the
@@ -1947,7 +1951,8 @@ Layered per [`testing.md`](../skills/testing.md).
   shipped `SharedCameraConnection` and its presence check end to end. The
   `conn_tests` in `backend.rs` pin the check's rules against the same
   simulator — no verdict on a handle the device does not hold or while the
-  lifecycle lock is held, one lost mark for both devices, a connect refused
+  lifecycle lock is held, a concurrent check waiting for the verdict in
+  progress, one lost mark for both devices, a connect refused
   from joining a lost connection, the mark cleared by a fresh open, and a
   handle a failed close left behind freed before that open, or the connect
   refused while the SDK keeps it (the simulator's `with_close_failure_file`).
