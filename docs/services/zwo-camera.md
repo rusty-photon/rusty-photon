@@ -1422,7 +1422,7 @@ else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md). Phase E landed **45 unit tests**
 and **57 BDD scenarios** (all green), plus a full **ConformU** pass; the suite
-now stands at **144 unit tests** (with `--all-features`; 126 without, since the
+now stands at **143 unit tests** (with `--all-features`; 125 without, since the
 `simulation` feature gates `lib.rs`'s three `simulation_tests` and the fifteen
 `backend::handle_tests` that drive the production handle against the `zwo-rs`
 simulation) and **85 BDD scenarios**.
@@ -1507,8 +1507,11 @@ simulation) and **85 BDD scenarios**.
 
   `backend::error_tests` pin that `CAMERA_REMOVED` alone crosses the seam as a
   departure, that the presence check's relabelling keeps the message, that a
-  departure keeps its kind when the arm names the control that failed (GO2),
-  and what counts as a blank frame.
+  departure keeps its kind when the arm names the control that failed (GO2).
+  What counts as a blank frame, and what a `Connected` write does from each
+  session, are `rusty-photon-camera-core`'s `is_blank_frame` and
+  `connected_transition`, shared with qhy-camera and svbony-camera and tested
+  there.
 
   The unit tests drive the device side through `MockCameraHandle::leave_bus`,
   which reproduces the handle's outcome on the mock's own flags:

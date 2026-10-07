@@ -809,7 +809,7 @@ impl ZwoCameraHandle {
             .ok_or_else(|| BackendError::new("frame is too large to address on this target"))?;
         let mut buf = vec![0u8; frame_len];
         camera.download_exposure(&mut buf)?;
-        if is_blank(&buf) {
+        if rusty_photon_camera_core::is_blank_frame(&buf) {
             // A readout the camera left in the middle of can come back a
             // success with every pixel zero, so a blank frame counts as a
             // failure and asks before it is published (C6).
@@ -833,12 +833,6 @@ impl ZwoCameraHandle {
             _ => Ok(()),
         }
     }
-}
-
-/// Whether a downloaded frame is blank, every byte zero. Stops at the first
-/// byte that is not, so a real frame costs next to nothing.
-fn is_blank(frame: &[u8]) -> bool {
-    frame.iter().all(|&byte| byte == 0)
 }
 
 // --- test mock -----------------------------------------------------------------
@@ -1304,14 +1298,6 @@ mod error_tests {
             err.to_string(),
             "failed to set gain: ASI camera SDK error: camera removed"
         );
-    }
-
-    /// A frame is blank only when every byte is zero (C6).
-    #[test]
-    fn a_frame_is_blank_only_when_every_byte_is_zero() {
-        assert!(is_blank(&[0, 0, 0, 0]));
-        assert!(!is_blank(&[0, 0, 1, 0]));
-        assert!(!is_blank(&[0, 0, 0, 0x80]));
     }
 }
 

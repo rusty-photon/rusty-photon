@@ -34,7 +34,8 @@ use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use parking_lot::Mutex;
 use rusty_photon_camera_core::{
-    self as camera_core, unbinned, Alignment, PixelDepth, Roi, UnbinnedRoi,
+    self as camera_core, connected_transition, unbinned, Alignment, ConnectedTransition,
+    PixelDepth, Roi, UnbinnedRoi,
 };
 use tracing::{debug, warn};
 use zwo_rs::{BayerPattern, CameraInfo, ControlCaps, ControlType, ImageType};
@@ -416,20 +417,21 @@ impl ZwoCamera {
     /// and `Connected = true` goes on to a fresh connect rather than taking
     /// the lost session back.
     fn transition(&self, connected: bool) -> ASCOMResult<()> {
-        let transition = self.state.lifecycle_lock.lock();
-        let session = self.handle.session();
-        let outcome = if already_there(session, connected) {
-            Ok(())
-        } else if session == SessionState::Lost {
-            debug!(camera = %self.unique_id, "releasing a session whose camera left the bus");
-            self.disconnect()
-                .and_then(|()| if connected { self.connect() } else { Ok(()) })
-        } else if connected {
-            self.connect()
-        } else {
-            self.disconnect()
+        let lifecycle = self.state.lifecycle_lock.lock();
+        let outcome = match transition_for(self.handle.session(), connected) {
+            ConnectedTransition::Nothing => Ok(()),
+            ConnectedTransition::Connect => self.connect(),
+            ConnectedTransition::Disconnect => self.disconnect(),
+            ConnectedTransition::Release => {
+                debug!(camera = %self.unique_id, "releasing a session whose camera left the bus");
+                self.disconnect()
+            }
+            ConnectedTransition::ReleaseThenConnect => {
+                debug!(camera = %self.unique_id, "releasing a session whose camera left the bus");
+                self.disconnect().and_then(|()| self.connect())
+            }
         };
-        drop(transition);
+        drop(lifecycle);
         outcome
     }
 
@@ -750,16 +752,16 @@ impl ZwoCamera {
     }
 }
 
-/// Whether a `Connected = connected` request finds nothing to change: the
-/// device already holds a live session, or holds none at all. A lost session
-/// (C6) always has something to change, its release.
-fn already_there(session: SessionState, connected: bool) -> bool {
-    session
-        == if connected {
-            SessionState::Live
-        } else {
-            SessionState::Closed
-        }
+/// What a `Connected = requested` write has to do from `session`: the rule
+/// qhy-camera and svbony-camera share (`rusty-photon-camera-core`), fed this
+/// handle's session. A lost session (C6) always has something to do, its
+/// release.
+const fn transition_for(session: SessionState, requested: bool) -> ConnectedTransition {
+    connected_transition(
+        requested,
+        !matches!(session, SessionState::Closed),
+        matches!(session, SessionState::Lost),
+    )
 }
 
 /// What a failed SDK call answers a client: `NOT_CONNECTED` when the SDK
@@ -1075,7 +1077,7 @@ impl Device for ZwoCamera {
         // A request that would change nothing returns here, without the
         // lifecycle lock: `session()` is one reading, so the answer is one
         // any request still in flight could have left too.
-        if already_there(self.handle.session(), connected) {
+        if transition_for(self.handle.session(), connected) == ConnectedTransition::Nothing {
             return Ok(());
         }
         // `connect`/`disconnect` do blocking SDK I/O — `ASIOpenCamera` enumerates
