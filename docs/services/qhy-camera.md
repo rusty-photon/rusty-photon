@@ -776,32 +776,45 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   sleeps through the exposure, and the progress poll that follows is the first
   call to fail. A capture whose camera is found gone by then is not read out,
   since there is no frame to read. And **bringing a camera back is not something this
-  contract does on its own.** On Linux a plain reconnect found a camera that had
-  been unplugged and plugged back in, with no scan and no reload, although it
-  came back as a new USB device: `OpenQHYCCD` finds it by its id. A camera that
-  was absent when the service started is a different case; finding it still
-  needs a reload or a restart (C0), and hotplug re-enumeration belongs to #1173.
+  contract does on its own.** On Linux and on Windows a plain reconnect found a
+  camera that had been unplugged and plugged back in, with no scan and no
+  reload, although it came back as a new USB device: `OpenQHYCCD` finds it by
+  its id. A camera that was absent when the service started is a different
+  case; finding it still needs a reload or a restart (C0), and hotplug
+  re-enumeration belongs to #1173.
 
-  **Measured on hardware**, on Linux with SDK 26.06.04 (the
-  [2026-10-05 record](../validation/2026-10-05-qhy-camera-qhy178m-cfw-linux-departure/README.md)):
+  **Measured on hardware** with SDK 26.06.04, on Linux (the
+  [2026-10-05 record](../validation/2026-10-05-qhy-camera-qhy178m-cfw-linux-departure/README.md))
+  and on Windows (the
+  [2026-10-06 record](../validation/2026-10-06-qhy-camera-qhy178m-cfw-windows-departure/README.md)):
 
-  - **Cable pulled with the camera idle.** The SDK stops answering
+  - **Camera gone while idle.** On both platforms the SDK stops answering
     `IsQHYCCDControlAvailable` for `CamSingleFrameMode`, and for `Cooler`. The
-    first SDK call after the pull reported the disconnect, after which both
-    devices read `Connected = false`.
-  - **Cable pulled mid-exposure.** The camera read disconnected about 31 s into
+    first SDK call after the departure reported the disconnect, after which
+    both devices read `Connected = false`.
+  - **Camera gone mid-exposure.** The camera read disconnected about 31 s into
     a 30 s frame, through the capture's own question and with no client call.
+    On Windows the log shows the progress poll failing first and the readout
+    skipped.
   - **12 V cut, camera still on USB.** A QHY178M whose 12 V is cut stays on USB
-    and answers every call, and the probes run against it did not mark it lost.
+    and answers every call. On both platforms, the probes run against it did
+    not mark it lost.
+  - **A readout that stalls inside `GetQHYCCDSingleFrame`** (Windows). The call
+    neither hangs nor fails: it blocked for about 86 s, until the host dropped
+    the device, then returned success with an all-zero frame. That is why a
+    blank frame counts as a failure. With the rule in place, the frame was
+    discarded and nothing was published.
 
   **Still owed:**
 
-  - **Windows.** On Windows the SDK was seen failing the probe only for
-    `Cooler`, on rig2's QHY600M, which drops off USB with its 12 V.
-  - **A departure during the readout itself.** In the mid-exposure run the
-    progress poll was the first call to fail, and the readout is now skipped
-    once a poll has found the camera gone. So whether `GetQHYCCDSingleFrame`
-    returns or hangs on a camera that vanishes inside it is unmeasured.
+  - **A physical cable pull on Windows.** The Windows departures were
+    hypervisor detaches, which Windows sees as surprise removals. rig2's
+    QHY600M, which drops off USB with its 12 V, is the field case.
+  - **A reopen that failed after a replug the driver had not noticed.** Once
+    on Windows, the camera was replugged while its stalled readout had
+    reported success. After the release, `OpenQHYCCD` kept failing until a
+    restart, though a fresh process saw the camera. That is one sample, not
+    yet a rule.
 
   Where the SDK went on answering for a departed camera, the probe would find
   it present and the driver would behave as it did before this rule, so no
@@ -1949,9 +1962,10 @@ Layered per [`testing.md`](../skills/testing.md).
   verdict while a transition holds the lock, and a close that fails on a
   departed camera are reached only there. Both doubles model what the SDK does
   once a camera has gone, which is to fail every call and the capability probe
-  with them. That behaviour has been measured on Linux, for a cable pulled from
-  an idle camera and for one pulled mid-exposure (C9). Windows and a departure
-  inside the readout remain the reading alone.
+  with them. That behaviour has been measured on Linux (cable pulls) and on
+  Windows (hypervisor detaches), for an idle camera and for one gone
+  mid-exposure. The mock's blank frame from a readout its camera left is what
+  the SDK was measured returning on Windows (C9).
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)
   — launches the production binary (built `--features conformu`, which pulls in
   `simulation`) via `bdd_infra::ServiceHandle::try_start` and drives the official
@@ -2348,12 +2362,6 @@ the "how" decisions made while building.
 - **Readout modes in the simulation.** The `qhyccd-rs` simulation has one mode
   and one geometry. The mode lists and the mode-5 geometry measured on rig2
   (RM1) are what it should be seeded from if it is to model modes.
-- **Noticing a departed camera without a failing call.** C9 is lazy: a client
-  that reads only `Connected` and the cache-served members never reaches the
-  SDK, so it is told at its next exposure or cooler read rather than when the
-  camera left. A presence check on a timer would close that gap, at the cost of
-  SDK traffic beside a capture. Its probe, `CamSingleFrameMode`, has been
-  measured on Linux, but it is still owed on Windows (C9).
 - **FastReadout** validation on real hardware.
 - **PulseGuide** / `CanPulseGuide`.
 - **Focuser consolidation.** `qhyccd-rs` also covers QHY focusers; a future
