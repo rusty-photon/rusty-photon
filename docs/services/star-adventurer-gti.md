@@ -3225,9 +3225,29 @@ measured 2026-10-07 on the commit this section was written against: all
 eight legs within 0.00–0.03 s of the expected ±2.51 s, against
 ConformU's 0.07 s tolerance (worst: HA −9 West, −2.48 s); North/South
 within 0.1″ of 37.6″, against 1″. On Linux and macOS the workflow runs
-every service's suite at once on one runner, and these legs fall
-1–4 minutes into the run, while the other suites are still going;
-on Windows each service has its own job.
+every service's suite at once on one runner; on Windows each service
+has its own job.
+
+Two `workflow_dispatch` runs of the workflow on 2026-10-07, before the
+package joined the rotation, all 0 errors / 0 issues / 0 configuration
+alerts:
+
+| Runner | Suite | Parallel step (Linux / macOS) or job step (Windows) | Worst RA East/West leg |
+|---|---|---|---|
+| Linux, run 1 | 710 s | 13.5 min | 0.03 s |
+| Linux, run 2 | 707 s | 14.5 min | 0.04 s |
+| macOS, run 1 | 713 s | 15.8 min | 0.04 s |
+| macOS, run 2 | 711 s | 14.2 min | 0.02 s |
+| Windows, run 1 | 708 s | 11.8 min | 0.02 s |
+| Windows, run 2 | 708 s | 11.8 min | 0.03 s |
+
+The package is the rotation's long pole: the same day's scheduled run,
+without it, finished the parallel step in 4.4 min on Linux and 6.2 min
+on macOS, against the step's 30-minute budget. On the shared runners
+the RA legs came about five minutes into the step, while two to four
+other suites were still running (zwo-camera's image downloads among
+them on Linux), and stayed inside the scatter the idle host and the
+Windows jobs showed: 48 legs, none worse than 0.04 s against 0.07 s.
 
 ### Expected ConformU report
 
