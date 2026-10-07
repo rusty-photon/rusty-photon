@@ -401,13 +401,23 @@ the CLI-override-applied effective config, so a transient `--port` is never
 baked in. The default `Config` therefore carries an **empty** `unique_id`; the
 value above is illustrative of a minted id.
 
+If the file leaves out the `cover_calibrator` section entirely, the bootstrap
+copies it in from `Config::default()` before minting, so the section arrives
+with its `name` and `description`. The bootstrap writes the file only when the
+result loads. A file the driver would refuse (an unknown key, a section missing
+a required field) is left byte for byte as it was, and the start fails with
+`config file <path> is valid JSON but not a valid configuration: <detail>`. See
+[docs/crates/rusty-photon-config.md](../crates/rusty-photon-config.md).
+
 The only escape hatch for changing the id is an explicit edit through the
 UI / `config.apply`. To prevent an operator from accidentally blanking the
 device's stable identity, `config.apply` **rejects an empty (or
 whitespace-only) `cover_calibrator.unique_id`** with a `status:"invalid"`
 field error on `cover_calibrator.unique_id` (see [Validation
 rules](#validation-rules)). Editing the config file by hand to remove the id
-is recoverable: the next startup re-mints a fresh one.
+is recoverable: the next startup re-mints a fresh one. Removing the whole
+`cover_calibrator` section is recoverable the same way, with the section
+re-filled from the defaults.
 
 ### CLI Arguments
 

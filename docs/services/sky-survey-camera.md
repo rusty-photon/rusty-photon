@@ -225,9 +225,19 @@ the operator to hand-write a unique string.
   must supply a config file with at least the `optics` (and the other
   required) sections; the `device.unique_id` is the one field they may
   safely leave out and let the service generate.
+- **The file is written only when the result loads.** The minted id is
+  applied in memory first, and the file is saved only if the result
+  parses as `Config` and passes the same rules `load_config` applies
+  (`Config`'s `ConfigFile::check`). There is no default to fill a
+  missing section from. So a file without a `device` section, or one
+  that breaks a follow-mode rule, is left byte for byte as it was, and
+  the start fails with
+  `config file <path> is valid JSON but not a valid configuration:
+  <detail>`.
 
 This is shared behaviour provided by the `rusty-photon-config` crate,
-identical across the rusty-photon drivers.
+identical across the rusty-photon drivers (see
+[docs/crates/rusty-photon-config.md](../crates/rusty-photon-config.md)).
 
 > **`--config` default change.** The `--config` flag previously
 > defaulted to the CWD-relative string `config.json`. It is now an

@@ -327,6 +327,14 @@ config file** (at `--config`, else the platform default —
 absent. Leave `unique_id` empty (or omit it) to have one
 minted; set it explicitly only to migrate a known id.
 
+If the file leaves out the `rotator` or `switch` section entirely, the bootstrap copies it in from
+the defaults before minting, so it arrives with its `name` and `description`.
+The bootstrap writes the file only when the result loads. A file the driver
+would refuse (an unknown key, a section missing a required field) is left byte
+for byte as it was, and the start fails with
+`config file <path> is valid JSON but not a valid configuration: <detail>`. See
+[docs/crates/rusty-photon-config.md](../crates/rusty-photon-config.md).
+
 ### CLI Arguments
 
 | Argument | Description |

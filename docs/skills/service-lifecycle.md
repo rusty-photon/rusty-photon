@@ -87,15 +87,23 @@ Key points:
   `ServiceRunner::run` whose helper returns a boxed error, convert with
   `rusty_photon_service_lifecycle::report_from_boxed`.
 - Bootstrap the config file **before** the runner with
-  `rusty_photon_config::resolve_and_init(name, args.config, &default, identity_pointers)`:
+  `rusty_photon_config::resolve_and_init::<Config>(name, args.config, &default, identity_pointers)`:
   it resolves the path, materializes the serialized default config at the
   platform-default path on first start (same-host consumers — sentinel's
   health-probe derivation, doctor — read that file), and mints ASCOM
-  `UniqueID`s into the given JSON pointers. Pass `&[]` when identities are
+  `UniqueID`s into the given JSON pointers. A device section the file leaves
+  out is filled in from `default` first. The file is written only when the
+  result loads as `Config`, so a start that fails never edits the operator's
+  file. `Config` implements `rusty_photon_config::ConfigFile`, with `check()`
+  holding any rule the parse cannot express. Pass `&[]` when identities are
   hardware-derived or the service has no devices — declining minting must
   never silently drop the first-start materialization. Only services whose
   config is deliberately operator-provided (the `ConditionPathExists`-gated
   ones, `session-runner`) skip this and call `resolve_config_path` directly.
+  Read the file with `rusty_photon_config::load_file::<Config>`: it tells a
+  JSON syntax error apart from a file that is JSON but not a valid
+  configuration. See
+  [docs/crates/rusty-photon-config.md](../crates/rusty-photon-config.md).
 
 ---
 

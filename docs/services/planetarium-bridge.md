@@ -576,8 +576,12 @@ two must not be conflated.
 Follows the fleet conventions: durations are humantime strings, angles
 bare decimal degrees, `AlpacaServerConfig` for the server block,
 sentinel's `service_auth`/`ca_cert` field shape for the client wiring
-(ADR-017), `resolve_and_init` minting `server.unique_id` on first
-start.
+(ADR-017), `resolve_and_init` minting `device.unique_id` on first
+start. The `device` section is optional, so a file that leaves it out
+gains it from the defaults along with the minted id. The bootstrap writes
+the file only when the result loads, and a file the bridge would refuse
+is left byte for byte as it was (see
+[docs/crates/rusty-photon-config.md](../crates/rusty-photon-config.md)).
 
 ```jsonc
 {

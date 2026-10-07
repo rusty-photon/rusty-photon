@@ -189,6 +189,14 @@ absent/empty, never overwrites a non-empty id, writes the default scaffold if th
 file is absent, and persists atomically (the on-disk file only — a transient
 `--port`/`--server-port` override is never baked in).
 
+If the file leaves out the `focuser` section entirely, the bootstrap copies it in from
+the defaults before minting, so it arrives with its `name` and `description`.
+The bootstrap writes the file only when the result loads. A file the driver
+would refuse (an unknown key, a section missing a required field) is left byte
+for byte as it was, and the start fails with
+`config file <path> is valid JSON but not a valid configuration: <detail>`. See
+[docs/crates/rusty-photon-config.md](../crates/rusty-photon-config.md).
+
 ### CLI Arguments
 
 | Argument | Description |
