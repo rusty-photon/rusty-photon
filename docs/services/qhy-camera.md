@@ -749,7 +749,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   change holds the connection's lifecycle lock (C8): those run `OpenQHYCCD`,
   `InitQHYCCD` and `CloseQHYCCD`, and a probe landing among them would be asking
   a camera in transition rather than one that has gone. A device that really
-  has gone is found out by the next failure outside those windows. The probe and
+  has gone is found out by the next failure outside those windows. A
+  capability probe whose question is withheld does not publish its answer: an
+  "absent" heard then is no more a fact than one from a departed camera. It
+  answers `INVALID_OPERATION` ("ask again") instead, and the next probe after
+  the transition is judged as usual. The probe and
   the mark are made under the lock the connection's open and close take, so a
   probe cannot judge one physical handle and mark the next. Presence checks are
   serialized among themselves, on a lock no transition takes. A check that
@@ -1973,7 +1977,8 @@ Layered per [`testing.md`](../skills/testing.md).
   mock's `frame_fill`), a failure and a probe that answer from their own
   verdict although a reconnect lands right after it (the mocks'
   `reconnect_lands_after_verdict`) or between the failed call and the question
-  (`reconnect_lands_before_verdict`), the abort whose SDK
+  (`reconnect_lands_before_verdict`), a probe whose question is withheld
+  answering "ask again" instead of its "absent", the abort whose SDK
   cancel fails on a departed camera, the withheld
   verdict while a transition holds the lock, and a close that fails on a
   departed camera are reached only there. Both doubles model what the SDK does

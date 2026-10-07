@@ -39,7 +39,7 @@ use rusty_photon_camera_core::{
 use rusty_photon_driver::ConfigActionCtx;
 use tracing::{debug, warn};
 
-use crate::backend::{BackendError, CameraHandle, ImageData};
+use crate::backend::{BackendError, CameraHandle, ImageData, Verdict};
 use crate::config::DeviceOverride;
 use crate::config_actions::QhyCameraDriver;
 
@@ -866,8 +866,8 @@ impl QhyCameraDevice {
             // client's release and reconnect opened since. A reconnect that
             // landed before the question was put means the handle this call
             // failed on is gone too, whatever the fresh one answers.
-            let gone =
-                outcome.is_err() && (handle.verify_presence() || handle.generation() != generation);
+            let gone = outcome.is_err()
+                && (handle.verify_presence() == Verdict::Lost || handle.generation() != generation);
             (outcome, gone)
         })
         .await
@@ -909,14 +909,26 @@ impl QhyCameraDevice {
         let probed = self
             .on_handle(move |h| {
                 let generation = h.generation();
-                let probed = f(h);
-                // A probe that answered from a handle the question finds lost,
-                // or that a reconnect has replaced since, answered for a
-                // departed camera, not for the one the connection holds now.
-                if probed.is_ok() && (h.verify_presence() || h.generation() != generation) {
-                    return Err(ASCOMError::NOT_CONNECTED);
+                let answer = f(h)?;
+                match h.verify_presence() {
+                    // A probe that answered from a handle the question finds
+                    // lost, or that a reconnect has replaced since, answered
+                    // for a departed camera, not for the one the connection
+                    // holds now.
+                    Verdict::Lost => Err(ASCOMError::NOT_CONNECTED),
+                    Verdict::Present if h.generation() != generation => {
+                        Err(ASCOMError::NOT_CONNECTED)
+                    }
+                    Verdict::Present => Ok(answer),
+                    // With no verdict, an "absent" is no more a fact than one
+                    // from a departed camera, so the probe's answer is not
+                    // published; the client asks again once the transition
+                    // is over.
+                    Verdict::Withheld => Err(ASCOMError::invalid_operation(
+                        "the camera is in a connect, disconnect or readout-mode change and \
+                         cannot be asked what it has; ask again",
+                    )),
                 }
-                probed
             })
             .await?;
         self.ensure_connected()?;
@@ -8565,6 +8577,45 @@ mod tests {
         let error = device.can_set_ccd_temperature().await.unwrap_err();
 
         assert_eq!(error.code, ASCOMErrorCode::NOT_CONNECTED);
+    }
+
+    /// A probe whose question is withheld, because a transition holds the
+    /// connection, does not publish its answer (C9, E11): an "absent" heard
+    /// then may come from a departed camera, and publishing it is the "no
+    /// cooler" C9 exists to prevent. The request asks again afterwards, when
+    /// the question is answered.
+    #[tokio::test]
+    async fn a_probe_whose_question_is_withheld_does_not_publish_its_answer() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+
+        let transition = handle.lifecycle_lock().lock().await;
+        let withheld = device.can_set_ccd_temperature().await.unwrap_err();
+        drop(transition);
+
+        assert_eq!(withheld.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(
+            device.can_set_ccd_temperature().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// The same holds for a camera that is present: its "absent" is held back
+    /// while the question cannot be put, and published once it can.
+    #[tokio::test]
+    async fn a_present_cameras_absent_is_published_once_its_question_is_answered() {
+        let (device, handle) = connected_device_with_handle(
+            MockCameraHandle::default().without_control(ControlType::Cooler),
+        )
+        .await;
+
+        let transition = handle.lifecycle_lock().lock().await;
+        let withheld = device.can_set_ccd_temperature().await.unwrap_err();
+        drop(transition);
+
+        assert_eq!(withheld.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert!(!device.can_set_ccd_temperature().await.unwrap());
+        assert!(device.connected().await.unwrap());
     }
 
     /// The other side of the probe rule: "absent" from a camera still on the

@@ -14,7 +14,7 @@ use ascom_alpaca::{ASCOMError, ASCOMResult};
 use parking_lot::Mutex;
 use tracing::debug;
 
-use crate::backend::FilterWheelHandle;
+use crate::backend::{FilterWheelHandle, Verdict};
 
 /// Slots are `usize` throughout because that is what every consumer is: the
 /// ASCOM `Position`, and the `Names` / `FocusOffsets` lengths that must match
@@ -120,8 +120,8 @@ impl QhyFilterWheelDevice {
             // client's release and reconnect opened since. A reconnect that
             // landed before the question was put means the handle this call
             // failed on is gone too, whatever the fresh one answers.
-            let gone =
-                outcome.is_err() && (handle.verify_presence() || handle.generation() != generation);
+            let gone = outcome.is_err()
+                && (handle.verify_presence() == Verdict::Lost || handle.generation() != generation);
             (outcome, gone)
         })
         .await

@@ -55,6 +55,19 @@ pub struct ImageData {
     pub channels: u32,
 }
 
+/// What a presence question settled (C9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// The camera answered for the control every connect requires.
+    Present,
+    /// The connection is lost: the camera has left the bus.
+    Lost,
+    /// No verdict: a connect, disconnect or readout-mode change holds the
+    /// connection, or the asking device does not hold the handle. An "absent"
+    /// heard meanwhile is no more a fact than one from a departed camera.
+    Withheld,
+}
+
 /// The blocking camera operations the ASCOM `Camera` device drives. Every method
 /// is synchronous (the SDK is blocking C FFI); the device offloads the long
 /// exposure calls onto `spawn_blocking`.
@@ -93,11 +106,10 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// verdict on a handle that is not open, or while a connect, disconnect or
     /// readout-mode change holds the [`lifecycle_lock`](Self::lifecycle_lock).
     ///
-    /// Returns whether the connection reads lost once the question is settled.
-    /// A request that asked answers from this rather than from a later read of
-    /// the connection, which a release and reconnect by another client may
-    /// already have replaced.
-    fn verify_presence(&self) -> bool;
+    /// Returns what the question settled. A request that asked answers from
+    /// this rather than from a later read of the connection, which a release
+    /// and reconnect by another client may already have replaced.
+    fn verify_presence(&self) -> Verdict;
     /// Which physical open the connection behind this handle is on. A request
     /// compares it across its SDK call and its question, so a failure on a
     /// handle a reconnect has since replaced is not judged by the new one.
@@ -411,7 +423,7 @@ pub trait FilterWheelHandle: std::fmt::Debug + Send + Sync {
     fn is_lost(&self) -> bool;
     /// [`CameraHandle::verify_presence`], asked from the wheel's side of the
     /// shared connection.
-    fn verify_presence(&self) -> bool;
+    fn verify_presence(&self) -> Verdict;
     /// [`CameraHandle::generation`], for the wheel.
     fn generation(&self) -> u64;
     /// The connect/disconnect lock for the *physical* connection behind this
@@ -634,27 +646,30 @@ impl SharedCameraConnection {
     /// `refs`, the lock the open and the close take, so the probe judges the
     /// physical handle the device's flag vouches for and no other.
     ///
-    /// Returns whether the connection reads lost once the question is settled,
-    /// read under the same locks, so it is the verdict for this handle and not
-    /// for one a later reconnect opened.
-    fn verify_presence(&self, connected: &AtomicBool) -> bool {
+    /// Returns what the question settled, read under the same locks, so it is
+    /// the verdict for this handle and not for one a later reconnect opened. A
+    /// withheld verdict is reported as such, never as "present".
+    fn verify_presence(&self, connected: &AtomicBool) -> Verdict {
         // A concurrent check waits for this one's verdict rather than reading
         // its hold on the lifecycle lock as a transition.
         let _check = self.presence.lock();
         let Ok(_transition) = self.lifecycle.try_lock() else {
             debug!("connection in transition; no presence verdict");
-            return self.lost.load(Ordering::SeqCst);
+            return self.lost_or(Verdict::Withheld);
         };
         let refs = self.refs.lock();
-        if !connected.load(Ordering::SeqCst) || self.lost.load(Ordering::SeqCst) {
-            return self.lost.load(Ordering::SeqCst);
+        if self.lost.load(Ordering::SeqCst) {
+            return Verdict::Lost;
+        }
+        if !connected.load(Ordering::SeqCst) {
+            return Verdict::Withheld;
         }
         if self
             .camera
             .is_control_available(ControlType::CamSingleFrameMode)
             .is_some()
         {
-            return false;
+            return Verdict::Present;
         }
         self.lost.store(true, Ordering::SeqCst);
         drop(refs);
@@ -663,7 +678,16 @@ impl SharedCameraConnection {
             "camera no longer answers for a control its connect required; it has left the bus, \
              and every device on its connection now reads disconnected"
         );
-        true
+        Verdict::Lost
+    }
+
+    /// [`Verdict::Lost`] if the connection is already lost, `otherwise` if not.
+    fn lost_or(&self, otherwise: Verdict) -> Verdict {
+        if self.lost.load(Ordering::SeqCst) {
+            Verdict::Lost
+        } else {
+            otherwise
+        }
     }
 }
 
@@ -703,7 +727,7 @@ impl CameraHandle for QhyCameraHandle {
     fn is_lost(&self) -> bool {
         self.conn.is_lost()
     }
-    fn verify_presence(&self) -> bool {
+    fn verify_presence(&self) -> Verdict {
         self.conn.verify_presence(&self.connected)
     }
     fn generation(&self) -> u64 {
@@ -892,7 +916,7 @@ impl FilterWheelHandle for QhyFilterWheelHandle {
     fn is_lost(&self) -> bool {
         self.conn.is_lost()
     }
-    fn verify_presence(&self) -> bool {
+    fn verify_presence(&self) -> Verdict {
         self.conn.verify_presence(&self.connected)
     }
     fn generation(&self) -> u64 {
@@ -1483,21 +1507,29 @@ pub(crate) mod mock {
         /// The presence verdict itself, without the hook: lost if already so,
         /// no verdict under the lifecycle lock or on a handle that is not open,
         /// and a probe of `CamSingleFrameMode` otherwise.
-        fn verdict(&self) -> bool {
+        fn verdict(&self) -> Verdict {
             let _check = self.presence.lock();
             let Ok(_transition) = self.lifecycle.try_lock() else {
-                return self.lost.load(Ordering::SeqCst);
+                return if self.lost.load(Ordering::SeqCst) {
+                    Verdict::Lost
+                } else {
+                    Verdict::Withheld
+                };
             };
-            if !self.open.load(Ordering::SeqCst) || self.lost.load(Ordering::SeqCst) {
-                return self.lost.load(Ordering::SeqCst);
+            if self.lost.load(Ordering::SeqCst) {
+                return Verdict::Lost;
+            }
+            if !self.open.load(Ordering::SeqCst) {
+                return Verdict::Withheld;
             }
             if self
                 .is_control_available(ControlType::CamSingleFrameMode)
-                .is_none()
+                .is_some()
             {
-                self.lost.store(true, Ordering::SeqCst);
+                return Verdict::Present;
             }
-            self.lost.load(Ordering::SeqCst)
+            self.lost.store(true, Ordering::SeqCst);
+            Verdict::Lost
         }
         /// Take the camera off the bus with its handle still open (C9).
         pub fn leave_bus(&self) {
@@ -1672,7 +1704,7 @@ pub(crate) mod mock {
         /// `SharedCameraConnection::verify_presence`'s rule, on the mock's own
         /// flags: no verdict while the lifecycle lock is held or on a handle
         /// that is not open, and a probe of `CamSingleFrameMode` otherwise.
-        fn verify_presence(&self) -> bool {
+        fn verify_presence(&self) -> Verdict {
             self.presence_checks.fetch_add(1, Ordering::SeqCst);
             if self
                 .reconnect_lands_before_verdict
@@ -1684,13 +1716,14 @@ pub(crate) mod mock {
                 self.lost.store(false, Ordering::SeqCst);
                 self.generation.fetch_add(1, Ordering::SeqCst);
             }
-            let lost = self.verdict();
-            if lost && self.reconnect_lands_after_verdict.load(Ordering::SeqCst) {
+            let verdict = self.verdict();
+            if verdict == Verdict::Lost && self.reconnect_lands_after_verdict.load(Ordering::SeqCst)
+            {
                 // Another client's release and reconnect, landing between the
                 // verdict and anything the asking request reads afterwards.
                 self.lost.store(false, Ordering::SeqCst);
             }
-            lost
+            verdict
         }
         fn generation(&self) -> u64 {
             self.generation.load(Ordering::SeqCst)
@@ -2192,7 +2225,7 @@ pub(crate) mod mock {
         }
         /// The camera mock's rule; the wheel has no control to probe, so the
         /// departure itself is the answer the probe would give.
-        fn verify_presence(&self) -> bool {
+        fn verify_presence(&self) -> Verdict {
             if self
                 .reconnect_lands_before_verdict
                 .swap(false, Ordering::SeqCst)
@@ -2201,20 +2234,30 @@ pub(crate) mod mock {
                 self.lost.store(false, Ordering::SeqCst);
                 self.generation.fetch_add(1, Ordering::SeqCst);
             }
-            let lost = {
+            let verdict = {
                 let _check = self.presence.lock();
-                let Ok(_transition) = self.lifecycle.try_lock() else {
-                    return self.lost.load(Ordering::SeqCst);
-                };
-                if self.open.load(Ordering::SeqCst) && self.departed.load(Ordering::SeqCst) {
-                    self.lost.store(true, Ordering::SeqCst);
+                if let Ok(_transition) = self.lifecycle.try_lock() {
+                    if self.open.load(Ordering::SeqCst) && self.departed.load(Ordering::SeqCst) {
+                        self.lost.store(true, Ordering::SeqCst);
+                    }
+                    if self.lost.load(Ordering::SeqCst) {
+                        Verdict::Lost
+                    } else if self.open.load(Ordering::SeqCst) {
+                        Verdict::Present
+                    } else {
+                        Verdict::Withheld
+                    }
+                } else if self.lost.load(Ordering::SeqCst) {
+                    Verdict::Lost
+                } else {
+                    Verdict::Withheld
                 }
-                self.lost.load(Ordering::SeqCst)
             };
-            if lost && self.reconnect_lands_after_verdict.load(Ordering::SeqCst) {
+            if verdict == Verdict::Lost && self.reconnect_lands_after_verdict.load(Ordering::SeqCst)
+            {
                 self.lost.store(false, Ordering::SeqCst);
             }
-            lost
+            verdict
         }
         fn generation(&self) -> u64 {
             self.generation.load(Ordering::SeqCst)
@@ -2397,7 +2440,7 @@ mod conn_tests {
         let (_conn, cam, _fw) = departing_pair(&dir.path().join("departed"));
         cam.open().unwrap();
 
-        cam.verify_presence();
+        assert_eq!(cam.verify_presence(), Verdict::Present);
 
         assert!(!cam.is_lost());
     }
@@ -2411,7 +2454,7 @@ mod conn_tests {
         fw.open().unwrap();
 
         std::fs::write(&departure, b"").unwrap();
-        fw.verify_presence();
+        assert_eq!(fw.verify_presence(), Verdict::Lost);
 
         assert!(cam.is_lost() && fw.is_lost());
         // Lost is not closed: both devices still hold the handle, and nothing
@@ -2456,21 +2499,27 @@ mod conn_tests {
         std::fs::write(&departure, b"").unwrap();
         let (cam, fw) = (Arc::new(cam), Arc::new(fw));
 
-        // Park the first check after it has taken the lifecycle lock: its
-        // probe runs under `refs`, which the test holds.
+        // Park the first check inside its question: its probe runs under
+        // `refs`, which the test holds. The test watches the presence lock
+        // rather than trying the lifecycle lock, which would compete with the
+        // check for it and could hand it a "transition" of the test's making.
         let refs = conn.refs.lock();
         let first = std::thread::spawn({
             let cam = Arc::clone(&cam);
             move || cam.verify_presence()
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while conn.lifecycle.try_lock().is_ok() {
+        while !conn.presence.is_locked() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "the first check never took the lifecycle lock"
+                "the first check never began"
             );
             std::thread::yield_now();
         }
+        // Nothing else takes the lifecycle lock here, so the first check takes
+        // it at once and parks on `refs`; the pause gives it the moment it
+        // needs, so the second check cannot reach the lock first.
+        std::thread::sleep(std::time::Duration::from_millis(50));
         let second = std::thread::spawn({
             let fw = Arc::clone(&fw);
             move || fw.verify_presence()
@@ -2482,12 +2531,14 @@ mod conn_tests {
         );
 
         drop(refs);
-        assert!(
+        assert_eq!(
             first.join().unwrap(),
+            Verdict::Lost,
             "the first check found the camera gone"
         );
-        assert!(
+        assert_eq!(
             second.join().unwrap(),
+            Verdict::Lost,
             "the second check answered from that verdict"
         );
     }
@@ -2500,7 +2551,7 @@ mod conn_tests {
         fw.open().unwrap();
 
         std::fs::write(&departure, b"").unwrap();
-        cam.verify_presence();
+        assert_eq!(cam.verify_presence(), Verdict::Withheld);
 
         assert!(!cam.is_lost(), "the camera holds nothing to judge");
     }
@@ -2514,14 +2565,14 @@ mod conn_tests {
         std::fs::write(&departure, b"").unwrap();
 
         let transition = conn.lifecycle_lock().try_lock().expect("lock free");
-        cam.verify_presence();
+        assert_eq!(cam.verify_presence(), Verdict::Withheld);
         assert!(
             !cam.is_lost(),
             "a probe inside a transition gives no verdict"
         );
 
         drop(transition);
-        cam.verify_presence();
+        assert_eq!(cam.verify_presence(), Verdict::Lost);
         assert!(cam.is_lost());
     }
 
