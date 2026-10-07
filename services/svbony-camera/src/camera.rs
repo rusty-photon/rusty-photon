@@ -40,7 +40,7 @@ use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use parking_lot::Mutex;
 use rusty_photon_camera_core::{
-    self as camera_core, unbinned, Alignment, PixelDepth, Roi, UnbinnedRoi,
+    self as camera_core, unbinned, Alignment, ConnectedTransition, PixelDepth, Roi, UnbinnedRoi,
 };
 use svbony_rs::{BayerPattern, CameraInfo, ControlCaps, ControlType, ImageType};
 use tracing::{debug, warn};
@@ -787,20 +787,31 @@ impl SvbonyCamera {
         // reconnected since. The mark first, as in `is_connected`.
         let lost = self.handle.is_lost();
         let held = self.handle.is_open();
-        if lost {
-            // The ordinary disconnect (C3). No connect can come between the
-            // read above and this close, and the handle refuses to reopen a
-            // lost camera, so the session it ends is the lost one.
-            self.disconnect()?;
-            debug!(camera = %self.unique_id, "released a camera that has left the bus");
+        match camera_core::connected_transition(connected, held, lost) {
+            ConnectedTransition::Nothing => Ok(()),
+            ConnectedTransition::Connect => self.connect(),
+            ConnectedTransition::Disconnect => self.disconnect(),
+            ConnectedTransition::Release => {
+                self.release();
+                Ok(())
+            }
+            ConnectedTransition::ReleaseThenConnect => {
+                self.release();
+                self.connect()
+            }
         }
-        if connected {
-            self.connect()
-        } else if held && !lost {
-            self.disconnect()
-        } else {
-            Ok(())
+    }
+
+    /// End a session whose camera has left the bus (C6) through the ordinary
+    /// disconnect (C3). No connect can come between the caller's read of the
+    /// lost mark and this close, and the handle refuses to reopen a lost
+    /// camera, so the session it ends is the lost one. A release succeeds
+    /// whatever the close says about a camera that is no longer there.
+    fn release(&self) {
+        if let Err(e) = self.disconnect() {
+            debug!(camera = %self.unique_id, error = ?e, "closing a camera that has left the bus failed");
         }
+        debug!(camera = %self.unique_id, "released a camera that has left the bus");
     }
 
     /// Close the handle, first forgetting the gain and offset this session
@@ -1212,7 +1223,8 @@ impl Device for SvbonyCamera {
         // comes first.
         let lost = self.handle.is_lost();
         let held = self.handle.is_open();
-        if connected == held && !lost {
+        if camera_core::connected_transition(connected, held, lost) == ConnectedTransition::Nothing
+        {
             return Ok(());
         }
         // `transition` decides again under the lifecycle lock (C7) and does

@@ -218,12 +218,6 @@ impl BackendError {
     }
 }
 
-/// Whether a frame read back blank, every byte zero. Stops at the first
-/// non-zero byte, so a real frame costs next to nothing to check.
-fn is_blank(frame: &[u8]) -> bool {
-    frame.iter().all(|&byte| byte == 0)
-}
-
 pub type BackendResult<T> = std::result::Result<T, BackendError>;
 
 /// Where `held` — a camera as it was enumerated — is in a fresh rescan of the
@@ -1071,7 +1065,7 @@ impl CameraHandle for SvbonyCameraHandle {
                 }
             })?;
             if frame {
-                if is_blank(&buf) {
+                if rusty_photon_camera_core::is_blank_frame(&buf) {
                     self.ask_after_a_blank_frame(epoch)?;
                 }
                 // A frame that outlived the SDK's recommendation is worth
@@ -1870,7 +1864,7 @@ mod handle_tests {
             .capture(sim_request(Duration::ZERO, &cancel))
             .unwrap();
 
-        assert!(is_blank(&frame));
+        assert!(rusty_photon_camera_core::is_blank_frame(&frame));
         assert!(!handle.is_lost());
     }
 }
@@ -2881,13 +2875,5 @@ mod pure_fn_tests {
             found.message().starts_with("the camera has left the bus: "),
             "{found}"
         );
-    }
-
-    /// A frame is blank only when every byte of it is zero.
-    #[test]
-    fn a_frame_is_blank_only_when_every_byte_is_zero() {
-        assert!(is_blank(&[0; 16]));
-        assert!(!is_blank(&[0, 0, 0, 1]));
-        assert!(!is_blank(&[1, 0, 0, 0]));
     }
 }

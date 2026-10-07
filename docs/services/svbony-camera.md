@@ -1014,8 +1014,9 @@ one core at load average 65, see "Real-hardware validation").
   camera the rescan does not find marks the session lost, logged once at
   `warn`. A departed camera's frame read is such a failure: it times out at
   its read deadline (E9). So is a frame that reads back blank, every byte
-  zero, which an SDK can hand back as a success for a readout that stalled
-  (QHY's was measured doing it; SDK 1.13.4 was not seen to). A blank frame
+  zero (`rusty-photon-camera-core`'s `is_blank_frame`, shared with qhy-camera
+  and zwo-camera), which an SDK can hand back as a success for a readout that
+  stalled (QHY's was measured doing it; SDK 1.13.4 was not seen to). A blank frame
   from a camera the rescan no longer finds is discarded and the exposure
   fails; one from a camera still there is that camera's frame, and is
   published as it is.
@@ -1051,10 +1052,13 @@ one core at load average 65, see "Real-hardware validation").
   **Lost is not closed.** The driver closes nothing on its own: the session
   ends when a client ends it. `Connected = false` on a lost camera releases it
   through the ordinary disconnect (C3: an exposure in flight cancelled, the
-  gain and offset forgotten, the camera closed). `Connected = true` releases it
-  the same way and then connects afresh, so a client that sees `Connected ==
-  false` and reconnects — rp's supervisor does exactly that — gets either a
-  working camera or C2's failure, never the lost session back. The release is
+  gain and offset forgotten, the camera closed), and succeeds whatever that
+  close says. `Connected = true` releases it the same way and then connects
+  afresh, so a client that sees `Connected == false` and reconnects — rp's
+  supervisor does exactly that — gets either a working camera or C2's
+  failure, never the lost session back. Which of these a `Connected` write
+  makes is `rusty-photon-camera-core`'s `connected_transition`, shared with
+  qhy-camera and zwo-camera. The release is
   decided, and made, under C7's lifecycle lock, so of two clients reconnecting
   a departed camera at once the second finds the first's fresh session and
   leaves it alone. `Connected` reads the lost mark before the open flag, which
@@ -1780,7 +1784,7 @@ everything else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 148 no-features / 171 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 147 no-features / 170 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
