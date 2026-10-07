@@ -254,6 +254,78 @@ fn checked<C: ConfigFile>(path: &Path, config: C) -> Result<C, ConfigError> {
     Ok(config)
 }
 
+/// Refuse `text`, the contents of the file at `path`, when an object in it
+/// holds the same key twice — the one thing a parse into a `Value` loses.
+fn reject_duplicate_keys(path: &Path, text: &str) -> Result<(), ConfigError> {
+    serde_json::from_str::<UniqueKeys>(text)
+        .map(|UniqueKeys| ())
+        .map_err(|source| ConfigError::InvalidConfig {
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+/// Any JSON value whose objects each hold every key at most once. Parsing
+/// into it checks that and keeps nothing.
+struct UniqueKeys;
+
+impl<'de> serde::Deserialize<'de> for UniqueKeys {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(Self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for UniqueKeys {
+    type Value = Self;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a JSON value")
+    }
+
+    fn visit_bool<E>(self, _: bool) -> Result<Self, E> {
+        Ok(self)
+    }
+
+    fn visit_i64<E>(self, _: i64) -> Result<Self, E> {
+        Ok(self)
+    }
+
+    fn visit_u64<E>(self, _: u64) -> Result<Self, E> {
+        Ok(self)
+    }
+
+    fn visit_f64<E>(self, _: f64) -> Result<Self, E> {
+        Ok(self)
+    }
+
+    fn visit_str<E>(self, _: &str) -> Result<Self, E> {
+        Ok(self)
+    }
+
+    fn visit_unit<E>(self) -> Result<Self, E> {
+        Ok(self)
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self, A::Error> {
+        while seq.next_element::<Self>()?.is_some() {}
+        Ok(self)
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self, A::Error> {
+        let mut seen = std::collections::HashSet::new();
+        while let Some(key) = map.next_key::<String>()? {
+            if seen.contains(&key) {
+                return Err(serde::de::Error::custom(format_args!(
+                    "duplicate key `{key}`"
+                )));
+            }
+            map.next_value::<Self>()?;
+            seen.insert(key);
+        }
+        Ok(self)
+    }
+}
+
 /// Stage `value` as pretty JSON in a synced temp file next to `path` (same
 /// directory, so the final rename/link stays on one filesystem).
 fn stage_pretty_json<'p>(
@@ -533,6 +605,11 @@ pub fn materialize_identity<C: ConfigFile>(
                 Some(Err(as_written)) => as_written,
                 _ => refused,
             });
+        }
+        // A `Value` keeps only the last of two equal keys, so the rewrite
+        // would silently drop the operator's other one.
+        if let Some(text) = &text {
+            reject_duplicate_keys(path, text)?;
         }
         save(path, &value).map_err(|source| ConfigError::Write {
             path: path.to_path_buf(),
@@ -1345,6 +1422,71 @@ mod tests {
 
         assert!(matches!(err, ConfigError::InvalidJson { .. }), "{err:?}");
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+    }
+
+    #[test]
+    fn materialize_leaves_a_file_with_a_duplicate_key_untouched() {
+        // A rewrite from a `Value` would keep only the second `x`.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let written = "{\"d\": {},\n\"x\": 1, \"x\": 2}";
+        std::fs::write(&path, written).unwrap();
+
+        let err = materialize_identity::<Value>(&path, &json!({}), &["/d/unique_id"])
+            .err()
+            .unwrap();
+
+        assert!(matches!(err, ConfigError::InvalidConfig { .. }), "{err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("duplicate key `x`"), "{msg}");
+        assert!(msg.contains("line 2"), "{msg}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+    }
+
+    #[test]
+    fn materialize_leaves_a_file_with_a_duplicate_field_untouched() {
+        // Collapsed to its last `name`, the device section would load, so the
+        // typed check alone would let the rewrite through.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("c.json");
+        let written = r#"{"port": 9, "device": {"name": "a", "name": "b"}}"#;
+        std::fs::write(&path, written).unwrap();
+
+        let err = materialize_identity::<Typed>(&path, &typed_default(), &["/device/unique_id"])
+            .err()
+            .unwrap();
+
+        assert!(err.to_string().contains("`name`"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+    }
+
+    #[test]
+    fn unique_keys_accepts_every_kind_of_json_value() {
+        // Equal keys in *different* objects are not duplicates.
+        let text = r#"{"a": -1, "b": 2, "c": 1.5, "d": true, "e": null,
+                       "f": [1, "x", {"a": "\"quoted\""}], "g": {"a": 1}}"#;
+
+        reject_duplicate_keys(Path::new("c.json"), text).unwrap();
+    }
+
+    #[test]
+    fn unique_keys_finds_a_duplicate_inside_an_array() {
+        let err = reject_duplicate_keys(Path::new("c.json"), r#"[{"a": 1, "a": 2}]"#)
+            .err()
+            .unwrap();
+
+        assert!(err.to_string().contains("duplicate key `a`"), "{err}");
+    }
+
+    #[test]
+    fn unique_keys_names_what_it_expects() {
+        // JSON never reaches `expecting`; bytes do.
+        use serde::Deserialize as _;
+        let bytes = serde::de::value::BytesDeserializer::<serde::de::value::Error>::new(b"x");
+
+        let err = UniqueKeys::deserialize(bytes).err().unwrap();
+
+        assert!(err.to_string().contains("a JSON value"), "{err}");
     }
 
     #[test]

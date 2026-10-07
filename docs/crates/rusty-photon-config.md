@@ -84,6 +84,12 @@ written only if the result loads as `C`. Otherwise:
   message carries their line numbers, so it points at what they need to fix.
   It does not describe the in-memory result.
 
+A rewrite cannot keep two equal keys in one object: parsed into a
+`serde_json::Value`, only the last survives. So when a write is needed, a file
+whose text repeats a key in any object is refused the same way, untouched. The
+error names the key with its line and column (``duplicate key `name` at line 3
+column 12``). A start that writes nothing leaves that to the service's load.
+
 A start that fails therefore never edits the operator's file. Writing first
 and loading second would turn one bad start into every later one. A section
 holding only `{"unique_id": …}`, saved before a load that refuses it, can
