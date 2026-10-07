@@ -858,17 +858,18 @@ impl QhyCameraDevice {
         T: Send + 'static,
     {
         let handle = Arc::clone(&self.handle);
-        let outcome = tokio::task::spawn_blocking(move || {
+        let (outcome, lost) = tokio::task::spawn_blocking(move || {
             let outcome = f(handle.as_ref());
-            if outcome.is_err() {
-                handle.verify_presence();
-            }
-            outcome
+            // The verdict is this request's answer. Read again once the task
+            // is back, the connection may already belong to a session another
+            // client's release and reconnect opened since.
+            let lost = outcome.is_err() && handle.verify_presence();
+            (outcome, lost)
         })
         .await
         .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?;
         match outcome {
-            Err(e) if self.ensure_connected().is_err() => {
+            Err(e) if lost || self.ensure_connected().is_err() => {
                 debug!(error = %e, "SDK call failed on a handle that is closed or whose camera has left the bus");
                 Err(ASCOMError::NOT_CONNECTED)
             }
@@ -904,8 +905,11 @@ impl QhyCameraDevice {
         let probed = self
             .on_handle(move |h| {
                 let probed = f(h);
-                if probed.is_ok() {
-                    h.verify_presence();
+                // A probe that answered from a handle the question finds lost
+                // answered for a departed camera, not for the one a reconnect
+                // may have opened by the time this request returns.
+                if probed.is_ok() && h.verify_presence() {
+                    return Err(ASCOMError::NOT_CONNECTED);
                 }
                 probed
             })
@@ -3424,7 +3428,7 @@ impl Camera for QhyCameraDevice {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::backend::mock::{MockCameraHandle, MockFilterWheelHandle};
+    use crate::backend::mock::{drop_once_parked, MockCameraHandle, MockFilterWheelHandle};
     use crate::filterwheel::QhyFilterWheelDevice;
     use qhyccd_rs::CCDChipInfo;
     use std::sync::atomic::Ordering;
@@ -3891,14 +3895,8 @@ mod tests {
 
         // Drop the request future while the handshake is parked in the SDK —
         // which is what an Alpaca client going away does to it.
-        handle.hold_open();
-        let cancelled =
-            tokio::time::timeout(Duration::from_millis(250), device.set_connected(true)).await;
-        assert!(
-            cancelled.is_err(),
-            "the connect should still have been parked, not finished"
-        );
-        assert!(handle.is_in_open(), "and parked inside the SDK");
+        let hold = handle.hold_open_until_dropped();
+        drop_once_parked(device.set_connected(true), || handle.is_in_open()).await;
         assert!(
             lifecycle.try_lock().is_err(),
             "a cancelled request must not give the connection back while the handshake it guards is still running"
@@ -3910,7 +3908,7 @@ mod tests {
         // anything (C6), so waiting on `Connected` would race the publication the
         // assertions below read — `init_calls` still 0, `BinX` still unset.
         // `BinX` answering at all is the commit, so it is the honest gate.
-        handle.release_open();
+        drop(hold);
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while device.bin_x().await.is_err() {
             assert!(
@@ -8488,6 +8486,44 @@ mod tests {
             ASCOMErrorCode::NOT_CONNECTED
         );
         assert!(!device.connected().await.unwrap());
+    }
+
+    /// A failed request answers from the verdict its own question returned
+    /// (C9). Another client may release and reconnect the moment that verdict
+    /// is in, and a read of the connection afterwards would then vouch for a
+    /// session the failure never touched, so the call site's own error (here,
+    /// "no cooler") would leak out.
+    #[tokio::test]
+    async fn a_failure_answers_from_its_own_verdict_even_if_a_reconnect_lands_after_it() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+        handle
+            .reconnect_lands_after_verdict
+            .store(true, Ordering::SeqCst);
+
+        let error = device.ccd_temperature().await.unwrap_err();
+
+        assert_eq!(error.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(
+            device.connected().await.unwrap(),
+            "the connection reads healthy again, as after a reconnect"
+        );
+    }
+
+    /// The probe rule's half of the same race: a probe whose question found the
+    /// camera gone answers `NOT_CONNECTED`, never the dead handle's "absent" as
+    /// a fact about the session a reconnect opened (C9, E11).
+    #[tokio::test]
+    async fn a_probe_answers_from_its_own_verdict_even_if_a_reconnect_lands_after_it() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        handle.leave_bus();
+        handle
+            .reconnect_lands_after_verdict
+            .store(true, Ordering::SeqCst);
+
+        let error = device.can_set_ccd_temperature().await.unwrap_err();
+
+        assert_eq!(error.code, ASCOMErrorCode::NOT_CONNECTED);
     }
 
     /// The other side of the probe rule: "absent" from a camera still on the

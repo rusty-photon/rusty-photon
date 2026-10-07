@@ -92,7 +92,12 @@ pub trait CameraHandle: std::fmt::Debug + Send + Sync {
     /// after a capability probe, from the thread that made the call. Gives no
     /// verdict on a handle that is not open, or while a connect, disconnect or
     /// readout-mode change holds the [`lifecycle_lock`](Self::lifecycle_lock).
-    fn verify_presence(&self);
+    ///
+    /// Returns whether the connection reads lost once the question is settled.
+    /// A request that asked answers from this rather than from a later read of
+    /// the connection, which a release and reconnect by another client may
+    /// already have replaced.
+    fn verify_presence(&self) -> bool;
     /// The connect/disconnect lock for the *physical* connection behind this
     /// handle, shared with any other ASCOM device on it (C8).
     fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()>;
@@ -402,7 +407,7 @@ pub trait FilterWheelHandle: std::fmt::Debug + Send + Sync {
     fn is_lost(&self) -> bool;
     /// [`CameraHandle::verify_presence`], asked from the wheel's side of the
     /// shared connection.
-    fn verify_presence(&self);
+    fn verify_presence(&self) -> bool;
     /// The connect/disconnect lock for the *physical* connection behind this
     /// handle, shared with the Camera device driven through it (C8).
     fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()>;
@@ -602,21 +607,25 @@ impl SharedCameraConnection {
     /// — a device that really has gone fails again outside those windows. Under
     /// `refs`, the lock the open and the close take, so the probe judges the
     /// physical handle the device's flag vouches for and no other.
-    fn verify_presence(&self, connected: &AtomicBool) {
+    ///
+    /// Returns whether the connection reads lost once the question is settled,
+    /// read under the same locks, so it is the verdict for this handle and not
+    /// for one a later reconnect opened.
+    fn verify_presence(&self, connected: &AtomicBool) -> bool {
         let Ok(_transition) = self.lifecycle.try_lock() else {
             debug!("connection in transition; no presence verdict");
-            return;
+            return self.lost.load(Ordering::SeqCst);
         };
         let refs = self.refs.lock();
         if !connected.load(Ordering::SeqCst) || self.lost.load(Ordering::SeqCst) {
-            return;
+            return self.lost.load(Ordering::SeqCst);
         }
         if self
             .camera
             .is_control_available(ControlType::CamSingleFrameMode)
             .is_some()
         {
-            return;
+            return false;
         }
         self.lost.store(true, Ordering::SeqCst);
         drop(refs);
@@ -625,6 +634,7 @@ impl SharedCameraConnection {
             "camera no longer answers for a control its connect required; it has left the bus, \
              and every device on its connection now reads disconnected"
         );
+        true
     }
 }
 
@@ -664,8 +674,8 @@ impl CameraHandle for QhyCameraHandle {
     fn is_lost(&self) -> bool {
         self.conn.is_lost()
     }
-    fn verify_presence(&self) {
-        self.conn.verify_presence(&self.connected);
+    fn verify_presence(&self) -> bool {
+        self.conn.verify_presence(&self.connected)
     }
     fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
         self.conn.lifecycle_lock()
@@ -850,8 +860,8 @@ impl FilterWheelHandle for QhyFilterWheelHandle {
     fn is_lost(&self) -> bool {
         self.conn.is_lost()
     }
-    fn verify_presence(&self) {
-        self.conn.verify_presence(&self.connected);
+    fn verify_presence(&self) -> bool {
+        self.conn.verify_presence(&self.connected)
     }
     fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
         self.conn.lifecycle_lock()
@@ -893,6 +903,46 @@ pub(crate) mod mock {
     use std::collections::{HashMap, HashSet};
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
     use std::time::Duration;
+
+    /// A mock `open` held until this drops. A test whose assertion fails while
+    /// the open is held then fails at once, instead of leaving the runtime's
+    /// shutdown to wait out the held open's one-minute backstop.
+    #[must_use = "the open is released as soon as the hold is dropped"]
+    pub struct OpenHold<'a>(&'a AtomicBool);
+
+    impl Drop for OpenHold<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+
+    /// Drive `request` until `parked` reports it is inside the SDK, then drop
+    /// it, which is what an Alpaca client going away mid-request does. Waiting
+    /// for the park rather than a fixed interval keeps a slow runner from
+    /// dropping the request before it got there.
+    ///
+    /// # Panics
+    ///
+    /// If the request finishes instead of parking, or has not parked within
+    /// 30 s.
+    pub async fn drop_once_parked<F>(request: F, parked: impl Fn() -> bool)
+    where
+        F: std::future::Future,
+        F::Output: std::fmt::Debug,
+    {
+        tokio::pin!(request);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        while !parked() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the request never parked in the SDK"
+            );
+            tokio::select! {
+                finished = &mut request => panic!("the request finished instead of parking: {finished:?}"),
+                () = tokio::time::sleep(Duration::from_millis(1)) => {}
+            }
+        }
+    }
 
     /// One readout mode in the mock's table: its name, and the sensor the camera
     /// has once an init has switched it into this mode.
@@ -1104,6 +1154,11 @@ pub(crate) mod mock {
         /// Counts `verify_presence` calls, so a test can tell a request that
         /// asked the question from one that did not.
         pub presence_checks: AtomicU32,
+        /// Clears a "lost" verdict right after `verify_presence` gives it, as a
+        /// release and reconnect by another client landing in that window
+        /// would, so a test can check the asking request still answers from
+        /// its own verdict.
+        pub reconnect_lands_after_verdict: AtomicBool,
     }
 
     impl Default for MockCameraHandle {
@@ -1217,6 +1272,7 @@ pub(crate) mod mock {
                 departed: AtomicBool::new(false),
                 lost: AtomicBool::new(false),
                 presence_checks: AtomicU32::new(0),
+                reconnect_lands_after_verdict: AtomicBool::new(false),
             }
         }
     }
@@ -1378,6 +1434,24 @@ pub(crate) mod mock {
         pub fn clear_calls(&self) {
             self.calls.lock().clear();
         }
+        /// The presence verdict itself, without the hook: lost if already so,
+        /// no verdict under the lifecycle lock or on a handle that is not open,
+        /// and a probe of `CamSingleFrameMode` otherwise.
+        fn verdict(&self) -> bool {
+            let Ok(_transition) = self.lifecycle.try_lock() else {
+                return self.lost.load(Ordering::SeqCst);
+            };
+            if !self.open.load(Ordering::SeqCst) || self.lost.load(Ordering::SeqCst) {
+                return self.lost.load(Ordering::SeqCst);
+            }
+            if self
+                .is_control_available(ControlType::CamSingleFrameMode)
+                .is_none()
+            {
+                self.lost.store(true, Ordering::SeqCst);
+            }
+            self.lost.load(Ordering::SeqCst)
+        }
         /// Take the camera off the bus with its handle still open (C9).
         pub fn leave_bus(&self) {
             self.departed.store(true, Ordering::SeqCst);
@@ -1455,6 +1529,13 @@ pub(crate) mod mock {
         /// Let an `open` parked by [`hold_open`](Self::hold_open) publish.
         pub fn release_open(&self) {
             self.open_held.store(false, Ordering::SeqCst);
+        }
+
+        /// [`hold_open`](Self::hold_open), released when the returned hold
+        /// drops, however the test ends.
+        pub fn hold_open_until_dropped(&self) -> OpenHold<'_> {
+            self.hold_open();
+            OpenHold(&self.open_held)
         }
 
         /// Whether an `open` is currently parked.
@@ -1543,20 +1624,15 @@ pub(crate) mod mock {
         /// `SharedCameraConnection::verify_presence`'s rule, on the mock's own
         /// flags: no verdict while the lifecycle lock is held or on a handle
         /// that is not open, and a probe of `CamSingleFrameMode` otherwise.
-        fn verify_presence(&self) {
+        fn verify_presence(&self) -> bool {
             self.presence_checks.fetch_add(1, Ordering::SeqCst);
-            let Ok(_transition) = self.lifecycle.try_lock() else {
-                return;
-            };
-            if !self.open.load(Ordering::SeqCst) || self.lost.load(Ordering::SeqCst) {
-                return;
+            let lost = self.verdict();
+            if lost && self.reconnect_lands_after_verdict.load(Ordering::SeqCst) {
+                // Another client's release and reconnect, landing between the
+                // verdict and anything the asking request reads afterwards.
+                self.lost.store(false, Ordering::SeqCst);
             }
-            if self
-                .is_control_available(ControlType::CamSingleFrameMode)
-                .is_none()
-            {
-                self.lost.store(true, Ordering::SeqCst);
-            }
+            lost
         }
         fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
             &self.lifecycle
@@ -1904,6 +1980,8 @@ pub(crate) mod mock {
         departed: AtomicBool,
         /// The connection's lost mark, as the camera mock keeps it.
         lost: AtomicBool,
+        /// [`MockCameraHandle::reconnect_lands_after_verdict`], for the wheel.
+        pub reconnect_lands_after_verdict: AtomicBool,
     }
 
     impl MockFilterWheelHandle {
@@ -1925,6 +2003,7 @@ pub(crate) mod mock {
                 pending: Mutex::new(None),
                 departed: AtomicBool::new(false),
                 lost: AtomicBool::new(false),
+                reconnect_lands_after_verdict: AtomicBool::new(false),
             }
         }
 
@@ -1966,6 +2045,13 @@ pub(crate) mod mock {
         /// Let an `open` parked by [`hold_open`](Self::hold_open) publish.
         pub fn release_open(&self) {
             self.open_held.store(false, Ordering::SeqCst);
+        }
+
+        /// [`hold_open`](Self::hold_open), released when the returned hold
+        /// drops, however the test ends.
+        pub fn hold_open_until_dropped(&self) -> OpenHold<'_> {
+            self.hold_open();
+            OpenHold(&self.open_held)
         }
 
         /// Whether an `open` is currently parked.
@@ -2033,13 +2119,20 @@ pub(crate) mod mock {
         }
         /// The camera mock's rule; the wheel has no control to probe, so the
         /// departure itself is the answer the probe would give.
-        fn verify_presence(&self) {
-            let Ok(_transition) = self.lifecycle.try_lock() else {
-                return;
+        fn verify_presence(&self) -> bool {
+            let lost = {
+                let Ok(_transition) = self.lifecycle.try_lock() else {
+                    return self.lost.load(Ordering::SeqCst);
+                };
+                if self.open.load(Ordering::SeqCst) && self.departed.load(Ordering::SeqCst) {
+                    self.lost.store(true, Ordering::SeqCst);
+                }
+                self.lost.load(Ordering::SeqCst)
             };
-            if self.open.load(Ordering::SeqCst) && self.departed.load(Ordering::SeqCst) {
-                self.lost.store(true, Ordering::SeqCst);
+            if lost && self.reconnect_lands_after_verdict.load(Ordering::SeqCst) {
+                self.lost.store(false, Ordering::SeqCst);
             }
+            lost
         }
         fn lifecycle_lock(&self) -> &tokio::sync::Mutex<()> {
             &self.lifecycle

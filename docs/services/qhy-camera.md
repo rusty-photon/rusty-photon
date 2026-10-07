@@ -732,7 +732,10 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   `Connected == false`, and every member that takes the connected check answers
   `NOT_CONNECTED`, the cache-served ones included. The request that noticed
   answers `NOT_CONNECTED` too, rather than whichever error its call site spells
-  a dead handle as.
+  a dead handle as. It answers from the verdict its own question returned, not
+  from a later read of the connection. Another client's release and reconnect
+  may have replaced that connection by then, and reading it would turn a dead
+  handle's "absent" into a statement about the fresh session.
 
   The verdict is withheld in two places, because **a false "lost" costs more
   than a late one**: it ends a live session, and the reconnect a supervisor
@@ -1957,7 +1960,9 @@ Layered per [`testing.md`](../skills/testing.md).
   success after its camera left inside it (held open with `hold_readout`; its
   frame is not published), a blank frame from a camera still present
   (published) and a frame with data in it (no presence probe at all, the
-  mock's `frame_fill`), the abort whose SDK
+  mock's `frame_fill`), a failure and a probe that answer from their own
+  verdict although a reconnect lands right after it (the mocks'
+  `reconnect_lands_after_verdict`), the abort whose SDK
   cancel fails on a departed camera, the withheld
   verdict while a transition holds the lock, and a close that fails on a
   departed camera are reached only there. Both doubles model what the SDK does

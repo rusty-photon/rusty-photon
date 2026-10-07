@@ -112,17 +112,18 @@ impl QhyFilterWheelDevice {
         T: Send + 'static,
     {
         let handle = Arc::clone(&self.handle);
-        let outcome = tokio::task::spawn_blocking(move || {
+        let (outcome, lost) = tokio::task::spawn_blocking(move || {
             let outcome = f(handle.as_ref());
-            if outcome.is_err() {
-                handle.verify_presence();
-            }
-            outcome
+            // The verdict is this request's answer. Read again once the task
+            // is back, the connection may already belong to a session another
+            // client's release and reconnect opened since.
+            let lost = outcome.is_err() && handle.verify_presence();
+            (outcome, lost)
         })
         .await
         .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?;
         match outcome {
-            Err(e) if self.ensure_connected().is_err() => {
+            Err(e) if lost || self.ensure_connected().is_err() => {
                 debug!(error = %e, "SDK call failed on a handle that is closed or whose camera has left the bus");
                 Err(ASCOMError::NOT_CONNECTED)
             }
@@ -405,7 +406,7 @@ impl FilterWheel for QhyFilterWheelDevice {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::backend::mock::MockFilterWheelHandle;
+    use crate::backend::mock::{drop_once_parked, MockFilterWheelHandle};
     use ascom_alpaca::ASCOMErrorCode;
     use std::sync::atomic::Ordering;
 
@@ -421,16 +422,8 @@ mod tests {
         let device =
             QhyFilterWheelDevice::new(Arc::<MockFilterWheelHandle>::clone(&handle), None, None);
 
-        handle.hold_open();
-        let cancelled = tokio::time::timeout(
-            std::time::Duration::from_millis(250),
-            device.set_connected(true),
-        )
-        .await;
-        assert!(
-            cancelled.is_err(),
-            "the connect should still have been parked, not finished"
-        );
+        let hold = handle.hold_open_until_dropped();
+        drop_once_parked(device.set_connected(true), || handle.is_in_open()).await;
         assert!(
             lifecycle.try_lock().is_err(),
             "a cancelled request must not give the connection back while the handshake it guards is still running"
@@ -439,7 +432,7 @@ mod tests {
         // Wait for the handshake to publish, not for `Connected`: `open()` makes
         // the handle report open before the slot count behind it is cached, so
         // gating on `Connected` would race the assertions below.
-        handle.release_open();
+        drop(hold);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while device.names().await.is_err() {
             assert!(
@@ -753,6 +746,29 @@ mod tests {
         assert_eq!(
             device.names().await.unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    /// A failed wheel request answers from the verdict its own question
+    /// returned (C9, FW4), not from a read of the connection a reconnect may
+    /// already have replaced.
+    #[tokio::test]
+    async fn a_wheel_failure_answers_from_its_own_verdict_even_if_a_reconnect_lands_after_it() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        let device =
+            QhyFilterWheelDevice::new(Arc::<MockFilterWheelHandle>::clone(&handle), None, None);
+        device.set_connected(true).await.unwrap();
+        handle.leave_bus();
+        handle
+            .reconnect_lands_after_verdict
+            .store(true, Ordering::SeqCst);
+
+        let err = device.set_position(3).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(
+            device.connected().await.unwrap(),
+            "the connection reads healthy again, as after a reconnect"
         );
     }
 
