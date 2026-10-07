@@ -349,6 +349,11 @@ pub struct Camera {
     info: CameraInfo,
     #[cfg(feature = "simulation")]
     state: std::sync::Mutex<SimState>,
+    /// The departure file of the [`Sdk`] that opened this camera, and the
+    /// rescans that had already missed it then (see
+    /// [`Sdk::with_departure_file`]).
+    #[cfg(feature = "simulation")]
+    departure: Option<SimDeparture>,
     /// Makes `Camera` `!Sync` (see the type docs) while leaving it `Send`.
     _not_sync: std::marker::PhantomData<std::cell::Cell<()>>,
 }
@@ -396,34 +401,87 @@ impl Drop for UninitialisedCamera {
     }
 }
 
+/// The SDK's camera list, held so that a rescan, the lookups after it and an
+/// open run as one step: no other rescan can renumber the list until this is
+/// dropped ([`Sdk::camera_list`]).
+///
+/// Holding it blocks every other caller that reads or rebuilds the list, in
+/// any thread, so keep the hold short and make no other `Sdk` list call while
+/// holding it: the lock is not re-entrant.
+#[derive(Debug)]
+pub struct CameraList<'a> {
+    sdk: &'a Sdk,
+    _held: std::sync::MutexGuard<'static, ()>,
+}
+
 impl Sdk {
-    /// Enumerate every connected camera's [`CameraInfo`] without opening it.
+    /// Hold the SDK's camera list for a sequence that must see one list, such
+    /// as finding a camera by its serial and then opening it. A rescan
+    /// elsewhere would renumber the indices between the two.
+    #[must_use]
+    pub fn camera_list(&self) -> CameraList<'_> {
+        CameraList {
+            sdk: self,
+            _held: crate::lock_camera_list(),
+        }
+    }
+
+    /// Enumerate every connected camera's [`CameraInfo`] without opening it
+    /// ([`CameraList::rescan`] under a hold of its own).
     ///
     /// # Errors
     /// Returns [`Error::Asi`] if the SDK fails to read a camera's properties.
     pub fn cameras(&self) -> Result<Vec<CameraInfo>> {
+        self.camera_list().rescan()
+    }
+
+    /// Open the camera at enumeration `index` **without initialising it**
+    /// ([`CameraList::open_uninitialised`] under a hold of its own).
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the index is out of range or the SDK fails
+    /// to open the camera.
+    pub fn open_uninitialised(&self, index: usize) -> Result<UninitialisedCamera> {
+        self.camera_list().open_uninitialised(index)
+    }
+
+    /// Open and initialise the camera at enumeration `index`
+    /// ([`CameraList::open_camera`] under a hold of its own).
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the index is out of range or the SDK fails to
+    /// open/initialise the camera.
+    pub fn open_camera(&self, index: usize) -> Result<Camera> {
+        self.camera_list().open_camera(index)
+    }
+}
+
+impl CameraList<'_> {
+    /// Rescan the bus (`ASIGetNumOfConnectedCameras`) and list every connected
+    /// camera's [`CameraInfo`] without opening it. The list's order is the
+    /// index order [`Self::open_camera`] and [`Self::open_uninitialised`] take
+    /// while this hold lasts.
+    ///
+    /// # Errors
+    /// Returns [`Error::Asi`] if the SDK fails to read a camera's properties.
+    pub fn rescan(&self) -> Result<Vec<CameraInfo>> {
+        let count = crate::rescan(self.sdk);
         #[cfg(feature = "simulation")]
-        let infos = (0..crate::SIM_CAMERA_COUNT)
-            .map(|_| sim_camera_info())
-            .collect();
+        let infos = (0..count).map(|_| sim_camera_info()).collect();
         #[cfg(not(feature = "simulation"))]
-        let infos = {
-            let n = self.camera_count()?;
-            (0..n)
-                .map(|index| {
-                    let idx =
-                        i32::try_from(index).map_err(|_| Error::Asi(AsiError::InvalidIndex))?;
-                    read_camera_property(idx)
-                })
-                .collect::<Result<Vec<_>>>()?
-        };
+        let infos = (0..count)
+            .map(|index| {
+                let idx = i32::try_from(index).map_err(|_| Error::Asi(AsiError::InvalidIndex))?;
+                read_camera_property(idx)
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(infos)
     }
 
     /// Open the camera at enumeration `index` **without initialising it**
     /// (`ASIOpenCamera` only).
     ///
-    /// Unlike [`Sdk::open_camera`] (which also runs `ASIInitCamera`,
+    /// Unlike [`Self::open_camera`] (which also runs `ASIInitCamera`,
     /// resetting controls such as the cooler to SDK defaults), this leaves
     /// the camera untouched — `ASIOpenCamera` is documented as not affecting
     /// a capturing camera. Used to read a camera's serial from a passive path
@@ -437,51 +495,53 @@ impl Sdk {
     /// to open the camera. A failure here should be treated as fatal by the
     /// caller (unlike a subsequent [`UninitialisedCamera::serial`] failure,
     /// which just means the camera has no stable identity).
-    // Const only under the simulation cfg; the real body calls into the SDK.
-    #[allow(clippy::missing_const_for_fn)]
     pub fn open_uninitialised(&self, index: usize) -> Result<UninitialisedCamera> {
         #[cfg(feature = "simulation")]
-        {
-            if index >= crate::SIM_CAMERA_COUNT {
-                return Err(Error::Asi(AsiError::InvalidIndex));
-            }
-            Ok(UninitialisedCamera {
+        let camera = {
+            self.sdk.sim_openable(index)?;
+            UninitialisedCamera {
                 _not_sync: std::marker::PhantomData,
-            })
-        }
+            }
+        };
         #[cfg(not(feature = "simulation"))]
-        {
+        let camera = {
             let idx = i32::try_from(index).map_err(|_| Error::Asi(AsiError::InvalidIndex))?;
             let info = read_camera_property(idx)?;
             // SAFETY: `info.id` is a valid CameraID from enumeration; open it.
             // Deliberately no `ASIInitCamera` call — see this method's docs.
             asi_check(unsafe { sys::ASIOpenCamera(info.id) })?;
-            Ok(UninitialisedCamera {
+            UninitialisedCamera {
                 id: info.id,
                 _not_sync: std::marker::PhantomData,
-            })
-        }
+            }
+        };
+        Ok(camera)
     }
 
-    /// Open and initialise the camera at enumeration `index`.
+    /// Open and initialise the camera at enumeration `index`, ending the hold.
     ///
     /// On the real path this calls `ASIOpenCamera` + `ASIInitCamera`; the
-    /// returned [`Camera`] closes the device on drop.
+    /// returned [`Camera`] closes the device on drop. The hold ends with this
+    /// call, since some [`Camera`] methods take the list lock themselves
+    /// ([`Camera::electrons_per_adu`]), and calling one under the hold would
+    /// deadlock.
     ///
     /// # Errors
     /// Returns [`Error::Asi`] if the index is out of range or the SDK fails to
     /// open/initialise the camera.
-    pub fn open_camera(&self, index: usize) -> Result<Camera> {
+    pub fn open_camera(self, index: usize) -> Result<Camera> {
         #[cfg(feature = "simulation")]
         let camera = {
-            if index >= crate::SIM_CAMERA_COUNT {
-                return Err(Error::Asi(AsiError::InvalidIndex));
-            }
+            self.sdk.sim_openable(index)?;
             let info = sim_camera_info();
             let state = std::sync::Mutex::new(SimState::new(&info));
             Camera {
                 info,
                 state,
+                departure: self.sdk.departure_file.clone().map(|file| SimDeparture {
+                    rescans_at_open: crate::sim_listing(&file).rescans_while_gone,
+                    file,
+                }),
                 _not_sync: std::marker::PhantomData,
             }
         };
@@ -508,6 +568,23 @@ impl Sdk {
     }
 }
 
+impl Sdk {
+    /// Simulation only: an open of `index` finds the camera only while it is
+    /// on the bus and the last rescan listed it. Like the real open, it reads
+    /// the list the last rescan left and runs no rescan of its own.
+    #[cfg(feature = "simulation")]
+    fn sim_openable(&self, index: usize) -> Result<()> {
+        let listed = self
+            .departure_file
+            .as_deref()
+            .is_none_or(|path| !path.exists() && crate::sim_listing(path).listed);
+        if index >= crate::SIM_CAMERA_COUNT || !listed {
+            return Err(Error::Asi(AsiError::InvalidIndex));
+        }
+        Ok(())
+    }
+}
+
 impl Camera {
     /// The camera's cached [`CameraInfo`].
     #[must_use]
@@ -521,6 +598,26 @@ impl Camera {
         self.info.id
     }
 
+    /// Whether the SDK's camera list still has this camera under its ID
+    /// (`ASIGetCameraPropertyByID`). Says something only straight after a
+    /// rescan, which is why [`Sdk::still_connected`] is the public form.
+    pub(crate) fn listed(&self) -> Result<bool> {
+        #[cfg(feature = "simulation")]
+        let answer = self.sim_listed();
+        #[cfg(not(feature = "simulation"))]
+        let answer = {
+            // SAFETY: `ASI_CAMERA_INFO` is POD; the SDK fills it for a listed ID
+            // and answers an error code for any other.
+            let mut raw: sys::ASI_CAMERA_INFO = unsafe { std::mem::zeroed() };
+            asi_check(unsafe { sys::ASIGetCameraPropertyByID(self.info.id, &raw mut raw) })
+        };
+        match answer {
+            Ok(()) => Ok(true),
+            Err(Error::Asi(AsiError::InvalidId | AsiError::CameraClosed)) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     /// The camera's stable serial number as a 16-character hex string.
     ///
     /// Reads `ASIGetSerialNumber` (the 8-byte hardware serial); if the model
@@ -531,7 +628,10 @@ impl Camera {
     /// Returns [`Error::Asi`] if neither a serial nor a flash id is available.
     pub fn serial(&self) -> Result<String> {
         #[cfg(feature = "simulation")]
-        let serial = SIM_SERIAL.to_owned();
+        let serial = {
+            self.sim_answered()?;
+            SIM_SERIAL.to_owned()
+        };
         #[cfg(not(feature = "simulation"))]
         let serial = read_serial_raw(self.info.id)?;
         Ok(serial)
@@ -543,7 +643,10 @@ impl Camera {
     /// Returns [`Error::Asi`] if the SDK fails to read the control list.
     pub fn control_caps(&self) -> Result<Vec<ControlCaps>> {
         #[cfg(feature = "simulation")]
-        let caps = sim_control_caps();
+        let caps = {
+            self.sim_answered()?;
+            sim_control_caps()
+        };
         #[cfg(not(feature = "simulation"))]
         let caps = {
             let mut n: std::os::raw::c_int = 0;
@@ -747,14 +850,20 @@ impl Camera {
     /// Returns [`Error::Asi`] if the SDK cannot read the camera's properties.
     pub fn electrons_per_adu(&self) -> Result<f32> {
         #[cfg(feature = "simulation")]
-        let value = self.sim_electrons_per_adu();
+        let value = self.sim_electrons_per_adu()?;
         #[cfg(not(feature = "simulation"))]
         let value = {
             // SAFETY: `ASI_CAMERA_INFO` is POD and `self.info.id` is an open
             // camera, which is what the *ByID* variant takes (the plain
             // `ASIGetCameraProperty` wants an enumeration index instead).
             let mut raw: sys::ASI_CAMERA_INFO = unsafe { std::mem::zeroed() };
-            asi_check(unsafe { sys::ASIGetCameraPropertyByID(self.info.id, &raw mut raw) })?;
+            // The SDK's camera list, read by ID: under its lock, like every
+            // other reader, so a rescan cannot rebuild it underneath.
+            let list = crate::lock_camera_list();
+            let read =
+                asi_check(unsafe { sys::ASIGetCameraPropertyByID(self.info.id, &raw mut raw) });
+            drop(list);
+            read?;
             raw.ElecPerADU
         };
         Ok(value)
@@ -857,11 +966,12 @@ impl Camera {
     ///
     /// # Errors
     /// Returns [`Error::Asi`] if the call fails.
-    // Const only under the simulation cfg; the real body calls into the SDK.
-    #[allow(clippy::missing_const_for_fn)]
     pub fn pulse_guide_on(&self, direction: GuideDirection) -> Result<()> {
         #[cfg(feature = "simulation")]
-        let _ = direction;
+        {
+            let _ = direction;
+            self.sim_reached()?;
+        }
         #[cfg(not(feature = "simulation"))]
         // SAFETY: open camera id; starts an ST4 pulse in the given direction.
         asi_check(unsafe { sys::ASIPulseGuideOn(self.info.id, direction.to_raw()) })?;
@@ -872,11 +982,12 @@ impl Camera {
     ///
     /// # Errors
     /// Returns [`Error::Asi`] if the call fails.
-    // Const only under the simulation cfg; the real body calls into the SDK.
-    #[allow(clippy::missing_const_for_fn)]
     pub fn pulse_guide_off(&self, direction: GuideDirection) -> Result<()> {
         #[cfg(feature = "simulation")]
-        let _ = direction;
+        {
+            let _ = direction;
+            self.sim_reached()?;
+        }
         #[cfg(not(feature = "simulation"))]
         // SAFETY: open camera id; ends the ST4 pulse in the given direction.
         asi_check(unsafe { sys::ASIPulseGuideOff(self.info.id, direction.to_raw()) })?;
@@ -1078,6 +1189,29 @@ struct SimState {
     cooler_on: bool,
 }
 
+/// Simulation only: the departure file a [`Camera`] was opened under, and how
+/// many rescans had already run while its camera was gone (see
+/// [`Sdk::with_departure_file`]).
+#[cfg(feature = "simulation")]
+#[derive(Debug)]
+struct SimDeparture {
+    file: std::path::PathBuf,
+    rescans_at_open: u64,
+}
+
+/// Simulation only: what the SDK knows about a simulated camera's departure,
+/// as measured on ASI SDK 1.41.
+#[cfg(feature = "simulation")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SimBus {
+    /// On the bus.
+    Present,
+    /// Gone, and no rescan has run since: the SDK still answers for it.
+    Hidden,
+    /// A rescan has dropped it; `returned` once it is back on the bus.
+    Forgotten { returned: bool },
+}
+
 #[cfg(feature = "simulation")]
 impl SimState {
     const fn new(info: &CameraInfo) -> Self {
@@ -1106,6 +1240,53 @@ impl SimState {
 // the public methods type-checks identically in both configs.
 #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
 impl Camera {
+    /// Where the departure file and the rescans since the open put this
+    /// camera ([`Sdk::with_departure_file`]).
+    fn sim_bus(&self) -> SimBus {
+        let Some(departure) = &self.departure else {
+            return SimBus::Present;
+        };
+        let gone = departure.file.exists();
+        if crate::sim_listing(&departure.file).rescans_while_gone > departure.rescans_at_open {
+            SimBus::Forgotten { returned: !gone }
+        } else if gone {
+            SimBus::Hidden
+        } else {
+            SimBus::Present
+        }
+    }
+
+    /// A call the SDK answers without reaching a departed camera: the reads,
+    /// and the queued ROI, start-position, start and stop calls. Only a rescan
+    /// that has dropped the camera fails it.
+    fn sim_answered(&self) -> Result<()> {
+        match self.sim_bus() {
+            SimBus::Forgotten { .. } => Err(Error::Asi(AsiError::InvalidId)),
+            SimBus::Present | SimBus::Hidden => Ok(()),
+        }
+    }
+
+    /// A call that has to reach the camera: a control write, the download, a
+    /// guide pulse. A hidden departure fails it with `GENERAL_ERROR`.
+    fn sim_reached(&self) -> Result<()> {
+        match self.sim_bus() {
+            SimBus::Forgotten { .. } => Err(Error::Asi(AsiError::InvalidId)),
+            SimBus::Hidden => Err(Error::Asi(AsiError::GeneralError)),
+            SimBus::Present => Ok(()),
+        }
+    }
+
+    /// `ASIGetCameraPropertyByID` on this camera's ID: listed until a rescan
+    /// drops it, then `INVALID_ID`, and `CAMERA_CLOSED` once it is back and
+    /// listed afresh under that ID.
+    fn sim_listed(&self) -> Result<()> {
+        match self.sim_bus() {
+            SimBus::Forgotten { returned: false } => Err(Error::Asi(AsiError::InvalidId)),
+            SimBus::Forgotten { returned: true } => Err(Error::Asi(AsiError::CameraClosed)),
+            SimBus::Present | SimBus::Hidden => Ok(()),
+        }
+    }
+
     fn sim_set_roi_format(
         &self,
         width: u32,
@@ -1113,6 +1294,7 @@ impl Camera {
         bin: u32,
         image_type: ImageType,
     ) -> Result<()> {
+        self.sim_answered()?;
         if !self.info.supported_bins.contains(&bin) {
             return Err(Error::Asi(AsiError::InvalidSize));
         }
@@ -1142,6 +1324,7 @@ impl Camera {
     }
 
     fn sim_roi_format(&self) -> Result<RoiFormat> {
+        self.sim_answered()?;
         Ok(self
             .state
             .lock()
@@ -1150,6 +1333,7 @@ impl Camera {
     }
 
     fn sim_set_start_pos(&self, x: u32, y: u32) -> Result<()> {
+        self.sim_answered()?;
         let mut st = self
             .state
             .lock()
@@ -1166,6 +1350,7 @@ impl Camera {
     }
 
     fn sim_start_pos(&self) -> Result<(u32, u32)> {
+        self.sim_answered()?;
         let st = self
             .state
             .lock()
@@ -1179,7 +1364,8 @@ impl Camera {
     /// legacy ASI120MC-S uses a different law — which is why the driver reads
     /// the value rather than computing it; the simulator only needs *a*
     /// plausible gain response.
-    fn sim_electrons_per_adu(&self) -> f32 {
+    fn sim_electrons_per_adu(&self) -> Result<f32> {
+        self.sim_answered()?;
         let gain = self
             .state
             .lock()
@@ -1187,12 +1373,12 @@ impl Camera {
             .gain;
         let scale = 10f64.powf(f64::from(i32::try_from(gain).unwrap_or(i32::MAX)) / 200.0);
         #[allow(clippy::cast_possible_truncation, clippy::as_conversions)]
-        {
-            (f64::from(self.info.e_per_adu) / scale) as f32
-        }
+        let value = (f64::from(self.info.e_per_adu) / scale) as f32;
+        Ok(value)
     }
 
     fn sim_control_value(&self, control: ControlType) -> Result<ControlValue> {
+        self.sim_answered()?;
         let st = self
             .state
             .lock()
@@ -1224,6 +1410,7 @@ impl Camera {
     }
 
     fn sim_set_control_value(&self, control: ControlType, value: i64, _auto: bool) -> Result<()> {
+        self.sim_reached()?;
         let mut st = self
             .state
             .lock()
@@ -1242,6 +1429,7 @@ impl Camera {
     }
 
     fn sim_start_exposure(&self, _is_dark: bool) -> Result<()> {
+        self.sim_answered()?;
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1250,6 +1438,7 @@ impl Camera {
     }
 
     fn sim_stop_exposure(&self) -> Result<()> {
+        self.sim_answered()?;
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1258,10 +1447,15 @@ impl Camera {
     }
 
     fn sim_exposure_status(&self) -> Result<ExposureStatus> {
+        self.sim_answered()?;
         let mut st = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A camera that left while its exposure ran fails it.
+        if self.sim_bus() == SimBus::Hidden && st.exposure_status != ExposureStatus::Idle {
+            st.exposure_status = ExposureStatus::Failed;
+        }
         let current = st.exposure_status;
         // A simulated exposure completes one poll after it starts.
         if current == ExposureStatus::Working {
@@ -1272,10 +1466,18 @@ impl Camera {
     }
 
     fn sim_download_exposure(&self, buf: &mut [u8], need: usize) -> Result<()> {
+        self.sim_answered()?;
         let dst = buf
             .get_mut(..need)
             .ok_or(Error::Asi(AsiError::BufferTooSmall))?;
-        crate::simulation::fill_noise(dst);
+        if self.sim_bus() == SimBus::Hidden {
+            // A readout from a camera that has gone succeeds with every pixel
+            // zero, as a QHY readout was seen to on Windows. Unmeasured on ASI;
+            // modelled so a caller's blank-frame rule has something to meet.
+            dst.fill(0);
+        } else {
+            crate::simulation::fill_noise(dst);
+        }
         Ok(())
     }
 }
@@ -1602,5 +1804,175 @@ mod tests {
         cam.pulse_guide_off(GuideDirection::North).unwrap();
         cam.pulse_guide_on(GuideDirection::West).unwrap();
         cam.pulse_guide_off(GuideDirection::West).unwrap();
+    }
+
+    /// A departure-file path in a fresh scratch directory, under Bazel's
+    /// per-test `TEST_TMPDIR` when there is one. The directory goes when the
+    /// returned guard drops, failed test or not. The file itself is not
+    /// created.
+    #[cfg(feature = "simulation")]
+    fn departure_path() -> (tempfile::TempDir, std::path::PathBuf) {
+        let root = std::env::var_os("TEST_TMPDIR")
+            .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+        let dir = tempfile::Builder::new()
+            .prefix("zwo-rs-departure-")
+            .tempdir_in(root)
+            .unwrap();
+        let path = dir.path().join("departed");
+        (dir, path)
+    }
+
+    /// Until a rescan, the SDK hides a departure: the reads and the queued
+    /// calls answer as before, the calls that have to reach the camera fail
+    /// with `GENERAL_ERROR`, and an exposure ends failed. No call answers
+    /// `CAMERA_REMOVED`. The ASI SDK 1.41 behaviour `with_departure_file`
+    /// models.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_departed_camera_is_hidden_until_a_rescan() {
+        let (_dir, departure) = departure_path();
+        let sdk = Sdk::new().unwrap().with_departure_file(&departure);
+        let cam = sdk.open_camera(0).unwrap();
+        std::fs::write(&departure, b"").unwrap();
+
+        cam.serial().unwrap();
+        cam.control_caps().unwrap();
+        cam.control_value(ControlType::Gain).unwrap();
+        cam.temperature_celsius().unwrap();
+        cam.electrons_per_adu().unwrap();
+        cam.set_roi_format(64, 64, 1, ImageType::Raw16).unwrap();
+        cam.roi_format().unwrap();
+        cam.set_start_pos(0, 0).unwrap();
+        cam.start_pos().unwrap();
+        cam.start_exposure(false).unwrap();
+        assert_eq!(cam.exposure_status().unwrap(), ExposureStatus::Failed);
+        cam.stop_exposure().unwrap();
+
+        let general = Error::Asi(AsiError::GeneralError);
+        let mut buf = vec![0u8; 64 * 64 * 2];
+        let reached = [
+            (
+                "set_control_value",
+                cam.set_control_value(ControlType::Gain, 1, false).err(),
+            ),
+            (
+                "pulse_guide_on",
+                cam.pulse_guide_on(GuideDirection::North).err(),
+            ),
+            (
+                "pulse_guide_off",
+                cam.pulse_guide_off(GuideDirection::North).err(),
+            ),
+        ];
+        for (call, answer) in reached {
+            assert_eq!(answer.as_ref(), Some(&general), "{call}");
+        }
+        cam.download_exposure(&mut buf).unwrap();
+        assert!(
+            buf.iter().all(|&byte| byte == 0),
+            "a hidden departure reads out blank"
+        );
+    }
+
+    /// The first rescan that misses a departed camera drops it, and every
+    /// call on its handle answers `INVALID_ID` from then on, even after the
+    /// camera returns. The rescan may come from another SDK in the process
+    /// that shares the departure file, as the real SDK's one camera list is
+    /// shared.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_rescan_drops_a_departed_camera_for_good() {
+        let (_dir, departure) = departure_path();
+        let sdk = Sdk::new().unwrap().with_departure_file(&departure);
+        let cam = sdk.open_camera(0).unwrap();
+        std::fs::write(&departure, b"").unwrap();
+
+        let other = Sdk::new().unwrap().with_departure_file(&departure);
+        assert_eq!(other.camera_count().unwrap(), 0);
+
+        let invalid = Error::Asi(AsiError::InvalidId);
+        assert_eq!(cam.temperature_celsius().unwrap_err(), invalid);
+        assert_eq!(cam.roi_format().unwrap_err(), invalid);
+        assert_eq!(cam.start_exposure(false).unwrap_err(), invalid);
+        std::fs::remove_file(&departure).unwrap();
+        assert_eq!(cam.control_value(ControlType::Gain).unwrap_err(), invalid);
+        assert_eq!(cam.stop_exposure().unwrap_err(), invalid);
+    }
+
+    /// An open reads the list the last rescan left: a camera a rescan dropped
+    /// stays unopenable after it returns until another rescan lists it, as on
+    /// the real SDK.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_returned_camera_opens_only_after_a_rescan_lists_it() {
+        let (_dir, departure) = departure_path();
+        let sdk = Sdk::new().unwrap().with_departure_file(&departure);
+        std::fs::write(&departure, b"").unwrap();
+        assert_eq!(sdk.camera_count().unwrap(), 0);
+        std::fs::remove_file(&departure).unwrap();
+
+        assert_eq!(
+            sdk.open_camera(0).unwrap_err(),
+            Error::Asi(AsiError::InvalidIndex)
+        );
+        assert_eq!(
+            sdk.open_uninitialised(0).unwrap_err(),
+            Error::Asi(AsiError::InvalidIndex)
+        );
+
+        assert_eq!(sdk.camera_count().unwrap(), crate::SIM_CAMERA_COUNT);
+        sdk.open_camera(0).unwrap();
+    }
+
+    /// `still_connected` rescans and asks for the camera by its ID: present
+    /// while it is on the bus, and gone once it has left, including after it
+    /// comes back, when its old ID names the fresh, unopened entry.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn still_connected_tells_a_departed_camera_from_a_present_one() {
+        let (_dir, departure) = departure_path();
+        let sdk = Sdk::new().unwrap().with_departure_file(&departure);
+        let cam = sdk.open_camera(0).unwrap();
+        assert!(sdk.still_connected(&cam).unwrap());
+
+        std::fs::write(&departure, b"").unwrap();
+        assert!(!sdk.still_connected(&cam).unwrap());
+
+        std::fs::remove_file(&departure).unwrap();
+        assert!(
+            !sdk.still_connected(&cam).unwrap(),
+            "the old handle is not the returned camera"
+        );
+        let fresh = sdk.open_camera(0).unwrap();
+        assert!(sdk.still_connected(&fresh).unwrap());
+    }
+
+    /// While the departure file exists the SDK sees no camera at all: none is
+    /// enumerated, and an open answers what an index past the connected count
+    /// gets. Removing the file brings the camera back.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_departed_camera_can_be_neither_enumerated_nor_opened_until_it_returns() {
+        let (_dir, departure) = departure_path();
+        let sdk = Sdk::new().unwrap().with_departure_file(&departure);
+        std::fs::write(&departure, b"").unwrap();
+
+        assert_eq!(sdk.camera_count().unwrap(), 0);
+        assert_eq!(sdk.cameras().unwrap().len(), 0);
+        assert_eq!(
+            sdk.open_camera(0).unwrap_err(),
+            Error::Asi(AsiError::InvalidIndex)
+        );
+        assert_eq!(
+            sdk.open_uninitialised(0).unwrap_err(),
+            Error::Asi(AsiError::InvalidIndex)
+        );
+
+        std::fs::remove_file(&departure).unwrap();
+        assert_eq!(sdk.camera_count().unwrap(), crate::SIM_CAMERA_COUNT);
+        sdk.open_camera(0)
+            .unwrap()
+            .control_value(ControlType::Gain)
+            .unwrap();
     }
 }

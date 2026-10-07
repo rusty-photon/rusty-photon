@@ -79,7 +79,7 @@ use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 use zwo_rs::CameraInfo;
 
-use crate::backend::{CameraHandle, ZwoCameraHandle};
+use crate::backend::{CameraHandle, HeldCameras, ZwoCameraHandle};
 
 /// One camera discovered at enumeration: its index, [`CameraInfo`], the bare
 /// SDK `serial` (the key for `devices` config overrides), and the
@@ -87,7 +87,11 @@ use crate::backend::{CameraHandle, ZwoCameraHandle};
 struct EnumeratedCamera {
     index: usize,
     info: CameraInfo,
+    /// The hardware serial, or the `noserial-{index}` stand-in; the key the
+    /// `devices` overrides use.
     serial: String,
+    /// The hardware serial alone, which an open matches its camera by (C6).
+    hardware_serial: Option<String>,
     unique_id: String,
 }
 
@@ -100,6 +104,10 @@ pub struct ServerBuilder {
     reload: Option<ReloadSignal>,
     /// Register no cameras (the test-only zero-camera startup path, C0).
     force_empty: bool,
+    /// Test-only: the file whose existence takes the simulated camera off
+    /// the bus (C6). See [`Self::with_departure_file`].
+    #[cfg(feature = "simulation")]
+    departure_file: Option<PathBuf>,
 }
 
 impl ServerBuilder {
@@ -140,6 +148,18 @@ impl ServerBuilder {
         self
     }
 
+    /// Test-only: give every registered camera's SDK `zwo-rs`'s departure
+    /// file, so the simulated camera leaves the bus while `path` exists and
+    /// returns when it is removed — the camera that loses its power or cable
+    /// while connected (C6). `None` keeps a camera that never leaves.
+    /// Enumeration is unaffected: the file is created after startup.
+    #[cfg(feature = "simulation")]
+    #[must_use]
+    pub fn with_departure_file(mut self, path: Option<PathBuf>) -> Self {
+        self.departure_file = path;
+        self
+    }
+
     /// Enumerate the connected ASI cameras, register each as an ASCOM device,
     /// and bind the Alpaca listener.
     ///
@@ -160,12 +180,21 @@ impl ServerBuilder {
         }
 
         let mut server = Server::new(CargoServerInfo!());
+        let held = HeldCameras::default();
         for cam in &cameras {
+            let sdk = zwo_rs::Sdk::new()?;
+            #[cfg(feature = "simulation")]
+            let sdk = match &self.departure_file {
+                Some(path) => sdk.with_departure_file(path),
+                None => sdk,
+            };
             let handle: Arc<dyn CameraHandle> = Arc::new(ZwoCameraHandle::new(
-                zwo_rs::Sdk::new()?,
+                sdk,
                 cam.index,
                 cam.info.clone(),
                 cam.unique_id.clone(),
+                cam.hardware_serial.clone(),
+                Arc::clone(&held),
             ));
             // `devices` overrides are keyed by the bare SDK serial (matching the
             // config-actions `devices.{serial}` paths), NOT the prefixed
@@ -337,11 +366,13 @@ async fn enumerate_cameras() -> Result<Vec<EnumeratedCamera>, ZwoCameraError> {
                         "camera exposes no hardware serial or flash ID; using a position-based identity"
                     );
                 }
+                let hardware_serial = serial_result.as_ref().ok().cloned();
                 let (serial, unique_id) = mint_identity(serial_result, &info.name, index);
                 out.push(EnumeratedCamera {
                     index,
                     info,
                     serial,
+                    hardware_serial,
                     unique_id,
                 });
             }

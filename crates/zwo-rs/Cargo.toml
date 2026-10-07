@@ -69,6 +69,7 @@ rayon = { workspace = true, optional = true }
 
 [dev-dependencies]
 mockall = { workspace = true }
+tempfile = { workspace = true }
 
 # The workspace lint policy, as a concrete copy rather than `workspace = true`:
 # this crate is dual-homed to crates.io, and the nightly publish-readiness

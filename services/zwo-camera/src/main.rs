@@ -71,6 +71,14 @@ struct Args {
     #[cfg(feature = "simulation")]
     #[arg(long, hide = true)]
     simulation_empty: bool,
+
+    /// Test-only: the simulated camera leaves the bus whenever this file
+    /// exists and comes back when it is removed, to exercise a camera that
+    /// loses its power or cable while connected (contract C6). Only
+    /// meaningful when built with `--features simulation`.
+    #[cfg(feature = "simulation")]
+    #[arg(long, hide = true, value_name = "PATH")]
+    simulation_departure_file: Option<PathBuf>,
 }
 
 /// Subcommands; running with none starts the ASCOM Alpaca driver.
@@ -126,6 +134,8 @@ fn main() -> ServiceResult {
     let overrides = CliOverrides { port: args.port };
     #[cfg(feature = "simulation")]
     let simulation_empty = args.simulation_empty;
+    #[cfg(feature = "simulation")]
+    let simulation_departure_file = args.simulation_departure_file;
     debug!(config = ?config_path, "starting zwo-camera");
 
     // `config.apply` triggers an in-process reload: each loop iteration re-reads
@@ -143,7 +153,9 @@ fn main() -> ServiceResult {
                     .with_reload_signal(reload.clone());
 
                 #[cfg(feature = "simulation")]
-                let builder = builder.with_empty(simulation_empty);
+                let builder = builder
+                    .with_empty(simulation_empty)
+                    .with_departure_file(simulation_departure_file.clone());
 
                 let bound = builder.build().await?;
 

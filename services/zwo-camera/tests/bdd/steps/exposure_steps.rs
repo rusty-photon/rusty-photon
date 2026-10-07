@@ -122,7 +122,9 @@ async fn pulse_guide(world: &mut CameraWorld, _device: u32, direction: String, m
 /// with, so a scenario can pin the error rather than the value. Every member is
 /// read through the same step because the contract is about the surface as a
 /// whole: one of them answering while its neighbours refuse is the
-/// contradiction the check exists to remove.
+/// contradiction the check exists to remove. `CCDTemperature` rides along as
+/// the cheapest member that reaches the SDK, which is what finds out that a
+/// camera has left the bus (C6).
 #[when(regex = r"^I try to read (\w+) from camera device (\d+)$")]
 async fn try_read_exposure_member(world: &mut CameraWorld, member: String, _device: u32) {
     let camera = world.camera();
@@ -133,7 +135,8 @@ async fn try_read_exposure_member(world: &mut CameraWorld, member: String, _devi
         "LastExposureStartTime" => camera.last_exposure_start_time().await.err(),
         "LastExposureDuration" => camera.last_exposure_duration().await.err(),
         "ImageArray" => camera.image_array().await.err(),
-        other => panic!("unknown exposure-state member: {other}"),
+        "CCDTemperature" => camera.ccd_temperature().await.err(),
+        other => panic!("unknown member: {other}"),
     };
     world.last_error_code = error.map(|e| e.code.raw());
 }

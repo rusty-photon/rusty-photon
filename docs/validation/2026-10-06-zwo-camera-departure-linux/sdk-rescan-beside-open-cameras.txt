@@ -1,0 +1,63 @@
+17:59:40  [start] rescan n=3 (17.8 ms) [(0, 'ZWO ASI1600MM-Cool', 0), (1, 'ZWO ASI120MC-S', 1), (2, 'ZWO ASI178MM', 2)]
+17:59:40    OpenCamera ZWO ASI120MC-S id 1               SUCCESS
+17:59:41    InitCamera ZWO ASI120MC-S id 1               SUCCESS
+17:59:41    OpenCamera ZWO ASI178MM id 2                 SUCCESS
+17:59:41    InitCamera ZWO ASI178MM id 2                 SUCCESS
+--- control: exposures with no rescan ---
+17:59:41    120 control: SetROIFormat 64x64              SUCCESS
+17:59:41    120 control: SetControlValue(EXPOSURE 1000 us) SUCCESS
+17:59:41    120 control: StartExposure                   SUCCESS
+17:59:42    120 control: status SUCCESS after 0.25 s
+17:59:42    120 control: GetDataAfterExp                 SUCCESS
+17:59:42    178 control: SetROIFormat 64x64              SUCCESS
+17:59:42    178 control: SetControlValue(EXPOSURE 1000 us) SUCCESS
+17:59:42    178 control: StartExposure                   SUCCESS
+17:59:42    178 control: status SUCCESS after 0.25 s
+17:59:42    178 control: GetDataAfterExp                 SUCCESS
+--- rescans with both open and idle ---
+17:59:42  [idle 1] rescan n=3 (18.7 ms) [(0, 'ZWO ASI1600MM-Cool', 0), (1, 'ZWO ASI120MC-S', 1), (2, 'ZWO ASI178MM', 2)]
+17:59:42  [idle 2] rescan n=3 (18.3 ms) [(0, 'ZWO ASI1600MM-Cool', 0), (1, 'ZWO ASI120MC-S', 1), (2, 'ZWO ASI178MM', 2)]
+    ids still name the same bodies: 1->ZWO ASI120MC-S  2->ZWO ASI178MM
+17:59:42    120 after idle rescans: SetROIFormat 64x64   SUCCESS
+17:59:42    120 after idle rescans: SetControlValue(EXPOSURE 1000 us) SUCCESS
+17:59:42    120 after idle rescans: StartExposure        SUCCESS
+17:59:42    120 after idle rescans: status SUCCESS after 0.25 s
+17:59:42    120 after idle rescans: GetDataAfterExp      SUCCESS
+17:59:42    178 after idle rescans: SetROIFormat 64x64   SUCCESS
+17:59:42    178 after idle rescans: SetControlValue(EXPOSURE 1000 us) SUCCESS
+17:59:42    178 after idle rescans: StartExposure        SUCCESS
+17:59:42    178 after idle rescans: status SUCCESS after 0.25 s
+17:59:42    178 after idle rescans: GetDataAfterExp      SUCCESS
+--- rescans while the 178 integrates 2 s ---
+17:59:43    178 with rescans: SetROIFormat 64x64         SUCCESS
+17:59:43    178 with rescans: SetControlValue(EXPOSURE 2000000 us) SUCCESS
+17:59:43    178 with rescans: StartExposure              SUCCESS
+17:59:43  [178 with rescans: rescan 1 during the exposure] rescan n=3 (161.6 ms) [(0, 'ZWO ASI1600MM-Cool', 0), (1, 'ZWO ASI120MC-S', 1), (2, 'ZWO ASI178MM', 2)]
+17:59:43  [178 with rescans: rescan 2 during the exposure] rescan n=3 (17.9 ms) [(0, 'ZWO ASI1600MM-Cool', 0), (1, 'ZWO ASI120MC-S', 1), (2, 'ZWO ASI178MM', 2)]
+17:59:45    178 with rescans: status SUCCESS after 2.15 s
+17:59:45    178 with rescans: GetDataAfterExp            SUCCESS
+17:59:45    120 after those: SetROIFormat 64x64          SUCCESS
+17:59:45    120 after those: SetControlValue(EXPOSURE 1000 us) SUCCESS
+17:59:45    120 after those: StartExposure               SUCCESS
+17:59:45    120 after those: status SUCCESS after 0.25 s
+17:59:45    120 after those: GetDataAfterExp             SUCCESS
+--- the raw probe's sequence: close, rescan, reopen, expose ---
+17:59:45    CloseCamera ZWO ASI120MC-S id 1              SUCCESS
+17:59:45    CloseCamera ZWO ASI178MM id 2                SUCCESS
+17:59:45  [after close] rescan n=3 (18.0 ms) [(0, 'ZWO ASI1600MM-Cool', 0), (1, 'ZWO ASI120MC-S', 1), (2, 'ZWO ASI178MM', 2)]
+17:59:45    OpenCamera ZWO ASI120MC-S id 1               SUCCESS
+17:59:46    InitCamera ZWO ASI120MC-S id 1               SUCCESS
+17:59:46    OpenCamera ZWO ASI178MM id 2                 SUCCESS
+17:59:46    InitCamera ZWO ASI178MM id 2                 SUCCESS
+17:59:46    ASI120MC-S reopened after a rescan: SetROIFormat 64x64 SUCCESS
+17:59:46    ASI120MC-S reopened after a rescan: SetControlValue(EXPOSURE 1000 us) SUCCESS
+17:59:46    ASI120MC-S reopened after a rescan: StartExposure SUCCESS
+17:59:46    ASI120MC-S reopened after a rescan: status SUCCESS after 0.25 s
+17:59:46    ASI120MC-S reopened after a rescan: GetDataAfterExp SUCCESS
+17:59:46    ASI178MM reopened after a rescan: SetROIFormat 64x64 SUCCESS
+17:59:46    ASI178MM reopened after a rescan: SetControlValue(EXPOSURE 1000 us) SUCCESS
+17:59:46    ASI178MM reopened after a rescan: StartExposure SUCCESS
+17:59:47    ASI178MM reopened after a rescan: status SUCCESS after 0.25 s
+17:59:47    ASI178MM reopened after a rescan: GetDataAfterExp SUCCESS
+17:59:47    CloseCamera ZWO ASI120MC-S                   SUCCESS
+17:59:47    CloseCamera ZWO ASI178MM                     SUCCESS
