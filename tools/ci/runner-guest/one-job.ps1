@@ -14,6 +14,63 @@ $dir = 'C:\actions-runner'
 $cfg = Join-Path $dir '.jitconfig'
 Start-Transcript -Path 'C:\actions-runner\one-job.log' -Append
 
+# Task Scheduler starts a task at priority 7 unless it is registered with
+# another, and on Windows that is more than a CPU nice level: the process gets
+# below-normal CPU, Low I/O priority and memory priority 2, and every process
+# the job starts inherits all three. At Low I/O priority the cache manager does
+# no read-ahead, so each small read a job makes is its own round trip to the
+# virtual disk. A fresh Bazel server re-hashes the output base in 8 KiB reads,
+# so that is where it shows: a no-op `bazel build` measured 35 s at the
+# inherited priorities and 12 s at normal ones. The template registers the
+# task at priority 4 (normal), and this resets all three anyway, so a task
+# re-registered with defaults cannot quietly bring the cost back. GitHub's
+# hosted runners run as a service at normal priority; this matches them.
+# A failure here is logged and the job runs regardless - slow, not broken.
+try {
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class RpJobPriority {
+  // NtQuery/SetInformationProcess class 33 is ProcessIoPriority (2 = normal);
+  // Get/SetProcessInformation class 0 is ProcessMemoryPriority (5 = normal).
+  [DllImport("ntdll.dll")]
+  static extern int NtQueryInformationProcess(IntPtr process, int infoClass, ref int info, int length, out int returned);
+  [DllImport("ntdll.dll")]
+  static extern int NtSetInformationProcess(IntPtr process, int infoClass, ref int info, int length);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool GetProcessInformation(IntPtr process, int infoClass, ref uint info, int size);
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern bool SetProcessInformation(IntPtr process, int infoClass, ref uint info, int size);
+
+  public static string Describe(IntPtr process) {
+    int io = -1, returned;
+    NtQueryInformationProcess(process, 33, ref io, 4, out returned);
+    uint memory = 0;
+    GetProcessInformation(process, 0, ref memory, 4);
+    return "io=" + io + " memory=" + memory;
+  }
+
+  public static string Normalize(IntPtr process) {
+    int io = 2;
+    int status = NtSetInformationProcess(process, 33, ref io, 4);
+    uint memory = 5;
+    bool ok = SetProcessInformation(process, 0, ref memory, 4);
+    return status == 0 && ok ? "" :
+      string.Format("io status 0x{0:X8}, memory error {1}", status, ok ? 0 : Marshal.GetLastWin32Error());
+  }
+}
+'@
+  $self = Get-Process -Id $PID
+  Write-Output "priority at start: cpu=$($self.PriorityClass) $([RpJobPriority]::Describe($self.Handle))"
+  $self.PriorityClass = [Diagnostics.ProcessPriorityClass]::Normal
+  $err = [RpJobPriority]::Normalize($self.Handle)
+  if ($err) { Write-Output "priority reset incomplete: $err" }
+  $self.Refresh()
+  Write-Output "priority now:      cpu=$($self.PriorityClass) $([RpJobPriority]::Describe($self.Handle))"
+} catch {
+  Write-Output "priority reset failed: $_"
+}
+
 # A linked clone inherits the template's RTC, so the clock can be badly wrong
 # at boot - wrong enough to break TLS to GitHub. Sync before anything talks to
 # the network, and log the correction so a bad clock is visible in triage.

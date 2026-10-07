@@ -185,6 +185,36 @@ Components:
   Windows slot needs no new review — the isolation is per-clone, not
   pair-specific — but re-confirm the host has the RAM and that cipool still
   scales at the new concurrency (fio, per docs below) before doing so.
+* **The Windows job must run at normal priority, which a scheduled task does
+  not get by default.** Task Scheduler starts a task at priority 7 unless it
+  is registered with another, and on Windows that sets three things, all
+  inherited by every process the job starts: below-normal CPU, **Low I/O
+  priority**, and memory priority 2. At Low I/O priority the cache manager
+  does no read-ahead, so every small read becomes its own round trip to the
+  virtual disk, which tops out near 30,000 reads a second. A fresh Bazel
+  server re-hashes the output base in 8 KiB reads, so it pays the most: on a
+  clone of the template, a no-op `bazel build` took 35 s at the inherited
+  priorities and 12 s at normal ones, and the fast-test step run as a job's
+  first Bazel command took about 70 s against 40 s. The guest's counters
+  give it away — `\Cache\Read Aheads/sec` at zero, and every disk read
+  exactly the size the program asked for — while nothing on the host is
+  slow: ZFS serves the reads from ARC.
+
+  Two layers keep it fixed. The `gha-runner` task is registered with
+  `New-ScheduledTaskSettingsSet -Priority 4` (normal), and `one-job.ps1`
+  resets its own CPU, I/O and memory priority to normal before it starts
+  the runner, so a task re-registered with defaults stays harmless.
+  `one-job.log` prints a `priority at start:` and a `priority now:` line on
+  every boot (`cpu=Normal io=2 memory=5` is right), and
+  `proxmox-runner-test.yml`'s Windows job fails if the job's own processes
+  run at anything else.
+
+  **Measure a job's I/O through a scheduled task, never through `qm guest
+  exec`.** Guest-agent commands run as SYSTEM at normal priority, so they
+  read the same files at full speed and hide the problem — which is how it
+  went unnoticed. The one-shot tasks that warm and validate a template (the
+  rebuild notes below) need `-Priority 4` for the same reason, or they run at
+  the slow priorities the job no longer has.
 * **Pool orchestrator** (`tools/ci/rp-runner-pool.sh`): runs on the Proxmox
   host; keeps one warm linked clone per **pool slot** registered just-in-time
   and destroys it after its single job. Slots are declared in a host-local
@@ -1397,8 +1427,12 @@ dangerous combination. The rule bifurcates by runner kind
     `C:\Users\Administrator\_bazel_Administrator`, where a job looks for
     them. Drive the warmup through a one-shot scheduled task registered for
     `Administrator` with `-LogonType Interactive`, which runs inside the
-    autologon session just as `gha-runner` does. Have it write a log file,
+    autologon session just as `gha-runner` does, and with
+    `New-ScheduledTaskSettingsSet -Priority 4` so it runs at the priorities a
+    job gets (the priority bullet above says why). Have it write a log file,
     poll that with `qm guest exec`, and unregister the task before capture.
+    Check the `gha-runner` task itself before capture as well:
+    `(Get-ScheduledTask gha-runner).Settings.Priority` should print `4`.
 
     Reproduce the job's shell and action keys exactly: Git bash with
     `--noprofile --norc` (how the runner invokes `shell: bash`), the
