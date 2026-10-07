@@ -453,6 +453,14 @@ pub struct Camera {
     property_ex: CameraPropertyEx,
     #[cfg(feature = "simulation")]
     state: std::sync::Mutex<SimState>,
+    /// The departure file of the [`Sdk`] that opened this camera (see
+    /// [`Sdk::with_departure_file`]).
+    #[cfg(feature = "simulation")]
+    departure_file: Option<std::path::PathBuf>,
+    /// The blank-frame file of the [`Sdk`] that opened this camera (see
+    /// [`Sdk::with_blank_frame_file`]).
+    #[cfg(feature = "simulation")]
+    blank_frame_file: Option<std::path::PathBuf>,
     /// Makes `Camera` `!Sync` (see the type docs) while leaving it `Send`.
     _not_sync: std::marker::PhantomData<std::cell::Cell<()>>,
 }
@@ -460,16 +468,34 @@ pub struct Camera {
 impl Sdk {
     /// Enumerate every connected camera's [`CameraInfo`] without opening it.
     ///
+    /// On the real path this rescans the bus (`SVBGetNumOfConnectedCameras`)
+    /// before reading each camera's info, so a camera that has left drops out
+    /// of the list and one that has come back reappears — the SDK's camera
+    /// table changes only on that rescan.
+    ///
     /// # Errors
     /// Returns [`Error::Svb`] if the SDK fails to read a camera's info.
     pub fn cameras(&self) -> Result<Vec<CameraInfo>> {
+        self.rescanned(Ok)
+    }
+
+    /// Rescan the bus under `SDK_CALL_LOCK` and hand what it lists to
+    /// `then`, still under the lock — the body of [`Sdk::cameras`] and of
+    /// [`Sdk::open_listed`].
+    fn rescanned<T>(&self, then: impl FnOnce(Vec<CameraInfo>) -> Result<T>) -> Result<T> {
         crate::with_sdk_lock(|| {
             #[cfg(feature = "simulation")]
-            let infos = (0..crate::SIM_CAMERA_COUNT)
-                .map(|_| sim_camera_info())
-                .collect();
+            let infos = if self.rescan_finds_departed() {
+                Vec::new()
+            } else {
+                (0..crate::SIM_CAMERA_COUNT)
+                    .map(|_| sim_camera_info())
+                    .collect()
+            };
             #[cfg(not(feature = "simulation"))]
             let infos = {
+                // Only the simulation keeps state on the `Sdk`.
+                let _ = self;
                 // `crate::camera_count_raw`, not `self.camera_count()`: the
                 // latter takes `SDK_CALL_LOCK` itself, and it is not
                 // reentrant.
@@ -482,7 +508,7 @@ impl Sdk {
                     })
                     .collect::<Result<Vec<_>>>()?
             };
-            Ok(infos)
+            then(infos)
         })
     }
 
@@ -502,61 +528,93 @@ impl Sdk {
         // discovered camera, minted freely by callers) opening different
         // cameras concurrently would otherwise race with no synchronization
         // at all.
-        crate::with_sdk_lock(|| {
-            #[cfg(feature = "simulation")]
-            let camera = {
-                if index >= crate::SIM_CAMERA_COUNT {
-                    return Err(Error::Svb(SvbError::InvalidIndex));
-                }
-                let info = sim_camera_info();
-                let property = sim_camera_property();
-                let property_ex = sim_camera_property_ex();
-                let state = std::sync::Mutex::new(SimState::new(&property));
-                Camera {
-                    info,
-                    property,
-                    property_ex,
-                    state,
-                    _not_sync: std::marker::PhantomData,
+        crate::with_sdk_lock(|| self.open_at(index))
+    }
+
+    /// Rescan the bus and open the camera `pick` chooses from what the
+    /// rescan lists, or `Ok(None)` when it chooses none.
+    ///
+    /// The rescan, the pick and the open are one critical section on the
+    /// process-wide `SDK_CALL_LOCK`. A rescan renumbers the SDK's camera
+    /// table, so an index taken from [`Sdk::cameras`] and handed to
+    /// [`Sdk::open_camera`] in a separate call can be stale by then, when
+    /// another thread's rescan has seen a camera leave or arrive in between.
+    /// It then fails, or opens a different camera. Here no other rescan can
+    /// come between them.
+    ///
+    /// # Errors
+    /// Returns [`Error::Svb`] if the rescan fails, or if the SDK fails to
+    /// open the chosen camera or read its properties.
+    pub fn open_listed(
+        &self,
+        pick: impl FnOnce(&[CameraInfo]) -> Option<usize>,
+    ) -> Result<Option<Camera>> {
+        self.rescanned(|cameras| pick(&cameras).map(|index| self.open_at(index)).transpose())
+    }
+
+    /// The body of [`Sdk::open_camera`], for a caller that already holds
+    /// `SDK_CALL_LOCK`.
+    fn open_at(&self, index: usize) -> Result<Camera> {
+        #[cfg(feature = "simulation")]
+        let camera = {
+            if index >= crate::SIM_CAMERA_COUNT
+                || departed(self.departure_file.as_deref())
+                || self.delisted()
+            {
+                return Err(Error::Svb(SvbError::InvalidIndex));
+            }
+            let info = sim_camera_info();
+            let property = sim_camera_property();
+            let property_ex = sim_camera_property_ex();
+            let state = std::sync::Mutex::new(SimState::new(&property));
+            Camera {
+                info,
+                property,
+                property_ex,
+                state,
+                departure_file: self.departure_file.clone(),
+                blank_frame_file: self.blank_frame_file.clone(),
+                _not_sync: std::marker::PhantomData,
+            }
+        };
+        #[cfg(not(feature = "simulation"))]
+        let camera = {
+            // Only the simulation keeps state on the `Sdk`.
+            let _ = self;
+            let idx = i32::try_from(index).map_err(|_| Error::Svb(SvbError::InvalidIndex))?;
+            let info = read_camera_info(idx)?;
+            // SAFETY: `info.id` is a valid CameraID from enumeration; open it.
+            svb_check(unsafe { sys::SVBOpenCamera(info.id) })?;
+            let property = match read_camera_property(info.id) {
+                Ok(p) => p,
+                Err(e) => {
+                    // SAFETY: closing what was just successfully opened, on
+                    // the property-read failure path, so the handle is not
+                    // leaked.
+                    unsafe {
+                        let _ = sys::SVBCloseCamera(info.id);
+                    }
+                    return Err(e);
                 }
             };
-            #[cfg(not(feature = "simulation"))]
-            let camera = {
-                let idx = i32::try_from(index).map_err(|_| Error::Svb(SvbError::InvalidIndex))?;
-                let info = read_camera_info(idx)?;
-                // SAFETY: `info.id` is a valid CameraID from enumeration; open it.
-                svb_check(unsafe { sys::SVBOpenCamera(info.id) })?;
-                let property = match read_camera_property(info.id) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        // SAFETY: closing what was just successfully opened, on
-                        // the property-read failure path, so the handle is not
-                        // leaked.
-                        unsafe {
-                            let _ = sys::SVBCloseCamera(info.id);
-                        }
-                        return Err(e);
+            let property_ex = match read_camera_property_ex(info.id) {
+                Ok(p) => p,
+                Err(e) => {
+                    // SAFETY: as above.
+                    unsafe {
+                        let _ = sys::SVBCloseCamera(info.id);
                     }
-                };
-                let property_ex = match read_camera_property_ex(info.id) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        // SAFETY: as above.
-                        unsafe {
-                            let _ = sys::SVBCloseCamera(info.id);
-                        }
-                        return Err(e);
-                    }
-                };
-                Camera {
-                    info,
-                    property,
-                    property_ex,
-                    _not_sync: std::marker::PhantomData,
+                    return Err(e);
                 }
             };
-            Ok(camera)
-        })
+            Camera {
+                info,
+                property,
+                property_ex,
+                _not_sync: std::marker::PhantomData,
+            }
+        };
+        Ok(camera)
     }
 }
 
@@ -1545,6 +1603,13 @@ impl SimState {
     }
 }
 
+/// Whether a camera whose departure file is `file` has left the bus (see
+/// [`Sdk::with_departure_file`]).
+#[cfg(feature = "simulation")]
+pub fn departed(file: Option<&std::path::Path>) -> bool {
+    file.is_some_and(std::path::Path::exists)
+}
+
 #[cfg(feature = "simulation")]
 impl Camera {
     fn sim_control_value(&self, control: ControlType) -> Result<ControlValue> {
@@ -1735,6 +1800,19 @@ impl Camera {
         // Counted before the readiness verdict: a poll that times out is still
         // a poll, and it is the timing-out ones a retrieval loop makes first.
         st.get_video_data_calls = st.get_video_data_calls.saturating_add(1);
+        // A stalled readout comes back blank, even from a camera that has left
+        // the bus (see `Sdk::with_blank_frame_file`).
+        let blank = self
+            .blank_frame_file
+            .as_deref()
+            .is_some_and(std::path::Path::exists);
+        // A camera that has left the bus delivers no frame, and the SDK says
+        // so as it does for any frame not yet ready (see
+        // `Sdk::with_departure_file`). Checked before the frame is consumed, so
+        // an armed frame is still there if the camera comes back.
+        if !blank && departed(self.departure_file.as_deref()) {
+            return Err(Error::Svb(SvbError::Timeout));
+        }
         if !st.capturing || !st.frame_ready {
             // A real camera would eventually time out waiting for a frame
             // that never becomes ready; the simulation reports it
@@ -1755,7 +1833,11 @@ impl Camera {
             st.frame_ready = false;
         }
         drop(st);
-        crate::simulation::fill_noise(dst);
+        if blank {
+            dst.fill(0);
+        } else {
+            crate::simulation::fill_noise(dst);
+        }
         Ok(())
     }
 }
@@ -1856,6 +1938,176 @@ mod tests {
             sdk.open_camera(99).unwrap_err(),
             Error::Svb(SvbError::InvalidIndex)
         );
+    }
+
+    /// A switch file a test controls — a departure file or a blank-frame
+    /// file: absent until [`Self::on`], and removed again when the guard
+    /// drops, so a failing test leaves nothing behind. Named for the test and
+    /// the process, under Bazel's per-action `TEST_TMPDIR` when there is one,
+    /// so concurrent runs never share it.
+    #[cfg(feature = "simulation")]
+    struct SwitchFile(std::path::PathBuf);
+
+    #[cfg(feature = "simulation")]
+    impl SwitchFile {
+        fn new(test: &str) -> Self {
+            let root = std::env::var_os("TEST_TMPDIR")
+                .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+            Self(root.join(format!("svbony-rs-{test}-{}", std::process::id())))
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+
+        fn on(&self) {
+            std::fs::write(&self.0, b"").unwrap();
+        }
+
+        fn off(&self) {
+            std::fs::remove_file(&self.0).unwrap();
+        }
+    }
+
+    #[cfg(feature = "simulation")]
+    impl Drop for SwitchFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// A departed camera drops out of enumeration — the one place the SDK
+    /// tells a camera that has left from one that is there — and comes back
+    /// into it when it returns.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_departed_camera_drops_out_of_enumeration_until_it_returns() {
+        let departure = SwitchFile::new("enumeration");
+        let sdk = Sdk::new().unwrap().with_departure_file(departure.path());
+        let _held = sdk.open_camera(0).unwrap();
+
+        departure.on();
+        assert_eq!(sdk.cameras().unwrap(), []);
+        assert_eq!(sdk.camera_count().unwrap(), 0);
+
+        departure.off();
+        assert_eq!(sdk.cameras().unwrap().len(), 1);
+        assert_eq!(sdk.camera_count().unwrap(), 1);
+    }
+
+    /// The handle of a departed camera goes on answering — from what the SDK
+    /// cached, as SDK 1.13.4 does on hardware — and only a frame never comes:
+    /// a sweep, so a call added later is held to the same model.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_departed_cameras_handle_keeps_answering_but_delivers_no_frame() {
+        let departure = SwitchFile::new("keeps-answering");
+        let sdk = Sdk::new().unwrap().with_departure_file(departure.path());
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_roi_format(0, 0, 64, 64, 1).unwrap();
+        cam.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        cam.start_video_capture().unwrap();
+        departure.on();
+
+        let calls: [(&str, Result<()>); 18] = [
+            ("control_caps", cam.control_caps().map(drop)),
+            (
+                "control_value",
+                cam.control_value(ControlType::Gain).map(drop),
+            ),
+            (
+                "set_control_value",
+                cam.set_control_value(ControlType::Exposure, 1_000, false),
+            ),
+            ("output_image_type", cam.output_image_type().map(drop)),
+            (
+                "set_output_image_type",
+                cam.set_output_image_type(ImageType::Raw8),
+            ),
+            ("roi_format", cam.roi_format().map(drop)),
+            ("set_roi_format", cam.set_roi_format(0, 0, 64, 64, 1)),
+            ("camera_mode", cam.camera_mode().map(drop)),
+            ("set_camera_mode", cam.set_camera_mode(CameraMode::TrigSoft)),
+            ("support_modes", cam.support_modes().map(drop)),
+            ("stop_video_capture", cam.stop_video_capture()),
+            ("start_video_capture", cam.start_video_capture()),
+            ("send_soft_trigger", cam.send_soft_trigger()),
+            ("can_pulse_guide", cam.can_pulse_guide().map(drop)),
+            ("pulse_guide", cam.pulse_guide(GuideDirection::North, 1)),
+            ("pixel_size_microns", cam.pixel_size_microns().map(drop)),
+            ("restore_default_param", cam.restore_default_param()),
+            ("set_auto_save_param", cam.set_auto_save_param(false)),
+        ];
+        for (call, result) in calls {
+            assert_eq!(result, Ok(()), "{call} on a departed camera");
+        }
+
+        let mut buf = vec![0u8; cam.frame_buffer_len().unwrap()];
+        assert_eq!(
+            cam.get_video_data(&mut buf, 0),
+            Err(Error::Svb(SvbError::Timeout)),
+            "a triggered frame on a departed camera"
+        );
+    }
+
+    /// A frame triggered before the camera left is still there once it is
+    /// back: the departure only withholds it.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_departed_camera_delivers_again_once_it_returns() {
+        let departure = SwitchFile::new("returns");
+        let sdk = Sdk::new().unwrap().with_departure_file(departure.path());
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_roi_format(0, 0, 64, 64, 1).unwrap();
+        cam.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        cam.start_video_capture().unwrap();
+        cam.send_soft_trigger().unwrap();
+        let mut buf = vec![0u8; cam.frame_buffer_len().unwrap()];
+
+        departure.on();
+        cam.get_video_data(&mut buf, 0).unwrap_err();
+        departure.off();
+
+        cam.get_video_data(&mut buf, 0).unwrap();
+    }
+
+    /// A camera a rescan found gone stays out of the camera table after it
+    /// returns, until a rescan finds it again: an open in between is refused,
+    /// as SDK 1.13.4 refuses it on hardware.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_camera_a_rescan_found_gone_opens_again_only_after_a_rescan_finds_it() {
+        let departure = SwitchFile::new("delisted");
+        let sdk = Sdk::new().unwrap().with_departure_file(departure.path());
+        departure.on();
+        assert_eq!(sdk.cameras().unwrap(), []);
+        departure.off();
+
+        assert_eq!(
+            sdk.open_camera(0).unwrap_err(),
+            Error::Svb(SvbError::InvalidIndex)
+        );
+
+        assert_eq!(sdk.cameras().unwrap().len(), 1);
+        sdk.open_camera(0).unwrap();
+    }
+
+    /// While the camera is off the bus there is nothing to open, and the
+    /// simulation answers as it does for any camera it does not have.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_departed_camera_cannot_be_opened_until_it_returns() {
+        let departure = SwitchFile::new("unopenable");
+        let sdk = Sdk::new().unwrap().with_departure_file(departure.path());
+        departure.on();
+
+        assert_eq!(
+            sdk.open_camera(0).unwrap_err(),
+            Error::Svb(SvbError::InvalidIndex)
+        );
+
+        departure.off();
+        sdk.open_camera(0).unwrap();
     }
 
     #[cfg(feature = "simulation")]
@@ -2267,5 +2519,108 @@ mod tests {
         let sdk = Sdk::new().unwrap();
         let cam = sdk.open_camera(0).unwrap();
         assert!((cam.pixel_size_microns().unwrap() - 3.76).abs() < f32::EPSILON);
+    }
+
+    /// `open_listed` opens the camera its pick chooses from the rescan, and
+    /// nothing when the pick chooses none.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn open_listed_opens_the_camera_the_pick_chooses() {
+        let sdk = Sdk::new().unwrap();
+
+        let camera = sdk
+            .open_listed(|cameras| {
+                cameras
+                    .iter()
+                    .position(|c| c.serial == sim_camera_info().serial)
+            })
+            .unwrap()
+            .expect("the pick chose the simulated camera");
+        assert_eq!(camera.info(), &sim_camera_info());
+
+        assert!(sdk.open_listed(|_| None).unwrap().is_none());
+    }
+
+    /// No other rescan runs while `open_listed` picks: the rescan it picks
+    /// from is still the camera table's when it opens.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn open_listed_keeps_other_rescans_out_until_it_has_opened() {
+        let sdk = Sdk::new().unwrap();
+        let (rescanned_tx, rescanned_rx) = std::sync::mpsc::channel();
+        let mut rescanner = None;
+
+        let camera = sdk
+            .open_listed(|_| {
+                rescanner = Some(std::thread::spawn(move || {
+                    Sdk::new().unwrap().cameras().unwrap();
+                    rescanned_tx.send(()).unwrap();
+                }));
+                // A window, not a nap (testing.md §6.9): the other rescan must
+                // stay shut out for all of it.
+                assert!(
+                    rescanned_rx
+                        .recv_timeout(std::time::Duration::from_millis(200))
+                        .is_err(),
+                    "another rescan ran between this one and its open"
+                );
+                Some(0)
+            })
+            .unwrap();
+
+        assert!(camera.is_some());
+        rescanner.expect("the pick ran").join().unwrap();
+    }
+
+    /// While the blank-frame file exists, a delivered frame reads back blank,
+    /// every byte zero; once it is gone, frames carry data again.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_stalled_readout_delivers_a_blank_frame() {
+        let stall = SwitchFile::new("blank-frames");
+        let sdk = Sdk::new().unwrap().with_blank_frame_file(stall.path());
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_roi_format(0, 0, 64, 64, 1).unwrap();
+        cam.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        cam.start_video_capture().unwrap();
+        let mut buf = vec![0xff_u8; cam.frame_buffer_len().unwrap()];
+        stall.on();
+
+        cam.send_soft_trigger().unwrap();
+        cam.get_video_data(&mut buf, 0).unwrap();
+        assert!(buf.iter().all(|&b| b == 0), "a stalled readout's frame");
+
+        stall.off();
+        cam.send_soft_trigger().unwrap();
+        cam.get_video_data(&mut buf, 0).unwrap();
+        assert!(
+            buf.iter().any(|&b| b != 0),
+            "a frame once the stall is over"
+        );
+    }
+
+    /// A stalled readout comes back blank even from a camera that has left
+    /// the bus, whose frame would otherwise never come.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_departed_camera_with_a_stalled_readout_delivers_a_blank_frame() {
+        let departure = SwitchFile::new("blank-departed");
+        let stall = SwitchFile::new("blank-departed-stall");
+        let sdk = Sdk::new()
+            .unwrap()
+            .with_departure_file(departure.path())
+            .with_blank_frame_file(stall.path());
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_roi_format(0, 0, 64, 64, 1).unwrap();
+        cam.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        cam.start_video_capture().unwrap();
+        cam.send_soft_trigger().unwrap();
+        departure.on();
+        stall.on();
+
+        let mut buf = vec![0xff_u8; cam.frame_buffer_len().unwrap()];
+        cam.get_video_data(&mut buf, 0).unwrap();
+
+        assert!(buf.iter().all(|&b| b == 0));
     }
 }

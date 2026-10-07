@@ -115,6 +115,19 @@ The simulated `SV605CC-Simulated` camera models the full control set
   driver's connect handshake writes one manual exposure before any gain
   (see `Camera::set_control_value`). `set_auto_save_param` is recorded but
   the simulation persists nothing across opens.
+- **A camera that leaves the bus**: `Sdk::with_departure_file(path)` takes
+  every camera that `Sdk` opens away whenever `path` exists, the state a
+  camera is in when its power or cable is cut while it is open. As on
+  hardware (SDK 1.13.4), the handle keeps answering every call and only its
+  frames stop coming (`get_video_data` answers `Timeout`); the camera drops
+  out of `cameras` and `camera_count`, and `open_camera` fails while it is
+  gone and, once a rescan has missed it, until a rescan finds it again. A
+  test can take the camera away from another process, which is how
+  `svbony-camera`'s BDD suite drives it.
+- **A stalled readout**: `Sdk::with_blank_frame_file(path)` makes every
+  frame a camera that `Sdk` opens delivers read back all zero whenever
+  `path` exists, from a camera off the bus too — a readout handed back as a
+  success though it stalled, so a host can exercise its guard against one.
 
 Frames are filled with sensor noise via a seeded xorshift64 fill (the same
 approach `zwo-rs`'s `fill_noise` settled on after the lessons recorded in its

@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- A simulated camera can leave the bus and come back:
+  `Sdk::with_departure_file(path)` takes every camera that `Sdk` opens away
+  whenever `path` exists, modelled on what SDK 1.13.4 was measured doing when
+  an SV605CC's USB port was disabled under an open handle. The handle keeps
+  answering every call, never with `SvbError::CameraRemoved`, and only
+  `get_video_data` answers `SvbError::Timeout` because no frame comes. The
+  camera drops out of `cameras` and `camera_count`, and `open_camera` fails
+  with `SvbError::InvalidIndex` while it is gone; once a rescan has missed it,
+  that lasts until a rescan finds it again. The file is checked on every
+  call, so a test can take the camera away from another process. `Sdk`
+  carries the setting, so it is no longer zero-sized under `simulation`.
+  Simulation only.
+
+- `Sdk::open_listed(pick)` rescans the bus and opens the camera `pick`
+  chooses from the fresh list in one critical section on the process-wide
+  SDK lock, so no other thread's rescan can renumber the camera table
+  between the two. An index from `Sdk::cameras` handed to
+  `Sdk::open_camera` in a separate call can be stale by then.
+
+- A simulated readout can stall into a blank frame:
+  `Sdk::with_blank_frame_file(path)` makes every frame a camera that `Sdk`
+  opens delivers read back all zero whenever `path` exists, as an SDK can
+  hand back a stalled readout as a success (QHY's was measured doing it; SDK
+  1.13.4 was not seen to). A frame still comes only once armed, and a blank
+  one comes from a camera off the bus too, as a readout already under way
+  when it left would. Simulation only.
+
 - `Camera::restore_default_param` (`SVBRestoreDefaultParam`) and
   `Camera::set_auto_save_param` (`SVBSetAutoSaveParam`) safe wrappers. The
   SDK's auto-save (on by default) persists the whole camera parameter block
