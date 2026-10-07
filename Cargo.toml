@@ -380,7 +380,8 @@ debug = "line-tables-only"
 # per-pixel ImageBytes encoder serves a 26 MPix frame in ~0.2 s instead of
 # ~2.8 s unoptimized — slow enough that zwo-camera's ConformU `ImageArray`
 # read reaches ConformU's 10 s timeout on a loaded CI runner. A clean build
-# costs ~16% more.
+# costs ~16% more. `.bazelrc` applies the same to Bazel builds
+# (`per_crate_rustc_flag`); keep the two in step.
 [profile.dev.package."*"]
 debug = false
 opt-level = 1

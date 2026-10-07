@@ -120,6 +120,19 @@ build --@rules_rust//rust/toolchain/channel=stable
 # `extra_rustc_flag` linker setting below rather than overriding it.
 build --@rules_rust//rust/settings:extra_rustc_flags=-Cdebuginfo=0
 
+# Optimize the third-party crates (opt-level 1) while workspace crates stay at
+# the fastbuild opt-level 0 — the Bazel side of the root Cargo.toml's
+# `[profile.dev.package."*"] opt-level = 1`; keep the two in step. Their hot
+# paths then run at near-release speed: ascom-alpaca's per-pixel ImageBytes
+# encoder serves a 26 MPix frame in ~0.17 s instead of ~2.6 s. Every
+# crate_universe crate's root sits under `external/`, so that prefix selects
+# exactly the dependencies (a label prefix cannot be used: the flag's format
+# splits at the first `@`). rustc honours the last `-Copt-level`, and these
+# flags follow rules_rust's own `--codegen=opt-level=0`. The setting skips the
+# exec configuration, so proc-macros and build scripts are unaffected. A cold
+# `bazel build //...` costs ~6 % more; cached, nothing.
+build --@rules_rust//rust/settings:per_crate_rustc_flag=external/@-Copt-level=1
+
 # --- Platform-specific config -----------------------------------------------
 
 # Override rules_rust's default gold linker on Linux. rustc 1.94+ warns
