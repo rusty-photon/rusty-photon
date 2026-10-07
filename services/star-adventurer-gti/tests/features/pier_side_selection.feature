@@ -35,7 +35,7 @@ Feature: Pier-side selection follows the counterweight exclusion zone
     # HA +3 (its mech_HA is -9, outside the zone; the
     # counterweight-down mech_HA of +3 is inside it), so staying is
     # the only correct answer.
-    Given a star-adventurer service configured with flip_policy enabled, site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
+    Given a star-adventurer service configured with site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
     And a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And the Dec-axis encoder reports angle 135.0 degrees
     And a running star-adventurer service
@@ -45,7 +45,7 @@ Feature: Pier-side selection follows the counterweight exclusion zone
     Then DestinationSideOfPier should be East
 
   Scenario: A western target is accepted while the mount is counterweight-up
-    Given a star-adventurer service configured with flip_policy enabled, site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
+    Given a star-adventurer service configured with site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
     And a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And the Dec-axis encoder reports angle 135.0 degrees
     And a running star-adventurer service
@@ -58,7 +58,7 @@ Feature: Pier-side selection follows the counterweight exclusion zone
     # |HA| = 0.7 h is inside the +/-0.95 h band both sides reach. The
     # mount stays counterweight-up rather than slewing back through
     # the wrap for a target it can already see.
-    Given a star-adventurer service configured with flip_policy enabled, site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
+    Given a star-adventurer service configured with site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
     And a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And the Dec-axis encoder reports angle 135.0 degrees
     And a running star-adventurer service
@@ -70,7 +70,7 @@ Feature: Pier-side selection follows the counterweight exclusion zone
   Scenario: An eastern target the counterweight-up side cannot reach flips the mount back
     # HA -3 puts the counterweight-up mech_HA at +9, inside the zone;
     # counterweight-down reaches it at -3.
-    Given a star-adventurer service configured with flip_policy enabled, site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
+    Given a star-adventurer service configured with site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
     And a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And the Dec-axis encoder reports angle 135.0 degrees
     And a running star-adventurer service
@@ -80,7 +80,7 @@ Feature: Pier-side selection follows the counterweight exclusion zone
     Then DestinationSideOfPier should be West
 
   Scenario: A western target flips a counterweight-down mount
-    Given a star-adventurer service configured with flip_policy enabled, site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
+    Given a star-adventurer service configured with site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
     And a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And a running star-adventurer service
     When I connect the device
@@ -89,7 +89,7 @@ Feature: Pier-side selection follows the counterweight exclusion zone
     Then DestinationSideOfPier should be East
 
   Scenario: An eastern target keeps a counterweight-down mount where it is
-    Given a star-adventurer service configured with flip_policy enabled, site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
+    Given a star-adventurer service configured with site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
     And a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And a running star-adventurer service
     When I connect the device
@@ -102,7 +102,7 @@ Feature: Pier-side selection follows the counterweight exclusion zone
     # 180 - 30 = 150 degrees, past the pole. Writing +30 instead
     # would tell the firmware the mount is counterweight-down and
     # leave every later slew planning from a false position.
-    Given a star-adventurer service configured with flip_policy enabled, site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
+    Given a star-adventurer service configured with site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
     And a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And the Dec-axis encoder reports angle 135.0 degrees
     And a running star-adventurer service
@@ -112,7 +112,7 @@ Feature: Pier-side selection follows the counterweight exclusion zone
     Then the Dec encoder position written to the wire should be 150.0 degrees within 0.01
 
   Scenario: Sync while counterweight-down writes the counterweight-down encoder solution
-    Given a star-adventurer service configured with flip_policy enabled, site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
+    Given a star-adventurer service configured with site latitude 45.0 degrees and a CW exclusion zone of 0.95 to 11.05 hours
     And a mount with CPR 3628800 on the RA axis and 2903040 on the Dec axis
     And a running star-adventurer service
     When I connect the device

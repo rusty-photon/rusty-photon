@@ -29,7 +29,7 @@ use super::altitude_floor_steps::ra_for_hour_angle;
 const GTI_CPR_DEC: u32 = 0x002C_4C00;
 
 #[given(
-    expr = "a star-adventurer service configured with flip_policy enabled, site latitude {float} degrees and a CW exclusion zone of {float} to {float} hours"
+    expr = "a star-adventurer service configured with site latitude {float} degrees and a CW exclusion zone of {float} to {float} hours"
 )]
 async fn configured_with_zone(
     world: &mut StarAdventurerWorld,
@@ -37,7 +37,6 @@ async fn configured_with_zone(
     zone_min: f64,
     zone_max: f64,
 ) {
-    world.config_mut().mount.flip_policy.enabled = true;
     world.config_mut().mount.site_latitude_deg = latitude_deg;
     world.config_mut().mount.cw_exclusion_zone = CwExclusionZone::Active(
         ActiveZone::try_new(zone_min, zone_max).expect("zone bounds valid in feature file"),

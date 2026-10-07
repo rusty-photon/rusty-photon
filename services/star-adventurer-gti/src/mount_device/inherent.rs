@@ -81,9 +81,10 @@ const FRESH_POWER_UP_TICK_TOLERANCE: i32 = 10;
 /// Which pier side a slew lands on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SideChoice {
-    /// Whichever side the flip-policy selector picks from where the
-    /// mount stands; see [`select_pier_side_for_target`].
-    FlipPolicy,
+    /// Whichever side can reach the target from where the mount
+    /// stands, preferring the current one; see
+    /// [`select_pier_side_for_target`].
+    Reachable,
     /// The side the caller asked for (`SetSideOfPier`).
     Pinned(PierSide),
 }
@@ -793,7 +794,7 @@ impl MountDevice {
 
     /// Execute a slew to `target`, landing on the pier side `side` asks
     /// for. The shared body of `slew_to_coordinates_async` (given
-    /// coordinates, side from the flip-policy selector) and
+    /// coordinates, side from the pier-side selector) and
     /// `set_side_of_pier` (the current pointing, side pinned by the
     /// caller).
     ///
@@ -1118,7 +1119,7 @@ impl MountDevice {
     /// axes, `snap`, at sidereal time `lst`. Pure: reads only its
     /// arguments and the config.
     ///
-    /// Picks the pier side (the flip-policy selector, unless `side`
+    /// Picks the pier side (the pier-side selector, unless `side`
     /// pins it), computes the target encoder pair for that side, checks
     /// it against the per-side safety envelope, and computes each axis'
     /// delta with its path checks (see [`Self::slew_axis_deltas`]).
@@ -1133,7 +1134,7 @@ impl MountDevice {
     ) -> ASCOMResult<SlewPlan> {
         let side = match side {
             SideChoice::Pinned(side) => side,
-            SideChoice::FlipPolicy => {
+            SideChoice::Reachable => {
                 let current_side = side_of_pier_calc(
                     DecTicks::new(snap.dec.position_ticks),
                     Cpr::new(params.cpr_dec),
@@ -1149,7 +1150,6 @@ impl MountDevice {
                     lst,
                     current_side,
                     current_mech_ha,
-                    &self.config.flip_policy,
                     self.config.cw_exclusion_zone.bounds(),
                     self.config.site_latitude_deg,
                 )

@@ -46,7 +46,7 @@ impl ConfigurableDriver for StarAdvDriver {
         // apply from installing what startup would have rejected.
         if let Some(msg) = config.mount.auto_flip_offset_error() {
             errors.push(FieldError {
-                path: "mount.flip_policy.auto_flip_at_meridian_offset_hours".to_string(),
+                path: "mount.auto_flip.meridian_offset_hours".to_string(),
                 msg,
             });
         }
@@ -117,13 +117,12 @@ mod tests {
         // shipped zone, so the auto-flip could never fire.
         let mut config = Config::default();
         config.mount.unique_id = "star-adv-id".to_string();
-        config.mount.flip_policy.enabled = true;
-        config.mount.flip_policy.auto_flip_during_tracking = true;
-        config.mount.flip_policy.auto_flip_at_meridian_offset_hours = 0.95;
+        config.mount.auto_flip.enabled = true;
+        config.mount.auto_flip.meridian_offset_hours = 0.95;
         let errors = StarAdvDriver::validate(&config);
         let err = errors
             .iter()
-            .find(|e| e.path == "mount.flip_policy.auto_flip_at_meridian_offset_hours")
+            .find(|e| e.path == "mount.auto_flip.meridian_offset_hours")
             .unwrap_or_else(|| panic!("expected the offset field error, got {errors:?}"));
         assert!(
             err.msg.contains("tracking guard"),
@@ -136,9 +135,8 @@ mod tests {
     fn validate_accepts_an_auto_flip_offset_inside_the_reachable_band() {
         let mut config = Config::default();
         config.mount.unique_id = "star-adv-id".to_string();
-        config.mount.flip_policy.enabled = true;
-        config.mount.flip_policy.auto_flip_during_tracking = true;
-        config.mount.flip_policy.auto_flip_at_meridian_offset_hours = 0.3;
+        config.mount.auto_flip.enabled = true;
+        config.mount.auto_flip.meridian_offset_hours = 0.3;
         assert_eq!(
             StarAdvDriver::validate(&config),
             Vec::<rusty_photon_config::actions::FieldError>::new()

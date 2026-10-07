@@ -3101,7 +3101,7 @@ phase T4).
 **Driver-internal flips.** The gate presumes rp is the sole source
 of non-guiding mount motion. A driver that moves the mount on its
 own schedule — concretely, star-adventurer-gti's opt-in
-`flip_policy.auto_flip_during_tracking` — flips invisibly underneath
+`auto_flip.enabled` — flips invisibly underneath
 the gate and would trail any in-flight sub. Settled as prevention
 over detection: driver-planned auto-flip **must stay disabled on
 rp-orchestrated rigs**, which is both its shipped default and the

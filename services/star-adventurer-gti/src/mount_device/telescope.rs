@@ -174,14 +174,9 @@ impl Telescope for MountDevice {
         Ok(true)
     }
     async fn can_set_pier_side(&self) -> ASCOMResult<bool> {
-        // Phase 6: CanSetPierSide tracks `flip_policy.enabled`. With
-        // the policy disabled (the shipped default), `SetSideOfPier`
-        // returns NOT_IMPLEMENTED — the driver behaves as a
-        // non-flipping GEM. With it enabled (only after a successful
-        // first real-hardware GTi flip), the slew planner accepts
-        // explicit flip requests. See the design doc's
+        // Meridian flips are always available. See the design doc's
         // [§"Meridian flip"](../../../../docs/services/star-adventurer-gti.md#meridian-flip).
-        Ok(self.config.flip_policy.enabled)
+        Ok(true)
     }
     async fn can_set_guide_rates(&self) -> ASCOMResult<bool> {
         Ok(true)
@@ -431,17 +426,13 @@ impl Telescope for MountDevice {
 
     async fn destination_side_of_pier(&self, ra: f64, dec: f64) -> ASCOMResult<PierSide> {
         // Pure prediction — no wire traffic, no slew. Shares the
-        // flip-policy decision tree with `slew_to_coordinates_async`
+        // pier-side decision tree with `slew_to_coordinates_async`
         // (see the design doc's
         // [§"Pier-side decision tree"](../../../../docs/services/star-adventurer-gti.md#pier-side-decision-tree)),
         // then validates the target against the safety envelope for
         // the chosen side with the same `INVALID_VALUE` rejection a
-        // slew would issue. With `flip_policy.enabled = false` (the
-        // default) the decision tree collapses to "current side", so
-        // any target inside the (pre-flip) safety envelope predicts
-        // `pierWest` in the Northern Hemisphere (`pierEast` in the
-        // Southern). With it enabled, an opposite side is returned
-        // when the current side's envelope rejects the target.
+        // slew would issue. The opposite side is returned when the
+        // current side cannot reach the target.
         self.ensure_connected().await?;
         Self::validate_coordinates(ra, dec)?;
         let params = self
@@ -467,7 +458,6 @@ impl Telescope for MountDevice {
             lst,
             current_side,
             current_mech_ha,
-            &self.config.flip_policy,
             self.config.cw_exclusion_zone.bounds(),
             self.config.site_latitude_deg,
         );
@@ -478,19 +468,9 @@ impl Telescope for MountDevice {
     }
 
     async fn set_side_of_pier(&self, side_of_pier: PierSide) -> ASCOMResult<()> {
-        // Phase 6: explicit meridian-flip trigger. With
-        // `flip_policy.enabled = false` (the default), every code path
-        // here short-circuits to NOT_IMPLEMENTED — the driver behaves
-        // as a non-flipping GEM. With the policy enabled, this method
-        // routes through `slew_to_coordinates_async` to the current
-        // celestial target with the chosen side. See the design doc's
+        // Explicit meridian-flip trigger: a slew to the current celestial
+        // target, landing on the requested side. See the design doc's
         // [§"`SetSideOfPier(side)`"](../../../../docs/services/star-adventurer-gti.md#setsideofpierside).
-        if !self.config.flip_policy.enabled {
-            return Err(ASCOMError::new(
-                ASCOMErrorCode::NOT_IMPLEMENTED,
-                "SetSideOfPier requires flip_policy.enabled = true",
-            ));
-        }
         if side_of_pier == PierSide::Unknown {
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_VALUE,
@@ -535,7 +515,7 @@ impl Telescope for MountDevice {
         // the OTA back to the pointing the sync replaced.
         //
         // Drive the slew with the chosen-side encoder math directly,
-        // bypassing the policy decision tree. The selector's
+        // bypassing the pier-side decision tree. The selector's
         // stay-on-current preference is correct for slew_to_coordinates
         // but wrong for an explicit SetSideOfPier — the user pinned the
         // side, honour it.
@@ -786,14 +766,12 @@ impl Telescope for MountDevice {
         self.ensure_connected().await?;
         Self::validate_coordinates(ra, dec)?;
         self.ensure_unparked().await?;
-        // The flip policy picks the pier side. With
-        // `flip_policy.enabled = false` (the default) the slew stays on
-        // the current side; with it enabled, a flip slew may be chosen —
-        // see the design doc's
+        // The pier-side selector picks the side: the current one when it
+        // can reach the target, a flip otherwise — see the design doc's
         // [§"Meridian flip"](../../../../docs/services/star-adventurer-gti.md#meridian-flip).
         // The choice is made with the rest of the plan, from where the
         // mount stands.
-        self.execute_slew(SlewTarget::Coordinates { ra, dec }, SideChoice::FlipPolicy)
+        self.execute_slew(SlewTarget::Coordinates { ra, dec }, SideChoice::Reachable)
             .await
     }
 

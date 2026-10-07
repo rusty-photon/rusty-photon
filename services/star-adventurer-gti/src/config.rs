@@ -198,10 +198,10 @@ pub struct MountConfig {
     /// stops exactly at zone entry. Defaults to `0.05` h (≈ 45 s of
     /// sidereal drift).
     ///
-    /// Independent of [`FlipPolicy::enabled`]: the guard is the safety
+    /// Independent of [`AutoFlip::enabled`]: the guard is the safety
     /// floor and runs whenever `cw_exclusion_zone` is
-    /// [`Active`](CwExclusionZone::Active), regardless of meridian-flip
-    /// support. Validated at deserialize time by
+    /// [`Active`](CwExclusionZone::Active), whether or not the driver
+    /// flips on its own. Validated at deserialize time by
     /// [`TrackingGuardMarginHours`]: a non-finite, negative, or over-cap
     /// value (> [`MAX_TRACKING_GUARD_MARGIN_HOURS`]) fails config loading.
     /// The guard additionally treats a non-finite or negative value as
@@ -258,13 +258,13 @@ pub struct MountConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub park_dec_ticks: Option<i32>,
 
-    /// Meridian-flip policy. See the design doc's
-    /// [§"Meridian flip"](../../../docs/services/star-adventurer-gti.md#meridian-flip).
-    /// Defaults to `enabled = false` so the driver behaves identically
-    /// to pre-Phase-6 builds until an operator opts in on a
-    /// hardware-validated mount.
+    /// Driver-initiated meridian flips while tracking. Meridian flips
+    /// themselves have no setting: the slew planner always picks a pier
+    /// side that can reach the target, and `SetSideOfPier` always flips.
+    /// See the design doc's
+    /// [§"Flip policy"](../../../docs/services/star-adventurer-gti.md#flip-policy).
     #[serde(default)]
-    pub flip_policy: FlipPolicy,
+    pub auto_flip: AutoFlip,
 
     /// Physical pose the operator powers the mount up in. This field is
     /// the **operator's assertion about the physical world**, so the
@@ -337,7 +337,7 @@ impl MountConfig {
     ///    [`path_crosses_binding_zone`] answers.
     ///
     /// Fail either and the flip is not deferred, it simply never
-    /// happens, leaving `auto_flip_during_tracking = true` as a setting
+    /// happens, leaving `auto_flip.enabled = true` as a setting
     /// that does nothing — discoverable only by an unattended session
     /// failing to flip, one attempt per crossing, with the guard
     /// stopping the mount afterwards. So the config is refused at load
@@ -356,13 +356,12 @@ impl MountConfig {
     /// tracking enabled from `mech_HA = −10` fires the trigger
     /// immediately and tries to flip to `+2`, inside the shipped zone.
     ///
-    /// Inert configurations are not errors: with `enabled = false`, or
-    /// `auto_flip_during_tracking = false`, the offset is not consulted
-    /// and any value passes. With the zone disabled there is no guard
+    /// Inert configurations are not errors: with `auto_flip.enabled =
+    /// false` the offset is not consulted and any value passes. With the zone disabled there is no guard
     /// and no unreachable side, so again anything goes.
     #[must_use]
     pub fn auto_flip_offset_error(&self) -> Option<String> {
-        if !(self.flip_policy.enabled && self.flip_policy.auto_flip_during_tracking) {
+        if !self.auto_flip.enabled {
             return None;
         }
         let zone = self.cw_exclusion_zone.bounds();
@@ -370,12 +369,12 @@ impl MountConfig {
         if zone_min >= zone_max {
             return None;
         }
-        let offset = self.flip_policy.auto_flip_at_meridian_offset_hours;
+        let offset = self.auto_flip.meridian_offset_hours;
         let margin = self.tracking_guard_margin_hours.value();
         let guard_entry = zone_min - margin;
         if offset >= guard_entry {
             return Some(format!(
-                "flip_policy.auto_flip_at_meridian_offset_hours {offset} names a point no \
+                "auto_flip.meridian_offset_hours {offset} names a point no \
                  flip can happen at: the tracking guard stops the mount at {guard_entry} h \
                  (cw_exclusion_zone.min_hours {zone_min} − \
                  tracking_guard_margin_hours {margin}), so tracking never reaches it"
@@ -386,7 +385,7 @@ impl MountConfig {
         // form the sweep from `offset + 12`. None may land in the zone.
         if path_crosses_binding_zone(offset + 12.0, guard_entry - offset, zone) {
             return Some(format!(
-                "flip_policy.auto_flip_at_meridian_offset_hours {offset} names a point no \
+                "auto_flip.meridian_offset_hours {offset} names a point no \
                  flip can happen at: between it and the guard entry at {guard_entry} h the \
                  mount would flip into the CW exclusion zone ({zone_min}, {zone_max}), and \
                  the watcher fires wherever tracking already is, not at the offset — so \
@@ -397,111 +396,79 @@ impl MountConfig {
     }
 }
 
-/// Master switch + parameters for driver-planned meridian flips.
+/// Driver-initiated meridian flips while tracking.
 ///
-/// `enabled = false` (the shipped default) disables every flip code
-/// path: `CanSetPierSide` reports `false`, `SetSideOfPier` returns
-/// `NOT_IMPLEMENTED`, `DestinationSideOfPier` always returns the
-/// current side, and slews use the pre-flip coordinate pipeline only.
+/// Meridian flips themselves are always on — the slew planner picks
+/// whichever pier side can reach the target, and `SetSideOfPier`
+/// flips on request — so this block only decides whether the tracking
+/// watcher also flips on its own.
 ///
-/// With `enabled = true`, the driver picks the pier side whose
-/// destination `mech_HA` and RA sweep both clear the CW exclusion
-/// zone, preferring the side the mount is already on, and honours an
-/// explicit `SetSideOfPier`. Which targets a side can reach is decided
-/// by [`MountConfig::cw_exclusion_zone`] alone — this block holds no
-/// second opinion about it. (A `flip_range_hours` field did until
-/// 2026-09; it expressed the counterweight-up side's reach as a band
-/// around the meridian, which is the wrong shape and cost the driver
-/// the whole western sky from that side — issue #1301. It is gone
-/// rather than kept as a no-op, so a config still carrying it fails
-/// to load with the field named.)
-///
-/// Deserialised via [`FlipPolicyWire`] so the offset's own domain
-/// check is reported with the field named. The rule tying that offset
-/// to the zone spans two config blocks, so it lives in
+/// Deserialised via [`AutoFlipWire`] so the offset's own domain check
+/// is reported with the field named. The rule tying that offset to the
+/// zone spans two config blocks, so it lives in
 /// [`MountConfig::auto_flip_offset_error`].
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(into = "FlipPolicyWire", try_from = "FlipPolicyWire")]
-pub struct FlipPolicy {
-    /// Master switch. Defaults `false` until the first real-hardware
-    /// meridian flip on a `GTi` has been verified.
-    pub enabled: bool,
-
-    /// Opt-in driver-initiated meridian flip while tracking. When
-    /// `true` (and `enabled` is `true`), the tracking watcher issues
-    /// the same through-wrap flip slew `SetSideOfPier` would once the
-    /// live encoder `mech_HA` reaches
-    /// `auto_flip_at_meridian_offset_hours`, then re-engages tracking
-    /// on the new pier side. Defaults `false` — hosts like NINA / SGP
-    /// own flip timing themselves, and a mid-exposure auto-flip breaks
-    /// running frames. See the design doc's
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(into = "AutoFlipWire", try_from = "AutoFlipWire")]
+pub struct AutoFlip {
+    /// When `true`, the tracking watcher issues the same through-wrap
+    /// flip slew `SetSideOfPier` would once the live encoder `mech_HA`
+    /// reaches `meridian_offset_hours`, then re-engages tracking on the
+    /// new pier side. Defaults `false` — hosts like NINA / SGP own flip
+    /// timing themselves, and a mid-exposure auto-flip breaks running
+    /// frames. See the design doc's
     /// [§"Auto-flip during tracking"](../../../docs/services/star-adventurer-gti.md#auto-flip-during-tracking).
-    pub auto_flip_during_tracking: bool,
+    pub enabled: bool,
 
     /// Target hour angle at which the auto-flip fires, hours. `0.0`
     /// (the default) flips exactly at meridian crossing; positive
     /// values delay the flip past the meridian (the common
-    /// astrophotography preference). Only consulted when
-    /// `auto_flip_during_tracking = true`. Must be a finite hour
-    /// angle (`|offset| ≤ 12`, checked by the [`FlipPolicyWire`]
-    /// `try_from`) that also lies in the band where a flip is possible
-    /// at all — see [`MountConfig::auto_flip_offset_error`].
-    pub auto_flip_at_meridian_offset_hours: f64,
+    /// astrophotography preference). Only consulted when `enabled`.
+    /// Must be a finite hour angle (`|offset| ≤ 12`, checked by the
+    /// [`AutoFlipWire`] `try_from`) that also lies in the band where a
+    /// flip is possible at all — see
+    /// [`MountConfig::auto_flip_offset_error`].
+    pub meridian_offset_hours: f64,
 }
 
-impl Default for FlipPolicy {
-    fn default() -> Self {
-        Self {
-            enabled: default_flip_policy_enabled(),
-            auto_flip_during_tracking: false,
-            auto_flip_at_meridian_offset_hours: 0.0,
-        }
-    }
-}
-
-/// Wire shape for [`FlipPolicy`]: same fields, each with its serde
+/// Wire shape for [`AutoFlip`]: same fields, each with its serde
 /// default, plus the offset's domain check in `TryFrom`. Mirrors the
 /// [`ActiveZoneWire`] pattern.
 #[derive(Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct FlipPolicyWire {
-    #[serde(default = "default_flip_policy_enabled")]
+struct AutoFlipWire {
+    #[serde(default)]
     enabled: bool,
     #[serde(default)]
-    auto_flip_during_tracking: bool,
-    #[serde(default)]
-    auto_flip_at_meridian_offset_hours: f64,
+    meridian_offset_hours: f64,
 }
 
-impl TryFrom<FlipPolicyWire> for FlipPolicy {
+impl TryFrom<AutoFlipWire> for AutoFlip {
     type Error = String;
-    fn try_from(w: FlipPolicyWire) -> std::result::Result<Self, String> {
+    fn try_from(w: AutoFlipWire) -> std::result::Result<Self, String> {
         // An hour angle, so `[−12, +12]` is all this block can say
         // about it alone. Whether it names a point a flip can actually
         // happen at depends on the CW exclusion zone and the
         // tracking-guard margin, which live one level up — see
         // `MountConfig::auto_flip_offset_error`.
-        let offset = w.auto_flip_at_meridian_offset_hours;
+        let offset = w.meridian_offset_hours;
         if !offset.is_finite() || offset.abs() > 12.0 {
             return Err(format!(
-                "flip_policy.auto_flip_at_meridian_offset_hours must be a finite hour angle \
+                "auto_flip.meridian_offset_hours must be a finite hour angle \
                  within [-12, 12] hours, got {offset}"
             ));
         }
         Ok(Self {
             enabled: w.enabled,
-            auto_flip_during_tracking: w.auto_flip_during_tracking,
-            auto_flip_at_meridian_offset_hours: w.auto_flip_at_meridian_offset_hours,
+            meridian_offset_hours: w.meridian_offset_hours,
         })
     }
 }
 
-impl From<FlipPolicy> for FlipPolicyWire {
-    fn from(p: FlipPolicy) -> Self {
+impl From<AutoFlip> for AutoFlipWire {
+    fn from(a: AutoFlip) -> Self {
         Self {
-            enabled: p.enabled,
-            auto_flip_during_tracking: p.auto_flip_during_tracking,
-            auto_flip_at_meridian_offset_hours: p.auto_flip_at_meridian_offset_hours,
+            enabled: a.enabled,
+            meridian_offset_hours: a.meridian_offset_hours,
         }
     }
 }
@@ -519,7 +486,7 @@ pub const MAX_TRACKING_GUARD_MARGIN_HOURS: f64 = 1.0;
 // Each field invariant lives in the type: an out-of-range value fails at
 // `serde_json::from_str` with the offending field named, so a bad config is
 // rejected at *load* rather than at slew/track time. This is what retired
-// the hand-rolled `MountConfig::validate` / `FlipPolicy::validate`.
+// the hand-rolled `validate` passes.
 
 /// Tracking-guard slack before the CW exclusion zone, hours. Valid
 /// `[0, MAX_TRACKING_GUARD_MARGIN_HOURS]`. JSON form is a bare number.
@@ -1190,9 +1157,6 @@ const fn default_udp_port() -> u16 {
 const fn default_settle_after_slew() -> Duration {
     Duration::from_secs(2)
 }
-const fn default_flip_policy_enabled() -> bool {
-    false
-}
 const fn default_true() -> bool {
     true
 }
@@ -1288,7 +1252,7 @@ impl Default for MountConfig {
             ra_pulse_edge_steps: RaPulseEdgeSteps::default(),
             park_ra_ticks: None,
             park_dec_ticks: None,
-            flip_policy: FlipPolicy::default(),
+            auto_flip: AutoFlip::default(),
             unpark_from_ap_position: default_unpark_from_ap_position(),
             preferred_ap_park: default_preferred_ap_park(),
         }
@@ -1871,27 +1835,16 @@ mod tests {
     }
 
     #[test]
-    fn flip_policy_default_is_disabled() {
-        // The shipped default disables every flip code path — a fresh
-        // install must behave identically to pre-Phase-6 builds until
-        // the operator explicitly opts in on a hardware-validated mount.
-        let p = FlipPolicy::default();
-        assert!(!p.enabled);
-        assert!(!p.auto_flip_during_tracking);
-        assert_eq!(p.auto_flip_at_meridian_offset_hours, 0.0);
+    fn auto_flip_default_is_off() {
+        // Hosts like NINA / SGP / rp own flip timing, so the driver
+        // flips on its own only when the operator opts in.
+        let a = MountConfig::default().auto_flip;
+        assert!(!a.enabled);
+        assert_eq!(a.meridian_offset_hours, 0.0);
     }
 
     #[test]
-    fn mount_config_default_includes_disabled_flip_policy() {
-        let cfg = MountConfig::default();
-        assert!(!cfg.flip_policy.enabled);
-    }
-
-    #[test]
-    fn mount_config_deserialises_missing_flip_policy_as_default() {
-        // Existing config files written before Phase 6 do not carry
-        // `flip_policy`; the driver must read them as
-        // `FlipPolicy::default()` rather than failing.
+    fn mount_config_deserialises_missing_auto_flip_as_default() {
         let json = r#"{
             "name": "T",
             "unique_id": "t-001",
@@ -1900,8 +1853,8 @@ mod tests {
             "site_longitude_deg": 0.0
         }"#;
         let m: MountConfig = serde_json::from_str(json).expect("deserialise");
-        assert!(!m.flip_policy.enabled);
-        assert!(!m.flip_policy.auto_flip_during_tracking);
+        assert!(!m.auto_flip.enabled);
+        assert_eq!(m.auto_flip.meridian_offset_hours, 0.0);
     }
 
     #[test]
@@ -1957,17 +1910,23 @@ mod tests {
     }
 
     #[test]
-    fn flip_range_hours_is_rejected_as_an_unknown_field() {
-        // Removed 2026-09 (issue #1301): it expressed the
-        // counterweight-up side's reach as a band around the meridian,
-        // which is the wrong shape — reach comes from the CW exclusion
-        // zone alone. `deny_unknown_fields` means a config still
-        // carrying it fails to load naming the field, rather than the
-        // operator tuning a value nothing reads.
-        let err = serde_json::from_str::<FlipPolicy>(r#"{"flip_range_hours": 0.5}"#)
+    fn flip_policy_is_rejected_as_an_unknown_field() {
+        // Meridian flips are always on, so the block that switched them
+        // is gone and its auto-flip fields live in `auto_flip`. A config
+        // still carrying it fails to load naming the field, rather than
+        // the operator setting a switch nothing reads.
+        let json = r#"{
+            "name": "T",
+            "unique_id": "t-001",
+            "description": "T",
+            "site_latitude_deg": 0.0,
+            "site_longitude_deg": 0.0,
+            "flip_policy": { "enabled": false }
+        }"#;
+        let err = serde_json::from_str::<MountConfig>(json)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("flip_range_hours"), "got {err}");
+        assert!(err.contains("flip_policy"), "got {err}");
     }
 
     #[test]
@@ -2054,38 +2013,32 @@ mod tests {
     }
 
     #[test]
-    fn mount_config_round_trips_enabled_flip_policy_through_json() {
+    fn mount_config_round_trips_enabled_auto_flip_through_json() {
         let cfg = MountConfig {
-            flip_policy: FlipPolicy {
+            auto_flip: AutoFlip {
                 enabled: true,
-                auto_flip_during_tracking: true,
-                auto_flip_at_meridian_offset_hours: 0.3,
+                meridian_offset_hours: 0.3,
             },
             ..MountConfig::default()
         };
         let json = serde_json::to_string(&cfg).expect("serialise");
         let back: MountConfig = serde_json::from_str(&json).expect("deserialise");
-        assert!(back.flip_policy.enabled);
-        assert!(back.flip_policy.auto_flip_during_tracking);
-        assert!((back.flip_policy.auto_flip_at_meridian_offset_hours - 0.3).abs() < f64::EPSILON);
+        assert!(back.auto_flip.enabled);
+        assert!((back.auto_flip.meridian_offset_hours - 0.3).abs() < f64::EPSILON);
     }
 
     #[test]
-    fn flip_policy_deserialises_with_partial_fields() {
+    fn auto_flip_deserialises_with_partial_fields() {
         // serde_default on each field means a partial block — only one
         // key present — fills the other in from the default.
-        let json = r#"{"enabled": true}"#;
-        let p: FlipPolicy = serde_json::from_str(json).expect("deserialise");
-        assert!(p.enabled);
-        assert!(!p.auto_flip_during_tracking);
+        let a: AutoFlip = serde_json::from_str(r#"{"enabled": true}"#).expect("deserialise");
+        assert!(a.enabled);
+        assert_eq!(a.meridian_offset_hours, 0.0);
 
-        let json = r#"{"auto_flip_during_tracking": true}"#;
-        let p: FlipPolicy = serde_json::from_str(json).expect("deserialise");
-        assert!(!p.enabled);
-        assert!(p.auto_flip_during_tracking);
-        // Pre-auto-flip config blocks fill the auto-flip fields from
-        // their defaults rather than failing.
-        assert_eq!(p.auto_flip_at_meridian_offset_hours, 0.0);
+        let a: AutoFlip =
+            serde_json::from_str(r#"{"meridian_offset_hours": 0.5}"#).expect("deserialise");
+        assert!(!a.enabled);
+        assert!((a.meridian_offset_hours - 0.5).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -2095,22 +2048,22 @@ mod tests {
         // rejects them before try_from runs; the is_finite arm in
         // TryFrom is defense-in-depth for non-JSON construction paths.)
         for bad in [
-            r#"{"auto_flip_at_meridian_offset_hours": 12.5}"#,
-            r#"{"auto_flip_at_meridian_offset_hours": -12.5}"#,
+            r#"{"meridian_offset_hours": 12.5}"#,
+            r#"{"meridian_offset_hours": -12.5}"#,
         ] {
-            let err = serde_json::from_str::<FlipPolicy>(bad)
+            let err = serde_json::from_str::<AutoFlip>(bad)
                 .unwrap_err()
                 .to_string();
             assert!(
-                err.contains("auto_flip_at_meridian_offset_hours"),
+                err.contains("auto_flip.meridian_offset_hours"),
                 "{bad} should be rejected naming the field, got: {err}"
             );
         }
         for good in [
-            r#"{"auto_flip_at_meridian_offset_hours": 0.5}"#,
-            r#"{"auto_flip_at_meridian_offset_hours": -0.25}"#,
+            r#"{"meridian_offset_hours": 0.5}"#,
+            r#"{"meridian_offset_hours": -0.25}"#,
         ] {
-            serde_json::from_str::<FlipPolicy>(good)
+            serde_json::from_str::<AutoFlip>(good)
                 .unwrap_or_else(|e| panic!("{good} should parse: {e}"));
         }
     }
@@ -2120,10 +2073,9 @@ mod tests {
     /// the band a flip is possible in is `[-0.95, 0.90)`.
     fn auto_flip_at(offset: f64) -> MountConfig {
         MountConfig {
-            flip_policy: FlipPolicy {
+            auto_flip: AutoFlip {
                 enabled: true,
-                auto_flip_during_tracking: true,
-                auto_flip_at_meridian_offset_hours: offset,
+                meridian_offset_hours: offset,
             },
             ..MountConfig::default()
         }
@@ -2141,7 +2093,7 @@ mod tests {
                 .auto_flip_offset_error()
                 .unwrap_or_else(|| panic!("offset {bad} should be rejected"));
             assert!(
-                err.contains("auto_flip_at_meridian_offset_hours"),
+                err.contains("auto_flip.meridian_offset_hours"),
                 "error should name the field, got: {err}"
             );
         }
@@ -2169,10 +2121,9 @@ mod tests {
             cw_exclusion_zone: CwExclusionZone::Active(
                 ActiveZone::try_new(zone.0, zone.1).expect("valid zone"),
             ),
-            flip_policy: FlipPolicy {
+            auto_flip: AutoFlip {
                 enabled: true,
-                auto_flip_during_tracking: true,
-                auto_flip_at_meridian_offset_hours: offset,
+                meridian_offset_hours: offset,
             },
             ..MountConfig::default()
         };
@@ -2227,15 +2178,11 @@ mod tests {
 
     #[test]
     fn auto_flip_offset_rule_is_inert_when_no_flip_can_be_planned() {
-        // Nothing reads the offset unless auto-flip is armed under the
-        // master switch, and with the zone disabled there is no guard
-        // and no unreachable side — so no value is wrong.
+        // Nothing reads the offset unless auto-flip is on, and with the
+        // zone disabled there is no guard and no unreachable side — so
+        // no value is wrong.
         let mut cfg = auto_flip_at(6.0);
-        cfg.flip_policy.enabled = false;
-        assert!(cfg.auto_flip_offset_error().is_none(), "master switch off");
-
-        let mut cfg = auto_flip_at(6.0);
-        cfg.flip_policy.auto_flip_during_tracking = false;
+        cfg.auto_flip.enabled = false;
         assert!(cfg.auto_flip_offset_error().is_none(), "auto-flip off");
 
         let mut cfg = auto_flip_at(6.0);
@@ -2280,8 +2227,7 @@ mod tests {
         .unwrap();
 
         assert!(
-            err.to_string()
-                .contains("auto_flip_at_meridian_offset_hours"),
+            err.to_string().contains("auto_flip.meridian_offset_hours"),
             "{err}"
         );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
@@ -2301,21 +2247,20 @@ mod tests {
         f.write_all(json.as_bytes()).expect("write temp config");
         let err = load_config(f.path()).unwrap_err();
         assert!(
-            err.to_string()
-                .contains("auto_flip_at_meridian_offset_hours"),
+            err.to_string().contains("auto_flip.meridian_offset_hours"),
             "expected the offset rule to fail the load, got: {err}"
         );
     }
 
     #[test]
-    fn flip_policy_rejects_unknown_keys_at_deserialize() {
-        // deny_unknown_fields lives on the wire struct now that
-        // FlipPolicy deserialises via try_from; a typo must still fail
-        // loudly at load.
-        let err = serde_json::from_str::<FlipPolicy>(r#"{"auto_flip": true}"#)
+    fn auto_flip_rejects_unknown_keys_at_deserialize() {
+        // deny_unknown_fields lives on the wire struct, since AutoFlip
+        // deserialises via try_from; a stale or misspelt key must still
+        // fail loudly at load.
+        let err = serde_json::from_str::<AutoFlip>(r#"{"auto_flip_during_tracking": true}"#)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("auto_flip"), "got {err}");
+        assert!(err.contains("auto_flip_during_tracking"), "got {err}");
     }
 
     #[test]
@@ -2379,9 +2324,9 @@ mod tests {
     }
 
     #[test]
-    fn flip_policy_rejects_unknown_field() {
+    fn auto_flip_rejects_unknown_field() {
         let json = r#"{"enabled": true, "hysteresis_hours": 0.1}"#;
-        let err = serde_json::from_str::<FlipPolicy>(json).unwrap_err();
+        let err = serde_json::from_str::<AutoFlip>(json).unwrap_err();
         assert!(err.to_string().contains("hysteresis_hours"), "{err}");
     }
 
