@@ -2470,8 +2470,7 @@ async fn capture_once(
         return Capture::Cancelled;
     }
     // A camera found gone during the wait (C9) is not read out: it has no frame
-    // to give, and how `GetQHYCCDSingleFrame` behaves on a departed camera is
-    // unmeasured.
+    // to give, and a readout of a departed camera can only produce a bad one.
     if handle.is_lost() {
         return Capture::Failed(
             "the camera left the bus before its frame was read out".to_string(),
@@ -2481,17 +2480,32 @@ async fn capture_once(
     let reader = Arc::clone(handle);
     match tokio::task::spawn_blocking(move || {
         let read = read_frame(reader.as_ref());
-        if read.is_err() {
+        // A readout that fails asks C9's question, and so does one that comes
+        // back blank: a camera that stops answering inside
+        // `GetQHYCCDSingleFrame` can make it report success with an all-zero
+        // frame.
+        if read.as_ref().map_or(true, is_blank) {
             reader.verify_presence();
         }
         read
     })
     .await
     {
+        // A frame read from a camera found gone is not published.
+        Ok(Ok(_)) if handle.is_lost() => Capture::Failed(
+            "the camera left the bus during its readout; the frame was discarded".to_string(),
+        ),
         Ok(Ok(image)) => Capture::Frame(image),
         Ok(Err(e)) => Capture::Failed(e.0),
         Err(e) => Capture::Failed(format!("exposure task failed: {e}")),
     }
+}
+
+/// Whether every byte of a frame is zero: what `GetQHYCCDSingleFrame` hands
+/// back, as a success, for a camera that stopped answering inside it. A real
+/// frame almost never is, so the scan normally ends within its first bytes.
+fn is_blank(image: &ImageData) -> bool {
+    image.data.iter().all(|&byte| byte == 0)
 }
 
 /// Size the frame and read it out — the readout half of [`capture_once`].
@@ -8590,6 +8604,85 @@ mod tests {
             0,
             "a camera found gone was read out"
         );
+    }
+
+    /// A camera that stops answering inside its readout can make the SDK report
+    /// success with an all-zero frame. A blank frame counts as a failed
+    /// readout, so it asks C9's question, and a frame from a camera found gone
+    /// is discarded rather than published as `ImageReady`.
+    #[tokio::test]
+    async fn a_blank_frame_from_a_camera_that_left_during_its_readout_is_not_published() {
+        let handle = MockCameraHandle::default();
+        handle.hold_readout();
+        let (device, handle) = connected_device_with_handle(handle).await;
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        // The mock checks the bus as the readout starts and then returns its
+        // blank frame regardless, as the SDK did for a camera that left inside it.
+        await_readout(&handle).await;
+        handle.leave_bus();
+        handle.release_readout();
+
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+        assert_eq!(handle.single_frame_calls.load(Ordering::SeqCst), 1);
+        assert!(!device.connected().await.unwrap());
+        assert!(
+            device.state.last_image.lock().is_none(),
+            "a frame from a camera that left during its readout was published"
+        );
+        assert!(!device.state.image_ready.load(Ordering::Acquire));
+    }
+
+    /// Only a failure asks C9's question (C9), and a frame with data in it is
+    /// not one: a real readout makes no presence probe of its own.
+    #[tokio::test]
+    async fn a_frame_with_data_in_it_asks_no_presence_question() {
+        let handle = MockCameraHandle::default();
+        handle.frame_fill.store(0x11, Ordering::SeqCst);
+        let (device, handle) = connected_device_with_handle(handle).await;
+        let checks_before = handle.presence_checks.load(Ordering::SeqCst);
+
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+
+        assert_eq!(handle.presence_checks.load(Ordering::SeqCst), checks_before);
+        assert!(device.image_ready().await.unwrap());
+    }
+
+    /// A blank frame asks C9's question, but a camera still on the bus answers
+    /// it, so its frame is published as the camera gave it and the session
+    /// carries on.
+    #[tokio::test]
+    async fn a_blank_frame_from_a_camera_still_on_the_bus_is_published() {
+        let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
+        let checks_before = handle.presence_checks.load(Ordering::SeqCst);
+
+        device
+            .start_exposure(Duration::from_millis(10), true)
+            .await
+            .unwrap();
+        assert!(
+            device.wait_until_drained(Duration::from_secs(30)).await,
+            "capture task did not drain in time"
+        );
+
+        assert_eq!(
+            handle.presence_checks.load(Ordering::SeqCst),
+            checks_before + 1
+        );
+        assert!(device.image_ready().await.unwrap());
+        assert!(device.connected().await.unwrap());
     }
 
     /// A failure while a transition holds the connection gives no verdict

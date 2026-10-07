@@ -891,7 +891,7 @@ pub(crate) mod mock {
     use super::*;
     use parking_lot::Mutex;
     use std::collections::{HashMap, HashSet};
-    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
     use std::time::Duration;
 
     /// One readout mode in the mock's table: its name, and the sensor the camera
@@ -1075,6 +1075,10 @@ pub(crate) mod mock {
         /// Counts `get_single_frame` calls, so a test can assert that an abort
         /// during the exposure skips the readout entirely.
         pub single_frame_calls: AtomicU32,
+        /// The byte every frame is filled with. Zero by default — a blank
+        /// frame, which the driver treats as a failed readout — so a test that
+        /// needs a frame a real sensor would give sets it non-zero.
+        pub frame_fill: AtomicU8,
         /// Counts `get_image_size` calls, a departed camera's refusals
         /// included, so a test can assert that a readout was never entered.
         pub image_size_calls: AtomicU32,
@@ -1205,6 +1209,7 @@ pub(crate) mod mock {
                 offset_range_held: AtomicBool::new(false),
                 in_offset_range: AtomicBool::new(false),
                 single_frame_calls: AtomicU32::new(0),
+                frame_fill: AtomicU8::new(0),
                 image_size_calls: AtomicU32::new(0),
                 remaining_exposure_us: AtomicU32::new(0),
                 remaining_calls: AtomicU32::new(0),
@@ -1817,7 +1822,10 @@ pub(crate) mod mock {
             }
             let roi = *self.roi.lock();
             Ok(ImageData {
-                data: vec![0u8; (roi.width * roi.height * 2) as usize],
+                data: vec![
+                    self.frame_fill.load(Ordering::SeqCst);
+                    (roi.width * roi.height * 2) as usize
+                ],
                 width: roi.width,
                 height: roi.height,
                 bits_per_pixel: 16,

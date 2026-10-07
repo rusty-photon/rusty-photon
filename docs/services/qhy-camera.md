@@ -711,11 +711,22 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   no "device removed" status — every failure is the same `QHYCCD_ERROR` — so the
   question is put as a probe of the one control every connect requires,
   `CamSingleFrameMode` (C1): a camera that passed the handshake has it, and the
-  SDK stops answering for it once the device has gone. It is asked after any SDK
-  call that fails, after every capability probe (whose "absent" is an answer
-  rather than a failure, so the failure path alone would never ask it — E11),
-  after a capture that fails (E9), and after an abort's SDK cancel that fails
-  (the one call a capture cancelled in its wait makes). A probe that answers "absent" marks the
+  SDK stops answering for it once the device has gone.
+
+  **Only a failure asks (decided 2026-10-06).** A blank frame counts as one,
+  and QHY's capability probes, which answer live rather than from a cache, ask
+  whatever they answer. So the question is asked after any SDK call that
+  fails; after every capability probe, whose "absent" is an answer rather than
+  a failure, so the failure path alone would never ask it (E11); after a
+  capture that fails (E9); after an abort's SDK cancel that fails, the one
+  call a capture cancelled in its wait makes; and after a readout that comes
+  back **blank**. A camera that stops answering inside
+  `GetQHYCCDSingleFrame` can make it report success with an all-zero frame.
+  A frame from a camera the question finds gone is discarded, the capture
+  fails, and nothing is published as `ImageReady`. A blank frame from a camera
+  still on the bus is published as the camera gave it. No timer asks, and
+  neither does a read that succeeds. The same rule governs zwo-camera and
+  svbony-camera. A probe that answers "absent" marks the
   **physical connection lost**, logged once at `warn`, and from that moment both
   ASCOM devices on it — the camera and its CFW (C8) — answer
   `Connected == false`, and every member that takes the connected check answers
@@ -1929,7 +1940,11 @@ Layered per [`testing.md`](../skills/testing.md).
   `MockFilterWheelHandle::leave_bus`, which reproduce that rule on the mock's
   own flags; the capture that loses its camera mid-frame, the departure a
   progress poll meets (the frame is then not read out, which the mock's
-  `image_size_calls` counter pins), the abort whose SDK
+  `image_size_calls` counter pins), a readout that returns a blank frame as a
+  success after its camera left inside it (held open with `hold_readout`; its
+  frame is not published), a blank frame from a camera still present
+  (published) and a frame with data in it (no presence probe at all, the
+  mock's `frame_fill`), the abort whose SDK
   cancel fails on a departed camera, the withheld
   verdict while a transition holds the lock, and a close that fails on a
   departed camera are reached only there. Both doubles model what the SDK does
