@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- A simulated camera can leave the bus and come back:
+  `SimulatedCameraConfig::with_departure_file(path)` takes it away whenever
+  `path` exists. A departed camera keeps its handle, as a real one whose power
+  or cable is cut does, and answers every call on it as a closed camera does —
+  an error, or `None` from `is_control_available` — and `open()` fails with
+  `QHYError::Sdk { op: "open_camera" }` until it is back. The file is checked on
+  every call, so a test can take the camera away from another process. The
+  setting is a new `departure_file` field on `SimulatedCameraConfig`, so a
+  struct literal that names every field has one more to name — the builder
+  methods and `Default` are unaffected. Simulation only.
+- `SimulatedCameraConfig::with_close_failure_file(path)` makes `close()` fail
+  whenever `path` exists, as a failed `CloseQHYCCD` does. It returns
+  `QHYError::Sdk { op: "close_camera" }` and keeps the handle, so the camera
+  still reads open and a later `open()` is a no-op on that handle. This is a new
+  `close_failure_file` field on `SimulatedCameraConfig`, with the same struct
+  literal note as `departure_file`. Simulation only.
+- `SimulatedCameraConfig::sdk_default()`: the camera `Sdk::new()` fabricates
+  under `simulation` (a QHY178M with a 7-position filter wheel and a cooler), so
+  a host can start from it and change one setting. `Sdk::new()` now builds its
+  camera from it. Simulation only.
+
 ### Changed
 
 - **Breaking:** simulated cameras now read out in whole pairs of pixels: a

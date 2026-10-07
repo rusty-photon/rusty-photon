@@ -207,16 +207,7 @@ impl Sdk {
     #[cfg(feature = "simulation")]
     pub fn new() -> Result<Self> {
         let mut sdk = Self::new_simulated();
-
-        // Add default simulated camera with 7-position filter wheel and cooler
-        let config = simulation::SimulatedCameraConfig::default()
-            .with_id("SIM-QHY178M")
-            .with_model("QHY178M-Simulated")
-            .with_filter_wheel(7)
-            .with_cooler();
-
-        sdk.add_simulated_camera(config);
-
+        sdk.add_simulated_camera(simulation::SimulatedCameraConfig::sdk_default());
         Ok(sdk)
     }
 

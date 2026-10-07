@@ -68,6 +68,14 @@ struct Args {
     #[arg(long, hide = true)]
     simulation_empty: bool,
 
+    /// Test-only: the simulated camera leaves the bus whenever this file
+    /// exists and comes back when it is removed, to exercise a camera that
+    /// loses its power while connected (contract C9). Only meaningful when
+    /// built with `--features simulation`.
+    #[cfg(feature = "simulation")]
+    #[arg(long, hide = true, value_name = "PATH")]
+    simulation_departure_file: Option<PathBuf>,
+
     /// Subcommand; running with none starts the ASCOM Alpaca driver.
     #[command(subcommand)]
     command: Option<Command>,
@@ -128,6 +136,8 @@ fn main() -> ServiceResult {
     };
     #[cfg(feature = "simulation")]
     let simulation_empty = args.simulation_empty;
+    #[cfg(feature = "simulation")]
+    let simulation_departure_file = args.simulation_departure_file;
 
     // Startup chatter stays at debug! per docs/AGENTS.md Rule 9; the
     // user-facing "Service started successfully on <addr>" info! lives in
@@ -169,6 +179,13 @@ fn main() -> ServiceResult {
                 #[cfg(feature = "simulation")]
                 let builder = if simulation_empty {
                     builder.with_sdk(qhyccd_rs::Sdk::new_simulated())
+                } else if let Some(departure) = &simulation_departure_file {
+                    let mut sdk = qhyccd_rs::Sdk::new_simulated();
+                    sdk.add_simulated_camera(
+                        qhyccd_rs::simulation::SimulatedCameraConfig::sdk_default()
+                            .with_departure_file(departure),
+                    );
+                    builder.with_sdk(sdk)
                 } else {
                     builder
                 };
