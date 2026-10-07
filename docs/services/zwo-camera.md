@@ -754,8 +754,17 @@ EAF; those belong to the other zwo services.)
     session ends. A reconnect then works. The cost is one failed exposure.
   - The control camera on USB3 kept its session and took frames throughout.
 
-  **Still owed:** Windows, and the blank frame on ASI hardware. No ASI
-  readout was seen to return one; the rule is there because a QHY readout did.
+  **Windows answers the same**, on the same three cameras and SDK 1.41, in a
+  KVM guest (the
+  [2026-10-07 record](../validation/2026-10-07-zwo-camera-departure-windows/README.md)).
+  The power cut was paired with a hypervisor detach, because QEMU passes a
+  host-side unplug to the guest only once an I/O on the camera fails. All
+  five probes behaved as on Linux, failure for failure. A sweep of cuts
+  across a full-frame exposure, from the integration through its readout,
+  always surfaced as `ASI_EXP_FAILED` before any download.
+
+  **The blank frame is unobserved on ASI hardware**, on both platforms; the
+  rule is there because a QHY readout returned one.
 
 ### Geometry, binning, ROI
 
@@ -1536,8 +1545,8 @@ simulation) and **85 BDD scenarios**.
     `opens` count), with the test holding the lifecycle lock while both
     requests read the lost session.
 
-  The simulator models the dev-box measurements, not every ASI model or
-  platform. Windows is unmeasured.
+  The simulator models the dev-box measurements, not every ASI model. Windows
+  was measured to answer the same as Linux.
 
   Mutation-checked:
   - a presence check that never finds the camera gone fails five handle tests;
