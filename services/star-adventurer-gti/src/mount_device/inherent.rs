@@ -41,7 +41,7 @@ use tracing::{debug, info};
 use crate::codec::SkywatcherCodec;
 use crate::config::ApPark;
 use crate::coordinates::{
-    local_sidereal_time_hours, mech_ha_in_binding_zone, ra_dec_to_alt_az,
+    encoder_to_celestial, local_sidereal_time_hours, mech_ha_in_binding_zone, ra_dec_to_alt_az,
     select_pier_side_for_target, side_of_pier as side_of_pier_calc, target_encoder_flipped,
     target_encoder_normal, SIDEREAL_DEG_PER_SEC,
 };
@@ -86,6 +86,16 @@ pub(super) enum SideChoice {
     FlipPolicy,
     /// The side the caller asked for (`SetSideOfPier`).
     Pinned(PierSide),
+}
+
+/// Where a slew points the OTA.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) enum SlewTarget {
+    /// The given RA (hours) and Dec (degrees).
+    Coordinates { ra: f64, dec: f64 },
+    /// Where the mount points once the slew has claimed the slew slot:
+    /// `SetSideOfPier`'s flip in place.
+    CurrentPointing,
 }
 
 /// Whether `axis` may still be in a goto, so that a plan from this
@@ -781,25 +791,27 @@ impl MountDevice {
         Ok(())
     }
 
-    /// Execute a slew to celestial (ra, dec), landing on the pier side
-    /// `side` asks for. The shared body of `slew_to_coordinates_async`
-    /// (side from the flip-policy selector) and `set_side_of_pier`
-    /// (side pinned by the caller).
+    /// Execute a slew to `target`, landing on the pier side `side` asks
+    /// for. The shared body of `slew_to_coordinates_async` (given
+    /// coordinates, side from the flip-policy selector) and
+    /// `set_side_of_pier` (the current pointing, side pinned by the
+    /// caller).
     ///
     /// Caller must have already validated: connected, coords in
     /// range, not parked. The helper then:
     ///   1. Claims the slew slot, refusing while a slew or park holds it.
-    ///   2. Unless an axis is still in a goto, plans the slew from the
-    ///      latest snapshot with [`Self::plan_slew`]. A slew refused here
-    ///      is refused before anything moves.
-    ///   3. Stops both axes, plans again from where they came to rest,
+    ///   2. Reads the latest snapshot, and from it the pointing for a
+    ///      [`SlewTarget::CurrentPointing`] target.
+    ///   3. Unless an axis is still in a goto, plans the slew from that
+    ///      snapshot with [`Self::plan_slew`]. A slew refused here is
+    ///      refused before anything moves.
+    ///   4. Stops both axes, plans again from where they came to rest,
     ///      latches the target and starts the gotos from that plan — see
     ///      [`Self::stop_plan_and_start`].
-    ///   4. Hands off to the slew-completion watcher.
+    ///   5. Hands off to the slew-completion watcher.
     pub(super) async fn execute_slew(
         &self,
-        ra: f64,
-        dec: f64,
+        target: SlewTarget,
         side: SideChoice,
     ) -> ASCOMResult<()> {
         let params = self
@@ -828,7 +840,30 @@ impl MountDevice {
                 "slew refused: slew already in progress",
             ));
         };
-        // Refuse from the latest snapshot first, so that a slew which is
+        // Read where the mount points only now that the slot is claimed.
+        // A sync refuses while a slew holds the slot, so none can rewrite
+        // the frame between this reading and the plans. A pointing read
+        // before the claim could predate a sync that held the axes in
+        // between, and a flip about it would carry the OTA back by the
+        // sync's correction.
+        let snap = self.manager.snapshot_now().await;
+        let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
+            .map_err(ASCOMError::from)?;
+        let (ra, dec) = match target {
+            SlewTarget::Coordinates { ra, dec } => (ra, dec),
+            SlewTarget::CurrentPointing => {
+                let (ra, dec) = encoder_to_celestial(
+                    RaTicks::new(snap.ra.position_ticks),
+                    DecTicks::new(snap.dec.position_ticks),
+                    lst,
+                    Cpr::new(params.cpr_ra),
+                    Cpr::new(params.cpr_dec),
+                    self.config.site_latitude_deg,
+                );
+                (ra.value(), dec.value())
+            }
+        };
+        // Refuse from that snapshot first, so that a slew which is
         // refused anyway leaves the mount as it was: still tracking, with
         // any guide pulse left to end itself. Not while an axis may still
         // be in a goto (see `may_be_in_goto`): the snapshot is then not
@@ -836,10 +871,7 @@ impl MountDevice {
         // rest position allows. Stopping an axis that is already
         // decelerating changes nothing, so the plan after the stop alone
         // decides.
-        let snap = self.manager.snapshot_now().await;
         if !may_be_in_goto(&snap.ra) && !may_be_in_goto(&snap.dec) {
-            let lst = local_sidereal_time_hours(SystemTime::now(), self.config.site_longitude_deg)
-                .map_err(ASCOMError::from)?;
             self.plan_slew(ra, dec, side, &snap, lst, &params)?;
         }
 
