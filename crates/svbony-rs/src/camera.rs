@@ -457,6 +457,10 @@ pub struct Camera {
     /// [`Sdk::with_departure_file`]).
     #[cfg(feature = "simulation")]
     departure_file: Option<std::path::PathBuf>,
+    /// The blank-frame file of the [`Sdk`] that opened this camera (see
+    /// [`Sdk::with_blank_frame_file`]).
+    #[cfg(feature = "simulation")]
+    blank_frame_file: Option<std::path::PathBuf>,
     /// Makes `Camera` `!Sync` (see the type docs) while leaving it `Send`.
     _not_sync: std::marker::PhantomData<std::cell::Cell<()>>,
 }
@@ -534,6 +538,7 @@ impl Sdk {
                     property_ex,
                     state,
                     departure_file: self.departure_file.clone(),
+                    blank_frame_file: self.blank_frame_file.clone(),
                     _not_sync: std::marker::PhantomData,
                 }
             };
@@ -1759,11 +1764,17 @@ impl Camera {
         // Counted before the readiness verdict: a poll that times out is still
         // a poll, and it is the timing-out ones a retrieval loop makes first.
         st.get_video_data_calls = st.get_video_data_calls.saturating_add(1);
+        // A stalled readout comes back blank, even from a camera that has left
+        // the bus (see `Sdk::with_blank_frame_file`).
+        let blank = self
+            .blank_frame_file
+            .as_deref()
+            .is_some_and(std::path::Path::exists);
         // A camera that has left the bus delivers no frame, and the SDK says
         // so as it does for any frame not yet ready (see
         // `Sdk::with_departure_file`). Checked before the frame is consumed, so
         // an armed frame is still there if the camera comes back.
-        if departed(self.departure_file.as_deref()) {
+        if !blank && departed(self.departure_file.as_deref()) {
             return Err(Error::Svb(SvbError::Timeout));
         }
         if !st.capturing || !st.frame_ready {
@@ -1786,7 +1797,11 @@ impl Camera {
             st.frame_ready = false;
         }
         drop(st);
-        crate::simulation::fill_noise(dst);
+        if blank {
+            dst.fill(0);
+        } else {
+            crate::simulation::fill_noise(dst);
+        }
         Ok(())
     }
 }
@@ -1889,15 +1904,16 @@ mod tests {
         );
     }
 
-    /// A departure file a test controls: absent until [`Self::leave`], and
-    /// removed again when the guard drops, so a failing test leaves nothing
-    /// behind. Named for the test and the process, under Bazel's per-action
-    /// `TEST_TMPDIR` when there is one, so concurrent runs never share it.
+    /// A switch file a test controls — a departure file or a blank-frame
+    /// file: absent until [`Self::on`], and removed again when the guard
+    /// drops, so a failing test leaves nothing behind. Named for the test and
+    /// the process, under Bazel's per-action `TEST_TMPDIR` when there is one,
+    /// so concurrent runs never share it.
     #[cfg(feature = "simulation")]
-    struct Departure(std::path::PathBuf);
+    struct SwitchFile(std::path::PathBuf);
 
     #[cfg(feature = "simulation")]
-    impl Departure {
+    impl SwitchFile {
         fn new(test: &str) -> Self {
             let root = std::env::var_os("TEST_TMPDIR")
                 .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
@@ -1908,17 +1924,17 @@ mod tests {
             &self.0
         }
 
-        fn leave(&self) {
+        fn on(&self) {
             std::fs::write(&self.0, b"").unwrap();
         }
 
-        fn come_back(&self) {
+        fn off(&self) {
             std::fs::remove_file(&self.0).unwrap();
         }
     }
 
     #[cfg(feature = "simulation")]
-    impl Drop for Departure {
+    impl Drop for SwitchFile {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
         }
@@ -1930,15 +1946,15 @@ mod tests {
     #[cfg(feature = "simulation")]
     #[test]
     fn a_departed_camera_drops_out_of_enumeration_until_it_returns() {
-        let departure = Departure::new("enumeration");
+        let departure = SwitchFile::new("enumeration");
         let sdk = Sdk::new().unwrap().with_departure_file(departure.path());
         let _held = sdk.open_camera(0).unwrap();
 
-        departure.leave();
+        departure.on();
         assert_eq!(sdk.cameras().unwrap(), []);
         assert_eq!(sdk.camera_count().unwrap(), 0);
 
-        departure.come_back();
+        departure.off();
         assert_eq!(sdk.cameras().unwrap().len(), 1);
         assert_eq!(sdk.camera_count().unwrap(), 1);
     }
@@ -1949,13 +1965,13 @@ mod tests {
     #[cfg(feature = "simulation")]
     #[test]
     fn a_departed_cameras_handle_keeps_answering_but_delivers_no_frame() {
-        let departure = Departure::new("keeps-answering");
+        let departure = SwitchFile::new("keeps-answering");
         let sdk = Sdk::new().unwrap().with_departure_file(departure.path());
         let cam = sdk.open_camera(0).unwrap();
         cam.set_roi_format(0, 0, 64, 64, 1).unwrap();
         cam.set_camera_mode(CameraMode::TrigSoft).unwrap();
         cam.start_video_capture().unwrap();
-        departure.leave();
+        departure.on();
 
         let calls: [(&str, Result<()>); 18] = [
             ("control_caps", cam.control_caps().map(drop)),
@@ -2003,7 +2019,7 @@ mod tests {
     #[cfg(feature = "simulation")]
     #[test]
     fn a_departed_camera_delivers_again_once_it_returns() {
-        let departure = Departure::new("returns");
+        let departure = SwitchFile::new("returns");
         let sdk = Sdk::new().unwrap().with_departure_file(departure.path());
         let cam = sdk.open_camera(0).unwrap();
         cam.set_roi_format(0, 0, 64, 64, 1).unwrap();
@@ -2012,9 +2028,9 @@ mod tests {
         cam.send_soft_trigger().unwrap();
         let mut buf = vec![0u8; cam.frame_buffer_len().unwrap()];
 
-        departure.leave();
+        departure.on();
         cam.get_video_data(&mut buf, 0).unwrap_err();
-        departure.come_back();
+        departure.off();
 
         cam.get_video_data(&mut buf, 0).unwrap();
     }
@@ -2025,11 +2041,11 @@ mod tests {
     #[cfg(feature = "simulation")]
     #[test]
     fn a_camera_a_rescan_found_gone_opens_again_only_after_a_rescan_finds_it() {
-        let departure = Departure::new("delisted");
+        let departure = SwitchFile::new("delisted");
         let sdk = Sdk::new().unwrap().with_departure_file(departure.path());
-        departure.leave();
+        departure.on();
         assert_eq!(sdk.cameras().unwrap(), []);
-        departure.come_back();
+        departure.off();
 
         assert_eq!(
             sdk.open_camera(0).unwrap_err(),
@@ -2045,16 +2061,16 @@ mod tests {
     #[cfg(feature = "simulation")]
     #[test]
     fn a_departed_camera_cannot_be_opened_until_it_returns() {
-        let departure = Departure::new("unopenable");
+        let departure = SwitchFile::new("unopenable");
         let sdk = Sdk::new().unwrap().with_departure_file(departure.path());
-        departure.leave();
+        departure.on();
 
         assert_eq!(
             sdk.open_camera(0).unwrap_err(),
             Error::Svb(SvbError::InvalidIndex)
         );
 
-        departure.come_back();
+        departure.off();
         sdk.open_camera(0).unwrap();
     }
 
@@ -2467,5 +2483,57 @@ mod tests {
         let sdk = Sdk::new().unwrap();
         let cam = sdk.open_camera(0).unwrap();
         assert!((cam.pixel_size_microns().unwrap() - 3.76).abs() < f32::EPSILON);
+    }
+
+    /// While the blank-frame file exists, a delivered frame reads back blank,
+    /// every byte zero; once it is gone, frames carry data again.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_stalled_readout_delivers_a_blank_frame() {
+        let stall = SwitchFile::new("blank-frames");
+        let sdk = Sdk::new().unwrap().with_blank_frame_file(stall.path());
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_roi_format(0, 0, 64, 64, 1).unwrap();
+        cam.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        cam.start_video_capture().unwrap();
+        let mut buf = vec![0xff_u8; cam.frame_buffer_len().unwrap()];
+        stall.on();
+
+        cam.send_soft_trigger().unwrap();
+        cam.get_video_data(&mut buf, 0).unwrap();
+        assert!(buf.iter().all(|&b| b == 0), "a stalled readout's frame");
+
+        stall.off();
+        cam.send_soft_trigger().unwrap();
+        cam.get_video_data(&mut buf, 0).unwrap();
+        assert!(
+            buf.iter().any(|&b| b != 0),
+            "a frame once the stall is over"
+        );
+    }
+
+    /// A stalled readout comes back blank even from a camera that has left
+    /// the bus, whose frame would otherwise never come.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn a_departed_camera_with_a_stalled_readout_delivers_a_blank_frame() {
+        let departure = SwitchFile::new("blank-departed");
+        let stall = SwitchFile::new("blank-departed-stall");
+        let sdk = Sdk::new()
+            .unwrap()
+            .with_departure_file(departure.path())
+            .with_blank_frame_file(stall.path());
+        let cam = sdk.open_camera(0).unwrap();
+        cam.set_roi_format(0, 0, 64, 64, 1).unwrap();
+        cam.set_camera_mode(CameraMode::TrigSoft).unwrap();
+        cam.start_video_capture().unwrap();
+        cam.send_soft_trigger().unwrap();
+        departure.on();
+        stall.on();
+
+        let mut buf = vec![0xff_u8; cam.frame_buffer_len().unwrap()];
+        cam.get_video_data(&mut buf, 0).unwrap();
+
+        assert!(buf.iter().all(|&b| b == 0));
     }
 }

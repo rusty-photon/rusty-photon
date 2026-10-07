@@ -35,6 +35,7 @@
 //! come back. As SDK 1.13.4 was measured doing, its handle goes on answering
 //! while it is gone and only its frames stop coming (`get_video_data`
 //! answers [`SvbError::Timeout`]); the departure shows only in enumeration.
+//! With `Sdk::with_blank_frame_file` its readouts can stall into blank frames.
 //!
 //! ## Build requirements
 //!
@@ -130,6 +131,10 @@ pub struct Sdk {
     /// bus — see [`Sdk::with_departure_file`].
     #[cfg(feature = "simulation")]
     departure_file: Option<std::path::PathBuf>,
+    /// The file whose existence blanks every frame a camera this `Sdk` opens
+    /// delivers — see [`Sdk::with_blank_frame_file`].
+    #[cfg(feature = "simulation")]
+    blank_frame_file: Option<std::path::PathBuf>,
     /// Whether the last rescan ([`Sdk::cameras`], [`Sdk::camera_count`]) found
     /// the camera gone: the SDK's camera table changes only on a rescan, so
     /// until another finds it again it stays unopenable, back or not.
@@ -170,6 +175,23 @@ impl Sdk {
     #[must_use]
     pub fn with_departure_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.departure_file = Some(path.into());
+        self
+    }
+
+    /// Makes every frame a camera this `Sdk` opens delivers read back blank,
+    /// every byte zero, whenever `path` exists: a readout that stalled and was
+    /// handed back as a success anyway. QHY's SDK was measured doing that for
+    /// a camera that stopped answering mid-readout. SDK 1.13.4 was not seen
+    /// doing it, since a departed SV605CC's frame simply never came, so this
+    /// is here for a host to exercise its guard against it. A frame still
+    /// comes only once armed, and a blank one comes from a camera off the bus
+    /// too (see [`Sdk::with_departure_file`]), as a readout already under way
+    /// when the camera left would. The file is checked on every read.
+    /// Simulation only.
+    #[cfg(feature = "simulation")]
+    #[must_use]
+    pub fn with_blank_frame_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.blank_frame_file = Some(path.into());
         self
     }
 

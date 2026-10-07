@@ -40,9 +40,9 @@ async fn try_connect_camera(world: &mut CameraWorld, _device: u32) {
         .map(|e| e.code.raw());
 }
 
-/// An exposure finds a departed camera out at its own next SDK call, with no
-/// client call to prompt it, so the scenario waits for the effect rather than
-/// sampling once (testing.md §6.9).
+/// A departed camera is found out by its exposure's read timing out at its
+/// deadline, in the background, so the scenario waits for the effect rather
+/// than sampling once (testing.md §6.9).
 #[then(regex = r"^camera device (\d+) eventually reports Connected as false$")]
 async fn eventually_disconnected(world: &mut CameraWorld, _device: u32) {
     world.wait_disconnected().await;

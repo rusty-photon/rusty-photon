@@ -124,6 +124,10 @@ The simulated `SV605CC-Simulated` camera models the full control set
   gone and, once a rescan has missed it, until a rescan finds it again. A
   test can take the camera away from another process, which is how
   `svbony-camera`'s BDD suite drives it.
+- **A stalled readout**: `Sdk::with_blank_frame_file(path)` makes every
+  frame a camera that `Sdk` opens delivers read back all zero whenever
+  `path` exists, from a camera off the bus too — a readout handed back as a
+  success though it stalled, so a host can exercise its guard against one.
 
 Frames are filled with sensor noise via a seeded xorshift64 fill (the same
 approach `zwo-rs`'s `fill_noise` settled on after the lessons recorded in its

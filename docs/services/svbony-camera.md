@@ -41,13 +41,14 @@
 > cache-served member — `CanSetCCDTemperature` still `true` among them — and
 > rp's reconnect supervisor, which takes `Connected == true` as healthy, never
 > re-established it. The SDK does not say a camera has gone (measured on
-> pier1's SV605CC: a departed camera's calls keep answering), so the driver
-> checks presence itself, rescanning the bus every second while a session is
-> connected. A camera the rescan no longer finds reads `Connected = false`
-> with no client call, every member answers `NOT_CONNECTED`, and a client's
-> `Connected = false` or `true` releases the lost session, the latter then
-> connecting afresh — to a camera that has come back too, since an open now
-> rescans first. Connects, disconnects and releases are serialized per device,
+> pier1's SV605CC: a departed camera's calls keep answering), so a call on the
+> camera that fails asks, by rescanning the bus — a departed camera's next
+> exposure fails at its read deadline, and that is the failure that usually
+> asks. Only a failure asks, so an idle departure is noticed at the next
+> exposure. A camera the rescan no longer finds reads `Connected = false`,
+> every member answers `NOT_CONNECTED`, and a client's `Connected = false` or
+> `true` releases the lost session, the latter then connecting afresh — to a
+> camera that has come back too, since an open now rescans first. Connects, disconnects and releases are serialized per device,
 > so no reconnect overtakes a handshake still running (C7). See "Enumeration
 > & connection lifecycle" (C6).
 >
@@ -574,8 +575,9 @@ graph TD;
   start/stop, the soft-trigger `capture` composite (ROI + output format +
   exposure control + the armed gain and offset + trigger + the
   `SVBGetVideoData` read deadline of step 2d), and pulse-guide. `is_open`
-  and `is_lost` — the mark a presence check that misses the camera leaves
-  (C6), read before `is_open` by a caller asking both — are backed by their
+  and `is_lost` — the mark a failed call leaves when the rescan it asks for
+  no longer finds the camera (C6), read before `is_open` by a caller asking
+  both — are backed by their
   own atomics,
   independent of the mutex `capture` holds, so connection-state reads stay
   responsive during an in-flight exposure — the mutex is released between
@@ -894,7 +896,7 @@ scenario.
 Named, testable behaviours. ASCOM error names per
 [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md). Every
 contract below is real as of Phase E; the BDD feature files under
-`tests/features/` (88 scenarios, 426 steps) and the unit tests in
+`tests/features/` (86 scenarios, 421 steps) and the unit tests in
 `src/camera.rs`/`src/backend.rs` exercise them — see "Testing" below for
 which layer covers which contract (E9's two branches, the
 generation-counter abort race and E10 are unit-test-only, per the design's
@@ -999,34 +1001,52 @@ one core at load average 65, see "Real-hardware validation").
   camera — and on the field rig the SV605CC is the imaging camera, with nobody
   watching.
 
-  So **the driver checks the camera's presence itself.** What does change when
-  a camera leaves is the SDK's camera table, and only on a rescan
-  (`SVBGetNumOfConnectedCameras`). Every second while a session is connected,
-  the driver rescans and looks for the camera's serial — or, for a camera that
-  reports none, everything else the SDK reported for it at enumeration, its
-  SDK camera id included, never its position alone, since with another camera
-  in the roster the one now at its old index may be a different camera — and a
+  So **a failure asks whether the camera is still there.** What does change
+  when a camera leaves is the SDK's camera table, and only on a rescan
+  (`SVBGetNumOfConnectedCameras`). **Only a failure asks (decided
+  2026-10-06). A blank frame counts as one.** Any SDK call on the camera that
+  fails — a member's read or write, a step of the connect handshake, a
+  capture's setup, trigger or frame read, an abort's stop or re-arm — rescans
+  the bus and looks for the camera's serial — or, for a camera that reports
+  none, everything else the SDK reported for it at enumeration, its SDK
+  camera id included, never its position alone, since with another camera in
+  the roster the one now at its old index may be a different camera — and a
   camera the rescan does not find marks the session lost, logged once at
-  `warn`. An open finds the camera the same way. The rescan takes a
-  few tens of milliseconds and does not disturb a capture in flight (measured
-  with it landing mid-exposure and at readout). No verdict is given while a
-  connect, a disconnect or a release holds C7's lifecycle lock, since a check
-  landing there would be asking about a session in transition; nor when the
-  rescan itself fails. A verdict lands only on the session that was open when
-  the check began, never on one a reconnect opened meanwhile.
+  `warn`. A departed camera's frame read is such a failure: it times out at
+  its read deadline (E9). So is a frame that reads back blank, every byte
+  zero, which an SDK can hand back as a success for a readout that stalled
+  (QHY's was measured doing it; SDK 1.13.4 was not seen to). A blank frame
+  from a camera the rescan no longer finds is discarded and the exposure
+  fails; one from a camera still there is that camera's frame, and is
+  published as it is.
 
-  From the mark on, `Connected == false` with no client call needed — which is
-  what a supervisor polling `Connected` needs — and every member that takes
-  the connected check answers `NOT_CONNECTED`, the cache-served ones
-  included. An exposure in flight stops at its next poll slice instead of
-  polling out its read deadline. The SDK's own `SVB_ERROR_CAMERA_REMOVED`, if
-  a call ever answers it, marks the session lost too, and that call answers
-  `NOT_CONNECTED` rather than the code its call site would use for a camera
-  that is there — decided from its own status, not from the device's state
-  once it returns, since a reconnect may by then have released the lost
-  session and opened a fresh one. Any other SDK failure that leaves the device
-  reading disconnected — a disconnect that closed the camera under the call —
-  is answered `NOT_CONNECTED` as well.
+  Nothing else asks — no timer, and no read of `Connected` or of a
+  cache-served member — so **the check is lazy**: a departed camera reads
+  `Connected == true` until something fails on it. On SDK 1.13.4, whose calls
+  on a departed camera keep answering, that is the camera's next exposure,
+  which fails at its read deadline; an idle camera is noticed only then.
+  qhy-camera and zwo-camera ask on the same terms. Only a rescan that succeeds
+  and does not list the camera counts as gone: one that fails gives no
+  verdict, since a camera wrongly taken for gone costs a reconnect, which sets
+  the camera up afresh. The question is asked under the camera lock the
+  failed call held, which an open and a close take too, so its verdict lands
+  only on the session that failed, never on one a reconnect opened since. An
+  open finds the camera the same way. The rescan takes a few tens of
+  milliseconds and does not disturb a capture in flight (measured with it
+  landing mid-exposure and at readout).
+
+  From the mark on, `Connected == false` and every member that takes the
+  connected check answers `NOT_CONNECTED`, the cache-served ones included. So
+  does the call whose failure found the camera gone, rather than the code its
+  call site would use for a camera that is there — decided from its own
+  failure, not from the device's state once it returns, since a reconnect may
+  by then have released the lost session and opened a fresh one. An exposure
+  in flight when another call's failure finds the camera gone stops at its
+  next poll slice instead of polling out its read deadline. The SDK's own
+  `SVB_ERROR_CAMERA_REMOVED`, if a call ever answers it, marks the session
+  lost with no rescan. Any other SDK failure that leaves the device reading
+  disconnected — a disconnect that closed the camera under the call — is
+  answered `NOT_CONNECTED` as well.
 
   **Lost is not closed.** The driver closes nothing on its own: the session
   ends when a client ends it. `Connected = false` on a lost camera releases it
@@ -1041,9 +1061,9 @@ one core at load average 65, see "Real-hardware validation").
   a close clears first, so a read that a release lands in the middle of never
   pairs an open flag from before the release with a mark the release cleared.
   An open is refused while the handle still holds a lost camera, and a
-  handshake that hears the camera has gone fails even where the step that
-  heard it is advisory (C1a), since a session on a departed camera is not one
-  to publish.
+  handshake whose failed step finds the camera gone fails even where that
+  step is advisory (C1a), since a session on a departed camera is not one to
+  publish.
 
   **An open rescans first** and finds the camera by serial, because the SDK's
   camera table changes only on a rescan: without one, a camera that left and
@@ -1053,12 +1073,14 @@ one core at load average 65, see "Real-hardware validation").
   reload or a restart (C0), and hotplug re-enumeration belongs to
   [#1173](https://github.com/rusty-photon/rusty-photon/issues/1173).
 
-  **A departure shorter than the check can go unseen.** A camera unplugged and
-  plugged back between two checks enumerates exactly as before — the same
-  camera id, device id and serial — and the SDK reattaches the open session to
-  it. But the camera comes back with its capture disarmed, so a trigger
-  camera's exposures time out (E9) until a reconnect's handshake re-arms it.
-  The one-second period keeps that window short; closing it is not done here.
+  **A departure between two failures goes unseen.** A camera unplugged and
+  plugged back with nothing failing on it meanwhile enumerates exactly as
+  before — the same camera id, device id and serial — and the SDK reattaches
+  the open session to it. But the camera comes back with its capture
+  disarmed, so a trigger camera's exposures time out (E9), and since each
+  timeout's rescan finds the camera there, it stays connected, its exposures
+  timing out, until a client reconnects and the handshake re-arms it. Closing
+  that is not done here.
 
   **Measured on hardware** on pier1's SV605CC (Raspberry Pi 5, Linux, SDK
   1.13.4 `armv8`, 2026-10-06), with the camera's USB port and its USB2
@@ -1083,16 +1105,19 @@ one core at load average 65, see "Real-hardware validation").
   - **A 2.4 s blip.** The enumeration was unchanged; the open session's next
     frame timed out, and after re-arming it the same session exposed
     normally.
-  - **This contract, on the same rig and SDK** (the driver built from this
-    change). With the camera idle and only `Connected` being read, the watch
-    marked the session lost 0.4 s after the port went down, and every member
-    answered `NOT_CONNECTED`. A departure 3 s into a 10 s exposure was found
-    0.67 s later, and the capture ended 10 ms after that rather than at its
-    20.5 s read deadline. A reconnect while the camera was gone answered
-    `NOT_CONNECTED`; after its return, a plain reconnect with no reload
-    connected in 1.7 s and exposed normally.
+  - **The rescan and the reopen, on the same rig and SDK**, from a build of
+    this change that asked on a one-second timer rather than on a failure.
+    The first rescan after the port went down, 0.4 s later, no longer listed
+    the idle camera, and every member then answered `NOT_CONNECTED`; a
+    departure 3 s into a 10 s exposure was found 0.67 s later, and the
+    capture ended 10 ms after that. A reconnect while the camera was gone
+    answered `NOT_CONNECTED`; after its return, a plain reconnect with no
+    reload connected in 1.7 s and exposed normally.
 
-  Still owed: a cable pull that also cuts the camera's power, and Windows.
+  Still owed: the failure-triggered check run end to end on the rig (a
+  departed camera's next exposure failing at its deadline, and that
+  failure's rescan finding it gone), a cable pull that also cuts the
+  camera's power, and Windows.
 - **C7.** **Connection transitions are serialized per device.** A connect
   (the open, its handshake, and the close a failed handshake ends in), a
   disconnect, and C6's release run one at a time, under a per-device
@@ -1115,8 +1140,8 @@ one core at load average 65, see "Real-hardware validation").
   return without waiting. This is
   [`qhy-camera`'s C8](qhy-camera.md#behavioral-contracts) for a driver whose
   devices share no handle, so the lock is per device. C6's presence check
-  takes the same lock, but only when it is free: a check that finds a
-  transition running gives no verdict and waits for the next period. Pinned by
+  takes no part in it: it runs under the camera lock the failed call holds.
+  Pinned by
   `a_reconnect_waits_for_a_handshake_the_departure_interrupted` and
   `a_transition_that_finds_a_fresh_session_leaves_it_alone`.
 
@@ -1663,7 +1688,7 @@ design follows `indi_svbony_ccd`'s shape (behavioural reference only, see
 
 **Every member below that describes the camera or its session answers
 `NOT_CONNECTED` while the device is disconnected** — which includes a camera
-that has left the bus once a presence check has found it gone (C6) — unless its row
+that has left the bus once a failed call has found it gone (C6) — unless its row
 says otherwise: a driver holding no device cannot describe one (state-machine
 steps 9 and 10). Two groups are outside that rule: what this driver never
 implements, named in its rows; and the identity and health members in the
@@ -1697,7 +1722,7 @@ device is there at all, so they answer throughout.
 | `StartExposure` / `AbortExposure` / `ImageReady` / `ImageArray` | Per the soft-trigger video-capture state machine above; all `NOT_CONNECTED` while disconnected (step 9) | **Real** |
 | `StopExposure` | `NOT_IMPLEMENTED`; never implemented, so answered at any time — the truth about a member no reconnect makes work (step 10) | **Real** |
 | `LastExposureStartTime` / `LastExposureDuration` | The last frame of the **running** session; `VALUE_NOT_SET` before its first exposure, `NOT_CONNECTED` while disconnected (step 9) | **Real** |
-| `Name` / `Description` / `DriverInfo` / `DriverVersion` / `Connected` / `UniqueID` | `Connected` is `false` once a presence check has found the camera gone from the bus, until a client releases it (C6) | **Real** |
+| `Name` / `Description` / `DriverInfo` / `DriverVersion` / `Connected` / `UniqueID` | `Connected` is `false` once a failed call has found the camera gone from the bus, until a client releases it (C6); reading it asks nothing of the bus | **Real** |
 
 ---
 
@@ -1750,7 +1775,7 @@ everything else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 148 no-features / 169 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 148 no-features / 171 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
@@ -1797,8 +1822,8 @@ Layered per [`testing.md`](../skills/testing.md).
   `Camera::video_capture_starts`, a read-only count that tells the test the
   capture's own capture restart has run, so "the cancel landed in the poll
   loop" is a fact rather than a nap.
-- **BDD** (`bdd-infra::ServiceHandle`, ten feature files, 88 scenarios /
-  426 steps) — all genuinely green, including `enumeration_connection`'s
+- **BDD** (`bdd-infra::ServiceHandle`, ten feature files, 86 scenarios /
+  421 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
   behavioural feature (`exposure`, `binning_and_roi`, `cooling`,
   `gain_offset_readout`, `sensor_properties`) — see each file's header
@@ -1823,24 +1848,31 @@ Layered per [`testing.md`](../skills/testing.md).
   answering, its frames never come, it drops out of the rescan, and once a
   rescan has missed it, it cannot be opened until a rescan finds it again.
   The suite creates and removes the file, so the scenarios run the shipped
-  `SvbonyCameraHandle`, its presence check and the device's watch end to end.
-  `backend::handle_tests` pins the handle against the same simulation: a
-  presence check marks a departed camera lost without closing it, leaves a
-  present one and a closed handle alone, an open is refused while the camera
-  is gone or still held lost, an open after its return rescans and succeeds,
-  and a capture stops once its camera is found gone, in its integration wait
-  or in its `SVBGetVideoData` poll. The device side runs against
-  `MockCameraHandle::leave_bus`, which follows the same model on the mock's
-  own flags: the watch finding an idle camera gone with no client call,
-  giving no verdict while a transition holds the lifecycle lock or when the
-  rescan fails, and ending with its session; every member refusing once the
-  departure is known; each member's own call answering `NOT_CONNECTED` when
-  the SDK names the departure, even past a reconnect
-  (`MockCameraHandle::answer_camera_removed_once`); an exposure ending once
-  the departure is found; the release and the fresh reconnect; a departure
-  heard during the handshake; a transition that finds a fresh session leaving
-  it alone; a reconnect waiting out a handshake the departure interrupted
-  (C7); and a release landing between the two state reads
+  `SvbonyCameraHandle` end to end: a departed camera reading connected until
+  its next exposure fails at its read deadline, and disconnected from then
+  on. `backend::handle_tests` pins the handle against the same simulation,
+  with `svbony-rs`'s blank-frame file (`Sdk::with_blank_frame_file`) for a
+  stalled readout: a failed call marks a departed camera lost without
+  closing it and says it found the camera gone, a failure on a present camera
+  is only that failure, a departed camera's capture finds it gone at its read
+  deadline, a blank frame fails the capture from a departed camera and is
+  kept from a present one, an open is refused while the camera is gone or
+  still held lost, an open after its return rescans and succeeds, and a
+  capture stops once another call's failure finds its camera gone, in its
+  integration wait or in its `SVBGetVideoData` poll. The device side runs
+  against `MockCameraHandle::leave_bus`, which follows the same model on the
+  mock's own flags: reads and `Connected` asking nothing of the bus; a failed
+  call finding a departed camera gone, and a failed rescan giving no verdict;
+  every member refusing once the departure is known; each member's own call
+  answering `NOT_CONNECTED` when its failure found the camera gone, even past
+  a reconnect
+  (`MockCameraHandle::fail_next_call_as_it_leaves_past_a_reconnect`); an
+  exposure finding the camera gone at its read deadline, and one stopping
+  once another call's failure does; the release and the fresh reconnect; a
+  handshake step failing on a departed camera, and a departure the SDK names
+  during the handshake; a transition that finds a fresh session leaving it
+  alone; a reconnect waiting out a handshake the departure interrupted (C7);
+  and a release landing between the two state reads
   (`MockCameraHandle::close_after_next_state_read`) reading neither as
   connected.
 - **ConformU** — `tests/conformu_integration.rs` (Phase F), mirroring
@@ -1977,10 +2009,10 @@ phases A–G:
   — see "Delivery phasing" Phase G for why it didn't land that phase.
   (`scripts/build-packages.sh` SDK-staging/RUNPATH support landed
   separately as issue #679.)
-- Recovering from a departure shorter than C6's presence period. The camera
-  comes back to the same session with its capture disarmed, so a trigger
-  camera's exposures time out until a reconnect. Re-arming after a capture
-  times out, or ending the session on such a timeout, would close it.
+- Recovering from a departure between two failures (C6). The camera comes
+  back to the same session with its capture disarmed, so a trigger camera's
+  exposures time out until a reconnect. Re-arming after a capture times out,
+  or ending the session on such a timeout, would close it.
 - A confirmed `mac_arm64` SVBony SDK blob — `scripts/build-tarballs.sh` and
   `scripts/generate-brew-formulas.sh` currently exclude `svbony-camera`
   outright (no macOS tarball/formula) rather than ship a
