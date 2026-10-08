@@ -2,19 +2,13 @@
 name = "qhyccd-rs"
 version = "0.1.9"
 edition = "2021"
-# Explicit, lower-than-workspace MSRV: this crate is dual-homed to crates.io
-# (ADR-009), so its published floor must reflect what DOWNSTREAM consumers can
-# build on, NOT the workspace's unified 1.98.1. The floor is verified out-of-tree
-# by the nightly publish-readiness check (docs/plans/archive/publish-readiness-checks.md),
-# which copies the crate family out of the workspace and builds it on this
-# toolchain with a direct-minimal-versions lockfile — it cannot be verified
-# in-workspace because
-# the root `profile.dev.debug = "line-tables-only"` needs Rust >= 1.71 and the
-# shared Cargo.lock pins newest deps. 1.85.0 is the standalone floor: the
-# `simulation` feature pulls rand 0.10 (MSRV 1.85) + its chacha20/getrandom chain;
-# the base build (no `simulation`) has a lower floor. (Was 1.68 before #392 moved
-# this crate onto rand 0.10.) `cargo msrv find` ratchets it.
-rust-version = "1.85.0"
+# The workspace MSRV, spelled out rather than `rust-version.workspace = true`:
+# this crate is dual-homed to crates.io (ADR-009), and the nightly
+# publish-readiness check (docs/plans/archive/publish-readiness-checks.md) builds
+# it copied out of the workspace, on this toolchain with a
+# direct-minimal-versions lockfile. A workspace MSRV bump raises it in the same
+# change (docs/workspace.md, "MSRV").
+rust-version = "1.98.1"
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"

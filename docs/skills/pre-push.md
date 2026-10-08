@@ -344,15 +344,14 @@ deduplicates sites on (lint, file, line, column); the raw JSON over-counts.
 The workspace uses a single MSRV (currently 1.98.1) declared in the root
 `Cargo.toml` via `[workspace.package]`. All members inherit it with
 `rust-version.workspace = true` **except the six dual-homed FFI crates**
-(`qhyccd-rs` 1.85.0, `libqhyccd-sys` 1.68.0, `zwo-rs` 1.87.0, `libzwo-sys` 1.71.0,
-`svbony-rs` 1.85.0, `libsvbony-sys` 1.68.0), which
-declare explicit lower MSRVs because they publish to crates.io for outside
-consumers. Those lower floors cannot be verified in-workspace (the root
-`profile.dev` needs Rust ≥ 1.71 and the shared lockfile pins newest deps), so the
-in-workspace **msrv** job (`check.yml`) **skips** those six (each wrapper plus its
-`sys-crate`, discovered from `[package.metadata.publish-readiness]`) and verifies
-only the workspace-MSRV members. The six are instead checked out-of-tree by the
-nightly **publish-readiness** workflow — see below and
+(`qhyccd-rs`, `libqhyccd-sys`, `zwo-rs`, `libzwo-sys`, `svbony-rs`,
+`libsvbony-sys`), which publish to crates.io and spell the same version out as a
+concrete `rust-version` — raise all six with the workspace. What a crates.io
+consumer relies on is the floor holding with minimal dependency versions, which
+the shared lockfile (newest deps) cannot show, so the in-workspace **msrv** job
+(`check.yml`) **skips** those six (each wrapper plus its `sys-crate`, discovered
+from `[package.metadata.publish-readiness]`). They are instead checked
+out-of-tree by the nightly **publish-readiness** workflow — see below and
 [docs/plans/archive/publish-readiness-checks.md](../plans/archive/publish-readiness-checks.md).
 
 ### test.yml
@@ -607,9 +606,9 @@ upstream release, not the PR under review). Families are discovered dynamically 
 | **notify-on-failure** | N/A (opens/updates a `publish-readiness` issue on scheduled red) | -- | CI-only |
 
 The script copies each crate family OUT of the workspace and builds it on its
-declared (lower) MSRV with a `-Z direct-minimal-versions` lockfile generated under
+declared MSRV with a `-Z direct-minimal-versions` lockfile generated under
 the MSRV-aware resolver (`CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback`) — the
-two ingredients that let a low MSRV hold against minimal dependency versions. The
+two ingredients that let the MSRV hold against minimal dependency versions. The
 `*_SKIP_NATIVE_LINK` env makes it a check-only, SDK-free build (zwo still needs
 libclang for bindgen, not the SDK binary).
 

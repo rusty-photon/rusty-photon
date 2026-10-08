@@ -7,14 +7,9 @@ links = "qhyccd"
 repository = "https://github.com/ivonnyssen/qhyccd-rs"
 license = "MIT OR Apache-2.0"
 description = "Rust bindings for QHY CCD SDK"
-# Explicit, lower-than-workspace MSRV (dual-homed to crates.io, ADR-009): a
-# dependency-free, hand-written FFI shim, so its floor is just what the bindings
-# compile on — 1.68.0. The wrapper (qhyccd-rs) sits higher at 1.85.0 since #392
-# put it on rand 0.10 / derive_more 2.1; this shim has no such deps, so it keeps
-# the lower floor independently. Verified out-of-tree by the nightly
-# publish-readiness check (docs/plans/archive/publish-readiness-checks.md), not
-# in-workspace. See ../Cargo.toml.
-rust-version = "1.68.0"
+# The workspace MSRV, spelled out (dual-homed to crates.io, ADR-009). See
+# ../Cargo.toml.
+rust-version = "1.98.1"
 exclude = ["qhyccd-sdk/*"]
 
 [lib]

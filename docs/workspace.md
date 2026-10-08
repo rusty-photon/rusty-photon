@@ -340,12 +340,15 @@ sentinel/src/
 ## MSRV
 
 The minimum supported Rust version is pinned in `[workspace.package]` of the
-root `Cargo.toml` (`rust-version = "1.98.1"`). Every member listed in
-`[workspace].members` inherits it via `rust-version.workspace = true`, except
-the six dual-homed FFI crates (`qhyccd-rs`, `libqhyccd-sys`, `zwo-rs`,
-`libzwo-sys`, `svbony-rs`, `libsvbony-sys`). Those publish to crates.io and
-declare explicit, lower floors; [pre-push.md](skills/pre-push.md) lists them
-and how each set is verified.
+root `Cargo.toml` (`rust-version = "1.98.1"`), and it is the floor of every
+workspace member. Every member listed in `[workspace].members` inherits
+it via `rust-version.workspace = true`, except the six dual-homed FFI crates
+(`qhyccd-rs`, `libqhyccd-sys`, `zwo-rs`, `libzwo-sys`, `svbony-rs`,
+`libsvbony-sys`). Those publish to crates.io and are verified copied out of the
+workspace, where `workspace = true` has nothing to resolve against, so they
+spell the same version out. A change that raises the workspace MSRV raises
+theirs with it. [pre-push.md](skills/pre-push.md) says how each set is
+verified.
 
 ## Supported targets
 

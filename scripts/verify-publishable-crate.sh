@@ -4,12 +4,10 @@
 # check for one dual-homed FFI crate family (a wrapper + its nested `*-sys`).
 #
 # WHY THIS EXISTS (see docs/plans/archive/publish-readiness-checks.md):
-#   These crates publish to crates.io independently, but neither their MSRV nor
-#   their minimal dependency versions can be verified *in* the workspace:
-#     - the root `[profile.dev] debug = "line-tables-only"` needs Rust >= 1.71, so
-#       a sub-1.71 floor fails at profile-parse before the crate even compiles;
-#     - the shared Cargo.lock pins newest deps, and `cargo update -Zminimal-versions`
-#       is a whole-lockfile operation the rest of the workspace won't tolerate.
+#   These crates publish to crates.io independently, but their MSRV cannot be
+#   verified against minimal dependency versions *in* the workspace: the shared
+#   Cargo.lock pins newest deps, and `cargo update -Zminimal-versions` is a
+#   whole-lockfile operation the rest of the workspace won't tolerate.
 #   So we copy the family OUT of the workspace and verify it the way a crates.io
 #   consumer would — on its own declared MSRV, with a minimal-versions lockfile.
 #
@@ -18,14 +16,15 @@
 #   newest and can demand a higher Rust than our floor (e.g. rayon -> rayon-core
 #   1.13 needs 1.80). Pairing it with the MSRV-aware resolver
 #   (CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback) caps transitive deps at
-#   MSRV-compatible versions, so direct-minimal-versions works with a low floor.
+#   MSRV-compatible versions, so direct-minimal-versions works on the declared floor.
 #
 # USAGE:
 #   scripts/verify-publishable-crate.sh <wrapper-crate-name> [verify|find]
 #     verify (default) — assert each crate builds on its declared MSRV with a
 #                        direct-minimal-versions lockfile, across the feature powerset.
-#     find             — report the LOWEST MSRV each crate could declare
-#                        (`cargo msrv find`), so the declared floor can be ratcheted.
+#     find             — report the lowest Rust each crate builds on today
+#                        (`cargo msrv find`). Informational: every crate declares the
+#                        workspace MSRV (docs/workspace.md "MSRV").
 #
 # REQUIREMENTS: rustup (nightly + each crate's MSRV toolchain — auto-installed),
 #   jq, cargo-hack (feature powerset; falls back to default/all-features if absent),
@@ -225,7 +224,7 @@ case "$MODE" in
   find)
     find_crate "$SCRATCH/pkg/$SYS_SUBDIR" "$SYS"
     find_crate "$SCRATCH/pkg"             "$WRAPPER"
-    echo "DONE: review the discovered floors above; lower the declared rust-version if a crate can go lower."
+    echo "DONE: the lowest Rust each crate builds on is above (informational; the declared rust-version follows the workspace MSRV)."
     ;;
   *)
     echo "FATAL: unknown mode '$MODE' (use 'verify' or 'find')" >&2; exit 2 ;;

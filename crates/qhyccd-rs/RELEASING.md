@@ -29,15 +29,11 @@ mechanic dictates the publish **order** and the version-bump rules below.
 
 ## MSRV
 
-Both crates declare an **explicit, lower-than-workspace** `rust-version` (not
-`workspace = true`, which would publish the workspace's `1.98.1`), and the two now
-differ: **`qhyccd-rs` is `1.85.0`** (its `simulation` feature pulls rand 0.10, MSRV
-1.85; the base build is held to 1.81 by derive_more 2.1) while **`libqhyccd-sys` is
-`1.68.0`** (dependency-free hand-written FFI). The nightly publish-readiness check
-verifies each floor builds with minimal dependency versions, and its advisory
-`find` leg reports the true lowest. If a change raises the floor (a new std API, a
-dependency MSRV bump), **bump that crate's `rust-version`** to the value the check
-accepts; to keep it low, prefer APIs/deps available on the declared MSRV.
+Both crates declare the **workspace MSRV** (`1.98.1`), spelled out as a concrete
+`rust-version` rather than `workspace = true`, because the publish-readiness check
+builds them copied out of the workspace. A change that raises the workspace MSRV
+raises both with it ([docs/workspace.md](../../docs/workspace.md#msrv)). The nightly
+publish-readiness check verifies the floor builds with minimal dependency versions.
 See [docs/plans/archive/publish-readiness-checks.md](../../docs/plans/archive/publish-readiness-checks.md).
 
 ## Steps

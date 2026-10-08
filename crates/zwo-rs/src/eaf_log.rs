@@ -89,8 +89,7 @@ fn refusal(dir: &Path, error: &std::io::Error) -> Error {
 
     let blocked = dir.ancestors().find(|path| path.exists()).unwrap_or(dir);
     let owner = std::fs::metadata(blocked)
-        .map(|metadata| format!(" (owner uid {})", metadata.uid()))
-        .unwrap_or_default();
+        .map_or_default(|metadata| format!(" (owner uid {})", metadata.uid()));
     Error::EafLog {
         dir: dir.display().to_string(),
         reason: format!(

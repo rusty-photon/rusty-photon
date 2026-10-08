@@ -2,13 +2,11 @@
 name = "libzwo-sys"
 version = "0.1.0"
 edition = "2021"
-# Explicit, lower-than-workspace MSRV (dual-homed to crates.io, ADR-010): the
-# floor is set by the `bindgen 0.73` build-dependency (its own MSRV is 1.71.0),
-# which the build script runs to generate the FFI bindings. Verified out-of-tree
-# by the nightly publish-readiness check (docs/plans/archive/publish-readiness-checks.md)
-# — bindgen must be present, so that job installs libclang; the ZWO SDK binary is
+# The workspace MSRV, spelled out (dual-homed to crates.io, ADR-010). See
+# ../Cargo.toml. The publish-readiness check runs this crate's build script, so
+# bindgen must be present and that job installs libclang; the ZWO SDK binary is
 # NOT needed (a check-only build, with ZWO_SKIP_NATIVE_LINK=1, never links).
-rust-version = "1.71.0"
+rust-version = "1.98.1"
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
 # Canonical development home is the rusty-photon monorepo (ADR-010); still
