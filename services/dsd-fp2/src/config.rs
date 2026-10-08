@@ -223,6 +223,7 @@ mod tests {
     /// A hand-written file that leaves out the device sections gains each
     /// one from the defaults, with a minted id, and then loads.
     #[test]
+    #[cfg_attr(miri, ignore)] // the save fsyncs the config's directory, which Miri does not support
     fn bootstrap_fills_left_out_device_sections_from_the_defaults() {
         let default = serde_json::to_value(Config::default()).unwrap();
         let sections: Vec<&str> = IDENTITY_POINTERS
