@@ -10,6 +10,9 @@ Feature: Sync to coordinates
   goto running: an AbortSlew, whose stops coast the axes on, or a client
   that reconnects mid-slew, which leaves the goto to run to its target.
   The position a sync would write there is not where the axis stops.
+  The GTi reports an axis coasting to a stop as running in tracking
+  mode, so an axis running with no tracking rate the driver set counts
+  as still in its goto.
 
   Scenario: SyncToCoordinates fails while disconnected
     Given a running star-adventurer service
@@ -43,6 +46,16 @@ Feature: Sync to coordinates
     When I connect the device
     Then Slewing should be true
     When I try to sync to RA 6.0 hours and Dec 30.0 degrees
+    Then the operation should fail with invalid-operation
+    And the mount should not have received an encoder-seed command
+
+  Scenario: SyncToCoordinates is refused while an axis coasts in tracking mode
+    # The seeded Dec axis runs in tracking mode, as the GTi reports a
+    # coast, and the driver has set no tracking rate on it.
+    Given a running star-adventurer service
+    And the mount reports the Dec axis running in tracking mode
+    When I connect the device
+    And I try to sync to RA 6.0 hours and Dec 30.0 degrees
     Then the operation should fail with invalid-operation
     And the mount should not have received an encoder-seed command
 

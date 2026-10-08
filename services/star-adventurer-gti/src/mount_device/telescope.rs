@@ -27,7 +27,7 @@ use crate::coordinates::{
 use crate::manager::MountParameters;
 use crate::units::{Cpr, Dec, DecTicks, Ra, RaTicks};
 
-use super::inherent::{validate_guide_rate, SideChoice, SlewTarget};
+use super::inherent::{may_be_in_goto, validate_guide_rate, SideChoice, SlewTarget};
 use super::park_persistence::write_park_to_config;
 use super::slew::enable_sidereal_tracking_ra;
 use super::watchers::spawn_park_completion_watcher;
@@ -654,15 +654,14 @@ impl Telescope for MountDevice {
         // coast on from goto speed, and a client that reconnected
         // mid-slew left that slew's goto running to its target. Its axis
         // is not where it will stop, so a position written now would be
-        // wrong once it does.
-        if [&now.ra, &now.dec]
-            .iter()
-            .any(|axis| axis.running() && axis.goto())
-        {
-            debug!(ra = ?now.ra.status, dec = ?now.dec.status, "sync refused: a goto is running");
+        // wrong once it does. The `GTi` reports the coast as tracking, so
+        // the goto bit alone does not catch it; see `may_be_in_goto`.
+        if may_be_in_goto(&now.ra) || may_be_in_goto(&now.dec) {
+            debug!(ra = ?now.ra.status, dec = ?now.dec.status, "sync refused: an axis is still moving");
             return Err(ASCOMError::new(
                 ASCOMErrorCode::INVALID_OPERATION,
-                "sync refused: an axis is still running a goto; retry once it has stopped",
+                "sync refused: an axis is still running a goto or coasting to a stop; \
+                 retry once it has stopped",
             ));
         }
         // That read took each axis' count before its status, so a coast

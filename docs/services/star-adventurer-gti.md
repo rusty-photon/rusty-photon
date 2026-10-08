@@ -191,6 +191,17 @@ What it means for the hardware:
   second after `:f` first reads stopped it moves back 9–20 ticks (under
   7″), then holds still.
 
+  While it coasts, `:f` does not report the goto it was. From the first
+  frame after the stop it reads `=111` — running, but in **tracking**
+  mode, clockwise and slow, whichever way the goto was turning — and
+  `=101` once the axis has stopped (measured on pier1, 2026-10-07: a goto
+  reading `=011` / `=211` read `=111` on both axes the frame after `:L`).
+  So the goto bit alone cannot tell a coast from tracking. What can is
+  the rate the driver commanded: every stop and every goto `:G` clears
+  it, so an axis running with none is still in its goto's motion. The
+  slew planner's first plan and `SyncToCoordinates` both read it that
+  way.
+
   The handshake value is therefore a pre-stop sample, stale the moment
   the halt executes; the resting position is what the 200 ms poll loop
   reads back once the axes have stopped. Anything that treated the
@@ -939,8 +950,10 @@ every refused slew would first stop tracking. A tracking or idle axis
 stops within milliseconds, so the two plans then agree.
 
 The first plan is skipped while either axis may still be in a goto:
-- it reads as running a goto, for example coasting from an abort or a
-  safety stop;
+- it reads as running a goto;
+- it reads as running with no tracking rate the driver commanded —
+  coasting from an abort or a safety stop, which the GTi reports in
+  tracking mode (see [§Safety stop at startup](#safety-stop-at-startup));
 - or no status has been read for it yet. The handshake seeds each
   position, read before the startup safety stop, with no status, so
   until the first poll a goto that stop interrupted may still be
@@ -2013,9 +2026,12 @@ status that reads stopped. Read after that status, the count is from
 after any coast. The five extra frames cost a sync a few round trips,
 and a sync is rare.
 
-**Sync refuses while either axis is running a goto** with
-`INVALID_OPERATION`, even when no slew or park holds the slew slot.
-Two ordinary sequences leave a goto running that nothing owns:
+**Sync refuses while either axis is running a goto or coasting out of
+one** with `INVALID_OPERATION`, even when no slew or park holds the
+slew slot: while it reads as running a goto, or as running with no
+tracking rate the driver commanded, which is how the GTi reports a
+coast (see [§Safety stop at startup](#safety-stop-at-startup)). Two
+ordinary sequences leave a goto running that nothing owns:
 
 - `AbortSlew`. Its `:L` stops do not stop a goto at once: the `GTi`
   coasts on for up to 1.5 s (see
@@ -2031,9 +2047,10 @@ stop. The refusal does not block the recovery the driver's procedures
 point at after an aborted flip — plate-solve, then
 `SyncToCoordinates` to ground-truth the frame. It only defers the sync
 until the axes have stopped, which the plate-solve exposure needs
-anyway. `Slewing` reports the same running goto once the poll has
-read it, so a client that waits for `Slewing` to clear before syncing
-is not refused.
+anyway. `Slewing` reports a running goto once the poll has read it,
+but not a coast: it reads false as soon as `AbortSlew` returns. A sync
+straight after an abort can therefore be refused for up to 1.5 s with
+`Slewing` false; retry once the axes have stopped.
 
 **Sync takes the axes for its duration** and refuses with
 `INVALID_OPERATION` when a slew or park already owns them. A sync
@@ -3354,6 +3371,27 @@ Historical baselines (`alpacaprotocol`-only or partial
 
 The evidence trail is [`docs/validation/`](../validation/README.md);
 this service's runs, newest first:
+
+- **2026-10-07 — sync around an abort's coast (for #1311)** on the
+  field rig: packaged arm64 nightly of `935e547`, through the running
+  service's Alpaca endpoint with rp stopped, every slew target at
+  Dec +60°. A scripted run of 26 checks.
+  - **The coast reads as tracking:** after `:L`, `:f` read `=111` on
+    both axes, not the goto they were running. Sync's check for a
+    running goto therefore let two syncs through mid-coast, and each
+    wrote counts 200–240 ticks behind where the axes were. The check now
+    also counts an axis running with no tracking rate the driver
+    commanded; see [§Safety stop at startup](#safety-stop-at-startup).
+  - **A slew straight after `AbortSlew`** is accepted once the coast
+    ends (1.55 s after the abort) and lands 2.1 s of RA from its target.
+  - **A disconnect and reconnect mid-slew** (1 ms apart) leave the goto
+    running and reading as a goto; sync is refused until it ends.
+  - **A flip aborted 6.9 s in**, once `SideOfPier` read East, came to
+    rest 4.7° past the pole. A sync there kept pierEast, and a slew
+    straight back from that pose landed.
+  - **`SetSideOfPier`** latched the pointing read just before it.
+
+  There is no record: this was not a ConformU run.
 
 - **2026-10-06 — RA pulse edge-step trim defaults on the field rig**
   ([record](../validation/2026-10-06-star-adventurer-gti-gti-rig-pulse-trim/README.md)).

@@ -104,8 +104,14 @@ pub(super) enum SlewTarget {
 /// has been read yet: the handshake seeds each axis' position, read
 /// before the startup safety stop, with no status. Until the first poll,
 /// a goto that stop interrupted can still be coasting.
+///
+/// It is also the case when the axis reads running with no tracking rate
+/// the driver commanded. The `GTi` reports an axis coasting out of a goto,
+/// after its `:K` or `:L`, as tracking, not as the goto it was. The
+/// driver forgets an axis' rate on every stop and every goto `:G`, so a
+/// running axis it holds no rate for is one it did not set tracking.
 pub(super) const fn may_be_in_goto(axis: &AxisSnapshot) -> bool {
-    axis.status.is_none() || (axis.running() && axis.goto())
+    axis.status.is_none() || (axis.running() && (axis.goto() || axis.step_period == 0))
 }
 
 /// A slew planned from one reading of both axes; see
