@@ -3604,6 +3604,12 @@ target, `Tracking`, the guide rates, any pulse in flight, the park
 target and the frame anchor (the last two are re-derived on the next
 connect, as after any disconnect).
 
+A lifecycle with the mount disabled — reachable only by a `SIGHUP` (or
+Windows `ParamChange`) after a hand edit, since `mount.enabled` is
+read-only to `config.apply` — has no device to retire. It hands on
+unchanged what it was given, so a later reload that enables the mount
+again starts from what the last mounted lifecycle kept.
+
 A process restart keeps nothing. A new process cannot know whether the
 mount was moved by hand while no driver was running, so it starts with
 `AtPark = false`, and a client that needs the mount parked parks it

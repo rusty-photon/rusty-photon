@@ -41,7 +41,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use star_adventurer_gti::{
-    AlpacaServerConfig, Config, MockTransportFactory, MountConfig, ServerBuilder, TransportFactory,
+    AlpacaServerConfig, BoundServer, Config, MockTransportFactory, MountConfig, RetainedState,
+    ServerBuilder, TransportFactory,
 };
 
 static SERVER_LOCK: Mutex<()> = Mutex::new(());
@@ -111,6 +112,93 @@ async fn test_server_starts_with_mount_disabled() {
     assert_ne!(status, 200, "Telescope should not be registered");
     handle.abort();
     let _ = handle.await;
+}
+
+/// Build one lifecycle's server, starting from what the previous one kept.
+async fn bind_lifecycle(config: Config, retained: RetainedState) -> BoundServer {
+    let factory: Arc<dyn TransportFactory> = Arc::new(MockTransportFactory);
+    ServerBuilder::new()
+        .with_config(config)
+        .with_transport_factory(factory)
+        .with_retained(retained)
+        .build()
+        .await
+        .expect("server failed to bind")
+}
+
+/// PUT an Alpaca telescope method and fail on any ASCOM error.
+async fn put_telescope(port: u16, method: &str, form: &[(&str, &str)]) {
+    let reply: serde_json::Value = reqwest::Client::new()
+        .put(format!(
+            "http://127.0.0.1:{port}/api/v1/telescope/0/{method}"
+        ))
+        .form(form)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        reply.get("ErrorNumber").and_then(serde_json::Value::as_i64),
+        Some(0),
+        "PUT {method} failed: {reply}"
+    );
+}
+
+async fn at_park(port: u16) -> bool {
+    let reply: serde_json::Value =
+        reqwest::get(format!("http://127.0.0.1:{port}/api/v1/telescope/0/atpark"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    reply
+        .get("Value")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap()
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)]
+async fn a_lifecycle_without_a_mount_hands_on_what_it_was_given() {
+    let _lock = SERVER_LOCK.lock().unwrap();
+
+    // A lifecycle with the mount: park it, then end the lifecycle.
+    let mut config = test_config(true);
+    config.mount.settle_after_slew = Duration::ZERO;
+    let bound = bind_lifecycle(config, RetainedState::default()).await;
+    let port = bound.listen_addr().port();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let serving = tokio::spawn(bound.start(async {
+        let _ = stopped.await;
+    }));
+    poll_status(port, "/api/v1/telescope/0/name", READY_TIMEOUT).await;
+    put_telescope(port, "connected", &[("Connected", "true")]).await;
+    put_telescope(port, "park", &[]).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !at_park(port).await {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the park never landed"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    stop.send(()).unwrap();
+    let parked = serving.await.unwrap().unwrap();
+    assert_ne!(
+        parked,
+        RetainedState::default(),
+        "the parked lifecycle handed over nothing"
+    );
+
+    // A reload that disables the mount registers no device, so it has
+    // nothing to retire; it passes on what it was given.
+    let bound = bind_lifecycle(test_config(false), parked).await;
+    let handed_on = bound.start(async {}).await.unwrap();
+
+    assert_eq!(handed_on, parked);
 }
 
 #[tokio::test]

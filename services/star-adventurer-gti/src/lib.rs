@@ -332,6 +332,7 @@ impl ServerBuilder {
                 discovery,
                 manager: Arc::clone(&manager),
                 mount,
+                retained: self.retained,
             })
         }
         .await;
@@ -368,6 +369,12 @@ pub struct BoundServer {
     /// The registered mount device, retired by `start()` once serving
     /// ends. `None` when `mount.enabled` is false.
     mount: Option<MountDevice>,
+    /// What the previous lifecycle kept. A lifecycle without a mount has
+    /// nothing to retire and hands this on unchanged, so a reload that
+    /// disables the mount and a later one that enables it again (both
+    /// SIGHUP-driven: `mount.enabled` is read-only to `config.apply`)
+    /// lose nothing in between — no driver touched the mount meanwhile.
+    retained: RetainedState,
 }
 
 impl BoundServer {
@@ -401,6 +408,7 @@ impl BoundServer {
             discovery,
             manager,
             mount,
+            retained,
         } = self;
         let serve = async {
             if let Some(ref tls_config) = tls {
@@ -418,7 +426,7 @@ impl BoundServer {
         // mount is retired, the watcher can no longer mark it parked.
         let retained = match &mount {
             Some(mount) => mount.retire().await,
-            None => RetainedState::default(),
+            None => retained,
         };
         // Always-run transport shutdown. In ServiceLifetime mode this
         // cancels the supervisor, runs the safety teardown one last
