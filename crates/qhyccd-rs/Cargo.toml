@@ -2,13 +2,7 @@
 name = "qhyccd-rs"
 version = "0.1.9"
 edition = "2021"
-# The workspace MSRV, spelled out rather than `rust-version.workspace = true`:
-# this crate is dual-homed to crates.io (ADR-009), and the nightly
-# publish-readiness check (docs/plans/archive/publish-readiness-checks.md) builds
-# it copied out of the workspace, on this toolchain with a
-# direct-minimal-versions lockfile. A workspace MSRV bump raises it in the same
-# change (docs/workspace.md, "MSRV").
-rust-version = "1.98.1"
+rust-version.workspace = true
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
@@ -22,22 +16,6 @@ The libqhyccd-sys crate provides the raw FFI bindings; this crate wraps them in 
 """
 categories = ["aerospace", "api-bindings"]
 homepage = "https://github.com/ivonnyssen/qhyccd-rs/wiki"
-
-# Marks this crate (+ its nested FFI sub-crate) for the nightly publish-readiness
-# check (docs/plans/archive/publish-readiness-checks.md). Discovered via `cargo metadata`
-# just like [package.metadata.conformu]/[package.metadata.miri]. ONLY the three
-# dual-homed FFI wrappers (qhyccd-rs, zwo-rs, svbony-rs) carry this, each naming
-# its sys crate, so six crates are verified; the rest of the workspace is never
-# checked.
-# - sys-crate:     the nested build-script sub-crate to co-verify standalone.
-# - skip-link-env: set =1 so the build script emits no link directives, letting
-#                  `cargo check` run with no QHYCCD SDK installed.
-# - needs-libclang: this family's build script needs libclang (bindgen). False
-#                   here (hand-written FFI); true for zwo.
-[package.metadata.publish-readiness]
-sys-crate = "libqhyccd-sys"
-skip-link-env = "QHYCCD_SKIP_NATIVE_LINK"
-needs-libclang = false
 
 [features]
 default = []
@@ -65,31 +43,5 @@ rayon = { workspace = true, optional = true }
 # so consumers of qhyccd-rs no longer pull it. Inherits the workspace pin.
 tracing-subscriber = { workspace = true }
 
-# The workspace lint policy, as a concrete copy rather than `workspace = true`:
-# this crate is dual-homed to crates.io, and the nightly publish-readiness
-# check builds it copied out of the workspace
-# (scripts/verify-publishable-crate.sh), where inheritance has nothing to
-# resolve against. The table must stay a verbatim mirror of [workspace.lints.*]
-# in the root Cargo.toml (which also carries the policy's rationale) —
-# tools/ci/check_lints_parity.py fails the `stable / clippy` gate on any
-# drift, so edit the root table and mirror it here in the same change. The
-# published copy is inert for consumers: registry dependencies build under
-# `--cap-lints allow`.
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
-
-[lints.clippy]
-unwrap_used = "deny"
-expect_used = "deny"
-unreachable = "deny"
-panic = "deny"
-todo = "deny"
-unimplemented = "deny"
-panic_in_result_fn = "deny"
-unchecked_time_subtraction = "deny"
-string_slice = "deny"
-as_conversions = "deny"
-arithmetic_side_effects = "deny"
-indexing_slicing = "deny"
-pedantic = { level = "deny", priority = -1 }
-nursery = { level = "deny", priority = -1 }
+[lints]
+workspace = true

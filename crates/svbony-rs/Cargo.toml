@@ -2,13 +2,7 @@
 name = "svbony-rs"
 version = "0.1.0"
 edition = "2021"
-# The workspace MSRV, spelled out rather than `rust-version.workspace = true`:
-# this crate is dual-homed to crates.io (mirroring qhyccd-rs/zwo-rs), and the
-# nightly publish-readiness check (docs/plans/archive/publish-readiness-checks.md)
-# builds it copied out of the workspace, on this toolchain with a
-# direct-minimal-versions lockfile. A workspace MSRV bump raises it in the same
-# change (docs/workspace.md, "MSRV").
-rust-version = "1.98.1"
+rust-version.workspace = true
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
@@ -22,15 +16,6 @@ homepage = "https://github.com/rusty-photon/rusty-photon"
 description = "Safe Rust bindings for the SVBony camera SDK"
 keywords = ["svbony", "astronomy", "camera"]
 categories = ["api-bindings", "hardware-support"]
-
-# Marks this crate (+ its nested FFI sub-crate) for the nightly
-# publish-readiness check (docs/plans/archive/publish-readiness-checks.md).
-# See the qhyccd-rs/zwo-rs marker for field semantics. needs-libclang = false:
-# libsvbony-sys is hand-written FFI, no bindgen.
-[package.metadata.publish-readiness]
-sys-crate = "libsvbony-sys"
-skip-link-env = "SVBONY_SKIP_NATIVE_LINK"
-needs-libclang = false
 
 [features]
 default = []
@@ -58,31 +43,5 @@ rand = { workspace = true, optional = true }
 # directly, same as this crate's tests) — not carried over here to avoid
 # another unused dependency.
 
-# The workspace lint policy, as a concrete copy rather than `workspace = true`:
-# this crate is dual-homed to crates.io, and the nightly publish-readiness
-# check builds it copied out of the workspace
-# (scripts/verify-publishable-crate.sh), where inheritance has nothing to
-# resolve against. The table must stay a verbatim mirror of [workspace.lints.*]
-# in the root Cargo.toml (which also carries the policy's rationale) —
-# tools/ci/check_lints_parity.py fails the `stable / clippy` gate on any
-# drift, so edit the root table and mirror it here in the same change. The
-# published copy is inert for consumers: registry dependencies build under
-# `--cap-lints allow`.
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
-
-[lints.clippy]
-unwrap_used = "deny"
-expect_used = "deny"
-unreachable = "deny"
-panic = "deny"
-todo = "deny"
-unimplemented = "deny"
-panic_in_result_fn = "deny"
-unchecked_time_subtraction = "deny"
-string_slice = "deny"
-as_conversions = "deny"
-arithmetic_side_effects = "deny"
-indexing_slicing = "deny"
-pedantic = { level = "deny", priority = -1 }
-nursery = { level = "deny", priority = -1 }
+[lints]
+workspace = true

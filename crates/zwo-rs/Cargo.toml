@@ -2,13 +2,7 @@
 name = "zwo-rs"
 version = "0.1.0"
 edition = "2021"
-# The workspace MSRV, spelled out rather than `rust-version.workspace = true`:
-# this crate is dual-homed to crates.io (ADR-010), and the nightly
-# publish-readiness check (docs/plans/archive/publish-readiness-checks.md) builds
-# it copied out of the workspace, on this toolchain with a
-# direct-minimal-versions lockfile. A workspace MSRV bump raises it in the same
-# change (docs/workspace.md, "MSRV").
-rust-version = "1.98.1"
+rust-version.workspace = true
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
 readme = "README.md"
@@ -26,14 +20,6 @@ categories = ["api-bindings", "hardware-support"]
 # package metadata above stays explicit (NOT `*.workspace = true`) so the crate
 # releases on its own cadence; shared *dependencies* inherit from the workspace
 # per AGENTS.md Rule 10 (`cargo publish` inlines their concrete versions).
-
-# Marks this crate (+ its nested FFI sub-crate) for the nightly publish-readiness
-# check (docs/plans/archive/publish-readiness-checks.md). See the qhyccd-rs marker for the
-# field semantics. needs-libclang = true: libzwo-sys's build script runs bindgen.
-[package.metadata.publish-readiness]
-sys-crate = "libzwo-sys"
-skip-link-env = "ZWO_SKIP_NATIVE_LINK"
-needs-libclang = true
 
 [features]
 # Default to the full device surface so a bare/external build behaves like the
@@ -69,31 +55,5 @@ rayon = { workspace = true, optional = true }
 mockall = { workspace = true }
 tempfile = { workspace = true }
 
-# The workspace lint policy, as a concrete copy rather than `workspace = true`:
-# this crate is dual-homed to crates.io, and the nightly publish-readiness
-# check builds it copied out of the workspace
-# (scripts/verify-publishable-crate.sh), where inheritance has nothing to
-# resolve against. The table must stay a verbatim mirror of [workspace.lints.*]
-# in the root Cargo.toml (which also carries the policy's rationale) —
-# tools/ci/check_lints_parity.py fails the `stable / clippy` gate on any
-# drift, so edit the root table and mirror it here in the same change. The
-# published copy is inert for consumers: registry dependencies build under
-# `--cap-lints allow`.
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
-
-[lints.clippy]
-unwrap_used = "deny"
-expect_used = "deny"
-unreachable = "deny"
-panic = "deny"
-todo = "deny"
-unimplemented = "deny"
-panic_in_result_fn = "deny"
-unchecked_time_subtraction = "deny"
-string_slice = "deny"
-as_conversions = "deny"
-arithmetic_side_effects = "deny"
-indexing_slicing = "deny"
-pedantic = { level = "deny", priority = -1 }
-nursery = { level = "deny", priority = -1 }
+[lints]
+workspace = true

@@ -29,12 +29,10 @@ mechanic dictates the publish **order** and the version-bump rules below.
 
 ## MSRV
 
-Both crates declare the **workspace MSRV** (`1.98.1`), spelled out as a concrete
-`rust-version` rather than `workspace = true`, because the publish-readiness check
-builds them copied out of the workspace. A change that raises the workspace MSRV
-raises both with it ([docs/workspace.md](../../docs/workspace.md#msrv)). The nightly
-publish-readiness check verifies the floor builds with minimal dependency versions.
-See [docs/plans/archive/publish-readiness-checks.md](../../docs/plans/archive/publish-readiness-checks.md).
+Both crates inherit the **workspace MSRV** (`rust-version.workspace = true`, see
+[docs/workspace.md](../../docs/workspace.md#msrv)); `cargo publish` writes the
+concrete value into the published manifest. The nightly `msrv` job in
+`check.yml` verifies it.
 
 ## Steps
 
@@ -46,11 +44,9 @@ verification build **links the real static SDK**.
 # 0. Preflight
 git status                      # must be clean
 bazel test //...                # build + test gate
-# Publish-readiness MUST be green for the crate being released — it verifies the
-# published-in-isolation guarantees (MSRV, direct-minimal-versions, semver,
-# docs.rs) that the in-workspace checks cannot. Trigger it and confirm it passes:
-#   gh workflow run publish-readiness.yml      # or rely on the last green nightly
-# A red run BLOCKS the release. See docs/plans/archive/publish-readiness-checks.md.
+# The version bump in step 1 must cover every API change since the last release:
+cargo semver-checks --package libqhyccd-sys
+cargo semver-checks --package qhyccd-rs
 
 # 1. Bump versions + changelogs
 #    - crates/qhyccd-rs/libqhyccd-sys/Cargo.toml : version = "0.1.5" (etc.)

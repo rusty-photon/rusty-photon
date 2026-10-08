@@ -583,7 +583,7 @@ provided per-run by the **Install ZWO SDK (sudo-free)** step
   re-running it is the catch-all fix.
 - `ZWO_SKIP_NATIVE_LINK` is **not** set on this job (the Pi must exercise the real
   ARM64 link; the skip flag is only for the sim-only x86 legs in
-  `test.yml`/`safety.yml`/`publish-readiness.yml`).
+  `test.yml`/`safety.yml`).
 
 ### `cargo build` fails with `cannot find -lSVBCameraSDK` / `-lusb-1.0` (compiling `libsvbony-sys`)
 
