@@ -50,12 +50,6 @@ Feature: Side of pier
       | 90.001  | West     |
       | 180.0   | West     |
 
-  Scenario: SideOfPier setter is not supported
-    Given a running star-adventurer service
-    When I connect the device
-    And I try to set SideOfPier to East
-    Then the operation should fail with not-implemented
-
   Scenario: DestinationSideOfPier predicts West for a valid northern-hemisphere target
     Given a star-adventurer service configured with site latitude 45.0 degrees
     And a running star-adventurer service

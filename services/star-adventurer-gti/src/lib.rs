@@ -49,7 +49,7 @@ pub mod transport;
 pub mod units;
 
 pub use config::{
-    load_config, ActiveZone, AlpacaServerConfig, ApPark, Config, CwExclusionZone, FlipPolicy,
+    load_config, ActiveZone, AlpacaServerConfig, ApPark, AutoFlip, Config, CwExclusionZone,
     MinAltitudeDegrees, MountConfig, RaPulseEdgeSteps, TrackingGuardMarginHours, TrackingRateName,
     TransportConfig, UdpConfig, UsbConfig,
 };

@@ -15,15 +15,14 @@
 //! hang off the same tick:
 //!
 //! - **Safety guard** (always on while the zone is active, independent
-//!   of [`crate::config::FlipPolicy::enabled`]): stop the mount (`:K1`)
+//!   of [`crate::config::AutoFlip::enabled`]): stop the mount (`:K1`)
 //!   before it can drift into the zone, clear the in-memory `Tracking`
 //!   flag to match, and emit a `warn!`. The guard does **not** pick a
 //!   pier side or flip; the operator (or higher-level automation)
 //!   decides what to do next.
-//! - **Auto-flip** (opt-in via
-//!   [`crate::config::FlipPolicy::auto_flip_during_tracking`], under
-//!   the `enabled` master switch): once `mech_HA` reaches the
-//!   configured meridian offset on the natural pier side, issue the
+//! - **Auto-flip** (opt-in via [`crate::config::AutoFlip::enabled`]):
+//!   once `mech_HA` reaches the configured meridian offset on the
+//!   natural pier side, issue the
 //!   same through-wrap flip slew an explicit `SetSideOfPier` would.
 //!   Tracking re-engages on the new pier side via the standard
 //!   slew-completion watcher. One attempt per meridian crossing; the
@@ -321,13 +320,11 @@ pub(super) async fn guard_loop_tick(
 pub(super) fn spawn_tracking_guard(device: MountDevice, polling_interval: Duration) {
     let zone = device.config.cw_exclusion_zone.bounds();
     let margin = device.config.tracking_guard_margin_hours.value();
-    let policy = device.config.flip_policy;
-    let offset_hours = policy.auto_flip_at_meridian_offset_hours;
-    // Auto-flip acts only under the flip_policy master switch. The
-    // finite check is defense-in-depth for construction paths that
+    let auto_flip = device.config.auto_flip;
+    let offset_hours = auto_flip.meridian_offset_hours;
+    // The finite check is defense-in-depth for construction paths that
     // bypass the config-load cross-field validation.
-    let auto_flip_armed =
-        policy.enabled && policy.auto_flip_during_tracking && offset_hours.is_finite();
+    let auto_flip_armed = auto_flip.enabled && offset_hours.is_finite();
     tokio::spawn(async move {
         let mut ticker = interval(polling_interval);
         // Skip the immediate first tick (matches the background poll

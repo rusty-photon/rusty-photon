@@ -12,7 +12,7 @@ Feature: Tracking-time exclusion-zone safety guard
   clears the in-memory Tracking flag to match, and warns, leaving the
   operator (or higher-level automation) to flip via SetSideOfPier, slew
   elsewhere, or park. It is the safety floor and runs whenever the zone
-  is active, independent of meridian-flip support.
+  is active, independent of auto-flip.
 
   Scenario: Tracking drifting into the exclusion zone stops the mount
     Given a star-adventurer service with the CW exclusion zone from 0.95 to 11.05 hours

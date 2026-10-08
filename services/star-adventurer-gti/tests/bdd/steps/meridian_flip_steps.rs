@@ -2,50 +2,15 @@
 //!
 //! Most pier-side and connection steps are shared with
 //! `side_of_pier_steps.rs` and `connection_steps.rs`; this file only
-//! adds the steps unique to the Phase 6 meridian-flip behaviour
-//! (`flip_policy` config seeds, `CanSetPierSide` read, parametric
-//! `SetSideOfPier` setter, abort step).
+//! adds the steps unique to the meridian-flip behaviour
+//! (`CanSetPierSide` read, parametric `SetSideOfPier` setter, abort
+//! step).
 
 #![allow(unused_variables)]
 
 use crate::world::StarAdventurerWorld;
 use ascom_alpaca::api::telescope::PierSide;
-use cucumber::{given, then, when};
-use std::time::Duration;
-
-#[given("a star-adventurer service configured with flip_policy enabled")]
-async fn configured_with_flip_policy_enabled(world: &mut StarAdventurerWorld) {
-    world.config_mut().mount.flip_policy.enabled = true;
-    world.start_service().await;
-}
-
-#[given(
-    expr = "a star-adventurer service configured with flip_policy enabled and a {int} second post-slew settle"
-)]
-async fn configured_with_flip_policy_and_post_slew_settle(
-    world: &mut StarAdventurerWorld,
-    secs: u64,
-) {
-    // The long settle pins `Slewing == true` open after the flip slew's
-    // motion completes, so a scenario asserting in-flight visibility can't
-    // race the completion watcher on a loaded runner. The settle never
-    // actually elapses — the scenario tears the service down first.
-    world.config_mut().mount.flip_policy.enabled = true;
-    world.config_mut().mount.settle_after_slew = Duration::from_secs(secs);
-    world.start_service().await;
-}
-
-#[given(
-    expr = "a star-adventurer service configured with flip_policy enabled and site latitude {float} degrees"
-)]
-async fn configured_with_flip_policy_enabled_and_site_latitude(
-    world: &mut StarAdventurerWorld,
-    deg: f64,
-) {
-    world.config_mut().mount.flip_policy.enabled = true;
-    world.config_mut().mount.site_latitude_deg = deg;
-    world.start_service().await;
-}
+use cucumber::{then, when};
 
 #[when(expr = "I set SideOfPier to {word}")]
 async fn set_side_of_pier_to(world: &mut StarAdventurerWorld, label: String) {

@@ -21,7 +21,7 @@ use skywatcher_motor_protocol::Axis;
 use tokio::sync::RwLock;
 
 use crate::config::{
-    ActiveZone, Config, CwExclusionZone, FlipPolicy, MinAltitudeDegrees, RaPulseEdgeSteps,
+    ActiveZone, AutoFlip, Config, CwExclusionZone, MinAltitudeDegrees, RaPulseEdgeSteps,
     TrackingGuardMarginHours,
 };
 use crate::coordinates::{
@@ -397,8 +397,7 @@ async fn tracking_guard_tick_leaves_tracking_set_when_stop_fails() {
     );
 }
 
-/// Build a device with auto-flip armed (`flip_policy` enabled +
-/// `auto_flip_during_tracking`) at the given meridian offset, the CW
+/// Build a device with auto-flip armed at the given meridian offset, the CW
 /// exclusion zone disabled, and the altitude floor neutralised (the
 /// flip target's apparent altitude depends on wallclock LST). The
 /// session is established directly — no background watcher; these
@@ -411,10 +410,9 @@ async fn auto_flip_device(
     let mut cfg = base_config();
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
-    cfg.mount.flip_policy = FlipPolicy {
+    cfg.mount.auto_flip = AutoFlip {
         enabled: true,
-        auto_flip_during_tracking: true,
-        auto_flip_at_meridian_offset_hours: offset_hours,
+        meridian_offset_hours: offset_hours,
     };
     let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
@@ -595,10 +593,9 @@ async fn guard_loop_tick_prefers_the_guard_inside_the_band() {
     let mut cfg = base_config();
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Active(ActiveZone::new(0.95, 11.05));
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
-    cfg.mount.flip_policy = FlipPolicy {
+    cfg.mount.auto_flip = AutoFlip {
         enabled: true,
-        auto_flip_during_tracking: true,
-        auto_flip_at_meridian_offset_hours: 0.0,
+        meridian_offset_hours: 0.0,
     };
     let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
@@ -814,8 +811,8 @@ fn device_with_settle(settle_after_slew: Duration) -> MountDevice {
     // altitude — depends on the wallclock LST and would
     // intermittently trip the envelope gates. Neutralise both: the
     // CW-exclusion-zone behaviour is covered separately by
-    // [`fast_settle_connected_narrow_envelope`], the altitude floor
-    // by [`fast_settle_connected_with_altitude_floor`].
+    // [`both_sides_blocked_zone`], the altitude floor by
+    // [`fast_settle_connected_with_altitude_floor`].
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     // Pin the park target to the mock's start position (0, 0) so
@@ -870,32 +867,6 @@ async fn wait_for_at_park(d: &MountDevice) {
 /// runtime is torn down first.
 async fn slow_settle_connected() -> MountDevice {
     let d = device_with_settle(Duration::from_mins(10));
-    d.set_connected(true).await.unwrap();
-    d
-}
-
-/// Like `fast_settle_connected`, but with a narrow CW exclusion zone
-/// so the safety-gate tests can land target coords that are clearly
-/// inside it without first needing to push past the `GTi` default
-/// `(0.95, 11.05)`.
-async fn fast_settle_connected_narrow_envelope() -> MountDevice {
-    let mut cfg = base_config();
-    if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
-        usb.polling_interval = Duration::from_millis(20);
-    }
-    cfg.mount.settle_after_slew = Duration::from_millis(0);
-    // Narrow CW exclusion zone covering `mech_HA ∈ [0.5, 1.5] h` so a
-    // target 1 h past meridian on the natural side is inside it.
-    // Neutralise the altitude floor so these tests exercise the CW
-    // gate in isolation (the floor has its own device builder below).
-    cfg.mount.cw_exclusion_zone = CwExclusionZone::Active(ActiveZone::new(0.5, 1.5));
-    cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
-    // Pin the park target to (0, 0) — see `fast_settle_device` for why
-    // (keeps `park()` instant despite the `preferred_ap_park` default).
-    cfg.mount.park_ra_ticks = Some(0);
-    cfg.mount.park_dec_ticks = Some(0);
-    let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
-    let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
     d
 }
@@ -981,21 +952,27 @@ async fn envelope_check_negative_floor_permits_below_horizon_target() {
     d.slew_to_coordinates_async(target_ra, -40.0).await.unwrap();
 }
 
-#[tokio::test]
-async fn slew_async_refuses_ra_target_in_binding_zone() {
-    // Binding zone covers `mech_HA ∈ [0.5, 1.5] h`. Target RA =
-    // LST − 1 puts `mech_HA = LST − (LST − 1) = +1 h` — squarely
-    // in the middle of the zone, so the slew must be rejected
-    // with `INVALID_VALUE` before any wire motion.
-    let d = fast_settle_connected_narrow_envelope().await;
+#[tokio::test(start_paused = true)]
+async fn slew_async_refuses_a_target_the_zone_covers_on_both_sides() {
+    // Both encoder solutions for the target lie inside the zone, so
+    // neither pier side can reach it and the slew is rejected with
+    // `INVALID_VALUE` before any wire motion.
+    let (d, mock) =
+        pier1_like_device_at(both_sides_blocked_zone(), CLEAR_OF_THAT_ZONE_RA_TICKS).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let from = mock.lock().await.command_log.len();
     let lst = d.sidereal_time().await.unwrap();
-    let target = (lst - 1.0).rem_euclid(24.0);
+    let target = (lst - BOTH_SIDES_BLOCKED_HA).rem_euclid(24.0);
     let err = d.slew_to_coordinates_async(target, 0.0).await.unwrap_err();
     assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
     assert!(
         err.message.contains("CW exclusion zone"),
         "error message must call out the CW exclusion zone: {}",
         err.message
+    );
+    assert_eq!(
+        setter_frames_since(&*mock.lock().await, from),
+        Vec::<String>::new()
     );
 }
 
@@ -4748,7 +4725,7 @@ fn canonical_path_crosses_pole_south_detects_k_minus_3_replica_at_negative_wire_
 
 // ---------- Phase 6: SetSideOfPier + CanSetPierSide ----------
 
-async fn flip_enabled_device() -> MountDevice {
+async fn flip_test_device() -> MountDevice {
     let mut cfg = base_config();
     if let crate::config::TransportConfig::Usb(usb) = &mut cfg.transport {
         usb.polling_interval = Duration::from_millis(20);
@@ -4757,53 +4734,39 @@ async fn flip_enabled_device() -> MountDevice {
     // Disable the CW-exclusion zone check for this test.
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
-    cfg.mount.flip_policy.enabled = true;
     let manager = MountManager::new(&cfg, Arc::new(MockTransportFactory));
     MountDevice::new(cfg.mount, manager)
 }
 
-async fn flip_enabled_connected_device() -> MountDevice {
-    let d = flip_enabled_device().await;
+async fn flip_test_connected_device() -> MountDevice {
+    let d = flip_test_device().await;
     d.set_connected(true).await.unwrap();
     d
 }
 
 #[tokio::test]
-async fn can_set_pier_side_defaults_to_false() {
-    let d = fast_settle_connected().await;
-    assert!(!d.can_set_pier_side().await.unwrap());
-}
-
-#[tokio::test]
-async fn can_set_pier_side_is_true_when_flip_policy_enabled() {
-    let d = flip_enabled_connected_device().await;
+async fn can_set_pier_side_is_true() {
+    let d = device();
     assert!(d.can_set_pier_side().await.unwrap());
 }
 
 #[tokio::test]
-async fn set_side_of_pier_returns_not_implemented_when_flip_policy_disabled() {
-    let d = fast_settle_connected().await;
-    let err = d.set_side_of_pier(PierSide::East).await.unwrap_err();
-    assert_eq!(err.code, ASCOMErrorCode::NOT_IMPLEMENTED);
-}
-
-#[tokio::test]
 async fn set_side_of_pier_rejects_unknown_with_invalid_value() {
-    let d = flip_enabled_connected_device().await;
+    let d = flip_test_connected_device().await;
     let err = d.set_side_of_pier(PierSide::Unknown).await.unwrap_err();
     assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
 }
 
 #[tokio::test]
 async fn set_side_of_pier_refuses_when_not_connected() {
-    let d = flip_enabled_device().await;
+    let d = flip_test_device().await;
     let err = d.set_side_of_pier(PierSide::East).await.unwrap_err();
     assert_eq!(err.code, ASCOMError::NOT_CONNECTED.code);
 }
 
 #[tokio::test]
 async fn set_side_of_pier_refuses_while_parked() {
-    let d = flip_enabled_connected_device().await;
+    let d = flip_test_connected_device().await;
     // Park puts AtPark = true; SetSideOfPier must refuse with
     // INVALID_WHILE_PARKED before reaching the slew planner.
     d.state.write().await.at_park = true;
@@ -4813,7 +4776,7 @@ async fn set_side_of_pier_refuses_while_parked() {
 
 #[tokio::test]
 async fn set_side_of_pier_refuses_while_slew_in_progress() {
-    let d = flip_enabled_connected_device().await;
+    let d = flip_test_connected_device().await;
     d.slew_in_progress.try_claim().unwrap();
     let err = d.set_side_of_pier(PierSide::East).await.unwrap_err();
     assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
@@ -4821,7 +4784,7 @@ async fn set_side_of_pier_refuses_while_slew_in_progress() {
 
 #[tokio::test]
 async fn set_side_of_pier_to_current_side_succeeds_as_noop() {
-    let d = flip_enabled_connected_device().await;
+    let d = flip_test_connected_device().await;
     // Mock starts with Dec encoder = 0 (within ±90°), site latitude
     // = 0° (northern convention since `>= 0`), so current side is
     // pierWest. SetSideOfPier(West) is a no-op.
@@ -4832,7 +4795,7 @@ async fn set_side_of_pier_to_current_side_succeeds_as_noop() {
 
 #[tokio::test]
 async fn set_side_of_pier_to_opposite_side_starts_a_flip_slew() {
-    let d = flip_enabled_connected_device().await;
+    let d = flip_test_connected_device().await;
     d.set_side_of_pier(PierSide::East).await.unwrap();
     // Slew was issued — the state should now show slew_in_progress
     // until the watcher clears it. The watcher may have already
@@ -4855,7 +4818,7 @@ async fn set_side_of_pier_keeps_the_pointing_a_sync_ahead_of_it_wrote() {
     // the frame before the flip can claim the slot. The flip must keep
     // the pointing the sync set: flipping about the pointing read before
     // the sync would carry the OTA back by the sync's correction.
-    let d = flip_enabled_connected_device().await;
+    let d = flip_test_connected_device().await;
     let lst = d.sidereal_time().await.unwrap();
     let (synced_ra, synced_dec) = ((lst + 1.0).rem_euclid(24.0), 20.0);
     let held = d.axis_ownership.lock().await;
@@ -5138,7 +5101,7 @@ fn pre_flip_side_for_latitude_picks_west_in_north_and_east_in_south() {
     // east of horizontal), Southern observers have the opposite. The
     // helper is consulted from `plan_slew`,
     // `destination_side_of_pier`, and the slew watcher's pickup loop,
-    // so both branches are load-bearing for the flip-policy logic.
+    // so both branches are load-bearing for the pier-side logic.
     assert_eq!(pre_flip_side_for_latitude(47.6), PierSide::West);
     assert_eq!(pre_flip_side_for_latitude(0.0), PierSide::West);
     assert_eq!(pre_flip_side_for_latitude(-33.0), PierSide::East);
@@ -5917,13 +5880,14 @@ async fn an_ambiguous_restart_is_stopped_before_tracking_reads_false() {
 
 #[tokio::test(start_paused = true)]
 async fn a_refused_slew_leaves_an_in_flight_pulse_to_end_itself() {
-    // A slew refused by its path check after winning the reservation
-    // must not have taken the axes from a pulse: the pulse's watcher
-    // still ends it, rather than Dec turning on at the guide rate.
+    // A slew refused by its plan after winning the reservation must not
+    // have taken the axes from a pulse: the pulse's watcher still ends
+    // it, rather than Dec turning on at the guide rate.
     let factory = CapturingMockFactory::new();
     let mock = Arc::clone(&factory.state);
+    mock.lock().await.ra.position_ticks = CLEAR_OF_THAT_ZONE_RA_TICKS;
     let mut cfg = base_config();
-    cfg.mount.cw_exclusion_zone = CwExclusionZone::Active(ActiveZone::new(0.95, 11.05));
+    cfg.mount.cw_exclusion_zone = both_sides_blocked_zone();
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
     cfg.mount.ra_pulse_edge_steps = NO_TRIM;
     let manager = MountManager::new(&cfg, Arc::new(factory));
@@ -5935,10 +5899,8 @@ async fn a_refused_slew_leaves_an_in_flight_pulse_to_end_itself() {
     d.pulse_guide(GuideDirection::North, Duration::from_secs(3))
         .await
         .unwrap();
-    // mech_HA 11.5 h is outside the zone, but the only way there from
-    // mech_HA 0 on this side crosses it.
     let lst = d.sidereal_time().await.unwrap();
-    let target_ra = (lst - 11.5).rem_euclid(24.0);
+    let target_ra = (lst - BOTH_SIDES_BLOCKED_HA).rem_euclid(24.0);
     d.slew_to_coordinates_async(target_ra, 0.0)
         .await
         .unwrap_err();
@@ -6439,10 +6401,17 @@ const PIER1_DEC_COAST: StopCoast = StopCoast {
 /// pier1 `GTi`'s do. The altitude floor is open and the CW exclusion
 /// zone is `zone`.
 async fn pier1_like_device(zone: CwExclusionZone) -> (MountDevice, SharedMock) {
+    pier1_like_device_at(zone, 0).await
+}
+
+/// [`pier1_like_device`] with the RA encoder at `ra_ticks` when it
+/// connects.
+async fn pier1_like_device_at(zone: CwExclusionZone, ra_ticks: i32) -> (MountDevice, SharedMock) {
     let factory = CapturingMockFactory::new();
     let mock = Arc::clone(&factory.state);
     {
         let mut m = mock.lock().await;
+        m.ra.position_ticks = ra_ticks;
         m.ra.stop_coast = Some(PIER1_RA_COAST);
         m.dec.stop_coast = Some(PIER1_DEC_COAST);
     }
@@ -6454,6 +6423,21 @@ async fn pier1_like_device(zone: CwExclusionZone) -> (MountDevice, SharedMock) {
     d.set_connected(true).await.unwrap();
     (d, mock)
 }
+
+/// A zone that covers both encoder solutions for a target at hour
+/// angle [`BOTH_SIDES_BLOCKED_HA`] — `mech_HA` 11.9 h and its flip at
+/// −0.1 h — so no pier side can reach it. A refusal needs a zone like
+/// this: under the shipped one some side always reaches a target.
+const fn both_sides_blocked_zone() -> CwExclusionZone {
+    CwExclusionZone::Active(ActiveZone::new(-0.2, 11.95))
+}
+
+/// See [`both_sides_blocked_zone`].
+const BOTH_SIDES_BLOCKED_HA: f64 = 11.9;
+
+/// `mech_HA` −0.5 h: clear of [`both_sides_blocked_zone`] and of the
+/// tracking guard's band around it, so a tracking mount stays put.
+const CLEAR_OF_THAT_ZONE_RA_TICKS: i32 = -75_600;
 
 /// Put `axis` in the middle of a goto in `direction` at `ticks`, as a
 /// client sees it during a slew. The goto is slow and its target far
@@ -6555,24 +6539,25 @@ async fn a_slew_starts_neither_axis_before_both_have_stopped() {
 
 #[tokio::test(start_paused = true)]
 async fn a_slew_refused_from_where_the_axes_came_to_rest_leaves_them_stopped_and_tracking_off() {
-    // RA is mid-goto CW at mech_HA -0.5 h, with Tracking on, and the
-    // slew's own `:K1` sets it coasting on to about -0.32 h. From there
-    // the short way to mech_HA 11.6 h runs through the CW exclusion zone.
-    let (d, mock) = pier1_like_device(CwExclusionZone::Active(ActiveZone::new(0.95, 11.05))).await;
+    // RA is mid-goto CW at mech_HA -0.5 h, with Tracking on, so the
+    // slew skips its snapshot plan; its own `:K1` sets RA coasting on
+    // to about -0.32 h, and the plan from there is refused.
+    let (d, mock) =
+        pier1_like_device_at(both_sides_blocked_zone(), CLEAR_OF_THAT_ZONE_RA_TICKS).await;
     d.set_tracking(true).await.unwrap();
     mid_goto(
         &mut mock.lock().await.ra,
-        -75_600,
+        CLEAR_OF_THAT_ZONE_RA_TICKS,
         skywatcher_motor_protocol::Direction::Cw,
     );
     tokio::time::sleep(Duration::from_secs(1)).await;
     let from = mock.lock().await.command_log.len();
     let lst = d.sidereal_time().await.unwrap();
     let err = d
-        .slew_to_coordinates_async((lst - 11.6).rem_euclid(24.0), 0.0)
+        .slew_to_coordinates_async((lst - BOTH_SIDES_BLOCKED_HA).rem_euclid(24.0), 0.0)
         .await
         .unwrap_err();
-    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
     assert!(
         err.message.contains("came to rest") && err.message.contains("CW exclusion zone"),
         "unexpected refusal: {}",
@@ -6649,10 +6634,6 @@ async fn a_slew_takes_its_pier_side_from_where_the_axes_came_to_rest() {
     let mut cfg = base_config();
     cfg.mount.cw_exclusion_zone = CwExclusionZone::Disabled;
     cfg.mount.min_altitude_degrees = MinAltitudeDegrees::new(-90.0);
-    cfg.mount.flip_policy = FlipPolicy {
-        enabled: true,
-        ..FlipPolicy::default()
-    };
     let manager = MountManager::new(&cfg, Arc::new(factory));
     let d = MountDevice::new(cfg.mount, manager);
     d.set_connected(true).await.unwrap();
@@ -6953,20 +6934,19 @@ async fn an_aborted_slews_watcher_leaves_the_next_slew_alone() {
 
 #[tokio::test(start_paused = true)]
 async fn a_slew_refused_from_the_snapshot_moves_nothing_and_leaves_tracking_on() {
-    let (d, mock) = pier1_like_device(CwExclusionZone::Active(ActiveZone::new(0.95, 11.05))).await;
+    let (d, mock) =
+        pier1_like_device_at(both_sides_blocked_zone(), CLEAR_OF_THAT_ZONE_RA_TICKS).await;
     d.set_tracking(true).await.unwrap();
     // Let the poll read the axes' status: until it has, the slew treats
     // them as possibly coasting and skips its snapshot plan.
     tokio::time::sleep(Duration::from_secs(1)).await;
     let from = mock.lock().await.command_log.len();
-    // mech_HA 11.5 h is outside the zone, but the only way there from
-    // mech_HA 0 on this side crosses it.
     let lst = d.sidereal_time().await.unwrap();
     let err = d
-        .slew_to_coordinates_async((lst - 11.5).rem_euclid(24.0), 0.0)
+        .slew_to_coordinates_async((lst - BOTH_SIDES_BLOCKED_HA).rem_euclid(24.0), 0.0)
         .await
         .unwrap_err();
-    assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+    assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
     assert_eq!(
         setter_frames_since(&*mock.lock().await, from),
         Vec::<String>::new()

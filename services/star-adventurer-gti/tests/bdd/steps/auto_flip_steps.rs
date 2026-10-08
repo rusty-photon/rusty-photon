@@ -13,19 +13,9 @@ use cucumber::{given, then};
 
 #[given(expr = "auto-flip during tracking at meridian offset {float} hours")]
 async fn auto_flip_at_offset(world: &mut StarAdventurerWorld, offset_hours: f64) {
-    // Auto-flip only acts under the flip_policy master switch, so this
-    // step enables both; the master-switch-off case has its own step.
-    let policy = &mut world.config_mut().mount.flip_policy;
-    policy.enabled = true;
-    policy.auto_flip_during_tracking = true;
-    policy.auto_flip_at_meridian_offset_hours = offset_hours;
-}
-
-#[given("auto-flip during tracking configured without flip support enabled")]
-async fn auto_flip_without_flip_support(world: &mut StarAdventurerWorld) {
-    let policy = &mut world.config_mut().mount.flip_policy;
-    policy.enabled = false;
-    policy.auto_flip_during_tracking = true;
+    let auto_flip = &mut world.config_mut().mount.auto_flip;
+    auto_flip.enabled = true;
+    auto_flip.meridian_offset_hours = offset_hours;
 }
 
 #[then(expr = "the mount should be tracking on pier side {word} within {int} seconds")]

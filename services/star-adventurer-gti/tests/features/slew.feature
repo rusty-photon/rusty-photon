@@ -29,8 +29,13 @@ Feature: Asynchronous slewing
   scenarios that care about a specific mech_HA address their targets
   by hour angle instead.
 
-  Scenario: A target inside the CW exclusion zone is refused before any motion
-    Given a running star-adventurer service
+  Scenario: A target inside the CW exclusion zone from both pier sides is refused before any motion
+    # Both solutions for HA +3 -- mech_HA +3 and its flip at -9 -- lie
+    # inside this zone, while the mount stands clear of it at +5. With
+    # the shipped zone a flip always reaches one of them.
+    Given a star-adventurer service with the CW exclusion zone from -9.5 to 3.5 hours
+    And the RA encoder is at mechanical HA 5.0 hours
+    And a running star-adventurer service
     When I connect the device
     And I try to slew asynchronously to a target at hour angle 3.0 hours and Dec 30.0 degrees
     Then the operation should fail with invalid-value

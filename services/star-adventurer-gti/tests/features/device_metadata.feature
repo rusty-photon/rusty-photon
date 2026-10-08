@@ -52,7 +52,7 @@ Feature: Device metadata
       | CanPark                     | true         |
       | CanUnpark                   | true         |
       | CanSetPark                  | true         |
-      | CanSetPierSide              | false        |
+      | CanSetPierSide              | true         |
       | DoesRefraction              | false        |
 
   Scenario: Tracking rates list contains only sidereal

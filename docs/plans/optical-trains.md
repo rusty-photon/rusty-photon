@@ -78,7 +78,7 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
   much as the sweep does).
 - Doctor cross-check for driver-internal auto-flip: warn when rp
   orchestrates a star-adventurer-gti mount whose driver config enables
-  `flip_policy.auto_flip_during_tracking` (incompatible with the T3 motion
+  `auto_flip.enabled` (incompatible with the T3 motion
   gate — see rp.md § Mount Motion Gate).
 
 ## Decisions (fixed — settled interactively 2026-07-18)
@@ -310,7 +310,7 @@ queued exclusives run FIFO. Guide pulses bypass the gate. Full contract
 (exemptions, the `mount_motion_pending` event, transitively bounded waits)
 in rp.md § Mount Motion Gate.
 
-Settled in the T3 design pass — the GTi's `auto_flip_during_tracking`
+Settled in the T3 design pass — the GTi's `auto_flip.enabled`
 ([#510](https://github.com/rusty-photon/rusty-photon/pull/510)) flips inside
 the driver, invisible to rp's gate: **prevention over detection**. The gate
 presumes rp is the sole source of non-guiding mount motion, so
