@@ -154,6 +154,8 @@ wrapper's dependency resolves on crates.io.
 
 1. Run `cargo semver-checks --package libzwo-sys` and `cargo semver-checks
    --package zwo-rs`; the version bump in step 2 must cover what they report.
+   Skip this for a crate's first publish: with no crates.io baseline there is
+   nothing to compare against.
 2. Bump `version` in `crates/zwo-rs/libzwo-sys/Cargo.toml` and/or
    `crates/zwo-rs/Cargo.toml` as needed; update each crate's `CHANGELOG.md`.
 3. If the wrapper's `version` changed, bump the `libzwo-sys = { version = "…" }`

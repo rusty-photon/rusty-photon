@@ -17,9 +17,11 @@ categories = ["api-bindings", "hardware-support"]
 # Vendored into the rusty-photon workspace as a first-party, dual-homed member
 # (ADR-010 / docs/plans/vendor-zwo-rs.md): the monorepo is the canonical
 # development home, and this crate is still published to crates.io from here. The
-# package metadata above stays explicit (NOT `*.workspace = true`) so the crate
-# releases on its own cadence; shared *dependencies* inherit from the workspace
-# per AGENTS.md Rule 10 (`cargo publish` inlines their concrete versions).
+# package identity metadata above (version, edition, license, ...) stays explicit
+# (NOT `*.workspace = true`) so the crate releases on its own cadence. Its
+# `rust-version` and `[lints]` follow the workspace, and shared *dependencies*
+# inherit from it per AGENTS.md Rule 10; `cargo publish` inlines the concrete
+# values of all three.
 
 [features]
 # Default to the full device surface so a bare/external build behaves like the

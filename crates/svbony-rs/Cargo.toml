@@ -9,7 +9,8 @@ readme = "README.md"
 # Canonical development home is the rusty-photon monorepo, vendored
 # first-party from day one (no external-repo detour, unlike zwo-rs's
 # original history — see docs/plans/archive/svbony-camera.md "The Rust crate gap").
-# Still dual-homed: published to crates.io from crates/svbony-rs.
+# Still dual-homed: published to crates.io from crates/svbony-rs (release
+# runbook: RELEASING.md).
 repository = "https://github.com/rusty-photon/rusty-photon"
 documentation = "https://docs.rs/svbony-rs"
 homepage = "https://github.com/rusty-photon/rusty-photon"
