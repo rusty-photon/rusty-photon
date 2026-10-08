@@ -1107,6 +1107,11 @@ mod tests {
         s.stop(t0);
         s.advance_tracking(t0, 16_000_000, 1);
         s.advance_tracking(t0 + COAST.duration, 16_000_000, 1);
+        // Before the coast is applied, so it cannot overwrite a move.
+        assert_eq!(
+            s.position_ticks, 1_000,
+            "the integrator moved a coasting axis"
+        );
         s.advance_coast(t0 + COAST.duration);
         assert_eq!(s.position_ticks, 1_000 + 30_000);
     }
