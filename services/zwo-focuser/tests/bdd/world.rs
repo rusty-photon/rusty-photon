@@ -23,8 +23,10 @@ pub struct FocuserWorld {
     pub focuser: Option<Arc<dyn Focuser>>,
     pub temp_dir: Option<TempDir>,
 
-    // Config knob set by a Given step before the service starts.
+    // Config knobs set by a Given step before the service starts.
     pub empty_backend: bool,
+    /// While this file exists the simulated EAF is off the bus (C5).
+    pub departure_file: Option<std::path::PathBuf>,
 
     // Result stashes ("When does, Then asserts").
     pub last_error_code: Option<u16>,
@@ -76,10 +78,7 @@ impl FocuserWorld {
             // line on stdout by ServiceHandle.
             "server": { "port": 0 },
         });
-        let dir = self
-            .temp_dir
-            .get_or_insert_with(|| TempDir::new().expect("temp dir"));
-        let path = dir.path().join("zwo-focuser.json");
+        let path = self.scratch_dir().join("zwo-focuser.json");
         std::fs::write(
             &path,
             serde_json::to_string_pretty(&config).expect("serialize config"),
@@ -95,6 +94,18 @@ impl FocuserWorld {
             ServiceHandle::start_with_args(
                 env!("CARGO_PKG_NAME"),
                 &["--config", &config_path, "--simulation-empty"],
+            )
+            .await
+        } else if let Some(departure) = &self.departure_file {
+            let departure = departure.to_str().expect("utf8 departure path");
+            ServiceHandle::start_with_args(
+                env!("CARGO_PKG_NAME"),
+                &[
+                    "--config",
+                    &config_path,
+                    "--simulation-departure-file",
+                    departure,
+                ],
             )
             .await
         } else {
@@ -137,6 +148,18 @@ impl FocuserWorld {
             self.empty_backend,
             "zwo-focuser did not register a Focuser device within 20s"
         );
+    }
+
+    /// The scenario's scratch directory, created on first use under Bazel's
+    /// per-action `TEST_TMPDIR` when there is one (testing.md §5.1): the config
+    /// and the departure file live here, read by the service under test.
+    pub fn scratch_dir(&mut self) -> std::path::PathBuf {
+        self.temp_dir
+            .get_or_insert_with(|| {
+                bdd_infra::scratch::new_dir("zwo-focuser-bdd-").expect("scratch dir")
+            })
+            .path()
+            .to_path_buf()
     }
 
     pub fn focuser(&self) -> Arc<dyn Focuser> {

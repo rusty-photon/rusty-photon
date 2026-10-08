@@ -1059,8 +1059,8 @@ one core at load average 65, see "Real-hardware validation").
   afresh, so a client that sees `Connected == false` and reconnects — rp's
   supervisor does exactly that — gets either a working camera or C2's
   failure, never the lost session back. Which of these a `Connected` write
-  makes is `rusty-photon-camera-core`'s `connected_transition`, shared with
-  qhy-camera and zwo-camera. The release is
+  makes is `rusty-photon-driver`'s `connected_transition`, shared with
+  zwo-camera and zwo-focuser. The release is
   decided, and made, under C7's lifecycle lock, so of two clients reconnecting
   a departed camera at once the second finds the first's fresh session and
   leaves it alone. `Connected` reads the lost mark before the open flag, which

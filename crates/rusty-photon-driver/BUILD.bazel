@@ -40,3 +40,11 @@ rust_test(
         normal_dev = True,
     ),
 )
+
+# No rust_doc_test here. On Windows this crate's rustdoc arguments are long
+# enough that Bazel spills them into the `.rustdoc_opt_params` file (bazel.yml's
+# "Report doc-test argument routing" step reports it SPILLED), and the doc-test
+# runner's path resolver (patch 3 in MODULE.bazel) never reads that file, so
+# link.exe is handed a tree-relative libstd path it cannot open (LNK1181). The
+# one runnable example, `connected_transition`'s, runs in the nightly
+# `cargo test --doc`, and the unit tests pin every row of its table.

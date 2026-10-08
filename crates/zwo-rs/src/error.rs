@@ -25,6 +25,17 @@ pub enum Error {
     /// An EAF focuser SDK call returned a non-success code.
     #[error("EAF focuser SDK error: {0}")]
     Eaf(#[from] EafError),
+    /// The EAF focuser SDK cannot write its own log, so it was not called. On
+    /// Linux it aborts the whole process at its first call when it cannot.
+    #[error(
+        "the EAF focuser SDK cannot write its log in {dir}, and would abort this process at its first call: {reason}"
+    )]
+    EafLog {
+        /// The directory the SDK logs to.
+        dir: String,
+        /// What refused the log, and what to do about it.
+        reason: String,
+    },
 }
 
 /// ASI camera SDK error codes (`ASI_ERROR_CODE`), mapped from the raw `int`.
@@ -267,6 +278,27 @@ impl EafError {
             11 => Self::InvalidLength,
             other => Self::Unknown(other),
         }
+    }
+
+    /// Whether this answer, given to a call on an **open** focuser, means the
+    /// focuser has left the bus.
+    ///
+    /// Measured on Linux with EAF SDK 1.7.7 (rusty-photon issue #1431): from
+    /// the moment an open EAF leaves, every call that needs its session
+    /// answers [`Self::Removed`]. Once a rescan (`EAFGetNum`) has run, its ID
+    /// answers [`Self::InvalidId`], or [`Self::Closed`] when the EAF has come
+    /// back and been listed again under the same ID, which then names a
+    /// fresh, unopened entry. All three mean the session's ID no longer names
+    /// a focuser it holds.
+    ///
+    /// Do not apply it to a failed **`EAFOpen`**. There, [`Self::Removed`]
+    /// usually means the EAF is on the bus but its `/dev/hidraw*` node is not
+    /// accessible, which is a permissions problem, not a departure. Nor to a
+    /// call on a focuser that was never opened, where [`Self::Closed`] means
+    /// just that.
+    #[must_use]
+    pub const fn left_the_bus(self) -> bool {
+        matches!(self, Self::Removed | Self::InvalidId | Self::Closed)
     }
 }
 

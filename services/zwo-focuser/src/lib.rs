@@ -83,16 +83,19 @@ use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 use zwo_rs::FocuserInfo;
 
-use crate::backend::{FocuserHandle, ZwoFocuserHandle};
+use crate::backend::{FocuserHandle, HeldFocusers, ZwoFocuserHandle};
 
 /// One EAF discovered at enumeration: its index, [`FocuserInfo`], the working
 /// travel limit (`EAFGetMaxStep`), the bare SDK `serial` (the key for
-/// `devices` config overrides), and the serial-derived ASCOM `UniqueID`.
+/// `devices` config overrides; `noserial-{index}` without one), the
+/// `hardware_serial` an open matches the EAF by (C5; `None` without one), and
+/// the serial-derived ASCOM `UniqueID`.
 struct EnumeratedFocuser {
     index: usize,
     info: FocuserInfo,
     max_step: u32,
     serial: String,
+    hardware_serial: Option<String>,
     unique_id: String,
 }
 
@@ -105,6 +108,10 @@ pub struct ServerBuilder {
     reload: Option<ReloadSignal>,
     /// Register no focusers (the test-only zero-focuser startup path, C0).
     force_empty: bool,
+    /// Test-only: while this file exists the simulated EAF is off the bus
+    /// (C5). See [`Self::with_departure_file`].
+    #[cfg(feature = "simulation")]
+    departure_file: Option<PathBuf>,
 }
 
 impl ServerBuilder {
@@ -146,6 +153,31 @@ impl ServerBuilder {
         self
     }
 
+    /// Test-only: give every registered focuser's SDK `zwo-rs`'s departure
+    /// file, so the simulated EAF leaves the bus while `path` exists — the
+    /// path exercising an EAF that loses its cable or power while connected
+    /// (contract C5).
+    #[cfg(feature = "simulation")]
+    #[must_use]
+    pub fn with_departure_file(mut self, path: Option<PathBuf>) -> Self {
+        self.departure_file = path;
+        self
+    }
+
+    /// A fresh SDK handle, carrying the departure file in a simulation build.
+    fn sdk(&self) -> Result<zwo_rs::Sdk, zwo_rs::Error> {
+        let sdk = zwo_rs::Sdk::new()?;
+        #[cfg(feature = "simulation")]
+        let sdk = match &self.departure_file {
+            Some(path) => sdk.with_departure_file(path),
+            None => sdk,
+        };
+        // Only the simulation build reads the builder here.
+        #[cfg(not(feature = "simulation"))]
+        let _ = self;
+        Ok(sdk)
+    }
+
     /// Enumerate the connected EAFs, register each as an ASCOM device, and
     /// bind the Alpaca listener.
     ///
@@ -159,20 +191,25 @@ impl ServerBuilder {
         let focusers = if self.force_empty {
             Vec::new()
         } else {
-            enumerate_focusers().await?
+            enumerate_focusers(self.sdk()?).await?
         };
         if focusers.is_empty() {
             warn!("no ZWO EAFs discovered; starting with no Focuser devices");
         }
 
+        // One set for every device: an open looking for its EAF skips the
+        // ones the others hold (C5).
+        let held = HeldFocusers::default();
         let mut server = Server::new(CargoServerInfo!());
         for eaf in &focusers {
             let handle: Arc<dyn FocuserHandle> = Arc::new(ZwoFocuserHandle::new(
-                zwo_rs::Sdk::new()?,
+                self.sdk()?,
                 eaf.index,
                 eaf.info.clone(),
                 eaf.max_step,
                 eaf.unique_id.clone(),
+                eaf.hardware_serial.clone(),
+                Arc::clone(&held),
             ));
             // `devices` overrides are keyed by the bare SDK serial (matching the
             // config-actions `devices.{serial}` paths), NOT the prefixed
@@ -310,11 +347,13 @@ impl BoundServer {
 /// happens later on `set_connected(true)`). The EAF SDK is blocking C FFI, so
 /// every SDK call funnels through [`tokio::task::spawn_blocking`] (design doc
 /// "Concurrency").
-async fn enumerate_focusers() -> Result<Vec<EnumeratedFocuser>, ZwoFocuserError> {
+async fn enumerate_focusers(sdk: zwo_rs::Sdk) -> Result<Vec<EnumeratedFocuser>, ZwoFocuserError> {
     let focusers =
-        tokio::task::spawn_blocking(|| -> Result<Vec<EnumeratedFocuser>, zwo_rs::Error> {
-            let sdk = zwo_rs::Sdk::new()?;
-            let count = sdk.focusers()?.len();
+        tokio::task::spawn_blocking(move || -> Result<Vec<EnumeratedFocuser>, zwo_rs::Error> {
+            // One hold of the SDK's list from the rescan to the last open, so
+            // the indices the opens take are the ones the rescan listed.
+            let list = sdk.focuser_list();
+            let count = list.rescan()?.len();
             let mut out = Vec::with_capacity(count);
             for index in 0..count {
                 // Open briefly to read the stable serial and the working
@@ -324,7 +363,7 @@ async fn enumerate_focusers() -> Result<Vec<EnumeratedFocuser>, ZwoFocuserError>
                 // `MaxStep`, so the pre-open enumeration copy can be
                 // incomplete.
                 let (info, max_step, serial_result) = {
-                    let focuser = sdk.open_focuser(index)?;
+                    let focuser = list.open_focuser(index)?;
                     let info = focuser.info().clone();
                     // `EAFGetMaxStep` is the limit the firmware stops at;
                     // `EAF_INFO::MaxStep` is only the ceiling it can be
@@ -347,15 +386,18 @@ async fn enumerate_focusers() -> Result<Vec<EnumeratedFocuser>, ZwoFocuserError>
                         "EAF exposes no hardware serial (or unsupported firmware); using a position-based identity"
                     );
                 }
+                let hardware_serial = serial_result.as_ref().ok().cloned();
                 let (serial, unique_id) = mint_identity(serial_result, &info.name, index);
                 out.push(EnumeratedFocuser {
                     index,
                     info,
                     max_step,
                     serial,
+                    hardware_serial,
                     unique_id,
                 });
             }
+            drop(list);
             Ok(out)
         })
         .await??;
@@ -423,7 +465,9 @@ mod simulation_tests {
     /// `ZWO:{name}:{serial}` `UniqueID`.
     #[tokio::test]
     async fn device_overrides_are_keyed_by_serial_not_unique_id() {
-        let eaf = &enumerate_focusers().await.unwrap()[0];
+        let eaf = &enumerate_focusers(zwo_rs::Sdk::new().unwrap())
+            .await
+            .unwrap()[0];
         assert!(
             eaf.serial != eaf.unique_id && eaf.unique_id.ends_with(&eaf.serial),
             "UniqueID should be the prefixed serial, serial the bare key"

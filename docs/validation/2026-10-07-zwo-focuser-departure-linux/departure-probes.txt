@@ -1,0 +1,50 @@
+--- 1. idle departure: only a failure asks ---
+08:49:09.714  PUT connected(Connected=True) value=None     err=0x0   (153.8 ms)
+08:49:09.715  GET connected                value=True     err=0x0   (1.1 ms)
+08:49:09.718  GET position                 value=34637    err=0x0   (2.8 ms)
+08:49:09.720  GET temperature              value=22.670000076293945 err=0x0   (2.8 ms)
+08:49:09.721  GET maxstep                  value=60000    err=0x0   (0.9 ms)
+08:49:09.929  sysfs port disable <- 1
+08:49:09.929  EAF on bus = False after 0.00 s
+08:49:11.930  GET connected                value=True     err=0x0   (1.2 ms)
+08:49:11.931  GET maxstep                  value=60000    err=0x0   (0.9 ms)
+08:49:11.932  GET position                 value=None     err=0x407 NOT_CONNECTED  (1.1 ms)
+08:49:11.933  GET connected                value=False    err=0x0   (0.9 ms)
+08:49:11.934  GET ismoving                 value=None     err=0x407 NOT_CONNECTED  (0.8 ms)
+08:49:11.935  GET temperature              value=None     err=0x407 NOT_CONNECTED  (0.8 ms)
+08:49:11.936  GET maxstep                  value=None     err=0x407 NOT_CONNECTED  (0.8 ms)
+08:49:11.937  GET maxincrement             value=None     err=0x407 NOT_CONNECTED  (0.8 ms)
+08:49:11.938  PUT halt                     value=None     err=0x407 NOT_CONNECTED  (0.9 ms)
+--- 2. reconnect while gone ---
+08:49:11.949  PUT connected(Connected=True) value=None     err=0x407 NOT_CONNECTED  (10.9 ms)
+08:49:11.950  GET connected                value=False    err=0x0   (0.9 ms)
+--- 3. back: a plain reconnect finds the EAF by its serial ---
+08:49:12.153  sysfs port disable <- 0
+08:49:12.453  EAF on bus = True after 0.30 s
+08:49:14.589  PUT connected(Connected=True) value=None     err=0x0   (135.9 ms)
+08:49:14.591  GET connected                value=True     err=0x0   (1.4 ms)
+08:49:14.594  GET position                 value=34637    err=0x0   (3.5 ms)
+08:49:14.598  GET temperature              value=22.670000076293945 err=0x0   (3.3 ms)
+08:49:14.602  PUT halt                     value=None     err=0x0   (4.3 ms)
+--- 4. off and on again with nothing failing in between ---
+08:49:14.825  sysfs port disable <- 1
+08:49:14.825  EAF on bus = False after 0.00 s
+08:49:18.029  sysfs port disable <- 0
+08:49:18.329  EAF on bus = True after 0.30 s
+08:49:20.331  GET connected                value=True     err=0x0   (1.6 ms)
+08:49:20.333  GET position                 value=None     err=0x407 NOT_CONNECTED  (1.6 ms)
+08:49:20.334  GET connected                value=False    err=0x0   (1.2 ms)
+08:49:20.473  PUT connected(Connected=True) value=None     err=0x0   (139.5 ms)
+08:49:20.477  GET position                 value=34637    err=0x0   (3.2 ms)
+--- 5. a lost session disconnects cleanly ---
+08:49:20.681  sysfs port disable <- 1
+08:49:20.681  EAF on bus = False after 0.00 s
+08:49:22.683  GET temperature              value=None     err=0x407 NOT_CONNECTED  (1.9 ms)
+08:49:22.695  PUT connected(Connected=False) value=None     err=0x0   (11.5 ms)
+08:49:22.696  GET connected                value=False    err=0x0   (1.2 ms)
+08:49:22.901  sysfs port disable <- 0
+08:49:23.251  EAF on bus = True after 0.35 s
+08:49:25.389  PUT connected(Connected=True) value=None     err=0x0   (137.9 ms)
+08:49:25.393  GET position                 value=34637    err=0x0   (3.3 ms)
+08:49:25.398  PUT connected(Connected=False) value=None     err=0x0   (5.5 ms)
+08:49:25.399  all phases passed

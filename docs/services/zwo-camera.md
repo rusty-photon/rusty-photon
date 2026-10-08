@@ -1528,10 +1528,11 @@ simulation) and **85 BDD scenarios**.
   `backend::error_tests` pin that `CAMERA_REMOVED` alone crosses the seam as a
   departure, that the presence check's relabelling keeps the message, that a
   departure keeps its kind when the arm names the control that failed (GO2).
-  What counts as a blank frame, and what a `Connected` write does from each
-  session, are `rusty-photon-camera-core`'s `is_blank_frame` and
-  `connected_transition`, shared with qhy-camera and svbony-camera and tested
-  there.
+  What counts as a blank frame is `rusty-photon-camera-core`'s
+  `is_blank_frame`, shared with qhy-camera and svbony-camera. What a
+  `Connected` write does from each session is `rusty-photon-driver`'s
+  `connected_transition`, shared with svbony-camera and zwo-focuser. Both are
+  tested where they live.
 
   The unit tests drive the device side through `MockCameraHandle::leave_bus`,
   which reproduces the handle's outcome on the mock's own flags:

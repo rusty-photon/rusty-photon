@@ -40,7 +40,7 @@ use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use parking_lot::Mutex;
 use rusty_photon_camera_core::{
-    self as camera_core, unbinned, Alignment, ConnectedTransition, PixelDepth, Roi, UnbinnedRoi,
+    self as camera_core, unbinned, Alignment, PixelDepth, Roi, UnbinnedRoi,
 };
 use svbony_rs::{BayerPattern, CameraInfo, ControlCaps, ControlType, ImageType};
 use tracing::{debug, warn};
@@ -48,7 +48,7 @@ use tracing::{debug, warn};
 use crate::backend::{BackendResult, CameraHandle, CaptureRequest};
 use crate::config::DeviceOverride;
 use crate::config_actions::SvbonyCameraDriver;
-use rusty_photon_driver::ConfigActionCtx;
+use rusty_photon_driver::{connected_transition, ConfigActionCtx, ConnectedTransition};
 
 /// 0x500 — driver-specific catch-all for an asynchronous capture failure
 /// surfaced lazily via `image_array` (E9).
@@ -787,7 +787,7 @@ impl SvbonyCamera {
         // reconnected since. The mark first, as in `is_connected`.
         let lost = self.handle.is_lost();
         let held = self.handle.is_open();
-        match camera_core::connected_transition(connected, held, lost) {
+        match connected_transition(connected, held, lost) {
             ConnectedTransition::Nothing => Ok(()),
             ConnectedTransition::Connect => self.connect(),
             ConnectedTransition::Disconnect => self.disconnect(),
@@ -1223,8 +1223,7 @@ impl Device for SvbonyCamera {
         // comes first.
         let lost = self.handle.is_lost();
         let held = self.handle.is_open();
-        if camera_core::connected_transition(connected, held, lost) == ConnectedTransition::Nothing
-        {
+        if connected_transition(connected, held, lost) == ConnectedTransition::Nothing {
             return Ok(());
         }
         // `transition` decides again under the lifecycle lock (C7) and does

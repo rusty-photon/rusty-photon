@@ -1,0 +1,98 @@
+08:11:03.726  SDK 1, 7, 7, 0; mode departure; EAF 03c3:1f10 at /sys/bus/usb/devices/3-2.2.2
+08:11:03.798  [start] EAFGetNum=1 (1.3 ms): [(0, 0, 'SUCCESS', 'EAF', 'SUCCESS', 600000)]
+08:11:03.857    EAFOpen                            SUCCESS        (    58.7 ms)  
+08:11:03.857  --- id 0: open, present (baseline) (on bus: True) ---
+08:11:03.859    EAFGetProperty                     SUCCESS        (     1.9 ms)  EAF MaxStep=600000
+08:11:03.861    EAFGetPosition                     SUCCESS        (     2.0 ms)  34637
+08:11:03.863    EAFIsMoving                        SUCCESS        (     2.0 ms)  moving=False hand=False
+08:11:03.865    EAFGetTemp                         SUCCESS        (     2.0 ms)  22.4 C
+08:11:03.867    EAFGetMaxStep                      SUCCESS        (     2.0 ms)  60000
+08:11:03.869    EAFGetReverse                      SUCCESS        (     2.0 ms)  False
+08:11:03.871    EAFGetBacklash                     SUCCESS        (     2.0 ms)  0
+08:11:03.873    EAFGetSerialNumber                 SUCCESS        (     2.2 ms)  6000e072a1e28f94
+08:11:03.875    EAFGetFirmwareVersion              SUCCESS        (     2.0 ms)  3.8.1
+08:11:03.878    EAFStop                            SUCCESS        (     3.0 ms)  
+08:11:03.878    EAFMove                            skipped: the EAF is on the bus (no actuation)
+08:11:03.905  [present, open, rescan beside it] EAFGetNum=1 (1.1 ms): [(0, 0, 'SUCCESS', 'EAF', 'SUCCESS', 600000)]
+08:11:03.905  --- id 0: open, present, after a rescan (on bus: True) ---
+08:11:03.907    EAFGetProperty                     SUCCESS        (     1.9 ms)  EAF MaxStep=600000
+08:11:03.909    EAFGetPosition                     SUCCESS        (     2.0 ms)  34637
+08:11:03.911    EAFIsMoving                        SUCCESS        (     2.0 ms)  moving=False hand=False
+08:11:03.913    EAFGetTemp                         SUCCESS        (     2.0 ms)  22.4 C
+08:11:03.915    EAFGetMaxStep                      SUCCESS        (     2.0 ms)  60000
+08:11:03.917    EAFGetReverse                      SUCCESS        (     2.0 ms)  False
+08:11:03.919    EAFGetBacklash                     SUCCESS        (     2.0 ms)  0
+08:11:03.921    EAFGetSerialNumber                 SUCCESS        (     2.0 ms)  6000e072a1e28f94
+08:11:03.923    EAFGetFirmwareVersion              SUCCESS        (     2.0 ms)  3.8.1
+08:11:03.926    EAFStop                            SUCCESS        (     3.0 ms)  
+08:11:03.926    EAFMove                            skipped: the EAF is on the bus (no actuation)
+08:11:04.141  sysfs /sys/bus/usb/devices/3-2.2:1.0/3-2.2-port2/disable <- 1
+08:11:04.141  on bus = False after 0.00 s; /dev hidraw nodes: []
+08:11:06.141  --- id 0: departed, no rescan, +2 s (on bus: False) ---
+08:11:06.142    EAFGetProperty                     SUCCESS        (     0.0 ms)  EAF MaxStep=600000
+08:11:06.142    EAFGetPosition                     REMOVED        (     0.0 ms)  
+08:11:06.142    EAFIsMoving                        REMOVED        (     0.0 ms)  
+08:11:06.142    EAFGetTemp                         REMOVED        (     0.0 ms)  
+08:11:06.142    EAFGetMaxStep                      REMOVED        (     0.0 ms)  
+08:11:06.142    EAFGetReverse                      REMOVED        (     0.0 ms)  
+08:11:06.142    EAFGetBacklash                     REMOVED        (     0.0 ms)  
+08:11:06.142    EAFGetSerialNumber                 REMOVED        (     0.0 ms)  
+08:11:06.142    EAFGetFirmwareVersion              REMOVED        (     0.0 ms)  
+08:11:06.142    EAFStop                            REMOVED        (     0.0 ms)  
+08:11:06.142    EAFMove(34637, = last read)        REMOVED        (     0.0 ms)  
+08:11:06.152  [departed, rescan] EAFGetNum=0 (10.0 ms): []
+08:11:06.152  --- id 0: departed, after a rescan (on bus: False) ---
+08:11:06.152    EAFGetProperty                     INVALID_ID     (     0.0 ms)  
+08:11:06.152    EAFGetPosition                     INVALID_ID     (     0.0 ms)  
+08:11:06.152    EAFIsMoving                        INVALID_ID     (     0.0 ms)  
+08:11:06.152    EAFGetTemp                         INVALID_ID     (     0.0 ms)  
+08:11:06.152    EAFGetMaxStep                      INVALID_ID     (     0.0 ms)  
+08:11:06.152    EAFGetReverse                      INVALID_ID     (     0.0 ms)  
+08:11:06.152    EAFGetBacklash                     INVALID_ID     (     0.0 ms)  
+08:11:06.152    EAFGetSerialNumber                 INVALID_ID     (     0.0 ms)  
+08:11:06.152    EAFGetFirmwareVersion              INVALID_ID     (     0.0 ms)  
+08:11:06.152    EAFStop                            INVALID_ID     (     0.0 ms)  
+08:11:06.152    EAFMove(34637, = last read)        INVALID_ID     (     0.0 ms)  
+08:11:06.152    EAFOpen(old id) while departed     INVALID_ID     (     0.0 ms)  
+08:11:06.353  sysfs /sys/bus/usb/devices/3-2.2:1.0/3-2.2-port2/disable <- 0
+08:11:06.703  on bus = True after 0.35 s; /dev hidraw nodes: []
+08:11:08.704  --- id 0: back, no rescan since the return (on bus: True) ---
+08:11:08.704    EAFGetProperty                     INVALID_ID     (     0.0 ms)  
+08:11:08.704    EAFGetPosition                     INVALID_ID     (     0.0 ms)  
+08:11:08.704    EAFIsMoving                        INVALID_ID     (     0.0 ms)  
+08:11:08.704    EAFGetTemp                         INVALID_ID     (     0.0 ms)  
+08:11:08.704    EAFGetMaxStep                      INVALID_ID     (     0.0 ms)  
+08:11:08.704    EAFGetReverse                      INVALID_ID     (     0.0 ms)  
+08:11:08.704    EAFGetBacklash                     INVALID_ID     (     0.0 ms)  
+08:11:08.704    EAFGetSerialNumber                 INVALID_ID     (     0.0 ms)  
+08:11:08.704    EAFGetFirmwareVersion              INVALID_ID     (     0.0 ms)  
+08:11:08.704    EAFStop                            INVALID_ID     (     0.0 ms)  
+08:11:08.704    EAFMove                            skipped: the EAF is on the bus (no actuation)
+08:11:08.777  [back, rescan] EAFGetNum=1 (1.3 ms): [(0, 0, 'SUCCESS', 'EAF', 'SUCCESS', 600000)]
+08:11:08.777  --- id 0: back, after a rescan (on bus: True) ---
+08:11:08.843    EAFGetProperty                     SUCCESS        (    65.2 ms)  EAF MaxStep=600000
+08:11:08.843    EAFGetPosition                     CLOSED         (     0.0 ms)  
+08:11:08.843    EAFIsMoving                        CLOSED         (     0.0 ms)  
+08:11:08.843    EAFGetTemp                         CLOSED         (     0.0 ms)  
+08:11:08.843    EAFGetMaxStep                      CLOSED         (     0.0 ms)  
+08:11:08.843    EAFGetReverse                      CLOSED         (     0.0 ms)  
+08:11:08.843    EAFGetBacklash                     CLOSED         (     0.0 ms)  
+08:11:08.843    EAFGetSerialNumber                 CLOSED         (     0.0 ms)  
+08:11:08.843    EAFGetFirmwareVersion              CLOSED         (     0.0 ms)  
+08:11:08.843    EAFStop                            CLOSED         (     0.0 ms)  
+08:11:08.843    EAFMove                            skipped: the EAF is on the bus (no actuation)
+08:11:08.843    EAFClose(old id)                   SUCCESS        (     0.0 ms)  
+08:11:08.900    EAFOpen(listed id 0)               SUCCESS        (    57.3 ms)  
+08:11:08.901  --- id 0: reopened from the listing (on bus: True) ---
+08:11:08.902    EAFGetProperty                     SUCCESS        (     1.9 ms)  EAF MaxStep=600000
+08:11:08.904    EAFGetPosition                     SUCCESS        (     2.0 ms)  34637
+08:11:08.906    EAFIsMoving                        SUCCESS        (     2.0 ms)  moving=False hand=False
+08:11:08.908    EAFGetTemp                         SUCCESS        (     2.0 ms)  22.4 C
+08:11:08.910    EAFGetMaxStep                      SUCCESS        (     2.0 ms)  60000
+08:11:08.912    EAFGetReverse                      SUCCESS        (     2.0 ms)  False
+08:11:08.914    EAFGetBacklash                     SUCCESS        (     2.0 ms)  0
+08:11:08.916    EAFGetSerialNumber                 SUCCESS        (     2.0 ms)  6000e072a1e28f94
+08:11:08.918    EAFGetFirmwareVersion              SUCCESS        (     2.0 ms)  3.8.1
+08:11:08.921    EAFStop                            SUCCESS        (     3.0 ms)  
+08:11:08.922    EAFMove                            skipped: the EAF is on the bus (no actuation)
+08:11:08.952    EAFClose(listed id 0)              SUCCESS        (    30.4 ms)  

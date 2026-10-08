@@ -15,17 +15,37 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::{Device, Focuser};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
+use parking_lot::Mutex;
+use tracing::debug;
 
-use crate::backend::{BackendError, FocuserHandle};
+use crate::backend::{BackendError, FocuserHandle, SessionState};
 use crate::config::DeviceOverride;
 use crate::config_actions::ZwoFocuserDriver;
-use rusty_photon_driver::ConfigActionCtx;
+use rusty_photon_driver::{connected_transition, ConfigActionCtx, ConnectedTransition};
 
-/// Map a [`BackendError`] to the generic ASCOM error for an SDK-call failure.
-/// Call sites that need a more specific code (e.g. `NOT_CONNECTED` on open
-/// failure) map the error themselves instead of going through this helper.
+/// What a failed SDK call answers a client: `NOT_CONNECTED` when the handle
+/// judged the failure to mean the EAF has left the bus (C5), and the generic
+/// `INVALID_OPERATION` with the SDK's message for any other failure. Decided
+/// from the call's own error, never from the session's mark, which a
+/// reconnect may have cleared by the time [`ZwoFocuser::on_handle`] looks.
 fn sdk_err(e: BackendError) -> ASCOMError {
-    ASCOMError::invalid_operation(e.0)
+    if e.is_departed() {
+        ASCOMError::NOT_CONNECTED
+    } else {
+        ASCOMError::invalid_operation(e.into_message())
+    }
+}
+
+/// What a `Connected = requested` write has to do from `session`: the rule
+/// zwo-camera and svbony-camera share (`rusty-photon-driver`), fed this
+/// handle's session. A lost session (C5) always has something to do, its
+/// release.
+const fn transition_for(session: SessionState, requested: bool) -> ConnectedTransition {
+    connected_transition(
+        requested,
+        !matches!(session, SessionState::Closed),
+        matches!(session, SessionState::Lost),
+    )
 }
 
 /// One ASCOM Focuser device per discovered EAF.
@@ -43,6 +63,12 @@ pub struct ZwoFocuser {
     description: String,
     #[debug(skip)]
     config_ctx: Option<ConfigActionCtx<ZwoFocuserDriver>>,
+    /// Held while a `Connected` write reads the session and acts on it, so
+    /// connection changes run one at a time (C5). A release is not idempotent
+    /// the way an open is: without this, two reconnects after a departure
+    /// could each release and reopen.
+    #[debug(skip)]
+    lifecycle: Arc<Mutex<()>>,
 }
 
 impl ZwoFocuser {
@@ -66,6 +92,7 @@ impl ZwoFocuser {
             name,
             description,
             config_ctx: None,
+            lifecycle: Arc::new(Mutex::new(())),
         }
     }
 
@@ -77,42 +104,94 @@ impl ZwoFocuser {
     }
 
     fn ensure_connected(&self) -> ASCOMResult<()> {
-        if self.handle.is_open() {
+        if self.is_connected() {
             Ok(())
         } else {
             Err(ASCOMError::NOT_CONNECTED)
         }
     }
 
+    /// Whether this device holds a session on an EAF still on the bus: the
+    /// handle is open, and no failure on it has meant the EAF left (C5).
+    /// Answered from the handle's own state, never from the SDK.
+    fn is_connected(&self) -> bool {
+        self.handle.session() == SessionState::Live
+    }
+
+    /// Bring the device to `connected`: read the handle's session under
+    /// [`Self::lifecycle`] and act on it there, so concurrent requests run one
+    /// after another, each from what the last left behind.
+    ///
+    /// An EAF that has left the bus is held but not connected (C5): its
+    /// handle is still open, and only a disconnect lets it go. Either way a
+    /// client asks, that release comes first. `Connected = false` ends there,
+    /// and `Connected = true` goes on to a fresh connect rather than taking
+    /// the lost session back.
+    fn transition(&self, connected: bool) -> ASCOMResult<()> {
+        let lifecycle = self.lifecycle.lock();
+        let outcome = match transition_for(self.handle.session(), connected) {
+            ConnectedTransition::Nothing => Ok(()),
+            ConnectedTransition::Connect => self.connect(),
+            ConnectedTransition::Disconnect => self.disconnect(),
+            ConnectedTransition::Release => {
+                debug!(focuser = %self.unique_id, "releasing a session whose focuser left the bus");
+                self.disconnect()
+            }
+            ConnectedTransition::ReleaseThenConnect => {
+                debug!(focuser = %self.unique_id, "releasing a session whose focuser left the bus");
+                self.disconnect().and_then(|()| self.connect())
+            }
+        };
+        drop(lifecycle);
+        outcome
+    }
+
     fn connect(&self) -> ASCOMResult<()> {
-        // Two concurrent connects can both get past `set_connected`'s
-        // is_open check, but the whole transition is just this open() —
-        // check-then-open under the handle's own lock, so a redundant call
-        // is a no-op and no transition lock is needed (there is no
-        // post-open handshake that could run twice).
-        self.handle.open().map_err(|_| ASCOMError::NOT_CONNECTED)?;
-        tracing::debug!(focuser = %self.unique_id, "focuser connected");
+        // A failed open leaves the handle closed (C2). There is no post-open
+        // handshake: the name, travel limit and serial were cached at
+        // enumeration.
+        self.handle.open().map_err(|e| {
+            debug!(focuser = %self.unique_id, error = %e, "focuser open failed");
+            ASCOMError::NOT_CONNECTED
+        })?;
+        debug!(focuser = %self.unique_id, "focuser connected");
         Ok(())
     }
 
     fn disconnect(&self) -> ASCOMResult<()> {
         self.handle.close().map_err(|_| ASCOMError::NOT_CONNECTED)?;
-        tracing::debug!(focuser = %self.unique_id, "focuser disconnected");
+        debug!(focuser = %self.unique_id, "focuser disconnected");
         Ok(())
     }
 
     /// Run a blocking SDK-seam call off the async executor. The EAF FFI calls
     /// do USB I/O, so running them directly on a Tokio worker could stall
     /// other Alpaca requests; offload them like the connect path.
+    ///
+    /// A failure on a device that is no longer connected answers
+    /// `NOT_CONNECTED`: a disconnect that landed during the call, or a
+    /// departure (C5), which the call site's own mapping also answers from the
+    /// failure itself.
     async fn on_handle<T, F>(&self, f: F) -> ASCOMResult<T>
     where
         F: FnOnce(&dyn FocuserHandle) -> ASCOMResult<T> + Send + 'static,
         T: Send + 'static,
     {
         let handle = Arc::clone(&self.handle);
-        tokio::task::spawn_blocking(move || f(handle.as_ref()))
+        let outcome = tokio::task::spawn_blocking(move || f(handle.as_ref()))
             .await
-            .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?
+            .map_err(|e| ASCOMError::invalid_operation(format!("SDK task failed: {e}")))?;
+        match outcome {
+            Err(e) if !self.is_connected() => {
+                debug!(
+                    focuser = %self.unique_id,
+                    error = %e,
+                    "SDK call failed on a focuser that is closed or has left the bus"
+                );
+                Err(ASCOMError::NOT_CONNECTED)
+            }
+            outcome => outcome,
+        }
     }
 }
 
@@ -127,26 +206,23 @@ impl Device for ZwoFocuser {
     }
 
     async fn connected(&self) -> ASCOMResult<bool> {
-        Ok(self.handle.is_open())
+        Ok(self.is_connected())
     }
 
     async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
-        if self.handle.is_open() == connected {
+        // A lock-free fast path for the common no-op; `transition` decides
+        // again under the lifecycle lock, since a request that held it first
+        // may have released and reconnected since.
+        if transition_for(self.handle.session(), connected) == ConnectedTransition::Nothing {
             return Ok(());
         }
-        // `connect`/`disconnect` do blocking SDK I/O (`EAFOpen`/`EAFClose`), so
-        // offload them off the executor (ZwoFocuser is cheap to clone: it is
-        // `Arc`-backed).
+        // `connect`/`disconnect` do blocking SDK I/O (`EAFGetNum`/`EAFOpen`/
+        // `EAFClose`), so offload them off the executor (ZwoFocuser is cheap
+        // to clone: it is `Arc`-backed).
         let this = self.clone();
-        tokio::task::spawn_blocking(move || {
-            if connected {
-                this.connect()
-            } else {
-                this.disconnect()
-            }
-        })
-        .await
-        .map_err(|e| ASCOMError::invalid_operation(format!("connect task failed: {e}")))?
+        tokio::task::spawn_blocking(move || this.transition(connected))
+            .await
+            .map_err(|e| ASCOMError::invalid_operation(format!("connect task failed: {e}")))?
     }
 
     async fn description(&self) -> ASCOMResult<String> {
@@ -183,10 +259,13 @@ impl Focuser for ZwoFocuser {
     }
 
     async fn max_increment(&self) -> ASCOMResult<u32> {
+        // Served from cache, but only while connected (M14, C5).
+        self.ensure_connected()?;
         Ok(self.max_step)
     }
 
     async fn max_step(&self) -> ASCOMResult<u32> {
+        self.ensure_connected()?;
         Ok(self.max_step)
     }
 
@@ -257,8 +336,176 @@ mod tests {
     #[tokio::test]
     async fn max_step_and_max_increment_report_the_cached_info() {
         let d = device(MockFocuserHandle::default().with_max_step(1234));
+        d.set_connected(true).await.unwrap();
         assert_eq!(d.max_step().await.unwrap(), 1234);
         assert_eq!(d.max_increment().await.unwrap(), 1234);
+    }
+
+    #[tokio::test]
+    async fn max_step_and_max_increment_need_a_connection() {
+        let d = device(MockFocuserHandle::default());
+        assert_eq!(
+            d.max_step().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            d.max_increment().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+    }
+
+    // --- an EAF that leaves the bus (C5) ----------------------------------------
+
+    /// A connected device over a mock whose knobs the test keeps.
+    async fn connected() -> (ZwoFocuser, Arc<MockFocuserHandle>) {
+        let handle = Arc::new(MockFocuserHandle::default());
+        let d = ZwoFocuser::new(Arc::clone(&handle) as Arc<dyn FocuserHandle>, None);
+        d.set_connected(true).await.unwrap();
+        (d, handle)
+    }
+
+    #[tokio::test]
+    async fn a_departed_focuser_reads_connected_until_a_call_reaches_it() {
+        let (d, handle) = connected().await;
+        handle.leave_bus();
+        assert!(d.connected().await.unwrap());
+        assert_eq!(d.max_step().await.unwrap(), 60_000);
+    }
+
+    #[tokio::test]
+    async fn the_call_that_finds_the_departure_answers_not_connected() {
+        let (d, handle) = connected().await;
+        handle.leave_bus();
+        assert_eq!(
+            d.position().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert!(!d.connected().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn once_lost_every_member_that_needs_a_session_answers_not_connected() {
+        let (d, handle) = connected().await;
+        handle.leave_bus();
+        d.temperature().await.unwrap_err();
+        let not_connected = ASCOMErrorCode::NOT_CONNECTED;
+        assert_eq!(d.position().await.unwrap_err().code, not_connected);
+        assert_eq!(d.is_moving().await.unwrap_err().code, not_connected);
+        assert_eq!(d.temperature().await.unwrap_err().code, not_connected);
+        assert_eq!(d.max_step().await.unwrap_err().code, not_connected);
+        assert_eq!(d.max_increment().await.unwrap_err().code, not_connected);
+        assert_eq!(d.halt().await.unwrap_err().code, not_connected);
+        assert_eq!(d.move_(100).await.unwrap_err().code, not_connected);
+        // The members the driver fixes answer either way.
+        assert!(d.absolute().await.unwrap());
+        assert!(!d.temp_comp().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_failure_on_a_focuser_still_there_keeps_its_code_and_the_session() {
+        let (d, handle) = connected().await;
+        handle.fail_temperature.store(true, Ordering::SeqCst);
+        assert_eq!(
+            d.temperature().await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+        assert!(d.connected().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn a_departure_answers_not_connected_even_when_the_mark_is_already_gone() {
+        // A reconnect landing between the failing call and the device's look
+        // at the session clears the mark; the answer comes from the failure.
+        let (d, handle) = connected().await;
+        handle.answer_one_departure_unmarked();
+        assert_eq!(
+            d.temperature().await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert!(d.connected().await.unwrap(), "the session itself is live");
+    }
+
+    #[tokio::test]
+    async fn disconnecting_a_lost_session_releases_it() {
+        let (d, handle) = connected().await;
+        handle.leave_bus();
+        d.position().await.unwrap_err();
+        d.set_connected(false).await.unwrap();
+        assert_eq!(handle.session(), SessionState::Closed);
+        assert!(!d.connected().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn reconnecting_while_the_focuser_is_gone_fails_and_leaves_it_closed() {
+        let (d, handle) = connected().await;
+        handle.leave_bus();
+        d.position().await.unwrap_err();
+        assert_eq!(
+            d.set_connected(true).await.unwrap_err().code,
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(handle.session(), SessionState::Closed);
+    }
+
+    #[tokio::test]
+    async fn reconnecting_a_lost_session_releases_it_and_opens_afresh() {
+        let (d, handle) = connected().await;
+        handle.leave_bus();
+        d.position().await.unwrap_err();
+        handle.return_to_bus();
+        d.set_connected(true).await.unwrap();
+        assert_eq!(handle.opens(), 2, "a fresh session, not the lost one back");
+        assert!(d.connected().await.unwrap());
+        d.position().await.unwrap();
+    }
+
+    /// Two `Connected = true` requests after a departure run one after the
+    /// other, and the second finds the session the first opened: one release
+    /// and one fresh open between them (C5). The test holds the lifecycle lock
+    /// while both requests pass their lock-free check, which reads the lost
+    /// session, so both are queued behind it when it is let go. A transition
+    /// that acted on that unlocked reading, rather than reading the session
+    /// again under the lock, would release the first request's fresh session
+    /// and open another.
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_lock,
+        reason = "held across the yields on purpose, so both requests queue behind it; only their blocking tasks, on other threads, take it"
+    )]
+    async fn two_reconnects_after_a_departure_release_once_and_open_one_fresh_session() {
+        let (d, handle) = connected().await;
+        handle.leave_bus();
+        d.position().await.unwrap_err();
+        handle.return_to_bus();
+        let reads = handle.session_reads();
+
+        let held = d.lifecycle.lock();
+        let requests = [(), ()].map(|()| {
+            let d = d.clone();
+            tokio::spawn(async move { d.set_connected(true).await })
+        });
+        // Current-thread runtime: each yield runs both spawned requests up to
+        // their blocking transition, which waits on the lock held here.
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            handle.session_reads() - reads,
+            2,
+            "both requests read the lost session, and neither has acted on it"
+        );
+        drop(held);
+        for request in requests {
+            request.await.unwrap().unwrap();
+        }
+
+        assert_eq!(
+            handle.closes(),
+            1,
+            "the second found the first's session live"
+        );
+        assert_eq!(handle.opens(), 2, "one fresh session between them");
+        assert!(d.connected().await.unwrap());
     }
 
     #[tokio::test]

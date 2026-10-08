@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   and `Camera::electrons_per_adu`, which reads it by ID) now take one
   process-wide lock, so a rescan on one thread cannot renumber the list under
   another's lookup.
+- `Sdk::focusers`, `focuser_count` and `open_focuser` likewise take a
+  process-wide lock on the SDK's focuser list, a separate one, since the EAF
+  SDK keeps its own list.
 - **Breaking:** `asi_check` takes the bindgen `ASI_ERROR_CODE` alias (`c_uint`
   on LP64, `c_int` on Windows) instead of `i32`, `AsiError::from_code` takes
   `i64`, and `AsiError::Unknown` stores `i64` — a raw code outside the vendored
@@ -56,7 +59,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `CAMERA_CLOSED`. Measured on Linux with ASI SDK 1.41, the SDK never answers
   `CAMERA_REMOVED` for a camera that has left the bus and hides the departure
   until something rescans, so this is how a consumer can tell.
-- `Sdk::with_departure_file(path)` (`simulation` + `camera` only): the
+- `Sdk::focuser_list()` → `FocuserList`: holds the focuser-list lock across a
+  sequence that must see one list, such as opening the listed focusers in
+  turn to find one by its serial (`rescan` and `open_focuser` under the one
+  hold). `Focuser` methods never take the lock.
+- `Focuser::still_connected()`: one read that needs the session
+  (`EAFGetPosition`, which moves nothing); `Ok(false)` once the answer says
+  the focuser has left the bus.
+- `EafError::left_the_bus()`: whether an answer to a call on an open focuser
+  means it has left the bus (`REMOVED`, `INVALID_ID` or `CLOSED`). Measured on
+  Linux with EAF SDK 1.7.7, unlike the ASI SDK, the EAF SDK answers `REMOVED`
+  from the moment an open EAF leaves, with no rescan needed.
+- `Error::EafLog`: on Linux the EAF SDK logs to `/tmp/zwo/log/eaf_sdk/` and
+  aborts the process at its first call when it cannot write there, as when
+  another user made `/tmp/zwo` first. Before the first EAF call in a process,
+  `focuser_count`, `eaf_version`, `focusers`, `open_focuser` and
+  `FocuserList`'s `rescan` and `open_focuser` make the directory as the SDK
+  would and check that it takes a file, and answer `Error::EafLog` instead of
+  calling the SDK when it does not.
+- `Sdk::with_departure_file(path)` (`simulation` + `camera` or `focuser`): the
   simulated camera leaves the bus while `path` exists and returns when it is
   removed, behaving as ASI SDK 1.41 was measured to. While it is gone a rescan
   finds no camera and an open answers `AsiError::InvalidIndex`. On a `Camera`
@@ -67,6 +88,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   Every call on it then answers `AsiError::InvalidId`, even after it returns.
   As on the real SDK, an open reads the list the last rescan left, so a camera
   a rescan dropped opens again only once another rescan has listed it.
+  The simulated EAF focuser leaves with it, as EAF SDK 1.7.7 was measured to:
+  every call on a `Focuser` opened before answers `EafError::Removed`, and
+  `EafError::InvalidId` once a rescan has run while it was gone. It never
+  works again; a rescan lists the focuser afresh once it is back.
 - Initial repository scaffold for `zwo-rs` (safe wrapper) and `libzwo-sys` (raw
   FFI), sibling to `qhyccd-rs`.
 - `libzwo-sys`: `bindgen`-generated bindings (build-time) from the vendored MIT

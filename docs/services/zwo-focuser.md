@@ -15,6 +15,12 @@
 > files) are green against the `zwo-rs` simulation backend, whose movement
 > model now mirrors the measured hardware behavior (multi-poll IsMoving,
 > live position ramp, halt-freezes-mid-travel).
+>
+> **An EAF that leaves the bus reads disconnected (C5, 2026-10-07).** What
+> the EAF SDK answers when an open EAF leaves was measured on the field rig
+> first, and the contract follows the camera drivers' departure design. The
+> measurements are in
+> [`docs/validation/2026-10-07-zwo-focuser-departure-linux/`](../validation/2026-10-07-zwo-focuser-departure-linux/README.md).
 
 ## Overview
 
@@ -109,11 +115,14 @@ graph TD;
   briefly to read its serial, then closes it; the per-device connect handshake
   happens later on `set_connected(true)`.
 - **`backend.rs`** — the `FocuserHandle` trait (the SDK seam, mirroring
-  `zwo-camera`'s `CameraHandle`): `unique_id`, `info`, `is_open`, `open`, `close`,
+  `zwo-camera`'s `CameraHandle`): `unique_id`, `info`, `session`, `open`, `close`,
   `position`, `is_moving`, `move_to`, `stop`, `max_step`, `temperature`,
   `reverse`/`set_reverse`. `ZwoFocuserHandle` wraps `zwo_rs::Focuser` behind a
-  `parking_lot::Mutex` (the SDK handle is `Send` but `!Sync`); `MockFocuserHandle`
-  (unit tests only) forces paths the `zwo-rs` simulation can't reach.
+  `parking_lot::Mutex` (the SDK handle is `Send` but `!Sync`). It owns the
+  departure check (C5): a failed call asks whether the EAF is still there,
+  under the lock the call ran under, and an open finds its EAF by serial.
+  `MockFocuserHandle` (unit tests only) forces paths the `zwo-rs` simulation
+  can't reach.
 - **`focuser.rs`** — `ZwoFocuser` (one instance per discovered EAF) implementing
   `Device` + `Focuser` against the `FocuserHandle` seam. Every blocking SDK call
   runs inside `tokio::task::spawn_blocking`.
@@ -171,6 +180,31 @@ there is no in-flight-task cancellation/invalidation machinery to build.
   scope*).
 - **`EAFGetPosition`** has no moving sentinel — it always returns the live
   (ramping) step count, whether or not the focuser is currently moving.
+- **The SDK writes its own log, and aborts the process when it cannot.** EAF
+  SDK 1.7.7 logs to `/tmp/zwo/log/eaf_sdk/` through spdlog, a path fixed in
+  the Linux library, and creates whatever part of it is missing. When it
+  cannot open its file there, the first SDK call ends the process with an
+  uncaught C++ exception (`spdlog::spdlog_ex` … `Permission denied`), which
+  Rust cannot catch. Whoever first creates `/tmp/zwo` on a shared `/tmp` owns
+  it, writable by nobody else under the usual umask, so any other user that
+  loads the SDK there would die (measured on the field rig, 2026-10-07, with a
+  directory a root run had left). The packaged unit runs with `PrivateTmp=yes`
+  and never sees another user's `/tmp/zwo`; a hand-run service or the doctor
+  subcommand does.
+
+  So on Linux `zwo-rs` checks, before the first EAF SDK call in a process,
+  that the directory takes a file. It makes whatever part of the directory is
+  missing, as the SDK would (mode 0755), then makes a file in it and removes
+  it again. Making the directory itself, rather than leaving it to the SDK,
+  leaves no gap between the check and the first call in which another user
+  could make it first. When the check fails, the SDK is not called and the call
+  answers `zwo_rs::Error::EafLog`, naming what refused the file, its owner's
+  uid and the fix (make it writable for this user, or run as its owner). The
+  service then fails to start with that message (C0), and doctor reports it as
+  a failed SDK check. One pass is enough: from its first call the SDK holds its
+  log open. The macOS library logs under `Library/Application Support/eaf_sdk/`
+  instead; how it and the Windows library behave without their log is not
+  measured, so neither is checked.
 
 ## ASCOM Focuser Mapping
 
@@ -337,23 +371,128 @@ working limit but within the ceiling is accepted and stops at the limit.
   as an ASCOM device with its serial-derived UniqueID (opening each briefly to
   read the serial). Zero discovered EAFs is **not** a hard failure — the service
   starts with no Focuser devices, logged at `warn!`; a later reload
-  re-enumerates.
-- **C1.** `set_connected(true)` on a device opens *that* EAF. On success
-  `Connected = true`. (The name, working travel limit, and serial were cached
-  at enumeration.)
-- **C2.** `set_connected(true)` with the device's EAF unreachable / SDK open
-  failure returns the mapped driver error and `Connected` stays `false`.
+  re-enumerates. An EAF SDK that cannot write its own log *is*: startup fails
+  with `zwo_rs::Error::EafLog` before any SDK call (see *Hardware
+  Constraints*).
+- **C1.** `set_connected(true)` on a device opens *that* EAF, found on the bus
+  by its serial (C5). On success `Connected = true`. (The name, working travel
+  limit, and serial were cached at enumeration.)
+- **C2.** `set_connected(true)` with the device's EAF not on the bus, or any
+  SDK open failure, returns `NOT_CONNECTED` and `Connected` stays `false`.
+  `EAF_ERROR_REMOVED` from `EAFOpen` usually means the `/dev/hidraw*` node is
+  not accessible (see *Hardware Constraints*), not that the EAF has gone.
 - **C3.** `set_connected(false)` closes that device and returns `NOT_CONNECTED`
   for subsequent operations.
 - **C4.** Connect is per-device and independent: connecting/disconnecting one
   EAF does not affect others enumerated on the same service.
+- **C5.** **An EAF that has left the bus reads disconnected.** An EAF that
+  loses its cable or its power while connected keeps its open SDK handle, and
+  `Connected` is this driver's own record of that handle: a connect sets it, a
+  disconnect clears it, and nothing else used to change it. A departed EAF
+  therefore answered `Connected == true` for as long as the service ran, its
+  `Position`, `IsMoving`, `Temperature`, `Halt` and `Move` failed as
+  `INVALID_OPERATION`, and rp's reconnect supervisor, which takes
+  `Connected == true` as healthy, never re-established it.
+
+  **What the SDK does when an EAF leaves (measured).** On the field rig
+  (Raspberry Pi 5, Raspberry Pi OS aarch64, EAF SDK 1.7.7, firmware 3.8.1),
+  with the EAF taken off the bus by disabling its hub port
+  ([record](../validation/2026-10-07-zwo-focuser-departure-linux/README.md)):
+
+  - **The SDK says so at once.** From the moment the EAF leaves, every call
+    that needs the open session answers `EAF_ERROR_REMOVED`: `EAFGetPosition`,
+    `EAFIsMoving`, `EAFGetTemp`, `EAFGetMaxStep`, `EAFGetReverse`,
+    `EAFGetBacklash`, `EAFGetSerialNumber`, `EAFGetFirmwareVersion`, `EAFStop`
+    and `EAFMove`. Only `EAFGetProperty`, which needs no session, answers from
+    memory. This is unlike the ASI cameras, whose SDK hides a departure until
+    something rescans ([zwo-camera C6](zwo-camera.md#enumeration--connection-lifecycle)).
+  - **A rescan drops it.** `EAFGetNum` (1–10 ms) lists only the EAFs still
+    there, and from then on the departed EAF's ID answers `INVALID_ID`.
+  - **A returned EAF does not rejoin the old session.** Until a rescan, the old
+    ID still answers `REMOVED`, even with the EAF back. A rescan lists it
+    afresh: under its old ID if an earlier rescan had dropped it, and the old
+    session's calls then answer `EAF_ERROR_CLOSED`; or under a new ID
+    otherwise, and the old ID then answers `INVALID_ID`. Either way, closing
+    the old ID and opening the listed one works.
+  - **A rescan leaves a present EAF alone.** Its ID and its session hold.
+
+  **A failure asks whether the EAF is still there.** When the SDK fails a call
+  on the open session, the handle decides, before it answers, whether the EAF
+  has left. `REMOVED`, `INVALID_ID` and `CLOSED` on an open session all mean
+  its ID no longer names an EAF the session holds, and mark the session lost,
+  logged once at `warn`. Any other failure asks: the handle reads the position
+  on the same ID once more, and one of those three answers to that read means
+  the EAF has gone. Anything else leaves the failure standing as what it is:
+  a move refused while another runs (M8) still answers `INVALID_OPERATION`,
+  and the session stays live. The second read covers a call already in flight
+  when the EAF left that failed some other way. It costs one session read
+  (about 2 ms) and no rescan, because the EAF SDK reports a departure without
+  one. The question is asked under the focuser lock the failed call ran under,
+  which is the lock an open and a close take, so the verdict lands only on the
+  session that failed, never on one a reconnect has opened since.
+
+  **Only a failure asks.** Nothing else runs the check: no timer, and no check
+  on members that do not reach the SDK. An idle EAF that has left still reads
+  `Connected == true`, and `MaxStep` still answers from cache, until a client's
+  next call reaches the SDK. A client polling `Position` or `IsMoving`, as rp
+  does through a move, finds out on its next poll. The camera drivers follow
+  the same rule (zwo-camera C6, decided 2026-10-06).
+
+  **What a lost session answers.** `Connected == false`, and every member that
+  takes the connected check answers `NOT_CONNECTED` (M14), `MaxStep` and
+  `MaxIncrement` included, though they are served from cache. The request
+  whose failure found the departure answers `NOT_CONNECTED` too, rather than
+  its call site's `INVALID_OPERATION`. It takes that from its own failure,
+  which the handle relabels a departure, not from the mark, so a reconnect
+  that clears the mark before the request returns cannot turn it back. The
+  connected check reads the handle and its mark together under the focuser
+  lock, since a close clears the mark as it lets the EAF go.
+
+  **Lost is not closed.** The driver closes nothing on its own: the session
+  ends when a client ends it. `Connected = false` releases a lost session
+  through the ordinary disconnect (C3), whatever `EAFClose` says about an ID
+  that no longer names the EAF, and succeeds. `Connected = true` releases it
+  the same way and then connects afresh, so a client that reconnects, as rp's
+  supervisor does, gets either a working focuser or C2's failure, never the
+  lost session back. Connection changes run one at a time: `set_connected`
+  reads the session and acts on it under one lifecycle lock, so two
+  `Connected = true` requests after a departure open one fresh session between
+  them. What a `Connected` write does from each session is
+  `rusty-photon-driver`'s `connected_transition`, shared with zwo-camera and
+  svbony-camera.
+
+  **A connect finds its EAF by identity.** A rescan can list a returned EAF
+  under a new ID and renumber the SDK's list, so the enumeration index read at
+  startup (C0) can name another EAF, or none. Every open therefore rescans and
+  looks for this device's EAF by its serial: it opens the listed EAFs that no
+  other device of this service holds, the startup index first, reads each
+  one's serial, keeps the one that matches and closes the rest. An EAF without
+  a serial (`noserial-{index}`) takes the first free one, its startup index
+  first. Opening an EAF and reading its serial moves nothing (tenet 3). The
+  search is one step: the service's set of held EAFs stays locked from the
+  first look to the reservation, and the SDK's list (`zwo_rs::FocuserList`)
+  from the rescan to the open, so another device's rescan cannot renumber the
+  list between the choice and the open, and two devices opening at once
+  cannot take one EAF. A close keeps its EAF reserved until `EAFClose` has
+  run, so another device cannot open the ID afresh in between and then have
+  its session closed by that close. An EAF that left and came back therefore
+  reconnects with a plain `Connected = true` and no reload; one still gone
+  fails the open with C2's error.
+
+  **Not measured.** What the motor does when the EAF leaves mid-move: the
+  probe moves nothing on the rig's focuser. The departures were made by
+  disabling the hub port, which the kernel logs as a USB disconnect while the
+  EAF keeps its power; a cable pull or a power cut was not tried. Windows was
+  not measured.
 
 ### Movement
 
 - **M1.** `Absolute` is always `true`.
 - **M2.** `MaxStep`/`MaxIncrement` report the device's cached working travel
   limit (`EAFGetMaxStep`, read at enumeration's brief open — with a fallback
-  to the `EAF_INFO::MaxStep` ceiling if that call fails).
+  to the `EAF_INFO::MaxStep` ceiling if that call fails). They are served from
+  cache but answer only while connected (M14), so an EAF that has left the
+  bus does not keep describing itself (C5).
 - **M3.** `Position` reports the current step count (`EAFGetPosition`, no
   sentinel — always live, ramping toward the target during a move).
 - **M4.** `Move` to a position within `[0, MaxStep]` starts the move
@@ -375,8 +514,11 @@ working limit but within the ceiling is accepted and stops at the limit.
 - **M12.** `StepSize` returns `NOT_IMPLEMENTED`.
 - **M13.** `TempComp`/`TempCompAvailable` return `false`; `SetTempComp` returns
   `NOT_IMPLEMENTED`.
-- **M14.** `Move`/`Position`/`Halt`/`IsMoving` while disconnected return
-  `NOT_CONNECTED`.
+- **M14.** `Move`/`Position`/`Halt`/`IsMoving`/`Temperature`/`MaxStep`/
+  `MaxIncrement` while disconnected, or once the EAF has left the bus (C5),
+  return `NOT_CONNECTED`. `Absolute`, `TempComp`, `TempCompAvailable` and
+  `StepSize` are fixed by the driver, not read from the device, and answer
+  either way.
 
 ## Service lifecycle (`main.rs`)
 
@@ -396,8 +538,19 @@ structure:
   move-range validation, identity minting (hardware serial vs. `noserial-{index}`
   fallback).
 - **BDD** (`bdd-infra::ServiceHandle`, `tests/features/*.feature`) — enumeration/
-  connection lifecycle (C0–C4), movement (M1–M14), and config actions, driven
-  against the `zwo-rs` `simulation` backend.
+  connection lifecycle (C0–C4), an EAF that leaves the bus (C5,
+  `focuser_departure.feature`), movement (M1–M14), and config actions, driven
+  against the `zwo-rs` `simulation` backend. For C5 the service is started
+  with the hidden `--simulation-departure-file <path>`: while that file
+  exists the simulated EAF is off the bus. The `zwo-rs` simulation answers as
+  the measured SDK does: a session's calls answer `REMOVED` from the
+  departure on, `INVALID_ID` once a rescan has run while it was gone, and an
+  open finds the EAF only while it is on the bus and the last rescan listed
+  it. It does not model a blink no call observed, nor a returned EAF's new ID.
+- **Hardware** — C5's SDK behaviour was measured with a `ctypes` probe of
+  `libEAFFocuser` on the field rig before the contract was written, and the
+  service was then run end to end against the same EAF (see the record linked
+  from C5).
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu`
   feature) — launches the production binary with `--features conformu` and runs
   `bdd_infra::run_conformu("focuser", …)`. Skipped when `CONFORMU_PATH` is unset.
@@ -449,6 +602,12 @@ probe attached, on a Linux dev box (`cargo run -p zwo-focuser`, real build, no
 - **Temperature**: 20.5 °C on the bench — ambient-plausible (probe reading).
 - **Position persistence**: the step counter survives power cycles (stored in
   the focuser, not the host).
+
+**Performed 2026-10-07** on the field rig (Raspberry Pi 5, aarch64) for C5, an
+EAF that leaves the bus: a `ctypes` probe of EAF SDK 1.7.7, five departure
+phases through the service, and ConformU 4.5.0 `alpacaprotocol` and
+`conformance`, both clean. Record:
+[`docs/validation/2026-10-07-zwo-focuser-departure-linux/`](../validation/2026-10-07-zwo-focuser-departure-linux/README.md).
 
 ## Packaging
 
