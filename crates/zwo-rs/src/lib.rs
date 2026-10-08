@@ -37,6 +37,14 @@
 //! device counts (`SIM_CAMERA_COUNT`, `SIM_FILTER_WHEEL_COUNT`,
 //! `SIM_FOCUSER_COUNT` — each present only with its device feature).
 //!
+//! ## The EAF SDK's own log (Linux)
+//!
+//! The EAF SDK logs every process's calls to `/tmp/zwo/log/eaf_sdk/`, and
+//! aborts the process at its first call when it cannot write there, as when
+//! another user made `/tmp/zwo` first. Before the first EAF call in a process,
+//! this crate checks that the directory takes a file, and when it does not,
+//! the call answers [`Error::EafLog`] instead of calling the SDK.
+//!
 //! ## Build requirements
 //!
 //! - **libclang** — `libzwo-sys` runs `bindgen` at build time (needed for
@@ -81,6 +89,13 @@ pub use libzwo_sys as sys;
 
 #[cfg(feature = "camera")]
 mod camera;
+// The check runs on the real path only, but its tests run in either build.
+#[cfg(all(
+    feature = "focuser",
+    target_os = "linux",
+    any(test, not(feature = "simulation"))
+))]
+mod eaf_log;
 #[cfg(feature = "efw")]
 mod efw;
 mod error;
@@ -423,9 +438,12 @@ impl Sdk {
     /// and rebuilds the SDK's focuser list).
     ///
     /// # Errors
-    /// Infallible today; returns [`Result`] for forward compatibility.
+    /// Returns [`Error::EafLog`] on Linux when the SDK could not write its own
+    /// log, before calling it: it would abort the process.
     #[cfg(feature = "focuser")]
     pub fn focuser_count(&self) -> Result<usize> {
+        #[cfg(all(target_os = "linux", not(feature = "simulation")))]
+        eaf_log::ensure_writable()?;
         let list = lock_focuser_list();
         let count = focuser::rescan(self);
         drop(list);
@@ -435,9 +453,12 @@ impl Sdk {
     /// EAF focuser SDK version string (`EAFGetSDKVersion`).
     ///
     /// # Errors
-    /// Infallible today; returns [`Result`] for forward compatibility.
+    /// Returns [`Error::EafLog`] on Linux when the SDK could not write its own
+    /// log, before calling it: it would abort the process.
     #[cfg(feature = "focuser")]
     pub fn eaf_version(&self) -> Result<String> {
+        #[cfg(all(target_os = "linux", not(feature = "simulation")))]
+        eaf_log::ensure_writable()?;
         #[cfg(feature = "simulation")]
         let version = "simulation".to_owned();
         #[cfg(not(feature = "simulation"))]

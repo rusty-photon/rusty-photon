@@ -80,8 +80,7 @@ impl Sdk {
     /// ([`FocuserList::rescan`] under a hold of its own).
     ///
     /// # Errors
-    /// Returns [`Error::Eaf`] if the SDK fails to read a focuser's id or
-    /// property.
+    /// As [`FocuserList::rescan`].
     pub fn focusers(&self) -> Result<Vec<FocuserInfo>> {
         self.focuser_list().rescan()
     }
@@ -90,8 +89,7 @@ impl Sdk {
     /// ([`FocuserList::open_focuser`] under a hold of its own).
     ///
     /// # Errors
-    /// Returns [`Error::Eaf`] if the index is out of range or the SDK fails to
-    /// open the focuser.
+    /// As [`FocuserList::open_focuser`].
     pub fn open_focuser(&self, index: usize) -> Result<Focuser> {
         self.focuser_list().open_focuser(index)
     }
@@ -108,8 +106,11 @@ impl FocuserList<'_> {
     ///
     /// # Errors
     /// Returns [`Error::Eaf`] if the SDK fails to read a focuser's id or
-    /// property.
+    /// property, and [`Error::EafLog`] on Linux when the SDK could not write
+    /// its own log, before calling it: it would abort the process.
     pub fn rescan(&self) -> Result<Vec<FocuserInfo>> {
+        #[cfg(all(target_os = "linux", not(feature = "simulation")))]
+        crate::eaf_log::ensure_writable()?;
         let count = rescan(self.sdk);
         #[cfg(feature = "simulation")]
         let infos = (0..count).map(|_| sim_focuser_info()).collect();
@@ -132,8 +133,11 @@ impl FocuserList<'_> {
     ///
     /// # Errors
     /// Returns [`Error::Eaf`] if the index is out of range or the SDK fails to
-    /// open the focuser.
+    /// open the focuser, and [`Error::EafLog`] on Linux when the SDK could not
+    /// write its own log, before calling it: it would abort the process.
     pub fn open_focuser(&self, index: usize) -> Result<Focuser> {
+        #[cfg(all(target_os = "linux", not(feature = "simulation")))]
+        crate::eaf_log::ensure_writable()?;
         #[cfg(feature = "simulation")]
         let focuser = {
             self.sdk.sim_focuser_openable(index)?;
@@ -176,7 +180,7 @@ impl FocuserList<'_> {
 }
 
 /// `EAFGetNum`, with the focuser list already held: rebuild the SDK's focuser
-/// list and count it.
+/// list and count it. Callers check first that the SDK can write its log.
 pub fn rescan(sdk: &Sdk) -> usize {
     #[cfg(feature = "simulation")]
     let count = sdk

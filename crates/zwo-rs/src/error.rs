@@ -25,6 +25,17 @@ pub enum Error {
     /// An EAF focuser SDK call returned a non-success code.
     #[error("EAF focuser SDK error: {0}")]
     Eaf(#[from] EafError),
+    /// The EAF focuser SDK cannot write its own log, so it was not called. On
+    /// Linux it aborts the whole process at its first call when it cannot.
+    #[error(
+        "the EAF focuser SDK cannot write its log in {dir}, and would abort this process at its first call: {reason}"
+    )]
+    EafLog {
+        /// The directory the SDK logs to.
+        dir: String,
+        /// What refused the log, and what to do about it.
+        reason: String,
+    },
 }
 
 /// ASI camera SDK error codes (`ASI_ERROR_CODE`), mapped from the raw `int`.

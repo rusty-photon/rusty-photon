@@ -181,13 +181,28 @@ there is no in-flight-task cancellation/invalidation machinery to build.
 - **`EAFGetPosition`** has no moving sentinel — it always returns the live
   (ramping) step count, whether or not the focuser is currently moving.
 - **The SDK writes its own log, and aborts the process when it cannot.** EAF
-  SDK 1.7.7 logs to `/tmp/zwo/log/eaf_sdk/` through spdlog. When that
-  directory is not writable, the first SDK call ends the process with an
+  SDK 1.7.7 logs to `/tmp/zwo/log/eaf_sdk/` through spdlog, a path fixed in
+  the Linux library, and creates whatever part of it is missing. When it
+  cannot open its file there, the first SDK call ends the process with an
   uncaught C++ exception (`spdlog::spdlog_ex` … `Permission denied`), which
-  Rust cannot catch. The packaged unit runs with `PrivateTmp=yes` and never
-  sees another user's `/tmp/zwo`. A hand-run service or the doctor
-  subcommand, run as a different user from whoever created `/tmp/zwo` on a
-  shared `/tmp`, dies this way (measured on the field rig, 2026-10-07).
+  Rust cannot catch. Whoever first creates `/tmp/zwo` on a shared `/tmp` owns
+  it, writable by nobody else under the usual umask, so any other user that
+  loads the SDK there would die (measured on the field rig, 2026-10-07, with a
+  directory a root run had left). The packaged unit runs with `PrivateTmp=yes`
+  and never sees another user's `/tmp/zwo`; a hand-run service or the doctor
+  subcommand does.
+
+  So on Linux `zwo-rs` checks, before the first EAF SDK call in a process,
+  that the directory takes a file: it makes one and removes it again, in the
+  nearest part of the path that exists when the rest does not yet, and makes
+  no directory. When the check fails, the SDK is not called and the call
+  answers `zwo_rs::Error::EafLog`, naming what refused the file, its owner's
+  uid and the fix (make it writable for this user, or run as its owner). The
+  service then fails to start with that message (C0), and doctor reports it as
+  a failed SDK check. One pass is enough: from its first call the SDK holds its
+  log open. The macOS library logs under `Library/Application Support/eaf_sdk/`
+  instead; how it and the Windows library behave without their log is not
+  measured, so neither is checked.
 
 ## ASCOM Focuser Mapping
 
@@ -354,7 +369,9 @@ working limit but within the ceiling is accepted and stops at the limit.
   as an ASCOM device with its serial-derived UniqueID (opening each briefly to
   read the serial). Zero discovered EAFs is **not** a hard failure — the service
   starts with no Focuser devices, logged at `warn!`; a later reload
-  re-enumerates.
+  re-enumerates. An EAF SDK that cannot write its own log *is*: startup fails
+  with `zwo_rs::Error::EafLog` before any SDK call (see *Hardware
+  Constraints*).
 - **C1.** `set_connected(true)` on a device opens *that* EAF, found on the bus
   by its serial (C5). On success `Connected = true`. (The name, working travel
   limit, and serial were cached at enumeration.)
