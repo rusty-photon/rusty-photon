@@ -7389,12 +7389,23 @@ fn a_running_goto_may_be_in_a_goto() {
 }
 
 #[test]
-fn a_stopped_or_tracking_axis_is_not_in_a_goto() {
+fn a_stopped_axis_or_one_tracking_at_a_commanded_rate_is_not_in_a_goto() {
     assert!(!may_be_in_goto(&axis_reading(Some((
         false,
         skywatcher_motor_protocol::ModeKind::Goto
     )))));
-    assert!(!may_be_in_goto(&axis_reading(Some((
+    assert!(!may_be_in_goto(&crate::manager::AxisSnapshot {
+        step_period: 0x0008_CC05,
+        ..axis_reading(Some((true, skywatcher_motor_protocol::ModeKind::Tracking)))
+    }));
+}
+
+#[test]
+fn a_running_axis_with_no_commanded_tracking_rate_may_be_in_a_goto() {
+    // The `GTi` reports an axis coasting out of a goto, after its `:K` or
+    // `:L`, as tracking. The stop cleared the rate the driver holds for
+    // it, so that is what tells the coast from tracking.
+    assert!(may_be_in_goto(&axis_reading(Some((
         true,
         skywatcher_motor_protocol::ModeKind::Tracking
     )))));

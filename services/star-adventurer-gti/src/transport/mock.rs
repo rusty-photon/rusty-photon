@@ -203,6 +203,10 @@ impl AxisSimState {
     /// Apply a `:K` or `:L` the mock honours. A running goto with a
     /// [`stop_coast`](Self::stop_coast) starts to coast, and a stop that
     /// arrives mid-coast changes nothing. Any other motion stops at once.
+    ///
+    /// A coasting axis reads as tracking, clockwise and slow, whatever
+    /// goto it was running: the pier1 `GTi`'s `:f` reads `=111` from the
+    /// first frame after the stop until the coast ends.
     fn stop(&mut self, now: Instant) {
         if self.coasting.is_some() {
             return;
@@ -218,6 +222,9 @@ impl AxisSimState {
                     started: now,
                     duration: coast.duration,
                 });
+                self.mode = ModeKind::Tracking;
+                self.direction = Direction::Cw;
+                self.speed = Speed::Slow;
             }
             _ => self.running = false,
         }
@@ -266,7 +273,8 @@ impl AxisSimState {
     /// rather than wrapping. A `step_period` of `0` (no `:I` yet) is no
     /// motion.
     fn advance_tracking(&mut self, now: Instant, tmr_freq: u32, high_speed_ratio: u32) {
-        if !self.running || self.mode != ModeKind::Tracking {
+        // A coast reads as tracking but moves only as the coast says.
+        if !self.running || self.mode != ModeKind::Tracking || self.coasting.is_some() {
             self.tracking_clock = None;
             self.tracking_tick_remainder = 0.0;
             return;
@@ -1083,6 +1091,32 @@ mod tests {
     }
 
     #[test]
+    fn a_coasting_axis_reads_tracking_clockwise_and_slow_as_the_gti_does() {
+        let mut s = coasting_goto_axis(Direction::Ccw);
+        s.initialized = true;
+        s.stop(Instant::now());
+        assert_eq!(&s.encode_status(), b"111");
+    }
+
+    #[test]
+    fn a_coasting_axis_moves_only_as_the_coast_says() {
+        // It reads as tracking, but the goto's `:I` must not drive it.
+        let t0 = Instant::now();
+        let mut s = coasting_goto_axis(Direction::Cw);
+        s.step_period = 6;
+        s.stop(t0);
+        s.advance_tracking(t0, 16_000_000, 1);
+        s.advance_tracking(t0 + COAST.duration, 16_000_000, 1);
+        // Before the coast is applied, so it cannot overwrite a move.
+        assert_eq!(
+            s.position_ticks, 1_000,
+            "the integrator moved a coasting axis"
+        );
+        s.advance_coast(t0 + COAST.duration);
+        assert_eq!(s.position_ticks, 1_000 + 30_000);
+    }
+
+    #[test]
     fn a_coast_ends_stopped_at_its_full_distance() {
         let t0 = Instant::now();
         let mut s = coasting_goto_axis(Direction::Cw);
@@ -1138,10 +1172,11 @@ mod tests {
         }
         let mut t = factory.open().await.unwrap();
         assert_eq!(round_trip(&mut t, b":L2\r").await, b"=\r");
-        // Goto, CW, fast (`4`); running (`1`); initialised (`1`).
-        assert_eq!(round_trip(&mut t, b":f2\r").await, b"=411\r");
+        // Tracking, CW, slow (`1`); running (`1`); initialised (`1`) — the
+        // pier1 `GTi`'s reply mid-coast, and `=101` once it is over.
+        assert_eq!(round_trip(&mut t, b":f2\r").await, b"=111\r");
         tokio::time::advance(COAST.duration).await;
-        assert_eq!(round_trip(&mut t, b":f2\r").await, b"=401\r");
+        assert_eq!(round_trip(&mut t, b":f2\r").await, b"=101\r");
         let position = round_trip(&mut t, b":j2\r").await;
         let payload: &[u8; 6] = position[1..7].try_into().unwrap();
         assert_eq!(decode_position(payload).unwrap(), 1_000 + 30_000);
