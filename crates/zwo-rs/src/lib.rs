@@ -42,8 +42,9 @@
 //! The EAF SDK logs every process's calls to `/tmp/zwo/log/eaf_sdk/`, and
 //! aborts the process at its first call when it cannot write there, as when
 //! another user made `/tmp/zwo` first. Before the first EAF call in a process,
-//! this crate checks that the directory takes a file, and when it does not,
-//! the call answers [`Error::EafLog`] instead of calling the SDK.
+//! this crate makes the directory as the SDK would and checks that it takes a
+//! file, and when it does not, the call answers [`Error::EafLog`] instead of
+//! calling the SDK.
 //!
 //! ## Build requirements
 //!

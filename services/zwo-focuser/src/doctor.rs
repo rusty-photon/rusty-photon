@@ -72,7 +72,7 @@ mod tests {
     fn a_refused_sdk_log_is_reported_without_the_usb_hint() {
         let error = zwo_rs::Error::EafLog {
             dir: "/tmp/zwo/log/eaf_sdk".to_string(),
-            reason: "/tmp/zwo (owner uid 0) refused a new file".to_string(),
+            reason: "/tmp/zwo (owner uid 0) refused the log".to_string(),
         };
 
         let SdkOutcome::Error { detail, suggestion } = failure(&error) else {

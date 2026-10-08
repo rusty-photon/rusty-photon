@@ -193,9 +193,11 @@ there is no in-flight-task cancellation/invalidation machinery to build.
   subcommand does.
 
   So on Linux `zwo-rs` checks, before the first EAF SDK call in a process,
-  that the directory takes a file: it makes one and removes it again, in the
-  nearest part of the path that exists when the rest does not yet, and makes
-  no directory. When the check fails, the SDK is not called and the call
+  that the directory takes a file. It makes whatever part of the directory is
+  missing, as the SDK would (mode 0755), then makes a file in it and removes
+  it again. Making the directory itself, rather than leaving it to the SDK,
+  leaves no gap between the check and the first call in which another user
+  could make it first. When the check fails, the SDK is not called and the call
   answers `zwo_rs::Error::EafLog`, naming what refused the file, its owner's
   uid and the fix (make it writable for this user, or run as its owner). The
   service then fails to start with that message (C0), and doctor reports it as

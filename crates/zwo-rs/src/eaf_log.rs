@@ -47,18 +47,28 @@ pub fn ensure_writable() -> Result<()> {
     Ok(())
 }
 
-/// Whether this process can write a log in `dir`: make a file there and
-/// remove it again. When `dir`, or part of it, does not exist yet, try the
-/// nearest part that does, where the SDK would have to make the rest. Leaves
-/// nothing behind and makes no directory.
+/// Whether this process can write a log in `dir`: make whatever part of `dir`
+/// is missing, as the SDK would at its first call (mode 0755, as spdlog makes
+/// it), then make a file in it and remove it again.
+///
+/// Making the directory here rather than leaving it to the SDK closes the gap
+/// between this check and the SDK's first call: once this process owns `dir`,
+/// no other user can make it first. Leaves no file behind.
 fn check(dir: &Path) -> Result<()> {
-    let nearest = dir.ancestors().find(|path| path.exists()).unwrap_or(dir);
-    let probe = nearest.join(format!(".rusty-photon-check-{}", std::process::id()));
-    match std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&probe)
-    {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let probe = dir.join(format!(".rusty-photon-check-{}", std::process::id()));
+    let made = std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o755)
+        .create(dir)
+        .and_then(|()| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&probe)
+        });
+    match made {
         Ok(file) => {
             drop(file);
             if let Err(error) = std::fs::remove_file(&probe) {
@@ -67,21 +77,24 @@ fn check(dir: &Path) -> Result<()> {
             tracing::debug!(dir = %dir.display(), "the EAF SDK can write its log");
             Ok(())
         }
-        Err(error) => Err(refusal(dir, nearest, &error)),
+        Err(error) => Err(refusal(dir, &error)),
     }
 }
 
-/// The error for a log directory `blocked` refused to take a file in.
-fn refusal(dir: &Path, blocked: &Path, error: &std::io::Error) -> Error {
+/// The error for a log directory `dir` this process could not make or write
+/// in. What refused is the deepest part of `dir` that exists: `dir` itself, or
+/// the parent that would not take the rest of it.
+fn refusal(dir: &Path, error: &std::io::Error) -> Error {
     use std::os::unix::fs::MetadataExt;
 
+    let blocked = dir.ancestors().find(|path| path.exists()).unwrap_or(dir);
     let owner = std::fs::metadata(blocked)
         .map(|metadata| format!(" (owner uid {})", metadata.uid()))
         .unwrap_or_default();
     Error::EafLog {
         dir: dir.display().to_string(),
         reason: format!(
-            "{}{owner} refused a new file: {error}; make it writable for this user, or run as its owner",
+            "{}{owner} refused the log: {error}; make it writable for this user, or run as its owner",
             blocked.display()
         ),
     }
@@ -111,13 +124,26 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_log_directory_is_tried_where_the_sdk_would_make_it() {
+    fn a_missing_log_directory_is_made_as_the_sdk_would_make_it() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("zwo/log/eaf_sdk");
 
         check(&dir).unwrap();
 
-        assert_eq!(entries(tmp.path()), Vec::<std::ffi::OsString>::new());
+        for made in [
+            tmp.path().join("zwo"),
+            tmp.path().join("zwo/log"),
+            dir.clone(),
+        ] {
+            let mode = std::fs::metadata(&made).unwrap().permissions().mode();
+            assert_eq!(
+                mode & 0o777 & !0o755,
+                0,
+                "{} is mode {mode:o}",
+                made.display()
+            );
+        }
+        assert_eq!(entries(&dir), Vec::<std::ffi::OsString>::new());
     }
 
     #[test]
@@ -157,11 +183,38 @@ mod tests {
             result.unwrap();
         } else {
             let error = result.unwrap_err();
+            let prefix = format!("{} (owner uid ", dir.display());
             assert!(
-                matches!(&error, Error::EafLog { reason, .. } if reason.contains("refused a new file")),
+                matches!(&error, Error::EafLog { reason, .. } if reason.starts_with(&prefix)),
                 "{error:?}"
             );
         }
         assert_eq!(entries(&dir), Vec::<std::ffi::OsString>::new());
+    }
+
+    #[test]
+    fn a_parent_this_user_cannot_write_is_refused_and_named() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().join("zwo/log");
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let writable = std::fs::create_dir(parent.join("direct")).is_ok();
+        let _ = std::fs::remove_dir(parent.join("direct"));
+        let dir = parent.join("eaf_sdk");
+
+        let result = check(&dir);
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        if writable {
+            result.unwrap();
+        } else {
+            let error = result.unwrap_err();
+            let prefix = format!("{} (owner uid ", parent.display());
+            assert!(
+                matches!(&error, Error::EafLog { reason, .. } if reason.starts_with(&prefix)),
+                "{error:?}"
+            );
+            assert!(!dir.exists());
+        }
     }
 }

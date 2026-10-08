@@ -74,8 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   aborts the process at its first call when it cannot write there, as when
   another user made `/tmp/zwo` first. Before the first EAF call in a process,
   `focuser_count`, `eaf_version`, `focusers`, `open_focuser` and
-  `FocuserList`'s `rescan` and `open_focuser` check that the directory takes a
-  file, and answer `Error::EafLog` instead of calling the SDK when it does not.
+  `FocuserList`'s `rescan` and `open_focuser` make the directory as the SDK
+  would and check that it takes a file, and answer `Error::EafLog` instead of
+  calling the SDK when it does not.
 - `Sdk::with_departure_file(path)` (`simulation` + `camera` or `focuser`): the
   simulated camera leaves the bus while `path` exists and returns when it is
   removed, behaving as ASI SDK 1.41 was measured to. While it is gone a rescan
