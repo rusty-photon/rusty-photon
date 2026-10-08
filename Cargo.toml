@@ -142,8 +142,8 @@ string_slice = "deny"
 # The L5 ladder's three: zeroed rung by rung across every inheriting crate
 # (docs/plans/archive/workspace-lints.md §L5), flipped to deny 2026-08-14 after the
 # full-workspace --all-targets --all-features census read zero outside the
-# dual-homed FFI crates (then outside the [lints] mechanism; the L7 ladder
-# now mirrors this table into them — see the dual-homed note below the table).
+# dual-homed FFI crates (then outside the [lints] mechanism; they inherit this
+# table with `[lints] workspace = true` now, like every other member).
 as_conversions = "deny"
 arithmetic_side_effects = "deny"
 indexing_slicing = "deny"
