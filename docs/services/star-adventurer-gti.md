@@ -196,7 +196,8 @@ What it means for the hardware:
   mode, clockwise and slow, whichever way the goto was turning — and
   `=101` once the axis has stopped (measured on pier1, 2026-10-07: a goto
   reading `=011` / `=211` read `=111` on both axes the frame after `:L`).
-  So the goto bit alone cannot tell a coast from tracking. What can is
+  RA tracking at sidereal reads the same `=111`, so `:f` cannot tell a
+  coast from tracking at all. What can is
   the rate the driver commanded: every stop and every goto `:G` clears
   it, so an axis running with none is still in its goto's motion. The
   slew planner's first plan and `SyncToCoordinates` both read it that
@@ -3390,6 +3391,13 @@ this service's runs, newest first:
     rest 4.7° past the pole. A sync there kept pierEast, and a slew
     straight back from that pose landed.
   - **`SetSideOfPier`** latched the pointing read just before it.
+  - **The fix, run again on the rig before it merged** (a branch build
+    swapped in for the packaged binary): 29 of 29 checks passed. Syncs
+    0.004 s and 0.6 s into an abort's coast, and 0.004 s into an aborted
+    flip's coast, were refused. Syncs while tracking and during North
+    and East guide pulses were accepted, though RA read the same `=111`
+    while it tracked. Every accepted sync wrote the count it had read,
+    to within a tick.
 
   There is no record: this was not a ConformU run.
 
