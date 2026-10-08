@@ -929,14 +929,40 @@ mod departure_tests {
         assert_eq!(focuser.max_step().unwrap_err(), removed);
         assert_eq!(focuser.stop().unwrap_err(), removed);
         assert_eq!(focuser.move_to(100).unwrap_err(), removed);
+        assert_eq!(focuser.reverse().unwrap_err(), removed);
+        assert_eq!(focuser.serial().unwrap_err(), removed);
+        assert_eq!(focuser.firmware_version().unwrap_err(), removed);
+        // The writes the probe did not send on hardware answer the same way:
+        // every call that needs the session does.
+        assert_eq!(focuser.set_reverse(true).unwrap_err(), removed);
+        assert_eq!(focuser.reset_position(42).unwrap_err(), removed);
         // The cached info needs no session, as `EAFGetProperty` needs none.
         assert_eq!(focuser.info().name, "EAF-Simulated");
 
         assert_eq!(sdk.focuser_count().unwrap(), 0);
-        assert_eq!(
-            focuser.position().unwrap_err(),
-            Error::Eaf(EafError::InvalidId)
-        );
+        let invalid_id = Error::Eaf(EafError::InvalidId);
+        assert_eq!(focuser.position().unwrap_err(), invalid_id);
+        assert_eq!(focuser.reverse().unwrap_err(), invalid_id);
+        assert_eq!(focuser.set_reverse(false).unwrap_err(), invalid_id);
+    }
+
+    /// A write refused on a departed focuser changes nothing: the departure is
+    /// answered before the write reaches the simulated state. The departed
+    /// session never answers again, so the state is read back directly.
+    #[test]
+    fn a_write_refused_after_a_departure_leaves_the_state_alone() {
+        let (_dir, departure) = departure_path();
+        let sdk = Sdk::new().unwrap().with_departure_file(&departure);
+        let focuser = sdk.open_focuser(0).unwrap();
+        std::fs::write(&departure, b"").unwrap();
+        focuser.set_reverse(true).unwrap_err();
+        focuser.reset_position(42).unwrap_err();
+        let state = focuser
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(!state.reverse);
+        assert_eq!(state.position, 0);
     }
 
     #[test]
