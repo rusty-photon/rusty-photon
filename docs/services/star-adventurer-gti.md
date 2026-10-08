@@ -1724,8 +1724,14 @@ configures (`auto_flip_during_tracking` → `auto_flip.enabled`,
 `auto_flip.meridian_offset_hours`). Neither was kept as an
 accepted-and-ignored alias: `deny_unknown_fields` fails a config that
 still carries `flip_policy`, naming the field. **Migration:** delete
-`mount.flip_policy` and, if it set either auto-flip field, set the
-same values under `mount.auto_flip`.
+`mount.flip_policy`. The old master switch gated auto-flip too, so
+the old block flipped on its own only when `enabled` **and**
+`auto_flip_during_tracking` were both `true`; set
+`auto_flip.enabled = true` only in that case. A block with
+`auto_flip_during_tracking = true` under `enabled = false` never
+auto-flipped, and carrying the field over alone would turn
+autonomous flips on. Carry `auto_flip_at_meridian_offset_hours` over
+as `auto_flip.meridian_offset_hours` when auto-flip stays on.
 
 An earlier member, `flip_range_hours`, went in 2026-09 (issue #1301).
 It expressed the counterweight-up side's reach as a half-width window
