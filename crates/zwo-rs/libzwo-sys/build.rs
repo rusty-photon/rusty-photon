@@ -24,11 +24,7 @@ use std::{env, path::PathBuf};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Register the custom cfg so `unexpected_cfgs` stays effective for real
-    // typos. Deliberately the legacy single-colon `cargo:` syntax: this crate's
-    // published MSRV is 1.70 (below check-cfg's Cargo 1.80), and older Cargos
-    // warn-and-ignore unknown single-colon directives (the `cargo::` form would
-    // hard-error there). On rustc < 1.80 the lint doesn't exist, so nothing is
-    // lost on the MSRV path.
+    // typos.
     println!("cargo:rustc-check-cfg=cfg(zwo_keep_udev)");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);

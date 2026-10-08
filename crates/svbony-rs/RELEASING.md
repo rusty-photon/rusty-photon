@@ -40,7 +40,7 @@ green.
 ```bash
 # 0. Preflight
 git status                      # must be clean
-bazel test //...                # build + test gate
+bazel build //... && bazel test //...   # build + test gate
 # The version bump in step 1 must cover every API change since the last release.
 # Skip this for a crate's first publish: with no crates.io baseline there is
 # nothing to compare against.

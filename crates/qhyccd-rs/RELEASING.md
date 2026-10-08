@@ -43,7 +43,7 @@ verification build **links the real static SDK**.
 ```bash
 # 0. Preflight
 git status                      # must be clean
-bazel test //...                # build + test gate
+bazel build //... && bazel test //...   # build + test gate
 # The version bump in step 1 must cover every API change since the last release:
 cargo semver-checks --package libqhyccd-sys
 cargo semver-checks --package qhyccd-rs

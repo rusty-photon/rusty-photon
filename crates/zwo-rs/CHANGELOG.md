@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Both crates require Rust 1.98.1 (`zwo-rs` was 1.87.0, `libzwo-sys` 1.70.0):
+- Both crates require Rust 1.98.1 (`zwo-rs` was 1.87.0, `libzwo-sys` 1.71.0):
   they now declare the rusty-photon workspace's MSRV.
 - `Sdk::cameras` and every call that reads or rebuilds the SDK's camera list
   (`camera_count`, `open_camera`, `open_uninitialised`, `still_connected`,
