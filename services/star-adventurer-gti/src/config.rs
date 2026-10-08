@@ -356,9 +356,11 @@ impl MountConfig {
     /// tracking enabled from `mech_HA = −10` fires the trigger
     /// immediately and tries to flip to `+2`, inside the shipped zone.
     ///
-    /// Inert configurations are not errors: with `auto_flip.enabled =
-    /// false` the offset is not consulted and any value passes. With the zone disabled there is no guard
-    /// and no unreachable side, so again anything goes.
+    /// Inert configurations are not errors here: with `auto_flip.enabled
+    /// = false` the offset is not consulted, and with the zone disabled
+    /// there is no guard and no unreachable side, so this rule passes any
+    /// offset. The offset's own domain, `[-12, 12]`, still applies — the
+    /// [`AutoFlipWire`] `try_from` checks it whatever the zone.
     #[must_use]
     pub fn auto_flip_offset_error(&self) -> Option<String> {
         if !self.auto_flip.enabled {

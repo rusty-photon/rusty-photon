@@ -1710,8 +1710,9 @@ also flips on its own while tracking. Two fields:
   (and on a runtime `config.apply`) rather than leaving
   `auto_flip.enabled = true` as a setting that does nothing. The
   rule spans two config blocks, so unlike the other invariants it is
-  not a newtype — it lives in `MountConfig::auto_flip_offset_error`. With the zone disabled there
-  is no guard and no unreachable side, so any finite offset passes.
+  not a newtype — it lives in `MountConfig::auto_flip_offset_error`.
+  With the zone disabled there is no guard and no unreachable side, so
+  any offset within the `[−12, +12]` hour-angle domain passes.
   See [§Auto-flip during tracking](#auto-flip-during-tracking).
 
 **Retired keys.** Until 2026-10 the block was `flip_policy`, with an
