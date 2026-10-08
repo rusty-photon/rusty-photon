@@ -57,7 +57,7 @@ pub use error::{Result, StarAdvError};
 pub use manager::{MountManager, MountParameters, MountSnapshot, PollPauseGuard};
 pub use mount_device::{
     canonicalise_config_path, probe_park_file_writability, warn_if_park_path_unwritable,
-    MountDevice,
+    MountDevice, RetainedState,
 };
 pub use rusty_photon_shared_transport::TransportFactory;
 pub use transport::serial::SerialTransportFactory;
@@ -98,6 +98,9 @@ pub struct ServerBuilder {
     /// In-process reload trigger handed to the device's `config.apply` handler.
     /// `Some` (with `config_file_path`) enables the config vendor actions.
     reload: Option<ReloadSignal>,
+    /// What the previous lifecycle kept, which the mount device starts
+    /// from. The default — nothing kept — is a fresh process.
+    retained: RetainedState,
     /// Optional handle to a [`MockMountState`] that the build path mounts
     /// at `/debug/v1/mock-commands`. Set by mock-mode code paths
     /// (`main.rs` under `feature = "mock"`, BDD tests) so the test
@@ -140,6 +143,15 @@ impl ServerBuilder {
         self
     }
 
+    /// Start the mount device from what the previous lifecycle kept — the
+    /// value [`BoundServer::start`] returned when it ended. See the design
+    /// doc's [§"What a reload keeps"](../../../docs/services/star-adventurer-gti.md#what-a-reload-keeps).
+    #[must_use]
+    pub const fn with_retained(mut self, retained: RetainedState) -> Self {
+        self.retained = retained;
+        self
+    }
+
     /// Inject a [`TransportFactory`]. BDD tests pass
     /// [`MockTransportFactory`](transport::mock::MockTransportFactory);
     /// when omitted, [`build`] picks serial / UDP from `config.transport`.
@@ -169,16 +181,22 @@ impl ServerBuilder {
 
     /// Register the Telescope device (when `mount.enabled`), wiring in
     /// the config vendor actions when built with a config file path +
-    /// reload signal (the normal path through `main`).
-    fn register_mount_device(&self, server: &mut Server, manager: &Arc<MountManager>) {
+    /// reload signal (the normal path through `main`). Returns a handle to
+    /// the registered device, for [`BoundServer::start`] to retire.
+    fn register_mount_device(
+        &self,
+        server: &mut Server,
+        manager: &Arc<MountManager>,
+    ) -> Option<MountDevice> {
         if !self.config.mount.enabled {
-            return;
+            return None;
         }
         let mut device = MountDevice::with_config_file_path(
             self.config.mount.clone(),
             Arc::clone(manager),
             self.config_file_path.clone(),
-        );
+        )
+        .with_retained(self.retained);
         let config_ctx: Option<rusty_photon_driver::ConfigActionCtx<StarAdvDriver>> =
             match (self.config_file_path.clone(), self.reload.clone()) {
                 (Some(path), Some(reload)) => Some(rusty_photon_driver::ConfigActionCtx {
@@ -192,8 +210,9 @@ impl ServerBuilder {
         if let Some(ctx) = config_ctx {
             device = device.with_config_actions(ctx);
         }
-        server.devices.register(device);
+        server.devices.register(device.clone());
         info!("Registered Telescope device: {}", self.config.mount.name);
+        Some(device)
     }
 
     /// Pick the transport from the config (serial or UDP) unless one was
@@ -254,7 +273,7 @@ impl ServerBuilder {
             let mut server = Server::new(CargoServerInfo!());
             server.listen_addr = self.config.server.socket_addr();
 
-            self.register_mount_device(&mut server, &manager);
+            let mount = self.register_mount_device(&mut server, &manager);
 
             let tls = self.config.server.tls.clone();
             // Mount the mock-introspection endpoint first so it takes
@@ -312,6 +331,7 @@ impl ServerBuilder {
                 tls,
                 discovery,
                 manager: Arc::clone(&manager),
+                mount,
             })
         }
         .await;
@@ -345,6 +365,9 @@ pub struct BoundServer {
     /// `Hooks::shutdown`, and closes the port. In `LazyAcquire` mode it's
     /// a no-op so pre-Phase-1 deployments are unaffected.
     manager: Arc<MountManager>,
+    /// The registered mount device, retired by `start()` once serving
+    /// ends. `None` when `mount.enabled` is false.
+    mount: Option<MountDevice>,
 }
 
 impl BoundServer {
@@ -352,7 +375,9 @@ impl BoundServer {
         self.local_addr
     }
 
-    /// Serve until `shutdown` resolves, then shut the transport down.
+    /// Serve until `shutdown` resolves, then retire the mount and shut
+    /// the transport down. Returns what the mount kept, for the next
+    /// lifecycle to start from ([`ServerBuilder::with_retained`]).
     ///
     /// # Errors
     ///
@@ -362,7 +387,7 @@ impl BoundServer {
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
-    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> std::result::Result<RetainedState, Box<dyn std::error::Error + Send + Sync>> {
         // Capture the serve result and run `transport.shutdown()`
         // unconditionally so a serve error doesn't leave the port and
         // the reconnect supervisor alive (the original `?` shape did
@@ -375,6 +400,7 @@ impl BoundServer {
             tls,
             discovery,
             manager,
+            mount,
         } = self;
         let serve = async {
             if let Some(ref tls_config) = tls {
@@ -386,6 +412,14 @@ impl BoundServer {
             }
         };
         let serve_result = rusty_photon_driver::discovery::serve_with(discovery, serve).await;
+        // Retire the mount before the transport shutdown below. That
+        // shutdown's safety stop halts a park still in flight, and the
+        // park's watcher would take the halt for an arrival; once the
+        // mount is retired, the watcher can no longer mark it parked.
+        let retained = match &mount {
+            Some(mount) => mount.retire().await,
+            None => RetainedState::default(),
+        };
         // Always-run transport shutdown. In ServiceLifetime mode this
         // cancels the supervisor, runs the safety teardown one last
         // time, and drops the port. Errors are logged-not-propagated
@@ -395,7 +429,7 @@ impl BoundServer {
             tracing::warn!(error = %e, "transport shutdown returned an error during teardown");
         }
         debug!("star-adventurer-gti shut down");
-        serve_result.map_err(Into::into)
+        serve_result.map(|()| retained).map_err(Into::into)
     }
 }
 

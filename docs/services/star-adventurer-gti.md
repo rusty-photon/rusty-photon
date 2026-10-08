@@ -642,7 +642,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `GuideRateRightAscension` | RA guide rate (deg/sec). In-memory mirror of the last `SetGuideRateRightAscension` write, default `0.5 × SIDEREAL_DEG_PER_SEC ≈ 0.00209` (i.e. fraction = 0.5 of sidereal). Re-initialised to the default on each `Connected = true`. |
 | `GuideRateDeclination` | Dec guide rate (deg/sec). Same shape as RA; settable independently per ASCOM. |
 | `IsPulseGuiding` | `true` if either axis has an in-flight pulse (`pulse_guiding.ra || pulse_guiding.dec`); see [§PulseGuide lifecycle](#pulseguide-lifecycle) for the per-axis flag semantics. |
-| `AtPark` | driver-state flag; set by `Park`, cleared by `Unpark` and by any motion command |
+| `AtPark` | driver-state flag; set by `Park`, cleared by `Unpark` and by any motion command. Survives a disconnect and a reload, not a process restart — see [§What a reload keeps](#what-a-reload-keeps) |
 | `AtHome` | `false` (no hardware home concept) |
 | `SideOfPier` | derived from Dec-axis encoder + Dec-axis CPR + site latitude — canonical INDI eqmod convention (`PierSide::East` when `\|dec_encoder\| > cpr_dec/4`, i.e. Dec rotated past either celestial pole). Southern hemisphere inverts. See [§Side-of-pier](#side-of-pier) |
 | `DestinationSideOfPier(ra, dec)` | predicts the pointing state the driver would land at for a slew target. Runs the pier-side decision a slew runs (current side + where the mount stands + target HA), maps to encoder ticks for the chosen side, and validates the per-side safety envelope. See [§Side-of-pier](#side-of-pier) and [§Meridian flip](#meridian-flip) |
@@ -651,7 +651,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `SiteElevation` | from config; defaults to `0` |
 | `UTCDate` | host clock (per ASCOM convention; setter writes a host-side offset only) |
 | `SiderealTime` | computed from `UTCDate` + `SiteLongitude` |
-| `SlewSettleTime` | from config; setter is allowed (writes the in-memory cache only, not config file) |
+| `SlewSettleTime` | from config; setter is allowed (writes the in-memory cache only, not config file). A value a client set survives a disconnect and a reload, and wins over `mount.settle_after_slew` — a value a reload has just applied included — until the process restarts; see [§What a reload keeps](#what-a-reload-keeps) |
 
 ### Writes / methods
 
@@ -2875,6 +2875,9 @@ changes a field persists atomically, returns `status:"applying"`, and fires the
 in-process reload: `main.rs` runs under
 `ServiceRunner::with_reload().run_with_reload(...)`, whose loop re-reads + re-
 applies the CLI overrides and rebuilds the server from the freshly-persisted file.
+The rebuilt server starts from what the old one kept — `AtPark` and a
+client-set `SlewSettleTime` — handed across the loop by `main.rs`; see
+[§What a reload keeps](#what-a-reload-keeps).
 
 ## Module Structure
 
@@ -2926,7 +2929,9 @@ src/
   coordinates.rs         — encoder-tick ↔ angle, LST, sync offset,
                            side-of-pier derivation
   mount_device.rs        — module entry point: `DriverState`,
-                           `MountDevice` struct + constructors,
+                           `RetainedState` (what a reload carries),
+                           `MountDevice` struct + constructors +
+                           `retire` (ends a lifecycle for a reload),
                            `pre_flip_side_for_latitude` helper, public
                            re-exports of the park-persistence helpers
   mount_device/
@@ -3561,6 +3566,9 @@ conduit, where it is asserted whatever the way down managed.
 ```
 Service shutdown (HTTP server stops → `SharedTransport::shutdown()`)
    ↓
+retire the mount: void the slew or park in flight, hand over what a
+   reload keeps (see §What a reload keeps) — nothing on the wire
+   ↓
 shutdown hook runs :L1, :L2, :K1 one last time
    (a stop that does not assert here is logged at error!: nothing
     downstream can act on it, and the next cold start is what
@@ -3579,6 +3587,40 @@ shutdown. A transient transport drop is handled by the reconnect supervisor,
 which re-runs the handshake against the new connection while live sessions
 survive via the connection-cell swap. (Same service-lifetime pattern as
 `qhy-focuser`, `ppba-driver`, `pa-falcon-rotator`, and `dsd-fp2`.)
+
+### What a reload keeps
+
+A reload rebuilds the driver, not the mount. To a client it looks like
+a disconnect — `Connected` reads `false` afterwards — and it keeps what
+a disconnect keeps:
+
+| Kept across a reload | Why |
+|---|---|
+| `AtPark` | Mechanical state. The encoders do not move because the driver was rebuilt, any more than because a client closed its socket; a mount parked before the reload is still parked after it, and the parked interlock (`INVALID_WHILE_PARKED` on slews, syncs, `SetSideOfPier`, `PulseGuide`, `AbortSlew` and `Tracking = true`) still holds. |
+| `SlewSettleTime` set by a client | An operator-tuned setting. It keeps winning over `mount.settle_after_slew`, even when the reload is the one that changed that field. |
+
+Everything a disconnect resets, a reload resets as well: the slew
+target, `Tracking`, the guide rates, any pulse in flight, the park
+target and the frame anchor (the last two are re-derived on the next
+connect, as after any disconnect).
+
+A process restart keeps nothing. A new process cannot know whether the
+mount was moved by hand while no driver was running, so it starts with
+`AtPark = false`, and a client that needs the mount parked parks it
+again.
+
+**A park the reload interrupts is not carried as parked.** The reload
+does not disconnect the old driver, so a park still in flight — still
+slewing, or sleeping out its settle — keeps its claim on the slew slot.
+The shutdown's safety stop then halts its axes, which its completion
+watcher cannot tell from a park that arrived. The old driver is
+therefore *retired* once the HTTP server has drained and **before** the
+shutdown hook runs: under `axis_ownership`, as `AbortSlew` and
+disconnect do, the slot is emptied — voiding the park's claim — and what
+the old driver kept is copied out and handed to the next one. A park
+whose watcher marked it parked before the retire is carried as parked;
+one still in flight is carried as not parked, and its watcher, finding
+its claim gone, never marks it. The retire sends nothing to the mount.
 
 ## MVP Scope
 
