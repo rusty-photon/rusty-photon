@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Both crates require Rust 1.98.1 (`zwo-rs` was 1.87.0, `libzwo-sys` 1.71.0):
+  they now declare the rusty-photon workspace's MSRV.
 - `Sdk::cameras` and every call that reads or rebuilds the SDK's camera list
   (`camera_count`, `open_camera`, `open_uninitialised`, `still_connected`,
   and `Camera::electrons_per_adu`, which reads it by ID) now take one
@@ -23,12 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   header's range is preserved exactly instead of saturating into `i32::MAX`.
 - **Breaking:** `ControlType::Other` stores `i64`; an unmapped control id from
   the SDK survives losslessly on either platform width of `ASI_CONTROL_TYPE`.
-- `libzwo-sys` builds its bindings with `bindgen 0.73` (was `0.72`), which
-  raises that crate's declared MSRV from 1.70.0 to 1.71.0. `bindgen`'s
+- `libzwo-sys` builds its bindings with `bindgen 0.73` (was `0.72`). `bindgen`'s
   `prettyplease` default feature is now off: the build script has always used
   the default `Formatter::Rustfmt`, so the feature only pulled a second
   formatter that `bindgen` cannot build when `prettyplease` and `syn` resolve to
-  mismatched majors. `zwo-rs`'s own MSRV is unchanged at 1.87.0.
+  mismatched majors.
 
 ### Fixed
 

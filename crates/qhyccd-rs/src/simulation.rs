@@ -835,11 +835,10 @@ fn write_sample(pixel: &mut [u8], value: u16) {
 /// Adds `value` to every 16-bit channel of a pixel, saturating so an
 /// overlapping star's core stays white rather than wrapping to black.
 fn add_sample(pixel: &mut [u8], value: u16) {
-    for sample in pixel.chunks_exact_mut(2) {
-        if let Some(bytes) = sample.first_chunk::<2>() {
-            let sum = u16::from_le_bytes(*bytes).saturating_add(value);
-            sample.copy_from_slice(&sum.to_le_bytes());
-        }
+    for sample in pixel.as_chunks_mut::<2>().0 {
+        *sample = u16::from_le_bytes(*sample)
+            .saturating_add(value)
+            .to_le_bytes();
     }
 }
 
@@ -1529,8 +1528,10 @@ mod image_generator_tests {
         assert!(data8.iter().copied().max().unwrap() >= 100);
         let data16 = ImageGenerator::new(ImagePattern::StarField).generate_16bit(W, H, 1);
         let max = data16
-            .chunks_exact(2)
-            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&c| u16::from_le_bytes(c))
             .max()
             .unwrap();
         assert!(max >= 30_000, "no star found: max sample {max}");
@@ -1554,13 +1555,13 @@ mod image_generator_tests {
     fn channels_replicate_each_sample() {
         let data8 = ImageGenerator::new(ImagePattern::Gradient).generate_8bit(8, 8, 3);
         assert_eq!(data8.len(), 8 * 8 * 3);
-        for px in data8.chunks_exact(3) {
+        for px in data8.as_chunks::<3>().0 {
             assert_eq!(px[0], px[1]);
             assert_eq!(px[1], px[2]);
         }
         let data16 = ImageGenerator::new(ImagePattern::Gradient).generate_16bit(8, 8, 3);
         assert_eq!(data16.len(), 8 * 8 * 3 * 2);
-        for px in data16.chunks_exact(6) {
+        for px in data16.as_chunks::<6>().0 {
             assert_eq!(px[0..2], px[2..4]);
             assert_eq!(px[2..4], px[4..6]);
         }
@@ -1579,13 +1580,17 @@ mod image_generator_tests {
         ] {
             let data = ImageGenerator::new(pattern).generate_8bit(64, 64, 3);
             assert!(
-                data.chunks_exact(3)
+                data.as_chunks::<3>()
+                    .0
+                    .iter()
                     .all(|px| px[0] == px[1] && px[1] == px[2]),
                 "{pattern:?} 8-bit channels diverge within a pixel"
             );
             let data = ImageGenerator::new(pattern).generate_16bit(64, 64, 3);
             assert!(
-                data.chunks_exact(6)
+                data.as_chunks::<6>()
+                    .0
+                    .iter()
                     .all(|px| px[0..2] == px[2..4] && px[2..4] == px[4..6]),
                 "{pattern:?} 16-bit channels diverge within a pixel"
             );
@@ -1665,7 +1670,7 @@ mod image_generator_tests {
         let data8 = generator.generate_8bit(8, 8, 1);
         assert!(data8.iter().all(|&v| v == data8[0]));
         let data16 = generator.generate_16bit(8, 8, 1);
-        assert!(data16.chunks_exact(2).all(|c| c == &data16[0..2]));
+        assert!(data16.as_chunks::<2>().0.iter().all(|c| c == &data16[0..2]));
     }
 }
 

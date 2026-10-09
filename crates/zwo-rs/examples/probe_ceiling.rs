@@ -194,10 +194,12 @@ fn report(camera: &Camera, shot: &Shot) {
     }
 
     let pixels: Vec<u16> = buf
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         // The camera puts Raw16 on the wire low byte first, which
         // `from_le_bytes` says directly.
-        .map(|c| u16::from_le_bytes(c.try_into().expect("chunks_exact(2) yields pairs")))
+        .map(|&c| u16::from_le_bytes(c))
         .collect();
     let mean = pixels.iter().map(|&p| u64::from(p)).sum::<u64>() as f64 / pixels.len() as f64;
     println!(

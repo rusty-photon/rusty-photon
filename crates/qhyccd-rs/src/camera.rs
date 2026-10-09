@@ -689,7 +689,7 @@ impl Camera {
     /// println!("Camera id: {}", camera.id());
     /// ```
     #[must_use]
-    pub fn id(&self) -> &str {
+    pub const fn id(&self) -> &str {
         self.id.as_str()
     }
 }

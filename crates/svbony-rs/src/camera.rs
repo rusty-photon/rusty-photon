@@ -942,7 +942,7 @@ impl Camera {
         height: u32,
         bin: u32,
     ) -> Result<()> {
-        if width % 8 != 0 || height % 2 != 0 {
+        if !width.is_multiple_of(8) || !height.is_multiple_of(2) {
             return Err(Error::Svb(SvbError::InvalidSize));
         }
         #[cfg(feature = "simulation")]
