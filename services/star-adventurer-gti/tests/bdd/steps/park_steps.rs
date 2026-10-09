@@ -29,6 +29,13 @@ async fn park_mount(world: &mut StarAdventurerWorld) {
     wait_for_at_park(world).await;
 }
 
+/// `Park()` without waiting for the watcher: the park is left in flight
+/// for the next step to act on.
+#[when("I start parking the mount")]
+async fn start_parking_mount(world: &mut StarAdventurerWorld) {
+    world.mount().park().await.unwrap();
+}
+
 #[when("I try to park the mount")]
 async fn try_park_mount(world: &mut StarAdventurerWorld) {
     match world.mount().park().await {
@@ -106,6 +113,27 @@ async fn mount_reports_axes_stopped_at_zero(world: &mut StarAdventurerWorld) {
 #[then("AtPark should be false")]
 async fn at_park_false(world: &mut StarAdventurerWorld) {
     assert!(!world.mount().at_park().await.unwrap());
+}
+
+#[then("AtPark should be true")]
+async fn at_park_true(world: &mut StarAdventurerWorld) {
+    assert!(world.mount().at_park().await.unwrap());
+}
+
+/// Watch `AtPark` across the whole window rather than sampling it once at
+/// the end: a flip to `true` anywhere inside it is the failure, and a
+/// longer window can only make it easier to see (docs/skills/testing.md
+/// §6.9).
+#[then(expr = "AtPark should stay false for {int} seconds")]
+async fn at_park_stays_false(world: &mut StarAdventurerWorld, secs: u64) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+    while std::time::Instant::now() < deadline {
+        assert!(
+            !world.mount().at_park().await.unwrap(),
+            "AtPark turned true within {secs} seconds"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 #[then(expr = "AtPark should eventually be true within {int} seconds")]

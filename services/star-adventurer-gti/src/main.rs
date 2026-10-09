@@ -37,8 +37,8 @@ use tracing::{debug, info, Level};
 #[cfg(feature = "mock")]
 use star_adventurer_gti::transport::mock::CapturingMockFactory;
 use star_adventurer_gti::{
-    canonicalise_config_path, load_config, warn_if_park_path_unwritable, Config, ServerBuilder,
-    TransportFactory,
+    canonicalise_config_path, load_config, warn_if_park_path_unwritable, Config, Handover,
+    ServerBuilder, TransportFactory,
 };
 
 #[derive(Parser)]
@@ -178,6 +178,15 @@ fn main() -> ServiceResult {
                 let factory: Arc<dyn TransportFactory> = Arc::new(factory);
                 (factory, state)
             };
+            // The driver's own record of the mount crosses a reload too —
+            // what a disconnect keeps: AtPark and a client-set
+            // SlewSettleTime — but as a value each lifecycle hands to the
+            // next, not as state the two share: a park still in flight in
+            // the old lifecycle must not be able to mark the new one
+            // parked (see `MountDevice::retire`). The next lifecycle uses
+            // it only if it drives the same mount. A process restart
+            // starts from the default: nothing kept.
+            let mut handover = Handover::default();
             loop {
                 // The file always exists (materialize wrote the scaffold on
                 // first run). Re-read + re-apply overrides each cycle.
@@ -198,7 +207,8 @@ fn main() -> ServiceResult {
                 let builder = ServerBuilder::new()
                     .with_config(config)
                     .with_config_file_path(Some(config_file_path.clone()))
-                    .with_reload_signal(reload.clone());
+                    .with_reload_signal(reload.clone())
+                    .with_handover(handover);
 
                 #[cfg(feature = "mock")]
                 let builder = builder
@@ -224,7 +234,7 @@ fn main() -> ServiceResult {
                         }
                     }
                 };
-                bound.start(stop).await?;
+                handover = bound.start(stop).await?;
 
                 if reloaded.load(Ordering::SeqCst) {
                     debug!("reloading star-adventurer-gti configuration");

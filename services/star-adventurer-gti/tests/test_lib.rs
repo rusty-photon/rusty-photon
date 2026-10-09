@@ -41,7 +41,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use star_adventurer_gti::{
-    AlpacaServerConfig, Config, MockTransportFactory, MountConfig, ServerBuilder, TransportFactory,
+    AlpacaServerConfig, BoundServer, Config, Handover, MockTransportFactory, MountConfig,
+    ServerBuilder, TransportConfig, TransportFactory, UdpConfig,
 };
 
 static SERVER_LOCK: Mutex<()> = Mutex::new(());
@@ -111,6 +112,154 @@ async fn test_server_starts_with_mount_disabled() {
     assert_ne!(status, 200, "Telescope should not be registered");
     handle.abort();
     let _ = handle.await;
+}
+
+/// Build one lifecycle's server, starting from what the previous one
+/// handed over.
+async fn bind_lifecycle(config: Config, handover: Handover) -> BoundServer {
+    let factory: Arc<dyn TransportFactory> = Arc::new(MockTransportFactory);
+    ServerBuilder::new()
+        .with_config(config)
+        .with_transport_factory(factory)
+        .with_handover(handover)
+        .build()
+        .await
+        .expect("server failed to bind")
+}
+
+/// PUT an Alpaca telescope method and fail on any ASCOM error.
+async fn put_telescope(port: u16, method: &str, form: &[(&str, &str)]) {
+    let reply: serde_json::Value = reqwest::Client::new()
+        .put(format!(
+            "http://127.0.0.1:{port}/api/v1/telescope/0/{method}"
+        ))
+        .form(form)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        reply.get("ErrorNumber").and_then(serde_json::Value::as_i64),
+        Some(0),
+        "PUT {method} failed: {reply}"
+    );
+}
+
+async fn at_park(port: u16) -> bool {
+    let reply: serde_json::Value =
+        reqwest::get(format!("http://127.0.0.1:{port}/api/v1/telescope/0/atpark"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+    reply
+        .get("Value")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap()
+}
+
+/// Run one lifecycle in which a client parks the mount, and return what it
+/// hands over.
+async fn parked_lifecycle(config: Config) -> Handover {
+    let bound = bind_lifecycle(config, Handover::default()).await;
+    let port = bound.listen_addr().port();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let serving = tokio::spawn(bound.start(async {
+        let _ = stopped.await;
+    }));
+    poll_status(port, "/api/v1/telescope/0/name", READY_TIMEOUT).await;
+    put_telescope(port, "connected", &[("Connected", "true")]).await;
+    put_telescope(port, "park", &[]).await;
+    let start = std::time::Instant::now();
+    while !at_park(port).await {
+        assert!(
+            start.elapsed() < Duration::from_secs(10),
+            "the park never landed"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    stop.send(()).unwrap();
+    let handover = serving.await.unwrap().unwrap();
+    assert_ne!(
+        handover,
+        Handover::default(),
+        "the parked lifecycle handed over nothing"
+    );
+    handover
+}
+
+/// Run one lifecycle from `handover` and read `AtPark` once it serves.
+async fn at_park_in_lifecycle(config: Config, handover: Handover) -> bool {
+    let bound = bind_lifecycle(config, handover).await;
+    let port = bound.listen_addr().port();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let serving = tokio::spawn(bound.start(async {
+        let _ = stopped.await;
+    }));
+    poll_status(port, "/api/v1/telescope/0/name", READY_TIMEOUT).await;
+    let parked = at_park(port).await;
+    stop.send(()).unwrap();
+    serving.await.unwrap().unwrap();
+    parked
+}
+
+fn fast_park_config() -> Config {
+    let mut config = test_config(true);
+    config.mount.settle_after_slew = Duration::ZERO;
+    config
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)]
+async fn a_lifecycle_without_a_mount_hands_on_what_it_was_given() {
+    let _lock = SERVER_LOCK.lock().unwrap();
+    let parked = parked_lifecycle(fast_park_config()).await;
+
+    // A reload that disables the mount registers no device, so it has
+    // nothing to retire; it passes on what it was given.
+    let bound = bind_lifecycle(test_config(false), parked.clone()).await;
+    let handed_on = bound.start(async {}).await.unwrap();
+
+    assert_eq!(handed_on, parked);
+}
+
+#[tokio::test]
+#[cfg_attr(miri, ignore)]
+async fn a_hand_over_applies_only_to_the_mount_it_was_kept_for() {
+    let _lock = SERVER_LOCK.lock().unwrap();
+    let parked = parked_lifecycle(fast_park_config()).await;
+
+    assert!(
+        at_park_in_lifecycle(fast_park_config(), parked.clone()).await,
+        "the same mount did not start parked"
+    );
+
+    let mut other_port = fast_park_config();
+    match &mut other_port.transport {
+        TransportConfig::Usb(usb) => usb.port = "/dev/ttyUSB9".to_string(),
+        TransportConfig::Udp(_) => unreachable!("the default transport is USB"),
+    }
+    assert!(
+        !at_park_in_lifecycle(other_port, parked.clone()).await,
+        "a mount on another serial port inherited AtPark"
+    );
+
+    let mut over_wifi = fast_park_config();
+    over_wifi.transport = TransportConfig::Udp(UdpConfig::default());
+    assert!(
+        !at_park_in_lifecycle(over_wifi, parked.clone()).await,
+        "a mount reached over UDP inherited the USB mount's AtPark"
+    );
+
+    let mut other_id = fast_park_config();
+    other_id.mount.unique_id = "another-mount".to_string();
+    assert!(
+        !at_park_in_lifecycle(other_id, parked).await,
+        "a mount with another unique_id inherited AtPark"
+    );
 }
 
 #[tokio::test]

@@ -642,7 +642,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `GuideRateRightAscension` | RA guide rate (deg/sec). In-memory mirror of the last `SetGuideRateRightAscension` write, default `0.5 × SIDEREAL_DEG_PER_SEC ≈ 0.00209` (i.e. fraction = 0.5 of sidereal). Re-initialised to the default on each `Connected = true`. |
 | `GuideRateDeclination` | Dec guide rate (deg/sec). Same shape as RA; settable independently per ASCOM. |
 | `IsPulseGuiding` | `true` if either axis has an in-flight pulse (`pulse_guiding.ra || pulse_guiding.dec`); see [§PulseGuide lifecycle](#pulseguide-lifecycle) for the per-axis flag semantics. |
-| `AtPark` | driver-state flag; set by `Park`, cleared by `Unpark` and by any motion command |
+| `AtPark` | driver-state flag; set by `Park`, cleared by `Unpark` and by any motion command. Survives a disconnect and a reload, not a process restart — see [§What a reload keeps](#what-a-reload-keeps) |
 | `AtHome` | `false` (no hardware home concept) |
 | `SideOfPier` | derived from Dec-axis encoder + Dec-axis CPR + site latitude — canonical INDI eqmod convention (`PierSide::East` when `\|dec_encoder\| > cpr_dec/4`, i.e. Dec rotated past either celestial pole). Southern hemisphere inverts. See [§Side-of-pier](#side-of-pier) |
 | `DestinationSideOfPier(ra, dec)` | predicts the pointing state the driver would land at for a slew target. Runs the pier-side decision a slew runs (current side + where the mount stands + target HA), maps to encoder ticks for the chosen side, and validates the per-side safety envelope. See [§Side-of-pier](#side-of-pier) and [§Meridian flip](#meridian-flip) |
@@ -651,7 +651,7 @@ Every property/method on `ITelescopeV3`, what the driver returns, and why.
 | `SiteElevation` | from config; defaults to `0` |
 | `UTCDate` | host clock (per ASCOM convention; setter writes a host-side offset only) |
 | `SiderealTime` | computed from `UTCDate` + `SiteLongitude` |
-| `SlewSettleTime` | from config; setter is allowed (writes the in-memory cache only, not config file) |
+| `SlewSettleTime` | from config; setter is allowed (writes the in-memory cache only, not config file). A value a client set survives a disconnect and a reload, and wins over `mount.settle_after_slew` — a value a reload has just applied included — until the process restarts; see [§What a reload keeps](#what-a-reload-keeps) |
 
 ### Writes / methods
 
@@ -2875,6 +2875,10 @@ changes a field persists atomically, returns `status:"applying"`, and fires the
 in-process reload: `main.rs` runs under
 `ServiceRunner::with_reload().run_with_reload(...)`, whose loop re-reads + re-
 applies the CLI overrides and rebuilds the server from the freshly-persisted file.
+The rebuilt server starts from what the old one kept — `AtPark` and a
+client-set `SlewSettleTime` — handed across the loop by `main.rs` as a
+`Handover`, as long as it drives the same mount; see
+[§What a reload keeps](#what-a-reload-keeps).
 
 ## Module Structure
 
@@ -2926,7 +2930,9 @@ src/
   coordinates.rs         — encoder-tick ↔ angle, LST, sync offset,
                            side-of-pier derivation
   mount_device.rs        — module entry point: `DriverState`,
-                           `MountDevice` struct + constructors,
+                           `RetainedState` (what a reload carries),
+                           `MountDevice` struct + constructors +
+                           `retire` (ends a lifecycle for a reload),
                            `pre_flip_side_for_latitude` helper, public
                            re-exports of the park-persistence helpers
   mount_device/
@@ -2969,7 +2975,9 @@ src/
                            and the boot-time writability probe
     tests.rs             — `#[cfg(test, feature = "mock")]` unit tests
                            for `MountDevice` and the private helpers
-  lib.rs                 — ServerBuilder, module declarations
+  lib.rs                 — ServerBuilder, BoundServer, `Handover` (what one
+                           reload lifecycle passes the next, and for which
+                           mount), module declarations
   main.rs                — CLI entry point
 examples/
   probe_live_step_period.rs — operator-run hardware probe (service
@@ -3022,7 +3030,7 @@ ConformU verifies ASCOM compliance.
 | Crate property tests (`tests/property_tests.rs`) | round-trip: random `Command` → bytes → `Command`; same for `Response`; bias-offset preservation across signed `i32` range |
 | Service unit tests (`#[cfg(test)]` per module) | `coordinates`: encoder ↔ RA/Dec across edge cases (poles, meridian, hemisphere flip); `config`: defaults, JSON round-trips, CLI overrides; `error`: ASCOM mapping |
 | Service BDD (cucumber) | every behaviour table-row above as a scenario, with the mock transport |
-| Service `test_lib.rs` (gated on `mock`) | server starts, binds the configured port, exposes the configured device |
+| Service `test_lib.rs` (gated on `mock`) | server starts, binds the configured port, exposes the configured device; the reload hand-over passes through a mount-disabled lifecycle and applies only to the mount it was kept for |
 | `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance via `bdd_infra::run_conformu` — ConformU's URL-argument verbs, so both the `alpacaprotocol` and `conformance` suites run with ConformU's **full** test set; the runner exposes no test selection. In the nightly `conformu` workflow rotation through `[package.metadata.conformu]`; its mock config runs clean on all three CI OSes ([#1344](https://github.com/rusty-photon/rusty-photon/issues/1344)). See [§"Running ConformU manually"](#running-conformu-manually) and [§"Expected ConformU report"](#expected-conformu-report). |
 
 **The BDD baseline runs the shipped safety config.** Its
@@ -3561,6 +3569,11 @@ conduit, where it is asserted whatever the way down managed.
 ```
 Service shutdown (HTTP server stops → `SharedTransport::shutdown()`)
    ↓
+retire the mount: the driver disconnects its own session, as a client
+   leaving would (stop-class only: the last-disconnect :L1, :L2, :K1
+   when it held the last session), voiding the slew or park in flight;
+   hand over what a reload keeps (see §What a reload keeps)
+   ↓
 shutdown hook runs :L1, :L2, :K1 one last time
    (a stop that does not assert here is logged at error!: nothing
     downstream can act on it, and the next cold start is what
@@ -3579,6 +3592,69 @@ shutdown. A transient transport drop is handled by the reconnect supervisor,
 which re-runs the handshake against the new connection while live sessions
 survive via the connection-cell swap. (Same service-lifetime pattern as
 `qhy-focuser`, `ppba-driver`, `pa-falcon-rotator`, and `dsd-fp2`.)
+
+### What a reload keeps
+
+A reload rebuilds the driver, not the mount. To a client it looks like
+a disconnect — `Connected` reads `false` afterwards — and it keeps what
+a disconnect keeps:
+
+| Kept across a reload | Why |
+|---|---|
+| `AtPark` | Mechanical state. The encoders do not move because the driver was rebuilt, any more than because a client closed its socket; a mount parked before the reload is still parked after it, and the parked interlock (`INVALID_WHILE_PARKED` on slews, syncs, `SetSideOfPier`, `PulseGuide`, `AbortSlew` and `Tracking = true`) still holds. |
+| `SlewSettleTime` set by a client | An operator-tuned setting. It keeps winning over `mount.settle_after_slew`, even when the reload is the one that changed that field. |
+
+Everything a disconnect resets, a reload resets as well: the slew
+target, `Tracking`, the guide rates, any pulse in flight, the park
+target and the frame anchor (the last two are re-derived on the next
+connect, as after any disconnect).
+
+A lifecycle with the mount disabled — reachable only by a `SIGHUP` (or
+Windows `ParamChange`) after a hand edit, since `mount.enabled` is
+read-only to `config.apply` — has no device to retire. It hands on
+unchanged what it was given, so a later reload that enables the mount
+again starts from what the last mounted lifecycle kept.
+
+What a reload keeps belongs to the mount it was kept for. The hand-over
+carries that mount's identity as far as the config names it: the
+transport endpoint (the USB `port`, or the UDP `address` and `port`)
+and `mount.unique_id`. A lifecycle whose identity differs starts from
+nothing, as a fresh process does. `config.apply` cannot change any of
+these (the transport block is read-only to it, `mount.unique_id` is
+locked), so only a `SIGHUP` after a hand edit gets here, and then the
+mount on the other end may be another one. A new path to the same
+device (`/dev/ttyACM0` to its `/dev/serial/by-id/` link) counts as a
+change too. That errs on the safe side: `AtPark` reads false and the
+next `Park()` runs the park again. The other side would be worse: a
+mount that is not parked reading `AtPark = true`, so that a client's
+`Park()` before closing a roof would do nothing.
+
+A process restart keeps nothing. A new process cannot know whether the
+mount was moved by hand while no driver was running, so it starts with
+`AtPark = false`, and a client that needs the mount parked parks it
+again.
+
+**A park the reload interrupts is not carried as parked.** The reload
+does not disconnect the old driver, so a park still in flight — still
+slewing, or sleeping out its settle — keeps its claim on the slew slot.
+The shutdown's safety stop then halts its axes, which its completion
+watcher cannot tell from a park that arrived. The old driver is
+therefore *retired* once the HTTP server has drained and **before** the
+shutdown hook runs. Retiring is the driver's own disconnect, the same
+transition a client's `Connected = false` makes. It empties the slew
+slot under `axis_ownership`, voiding the park's claim, and copies out
+what the old driver kept for the next one. A park whose watcher marked
+it parked before the retire is carried as parked. One still in flight
+is carried as not parked, and its watcher, finding its claim gone,
+never marks it.
+
+Retiring also leaves the old driver with no session. Nothing still
+running in it can put a command on the wire afterwards: the tracking
+guard ends, and an auto-flip that has not reached the wire fails
+`NOT_CONNECTED` instead of starting a goto in the moment before the
+transport shuts down. On the wire the retire sends only stop-class
+commands: the last-disconnect `:L1`, `:L2`, `:K1` when the driver held
+the last session, which the shutdown hook repeats a moment later.
 
 ## MVP Scope
 
