@@ -40,8 +40,7 @@ impl PpbaWorld {
     fn refused_stderr(&self) -> String {
         self.refused_start
             .as_ref()
-            .map(|out| String::from_utf8_lossy(&out.stderr).into_owned())
-            .unwrap_or_default()
+            .map_or_default(|out| String::from_utf8_lossy(&out.stderr).into_owned())
     }
 }
 

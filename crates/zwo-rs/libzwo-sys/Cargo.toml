@@ -2,13 +2,7 @@
 name = "libzwo-sys"
 version = "0.1.0"
 edition = "2021"
-# Explicit, lower-than-workspace MSRV (dual-homed to crates.io, ADR-010): the
-# floor is set by the `bindgen 0.73` build-dependency (its own MSRV is 1.71.0),
-# which the build script runs to generate the FFI bindings. Verified out-of-tree
-# by the nightly publish-readiness check (docs/plans/archive/publish-readiness-checks.md)
-# — bindgen must be present, so that job installs libclang; the ZWO SDK binary is
-# NOT needed (a check-only build, with ZWO_SKIP_NATIVE_LINK=1, never links).
-rust-version = "1.71.0"
+rust-version.workspace = true
 authors = ["Igor von Nyssen <igor@vonnyssen.com>"]
 license = "MIT OR Apache-2.0"
 # Canonical development home is the rusty-photon monorepo (ADR-010); still
@@ -64,31 +58,5 @@ bindgen = { version = "0.73", default-features = false, features = [
   "runtime",
 ] }
 
-# The workspace lint policy, as a concrete copy rather than `workspace = true`:
-# this crate is dual-homed to crates.io, and the nightly publish-readiness
-# check builds it copied out of the workspace
-# (scripts/verify-publishable-crate.sh), where inheritance has nothing to
-# resolve against. The table must stay a verbatim mirror of [workspace.lints.*]
-# in the root Cargo.toml (which also carries the policy's rationale) —
-# tools/ci/check_lints_parity.py fails the `stable / clippy` gate on any
-# drift, so edit the root table and mirror it here in the same change. The
-# published copy is inert for consumers: registry dependencies build under
-# `--cap-lints allow`.
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
-
-[lints.clippy]
-unwrap_used = "deny"
-expect_used = "deny"
-unreachable = "deny"
-panic = "deny"
-todo = "deny"
-unimplemented = "deny"
-panic_in_result_fn = "deny"
-unchecked_time_subtraction = "deny"
-string_slice = "deny"
-as_conversions = "deny"
-arithmetic_side_effects = "deny"
-indexing_slicing = "deny"
-pedantic = { level = "deny", priority = -1 }
-nursery = { level = "deny", priority = -1 }
+[lints]
+workspace = true

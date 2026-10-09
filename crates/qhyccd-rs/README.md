@@ -16,9 +16,8 @@ qhyccd-rs = "0.1.9"
 
 ## Rust version requirements
 
-qhyccd-rs works with stable Rust. The minimum required Rust version is 1.85.0,
-declared explicitly in `Cargo.toml` and lower than the rusty-photon workspace's
-own minimum so that crates.io consumers can build on older toolchains.
+qhyccd-rs works with stable Rust. The minimum required Rust version is 1.98.1,
+the rusty-photon workspace's own minimum.
 
 ## Version of libqhyccd
 

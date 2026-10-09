@@ -203,10 +203,12 @@ fn expose(
     let mut buf = vec![0u8; roi.buffer_len().expect("addressable frame")];
     camera.download_exposure(&mut buf).expect("download");
     Some(
-        buf.chunks_exact(2)
+        buf.as_chunks::<2>()
+            .0
+            .iter()
             // The camera puts Raw16 on the wire low byte first, which
             // `from_le_bytes` says directly.
-            .map(|c| u16::from_le_bytes(c.try_into().expect("chunks_exact(2) yields pairs")))
+            .map(|&c| u16::from_le_bytes(c))
             .collect(),
     )
 }
