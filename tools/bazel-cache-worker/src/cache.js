@@ -91,6 +91,15 @@ async function touchObj(env, key, body, etag) {
   await env.CACHE.put(key, body, { onlyIf: { etagMatches: etag } });
 }
 
+// Populates the edge cache from a fresh R2 read, independent of the client's
+// response stream (see the /cas/ GET path for why not res.clone()). The key is
+// a content hash, so the copy is byte-identical to what the client got.
+async function edgePut(env, request, key, headers) {
+  const obj = await r2Get(env, key);
+  if (!obj) return;
+  await caches.default.put(request, new Response(obj.body, { status: 200, headers }));
+}
+
 // Bazel checks the action cache on every action, hit or not -- but an AC hit
 // alone never reads (and so never touches) the CAS blobs its ActionResult
 // points to: build-without-the-bytes (--remote_download_outputs=toplevel)
@@ -177,10 +186,18 @@ export default {
         // stream; Cache-Control is what makes cache.put store the response.
         const headers = { "Content-Length": String(obj.size) };
         if (edgeable) headers["Cache-Control"] = `public, max-age=${CAS_EDGE_TTL_S}`;
-        const res = new Response(obj.body, { status: 200, headers });
-        // clone() tees the body: one branch to the client, one to the edge.
-        if (edgeable) ctx.waitUntil(caches.default.put(request, res.clone()));
-        return res;
+        // The edge write reads its own copy from R2 rather than tee-ing the
+        // client's body with res.clone(). A tee makes the runtime buffer
+        // whatever the slower branch hasn't read yet -- unbounded, no
+        // backpressure -- and the slower branch is the client: a multi-MiB
+        // test binary (rp_unit_test is ~88 MiB) read slowly by Bazel while
+        // cache.put drains fast lands most of the blob in isolate memory
+        // (128 MB limit), with touch() above reading it again on stale
+        // keys. Two independent streams each go at their own pace; the cost
+        // is one extra Class B read per edge miss. A suspect in the macOS
+        // bazel-build wedge (#765), the one leg that still reads this Worker.
+        if (edgeable) ctx.waitUntil(edgePut(env, request, key, headers));
+        return new Response(obj.body, { status: 200, headers });
       }
       case "HEAD": {
         const obj = await env.CACHE.head(key);

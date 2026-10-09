@@ -110,6 +110,17 @@ latency spike or transient error can't stall an edge-cached read. `/ac/`
 entries are mutable (a re-executed action re-uploads under the same key), so
 they always read R2 and are never edge-cached.
 
+On an edge miss the client's response streams straight from R2, and the
+edge copy is written from a *second*, independent R2 read — not by tee-ing
+the client's body with `response.clone()`. A tee makes the runtime buffer
+whatever the slower branch hasn't consumed, with no limit and no
+backpressure; the slower branch is Bazel, and the blobs that miss are the
+big test binaries (~88 MiB for `rp_unit_test`) against a 128 MB isolate
+memory limit. The second read costs one Class B operation per edge miss.
+This was changed as a suspect in the macOS `bazel build` wedge
+([#765](https://github.com/rusty-photon/rusty-photon/issues/765)) — macOS is
+the only CI leg that still reads this Worker.
+
 Interplay with retention: an edge hit never reaches R2, so it cannot touch —
 a hot blob's R2 clock only advances on the origin reads between TTL
 expiries. The 1-day TTL bounds that: worst-case R2 age of a live object is
