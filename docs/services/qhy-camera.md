@@ -533,8 +533,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   no list supports, `VALUE_NOT_SET` for the geometry, for `BinX`/`BinY`, for
   the gain and offset bounds and values — a `Gain` or `Offset` write among
   them — and for `ReadoutMode`, `ReadoutModes` and a
-  `ReadoutMode` write, and a refused `StartExposure` — *not ready yet*
-  rather than the previous session's numbers. `BinX` is `VALUE_NOT_SET` rather
+  `ReadoutMode` write — *not ready yet* rather than the previous session's
+  numbers. A `StartExposure` there is refused as busy (E2), since the connect
+  owns the device (below). `BinX` is `VALUE_NOT_SET` rather
   than the 1 the handshake settles on because that 1 belongs to the geometry
   the handshake has not read yet, and is published with it and with the list
   a bin is checked against (B1): answered in the window, it would be a bin for
@@ -619,13 +620,31 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   claim, ask it once, when they hold the lock a mode change holds and before
   their SDK write (RM4): they can wait there for as long as a mode change runs.
 
-  A connect's own handshake answers to the same rule: it publishes **in the
-  session it established, or not at all.** A disconnect or a later connect
-  arriving while its reads were running has taken the device somewhere else, and
-  the snapshot in its hands describes where the camera used to be. Such a
-  handshake also leaves the handle alone on its way out — the device is no
-  longer its to close, and closing it would take down the session that replaced
-  it. **Reaching the close ends the session** too — whether or not
+  **A connect owns the device from before its open until its caches are live.**
+  It takes the device claim a mode change takes (B4), after the session has
+  begun and before `OpenQHYCCD`, and holds it — inside the connection's
+  lifecycle lock (C8) — across the whole handshake: the stream mode, the
+  readout mode, `InitQHYCCD`, the transfer depth, `normalize_geometry`'s bin and
+  resolution, and the commit. Those are writes to the *camera*, the same ones a
+  mode change makes, and they get the same ownership: no capture, no abort's SDK
+  cancel and no disconnect's close can reach the camera between them, because
+  every one of those owns the device first. A claim found already held — a
+  capture from the session before still inside the SDK — refuses the connect
+  with `INVALID_OPERATION` before anything is opened, rather than running
+  `InitQHYCCD` under a live readout. The claim is released when the connect
+  returns, succeeded or failed. While it is held the device reports itself busy
+  on the terms B4 describes, and the cooler holds still (RM4): a `CoolerOn` or
+  `SetCCDTemperature` sent while a connect runs waits for it and lands after its
+  `InitQHYCCD`, which would otherwise undo it.
+
+  A connect's own handshake also answers to the session rule: it publishes **in
+  the session it established, or not at all** — the commit every cache writer
+  makes, here with nothing able to end the session under it but a camera that
+  leaves the bus (C9), which refuses the commit through its connected half. A
+  handshake that fails closes the handle it opened, and with the claim held
+  that handle can be no one else's: a disconnect waits for the claim rather than
+  overtaking the handshake, and a later connect waits on the lifecycle lock in
+  front of it. **Reaching the close ends the session** too — whether or not
   `CloseQHYCCD` succeeds, because the handle's connected flag is cleared before
   that call and stays clear when it errors, so a close that failed has still
   disconnected the device and `Connected` reads false. That is what stops a
@@ -639,12 +658,14 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   values and bounds into hand — each value just ahead of its bounds, so the
   offset bounds remain the last thing it asks the device — and makes the caches
   live in one section at its end.
-  Published as they were read, the geometry and the exposure range together are
-  enough for a `StartExposure` to arm the SDK while the connect is still
-  questioning the device — two owners on one handle, which is the state the
-  capture claim exists to prevent. Readers take no lock, so those few stores are
-  not atomic against them; what the section removes is the handshake-long
-  stretch in which some caches answered and others did not.
+  Published as they were read, the geometry and the exposure range would answer
+  while the connect is still questioning the device, beside caches that do not
+  answer yet. A `StartExposure` in that window is refused as busy by the claim
+  the connect holds (E2), whatever has been published, so what the single
+  section buys is the cache surface:
+  readers take no lock, so those few stores are not atomic against them, but the
+  handshake-long stretch in which some caches answered and others did not is
+  gone.
 - **C7.** `Connect` and `Disconnect` are asynchronous and `Connecting` is what a
   client waits on, so `Connecting` is the only thing standing between a client
   and the C6 window: a client told the operation has finished is entitled to
@@ -1064,7 +1085,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   being taken*. A sequential client never sees it: the setter has returned
   before its next request is read. A second, concurrent client can, and *busy*
   is the honest answer to give it, for the length of an `InitQHYCCD` (RM1),
-  during which a frame already taken cannot be downloaded either.
+  during which a frame already taken cannot be downloaded either. A connect
+  holds the same claim across its handshake (C6) and reports the same busy:
+  `CameraState` reads `Exposing` from the open until the connect returns. A
+  client that waits on `Connecting` (C7), or on a blocking `Connected = true`,
+  is never released into that window.
 
   **Busy is not the same as ended, so the claim records which kind of owner it
   is.** Every owner shares one slot, but only a geometry write has no exposure
@@ -1178,7 +1203,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 ### Exposure
 
 - **E1.** `StartExposure` while disconnected returns `NOT_CONNECTED`.
-- **E2.** `StartExposure` while exposing returns `INVALID_OPERATION`.
+- **E2.** `StartExposure` while exposing returns `INVALID_OPERATION` — and
+  while anything else owns the device: a connect's handshake (C6), a
+  readout-mode change (B4), an abort's SDK cancel (E7) or a disconnect (C3).
 - **E3.** `StartExposure` `Duration` outside `[ExposureMin, ExposureMax]` returns
   `INVALID_VALUE`. The range is read in the section that claims the device,
   under the lock a readout-mode change publishes under, so it is the range of
@@ -1565,6 +1592,18 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   cooler was engaged in, which is the session a later mode change re-asserts it
   for.
 
+  **A connect holds the cooler still the same way** (C6), from before its open
+  until its caches are live, because its handshake runs the same `InitQHYCCD`.
+  Unheld, a `CoolerOn` or `SetCCDTemperature` landing between the open and the
+  init — a second client's, since the client connecting is waiting on
+  `Connecting` (C7) — would reach the camera, record the cooler as engaged in
+  the new session, and then be undone by the init on a rig with
+  `disable_auto_cooler`: `CoolerOn` reading true and `SetCCDTemperature` the
+  new target while the TEC is off. Held, the write waits and lands after the
+  init. The connect re-asserts nothing itself: unlike a mode change, there is
+  no command given in its session for it to restore, and pushing an earlier
+  session's would be an actuation on connect (C5, K4).
+
   **Gain and offset do not wait.** Their setters store into the cache under the
   lock the change publishes under (GO2), so a set made while a change runs
   lands wholly before its publish or wholly after it, as a bin set does (B1).
@@ -1596,7 +1635,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   the target survive it as the last command given, and nothing re-asserts them,
   so on a rig whose `qhyccd.ini` sets `disable_auto_cooler` the connect's own
   init leaves the TEC off beside a `CoolerOn` that still reads true, until a
-  client sends `CoolerOn` again. Service start is one more such init, with no
+  client sends `CoolerOn` again. One sent while the connect is still running
+  waits for its handshake and lands after that init (RM4), so it is not undone
+  by it. Service start is one more such init, with no
   client involved: to find each camera's filter wheel, `build()` opens every
   camera and runs `InitQHYCCD` before `IsQHYCCDCFWPlugged`, the order indi-qhy
   uses in its connect. So on such a rig, a TEC still running when the service
@@ -2390,25 +2431,15 @@ the "how" decisions made while building.
 - **TLS / Basic Auth** via `rusty-photon-tls` / `rp-auth`.
 - **`ElectronsPerADU` / `FullWellCapacity`** real values if a signal model is
   added.
-- **A connect's own handshake takes no device claim.** `set_readout_mode`
-  holds the device across its SDK writes (B4), and a bin reaches the camera
-  only inside an exposure's claim (B1), but a connect's handshake still writes the stream mode, the readout mode, the
-  transfer bit and `normalize_geometry`'s bin and resolution with no ownership
-  at all. A superseded handshake publishes nothing, so the caches stay honest,
-  but nothing puts the *camera* back — and a check placed immediately before a
-  write only races that write. It needs the same claim a mode change takes
-  (B4), held from the open through to the caches going live.
-
-  The racing *connect* this was originally written against is gone: C8
-  serializes every transition on one physical connection, so no second connect
-  can be opening the handle while a handshake runs, and the two bullets that
-  used to sit here — lifecycle transitions unserialized in either direction, and
-  concurrent connects to one camera — are closed with it. What remains is the
-  narrower question the lifecycle lock does not answer, because it is not the
-  lock's to answer: the handshake's SDK writes are not serialized against the
-  paths that hold the *capture* claim, an abort's SDK cancel among them. The
-  cache-publication order (see C6) is what keeps a `StartExposure` out of the
-  handshake window today, rather than ownership.
+- **A filter-wheel move during the camera's `InitQHYCCD`.** A connect's
+  handshake and a mode change own the *camera* (C6, B4) and the connection's
+  lifecycle (C8), but a wheel `Position` write takes neither — the camera's
+  claim is the camera's, and the lifecycle lock is held across a disconnect's
+  drain, which a wheel move must not queue behind. So a wheel already connected
+  can be commanded while the camera on its handle runs `InitQHYCCD`, two threads
+  in the SDK on one `OpenQHYCCD`. Whether the SDK serializes a CFW command
+  against an init itself, and whether the wheel or the camera notices when it
+  does not, is unmeasured; it wants a hardware probe before it wants a lock.
 
 ## Packaging
 
