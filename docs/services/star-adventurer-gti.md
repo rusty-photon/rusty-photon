@@ -2527,9 +2527,8 @@ Notes:
   the load on the mount, the firmware and the guide rate, so a rig that
   guides at another rate, or reads its ConformU East/West legs
   consistently off, should measure its own, at more than one pose: a
-  single pose shows only one level (issue #1362 tracks measuring them
-  with `doctor`). Each value must be finite in `[-20, 20]`; `0`
-  disables the trim for that direction.
+  single pose shows only one level. Each value must be finite in
+  `[-20, 20]`; `0` disables the trim for that direction.
 - `park_ra_ticks` / `park_dec_ticks` are written by `SetPark` and read
   on every connect; absent (or `null`) at first run, populated once
   `SetPark` is called. Operators may set them by hand to pin a known
