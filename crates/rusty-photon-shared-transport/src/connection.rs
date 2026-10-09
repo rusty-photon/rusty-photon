@@ -192,7 +192,11 @@ pub struct Connection<C: Codec> {
     /// Behind an `Arc` so an exchange's task can own the lock, and
     /// hold it to the end of the exchange after its caller has gone.
     transport: Arc<Mutex<Option<Box<dyn FrameTransport>>>>,
-    codec: C,
+    /// One codec for the life of the connection, shared with each
+    /// exchange's task rather than cloned into it: [`Codec`] promises a
+    /// fresh copy per connection, not per request, so a codec may keep
+    /// state across the requests on one conduit.
+    codec: Arc<C>,
     failures: WireFailures,
 }
 
@@ -266,7 +270,7 @@ impl<C: Codec> Connection<C> {
     pub(crate) fn new(transport: Box<dyn FrameTransport>, codec: C) -> Self {
         Self {
             transport: Arc::new(Mutex::new(Some(transport))),
-            codec,
+            codec: Arc::new(codec),
             failures: WireFailures {
                 reconnect_signal: None,
                 wire_failures: Arc::new(AtomicU32::new(0)),
@@ -399,7 +403,7 @@ impl<C: Codec> Connection<C> {
             // Taken here, by the caller, so that a caller which goes
             // away while it queues for the wire has sent nothing.
             transport: Arc::clone(&self.transport).lock_owned().await,
-            codec: self.codec.clone(),
+            codec: Arc::clone(&self.codec),
             failures: self.failures.clone(),
         }
         .run(cmd, bytes);
@@ -434,7 +438,7 @@ impl<C: Codec> Connection<C> {
 /// stops waiting. See [`Connection::request_timed`].
 struct Exchange<C: Codec> {
     transport: OwnedMutexGuard<Option<Box<dyn FrameTransport>>>,
-    codec: C,
+    codec: Arc<C>,
     failures: WireFailures,
 }
 
@@ -1041,6 +1045,49 @@ mod tests {
             [b"one".to_vec()],
             "the queued frame never went out"
         );
+    }
+
+    /// Remembers the last frame it encoded and takes only that frame
+    /// back as the answer. Its `Clone` starts with nothing remembered,
+    /// the way a codec with per-connection state might implement it, so
+    /// it only works if one instance both encodes and judges the reply.
+    struct RemembersWhatItSent(std::sync::Mutex<Vec<u8>>);
+
+    impl Clone for RemembersWhatItSent {
+        fn clone(&self) -> Self {
+            Self(std::sync::Mutex::default())
+        }
+    }
+
+    impl Codec for RemembersWhatItSent {
+        type Command = Vec<u8>;
+        type Response = Vec<u8>;
+        type Error = StubCodecError;
+
+        fn encode(&self, cmd: &Self::Command) -> Vec<u8> {
+            self.0.lock().unwrap().clone_from(cmd);
+            cmd.clone()
+        }
+
+        fn decode(&self, bytes: &[u8]) -> Result<Self::Response, Self::Error> {
+            Ok(bytes.to_vec())
+        }
+
+        fn matches(&self, _cmd: &Self::Command, resp: &Self::Response) -> bool {
+            *self.0.lock().unwrap() == *resp
+        }
+    }
+
+    #[tokio::test]
+    async fn the_exchange_judges_its_reply_with_the_codec_that_encoded_it() {
+        let conn = Connection::new(
+            Box::new(EchoTransport(None)),
+            RemembersWhatItSent(std::sync::Mutex::default()),
+        );
+
+        let reply = conn.request(b"ping".to_vec()).await.unwrap();
+
+        assert_eq!(reply, b"ping");
     }
 
     /// Panics on decode, as a codec with a bug might.
