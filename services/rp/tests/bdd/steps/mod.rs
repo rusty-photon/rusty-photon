@@ -4,6 +4,7 @@ pub mod auth_steps;
 pub mod auto_focus_steps;
 pub mod camera_info_steps;
 pub mod capture_binning_steps;
+pub mod capture_concurrency_steps;
 pub mod capture_target_linkage_steps;
 pub mod catalog_steps;
 pub mod center_on_target_steps;
