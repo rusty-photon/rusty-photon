@@ -2050,6 +2050,36 @@ With 150 ms freezes every 60 ms, the real-time gate tests failed 8 of 100
 runs. The paused-time rewrite passed 100 of 100, and 40 of 40 with 500 ms
 freezes.
 
+#### 6.13 A Test-Only API Is a `test-util` Feature
+
+A library API that only tests may call goes behind a `test-util` Cargo
+feature, so that a production caller fails to compile instead of relying on
+review to catch it. `SharedTransport::reconnect_now` in
+`rusty-photon-shared-transport` is the example: nothing can join the attempt
+it starts, so a production caller would reopen teardown races.
+
+- **Cargo.** Declare `test-util = []`. Gate the API and anything only it
+  uses with `#[cfg(feature = "test-util")]`. The crate's own tests reach the
+  feature through a dev-dependency on the crate itself:
+  `name = { path = ".", features = ["test-util"] }`. Cargo turns it on for
+  this crate's tests and never for a dependent's build. Run
+  `scripts/repin-bazel-lock.sh` afterwards, as for any manifest edit.
+- **Bazel.** Add a `testonly = True` twin of the library with
+  `crate_features = ["test-util"]`, and build every test target against it,
+  the unit test included (`crate = ":<lib>_test_util"`). `testonly` makes a
+  production target that depends on the twin an analysis error.
+- **Not `required-features`.** Gating the test targets with
+  `required-features` instead makes Cargo skip them silently when the
+  feature is off, so a test suite can stop running without failing.
+
+The evidence that the gate holds is negative:
+- point a test target at the production library, and the build fails with
+  E0599;
+- add a non-`testonly` library depending on the twin, and Bazel refuses it at
+  analysis;
+- `cargo build -v -p <a dependent>` shows the crate compiled without
+  `--cfg feature="test-util"`.
+
 ---
 
 ### 7. Migration Strategy: From Integration Tests to BDD

@@ -32,10 +32,15 @@
 pub trait Codec: Send + Sync + Clone + 'static {
     /// The typed command the service-level API speaks in
     /// (e.g. `QhyCommand::GetPosition`, `PpbaCommand::SetPower { .. }`).
-    type Command: Send + Sync;
+    ///
+    /// `'static` because an exchange runs on its own task, so that it
+    /// finishes even when its caller stops waiting — see
+    /// [`crate::Connection::request_timed`].
+    type Command: Send + Sync + 'static;
 
-    /// The typed response the service-level API receives.
-    type Response: Send;
+    /// The typed response the service-level API receives. `'static` for
+    /// the same reason as [`Self::Command`].
+    type Response: Send + 'static;
 
     /// Codec-level error type for parse / deserialise / validate failures.
     ///

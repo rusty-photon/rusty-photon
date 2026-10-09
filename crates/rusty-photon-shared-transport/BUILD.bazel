@@ -17,6 +17,23 @@ rust_library(
     deps = all_crate_deps(normal = True),
 )
 
+# The library with `test-util` on, which compiles the `reconnect_now` test
+# hook. Every test target builds against this twin; Cargo gets the same
+# through the crate's dev-dependency on itself. `testonly = True` makes a
+# production target that depends on it a Bazel analysis error, so the hook
+# cannot reach a shipped binary by this route either.
+rust_library(
+    name = "rusty-photon-shared-transport_test_util",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    aliases = aliases(),
+    crate_features = ["test-util"],
+    crate_name = "rusty_photon_shared_transport",
+    edition = "2021",
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    deps = all_crate_deps(normal = True),
+)
+
 rust_test(
     name = "rusty-photon-shared-transport_unit_test",
     size = "small",
@@ -24,7 +41,7 @@ rust_test(
         normal_dev = True,
         proc_macro_dev = True,
     ),
-    crate = ":rusty-photon-shared-transport",
+    crate = ":rusty-photon-shared-transport_test_util",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -53,7 +70,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = [":rusty-photon-shared-transport"] + all_crate_deps(
+    deps = [":rusty-photon-shared-transport_test_util"] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -73,7 +90,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = [":rusty-photon-shared-transport"] + all_crate_deps(
+    deps = [":rusty-photon-shared-transport_test_util"] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -93,7 +110,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = [":rusty-photon-shared-transport"] + all_crate_deps(
+    deps = [":rusty-photon-shared-transport_test_util"] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -113,7 +130,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = [":rusty-photon-shared-transport"] + all_crate_deps(
+    deps = [":rusty-photon-shared-transport_test_util"] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -133,7 +150,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = [":rusty-photon-shared-transport"] + all_crate_deps(
+    deps = [":rusty-photon-shared-transport_test_util"] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -153,7 +170,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = [":rusty-photon-shared-transport"] + all_crate_deps(
+    deps = [":rusty-photon-shared-transport_test_util"] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

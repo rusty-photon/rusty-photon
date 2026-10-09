@@ -52,8 +52,8 @@ pub enum TransportError {
     /// reset). Returned from `Session::request` while the supervisor
     /// is mid-recovery so callers don't queue against the dying
     /// transport's command lock. The retry shape is caller-defined;
-    /// the supervisor's next periodic tick or a `reconnect_now()` call
-    /// will recover automatically when the hardware reappears.
+    /// the reconnect supervisor recovers the transport on its next
+    /// attempt once the hardware reappears.
     ///
     /// `SharedTransport::acquire()` does **not** short-circuit on this
     /// state in the current implementation — the on-acquire eager
