@@ -79,6 +79,72 @@ use tracing::{debug, info};
 
 use crate::config_actions::StarAdvDriver;
 
+/// What one lifecycle hands to the next across a reload: what its mount
+/// kept ([`RetainedState`]), and which mount that was.
+///
+/// [`BoundServer::start`] returns it; [`ServerBuilder::with_handover`]
+/// takes it. The next lifecycle starts from what was kept only if it
+/// drives the same mount — see [`MountIdentity`]. The default is a fresh
+/// process: nothing kept, for no mount.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Handover {
+    retained: RetainedState,
+    /// The mount `retained` was kept for; `None` when nothing was kept.
+    mount: Option<MountIdentity>,
+}
+
+impl Handover {
+    /// What a lifecycle driving `mount` may start from: what was kept, if
+    /// it was kept for this same mount; otherwise nothing.
+    fn retained_for(&self, mount: &MountIdentity) -> RetainedState {
+        match &self.mount {
+            Some(kept_for) if kept_for == mount => self.retained,
+            Some(_) => {
+                debug!("the configured mount changed across the reload; starting from nothing");
+                RetainedState::default()
+            }
+            None => RetainedState::default(),
+        }
+    }
+}
+
+/// The physical mount a lifecycle drives, as far as its config names it:
+/// where the transport points, and the device identity clients see.
+///
+/// `config.apply` cannot change either — the transport block is read-only
+/// to it and `mount.unique_id` is locked — but a `SIGHUP` (or Windows
+/// `ParamChange`) reload after a hand edit can, and then the mount on the
+/// other end may be a different one, about which the old lifecycle's
+/// `AtPark` says nothing. A new path to the same device (`/dev/ttyACM0`
+/// to its `/dev/serial/by-id/` link) also counts as a change: the
+/// conservative side, where `AtPark` reads false and a `Park()` runs again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MountIdentity {
+    endpoint: MountEndpoint,
+    unique_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MountEndpoint {
+    Usb(String),
+    Udp(SocketAddr),
+}
+
+impl MountIdentity {
+    fn of(config: &Config) -> Self {
+        let endpoint = match &config.transport {
+            config::TransportConfig::Usb(usb) => MountEndpoint::Usb(usb.port.clone()),
+            config::TransportConfig::Udp(udp) => {
+                MountEndpoint::Udp(SocketAddr::new(udp.address, udp.port))
+            }
+        };
+        Self {
+            endpoint,
+            unique_id: config.mount.unique_id.clone(),
+        }
+    }
+}
+
 /// Builder for the Alpaca server bound to a configured Transport.
 ///
 /// Two-phase: `build()` opens the listener and constructs the device tree
@@ -98,9 +164,10 @@ pub struct ServerBuilder {
     /// In-process reload trigger handed to the device's `config.apply` handler.
     /// `Some` (with `config_file_path`) enables the config vendor actions.
     reload: Option<ReloadSignal>,
-    /// What the previous lifecycle kept, which the mount device starts
-    /// from. The default — nothing kept — is a fresh process.
-    retained: RetainedState,
+    /// What the previous lifecycle handed over. The mount device starts
+    /// from it when it was kept for the same mount. The default — nothing
+    /// kept — is a fresh process.
+    handover: Handover,
     /// Optional handle to a [`MockMountState`] that the build path mounts
     /// at `/debug/v1/mock-commands`. Set by mock-mode code paths
     /// (`main.rs` under `feature = "mock"`, BDD tests) so the test
@@ -143,12 +210,13 @@ impl ServerBuilder {
         self
     }
 
-    /// Start the mount device from what the previous lifecycle kept — the
-    /// value [`BoundServer::start`] returned when it ended. See the design
-    /// doc's [§"What a reload keeps"](../../../docs/services/star-adventurer-gti.md#what-a-reload-keeps).
+    /// Start the mount device from what the previous lifecycle handed over
+    /// — the value [`BoundServer::start`] returned when it ended — if it
+    /// was kept for the same mount. See the design doc's
+    /// [§"What a reload keeps"](../../../docs/services/star-adventurer-gti.md#what-a-reload-keeps).
     #[must_use]
-    pub const fn with_retained(mut self, retained: RetainedState) -> Self {
-        self.retained = retained;
+    pub fn with_handover(mut self, handover: Handover) -> Self {
+        self.handover = handover;
         self
     }
 
@@ -181,12 +249,14 @@ impl ServerBuilder {
 
     /// Register the Telescope device (when `mount.enabled`), wiring in
     /// the config vendor actions when built with a config file path +
-    /// reload signal (the normal path through `main`). Returns a handle to
-    /// the registered device, for [`BoundServer::start`] to retire.
+    /// reload signal (the normal path through `main`). The device starts
+    /// from the hand-over when it was kept for `identity`. Returns a handle
+    /// to the registered device, for [`BoundServer::start`] to retire.
     fn register_mount_device(
         &self,
         server: &mut Server,
         manager: &Arc<MountManager>,
+        identity: &MountIdentity,
     ) -> Option<MountDevice> {
         if !self.config.mount.enabled {
             return None;
@@ -196,7 +266,7 @@ impl ServerBuilder {
             Arc::clone(manager),
             self.config_file_path.clone(),
         )
-        .with_retained(self.retained);
+        .with_retained(self.handover.retained_for(identity));
         let config_ctx: Option<rusty_photon_driver::ConfigActionCtx<StarAdvDriver>> =
             match (self.config_file_path.clone(), self.reload.clone()) {
                 (Some(path), Some(reload)) => Some(rusty_photon_driver::ConfigActionCtx {
@@ -273,7 +343,10 @@ impl ServerBuilder {
             let mut server = Server::new(CargoServerInfo!());
             server.listen_addr = self.config.server.socket_addr();
 
-            let mount = self.register_mount_device(&mut server, &manager);
+            let identity = MountIdentity::of(&self.config);
+            let mount = self
+                .register_mount_device(&mut server, &manager, &identity)
+                .map(|device| (device, identity));
 
             let tls = self.config.server.tls.clone();
             // Mount the mock-introspection endpoint first so it takes
@@ -332,7 +405,7 @@ impl ServerBuilder {
                 discovery,
                 manager: Arc::clone(&manager),
                 mount,
-                retained: self.retained,
+                handover: self.handover.clone(),
             })
         }
         .await;
@@ -366,15 +439,16 @@ pub struct BoundServer {
     /// `Hooks::shutdown`, and closes the port. In `LazyAcquire` mode it's
     /// a no-op so pre-Phase-1 deployments are unaffected.
     manager: Arc<MountManager>,
-    /// The registered mount device, retired by `start()` once serving
-    /// ends. `None` when `mount.enabled` is false.
-    mount: Option<MountDevice>,
-    /// What the previous lifecycle kept. A lifecycle without a mount has
-    /// nothing to retire and hands this on unchanged, so a reload that
-    /// disables the mount and a later one that enables it again (both
-    /// SIGHUP-driven: `mount.enabled` is read-only to `config.apply`)
-    /// lose nothing in between — no driver touched the mount meanwhile.
-    retained: RetainedState,
+    /// The registered mount device and the mount it drives, retired by
+    /// `start()` once serving ends. `None` when `mount.enabled` is false.
+    mount: Option<(MountDevice, MountIdentity)>,
+    /// What the previous lifecycle handed over. A lifecycle without a
+    /// mount has nothing to retire and hands this on unchanged, so a
+    /// reload that disables the mount and a later one that enables it
+    /// again (both SIGHUP-driven: `mount.enabled` is read-only to
+    /// `config.apply`) lose nothing in between — no driver touched the
+    /// mount meanwhile.
+    handover: Handover,
 }
 
 impl BoundServer {
@@ -383,8 +457,8 @@ impl BoundServer {
     }
 
     /// Serve until `shutdown` resolves, then retire the mount and shut
-    /// the transport down. Returns what the mount kept, for the next
-    /// lifecycle to start from ([`ServerBuilder::with_retained`]).
+    /// the transport down. Returns what the mount kept and for which
+    /// mount, for the next lifecycle ([`ServerBuilder::with_handover`]).
     ///
     /// # Errors
     ///
@@ -394,7 +468,7 @@ impl BoundServer {
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
-    ) -> std::result::Result<RetainedState, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> std::result::Result<Handover, Box<dyn std::error::Error + Send + Sync>> {
         // Capture the serve result and run `transport.shutdown()`
         // unconditionally so a serve error doesn't leave the port and
         // the reconnect supervisor alive (the original `?` shape did
@@ -408,7 +482,7 @@ impl BoundServer {
             discovery,
             manager,
             mount,
-            retained,
+            handover,
         } = self;
         let serve = async {
             if let Some(ref tls_config) = tls {
@@ -424,9 +498,12 @@ impl BoundServer {
         // shutdown's safety stop halts a park still in flight, and the
         // park's watcher would take the halt for an arrival; once the
         // mount is retired, the watcher can no longer mark it parked.
-        let retained = match &mount {
-            Some(mount) => mount.retire().await,
-            None => retained,
+        let handover = match mount {
+            Some((device, identity)) => Handover {
+                retained: device.retire().await,
+                mount: Some(identity),
+            },
+            None => handover,
         };
         // Always-run transport shutdown. In ServiceLifetime mode this
         // cancels the supervisor, runs the safety teardown one last
@@ -437,7 +514,7 @@ impl BoundServer {
             tracing::warn!(error = %e, "transport shutdown returned an error during teardown");
         }
         debug!("star-adventurer-gti shut down");
-        serve_result.map(|()| retained).map_err(Into::into)
+        serve_result.map(|()| handover).map_err(Into::into)
     }
 }
 

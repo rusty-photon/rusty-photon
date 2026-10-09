@@ -2876,7 +2876,8 @@ in-process reload: `main.rs` runs under
 `ServiceRunner::with_reload().run_with_reload(...)`, whose loop re-reads + re-
 applies the CLI overrides and rebuilds the server from the freshly-persisted file.
 The rebuilt server starts from what the old one kept — `AtPark` and a
-client-set `SlewSettleTime` — handed across the loop by `main.rs`; see
+client-set `SlewSettleTime` — handed across the loop by `main.rs` as a
+`Handover`, as long as it drives the same mount; see
 [§What a reload keeps](#what-a-reload-keeps).
 
 ## Module Structure
@@ -2974,7 +2975,9 @@ src/
                            and the boot-time writability probe
     tests.rs             — `#[cfg(test, feature = "mock")]` unit tests
                            for `MountDevice` and the private helpers
-  lib.rs                 — ServerBuilder, module declarations
+  lib.rs                 — ServerBuilder, BoundServer, `Handover` (what one
+                           reload lifecycle passes the next, and for which
+                           mount), module declarations
   main.rs                — CLI entry point
 examples/
   probe_live_step_period.rs — operator-run hardware probe (service
@@ -3027,7 +3030,7 @@ ConformU verifies ASCOM compliance.
 | Crate property tests (`tests/property_tests.rs`) | round-trip: random `Command` → bytes → `Command`; same for `Response`; bias-offset preservation across signed `i32` range |
 | Service unit tests (`#[cfg(test)]` per module) | `coordinates`: encoder ↔ RA/Dec across edge cases (poles, meridian, hemisphere flip); `config`: defaults, JSON round-trips, CLI overrides; `error`: ASCOM mapping |
 | Service BDD (cucumber) | every behaviour table-row above as a scenario, with the mock transport |
-| Service `test_lib.rs` (gated on `mock`) | server starts, binds the configured port, exposes the configured device |
+| Service `test_lib.rs` (gated on `mock`) | server starts, binds the configured port, exposes the configured device; the reload hand-over passes through a mount-disabled lifecycle and applies only to the mount it was kept for |
 | `conformu_integration.rs` (gated on `conformu`) | ASCOM Telescope compliance via `bdd_infra::run_conformu` — ConformU's URL-argument verbs, so both the `alpacaprotocol` and `conformance` suites run with ConformU's **full** test set; the runner exposes no test selection. In the nightly `conformu` workflow rotation through `[package.metadata.conformu]`; its mock config runs clean on all three CI OSes ([#1344](https://github.com/rusty-photon/rusty-photon/issues/1344)). See [§"Running ConformU manually"](#running-conformu-manually) and [§"Expected ConformU report"](#expected-conformu-report). |
 
 **The BDD baseline runs the shipped safety config.** Its
@@ -3609,6 +3612,20 @@ Windows `ParamChange`) after a hand edit, since `mount.enabled` is
 read-only to `config.apply` — has no device to retire. It hands on
 unchanged what it was given, so a later reload that enables the mount
 again starts from what the last mounted lifecycle kept.
+
+What a reload keeps belongs to the mount it was kept for. The hand-over
+carries that mount's identity as far as the config names it: the
+transport endpoint (the USB `port`, or the UDP `address` and `port`)
+and `mount.unique_id`. A lifecycle whose identity differs starts from
+nothing, as a fresh process does. `config.apply` cannot change any of
+these (the transport block is read-only to it, `mount.unique_id` is
+locked), so only a `SIGHUP` after a hand edit gets here, and then the
+mount on the other end may be another one. A new path to the same
+device (`/dev/ttyACM0` to its `/dev/serial/by-id/` link) counts as a
+change too. That errs on the safe side: `AtPark` reads false and the
+next `Park()` runs the park again. The other side would be worse: a
+mount that is not parked reading `AtPark = true`, so that a client's
+`Park()` before closing a roof would do nothing.
 
 A process restart keeps nothing. A new process cannot know whether the
 mount was moved by hand while no driver was running, so it starts with
