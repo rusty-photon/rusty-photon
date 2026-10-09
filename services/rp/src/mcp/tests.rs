@@ -10173,6 +10173,47 @@ async fn capture_through_a_busy_camera_waits_for_it_before_touching_it() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn capture_queued_across_a_reconnect_runs_against_the_reestablished_session() {
+    let lost = Arc::new(MockCamera::default());
+    let reestablished = Arc::new(MockCamera::default());
+    let (handler, _tmp) = capture_handler(lost.clone());
+    let entry = handler.equipment.find_camera("cam").unwrap();
+    let slot = entry.capture_slot().await;
+
+    let capture = {
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            handler
+                .do_capture(capture_request("cam", 1), None, &Cancel::never())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !capture.is_finished(),
+        "the capture must still be queued on the camera"
+    );
+    let handle: Arc<dyn ascom_alpaca::api::Camera> = reestablished.clone();
+    entry.session.install(handle, entry.invariants());
+
+    drop(slot);
+    capture
+        .await
+        .unwrap()
+        .expect("the queued capture runs once the camera is free");
+    assert_eq!(
+        calls(&reestablished.start_exposure_calls),
+        1,
+        "the exposure must run on the session live when the capture got the camera"
+    );
+    assert_eq!(
+        calls(&lost.start_exposure_calls),
+        0,
+        "the session the capture queued on was replaced while it waited"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn capture_cancelled_while_queued_leaves_without_touching_the_camera() {
     let cam = Arc::new(MockCamera::default());
     let (handler, _tmp) = capture_handler(cam.clone());

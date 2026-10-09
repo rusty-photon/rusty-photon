@@ -1359,26 +1359,33 @@ impl McpHandler {
         )
     }
 
-    /// Claim the camera for one capture. First the snapshot: the
-    /// connected camera handle, the train-derived focal length, and the
-    /// invariant physical-sensor properties cached at connect time,
-    /// copied out of the `CameraEntry` borrow as `Copy`/`Option<Copy>`
-    /// values — which is what lets `do_capture` avoid the 5 Alpaca
-    /// round-trips per exposure it used to pay for these properties
-    /// (see `CameraEntry` docs). The readout estimate sizes the
-    /// predictive exposure deadline (§2.4); omitted in config → the
-    /// conservative built-in default. rp does not enforce it; it rides
-    /// the `exposure_started` envelope for the Sentinel watchdog (the
-    /// camera driver owns the exposure, and `CAPTURE_READOUT_GRACE`
-    /// remains rp's own readout backstop).
+    /// Claim the camera for one capture: wait for it, then snapshot it.
     ///
-    /// Then the two waits, in this order (rp.md § Capture Tool Details,
+    /// The two waits come in this order (rp.md § Capture Tool Details,
     /// "Binning" → Concurrency): the camera's capture slot, then the
     /// motion-gate permit. Slot first, so a capture queued behind a busy
     /// camera holds no permit and never delays a pending slew; nothing
     /// holds the gate and then waits for a camera, so the two waits
     /// cannot deadlock. Both are raced against `cancel`: a call
-    /// cancelled in either returns `Err` without touching the camera.
+    /// cancelled in either returns `Err` without touching the camera. A
+    /// camera that has never connected is refused before either wait.
+    ///
+    /// The snapshot follows the waits: the connected camera handle, the
+    /// train-derived focal length, and the invariant physical-sensor
+    /// properties cached at connect time, copied out of the
+    /// `CameraEntry` borrow as `Copy`/`Option<Copy>` values — which is
+    /// what lets `do_capture` avoid the 5 Alpaca round-trips per
+    /// exposure it used to pay for these properties (see `CameraEntry`
+    /// docs). A capture can queue for a whole exposure, and a reconnect
+    /// in that time may put a different device behind the entry (rp.md
+    /// § Device Session Recovery), so the snapshot is taken once the
+    /// capture holds the camera: it exposes on the session live when it
+    /// got the camera, not the one live when it queued. The readout
+    /// estimate sizes the predictive exposure deadline (§2.4); omitted
+    /// in config → the conservative built-in default. rp does not
+    /// enforce it; it rides the `exposure_started` envelope for the
+    /// Sentinel watchdog (the camera driver owns the exposure, and
+    /// `CAPTURE_READOUT_GRACE` remains rp's own readout backstop).
     async fn claim_camera(
         &self,
         camera_id: &str,
@@ -1388,15 +1395,17 @@ impl McpHandler {
             .equipment
             .find_camera(camera_id)
             .ok_or_else(|| format!("camera not found: {camera_id}"))?;
-        let (cam, invariants) = cam_entry
-            .snapshot()
-            .ok_or_else(|| format!("camera not connected: {camera_id}"))?;
+        let not_connected = || format!("camera not connected: {camera_id}");
+        if cam_entry.device().is_none() {
+            return Err(not_connected());
+        }
         let slot = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(cancel.error()),
             slot = cam_entry.capture_slot() => slot,
         };
         let motion_permit = self.imaging_permit(camera_id, cancel).await?;
+        let (cam, invariants) = cam_entry.snapshot().ok_or_else(not_connected)?;
         Ok(CameraClaim {
             cam,
             focal_length_mm: self.trains.focal_length_for_camera(camera_id),
