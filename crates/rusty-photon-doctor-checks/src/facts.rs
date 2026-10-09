@@ -841,8 +841,9 @@ mod linux {
     /// Walk sysfs USB devices under the sysfs mount `sysfs` (`/sys`). An
     /// entry of `bus/usb/devices` with an `idVendor` is a **candidate
     /// device record**; interfaces have none and are skipped silently, as
-    /// is an entry that no longer resolves (a device that left the bus mid
-    /// walk). Root hubs, `usb1`, do carry one and are listed like any
+    /// is an entry whose link points at nothing (a device that left the bus
+    /// mid walk) — but an entry that fails to resolve for any other reason
+    /// is a fault. Root hubs, `usb1`, do carry one and are listed like any
     /// device. A candidate that cannot be read in full, or whose port
     /// cannot be spelled, is reported as a fault rather than a partial
     /// record — a device with no port is indistinguishable from one whose
@@ -897,9 +898,30 @@ mod linux {
     /// entry that no longer resolves, a fault for a candidate that cannot
     /// be read in full or placed under a root hub.
     fn candidate(dir: &Path, tree: &Path) -> Option<Result<Candidate, UsbFault>> {
-        let Ok(real) = std::fs::canonicalize(dir) else {
-            debug!(entry = %dir.display(), "sysfs USB entry no longer resolves; skipped");
-            return None;
+        let real = match std::fs::canonicalize(dir) {
+            Ok(real) => real,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                debug!(entry = %dir.display(), "sysfs USB entry no longer resolves; skipped");
+                return None;
+            }
+            // Anything else is not a device leaving the bus, and skipping
+            // it would quietly shorten the inventory.
+            Err(e) => {
+                debug!(entry = %dir.display(), error = %e, "sysfs USB entry could not be resolved");
+                return Some(Err(UsbFault {
+                    record: dir.display().to_string(),
+                    vendor: None,
+                    product: None,
+                    model: None,
+                    location: dir
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .map(str::to_string),
+                    reason: format!(
+                        "its sysfs entry could not be resolved ({e}), so it cannot be read"
+                    ),
+                }));
+            }
         };
         let vendor = read_attr(&real, "idVendor")?;
         let model = read_attr(&real, "product");
@@ -2702,6 +2724,43 @@ mod tests {
         assert_eq!(
             sysfs.ports(),
             vec!["pci-0000:00:14.0-usbv2-0:1".to_string()]
+        );
+    }
+
+    /// An entry that fails to resolve for any other reason — here a link
+    /// loop — is not a device leaving the bus: a fault naming the error,
+    /// so the inventory is not quietly shortened, and the device beside it
+    /// is still listed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_sysfs_entry_that_cannot_be_resolved_is_a_fault() {
+        let sysfs = FakeSysfs::new();
+        sysfs.node("pci0000:00/0000:00:14.0", "pci");
+        sysfs.hub("pci0000:00/0000:00:14.0/usb1", "2.00");
+        sysfs.usb("pci0000:00/0000:00:14.0/usb1/1-1", CAMERA);
+        let looped = sysfs.root().join("bus/usb/devices/1-5");
+        std::os::unix::fs::symlink(&looped, &looped).unwrap();
+        let error = std::fs::canonicalize(&looped).unwrap_err();
+
+        let scan = sysfs.scan();
+
+        assert_eq!(
+            scan.devices.len(),
+            1,
+            "the device beside it is still listed"
+        );
+        assert_eq!(
+            scan.faults,
+            vec![UsbFault {
+                record: looped.display().to_string(),
+                vendor: None,
+                product: None,
+                model: None,
+                location: Some("1-5".to_string()),
+                reason: format!(
+                    "its sysfs entry could not be resolved ({error}), so it cannot be read"
+                ),
+            }]
         );
     }
 

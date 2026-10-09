@@ -319,8 +319,11 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   every record under two root hubs whose spellings collide — possible
   only where one stable ancestor sits over two `.auto` controllers of
   the same revision — since a spelling two sockets share names neither.
-  An entry whose link no longer resolves is skipped rather than
+  An entry whose link points at nothing is skipped rather than
   reported: the device has left the bus, so it is not there to report.
+  An entry that fails to resolve for any other reason (a permission
+  error, a link loop) is a fault naming the error, since skipping it
+  would quietly shorten the inventory.
 
   On Windows `DEVPKEY_Device_LocationPaths` is **multi-valued** — a device
   typically publishes both a `PCIROOT(…)`-rooted chain and an `ACPI(…)`
