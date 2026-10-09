@@ -94,9 +94,15 @@ async function touchObj(env, key, body, etag) {
 // Populates the edge cache from a fresh R2 read, independent of the client's
 // response stream (see the /cas/ GET path for why not res.clone()). The key is
 // a content hash, so the copy is byte-identical to what the client got.
-async function edgePut(env, request, key, headers) {
+// Headers come from this read's own object, so Content-Length always matches
+// the body being stored.
+async function edgePut(env, request, key) {
   const obj = await r2Get(env, key);
   if (!obj) return;
+  const headers = {
+    "Content-Length": String(obj.size),
+    "Cache-Control": `public, max-age=${CAS_EDGE_TTL_S}`,
+  };
   await caches.default.put(request, new Response(obj.body, { status: 200, headers }));
 }
 
@@ -195,8 +201,9 @@ export default {
         // (128 MB limit), with touch() above reading it again on stale
         // keys. Two independent streams each go at their own pace; the cost
         // is one extra Class B read per edge miss. A suspect in the macOS
-        // bazel-build wedge (#765), the one leg that still reads this Worker.
-        if (edgeable) ctx.waitUntil(edgePut(env, request, key, headers));
+        // bazel-build wedge (#765): on push-to-main and same-repo PRs, macOS
+        // is the only leg that still reads this Worker.
+        if (edgeable) ctx.waitUntil(edgePut(env, request, key));
         return new Response(obj.body, { status: 200, headers });
       }
       case "HEAD": {
