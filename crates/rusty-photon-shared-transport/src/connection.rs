@@ -26,6 +26,25 @@
 //!
 //! [`Connection::request_timed`] also reports *when* the exchange
 //! crossed the host's side of the wire — see [`WireTiming`].
+//!
+//! # An exchange runs to completion
+//!
+//! Once a request has the command lock, its exchange runs on its own
+//! task, to its reply, whether or not the caller is still waiting. A
+//! caller can stop waiting at any point — an HTTP client hangs up and
+//! the server drops its handler, a poll task is aborted — and the
+//! protocols here carry no tag a later reader could use to recognise a
+//! reply that was left unread. Were the exchange dropped with its
+//! caller, its reply would answer the next request on the conduit, and
+//! every reply after it would be one exchange late until a read timed
+//! out or the conduit was reopened. Finishing the exchange keeps each
+//! reply with the request that sent it, and keeps the device to one
+//! command outstanding at a time. The cost is that the next request
+//! waits for it: one round trip, or one read timeout if the reply never
+//! comes — the same wait it has behind any request still in flight.
+//!
+//! A request that has not yet taken the lock sends nothing when its
+//! caller goes away.
 
 use std::fmt;
 use std::io;
@@ -33,9 +52,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, OwnedMutexGuard};
 use tokio::time::Instant;
-use tracing::trace;
+use tracing::{debug, trace, Instrument};
 
 use crate::codec::Codec;
 use crate::error::{SessionError, TransportError};
@@ -169,8 +188,18 @@ pub struct Connection<C: Codec> {
     /// holders at that moment (live `Session`s, an aborted `while_open`
     /// task) is not something the reconnect and shutdown paths can
     /// bound.
-    transport: Mutex<Option<Box<dyn FrameTransport>>>,
+    ///
+    /// Behind an `Arc` so an exchange's task can own the lock, and
+    /// hold it to the end of the exchange after its caller has gone.
+    transport: Arc<Mutex<Option<Box<dyn FrameTransport>>>>,
     codec: C,
+    failures: WireFailures,
+}
+
+/// Where requests on one connection report failing on the wire. Cloned
+/// into each exchange's task, which can outlive the request's caller.
+#[derive(Clone)]
+struct WireFailures {
     /// Notify fired on a `TransportError` from `request` that came off
     /// the wire. Not on one raised because the conduit was already
     /// closed: that is where teardown leaves things, and waking a
@@ -196,7 +225,7 @@ pub struct Connection<C: Codec> {
     /// recovery model is "next acquire reopens".
     reconnect_signal: Option<Arc<Notify>>,
     /// Count of requests that failed on the wire, i.e. every one that
-    /// fired [`Connection::signal_reconnect`]. Lets a caller that ran
+    /// fired [`WireFailures::signal_reconnect`]. Lets a caller that ran
     /// commands on this connection ask afterwards whether they landed
     /// — which the hooks cannot say, because they stay best-effort
     /// about their own errors and log rather than propagate. The
@@ -211,7 +240,23 @@ pub struct Connection<C: Codec> {
     /// That half is the hook's own verdict — see
     /// [`crate::StateAssertion`] — and the two are read together
     /// wherever it matters.
-    wire_failures: AtomicU32,
+    wire_failures: Arc<AtomicU32>,
+}
+
+impl WireFailures {
+    /// A request that found the conduit closed: counted, not signalled.
+    fn count(&self) {
+        self.wire_failures.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// A request that failed on the wire: counted, and the supervisor
+    /// woken.
+    fn signal_reconnect(&self) {
+        self.count();
+        if let Some(sig) = self.reconnect_signal.as_ref() {
+            sig.notify_one();
+        }
+    }
 }
 
 impl<C: Codec> Connection<C> {
@@ -220,10 +265,12 @@ impl<C: Codec> Connection<C> {
     /// constructs these.
     pub(crate) fn new(transport: Box<dyn FrameTransport>, codec: C) -> Self {
         Self {
-            transport: Mutex::new(Some(transport)),
+            transport: Arc::new(Mutex::new(Some(transport))),
             codec,
-            reconnect_signal: None,
-            wire_failures: AtomicU32::new(0),
+            failures: WireFailures {
+                reconnect_signal: None,
+                wire_failures: Arc::new(AtomicU32::new(0)),
+            },
         }
     }
 
@@ -269,7 +316,7 @@ impl<C: Codec> Connection<C> {
     /// [`crate::SharedTransport`] right after constructing a connection
     /// destined for the slot, before it's published to clients.
     pub(crate) fn with_reconnect_signal(mut self, signal: Arc<Notify>) -> Self {
-        self.reconnect_signal = Some(signal);
+        self.failures.reconnect_signal = Some(signal);
         self
     }
 
@@ -278,7 +325,15 @@ impl<C: Codec> Connection<C> {
     /// Holds the command lock for the entire request/response
     /// exchange: encode → `send_frame` → (read frames until one matches
     /// or `max_skip` is exhausted) → decode. The lock is released when
-    /// this future completes (success or error).
+    /// the exchange ends (success or error).
+    ///
+    /// # Cancellation
+    ///
+    /// Dropping this future before it has the command lock sends
+    /// nothing. Dropping it after does not stop the exchange: that runs
+    /// on its own task to its reply, which it reads and discards, so the
+    /// next request on the conduit reads its own. See the [module
+    /// documentation](self#an-exchange-runs-to-completion) for why.
     ///
     /// On a [`crate::TransportError`] raised by the wire, also fires
     /// the attached `reconnect_signal` (if any). Three failures do not
@@ -340,7 +395,60 @@ impl<C: Codec> Connection<C> {
         cmd: C::Command,
     ) -> Result<(C::Response, WireTiming), SessionError<C::Error>> {
         let bytes = self.codec.encode(&cmd);
-        let mut guard = self.transport.lock().await;
+        let exchange = Exchange {
+            // Taken here, by the caller, so that a caller which goes
+            // away while it queues for the wire has sent nothing.
+            transport: Arc::clone(&self.transport).lock_owned().await,
+            codec: self.codec.clone(),
+            failures: self.failures.clone(),
+        }
+        .run(cmd, bytes);
+        // The span keeps the exchange's trace events with the request
+        // that started it, which is also what names an exchange that
+        // ran on after its caller left.
+        let task = tokio::spawn(exchange.in_current_span());
+        let waiting = CallerWaiting { answered: false };
+        let outcome = task.await;
+        waiting.answered();
+        match outcome {
+            Ok(result) => result,
+            // A panic in the exchange (in the codec, say) reaches the
+            // caller, as it did when the exchange ran inline. Nothing
+            // else ends the task while a caller still waits on it: only
+            // a runtime shutdown cancels it, and that drops the caller
+            // too.
+            Err(e) => std::panic::resume_unwind(e.into_panic()),
+        }
+    }
+
+    /// How many requests on this connection have failed on the wire.
+    /// Counted even when no signal is attached, so the value means
+    /// "did not reach the device", not "woke the supervisor".
+    pub(crate) fn wire_failures(&self) -> u32 {
+        self.failures.wire_failures.load(Ordering::SeqCst)
+    }
+}
+
+/// One request/response exchange, holding the command lock, on a task
+/// of its own so that it ends at its reply rather than when its caller
+/// stops waiting. See [`Connection::request_timed`].
+struct Exchange<C: Codec> {
+    transport: OwnedMutexGuard<Option<Box<dyn FrameTransport>>>,
+    codec: C,
+    failures: WireFailures,
+}
+
+impl<C: Codec> Exchange<C> {
+    async fn run(
+        self,
+        cmd: C::Command,
+        bytes: Vec<u8>,
+    ) -> Result<(C::Response, WireTiming), SessionError<C::Error>> {
+        let Self {
+            transport: mut guard,
+            codec,
+            failures,
+        } = self;
         // Reached only by a caller that raced `close` — the reconnect
         // and shutdown paths both quiesce their callers first.
         let Some(transport) = guard.as_mut() else {
@@ -349,7 +457,7 @@ impl<C: Codec> Connection<C> {
             // supervisor — but the command did not reach the device,
             // and a caller asking afterwards whether its commands
             // landed has to be told no.
-            self.wire_failures.fetch_add(1, Ordering::SeqCst);
+            failures.count();
             return Err(SessionError::Transport(TransportError::Io(
                 io::Error::other("transport closed"),
             )));
@@ -366,17 +474,17 @@ impl<C: Codec> Connection<C> {
         match transport.send_frame(&bytes).await {
             Ok(()) => {}
             Err(e) => {
-                self.signal_reconnect();
+                failures.signal_reconnect();
                 return Err(SessionError::Transport(e));
             }
         }
         let written_at = Instant::now();
 
         let mut buf = Vec::new();
-        let budget = self.codec.max_skip();
+        let budget = codec.max_skip();
         for skipped in 0..=budget {
             if let Err(e) = transport.recv_frame(&mut buf).await {
-                self.signal_reconnect();
+                failures.signal_reconnect();
                 return Err(SessionError::Transport(e));
             }
             let timing = WireTiming {
@@ -392,27 +500,34 @@ impl<C: Codec> Connection<C> {
                 bytes = %DisplayWire(&buf),
                 "wire recv"
             );
-            let resp = self.codec.decode(&buf).map_err(SessionError::Codec)?;
-            if self.codec.matches(&cmd, &resp) {
+            let resp = codec.decode(&buf).map_err(SessionError::Codec)?;
+            if codec.matches(&cmd, &resp) {
                 return Ok((resp, timing));
             }
         }
         drop(guard);
         Err(SessionError::SkipExhausted(budget.saturating_add(1)))
     }
+}
 
-    fn signal_reconnect(&self) {
-        self.wire_failures.fetch_add(1, Ordering::SeqCst);
-        if let Some(sig) = self.reconnect_signal.as_ref() {
-            sig.notify_one();
-        }
+/// Records, from the caller's side, a caller that stopped waiting while
+/// its exchange was on the wire. The exchange runs on regardless; this
+/// only says so in the log.
+struct CallerWaiting {
+    answered: bool,
+}
+
+impl CallerWaiting {
+    fn answered(mut self) {
+        self.answered = true;
     }
+}
 
-    /// How many requests on this connection have failed on the wire.
-    /// Counted even when no signal is attached, so the value means
-    /// "did not reach the device", not "woke the supervisor".
-    pub(crate) fn wire_failures(&self) -> u32 {
-        self.wire_failures.load(Ordering::SeqCst)
+impl Drop for CallerWaiting {
+    fn drop(&mut self) {
+        if !self.answered {
+            debug!("the caller stopped waiting mid-exchange; the exchange runs on to its reply");
+        }
     }
 }
 
@@ -771,5 +886,189 @@ mod tests {
             SessionError::SkipExhausted(n) => assert_eq!(n, 1, "one frame read and rejected"),
             other => panic!("expected SkipExhausted, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------
+    // A caller that stops waiting mid-exchange
+    // -----------------------------------------------------------------
+
+    /// A device on a line. Each frame written queues its answer, `re:`
+    /// and the frame, the moment it is written; each read and each
+    /// write waits until the test releases it. A read its caller
+    /// abandons therefore leaves its answer on the line for whoever
+    /// reads next, the way a serial port does.
+    struct Line {
+        answers: std::sync::Mutex<std::collections::VecDeque<Vec<u8>>>,
+        written: std::sync::Mutex<Vec<Vec<u8>>>,
+        reads: tokio::sync::Semaphore,
+        writes: tokio::sync::Semaphore,
+        reading: Notify,
+        writing: Notify,
+    }
+
+    impl Line {
+        /// Reads wait to be released; writes go straight out.
+        fn new() -> Arc<Self> {
+            Self::with_writes(tokio::sync::Semaphore::MAX_PERMITS)
+        }
+
+        /// Reads wait to be released, and only `writes` writes go out
+        /// before the test releases more.
+        fn with_writes(writes: usize) -> Arc<Self> {
+            Arc::new(Self {
+                answers: std::sync::Mutex::default(),
+                written: std::sync::Mutex::default(),
+                reads: tokio::sync::Semaphore::new(0),
+                writes: tokio::sync::Semaphore::new(writes),
+                reading: Notify::new(),
+                writing: Notify::new(),
+            })
+        }
+
+        fn written(&self) -> Vec<Vec<u8>> {
+            self.written.lock().unwrap().clone()
+        }
+
+        fn unread(&self) -> usize {
+            self.answers.lock().unwrap().len()
+        }
+    }
+
+    struct LineTransport(Arc<Line>);
+
+    #[async_trait::async_trait]
+    impl FrameTransport for LineTransport {
+        async fn send_frame(&mut self, bytes: &[u8]) -> Result<(), TransportError> {
+            self.0.writing.notify_one();
+            self.0.writes.acquire().await.unwrap().forget();
+            self.0.written.lock().unwrap().push(bytes.to_vec());
+            let mut answer = b"re:".to_vec();
+            answer.extend_from_slice(bytes);
+            self.0.answers.lock().unwrap().push_back(answer);
+            Ok(())
+        }
+
+        async fn recv_frame(&mut self, buf: &mut Vec<u8>) -> Result<(), TransportError> {
+            self.0.reading.notify_one();
+            self.0.reads.acquire().await.unwrap().forget();
+            buf.clear();
+            buf.extend(
+                self.0
+                    .answers
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .ok_or(TransportError::Eof)?,
+            );
+            Ok(())
+        }
+    }
+
+    fn line_connection(line: &Arc<Line>) -> Arc<Connection<StubCodec<true>>> {
+        Arc::new(Connection::new(
+            Box::new(LineTransport(Arc::clone(line))),
+            StubCodec::<true>,
+        ))
+    }
+
+    /// Drive `request` until `reached` fires, then drop it: a caller
+    /// that stops waiting at that point of its exchange.
+    async fn abandon_at<F: std::future::Future>(request: F, reached: &Notify) {
+        tokio::select! {
+            _ = request => panic!("the request finished before it was abandoned"),
+            () = reached.notified() => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn a_caller_that_stops_waiting_for_its_reply_leaves_the_next_request_its_own() {
+        // The rig's failure: an HTTP client hung up while its frame was
+        // on the wire, the server dropped the handler, and the reply
+        // went to the next request instead — then every reply after it
+        // was one exchange late.
+        let line = Line::new();
+        let conn = line_connection(&line);
+        abandon_at(conn.request(b"one".to_vec()), &line.reading).await;
+
+        line.reads.add_permits(2);
+        let reply = conn.request(b"two".to_vec()).await.unwrap();
+
+        assert_eq!(reply, b"re:two", "the next request reads its own reply");
+        assert_eq!(line.unread(), 0, "the abandoned reply was read, not left");
+    }
+
+    #[tokio::test]
+    async fn a_caller_that_stops_waiting_while_its_frame_goes_out_still_sends_it_whole() {
+        // A frame abandoned part-way through its write would reach the
+        // device torn, and whether a device answers a torn frame is
+        // anyone's guess.
+        let line = Line::with_writes(0);
+        let conn = line_connection(&line);
+        abandon_at(conn.request(b"one".to_vec()), &line.writing).await;
+
+        line.writes.add_permits(2);
+        line.reads.add_permits(2);
+        let reply = conn.request(b"two".to_vec()).await.unwrap();
+
+        assert_eq!(line.written(), [b"one".to_vec(), b"two".to_vec()]);
+        assert_eq!(reply, b"re:two");
+    }
+
+    #[tokio::test]
+    async fn a_caller_that_stops_waiting_for_the_wire_sends_nothing() {
+        // The lock is taken by the caller, so one that goes away while
+        // it queues leaves no command behind it — a client that hung up
+        // on a cover move does not move the cover later.
+        let line = Line::new();
+        let conn = line_connection(&line);
+        let first = tokio::spawn({
+            let conn = Arc::clone(&conn);
+            async move { conn.request(b"one".to_vec()).await }
+        });
+        line.reading.notified().await;
+
+        let queued = conn.request(b"two".to_vec());
+        tokio::select! {
+            biased;
+            _ = queued => panic!("the queued request ran while the first held the wire"),
+            () = tokio::task::yield_now() => {}
+        }
+        line.reads.add_permits(1);
+
+        assert_eq!(first.await.unwrap().unwrap(), b"re:one");
+        assert_eq!(
+            line.written(),
+            [b"one".to_vec()],
+            "the queued frame never went out"
+        );
+    }
+
+    /// Panics on decode, as a codec with a bug might.
+    #[derive(Clone)]
+    struct PanicsOnDecode;
+
+    impl Codec for PanicsOnDecode {
+        type Command = Vec<u8>;
+        type Response = Vec<u8>;
+        type Error = StubCodecError;
+
+        fn encode(&self, cmd: &Self::Command) -> Vec<u8> {
+            cmd.clone()
+        }
+
+        #[expect(
+            clippy::panic_in_result_fn,
+            reason = "a codec that panics is the behaviour under test"
+        )]
+        fn decode(&self, _bytes: &[u8]) -> Result<Self::Response, Self::Error> {
+            panic!("the codec panicked");
+        }
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "the codec panicked")]
+    async fn a_panic_in_the_exchange_reaches_the_caller() {
+        let conn = Connection::new(Box::new(EchoTransport(None)), PanicsOnDecode);
+        let _ = conn.request(b"ping".to_vec()).await;
     }
 }
