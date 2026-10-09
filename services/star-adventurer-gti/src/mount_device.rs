@@ -434,9 +434,11 @@ impl MountDevice {
     ///
     /// On the wire it is only the stop-class commands a disconnect sends
     /// (the last-disconnect `:L1`, `:L2`, `:K1` when this was the last
-    /// session). The slot is emptied again afterwards, under the axes: a
-    /// disconnect whose session close fails returns before it gets there,
-    /// and with no client connected there was no disconnect to run.
+    /// session). The slot is emptied again afterwards, under the axes, so
+    /// the claim is void whichever way the disconnect went: with no client
+    /// connected there was no disconnect to run, and a disconnect returns
+    /// before its own clear if closing the session fails — which the
+    /// shared transport documents as unreachable, hence only the warning.
     pub async fn retire(&self) -> RetainedState {
         use ascom_alpaca::api::Device as _;
         if let Err(e) = self.set_connected(false).await {

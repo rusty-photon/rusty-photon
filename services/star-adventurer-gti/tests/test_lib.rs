@@ -42,7 +42,7 @@ use std::time::Duration;
 
 use star_adventurer_gti::{
     AlpacaServerConfig, BoundServer, Config, Handover, MockTransportFactory, MountConfig,
-    ServerBuilder, TransportConfig, TransportFactory,
+    ServerBuilder, TransportConfig, TransportFactory, UdpConfig,
 };
 
 static SERVER_LOCK: Mutex<()> = Mutex::new(());
@@ -245,6 +245,13 @@ async fn a_hand_over_applies_only_to_the_mount_it_was_kept_for() {
     assert!(
         !at_park_in_lifecycle(other_port, parked.clone()).await,
         "a mount on another serial port inherited AtPark"
+    );
+
+    let mut over_wifi = fast_park_config();
+    over_wifi.transport = TransportConfig::Udp(UdpConfig::default());
+    assert!(
+        !at_park_in_lifecycle(over_wifi, parked.clone()).await,
+        "a mount reached over UDP inherited the USB mount's AtPark"
     );
 
     let mut other_id = fast_park_config();
