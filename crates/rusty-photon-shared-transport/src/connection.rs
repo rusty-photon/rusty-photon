@@ -398,7 +398,6 @@ impl<C: Codec> Connection<C> {
         &self,
         cmd: C::Command,
     ) -> Result<(C::Response, WireTiming), SessionError<C::Error>> {
-        let bytes = self.codec.encode(&cmd);
         let exchange = Exchange {
             // Taken here, by the caller, so that a caller which goes
             // away while it queues for the wire has sent nothing.
@@ -406,7 +405,7 @@ impl<C: Codec> Connection<C> {
             codec: Arc::clone(&self.codec),
             failures: self.failures.clone(),
         }
-        .run(cmd, bytes);
+        .run(cmd);
         // The span keeps the exchange's trace events with the request
         // that started it, which is also what names an exchange that
         // ran on after its caller left.
@@ -446,7 +445,6 @@ impl<C: Codec> Exchange<C> {
     async fn run(
         self,
         cmd: C::Command,
-        bytes: Vec<u8>,
     ) -> Result<(C::Response, WireTiming), SessionError<C::Error>> {
         let Self {
             transport: mut guard,
@@ -466,6 +464,12 @@ impl<C: Codec> Exchange<C> {
                 io::Error::other("transport closed"),
             )));
         };
+        // Encoded here, under the command lock, so the codec sees each
+        // request's encode, decode and match together. A codec that
+        // keeps state between them would otherwise have it changed by a
+        // request still queueing for the wire, or by one that gave up
+        // while it queued.
+        let bytes = codec.encode(&cmd);
         trace!(
             len = bytes.len(),
             bytes = %DisplayWire(&bytes),
@@ -1047,8 +1051,8 @@ mod tests {
         );
     }
 
-    /// Remembers the last frame it encoded and takes only that frame
-    /// back as the answer. Its `Clone` starts with nothing remembered,
+    /// Remembers the last frame it encoded and takes only a reply that
+    /// ends with it as the answer. Its `Clone` starts with nothing remembered,
     /// the way a codec with per-connection state might implement it, so
     /// it only works if one instance both encodes and judges the reply.
     struct RemembersWhatItSent(std::sync::Mutex<Vec<u8>>);
@@ -1074,7 +1078,7 @@ mod tests {
         }
 
         fn matches(&self, _cmd: &Self::Command, resp: &Self::Response) -> bool {
-            *self.0.lock().unwrap() == *resp
+            resp.ends_with(&self.0.lock().unwrap())
         }
     }
 
@@ -1088,6 +1092,33 @@ mod tests {
         let reply = conn.request(b"ping".to_vec()).await.unwrap();
 
         assert_eq!(reply, b"ping");
+    }
+
+    #[tokio::test]
+    async fn a_request_queued_for_the_wire_does_not_encode_under_an_exchange_in_flight() {
+        // Encoding ahead of the lock would let the queued request
+        // overwrite what the codec remembers while the first still
+        // waits for its reply, and the first would reject its own.
+        let line = Line::new();
+        let conn = Arc::new(Connection::new(
+            Box::new(LineTransport(Arc::clone(&line))),
+            RemembersWhatItSent(std::sync::Mutex::default()),
+        ));
+        let first = tokio::spawn({
+            let conn = Arc::clone(&conn);
+            async move { conn.request(b"one".to_vec()).await }
+        });
+        line.reading.notified().await;
+        let queued = tokio::spawn({
+            let conn = Arc::clone(&conn);
+            async move { conn.request(b"two".to_vec()).await }
+        });
+        tokio::task::yield_now().await;
+
+        line.reads.add_permits(2);
+
+        assert_eq!(first.await.unwrap().unwrap(), b"re:one");
+        assert_eq!(queued.await.unwrap().unwrap(), b"re:two");
     }
 
     /// Panics on decode, as a codec with a bug might.
