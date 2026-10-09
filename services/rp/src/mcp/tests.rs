@@ -141,6 +141,10 @@ struct MockCamera {
     /// phase would complete in one poll and the select would never look
     /// at its cancel branch again.
     cancel_during_geometry: std::sync::Mutex<Option<Cancel>>,
+    /// Every exposure start (with the binning the camera was at when it
+    /// started) and every frame download, in the order they arrived —
+    /// what tells a test whether two captures' exposures overlapped.
+    exposure_log: std::sync::Mutex<Vec<String>>,
 }
 
 impl MockCamera {
@@ -154,6 +158,11 @@ impl MockCamera {
     /// Every geometry write so far, in order.
     fn geometry_writes(&self) -> Vec<String> {
         self.geometry_writes.lock().unwrap().clone()
+    }
+
+    /// Every exposure start and frame download so far, in order.
+    fn exposure_log(&self) -> Vec<String> {
+        self.exposure_log.lock().unwrap().clone()
     }
 
     /// What the camera answers for its binning: the override when one
@@ -188,6 +197,11 @@ impl ascom_alpaca::api::Camera for MockCamera {
         if self.fail_start_exposure {
             return Err(ASCOMError::invalid_operation("shutter jammed"));
         }
+        let [bin_x, bin_y] = self.reported_bin();
+        self.exposure_log
+            .lock()
+            .unwrap()
+            .push(format!("start {bin_x}x{bin_y}"));
         Ok(())
     }
 
@@ -243,6 +257,10 @@ impl ascom_alpaca::api::Camera for MockCamera {
         if self.fail_image_array {
             return Err(ASCOMError::invalid_operation("download timeout"));
         }
+        self.exposure_log
+            .lock()
+            .unwrap()
+            .push("download".to_string());
         if let Some(frame) = &self.frame {
             return Ok(frame.clone().into());
         }
@@ -10083,6 +10101,252 @@ async fn capture_through_an_untrained_camera_ignores_the_gate() {
     .unwrap();
     let json = ok_text(result);
     assert!(json["image_path"].as_str().is_some());
+}
+
+// -----------------------------------------------------------------------
+// Same-camera capture serialization (rp.md § Capture Tool Details,
+// "Binning" → Concurrency)
+// -----------------------------------------------------------------------
+// The slot's queueing is tokio's mutex; these pin how `do_capture` uses
+// it — held until the frame is downloaded, per camera, taken before the
+// motion gate, and left when the call is cancelled.
+
+/// A handler over the mock camera "cam" whose FITS writes land in a
+/// sandbox, with the sandbox's guard.
+fn capture_handler(cam: Arc<MockCamera>) -> (McpHandler, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let mut handler = test_handler(camera_registry(cam));
+    handler.session_config = SessionConfig {
+        data_directory: tmp.path().to_string_lossy().to_string(),
+    };
+    (handler, tmp)
+}
+
+fn capture_request(camera_id: &str, binning: u8) -> CaptureRequest<'_> {
+    CaptureRequest {
+        camera_id,
+        duration: Duration::from_millis(100),
+        binning: rp_vocabulary::Binning {
+            x: binning,
+            y: binning,
+        },
+        target: None,
+        frame_type: None,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_through_a_busy_camera_waits_for_it_before_touching_it() {
+    let cam = Arc::new(MockCamera::default());
+    let (handler, _tmp) = capture_handler(cam.clone());
+    let slot = handler
+        .equipment
+        .find_camera("cam")
+        .unwrap()
+        .capture_slot()
+        .await;
+
+    let capture = {
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            handler
+                .do_capture(capture_request("cam", 2), None, &Cancel::never())
+                .await
+        })
+    };
+
+    for _ in 0..20 {
+        assert!(
+            cam.geometry_writes().is_empty() && calls(&cam.start_exposure_calls) == 0,
+            "a capture queued behind a busy camera touched it: {:?}",
+            cam.geometry_writes()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    drop(slot);
+    capture
+        .await
+        .unwrap()
+        .expect("the queued capture runs once the camera is free");
+    assert_eq!(calls(&cam.start_exposure_calls), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_queued_across_a_reconnect_runs_against_the_reestablished_session() {
+    let lost = Arc::new(MockCamera::default());
+    let reestablished = Arc::new(MockCamera::default());
+    let (handler, _tmp) = capture_handler(lost.clone());
+    let entry = handler.equipment.find_camera("cam").unwrap();
+    let slot = entry.capture_slot().await;
+
+    let capture = {
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            handler
+                .do_capture(capture_request("cam", 1), None, &Cancel::never())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !capture.is_finished(),
+        "the capture must still be queued on the camera"
+    );
+    let handle: Arc<dyn ascom_alpaca::api::Camera> = reestablished.clone();
+    entry.session.install(handle, entry.invariants());
+
+    drop(slot);
+    capture
+        .await
+        .unwrap()
+        .expect("the queued capture runs once the camera is free");
+    assert_eq!(
+        calls(&reestablished.start_exposure_calls),
+        1,
+        "the exposure must run on the session live when the capture got the camera"
+    );
+    assert_eq!(
+        calls(&lost.start_exposure_calls),
+        0,
+        "the session the capture queued on was replaced while it waited"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_cancelled_while_queued_leaves_without_touching_the_camera() {
+    let cam = Arc::new(MockCamera::default());
+    let (handler, _tmp) = capture_handler(cam.clone());
+    let _slot = handler
+        .equipment
+        .find_camera("cam")
+        .unwrap()
+        .capture_slot()
+        .await;
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::ClientDisconnected);
+    let started = tokio::time::Instant::now();
+
+    // The slot is never released, so a wait that ignored the cancel
+    // would hang; the timeout turns that into a failure.
+    let err = tokio::time::timeout(
+        Duration::from_mins(1),
+        handler.do_capture(capture_request("cam", 1), None, &cancel),
+    )
+    .await
+    .expect("a capture cancelled while queued must not wait for the camera")
+    .expect_err("a capture cancelled while queued must fail");
+
+    assert_eq!(err, "cancelled: client disconnected");
+    assert_eq!(
+        started.elapsed(),
+        CANCEL_AT,
+        "the queued call must leave as the cancel lands, not when the camera frees"
+    );
+    assert_eq!(cam.geometry_writes(), Vec::<String>::new());
+    assert_eq!(calls(&cam.start_exposure_calls), 0);
+    assert_eq!(
+        calls(&cam.abort_exposure_calls),
+        0,
+        "nothing was exposing for this call to abort"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_queued_behind_a_busy_camera_holds_no_motion_gate_permit() {
+    let (handler, _tmp) = capture_handler(Arc::new(MockCamera::default()));
+    let handler = handler.with_trains(cam_trains(1000.0));
+    let slot = handler
+        .equipment
+        .find_camera("cam")
+        .unwrap()
+        .capture_slot()
+        .await;
+
+    let capture = {
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            handler
+                .do_capture(capture_request("cam", 1), None, &Cancel::never())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !capture.is_finished(),
+        "the capture must still be queued on the camera"
+    );
+
+    let exclusive = tokio::time::timeout(
+        Duration::from_secs(1),
+        handler.motion_gate.exclusive("slew"),
+    )
+    .await
+    .expect("a mount motion must not wait on a capture queued behind a busy camera");
+
+    drop(exclusive);
+    drop(slot);
+    capture
+        .await
+        .unwrap()
+        .expect("the queued capture runs once the camera and the gate are free");
+}
+
+#[tokio::test(start_paused = true)]
+async fn overlapping_captures_through_one_camera_expose_one_after_the_other() {
+    // Three seconds of polls keep the first exposure in flight while
+    // the second capture arrives; the counter is shared, so the second
+    // exposure is ready at its first poll.
+    let cam = Arc::new(MockCamera {
+        not_ready_count: 30,
+        ..Default::default()
+    });
+    let (handler, _tmp) = capture_handler(cam.clone());
+    let cancel = Cancel::never();
+
+    // `join!` polls in argument order, so the 2x2 capture takes the
+    // camera first.
+    let (first, second) = tokio::join!(
+        handler.do_capture(capture_request("cam", 2), None, &cancel),
+        handler.do_capture(capture_request("cam", 1), None, &cancel),
+    );
+
+    first.expect("the capture that took the camera first completes");
+    second.expect("the capture queued behind it completes instead of failing");
+    assert_eq!(
+        cam.exposure_log(),
+        vec!["start 2x2", "download", "start 1x1", "download"],
+        "the second exposure must start only once the first frame is downloaded, at its own binning"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn captures_through_different_cameras_do_not_wait_for_each_other() {
+    let free = Arc::new(MockCamera::default());
+    let mut registry = camera_registry(Arc::new(MockCamera::default()));
+    let mut other = camera_registry(free.clone()).cameras.remove(0);
+    other.id = "other-cam".to_string();
+    registry.cameras.push(other);
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let mut handler = test_handler(registry);
+    handler.session_config = SessionConfig {
+        data_directory: tmp.path().to_string_lossy().to_string(),
+    };
+    let _slot = handler
+        .equipment
+        .find_camera("cam")
+        .unwrap()
+        .capture_slot()
+        .await;
+
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        handler.do_capture(capture_request("other-cam", 1), None, &Cancel::never()),
+    )
+    .await
+    .expect("a capture through another camera must not wait on this one's slot")
+    .expect("the capture through the free camera completes");
+    assert_eq!(calls(&free.start_exposure_calls), 1);
 }
 
 /// Build a handler with a configured guider client. Pass

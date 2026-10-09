@@ -1064,7 +1064,7 @@ tool across the line with `safety.gate` (§ Configuration).
 
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
-| `capture` | Ungated | camera_id *or* train_id (exactly one), duration, binning (optional `"AxB"`, default `"1x1"`), target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. Sets the binning and the full-frame subframe on the camera before every exposure, so nothing a foreign client left on it beforehand reaches the frame (a *concurrent* same-camera capture is a separate matter — see [Capture Tool Details](#capture-tool-details), Concurrency). `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
+| `capture` | Ungated | camera_id *or* train_id (exactly one), duration, binning (optional `"AxB"`, default `"1x1"`), target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. Sets the binning and the full-frame subframe on the camera before every exposure, so nothing a foreign client left on it beforehand reaches the frame. `rp`'s captures through one camera run one at a time: a call through a camera `rp` is already capturing on waits its turn rather than failing (a client outside `rp` is not queued — see [Capture Tool Details](#capture-tool-details), Concurrency), and the deadlines below start once it has the camera. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
 | `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, max_bin_x, max_bin_y, can_asymmetric_bin, gain, offset | Read camera capabilities and current settings. `max_bin_x`/`max_bin_y`/`can_asymmetric_bin` are the binning envelope a caller picks a `capture` binning inside; they are read once at connect time with the other invariant sensor properties, and are `null` when that read failed. `gain` and `offset` are read from the driver on every call, never cached by rp — for the SDK camera drivers they are the values the camera's next exposure is taken at (their GO1); `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at (calibrator-flats-provider plan, D4/D5) |
 | `move_focuser` | Ungated | focuser_id, position | actual_position, backlash_compensated | Move focuser to absolute position (blocks polling `is_moving` until idle **and** the read-back position equals the target; with a `backlash` block on the focuser the move arrives from the configured direction via an overshoot leg — see [Focuser Tool Details](#focuser-tool-details)). Bounded by a **predicted deadline per leg**: `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` (current position read before the move) and a compensated move is the overshoot hop then the return hop; the envelope's `predicted`/`max` are the sums over the legs. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
 | `get_focuser_position` | Ungated | focuser_id | position, min_position, max_position, backlash | Read the current focuser position together with the configured travel bounds and backlash block — `min_position` / `max_position` and `backlash` (`{ "approach", "steps" }`) from the focuser's config block, each `null` when the config sets none. See [Focuser Tool Details](#focuser-tool-details) |
@@ -1278,10 +1278,10 @@ call that asked for it. The cost is six property writes and one
 read-back per exposure.
 
 That covers state the camera was **already in** when the capture
-started, which is the whole of the problem on a rig where `rp` is the
-only thing capturing. It does not cover a second capture arriving
-through the same camera *while* this one runs — see Concurrency at the
-end of this section.
+started. A second `rp` capture arriving through the same camera *while*
+this one runs cannot interleave its writes with these: captures through
+one camera run one at a time — see Concurrency at the end of this
+section.
 
 The write order is fixed, and all four properties are written:
 
@@ -1291,8 +1291,8 @@ The write order is fixed, and all four properties are written:
    is exposed. Sizing the subframe from factors the sensor is not at
    would write a crop, not a full frame; and since a goal is keyed by
    binning, a frame at a binning nobody asked for is worse than no
-   frame. This read is also the one moment that catches another client
-   re-binning the camera between these writes.
+   frame. This read is also the one moment that catches a client
+   outside `rp` re-binning the camera between these writes.
 3. `StartX`, `StartY` = `0`.
 4. `NumX`, `NumY` = `CameraXSize / BinX`, `CameraYSize / BinY`
    (integer division). The sensor dimensions come from the connect-time
@@ -1348,22 +1348,63 @@ parameter error rather than a started/failed pair, and stops a run
 before the focuser moves or the loop starts rather than at the first
 frame.
 
-**Concurrency.** These writes are not serialized against a second
-capture through the same camera. `rp` has never serialized same-camera
-captures — the [mount motion gate](#mount-motion-gate) is about mount
-motion, and the drivers reject a second concurrent `StartExposure` —
-so two overlapping captures can interleave their geometry writes.
+**Concurrency.** Captures through one camera run one at a time. Each
+camera has a capture slot, and a capture holds it from its first
+geometry write until its image is downloaded, so the geometry it
+wrote, the exposure it started and the frame it reads back are all its
+own. Without that, two overlapping captures could interleave their
+writes: step 2's read-back catches an interleaving that lands before
+it, but not one that lands after it — the other capture re-bins the
+camera while this one is still writing its subframe, and the frame
+runs at a binning its document and filename do not name.
 
-Step 2's read-back narrows that window; it does **not** close it. An
-interleaving that lands *before* the read-back is caught and fails the
-call. One that lands *after* it is not: the other capture can re-bin
-the camera while this one is still writing its subframe, and the frame
-then runs at a binning the document and the filename do not name.
-Nothing short of holding the camera from the first write through
-`StartExposure` fixes that, which is a change to `rp`'s concurrency
-contract rather than to this path — tracked as
-[issue #1217](https://github.com/rusty-photon/rusty-photon/issues/1217).
-Until then: one capture per camera at a time.
+A `capture` — or an internal capture of `auto_focus`, `refocus_train`
+or `center_on_target` — through a camera whose slot is held **waits
+its turn rather than failing**, and waiters take the slot in arrival
+order. An orchestrator does not have to track which camera is busy.
+Captures through different cameras never wait for each other.
+
+- **Released at download, not at persistence.** Writing the FITS file
+  and the sidecar and inserting into the cache touch no camera, so the
+  next exposure starts while the previous frame is still being written
+  (tenet 2).
+- **Taken before the motion gate.** A capture waits for its camera
+  first and only then takes the [mount motion gate](#mount-motion-gate)
+  shared. A capture queued behind a busy camera therefore holds no
+  permit and never delays a pending slew or dither. Nothing in `rp`
+  holds the gate and then waits for a camera, so the two waits cannot
+  deadlock.
+- **Cancel-aware.** The wait is raced against the call's cancellation,
+  like the motion-gate acquire ([In-Flight Tool
+  Calls](#in-flight-tool-calls)). A call cancelled while it waits — its
+  caller disconnected, or the unsafe transition swept it — leaves the
+  queue at once with `cancelled: <reason>` and never touches the
+  camera. Stop-class commands never take the slot: the safety
+  enforcer's `AbortExposure` goes straight to the device.
+- **Session read after the wait.** The camera's handle and its
+  connect-time metadata are read once the capture holds the camera, so
+  one queued across a reconnect exposes on the re-established session
+  ([Device Session Recovery](#device-session-recovery)) — which may put
+  a different device behind the entry — not on the one it queued on. A
+  camera that has never connected is refused before it queues.
+- **Silent while queued, deadlines exclude the wait.** Like a capture
+  waiting on the motion gate, a queued call emits nothing — no event,
+  no `notifications/progress` — until it holds the camera.
+  `exposure_started` and its advisory deadline follow the acquire, so
+  they describe this capture's own exposure rather than its time in
+  the queue.
+- **Bounded.** The wait adds no timeout of its own, and needs none:
+  the capture ahead holds the slot for at most its `duration` plus the
+  readout backstop and its download. A wedged exposure therefore holds
+  up its camera's next capture for that long, and no other camera's.
+
+The slot serializes `rp`'s own captures; it cannot hold a client
+outside `rp`. A NINA session, a ConformU run or a probe exposing
+through the same camera concurrently is not queued by it — the
+rusty-photon drivers reject a second concurrent `StartExposure`, and
+step 2 catches a re-bin that lands before the read-back, but nothing
+in `rp` can see one that lands after it. Capture through a camera from
+one client at a time.
 
 **Target linkage (Decision 11 — landed).** `capture` gains two optional
 parameters: `target` (a slug string) and `frame_type`
@@ -2539,8 +2580,11 @@ in the catalog. Safety is enforced at the tool level, universally:
 - **Parameter validation**: focuser position within min/max bounds,
   exposure duration within configured limits, slew coordinates above
   horizon.
-- **State validation**: cannot capture while another capture is in
-  progress on the same camera, cannot slew during an exposure.
+- **State sequencing**: a capture through a camera that is already
+  capturing waits for it to finish
+  ([Capture Tool Details](#capture-tool-details), Concurrency), and a
+  slew waits for the in-flight imaging-train exposures
+  ([Mount Motion Gate](#mount-motion-gate)).
 - **Safety override**: a safety event (unsafe transition) immediately
   cancels every in-flight gated tool call (§ Safety → [In-Flight Tool
   Calls](#in-flight-tool-calls)) — the caller sees the tool error
@@ -3038,7 +3082,7 @@ Acquisition rules:
 |---|---|---|
 | `slew` — including `center_on_target`'s inner slews and orchestrator-driven meridian flips, which reach the mount as slews | Exclusive | Acquired before the pre-slew pointing read, so the predictive deadline never includes gate wait |
 | `dither` | Exclusive | Acquired after parameter and unit resolution (invalid calls fail fast without waiting), before the proxy call to the guider service; held through settle. A dither cancelled mid-settle answers its caller at once but hands the permit to a detached holder that keeps the gate exclusive until the guider's settle RPC ends — bounded by the settle timeout plus 15 s, or 90 s when the call named none — so no capture starts into the tail of guide pulses |
-| `capture` through a camera terminating an **imaging** train — including the internal captures of `auto_focus`, `refocus_train`, and `center_on_target` | Shared | Held for the full exposure-to-persistence pipeline; concurrent imaging-train captures share freely |
+| `capture` through a camera terminating an **imaging** train — including the internal captures of `auto_focus`, `refocus_train`, and `center_on_target` | Shared | Held for the full exposure-to-persistence pipeline; concurrent imaging-train captures share freely. A capture takes its camera's slot first and the gate second, so one queued behind another capture through the same camera holds no permit while it waits ([Capture Tool Details](#capture-tool-details), Concurrency) |
 
 Queueing semantics (Decision 5 of the
 [optical-trains plan](../plans/optical-trains.md)):
