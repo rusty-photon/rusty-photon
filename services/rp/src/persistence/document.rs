@@ -53,10 +53,11 @@ pub struct ExposureDocument {
     /// different binning than it was set to fails the capture before
     /// exposing, so no document is written for it — the read-back is
     /// what makes that check possible, and what this field records.
-    /// The one case where it can still misname a frame is two
-    /// overlapping captures through one camera, which `rp` does not
-    /// serialize (rp.md §"Capture Tool Details", "Binning" →
-    /// Concurrency). Present on every frame this version captures;
+    /// The one case where it can still misname a frame is a client
+    /// outside `rp` re-binning the camera after the read-back; `rp`'s
+    /// own captures through one camera run one at a time (rp.md
+    /// §"Capture Tool Details", "Binning" → Concurrency). Present on
+    /// every frame this version captures;
     /// absent on sidecars written before `capture` set the binning at
     /// all.
     #[serde(default, skip_serializing_if = "Option::is_none")]

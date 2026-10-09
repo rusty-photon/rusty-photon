@@ -122,6 +122,22 @@ async fn apply_pin_port_and_description(world: &mut StarAdventurerWorld, descrip
     world.call_config_apply(config).await;
 }
 
+#[when(
+    regex = r#"^config\.apply pins the bound port, sets the mount description to "([^"]+)" and the post-slew settle to (\d+) seconds$"#
+)]
+async fn apply_pin_port_description_and_settle(
+    world: &mut StarAdventurerWorld,
+    description: String,
+    settle_secs: u64,
+) {
+    let port = world.bound_port();
+    let mut config = world.current_config().await;
+    config["server"]["port"] = serde_json::json!(port);
+    config["mount"]["description"] = serde_json::json!(description);
+    config["mount"]["settle_after_slew"] = serde_json::json!(format!("{settle_secs}s"));
+    world.call_config_apply(config).await;
+}
+
 #[when("config.apply is called with an empty mount unique_id")]
 async fn apply_empty_unique_id(world: &mut StarAdventurerWorld) {
     let mut config = world.current_config().await;
@@ -135,8 +151,11 @@ async fn assert_apply_status(world: &mut StarAdventurerWorld, expected: String) 
     assert_eq!(response["status"].as_str(), Some(expected.as_str()));
 }
 
+/// Also a `When`: a scenario that goes on to act on the reloaded service
+/// uses it as the barrier that the reload has landed.
+#[when(regex = r#"^the reloaded service serves mount description "([^"]+)"$"#)]
 #[then(regex = r#"^the reloaded service serves mount description "([^"]+)"$"#)]
-async fn assert_reloaded_serves(world: &mut StarAdventurerWorld, expected: String) {
+async fn reloaded_serves_description(world: &mut StarAdventurerWorld, expected: String) {
     world.wait_for_config_description(&expected).await;
 }
 

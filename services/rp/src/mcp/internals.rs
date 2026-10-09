@@ -326,18 +326,41 @@ fn new_document_ids() -> (String, String) {
     (document_id, uuid8)
 }
 
-/// The per-exposure snapshot of connect-time invariants, copied out of
-/// the equipment-registry borrow so it need not outlive any await.
+/// What one capture holds for its pipeline: the per-exposure snapshot
+/// of connect-time invariants, the camera's capture slot (rp.md
+/// § Capture Tool Details, "Binning" → Concurrency), and — through an
+/// imaging-train camera — the shared motion-gate permit (§ Mount Motion
+/// Gate).
 ///
 /// The handle and the invariants come out of the session slot
 /// together, so an exposure always runs against metadata read from the
 /// session its handle belongs to, whatever the reconnect supervisor
 /// does underneath it.
-struct CaptureSnapshot {
+struct CameraClaim<'a> {
     cam: Arc<dyn Camera>,
     focal_length_mm: Option<f64>,
     readout_time_estimate: Duration,
     invariants: CameraInvariants,
+    slot: tokio::sync::MutexGuard<'a, ()>,
+    motion_permit: Option<tokio::sync::RwLockReadGuard<'a, ()>>,
+}
+
+/// Download the finished frame and give up the camera's capture slot
+/// (rp.md § Capture Tool Details, "Binning" → Concurrency). Nothing a
+/// capture does after its download touches the camera, so the next
+/// queued capture can start its exposure while this frame is still
+/// being written (tenet 2); taking the guard by value is what makes
+/// the download the last camera access the slot covers.
+async fn download_frame(
+    cam: &Arc<dyn Camera>,
+    slot: tokio::sync::MutexGuard<'_, ()>,
+) -> std::result::Result<ImageArray, String> {
+    let image_array = cam
+        .image_array()
+        .await
+        .map_err(|e| format!("failed to download image array: {e}"))?;
+    drop(slot);
+    Ok(image_array)
 }
 
 /// Dispatch on `max_adu`, collecting pixels directly into the
@@ -1016,21 +1039,27 @@ impl McpHandler {
     ) -> std::result::Result<(String, String), String> {
         let camera_id = req.camera_id;
         let duration = req.duration;
-        let CaptureSnapshot {
-            cam,
-            focal_length_mm,
-            readout_time_estimate,
-            invariants,
-        } = self.capture_snapshot(camera_id)?;
-
+        // One capture through a camera at a time (rp.md § Capture Tool
+        // Details, "Binning" → Concurrency): the slot is held from the
+        // first geometry write until the frame is downloaded, so a
+        // second capture through this camera queues here rather than
+        // interleaving its writes with this one's.
+        //
         // Imaging-train exposures contend with mount motion (rp.md
         // § Mount Motion Gate): hold the gate shared for the whole
         // pipeline, so a pending slew/dither delays this exposure's
         // start rather than trailing its stars. Un-trained and
         // guiding-train cameras bypass the gate — trains are
         // enrichment, not a gate. `exposure_started` below is emitted
-        // only after the acquire, keeping its deadline honest.
-        let _motion_permit = self.imaging_permit(camera_id, cancel).await?;
+        // only after both waits, keeping its deadline honest.
+        let CameraClaim {
+            cam,
+            focal_length_mm,
+            readout_time_estimate,
+            invariants,
+            slot: camera_slot,
+            motion_permit: _motion_permit,
+        } = self.claim_camera(camera_id, cancel).await?;
 
         // Frame geometry is written before `exposure_started` is
         // emitted: a rejected `binning` or an unreachable camera then
@@ -1110,10 +1139,7 @@ impl McpHandler {
                 }
             }
 
-            let image_array = cam
-                .image_array()
-                .await
-                .map_err(|e| format!("failed to download image array: {e}"))?;
+            let image_array = download_frame(&cam, camera_slot).await?;
 
             let (width, height, _planes) = image_array.dim();
             let (doc_width, doc_height) = sidecar_dims(width, height)?;
@@ -1333,28 +1359,54 @@ impl McpHandler {
         )
     }
 
-    /// Snapshot the connected camera handle, the train-derived focal
-    /// length, and the invariant physical-sensor properties cached at
-    /// connect time. The `CameraEntry` is a borrow off
-    /// `self.equipment`; the snapshot copies out the `Copy`/
-    /// `Option<Copy>` values so the borrow does not have to outlive
-    /// `do_capture`'s awaits — which is also what lets `do_capture`
-    /// avoid the 5 Alpaca round-trips per exposure it used to pay for
-    /// these properties (see `CameraEntry` docs). The readout estimate
-    /// sizes the predictive exposure deadline (§2.4); omitted in
-    /// config → the conservative built-in default. rp does not enforce
-    /// it; it rides the `exposure_started` envelope for the Sentinel
-    /// watchdog (the camera driver owns the exposure, and
+    /// Claim the camera for one capture: wait for it, then snapshot it.
+    ///
+    /// The two waits come in this order (rp.md § Capture Tool Details,
+    /// "Binning" → Concurrency): the camera's capture slot, then the
+    /// motion-gate permit. Slot first, so a capture queued behind a busy
+    /// camera holds no permit and never delays a pending slew; nothing
+    /// holds the gate and then waits for a camera, so the two waits
+    /// cannot deadlock. Both are raced against `cancel`: a call
+    /// cancelled in either returns `Err` without touching the camera. A
+    /// camera that has never connected is refused before either wait.
+    ///
+    /// The snapshot follows the waits: the connected camera handle, the
+    /// train-derived focal length, and the invariant physical-sensor
+    /// properties cached at connect time, copied out of the
+    /// `CameraEntry` borrow as `Copy`/`Option<Copy>` values — which is
+    /// what lets `do_capture` avoid the 5 Alpaca round-trips per
+    /// exposure it used to pay for these properties (see `CameraEntry`
+    /// docs). A capture can queue for a whole exposure, and a reconnect
+    /// in that time may put a different device behind the entry (rp.md
+    /// § Device Session Recovery), so the snapshot is taken once the
+    /// capture holds the camera: it exposes on the session live when it
+    /// got the camera, not the one live when it queued. The readout
+    /// estimate sizes the predictive exposure deadline (§2.4); omitted
+    /// in config → the conservative built-in default. rp does not
+    /// enforce it; it rides the `exposure_started` envelope for the
+    /// Sentinel watchdog (the camera driver owns the exposure, and
     /// `CAPTURE_READOUT_GRACE` remains rp's own readout backstop).
-    fn capture_snapshot(&self, camera_id: &str) -> std::result::Result<CaptureSnapshot, String> {
+    async fn claim_camera(
+        &self,
+        camera_id: &str,
+        cancel: &Cancel,
+    ) -> std::result::Result<CameraClaim<'_>, String> {
         let cam_entry = self
             .equipment
             .find_camera(camera_id)
             .ok_or_else(|| format!("camera not found: {camera_id}"))?;
-        let (cam, invariants) = cam_entry
-            .snapshot()
-            .ok_or_else(|| format!("camera not connected: {camera_id}"))?;
-        Ok(CaptureSnapshot {
+        let not_connected = || format!("camera not connected: {camera_id}");
+        if cam_entry.device().is_none() {
+            return Err(not_connected());
+        }
+        let slot = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(cancel.error()),
+            slot = cam_entry.capture_slot() => slot,
+        };
+        let motion_permit = self.imaging_permit(camera_id, cancel).await?;
+        let (cam, invariants) = cam_entry.snapshot().ok_or_else(not_connected)?;
+        Ok(CameraClaim {
             cam,
             focal_length_mm: self.trains.focal_length_for_camera(camera_id),
             readout_time_estimate: cam_entry
@@ -1362,6 +1414,8 @@ impl McpHandler {
                 .readout_time_estimate
                 .unwrap_or(DEFAULT_READOUT_TIME_ESTIMATE),
             invariants,
+            slot,
+            motion_permit,
         })
     }
 

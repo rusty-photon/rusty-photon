@@ -180,5 +180,6 @@ async fn background_call_succeeds(world: &mut RpWorld, tool: String) {
             handle.abort();
             panic!("background '{tool}' call did not finish within 60s");
         };
-    result.unwrap_or_else(|e| panic!("background '{tool}' call failed: {e}"));
+    let value = result.unwrap_or_else(|e| panic!("background '{tool}' call failed: {e}"));
+    world.last_background_result = Some(value);
 }
