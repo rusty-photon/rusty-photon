@@ -4810,6 +4810,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "derive_more",
+ "rusty-photon-shared-transport",
  "thiserror 2.0.21",
  "tokio",
  "tokio-serial",

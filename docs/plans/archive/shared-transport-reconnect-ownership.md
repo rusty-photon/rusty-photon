@@ -1,9 +1,11 @@
 # Plan: shared-transport reconnect ownership — every reconnect attempt has one owner
 
-**Status: OBSOLETE (archived 2026-10-08).** None of the nine PRs was
-started. The plan's one bug that production demonstrably reaches, the
-stale reply PR 0 targeted, is fixed by a different mechanism under
-[#1448](https://github.com/rusty-photon/rusty-photon/issues/1448).
+**Status: OBSOLETE (archived 2026-10-08).** The plan was never
+followed as written. Its one bug that production demonstrably reaches,
+the stale reply PR 0 targeted, is fixed by a different mechanism under
+[#1448](https://github.com/rusty-photon/rusty-photon/issues/1448). PR 6,
+PR 7 and one of PR 1's pins land in the same pull request; the rest is
+dropped.
 
 - **How #1448 fixes it.** An exchange runs to completion once it holds
   the command lock, so an abandoned request reads its own reply instead
@@ -11,23 +13,37 @@ stale reply PR 0 targeted, is fixed by a different mechanism under
   decision 7. On rig2's FP2 the fix saw 89 hang-ups land mid-exchange
   and 0 misattributed replies in 2,435 exchanges. The installed build
   shifted on the first hang-up in 4 runs out of 4.
-- **Why the rest is not pursued.** Production reaches the lifecycle
-  windows the plan was written for (W1, W2, W3 and the Lazy variant, the
-  subject of
-  [#1243](https://github.com/rusty-photon/rusty-photon/issues/1243))
-  only through `reconnect_now`, which nothing in production calls. PR
-  8's single-owner rewrite is therefore not pursued.
+- **Delivered in the same PR,
+  [#1449](https://github.com/rusty-photon/rusty-photon/pull/1449):**
+  - PR 7. `reconnect_now` is a `test-util` hook that production builds
+    do not compile, so "nothing in production calls it" is a compile
+    error rather than a grep result.
+  - PR 6. `shutdown` closes what the slot holds when it takes it, which
+    closes W1-LEAK for any publisher.
+  - From PR 1, the pin of the post-join re-store
+    (`a_recovery_published_inside_the_shutdown_join_is_withdrawn_after_it`).
+- **Why the rest is not pursued.** With `reconnect_now` out of
+  production builds, the lifecycle windows the plan was written for (W1,
+  W2, W3 and the Lazy variant, the subject of
+  [#1243](https://github.com/rusty-photon/rusty-photon/issues/1243)) are
+  reachable only through W5. That needs a reconnect attempt that does not
+  yield for 5 s, such as a wedged synchronous serial open, before the
+  supervisor's join gives up on it. PR 8's single-owner rewrite is
+  therefore not pursued. What W5 still allows, unchanged by this PR:
+  - the orphaned attempt holds the port while it opens and handshakes,
+    so a reload opening the same port races it;
+  - if it then publishes into the lifecycle being torn down, PR 6
+    closes that conduit, so it keeps no port afterwards;
+  - a poll task it respawns after the teardown drained the old one (W1)
+    keeps polling that closed conduit, its requests failing as closed,
+    until the process exits.
 - **Decision 6.** Its reason no longer holds: a poll task aborted
   mid-request no longer strands a reply.
-- **Parked as follow-up candidates:**
-  - PR 6, W1-LEAK, reachable only through W5 or `reconnect_now`;
-  - PR 7, `reconnect_now` as a `test-util` hook, which would make
-    "nothing in production calls it" a compile-time fact.
 - **Dropped:**
-  - PR 1, the pins;
+  - the rest of PR 1, the pins of guarantees that already hold;
   - PR 2, bug B, which has no effect today;
   - PR 3, bug A, latent: every poll body only inquires;
-  - PR 4, W5, which needs an attempt that does not yield for 5 s;
+  - PR 4, W5 itself, which needs the 5 s stall above;
   - PR 5, W4b, which costs availability only.
 
 Decisions were settled by Igor on 2026-10-03 and revised on review on
