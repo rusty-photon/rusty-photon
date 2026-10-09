@@ -1599,8 +1599,10 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   `Connecting` (C7) — would reach the camera, record the cooler as engaged in
   the new session, and then be undone by the init on a rig with
   `disable_auto_cooler`: `CoolerOn` reading true and `SetCCDTemperature` the
-  new target while the TEC is off. Held, the write waits and lands after the
-  init. The connect re-asserts nothing itself: unlike a mode change, there is
+  new target while the TEC is off — 3 runs out of 3 on the QHY178M with the
+  write unheld, and none with it held, in the
+  [2026-10-09 record](../validation/2026-10-09-qhy-camera-qhy178m-cfw-linux-connect/README.md).
+  Held, the write waits and lands after the init. The connect re-asserts nothing itself: unlike a mode change, there is
   no command given in its session for it to restore, and pushing an earlier
   session's would be an actuation on connect (C5, K4).
 
@@ -1635,9 +1637,14 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   the target survive it as the last command given, and nothing re-asserts them,
   so on a rig whose `qhyccd.ini` sets `disable_auto_cooler` the connect's own
   init leaves the TEC off beside a `CoolerOn` that still reads true, until a
-  client sends `CoolerOn` again. One sent while the connect is still running
-  waits for its handshake and lands after that init (RM4), so it is not undone
-  by it. Service start is one more such init, with no
+  client sends `CoolerOn` again — measured on the QHY178M in the
+  [2026-10-09 record](../validation/2026-10-09-qhy-camera-qhy178m-cfw-linux-connect/README.md).
+  One sent while the connect is still running waits for its handshake and lands
+  after that init (RM4), so it is not undone by it. On Linux the SDK reads
+  `qhyccd.ini` from the service process's **working directory** — it logs
+  `Load ini filePath = <that directory>` as it starts — so the file that
+  decides this for a service is the one where that service runs, not the copy
+  the SDK installs under `/usr/local/lib`. Service start is one more such init, with no
   client involved: to find each camera's filter wheel, `build()` opens every
   camera and runs `InitQHYCCD` before `IsQHYCCDCFWPlugged`, the order indi-qhy
   uses in its connect. So on such a rig, a TEC still running when the service
@@ -1964,10 +1971,13 @@ Layered per [`testing.md`](../skills/testing.md).
   cost in RM1's *Measured on hardware* (2026-09-28), and a gain and offset
   carried across a switch and armed by the next exposure in the
   [2026-10-03 record](../validation/2026-10-03-qhy-camera-qhy600m-cfw-windows/README.md).
-  Two of the knobs model behaviour no camera here has shown — an init that
-  resets gain and offset (reported for a QHYminiCam8M) and an init that
-  switches the cooler off (`disable_auto_cooler=true`; rig2 runs with it
-  false) — so for those the mock is still the reading alone.
+  An init that switches the cooler off (`disable_auto_cooler=true`; rig2 runs
+  with it false) is measured on the dev box's QHY178M in the
+  [2026-10-09 record](../validation/2026-10-09-qhy-camera-qhy178m-cfw-linux-connect/README.md):
+  a plain reconnect leaves the TEC at 0 % beside `CoolerOn` true, and a
+  `CoolerOn` sent into a connect's handshake is switched off by the rest of it.
+  An init that resets gain and offset (reported for a QHYminiCam8M) is the one
+  knob no camera here has shown, so for it the mock is still the reading alone.
 - **Windows DLL resolution** — the preflight's candidate ordering/selection are
   pure functions with **injected** environment and fs-existence checkers, and
   the doctor's check assembly / prompt parsing are pure over plain data —
