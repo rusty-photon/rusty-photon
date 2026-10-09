@@ -494,10 +494,11 @@ impl BoundServer {
             }
         };
         let serve_result = rusty_photon_driver::discovery::serve_with(discovery, serve).await;
-        // Retire the mount before the transport shutdown below. That
-        // shutdown's safety stop halts a park still in flight, and the
-        // park's watcher would take the halt for an arrival; once the
-        // mount is retired, the watcher can no longer mark it parked.
+        // Retire the mount (its own disconnect) before the transport
+        // shutdown below. Once retired, nothing in this lifecycle can
+        // command the mount, and a park still in flight, which that
+        // shutdown's safety stop halts and the park's watcher would take
+        // for an arrival, can no longer mark it parked.
         let handover = match mount {
             Some((device, identity)) => Handover {
                 retained: device.retire().await,

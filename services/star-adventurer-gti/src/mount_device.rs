@@ -414,18 +414,34 @@ impl MountDevice {
     }
 
     /// End this lifecycle for a reload and hand over what the next one
-    /// keeps. Sends nothing to the mount.
+    /// keeps.
     ///
-    /// A reload rebuilds the driver without disconnecting it, so a park
-    /// still in flight keeps its claim on the slew slot, and the
-    /// shutdown's safety stop then halts its axes — which its watcher
-    /// cannot tell from a park that arrived. Called once serving has
-    /// ended and before that stop, this empties the slot under
-    /// `axis_ownership`, as `AbortSlew` and disconnect do. A park watcher
-    /// marks the mount parked only while holding `axis_ownership` and its
-    /// claim, so it either finished before the slot was emptied, and the
-    /// park is carried, or never will: the state read below is final.
+    /// To the device a reload is a disconnect, and this is that
+    /// disconnect, run by the driver itself once serving has ended and
+    /// before the transport shuts down. It leaves the old lifecycle inert:
+    ///
+    /// - The session slot empties, so nothing in this lifecycle can put a
+    ///   command on the wire through it: the tracking guard ends, and an
+    ///   auto-flip that has not reached the wire fails `NOT_CONNECTED`.
+    /// - A park still in flight loses its claim on the slew slot, so its
+    ///   watcher cannot take the shutdown's halt for an arrival. A park
+    ///   watcher marks the mount parked only while holding
+    ///   `axis_ownership` and its claim, so it either finished before the
+    ///   slot emptied, and the park is carried, or never will: the state
+    ///   read below is final.
+    /// - [`DriverState::reset_for_disconnect`] keeps exactly what
+    ///   [`RetainedState`] carries.
+    ///
+    /// On the wire it is only the stop-class commands a disconnect sends
+    /// (the last-disconnect `:L1`, `:L2`, `:K1` when this was the last
+    /// session). The slot is emptied again afterwards, under the axes: a
+    /// disconnect whose session close fails returns before it gets there,
+    /// and with no client connected there was no disconnect to run.
     pub async fn retire(&self) -> RetainedState {
+        use ascom_alpaca::api::Device as _;
+        if let Err(e) = self.set_connected(false).await {
+            tracing::warn!(error = %e, "retiring the mount: its disconnect did not complete");
+        }
         {
             let _axes = self.axis_ownership.lock().await;
             self.slew_in_progress.clear();

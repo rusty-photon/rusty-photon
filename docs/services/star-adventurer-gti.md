@@ -3569,8 +3569,10 @@ conduit, where it is asserted whatever the way down managed.
 ```
 Service shutdown (HTTP server stops → `SharedTransport::shutdown()`)
    ↓
-retire the mount: void the slew or park in flight, hand over what a
-   reload keeps (see §What a reload keeps) — nothing on the wire
+retire the mount: the driver disconnects its own session, as a client
+   leaving would (stop-class only: the last-disconnect :L1, :L2, :K1
+   when it held the last session), voiding the slew or park in flight;
+   hand over what a reload keeps (see §What a reload keeps)
    ↓
 shutdown hook runs :L1, :L2, :K1 one last time
    (a stop that does not assert here is logged at error!: nothing
@@ -3638,12 +3640,21 @@ slewing, or sleeping out its settle — keeps its claim on the slew slot.
 The shutdown's safety stop then halts its axes, which its completion
 watcher cannot tell from a park that arrived. The old driver is
 therefore *retired* once the HTTP server has drained and **before** the
-shutdown hook runs: under `axis_ownership`, as `AbortSlew` and
-disconnect do, the slot is emptied — voiding the park's claim — and what
-the old driver kept is copied out and handed to the next one. A park
-whose watcher marked it parked before the retire is carried as parked;
-one still in flight is carried as not parked, and its watcher, finding
-its claim gone, never marks it. The retire sends nothing to the mount.
+shutdown hook runs. Retiring is the driver's own disconnect, the same
+transition a client's `Connected = false` makes. It empties the slew
+slot under `axis_ownership`, voiding the park's claim, and copies out
+what the old driver kept for the next one. A park whose watcher marked
+it parked before the retire is carried as parked. One still in flight
+is carried as not parked, and its watcher, finding its claim gone,
+never marks it.
+
+Retiring also leaves the old driver with no session. Nothing still
+running in it can put a command on the wire afterwards: the tracking
+guard ends, and an auto-flip that has not reached the wire fails
+`NOT_CONNECTED` instead of starting a goto in the moment before the
+transport shuts down. On the wire the retire sends only stop-class
+commands: the last-disconnect `:L1`, `:L2`, `:K1` when the driver held
+the last session, which the shutdown hook repeats a moment later.
 
 ## MVP Scope
 

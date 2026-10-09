@@ -5223,12 +5223,43 @@ async fn retire_hands_over_a_finished_park_and_the_settle_override() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn retire_sends_nothing_to_the_mount() {
+async fn retire_puts_only_stops_on_the_wire() {
+    // Retiring is the device's own disconnect: the last-disconnect stop
+    // and nothing else (no actuation on a reload).
     let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
     let from = mock.lock().await.command_log.len();
 
     d.retire().await;
 
+    let m = mock.lock().await;
+    let frames = setter_frames_since(&m, from);
+    assert!(
+        frames
+            .iter()
+            .all(|f| f.starts_with(":L") || f.starts_with(":K")),
+        "retire sent more than stops: {frames:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retired_device_puts_no_motion_on_the_wire() {
+    // Whatever in the old lifecycle still runs after the retire — the
+    // tracking guard's auto-flip, which is a SetSideOfPier, among it —
+    // finds the device disconnected and never reaches the wire.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.retire().await;
+    let from = mock.lock().await.command_log.len();
+
+    let lst = d.sidereal_time().await.unwrap();
+    let slew = d
+        .slew_to_coordinates_async((lst + 1.0).rem_euclid(24.0), 30.0)
+        .await
+        .unwrap_err();
+    let flip = d.set_side_of_pier(PierSide::East).await.unwrap_err();
+
+    assert!(!d.connected().await.unwrap());
+    assert_eq!(slew.code, ASCOMErrorCode::NOT_CONNECTED, "{slew}");
+    assert_eq!(flip.code, ASCOMErrorCode::NOT_CONNECTED, "{flip}");
     let m = mock.lock().await;
     assert_eq!(setter_frames_since(&m, from), Vec::<String>::new());
 }
