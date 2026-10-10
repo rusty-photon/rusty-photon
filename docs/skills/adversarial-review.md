@@ -53,8 +53,15 @@ because the reviewers read files from the working tree):
 /adversarial-review 1458
 ```
 
-or, from an agent, the Workflow tool with `name: "adversarial-review"`
-and `args: {pr: 1458}`. Optional args: `full: true` reviews the whole
+or, from an agent, the Workflow tool with
+`scriptPath: ".claude/workflows/adversarial-review.js"` and
+`args: {pr: 1458}`. Use `scriptPath`, not `name:`: within one session
+the by-name registry can keep serving a cached copy of an earlier
+version of the file — on #1459 five consecutive rounds ran a stale copy
+while the file changed under them — and `scriptPath` always runs the
+file in the checkout. The slash command goes through the same registry,
+so after editing the workflow run it from a fresh session or by
+`scriptPath`. Optional args: `full: true` reviews the whole
 PR again instead of the delta (after a redesign); `round` / `since`
 override what the scope stage reads from the PR's previous rounds; and
 `skip: ["silent-failures"]` leaves a lens out on purpose — the body

@@ -43,7 +43,9 @@ Arguments: $ARGUMENTS
    defines — exit criteria, reply-per-thread rule, watcher, CI
    diagnosis — with review rounds as the second one defines them.
 3. **Run a review round on every new head** with the Workflow tool:
-   `name: "adversarial-review"`, `args: {pr: <n>}`. It runs in the
+   `scriptPath: ".claude/workflows/adversarial-review.js"`,
+   `args: {pr: <n>}` — by path, never by `name:`, which can serve a
+   stale cached copy of the file within a session. It runs in the
    background next to the CI watcher, and it reads the working tree:
    **change nothing in the checkout until it returns** — diagnose CI
    failures, but hold every edit, commit, merge and push. The round

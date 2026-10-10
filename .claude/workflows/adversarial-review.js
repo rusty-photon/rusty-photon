@@ -437,7 +437,12 @@ if (lenses.length) {
     const notes = votes.map(v => v.remedy_note).filter(Boolean)
     const reasons = votes.filter(v => v.verdict === 'refuted').map(v => v.reasoning)
     const overstated = alive.map(v => v.statement_note).filter(Boolean)
-    return { ...f, status, remedy_note: notes.join(' '), statement_note: overstated.join(' '), refuted_because: reasons[0] || '', votes: votes.length, expected }
+    const tally = {
+      confirmed: votes.filter(v => v.verdict === 'confirmed').length,
+      pre_existing: votes.filter(v => v.verdict === 'pre_existing').length,
+      refuted: reasons.length,
+    }
+    return { ...f, status, remedy_note: notes.join(' '), statement_note: overstated.join(' '), refuted_because: reasons[0] || '', votes: votes.length, expected, tally }
   }
 
   // How well a statement came through its skeptics, best last: confirmed as
@@ -478,7 +483,7 @@ if (lenses.length) {
     }
     const unchecked = tried
       .filter(t => t !== bestFrom && t.status === 'unverified')
-      .map(t => ({ severity: t.severity, title: t.title, consequence: t.consequence, votes: t.votes, expected: t.expected }))
+      .map(t => ({ severity: t.severity, title: t.title, consequence: t.consequence, votes: t.votes, expected: t.expected, tally: t.tally, refuted_because: t.refuted_because, statement_note: t.statement_note }))
     if (unchecked.length) {
       log(`${unchecked.length} statement(s) of "${clip(best.title, 80)}" could not be verified; recorded on the posted finding`)
       best = { ...best, unchecked }
@@ -546,8 +551,12 @@ const complete = incomplete.length === 0
 
 const marker = `<!-- adversarial-review round=${round}${complete ? ' head=' + head : ''} -->`
 
+// An unverified statement is only readable with its verdicts: one returned
+// refutation and one returned confirmation are opposite answers.
+const voteSplit = t => `${t.votes} of ${t.expected} skeptics returned: ${t.tally.confirmed} confirmed, ${t.tally.pre_existing} pre-existing, ${t.tally.refuted} refuted`
+
 const findingBody = f => [
-  `**${f.id}** · ${f.lenses.join(' + ')} · ${f.severity}` + (f.status === 'unverified' ? ` · **unverified** (${f.votes} of ${f.expected} skeptics returned)` : ''),
+  `**${f.id}** · ${f.lenses.join(' + ')} · ${f.severity}` + (f.status === 'unverified' ? ` · **unverified** (${voteSplit(f)})` : ''),
   '',
   `**${f.title}**`,
   '',
@@ -558,7 +567,10 @@ const findingBody = f => [
   f.merged && f.merged.length ? `**Also raised as:** ${f.merged.map(t => clip(t, 120)).join('; ')}` : null,
   f.remedy ? `**Suggested remedy:** ${f.remedy}` : null,
   f.statement_note ? `**Skeptic on the statement:** ${f.statement_note}` : null,
-  ...(f.unchecked || []).map(u => `**Unverified statement:** ${u.severity} "${clip(u.title, 160)}" — ${u.votes} of ${u.expected} skeptics returned — ${clip(u.consequence, 240)}`),
+  f.status === 'unverified' && f.refuted_because ? `**Skeptic who refuted it:** ${clip(f.refuted_because, 400)}` : null,
+  ...(f.unchecked || []).map(u => `**Unverified statement:** ${u.severity} "${clip(u.title, 160)}" — ${voteSplit(u)} — ${clip(u.consequence, 240)}`
+    + (u.refuted_because ? ` — refuted because: ${clip(u.refuted_because, 240)}` : '')
+    + (u.statement_note ? ` — overstated: ${clip(u.statement_note, 160)}` : '')),
   f.remedy_note ? `**Skeptic on the remedy:** ${f.remedy_note}` : null,
 ].filter(x => x !== null).join('\n')
 

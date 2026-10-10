@@ -47,9 +47,10 @@ checkout is at its head (`git rev-parse HEAD`): review rounds read the
 working tree. Then iterate:
 
 1. **Start both waits after every push** (and once at the start): the
-   CI watcher (§Pacing) and a review round (`/adversarial-review <n>`,
-   or the Workflow tool with `name: "adversarial-review"`,
-   `args: {pr: <n>}`). Both run in the background; neither ends the
+   CI watcher (§Pacing) and a review round (the Workflow tool with
+   `scriptPath: ".claude/workflows/adversarial-review.js"`,
+   `args: {pr: <n>}` — by path, not by name, so the checkout's file
+   runs; adversarial-review.md §What a round is). Both run in the background; neither ends the
    other's wait. **While the round runs, change nothing in the
    checkout** — no edits, commits, merges or pushes: its reviewers are
    reading that working tree (adversarial-review.md §What a round is).
