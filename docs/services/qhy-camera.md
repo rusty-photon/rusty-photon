@@ -621,26 +621,43 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   their SDK write (RM4): they can wait there for as long as a mode change runs.
 
   **A connect owns the device from before its open until its caches are live.**
-  It takes the device claim a mode change takes (B4), after the session has
-  begun and before `OpenQHYCCD`, and holds it — inside the connection's
-  lifecycle lock (C8) — across the whole handshake: the stream mode, the
-  readout mode, `InitQHYCCD`, the transfer depth, `normalize_geometry`'s bin and
-  resolution, and the commit. Those are writes to the *camera*, the same ones a
-  mode change makes, and they get the same ownership: no capture, no abort's SDK
-  cancel and no disconnect's close can reach the camera between them, because
-  every one of those owns the device first. A claim found already held — a
-  capture from the session before still inside the SDK — refuses the connect
-  with `INVALID_OPERATION` before anything is opened, rather than running
-  `InitQHYCCD` under a live readout. The claim is released when the connect
-  returns, succeeded or failed. While it is held the device reports itself busy
-  on the terms B4 describes, and the cooler holds still (RM4): a `CoolerOn` or
-  `SetCCDTemperature` sent while a connect runs waits for it and lands after its
-  `InitQHYCCD`, which would otherwise undo it.
+  It takes the device claim a mode change takes (B4) before anything else —
+  before its session begins and before `OpenQHYCCD` — and holds it, inside the
+  connection's lifecycle lock (C8), across the whole handshake: the stream
+  mode, the readout mode, `InitQHYCCD`, the transfer depth,
+  `normalize_geometry`'s bin and resolution, and the commit. Those are writes
+  to the *camera*, the same ones a mode change makes, and they get the same
+  ownership: no capture, no abort's SDK cancel and no disconnect's close can
+  reach the camera between them, because every one of those owns the device
+  first. A claim found already held — a capture from the session before still
+  inside the SDK, or an abort's cancel finishing on the closed handle — refuses
+  the connect with `INVALID_OPERATION`, rather than running `InitQHYCCD` under a
+  live readout or letting that cancel land on the reopened handle. Refused
+  there, the connect has changed nothing: no session begun, no cache cleared,
+  and a retry goes through once the owner lets go. The claim is released when
+  the connect returns, succeeded or failed. While it is held the device reports
+  itself busy on the terms B4 describes, and the cooler holds still (RM4): a
+  `CoolerOn` or `SetCCDTemperature` sent while a connect runs waits for it and
+  lands after its `InitQHYCCD`, which would otherwise undo it. That wait has no
+  deadline, as a mode change's has none: a cooler command that never comes back
+  from the SDK holds the connect, and the lifecycle transitions behind it, as
+  an `InitQHYCCD` that never returns would (B4).
+
+  The claim orders the device's *owners* — the paths that write to the camera
+  or close it — not every SDK call. Reads that take no claim go into the SDK
+  during the handshake as they do during a mode change: `CCDTemperature`,
+  `CoolerPower`, `CoolerOn`'s and the capability members' probes. A client is
+  not released into that window (C7), so such a read comes from a second client;
+  one that fails there answers as a failed read does (C3, C9).
 
   A connect's own handshake also answers to the session rule: it publishes **in
   the session it established, or not at all** — the commit every cache writer
-  makes, here with nothing able to end the session under it but a camera that
-  leaves the bus (C9), which refuses the commit through its connected half. A
+  makes. Neither half of that check can fail on a connect today: with the
+  device held and the lifecycle lock taken, nothing else begins a session or
+  closes the handle, and C9 gives no presence verdict while the lifecycle lock
+  is held, so a camera that leaves mid-handshake shows up as a failed SDK call
+  and a failed connect, not as a refused commit. The check is kept as the rule
+  every cache writer follows, as a mode change keeps its second one. A
   handshake that fails closes the handle it opened, and with the claim held
   that handle can be no one else's: a disconnect waits for the claim rather than
   overtaking the handshake, and a later connect waits on the lifecycle lock in
@@ -1571,9 +1588,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   sensor warming while `CoolerOn` read true. That
   restores what a client commanded, on a path a client started; it is not an
   actuation on connect (C5). A cooler nobody engaged is not touched, and nor is
-  one engaged before a reconnect: `CoolerOn` outlives a reconnect as the last
-  command given (K4), but the command was given to a session that has ended,
-  and a mode change in the next one does not act on it. The filter wheel is not
+  one engaged before a reconnect: `CoolerOn` outlives a reconnect when the TEC
+  does (K4), but the command was given to a session that has ended, and a mode
+  change in the next one does not act on it. The filter wheel is not
   commanded: the SDK's init sends it nothing on the QHY600 and QHY5III classes
   (C5 has what is claimed beyond that).
 
@@ -1633,14 +1650,26 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   asserted). `CoolerPower` remains the normalized `CurPWM` percent (read via
   `handle.cooler_power_raw()`). A readout-mode change re-asserts a cooler
   engaged in the same session after its `InitQHYCCD`, so `CoolerOn` stays true
-  of the camera across one (RM4). A reconnect is not like that: `CoolerOn` and
-  the target survive it as the last command given, and nothing re-asserts them,
-  so on a rig whose `qhyccd.ini` sets `disable_auto_cooler` the connect's own
-  init leaves the TEC off beside a `CoolerOn` that still reads true, until a
-  client sends `CoolerOn` again — measured on the QHY178M in the
-  [2026-10-09 record](../validation/2026-10-09-qhy-camera-qhy178m-cfw-linux-connect/README.md).
-  One sent while the connect is still running waits for its handshake and lands
-  after that init (RM4), so it is not undone by it. On Linux the SDK reads
+  of the camera across one (RM4). A reconnect re-asserts nothing (C5), and what
+  its own `InitQHYCCD` does to a running TEC depends on the SDK's `qhyccd.ini`.
+  By default the TEC regulates straight through: on the QHY178M its drive read
+  the same before the reconnect and a millisecond after it, and the sensor kept
+  cooling. With `disable_auto_cooler=true` the init sets the drive to zero and
+  the sensor warms, as the
+  [2026-10-09 record](../validation/2026-10-09-qhy-camera-qhy178m-cfw-linux-connect/README.md)
+  measured.
+  So **`CoolerOn` reports what survived the connect's init**, not only the last
+  command: when a client had the cooler on, the connect reads the TEC's drive
+  straight after its init, and a drive of zero means the init stopped it —
+  `CoolerOn` then reads false, the service logs a warning, and the cooler stays
+  off until a client turns it on again, at the target `SetCCDTemperature` still
+  reports. A drive that reads anything else leaves `CoolerOn` true, and one that
+  cannot be read leaves it as the client set it. A TEC regulating at or above
+  ambient also reads zero, having nothing to drive, and reads off after a
+  reconnect: the safe error, since a client that sees it off turns it on
+  again, where the opposite one images on a warm sensor. A `CoolerOn` sent
+  while the connect is still running waits for its handshake and lands after
+  that init (RM4), so it is not undone by it. On Linux the SDK reads
   `qhyccd.ini` from the service process's **working directory** — it logs
   `Load ini filePath = <that directory>` as it starts — so the file that
   decides this for a service is the one where that service runs, not the copy

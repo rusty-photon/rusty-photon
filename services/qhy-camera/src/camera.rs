@@ -192,7 +192,9 @@ struct DeviceState {
     /// capture task; `cancel_exposure` signals whichever claim it finds and
     /// then installs one of its own for the SDK cancel; `disconnect` holds one
     /// across the close, so nothing can enter the SDK while the handle is being
-    /// freed. Only the installer ever takes a claim back, and only if it is
+    /// freed; and the two geometry writes — a connect's handshake and a
+    /// readout-mode change — each hold one across the writes that reconfigure
+    /// the camera (C6, B4). Only the installer ever takes a claim back, and only if it is
     /// still the installed one, so the `Arc`'s identity is the ownership token:
     /// while a claim is installed, its owner — and only its owner — may be
     /// inside the SDK or closing the handle.
@@ -370,17 +372,11 @@ impl DeviceState {
     fn reset_exposure_state(&self) {
         let _guard = self.result_lock.lock();
         self.exposure_generation.fetch_add(1, Ordering::AcqRel);
-        // Ask a capture somehow still draining from a previous session to bail
-        // promptly rather than run out its exposure. Deliberately does NOT take
-        // its claim, which is where this driver parts company with its siblings:
-        // here the claim means "something is inside the SDK", and handing the
-        // device on while that is still true is exactly what lets an SDK cancel
-        // land on a live readout (see `cancel_exposure`). The capture takes its
-        // own claim back as it leaves, and until it does a new exposure is
-        // rejected rather than started alongside it.
-        if let Some(claim) = self.in_flight_capture.lock().as_ref() {
-            claim.request();
-        }
+        // The in-flight claim is left alone. The one caller is a connect, which
+        // has taken the device before its session begins (C6), so the claim
+        // installed now is that connect's own, and no capture from the session
+        // before can still be inside the SDK: the connect would have been
+        // refused rather than reach here.
         self.image_ready.store(false, Ordering::Release);
         self.expected_duration_us.store(0, Ordering::Release);
         *self.last_image.lock() = None;
@@ -644,8 +640,10 @@ struct CaptureCancel {
     /// requested, so abort latency tracks the readout rather than the exposure
     /// length.
     wake: tokio::sync::Notify,
-    /// Whether this owner is a **geometry write** (B4) — a readout-mode change,
-    /// an owner of the device that is not, and never becomes, a frame.
+    /// Whether this owner is a **geometry write** — a readout-mode change (B4)
+    /// or a connect's handshake (C6), an owner of the device that is not, and
+    /// never becomes, a frame. A connect's is installed before the handle is
+    /// even open, so nothing may assume a geometry write's caches are live.
     ///
     /// Every owner shares this one slot, because each is *the device's one
     /// owner*. Only this kind has no exposure behind it, and the lifecycle
@@ -983,9 +981,10 @@ impl QhyCameraDevice {
         // reason: their setters store under this lock too (GO2), so a set
         // made while this exposure arms is wholly this frame's or wholly the
         // next one's. Under `commit_guard` for the second half of the same
-        // question: a connect signals a claim rather than taking it, so it is
-        // the session check that keeps the ended session's geometry from
-        // arming the new session's frame (C6).
+        // question. This exposure already holds the device, so no connect can
+        // begin a session under it (C6); the session check keeps the rule every
+        // cache reader that commits follows, should the geometry read here ever
+        // stop being behind the claim.
         let (bin, roi, controls) = {
             let _commit = self.commit_guard(session)?;
             let (bin, roi) = self.validated_geometry()?;
@@ -1072,14 +1071,6 @@ impl QhyCameraDevice {
     }
 
     fn connect_blocking(&self) -> ASCOMResult<()> {
-        // Nothing from the last session survives into this one (C6): the open
-        // below is what makes every read and setter answer again, and at that
-        // moment nothing has been republished. A previous session's `Error`,
-        // `ImageReady` and frame are as stale in that window as its geometry, so
-        // the reconnect hygiene of C3 starts here rather than after the
-        // handshake — and in the same step, so nothing can observe one without
-        // the other.
-        let session = self.state.begin_session();
         // The connect owns the device from here until its caches are live (C6):
         // the stream mode, the readout mode, `InitQHYCCD`, the transfer depth and
         // `normalize_geometry`'s bin and resolution are the writes a mode change
@@ -1089,20 +1080,34 @@ impl QhyCameraDevice {
         // through `set_connected`, which holds it (C8). Taken here, in the
         // blocking task, rather than in the future awaiting it, so the claim
         // lasts exactly as long as the SDK calls it covers (see [`ClaimGuard`]).
+        // And taken before anything else, so a connect refused here has changed
+        // nothing: the previous session's caches and exposure state are left as
+        // the owner it met is using them.
         let Some(mine) = self.try_claim(CaptureCancel::for_geometry_write()) else {
             warn!(
                 camera = %self.unique_id,
-                "a capture still owns the device; refusing to connect under it"
+                "another owner still holds the device; refusing to connect under it"
             );
             return Err(ASCOMError::invalid_operation(
-                "the device is still held by a capture inside the SDK; the camera \
-                 cannot be connected until it is released",
+                "the device is still held by another owner (a capture inside the SDK, \
+                 or an abort's cancel finishing); try the connect again once it is released",
             ));
         };
         let _guard = ClaimGuard::new(&self.state, &mine);
+        // Nothing from the last session survives into this one (C6): the open
+        // below is what makes every read and setter answer again, and at that
+        // moment nothing has been republished. A previous session's `Error`,
+        // `ImageReady` and frame are as stale in that window as its geometry, so
+        // the reconnect hygiene of C3 starts here rather than after the
+        // handshake — and in the same step, so nothing can observe one without
+        // the other.
+        let session = self.state.begin_session();
         // And the cooler holds still for the same stretch (RM4): a client's
         // command for it lands after the `InitQHYCCD` below rather than being
-        // undone by it. A blocking acquire, on the blocking pool's thread.
+        // undone by it. A blocking acquire, on the blocking pool's thread, and
+        // without a deadline, as a mode change waits for it: a cooler command
+        // that never comes back from the SDK holds this connect as an
+        // `InitQHYCCD` that never returns would (B4).
         let _controls = self.state.control_lock.blocking_lock();
         // `handle.open()` refcounts the shared physical connection
         // (`backend::SharedCameraConnection`): the open + refcount transition is
@@ -1138,6 +1143,9 @@ impl QhyCameraDevice {
             return Err(ASCOMError::NOT_CONNECTED);
         }
         initialize_in_mode(h, 0).map_err(nc)?;
+        // Asked straight after the init, and ahead of the mode's own reads so the
+        // offset range stays the last question a connect puts to the device.
+        let cooler_stopped = self.cooler_stopped_by_init(h);
         // The list does not depend on the mode, so it is read once here rather
         // than again by every mode change (RM1) — and ahead of the mode's own
         // reads, which keep the offset range as the last thing a connect asks
@@ -1154,20 +1162,59 @@ impl QhyCameraDevice {
         // `publish_mode` says why its order is the one it is.
         //
         // In the session this connect established and on a device still open,
-        // or not at all — the same guard every other writer here answers to, and
-        // the handshake is no exception. With the device held, nothing can begin
-        // a session under it, so the half doing the work here is the connected
-        // one: a camera that left the bus while these reads ran (C9) is refused
-        // its publish rather than answering `Ok` to a client whose next read is
-        // `Connected == false`.
+        // or not at all — the same guard every other writer here answers to.
+        // With the device held and the lifecycle lock taken, neither half can
+        // fail here today: nothing else begins a session or closes the handle,
+        // and C9 gives no presence verdict while the lifecycle lock is held, so
+        // a camera that leaves mid-handshake shows up as a failed SDK call, not
+        // as a refused commit. The check is kept as the rule every cache writer
+        // follows, as a mode change keeps its second one (C6).
         let commit = self.commit_guard(session)?;
         *self.state.readout_modes.lock() = Some(modes);
         // Nothing to carry: the session's caches were emptied as it began, and
         // the gain and offset are seeded from what the camera reported.
         self.state
             .publish_mode(readings, 0, ArmedControls::default());
+        if cooler_stopped {
+            // The command did not survive the init, so `CoolerOn` stops
+            // reporting it (K4). Under `control_lock`, which this connect holds,
+            // so no cooler setter's own store can interleave.
+            self.state.cooler_engaged.store(false, Ordering::Release);
+            warn!(
+                camera = %self.unique_id,
+                "the cooler a client turned on reads no drive after this connect's \
+                 InitQHYCCD (qhyccd.ini's disable_auto_cooler switches it off there); \
+                 CoolerOn reads false until a client turns it on again"
+            );
+        }
         drop(commit);
         Ok(())
+    }
+
+    /// Whether this connect's `InitQHYCCD` left off a cooler a client had turned
+    /// on (K4). With `disable_auto_cooler` set in the SDK's `qhyccd.ini`, the
+    /// init sets the TEC's drive to zero; without it, the drive goes on where it
+    /// was. So a cooler engaged before the connect whose PWM reads zero straight
+    /// after the init is one the init stopped. Asked only when a client had the
+    /// cooler on, so an idle camera's connect sends the device nothing more.
+    ///
+    /// A zero also reads from a TEC regulating at or above ambient, which has
+    /// nothing to drive; reporting that one off is the safe error, since a
+    /// client that sees it off turns it on again. A read that fails says
+    /// nothing either way, and leaves `CoolerOn` as the client last set it.
+    fn cooler_stopped_by_init(&self, h: &dyn CameraHandle) -> bool {
+        if !self.state.cooler_engaged.load(Ordering::Acquire)
+            || h.is_control_available(ControlType::Cooler).is_none()
+        {
+            return false;
+        }
+        match h.cooler_power_raw() {
+            Ok(pwm) => pwm <= 0.0,
+            Err(e) => {
+                debug!(error = %e, "cooler PWM unreadable after the connect's init; CoolerOn left as the client set it");
+                false
+            }
+        }
     }
 
     /// Wait until the in-flight slot satisfies `settled`, bounded by `timeout`.
@@ -1340,10 +1387,11 @@ impl QhyCameraDevice {
             if let Some(claim) = self.signal_owner() {
                 // A geometry write is waited out like any other owner, but it is
                 // not a capture: the SDK cancel below is no part of closing a
-                // camera that was not exposing. (The one geometry write, a
-                // readout-mode change, holds the lifecycle lock `set_connected`
-                // takes before it gets here, so it has finished by now; the
-                // check keeps this path from relying on that.)
+                // camera that was not exposing. (Both geometry writes, a
+                // readout-mode change and a connect's handshake, hold the
+                // lifecycle lock `set_connected` takes before it gets here, so
+                // they have finished by now; the check keeps this path from
+                // relying on that.)
                 stopped_a_capture |= !claim.is_geometry_write;
                 let budget = self.drain_timeout.saturating_sub(started.elapsed());
                 if !self.wait_until_released(&claim, budget).await {
@@ -4245,15 +4293,25 @@ mod tests {
         };
         await_init(&handle).await;
 
-        assert!(!device.image_ready().await.unwrap());
-        assert_eq!(
-            device.image_array().await.unwrap_err().code,
-            ASCOMErrorCode::INVALID_OPERATION
+        // Read from the state rather than through `ImageReady` / `ImageArray`:
+        // both also answer "not ready" while the connect's own claim is held
+        // (B4), which would pass whether or not the frame had been dropped.
+        assert!(
+            !device.state.image_ready.load(Ordering::Acquire),
+            "the previous session's ImageReady survived into the handshake window"
+        );
+        assert!(
+            device.state.last_image.lock().is_none(),
+            "the previous session's frame survived into the handshake window"
         );
 
         handle.release_init();
         reconnecting.await.unwrap().unwrap();
         assert!(!device.image_ready().await.unwrap());
+        assert_eq!(
+            device.image_array().await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_OPERATION
+        );
         assert_eq!(device.camera_state().await.unwrap(), CameraState::Idle);
     }
 
@@ -4571,10 +4629,10 @@ mod tests {
     /// draining one is not stopping a capture — the SDK cancel is no part of
     /// closing a camera that was not exposing.
     ///
-    /// The owner is installed by hand: the one geometry write, a readout-mode
-    /// change, holds the lifecycle lock `set_connected` takes first, so an
-    /// ordinary disconnect finds it gone. This pins what the drain does if one
-    /// is ever there.
+    /// The owner is installed by hand: both geometry writes, a readout-mode
+    /// change and a connect's handshake, hold the lifecycle lock
+    /// `set_connected` takes first, so an ordinary disconnect finds them gone.
+    /// This pins what the drain does if one is ever there.
     #[tokio::test]
     async fn a_disconnect_draining_a_geometry_write_does_not_cancel_the_camera() {
         let (device, handle) = connected_device_with_handle(MockCameraHandle::default()).await;
@@ -4699,9 +4757,9 @@ mod tests {
             ASCOMErrorCode::VALUE_NOT_SET
         );
         // And the exposure range, read before the gain, is not published either.
-        assert_eq!(
-            device.exposure_max().await.unwrap_err().code,
-            ASCOMErrorCode::INVALID_VALUE
+        assert!(
+            device.state.exposure_range_us.lock().is_none(),
+            "the exposure range went live before the connect had asked the device everything"
         );
 
         handle.release_offset_range();
@@ -4942,6 +5000,67 @@ mod tests {
         assert_eq!(handle.param(ControlType::Cooler), Some(-10.0));
     }
 
+    /// K4: a cooler the connect's `InitQHYCCD` switched off reads off. With
+    /// `disable_auto_cooler` in the SDK's `qhyccd.ini`, every init sets the TEC's
+    /// drive to zero, and a connect puts nothing back (C5) — so the last command
+    /// would describe a cooler that is not running. The target stays the
+    /// client's, and turning the cooler on again engages it at that target.
+    #[tokio::test]
+    async fn a_cooler_the_connects_init_switched_off_reads_off() {
+        // A TEC regulating below ambient draws a drive the SDK reports.
+        let mock = Arc::new(MockCameraHandle::default().with_param(ControlType::CurPWM, 50.0));
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&mock), None);
+        device.set_connected(true).await.unwrap();
+        device.set_set_ccd_temperature(-10.0).await.unwrap();
+        device.set_cooler_on(true).await.unwrap();
+        assert!(device.cooler_on().await.unwrap());
+
+        mock.init_stops_cooler.store(true, Ordering::SeqCst);
+        device.set_connected(false).await.unwrap();
+        device.set_connected(true).await.unwrap();
+
+        assert!(
+            !device.cooler_on().await.unwrap(),
+            "CoolerOn reads true of a TEC the connect's init switched off"
+        );
+        assert_eq!(device.set_ccd_temperature().await.unwrap(), -10.0);
+        device.set_cooler_on(true).await.unwrap();
+        assert!(device.cooler_on().await.unwrap());
+        assert_eq!(mock.param(ControlType::Cooler), Some(-10.0));
+    }
+
+    /// K4: a cooler the connect's init left running still reads on — the SDK's
+    /// default, where the TEC regulates straight through a reconnect.
+    #[tokio::test]
+    async fn a_cooler_still_regulating_after_a_reconnect_still_reads_on() {
+        let mock = Arc::new(MockCameraHandle::default().with_param(ControlType::CurPWM, 50.0));
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&mock), None);
+        device.set_connected(true).await.unwrap();
+        device.set_cooler_on(true).await.unwrap();
+
+        device.set_connected(false).await.unwrap();
+        device.set_connected(true).await.unwrap();
+
+        assert!(device.cooler_on().await.unwrap());
+    }
+
+    /// K4: a drive that cannot be read after the init says nothing either way,
+    /// so `CoolerOn` stays the client's last command and the connect goes on.
+    #[tokio::test]
+    async fn a_cooler_whose_drive_is_unreadable_after_a_reconnect_reads_as_last_set() {
+        let mock = Arc::new(MockCameraHandle::default().with_param(ControlType::CurPWM, 50.0));
+        let device = QhyCameraDevice::new(Arc::<MockCameraHandle>::clone(&mock), None);
+        device.set_connected(true).await.unwrap();
+        device.set_cooler_on(true).await.unwrap();
+
+        mock.fail_reads_of(ControlType::CurPWM);
+        device.set_connected(false).await.unwrap();
+        device.set_connected(true).await.unwrap();
+
+        assert!(device.connected().await.unwrap());
+        assert!(device.cooler_on().await.unwrap());
+    }
+
     /// C6: a connect never runs its handshake under a capture still inside the
     /// SDK — that would be `InitQHYCCD` beside a live readout. It is refused
     /// before it opens anything, and goes through once the capture has handed
@@ -4954,6 +5073,7 @@ mod tests {
         // first, so no sequence of requests leaves a capture holding it behind
         // a closed handle. The refusal is what keeps that true if one ever does.
         let stray = device.try_claim(CaptureCancel::for_capture()).unwrap();
+        let session = device.state.session();
 
         assert_eq!(
             device.connect().await.unwrap_err().code,
@@ -4964,6 +5084,17 @@ mod tests {
             "the connect opened the camera under the capture"
         );
         assert_eq!(handle.init_calls.load(Ordering::SeqCst), 0);
+        // Refused before anything changed: no session begun, so nothing the
+        // owner it met is using was cleared or bumped.
+        assert_eq!(
+            device.state.session(),
+            session,
+            "a refused connect began a session"
+        );
+        assert!(
+            !stray.is_requested(),
+            "a refused connect asked the owner it met to stop"
+        );
 
         device.state.release_claim(&stray);
         device.connect().await.unwrap();
@@ -7176,16 +7307,21 @@ mod tests {
         );
     }
 
-    /// RM4: `CoolerOn` outlives a reconnect as the last command given, but a
-    /// mode change re-asserts only a cooler engaged in its own session — never
-    /// one commanded of a session that has ended.
+    /// RM4: a cooler still regulating through a reconnect still reads on (K4),
+    /// but a mode change re-asserts only a cooler engaged in its own session —
+    /// never one commanded of a session that has ended.
     #[tokio::test]
     async fn a_cooler_engaged_in_an_ended_session_is_not_switched_on_by_a_readout_mode_change() {
-        let (device, mock) = connected_device_with_handle(two_mode_mock()).await;
+        // Regulating, so the reconnect's init leaves it reported on and the
+        // session is what this test is about.
+        let (device, mock) =
+            connected_device_with_handle(two_mode_mock().with_param(ControlType::CurPWM, 50.0))
+                .await;
         device.set_set_ccd_temperature(-10.0).await.unwrap();
         device.set_cooler_on(true).await.unwrap();
         device.disconnect().await.unwrap();
         device.connect().await.unwrap();
+        assert!(device.cooler_on().await.unwrap());
         mock.clear_calls();
 
         device.set_readout_mode(1).await.unwrap();
@@ -7335,53 +7471,57 @@ mod tests {
         );
     }
 
-    /// Queue `request` behind [`DeviceState::control_lock`], disconnect while it
-    /// waits, and start a reconnect — which, holding that lock across its
-    /// handshake (C6), queues behind the request with its new session already
-    /// begun. Then let the request go: it was made in a session that has ended,
-    /// so it must answer `NOT_CONNECTED` and send the camera no cooler command,
-    /// and the reconnect behind it then completes (C6, RM4).
-    async fn assert_refused_across_a_reconnect<F, Fut>(request: F)
+    /// Make `request` in one session and let its locked section run in the
+    /// next, on a camera the reconnect has opened again (C6, RM4).
+    ///
+    /// The request is polled once on a runtime of its own: far enough to read
+    /// its session, pass the connected check and spawn its locked section,
+    /// which that runtime then does not run. A disconnect and a reconnect
+    /// complete on the main runtime meanwhile — nothing holds the cooler lock,
+    /// so the reconnect takes it and gives it back. When the section finally
+    /// runs, the handle is open and connected, so only the session check can
+    /// refuse it: it must answer `NOT_CONNECTED` and send the camera no cooler
+    /// command. That is the order a stale request takes when its section is
+    /// scheduled late, and the one place the session check is the only guard.
+    fn assert_refused_across_a_reconnect<F, Fut>(request: F)
     where
         F: FnOnce(QhyCameraDevice) -> Fut,
         Fut: std::future::Future<Output = ASCOMResult<()>> + Send + 'static,
     {
-        let (device, mock) = connected_device_with_handle(MockCameraHandle::default()).await;
-        let held = device.state.control_lock.lock().await;
-        let queued = tokio::spawn(request(device.clone()));
-        // On this single-threaded runtime a yield runs the request up to the
-        // lock, so it has read its session before the disconnect below.
-        for _ in 0..3 {
-            tokio::task::yield_now().await;
-        }
-        assert!(
-            !queued.is_finished(),
-            "the request did not wait for the lock"
-        );
-        device.disconnect().await.unwrap();
-        let reconnecting = {
-            let device = device.clone();
-            tokio::spawn(async move { device.connect().await })
-        };
-        // The reconnect has begun its session and claimed the device, and is
-        // waiting on the lock behind the request.
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while !device.state.exposure_in_flight() {
+        let main = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let held_back = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (device, mock) =
+            main.block_on(connected_device_with_handle(MockCameraHandle::default()));
+
+        // One poll, on a runtime whose tasks run only when it is next driven:
+        // `block_on` returns as soon as this future is ready, before running
+        // the section the request has just spawned onto it.
+        let mut queued = Box::pin(request(device.clone()));
+        held_back.block_on(std::future::poll_fn(|cx| {
             assert!(
-                std::time::Instant::now() < deadline,
-                "the reconnect never claimed the device"
+                queued.as_mut().poll(cx).is_pending(),
+                "the request finished before its locked section ran"
             );
-            tokio::task::yield_now().await;
-        }
+            std::task::Poll::Ready(())
+        }));
+
+        main.block_on(async {
+            device.disconnect().await.unwrap();
+            device.connect().await.unwrap();
+        });
+        assert!(main.block_on(device.connected()).unwrap());
         mock.clear_calls();
 
-        drop(held);
-
         assert_eq!(
-            queued.await.unwrap().unwrap_err().code,
+            held_back.block_on(queued).unwrap_err().code,
             ASCOMErrorCode::NOT_CONNECTED
         );
-        reconnecting.await.unwrap().unwrap();
         let cooler_commands = mock
             .calls()
             .into_iter()
@@ -7390,22 +7530,20 @@ mod tests {
         assert_eq!(
             cooler_commands,
             Vec::<String>::new(),
-            "a request from an ended session reached the camera"
+            "a request from an ended session reached the reconnected camera"
         );
     }
 
-    #[tokio::test]
-    async fn a_setpoint_queued_across_a_reconnect_is_refused() {
+    #[test]
+    fn a_setpoint_queued_across_a_reconnect_is_refused() {
         assert_refused_across_a_reconnect(|device| async move {
             device.set_set_ccd_temperature(-10.0).await
-        })
-        .await;
+        });
     }
 
-    #[tokio::test]
-    async fn a_cooler_command_queued_across_a_reconnect_is_refused() {
-        assert_refused_across_a_reconnect(|device| async move { device.set_cooler_on(true).await })
-            .await;
+    #[test]
+    fn a_cooler_command_queued_across_a_reconnect_is_refused() {
+        assert_refused_across_a_reconnect(|device| async move { device.set_cooler_on(true).await });
     }
 
     /// RM4/GO2: the offset is held to the gain's rule — set while a mode change
