@@ -815,24 +815,30 @@ mod linux {
 
     use super::{UsbDevice, UsbFault, UsbScan};
 
-    /// A candidate device record whose identity has been read, waiting for
-    /// its root hub's spelling.
+    /// A record that names a vendor: what its entry gave up, and where it
+    /// sits or why that cannot be said, waiting for its root hub's spelling.
     struct Candidate {
         record: String,
-        sysname: String,
-        device: UsbDevice,
-        hub: PathBuf,
-        chain: Option<String>,
+        /// The entry's own name, when it is UTF-8: a location hint for a
+        /// record whose port cannot be spelled.
+        sysname: Option<String>,
+        vendor: String,
+        /// `None` when the entry names a vendor but no readable `idProduct`.
+        product: Option<String>,
+        model: Option<String>,
+        serial: Option<String>,
+        /// The root hub and port chain, or why the record has neither.
+        placement: Result<(PathBuf, Option<String>), String>,
     }
 
     impl Candidate {
-        fn fault(self, reason: String) -> UsbFault {
+        fn fault(self, location: Option<String>, reason: String) -> UsbFault {
             UsbFault {
                 record: self.record,
-                vendor: Some(self.device.vendor),
-                product: Some(self.device.product),
-                model: self.device.model,
-                location: Some(self.sysname),
+                vendor: Some(self.vendor),
+                product: self.product,
+                model: self.model,
+                location,
                 reason,
             }
         }
@@ -854,7 +860,8 @@ mod linux {
     /// (`pci-0000:00:14.0-usbv3-0:4.2`), not the entry's own name: the
     /// name's leading bus number follows the order host controllers
     /// register, so it can move between boots. See [`controller`] for the
-    /// one place it departs from udev. A device whose enumeration failed
+    /// one place a device's spelling departs from udev; a root hub's own
+    /// record, which udev gives no revision path, is spelled with no chain. A device whose enumeration failed
     /// never gets an entry, so the kernel log is the only trace of one.
     pub fn usb_inventory(sysfs: &Path) -> Result<UsbScan, String> {
         let devices_dir = sysfs.join("bus/usb/devices");
@@ -895,8 +902,8 @@ mod linux {
     }
 
     /// Read one `bus/usb/devices` entry: `None` for an interface or an
-    /// entry that no longer resolves, a fault for a candidate that cannot
-    /// be read in full or placed under a root hub.
+    /// entry whose link points at nothing, a fault for an entry that fails
+    /// to resolve otherwise, and a candidate for any entry naming a vendor.
     fn candidate(dir: &Path, tree: &Path) -> Option<Result<Candidate, UsbFault>> {
         let real = match std::fs::canonicalize(dir) {
             Ok(real) => real,
@@ -924,70 +931,54 @@ mod linux {
             }
         };
         let vendor = read_attr(&real, "idVendor")?;
-        let model = read_attr(&real, "product");
-        let fault = |product: Option<String>, location: Option<String>, reason: &str| UsbFault {
+        let sysname = dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string);
+        let placement = sysname.as_deref().map_or_else(
+            || {
+                Err(
+                    "its sysfs entry name is not valid UTF-8, so its port cannot be named"
+                        .to_string(),
+                )
+            },
+            |sysname| chain(sysname).and_then(|chain| Ok((root_hub(&real, tree)?, chain))),
+        );
+        Some(Ok(Candidate {
             record: dir.display().to_string(),
-            vendor: Some(vendor.clone()),
-            product,
-            model: model.clone(),
-            location,
-            reason: reason.to_string(),
-        };
-        let Some(sysname) = dir.file_name().and_then(|name| name.to_str()) else {
-            return Some(Err(fault(
-                None,
-                None,
-                "its sysfs entry name is not valid UTF-8, so its port cannot be named",
-            )));
-        };
-        // `idProduct` is mandatory in the device descriptor, so a
-        // candidate missing it is an unreadable entry rather than a
-        // device without one — in practice, one unplugged mid-walk.
-        // Defaulting it to empty would leave a plausible-looking record
-        // that no VID:PID match can hit. `model` and `serial` are
-        // genuinely optional and stay that way.
-        let Some(product) = read_attr(&real, "idProduct") else {
-            return Some(Err(fault(
-                None,
-                Some(sysname.to_string()),
-                "it names a vendor but no readable idProduct, which usually means it was \
-                 unplugged during the scan",
-            )));
-        };
-        let placement = chain(sysname).and_then(|chain| Ok((root_hub(&real, tree)?, chain)));
-        Some(match placement {
-            Ok((hub, chain)) => Ok(Candidate {
-                record: dir.display().to_string(),
-                sysname: sysname.to_string(),
-                device: UsbDevice {
-                    vendor,
-                    product,
-                    model,
-                    port: None,
-                    serial: read_attr(&real, "serial"),
-                },
-                hub,
-                chain,
-            }),
-            Err(reason) => Err(fault(Some(product), Some(sysname.to_string()), &reason)),
-        })
+            sysname,
+            vendor,
+            product: read_attr(&real, "idProduct"),
+            model: read_attr(&real, "product"),
+            serial: read_attr(&real, "serial"),
+            placement,
+        }))
     }
 
-    /// Spell each candidate's port from its root hub, spelling each root
-    /// hub once, and refuse any spelling two root hubs share: a string that
-    /// names two sockets names neither.
+    /// Spell each candidate's port, spelling each root hub once, and keep
+    /// as a device only a candidate whose port spells, names one socket,
+    /// and whose identity was read in full. Every other candidate is a
+    /// fault, and one whose port could be spelled carries that spelling as
+    /// its location, so a claim on the port finds the fault's reason.
     fn place(candidates: Vec<Candidate>, tree: &Path, scan: &mut UsbScan) {
         let mut hubs: BTreeMap<PathBuf, Result<String, String>> = BTreeMap::new();
         let spelled: Vec<(Candidate, Result<String, String>)> = candidates
             .into_iter()
             .map(|candidate| {
-                let spelling = hubs
-                    .entry(candidate.hub.clone())
-                    .or_insert_with(|| hub_spelling(&candidate.hub, tree))
-                    .clone();
-                (candidate, spelling)
+                let port = candidate.placement.clone().and_then(|(hub, chain)| {
+                    let hub_port = hubs
+                        .entry(hub)
+                        .or_insert_with_key(|hub| hub_spelling(hub, tree))
+                        .clone()?;
+                    Ok(match chain {
+                        Some(chain) => format!("{hub_port}-0:{chain}"),
+                        None => hub_port,
+                    })
+                });
+                (candidate, port)
             })
             .collect();
+        // A spelling two root hubs share names neither one's sockets.
         let mut seen = BTreeSet::new();
         let mut shared = BTreeSet::new();
         for spelling in hubs.values().flatten() {
@@ -995,22 +986,52 @@ mod linux {
                 shared.insert(spelling);
             }
         }
-        for (mut candidate, spelling) in spelled {
-            match spelling {
-                Err(reason) => scan.faults.push(candidate.fault(reason)),
-                Ok(spelling) if shared.contains(&spelling) => {
-                    scan.faults.push(candidate.fault(format!(
-                        "its root hub spells its port `{spelling}`, as another root hub does, \
-                         so the spelling cannot name one socket"
-                    )));
+        let collided: BTreeSet<&PathBuf> = hubs
+            .iter()
+            .filter(|(_, spelling)| spelling.as_ref().is_ok_and(|s| shared.contains(s)))
+            .map(|(hub, _)| hub)
+            .collect();
+        for (mut candidate, port) in spelled {
+            let shares_a_spelling = candidate
+                .placement
+                .as_ref()
+                .is_ok_and(|(hub, _)| collided.contains(hub));
+            match port {
+                Err(reason) => {
+                    let hint = candidate.sysname.clone();
+                    scan.faults.push(candidate.fault(hint, reason));
                 }
-                Ok(spelling) => {
-                    candidate.device.port = Some(match &candidate.chain {
-                        Some(chain) => format!("{spelling}-0:{chain}"),
-                        None => spelling,
-                    });
-                    scan.devices.push(candidate.device);
+                Ok(port) if shares_a_spelling => {
+                    let reason = format!(
+                        "its port spells as `{port}`, as a port of another root hub can, so \
+                         the spelling cannot name one socket"
+                    );
+                    scan.faults.push(candidate.fault(Some(port), reason));
                 }
+                Ok(port) => match candidate.product.take() {
+                    Some(product) => scan.devices.push(UsbDevice {
+                        vendor: candidate.vendor,
+                        product,
+                        model: candidate.model,
+                        port: Some(port),
+                        serial: candidate.serial,
+                    }),
+                    // `idProduct` is mandatory in the device descriptor, so
+                    // a candidate missing it is an unreadable entry rather
+                    // than a device without one — in practice, one unplugged
+                    // mid-walk. Defaulting it to empty would leave a
+                    // plausible-looking record that no VID:PID match can
+                    // hit. `model` and `serial` are genuinely optional and
+                    // stay that way.
+                    None => scan.faults.push(
+                        candidate.fault(
+                            Some(port),
+                            "it names a vendor but no readable idProduct, which usually means it \
+                         was unplugged during the scan"
+                                .to_string(),
+                        ),
+                    ),
+                },
             }
         }
     }
@@ -1087,44 +1108,51 @@ mod linux {
 
     /// The name of the host controller a root hub hangs off, built as
     /// udev's `path_id` builds it: walking up from the controller, each run
-    /// of PCI ancestors adds `pci-` and the innermost one's address, each
-    /// run of platform ancestors adds `platform-` and a name, outermost
-    /// first (`platform-fd500000.pcie-pci-0000:01:00.0` on a Pi 4). Other
-    /// buses add nothing, also as udev does.
+    /// of PCI, AMBA, ACPI or Xen ancestors adds the bus and its innermost
+    /// device's name, each run of platform ancestors adds `platform-` and a
+    /// name, outermost first (`platform-fd500000.pcie-pci-0000:01:00.0` on
+    /// a Pi 4). A run on any other bus adds nothing. udev names a few of
+    /// those too (`bcma`, `serio`, `ccw`, …), none of them a bus a USB host
+    /// controller hangs off on the hosts this serves; one that did would be
+    /// left with no name, or with a spelling another root hub shares, and
+    /// either is a fault, never another socket's port.
     ///
-    /// The one departure: udev names a platform run by its innermost
-    /// device, and where that device's instance number was allocated by
-    /// the kernel in probe order — the `.auto` suffix the kernel adds to
-    /// exactly those names, as on the `xhci-hcd.0.auto` a mainline dwc3
-    /// glue driver creates — the name moves between boots just as a bus
-    /// number does. So the run is named by its innermost device whose name
-    /// is not `.auto`, and a run of nothing but `.auto` names adds
-    /// nothing. A plain instance number is explicit and is kept: the Pi 5
-    /// kernel numbers its `xhci-hcd.N` controllers from devicetree aliases.
+    /// The one departure for a device: udev names a platform run by its
+    /// innermost device, and where that device's instance number was
+    /// allocated by the kernel in probe order — the `.auto` suffix the
+    /// kernel adds to exactly those names, as on the `xhci-hcd.0.auto` a
+    /// mainline dwc3 glue driver creates — the name moves between boots
+    /// just as a bus number does. So the run is named by its innermost
+    /// device whose name is not `.auto`, and a run of nothing but `.auto`
+    /// names adds nothing. A plain instance number is explicit and is kept:
+    /// the Pi 5 kernel numbers its `xhci-hcd.N` controllers from devicetree
+    /// aliases.
     fn controller(hub: &Path, tree: &Path) -> Result<String, String> {
-        let within = |node: &&Path| node.starts_with(tree) && *node != tree;
+        let nodes = hub
+            .ancestors()
+            .skip(1)
+            .take_while(|node| node.starts_with(tree) && *node != tree)
+            .map(|node| Ok((node, subsystem(node)?)))
+            .collect::<Result<Vec<_>, String>>()?;
         let mut parts = Vec::new();
-        let mut node = hub.parent();
-        while let Some(start) = node.filter(within) {
-            let bus = subsystem(start);
-            let run: Vec<&Path> = start
-                .ancestors()
-                .take_while(|n| within(n) && subsystem(n) == bus)
-                .collect();
-            let names = run
-                .iter()
-                .map(|n| sysname(n))
-                .collect::<Result<Vec<_>, _>>()?;
-            match (bus.as_deref(), names.first()) {
-                (Some("pci"), Some(innermost)) => parts.push(format!("pci-{innermost}")),
-                (Some("platform"), _) => {
-                    if let Some(stable) = names.iter().find(|name| !auto_numbered(name)) {
-                        parts.push(format!("platform-{stable}"));
+        for run in nodes.chunk_by(|(_, a), (_, b)| a == b) {
+            if let Some((innermost, bus)) = run.first() {
+                match bus.as_deref() {
+                    Some(bus @ ("pci" | "amba" | "acpi" | "xen")) => {
+                        parts.push(format!("{bus}-{}", sysname(innermost)?));
                     }
+                    Some("platform") => {
+                        for (node, _) in run {
+                            let name = sysname(node)?;
+                            if !auto_numbered(name) {
+                                parts.push(format!("platform-{name}"));
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
-            node = run.last().and_then(|n| n.parent());
         }
         if parts.is_empty() {
             return Err(format!(
@@ -1148,10 +1176,28 @@ mod linux {
 
     /// The bus a sysfs device node sits on: the name its `subsystem` link
     /// points at. `None` for a node that has none (`pci0000:00`, the
-    /// `platform` root).
-    fn subsystem(node: &Path) -> Option<String> {
-        let link = std::fs::read_link(node.join("subsystem")).ok()?;
-        Some(link.file_name()?.to_str()?.to_string())
+    /// `platform` root). A link that is there but cannot be read is an
+    /// error, not "no bus": read as none, it would drop a run from the
+    /// spelling and leave a different port that looks just as valid.
+    fn subsystem(node: &Path) -> Result<Option<String>, String> {
+        let link = node.join("subsystem");
+        match std::fs::read_link(&link) {
+            Ok(target) => target
+                .file_name()
+                .and_then(|bus| bus.to_str())
+                .map(|bus| Some(bus.to_string()))
+                .ok_or_else(|| {
+                    format!(
+                        "the sysfs link {} names no bus, so its port cannot be named",
+                        link.display()
+                    )
+                }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!(
+                "the sysfs link {} could not be read ({e}), so its port cannot be named",
+                link.display()
+            )),
+        }
     }
 
     fn sysname(node: &Path) -> Result<&str, String> {
@@ -2278,6 +2324,13 @@ mod tests {
     #[cfg(target_os = "linux")]
     const CAMERA: &[(&str, &str)] = &[("idVendor", "1618"), ("idProduct", "c179")];
 
+    /// Every fault's reason, in fault order — compared whole, so a missing
+    /// or an extra fault fails as a diff rather than an index panic.
+    #[cfg(target_os = "linux")]
+    fn reasons(scan: &UsbScan) -> Vec<&str> {
+        scan.faults.iter().map(|f| f.reason.as_str()).collect()
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn test_sysfs_walk_and_udev_precedence() {
@@ -2564,14 +2617,20 @@ mod tests {
         let scan = sysfs.scan();
 
         assert_eq!(scan.devices, Vec::<UsbDevice>::new());
-        let reasons: Vec<&str> = scan.faults.iter().map(|f| f.reason.as_str()).collect();
+        let port = "platform-fe000000.usb-usbv2-0:1";
+        let reason = format!(
+            "its port spells as `{port}`, as a port of another root hub can, so the spelling \
+             cannot name one socket"
+        );
+        let faults: Vec<(Option<&str>, &str)> = scan
+            .faults
+            .iter()
+            .map(|f| (f.location.as_deref(), f.reason.as_str()))
+            .collect();
         assert_eq!(
-            reasons,
-            vec![
-                "its root hub spells its port `platform-fe000000.usb-usbv2`, as another root \
-                 hub does, so the spelling cannot name one socket";
-                2
-            ]
+            faults,
+            vec![(Some(port), reason.as_str()); 2],
+            "each fault sits at the shared spelling, where a claim on it finds the reason"
         );
     }
 
@@ -2611,13 +2670,11 @@ mod tests {
         let scan = sysfs.scan();
 
         assert_eq!(scan.devices, Vec::<UsbDevice>::new());
-        assert_eq!(
-            scan.faults[0].reason,
-            format!(
-                "its root hub {} reports no readable USB version, so its port cannot be named",
-                sysfs.real("pci0000:00/0000:00:14.0/usb1")
-            )
+        let expected = format!(
+            "its root hub {} reports no readable USB version, so its port cannot be named",
+            sysfs.real("pci0000:00/0000:00:14.0/usb1")
         );
+        assert_eq!(reasons(&scan), vec![expected.as_str()]);
     }
 
     #[cfg(target_os = "linux")]
@@ -2631,14 +2688,12 @@ mod tests {
         let scan = sysfs.scan();
 
         assert_eq!(scan.devices, Vec::<UsbDevice>::new());
-        assert_eq!(
-            scan.faults[0].reason,
-            format!(
-                "its root hub {} reports USB version `x.00`, which names no revision, so its \
-                 port cannot be named",
-                sysfs.real("pci0000:00/0000:00:14.0/usb1")
-            )
+        let expected = format!(
+            "its root hub {} reports USB version `x.00`, which names no revision, so its port \
+             cannot be named",
+            sysfs.real("pci0000:00/0000:00:14.0/usb1")
         );
+        assert_eq!(reasons(&scan), vec![expected.as_str()]);
     }
 
     #[cfg(target_os = "linux")]
@@ -2654,9 +2709,8 @@ mod tests {
         let scan = sysfs.scan();
 
         assert_eq!(scan.devices, Vec::<UsbDevice>::new());
-        let reasons: Vec<&str> = scan.faults.iter().map(|f| f.reason.as_str()).collect();
         assert_eq!(
-            reasons,
+            reasons(&scan),
             vec![
                 "its sysfs name `1-` is neither a root hub nor a port chain, so its port \
                  cannot be named",
@@ -2694,13 +2748,111 @@ mod tests {
         let scan = sysfs.scan();
 
         assert_eq!(scan.devices, Vec::<UsbDevice>::new());
+        let expected = format!(
+            "the sysfs node {} above its root hub is not valid UTF-8, so its port cannot be \
+             named",
+            std::fs::canonicalize(&pci).unwrap().display()
+        );
+        assert_eq!(reasons(&scan), vec![expected.as_str()]);
+    }
+
+    /// Only the names that reach the spelling must be UTF-8: one in a run
+    /// that adds nothing — here the PCI root above the controller, which
+    /// has no bus — costs nothing, as it costs udev nothing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_sysfs_non_utf8_name_the_spelling_never_reads_is_harmless() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let sysfs = FakeSysfs::new();
+        let root = sysfs
+            .root()
+            .join("devices")
+            .join(std::ffi::OsStr::from_bytes(b"pci\xff:00"));
+        let pci = root.join("0000:00:14.0");
+        std::fs::create_dir_all(pci.join("usb1/1-1")).unwrap();
+        std::os::unix::fs::symlink(sysfs.root().join("bus/pci"), pci.join("subsystem")).unwrap();
+        std::os::unix::fs::symlink(sysfs.root().join("bus/usb"), pci.join("usb1/subsystem"))
+            .unwrap();
+        std::fs::write(pci.join("usb1/version"), " 2.00\n").unwrap();
+        for (attr, value) in CAMERA {
+            std::fs::write(pci.join("usb1/1-1").join(attr), format!("{value}\n")).unwrap();
+        }
+        std::os::unix::fs::symlink(
+            pci.join("usb1/1-1"),
+            sysfs.root().join("bus/usb/devices/1-1"),
+        )
+        .unwrap();
+
         assert_eq!(
-            scan.faults[0].reason,
-            format!(
-                "the sysfs node {} above its root hub is not valid UTF-8, so its port cannot \
-                 be named",
-                std::fs::canonicalize(&pci).unwrap().display()
-            )
+            sysfs.ports(),
+            vec!["pci-0000:00:14.0-usbv2-0:1".to_string()]
+        );
+    }
+
+    /// A `subsystem` link that is there but cannot be read is not "no
+    /// bus": reading it so would drop the controller's run and spell a
+    /// different, valid-looking port. Here it is a plain file, which
+    /// `readlink` refuses.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_sysfs_unreadable_subsystem_link_is_a_fault() {
+        let sysfs = FakeSysfs::new();
+        let pci = sysfs.root().join("devices/pci0000:00/0000:00:14.0");
+        std::fs::create_dir_all(&pci).unwrap();
+        std::fs::write(pci.join("subsystem"), "pci\n").unwrap();
+        sysfs.hub("pci0000:00/0000:00:14.0/usb1", "2.00");
+        sysfs.usb("pci0000:00/0000:00:14.0/usb1/1-1", CAMERA);
+        let link = std::fs::canonicalize(&pci).unwrap().join("subsystem");
+        let error = std::fs::read_link(&link).unwrap_err();
+
+        let scan = sysfs.scan();
+
+        assert_eq!(scan.devices, Vec::<UsbDevice>::new());
+        let expected = format!(
+            "the sysfs link {} could not be read ({error}), so its port cannot be named",
+            link.display()
+        );
+        assert_eq!(reasons(&scan), vec![expected.as_str()]);
+    }
+
+    /// A `subsystem` link whose target has no final name names no bus.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_sysfs_subsystem_link_naming_no_bus_is_a_fault() {
+        let sysfs = FakeSysfs::new();
+        let pci = sysfs.root().join("devices/pci0000:00/0000:00:14.0");
+        std::fs::create_dir_all(&pci).unwrap();
+        std::os::unix::fs::symlink("..", pci.join("subsystem")).unwrap();
+        sysfs.hub("pci0000:00/0000:00:14.0/usb1", "2.00");
+        sysfs.usb("pci0000:00/0000:00:14.0/usb1/1-1", CAMERA);
+
+        let scan = sysfs.scan();
+
+        assert_eq!(scan.devices, Vec::<UsbDevice>::new());
+        let expected = format!(
+            "the sysfs link {} names no bus, so its port cannot be named",
+            std::fs::canonicalize(&pci)
+                .unwrap()
+                .join("subsystem")
+                .display()
+        );
+        assert_eq!(reasons(&scan), vec![expected.as_str()]);
+    }
+
+    /// The other buses udev names by their innermost device are named the
+    /// same way — here an AMBA-attached controller under a platform node.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_sysfs_amba_run_is_named_as_udev_names_it() {
+        let sysfs = FakeSysfs::new();
+        sysfs.node("platform/soc", "platform");
+        sysfs.node("platform/soc/10140000.usb", "amba");
+        sysfs.hub("platform/soc/10140000.usb/usb1", "2.00");
+        sysfs.usb("platform/soc/10140000.usb/usb1/1-1", CAMERA);
+        assert_eq!(
+            sysfs.ports(),
+            vec!["platform-soc-amba-10140000.usb-usbv2-0:1".to_string()]
         );
     }
 
@@ -2767,7 +2919,9 @@ mod tests {
     /// A candidate that names a vendor but whose product cannot be read —
     /// a device unplugged mid-walk — is a fault: it neither becomes a
     /// record with an empty product that no VID:PID match could hit, nor
-    /// costs the answer for the device beside it.
+    /// costs the answer for the device beside it. Its port still spells,
+    /// so the fault sits at that spelling, where a claim on the port finds
+    /// it.
     #[cfg(target_os = "linux")]
     #[test]
     fn test_sysfs_entry_without_idproduct_is_a_fault_not_a_failed_scan() {
@@ -2794,7 +2948,7 @@ mod tests {
                 vendor: Some("03c3".to_string()),
                 product: None,
                 model: Some("ASI662MC".to_string()),
-                location: Some("1-9".to_string()),
+                location: Some("pci-0000:00:14.0-usbv2-0:9".to_string()),
                 reason: "it names a vendor but no readable idProduct, which usually means it \
                          was unplugged during the scan"
                     .to_string(),

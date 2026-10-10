@@ -210,7 +210,9 @@ passively and cross-platform for the D4 `hardware.usb-device` check, with
   hub's `version`), so it stays passive. The `1-4.2` examples elsewhere
   in this plan stand for that spelling.
 
-  **Landed, with one departure from udev.** udev names the innermost
+  **Landed, with one departure from udev for a device** (a root hub's
+  own record, which udev gives no revision path, is spelled with no
+  chain: `pci-0000:00:14.0-usbv3`). udev names the innermost
   platform device above `usbN`, and on mainline dwc3 boards (Rockchip,
   i.MX) that is the `xhci-hcd.N.auto` child the glue driver creates —
   an id the kernel allocates in probe order and marks with `.auto` for
@@ -237,11 +239,15 @@ passively and cross-platform for the D4 `hardware.usb-device` check, with
 
   A record whose spelling cannot be built is a fault (D4.4): a name that
   is no port chain, an entry under no root hub, a root-hub `version`
-  that names no revision, or a controller with no stable name. So is
-  every record under two root hubs that end up with one spelling. Platform device
-  names are unique, so that can only happen where one stable ancestor
-  sits over two `.auto` controllers of the same revision. No observed
-  host has one, but a collision would let one string name two sockets.
+  that names no revision, an unreadable `subsystem` link, or a
+  controller with no stable name. So is every record under two root hubs
+  that end up with one spelling. Platform device names are unique, so
+  that can only happen where one stable ancestor sits over two `.auto`
+  controllers of the same revision. No observed host has one, but a
+  collision would let one string name two sockets. A fault whose port
+  could still be spelled (the collision, or a record whose `idProduct`
+  could not be read) carries the spelling as its `location`, which is
+  what D4.5's match of a fault to a listed port needs.
 - **macOS** — `system_profiler -json SPUSBDataType`, which carries
   `location_id` (a hex encoding of the port chain) per device.
 - **Windows** — `Get-PnpDevice` + `Get-PnpDeviceProperty`. Today it reads
@@ -1001,7 +1007,10 @@ date. (`name` is display text, never a key.)
    train — a marginal or USB 2 cable, a loose seat — enumerates on the
    companion under a different native spelling: `…-usbv2-0:1.3` (the
    USB 2 root hub) instead of `…-usbv3-0:1.3` on Linux,
-   `…#USB(2)#USB(3)` instead of `…#USB(14)#USB(3)` on Windows. The key is the native spelling (D2),
+   `…#USB(2)#USB(3)` instead of `…#USB(14)#USB(3)` on Windows. The chain
+   need not stay the same — the two root hubs number their ports
+   independently, and only the port's `peer` link (below) says which
+   halves pair. The key is the native spelling (D2),
    so the twin is a different port, never an alias, and `usb_port` takes
    one spelling, not a list: accepting both halves would let one socket
    answer to two entries. With a list, the listed number becomes a placeholder and the
