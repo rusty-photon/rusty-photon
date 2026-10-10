@@ -27,6 +27,8 @@
 //   cfw_probe forget <how>       a move after the last command and a re-init
 //                                (reinit), a close, re-open and init (reopen), or
 //                                neither (none)
+//   cfw_probe travel             a rested wheel's move from every slot to every
+//                                other: how long it travels
 //
 // It opens the last camera the SDK lists, or, with CFW_PROBE_CAMERA set, the
 // one whose SDK id starts with it (a host with several QHY cameras).
@@ -315,6 +317,41 @@ fn same(cam: &Camera) {
     to_zero(cam);
 }
 
+/// A rested wheel's move from every slot to every other, each timed. The
+/// process's first command goes to the slot the wheel stands on, so from then
+/// on what the Linux SDK names in transit is the slot a move left, never its
+/// target.
+fn travel(cam: &Camera, slots: u32) {
+    let mut at = read(cam, "travel").expect("precondition: the status names a slot");
+    send(cam, at, "prime");
+    assert!(
+        wait_for(cam, at, Duration::from_secs(5), "prime").is_some(),
+        "precondition: the wheel names the slot it was sent back to"
+    );
+    for from in 0..slots {
+        for to in (0..slots).filter(|to| *to != from) {
+            if at != from {
+                timed_move(cam, at, from);
+            }
+            timed_move(cam, from, to);
+            at = to;
+        }
+    }
+}
+
+/// A rested wheel's move from `from` to `to`: when, after it was sent, a
+/// status read first named `to`.
+fn timed_move(cam: &Camera, from: u32, to: u32) {
+    thread::sleep(RESTED);
+    let sent = send(cam, to, "travel");
+    let arrived = wait_for(cam, to, Duration::from_secs(30), "travel").map(|t| t - sent);
+    emit(&format!(
+        "\"ev\":\"travel\",\"from\":{from},\"to\":{to},\"arrived_after_ms\":{}",
+        or_null(arrived)
+    ));
+    assert!(arrived.is_some(), "the wheel reaches slot {to} within 30 s");
+}
+
 fn forget(cam: &Camera, args: &[String]) {
     let how: String = arg(args, 2, "none, reinit or reopen");
     arrive_at(cam, FROM);
@@ -369,12 +406,13 @@ fn main() {
         Some("zero") => zero(camera),
         Some("same") => same(camera),
         Some("forget") => forget(camera, &args),
+        Some("travel") => travel(camera, slots),
         Some("rest") => rest(camera, &args),
         Some("during") => during(camera, &args),
         Some("overlap") => overlap(camera, &args),
         Some("lost") => lost(camera, &args),
         Some("reads") => reads(camera, &args),
-        _ => panic!("usage: cfw_probe home|rest|during|overlap|lost|reads|settle|zero|same|forget ... (see the header)"),
+        _ => panic!("usage: cfw_probe home|rest|during|overlap|lost|reads|settle|zero|same|forget|travel ... (see the header)"),
     }
     camera.close().expect("close");
     emit("\"ev\":\"done\"");

@@ -2071,6 +2071,11 @@ pub(crate) mod mock {
         /// then lands it. A command to the slot the wheel stands on lands at
         /// once all the same: a CFW sent to its own slot does not move.
         pub defer_move: AtomicBool,
+        /// One shot: the next move that would travel is dropped, as a CFW drops
+        /// one sent straight after a status read or while it travels (FW5). The
+        /// SDK takes the slot and the wheel stays where it is, its status naming
+        /// that slot at rest.
+        pub drop_next_move: AtomicBool,
         pending: Mutex<Option<u32>>,
         /// The slot last commanded, which the SDK keeps across a close and
         /// re-open, as the real one does for as long as its process runs.
@@ -2128,6 +2133,7 @@ pub(crate) mod mock {
                 in_close: AtomicBool::new(false),
                 lifecycle: Arc::new(tokio::sync::Mutex::new(())),
                 defer_move: AtomicBool::new(false),
+                drop_next_move: AtomicBool::new(false),
                 pending: Mutex::new(None),
                 commanded: Mutex::new(None),
                 transit: Mutex::new(0),
@@ -2366,6 +2372,11 @@ pub(crate) mod mock {
             self.on_bus()?;
             self.commands.lock().push(position);
             let before = self.commanded.lock().replace(position).unwrap_or(0);
+            if position != *self.position.lock()
+                && self.drop_next_move.swap(false, Ordering::SeqCst)
+            {
+                return Ok(());
+            }
             if self.defer_move.load(Ordering::SeqCst) && position != *self.position.lock() {
                 *self.transit.lock() = before;
                 *self.pending.lock() = Some(position);

@@ -1702,7 +1702,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
 - **FW1.** `Names` lists `filter_names` (or generated `Filter0..N`); `Position`
   returns the current slot, or the "moving" sentinel (`-1`/`None` → ASCOM moving)
-  while target ≠ actual or the wheel reports itself moving (FW7). A **settled** wheel answers from the slot cached at
+  while target ≠ actual or the wheel reports itself moving (FW7), and an error
+  once a move has failed, until the next write (FW8). A **settled** wheel answers from the slot cached at
   connect or at the end of the last move — the SDK is read only while a move is
   outstanding. `GetQHYCCDCFWStatus` is a serial round-trip through the camera and
   measures **~260 ms** on a QHY178M + CFW3, which alone would put `Position` (and
@@ -1715,7 +1716,15 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   out-of-range returns `INVALID_VALUE`. The check runs on the slot as ASCOM
   sends it (a `usize`), *before* it is narrowed to the SDK's `u32`, so a value
   past 2^32 is rejected rather than wrapped onto a real slot. The slot already
-  commanded is not sent again, whether or not the wheel has reached it (FW5).
+  commanded is not sent again, whether or not the wheel has reached it (FW5),
+  unless its move failed (FW8). **A write of another slot while this
+  connection's move is under way is refused** with `INVALID_OPERATION` (`the
+  filter wheel is still moving to slot 3`): a CFW drops a move sent while it
+  travels (FW5), so sending it would strand the wheel. Under way means sent
+  and neither seen to arrive nor failed (FW8). The range check comes first. A
+  wheel moving with no move of this connection's under way, one already
+  moving at connect or one a reconnect left travelling, is sent the write
+  (FW8).
 - **FW2a.** A status that names no slot of the wheel's is not a slot. `'N'` is
   the wheel moving (FW7). Any other nonstandard `CONTROL_CFWPORT` status byte
   `qhyccd-rs` degrades to `byte - 0x30` rather than failing, so anything past
@@ -1768,9 +1777,10 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   an arrival. A move sent 0.6 s into that travel was dropped as well (2 of
   2). On Windows, where the status reports the wheel moving instead, a resend
   of a dropped slot travelled and read correctly (2 of 2 on each camera). The
-  driver therefore has no way to recover a dropped move by itself,
-  and no deadline on one (Future Work); the rest is what keeps the move from
-  being dropped.
+  driver therefore does not recover a dropped move by itself. The rest keeps
+  the wheel from dropping a move, the refusal of a write while a move is under
+  way (FW2) keeps a client from making it drop one, and a move dropped all the
+  same fails at its deadline (FW8).
 - **FW6.** **The camera's traffic and the wheel's travel do not disturb each
   other (measured).** The camera and the wheel share one handle but not a
   lock: a camera connect or readout-mode change owns the *camera* (C6, B4) and
@@ -1799,17 +1809,18 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   not the camera's.
 
   On Linux, then, a status that names a move's target does not mean the wheel
-  has arrived when the target is the slot the SDK was last sent. FW2 never
-  sends the slot this driver last commanded, so once a connection has sent the
-  wheel a slot that cannot happen; before then, the driver does not know what
-  the SDK was last sent. Measured: a process's first move, from slot 3 to
+  has arrived when the target is the slot the SDK was last sent. FW2 sends the
+  slot this driver last commanded again only once that slot's move has failed
+  (FW8); otherwise, once a connection has sent the wheel a slot, that cannot
+  happen. Before then, the driver does not know what the SDK was last sent. Measured: a process's first move, from slot 3 to
   slot 0, named slot 0 from its first read, 120 ms after the command, while
   the wheel turned about 3.8 s more (2 of 2 with the probe). Through the
   service before this rule, `Position` named slot 0 0.12 s after the write
   (2 of 2).
 
-  So a connection's first move, on a wheel that has not reported itself
-  moving, first sends the wheel to the slot it stands on, reads until the
+  So a connection's first move, and a move to the slot of one that failed
+  (FW8), on a wheel that has not reported itself moving, first sends the
+  wheel to the slot it stands on, reads until the
   status names that slot (up to eight reads, or the move is refused), rests
   (FW5), and only then sends its target. A CFW sent to its own slot does not
   move: 38 to 40 reads over 10 s, every one at the at-rest pace naming that slot (2
@@ -1830,6 +1841,50 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   connect could not read has no slot to go back to and is sent its move as it
   is (records: [Linux](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-first-move/README.md),
   [Windows](../validation/2026-10-10-qhy-camera-qhy600m-cfw-windows-first-move/README.md)).
+- **FW8.** **A move that has not arrived 30 s after it was sent has failed.**
+  The dev box's seven-slot CFW3 travels ≈1.2 s a slot and takes the shorter
+  way round, except that slot 0 to 4, 1 to 5 and 2 to 6 go four slots
+  forward. Each slot's move to each other slot, 82 moves in all, arrived in
+  1.46–5.08 s, the four-slot moves taking the longest ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-move-deadline/README.md)). 30 s is
+  six times that, and longer than a full turn of a sixteen-slot wheel, the
+  most `CONTROL_CFWPORT` can name, would take at that pace (~19 s).
+
+  While a move is out, `Position` reads the status as before (FW1). The first
+  read after the deadline that does not name the move's slot ends the move.
+  From then on `Position` answers error `0x500`, the catch-all a failed
+  capture's `ImageArray` answers too (E9), with a message naming the slot asked
+  for and the slot the status names, or that it names none: `the filter wheel
+  did not reach slot 4 within 30s; its status names slot 2`. It goes on
+  answering that, without reading the wheel, until a client writes `Position`
+  again or the wheel is connected anew, and the failure is logged at `warn!`.
+  The driver sends the wheel nothing when a move fails, neither a retry nor a
+  move back: a move is a client's to ask for (tenet 3). The next write goes
+  out even when it names the slot that failed (FW2), and the driver takes the
+  wheel to stand on the slot the status named. On a wheel that has not
+  reported itself moving, a write of the failed slot goes through that slot
+  first (FW7): while the wheel travels, the Linux SDK names the slot it was
+  last sent, which is the failed one. A write that comes after the deadline,
+  before any read has seen it pass, reads the status first and settles the
+  move the same way (arrived, if the status names its slot), so it is not
+  refused on behalf of a move that has failed.
+
+  An error, rather than the slot the wheel stands on, which is what ASCOM's
+  `Position` describes for a wheel at rest: rp's `set_filter` waits until
+  `Position` names the slot it asked for and passes over any other, so only an
+  error ends its wait, and a client that waits only for −1 to clear would carry
+  on with the wrong filter. ASCOM names `DriverException` for an error it has
+  no more specific exception for. `DeviceState` leaves out a member that
+  errors, so it still answers. INDI's `indi-qhy` has no deadline: it gives up
+  only after 30 status reads that fail, and a status that names another slot
+  keeps the move busy for good.
+
+  The rest (FW5) and the refusal (FW2) guard the two ways a move was measured
+  to be lost through this driver. The deadline is for the others: a move sent
+  after a reconnect while the wheel still travels, since a reconnect forgets
+  the move under way, and any way not yet measured. Under Windows a dropped
+  move shows sooner, its status naming the slot the wheel stayed on, at rest,
+  where a move under way reads `N` from its first read (FW7). The driver does
+  not act on that, so a move fails the same way under both SDKs.
 
 ---
 
@@ -2151,6 +2206,14 @@ Layered per [`testing.md`](../skills/testing.md).
   flight (`hold_read_until_dropped`). The simulated wheel drops no move, so
   BDD cannot reach it; the hardware evidence is the
   [2026-10-10 wheel record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-wheel/README.md).
+- **A move's deadline, and the refusal of a write while a move is under way
+  (FW8, FW2),** are unit-tested against `MockFilterWheelHandle`, which can
+  drop the next move that would travel (`drop_next_move`): the SDK takes the
+  slot and the wheel stays where it was, its status naming that slot at rest,
+  as a CFW's does. The tests shorten the deadline (`with_move_deadline`).
+  `filter_wheel.feature` pins the refusal through the service. The simulated
+  wheel drops no move, so BDD cannot reach the deadline; the hardware evidence
+  is the [move-deadline record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-move-deadline/README.md).
 - **A camera that leaves the bus (C9, FW4)** — `camera_departure.feature`
   starts the `simulation` binary with the hidden `--simulation-departure-file
   <path>` flag, which builds the default simulated camera
@@ -2592,18 +2655,16 @@ the "how" decisions made while building.
 - **TLS / Basic Auth** via `rusty-photon-tls` / `rp-auth`.
 - **`ElectronsPerADU` / `FullWellCapacity`** real values if a signal model is
   added.
-- **A wheel move that never arrives.** `Position` reads the moving sentinel
-  for as long as the status does not name the commanded slot, with no
-  deadline, and the slot already commanded is not sent again (FW2, FW5). The
-  rest in FW5 keeps the one measured cause from dropping a move. A move lost
-  any other way strands the wheel until a client commands a different slot,
-  which is the move that was measured to recover it. One other way is
-  measured and not guarded: a move sent while the wheel still travels is
-  dropped (FW5), so a client that changes its mind mid-move strands it. Whether to give up on a
-  move after the longest travel the wheel could need, and what to report then,
-  is open. Under Windows a dropped move shows: the status names the slot the
-  wheel stayed on, at rest, where a move under way reads `N` from its first
-  read (FW7). The Linux SDK's status gives no such sign.
+- **A move under way across a reconnect.** A reconnect forgets this
+  connection's move (FW2, FW8). A write after it, while the wheel still
+  travels, can be dropped, and then fails only at its deadline. Under Linux
+  the connect also caches the slot the status names, which while the wheel
+  travels is the slot the move left, not the one it is going to (FW7), so
+  `Position` would report that slot after the wheel stopped elsewhere, and a
+  write of it would not be sent (FW2). That follows from FW7's rule and is not
+  measured. Carrying the move under way across a reconnect would close both.
+- **A dropped move under Windows** could fail at the first read that names
+  another slot at rest, rather than at its deadline (FW8).
 
 ## Packaging
 
