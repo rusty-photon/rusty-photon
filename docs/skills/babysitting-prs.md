@@ -45,10 +45,15 @@ on the feature branch, never on `main` (rule 5).
 
 Start by classifying the PR — `gh pr view <n> --json
 state,isDraft,author,mergeable,headRefOid` — and make sure the local
-checkout is at its head (`git rev-parse HEAD`): the reviewer reads the
-working tree. Then, for each head:
+checkout is exactly its head: `git rev-parse HEAD` equals `headRefOid`
+and `git status --porcelain` prints nothing. The reviewer reads the
+working tree, including uncommitted changes, so anything else gets
+reviewed under the wrong SHA. Then, for each head:
 
-1. **Start the CI watcher** (§Pacing) in the background.
+1. **Start the CI watcher** (§Pacing) in the background, after stopping
+   the previous head's watcher if it is still running. Re-read the PR's
+   reviews, review comments and conversation comments, since the watcher
+   misses some of them (§Pacing).
 2. **Review the head** — `/code-review high <n> --comment --max-findings all`
    (code-review.md §Running a review); change nothing in the checkout
    while it runs. Compare the findings it returns with the inline
@@ -103,10 +108,11 @@ finding you declined can come back: reply with a link to the earlier
 decline, and it counts as declined. Expect the review after a fix to
 find fallout from that fix — that is convergence, not churn.
 
-Four reviews is the budget: if the fourth still raises findings you fix,
-stop and report to the owner instead of starting a fifth. Findings that
-survive four rounds usually mean a design question that fixes cannot
-settle.
+Four reviews is the budget, not counting the re-run of a review that
+errored. If the fourth raises findings you would fix, stop and report to
+the owner, and don't start a fifth for any reason without their say.
+Findings that survive four rounds usually mean a design question that
+fixes cannot settle.
 
 A bot-authored PR (dependabot, github-actions) or a draft PR is reviewed
 like any other.

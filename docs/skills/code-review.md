@@ -33,28 +33,33 @@ An agent runs the same thing with the Skill tool: `skill: "code-review"`,
   typed, which the skill remembers.
 
 Claude Code runs the review in a separate context, so it carries none of
-the calling session's reasoning about the change. That independence from
-the author is most of what a review is worth.
+the calling session's conversation about the change. That independence
+from the author is most of what a review is worth. It does load
+CLAUDE.md and, on a machine with Claude Code auto-memory, the user's
+memory index, which can hold notes about the PR under review.
 
 **Level: `high`**, chosen on 2026-10-10 as the starting point; revisit
 it once a few PRs have been through. The level trades cost for recall.
 With Opus 5.5 on Claude Code 2.1.296:
 
-| Level            | What runs                                                                   | Reports |
-| ---------------- | --------------------------------------------------------------------------- | ------: |
-| `low`            | one pass over the diff hunks, test files skipped, no verification          |    ≤ 4 |
-| `medium`, `high` | one agent works through eight review angles and dedups; no verification    |   ≤ 10 |
-| `xhigh`          | one agent works through ten angles, then a gap sweep; no verification      |   ≤ 15 |
-| `max`            | ten independent finder agents, a verifier per candidate, then a gap sweep   |   ≤ 15 |
+| Level            | What runs                                                                   | Default cap |
+| ---------------- | --------------------------------------------------------------------------- | ----------: |
+| `low`            | one pass over the diff hunks, test files skipped, no verification          |          4 |
+| `medium`, `high` | one agent works through eight review angles and dedups; no verification    |         10 |
+| `xhigh`          | one agent works through ten angles, then a gap sweep; no verification      |         15 |
+| `max`            | ten independent finder agents, a verifier per candidate, then a gap sweep   |         15 |
 
 What runs depends on the model and the Claude Code version, so check
 before relying on this table: the review's prompt opens with a one-line
 summary of its recipe, visible in the review agent's transcript. The
-`high` review of #1459 on 2026-10-10 opened with
+first `high` review of #1459 on 2026-10-10, run before this repo added
+`--max-findings all`, opened with
 `high effort → 8 inline angles → dedup (no verify) → ≤10 findings`; it
-took about three minutes and 94k tokens. `/code-review ultra`, a cloud
-review, can only be launched by a person. If real defects keep reaching
-merge past `high`, move the default up and record why here.
+took about three minutes and 94k tokens. With `--max-findings all` the
+line ends in `all findings` instead. Claude can't launch
+`/code-review ultra`, the cloud review; a person types it. If real
+defects keep reaching merge past `high`, move the default up and record
+why here.
 
 Without Claude Code, any careful reviewer works: give them the section
 below, and triage what they find the same way.
@@ -126,6 +131,9 @@ directions: don't dismiss a real bug because it reads pedantic, and don't
   weak, then prescribed asserting on the enum's `enum` array — but
   `schemars` renders a documented fieldless enum as `oneOf[].const`.
   Dumping the actual artefact first cost one command.
+- **A claim that code won't compile, lint or format is settled by the
+  gate, not by argument** — run it. 27 of the 32 such claims in the
+  record were factually wrong.
 - **A finding about a test is proved by the test failing.** Break the
   behaviour the test guards and confirm it fails before calling it
   fixed. Fixing a test double can vacuum the tests built on it, so
