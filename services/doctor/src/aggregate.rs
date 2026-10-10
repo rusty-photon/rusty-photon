@@ -598,6 +598,84 @@ mod tests {
         }
     }
 
+    /// Stage an executable that writes `first` and then about 8 KiB — twice
+    /// `STDERR_TAIL` — to stderr, then `stdout` as one line, and exits 0: a
+    /// child that logs verbosely, in the same two shapes as
+    /// `stage_hanging_binary`.
+    fn stage_verbose_binary(
+        dir: &std::path::Path,
+        first: &str,
+        stdout: &str,
+    ) -> std::path::PathBuf {
+        let filler = "x".repeat(80);
+        #[cfg(windows)]
+        {
+            let path = dir.join("verbose.cmd");
+            let body = format!(
+                "@echo off\r\necho {first} 1>&2\r\n\
+                 for /l %%i in (1,1,100) do @echo {filler} 1>&2\r\necho {stdout}\r\n"
+            );
+            std::fs::write(&path, body).unwrap();
+            path
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = dir.join("verbose.sh");
+            let body = format!(
+                "#!/bin/sh\necho '{first}' >&2\ni=0\n\
+                 while [ $i -lt 100 ]; do echo {filler} >&2; i=$((i + 1)); done\n\
+                 echo '{stdout}'\n"
+            );
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        }
+    }
+
+    /// A child's verbose stderr does not cost the report on its stdout.
+    #[tokio::test]
+    async fn test_run_child_doctor_merges_a_report_behind_verbose_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = stage_verbose_binary(
+            dir.path(),
+            "starting",
+            r#"{"checks":[{"name":"stub.check","status":"ok"}]}"#,
+        );
+        let config = dir.path().join("svc.json");
+        std::fs::write(&config, "{}").unwrap();
+
+        let checks = run_child_doctor("svc", &binary, &config, Duration::from_secs(30)).await;
+
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0].name, "stub.check");
+        assert_eq!(checks[0].status, Status::Ok);
+        assert_eq!(checks[0].service.as_deref(), Some("svc"));
+    }
+
+    /// A child that produced no report is described by the first line of
+    /// its stderr, however much followed it.
+    #[tokio::test]
+    async fn test_run_child_doctor_names_the_first_stderr_line_of_a_verbose_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = stage_verbose_binary(dir.path(), "doctor: the first line", "not a report");
+        let config = dir.path().join("svc.json");
+        std::fs::write(&config, "{}").unwrap();
+
+        let checks = run_child_doctor("svc", &binary, &config, Duration::from_secs(30)).await;
+
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0].name, "service.doctor-probe");
+        assert_eq!(checks[0].status, Status::Warn);
+        assert!(
+            checks[0]
+                .detail
+                .contains("(exit 0; stderr: doctor: the first line)"),
+            "{}",
+            checks[0].detail
+        );
+    }
+
     #[tokio::test]
     async fn test_run_child_doctor_timeout_warns_with_humantime_bound() {
         let dir = tempfile::tempdir().unwrap();

@@ -537,7 +537,7 @@ impl Running {
                     return ended;
                 }
                 debug!(pid = self.guard.child.id(), "the child missed its deadline");
-                return Ok(Outcome::TimedOut(self.guard.stop(self.grace)));
+                return Ok(Outcome::TimedOut(self.stop()));
             };
 
             // Output first: a child is not finished while a stream is open,
@@ -556,6 +556,71 @@ impl Running {
             // run is stopped at once.
             if let Some(ended) = self.receive(poll.min(remaining)) {
                 return ended;
+            }
+            poll = poll.saturating_mul(2).min(POLL_LONGEST);
+        }
+    }
+
+    /// The deadline's stop: the graceful signal, the grace period, then a
+    /// force-kill of whatever is left of the tree — the child too, if it did
+    /// not answer — and the reap.
+    fn stop(&mut self) -> Stop {
+        let answered =
+            !self.grace.is_zero() && self.guard.tree.signal_graceful() && self.exits_within_grace();
+        // Even after the child answered: a descendant that ignored the
+        // signal must not outlive the run.
+        self.guard.kill();
+        let stop = if answered {
+            Stop::Terminated
+        } else {
+            Stop::Killed
+        };
+        debug!(
+            pid = self.guard.child.id(),
+            ?stop,
+            "stopped the bounded child"
+        );
+        stop
+    }
+
+    /// Whether the child exits within the grace period, looked at without
+    /// reaping it. Not if the run is abandoned meanwhile: the force-kill
+    /// then follows at once.
+    fn exits_within_grace(&mut self) -> bool {
+        let since = Instant::now();
+        let mut poll = POLL_FIRST;
+        loop {
+            match tree::has_exited(&mut self.guard.child) {
+                Ok(true) => return true,
+                Ok(false) => {}
+                Err(e) => {
+                    debug!(
+                        pid = self.guard.child.id(),
+                        "could not check whether the child exited: {e}"
+                    );
+                    return false;
+                }
+            }
+            let Some(left) = self
+                .grace
+                .checked_sub(since.elapsed())
+                .filter(|left| !left.is_zero())
+            else {
+                return false;
+            };
+            // Waiting on the channel rather than sleeping, so an abandon cuts
+            // the grace short. Output that ends meanwhile is not wanted: a
+            // stopped run hands none back, and only the exit says whether the
+            // child answered.
+            if matches!(
+                self.inbox.recv_timeout(poll.min(left)),
+                Ok(Event::Abandoned)
+            ) {
+                debug!(
+                    pid = self.guard.child.id(),
+                    "the run was abandoned during its grace"
+                );
+                return false;
             }
             poll = poll.saturating_mul(2).min(POLL_LONGEST);
         }
@@ -646,55 +711,10 @@ struct Guard {
 }
 
 impl Guard {
-    /// The deadline's stop: the graceful signal, the grace period, then a
-    /// force-kill of whatever is left of the tree — the child too, if it did
-    /// not answer — and the reap.
-    fn stop(&mut self, grace: Duration) -> Stop {
-        let answered = !grace.is_zero() && self.tree.signal_graceful() && self.exits_within(grace);
-        // Even after the child answered: a descendant that ignored the
-        // signal must not outlive the run.
-        self.tree.kill(&mut self.child);
-        self.reap();
-        let stop = if answered {
-            Stop::Terminated
-        } else {
-            Stop::Killed
-        };
-        debug!(pid = self.child.id(), ?stop, "stopped the bounded child");
-        stop
-    }
-
     /// Force-kill the tree and reap the child.
     fn kill(&mut self) {
         self.tree.kill(&mut self.child);
         self.reap();
-    }
-
-    /// Whether the child exits within `grace`, looked at without reaping it.
-    fn exits_within(&mut self, grace: Duration) -> bool {
-        let since = Instant::now();
-        let mut poll = POLL_FIRST;
-        loop {
-            match tree::has_exited(&mut self.child) {
-                Ok(true) => return true,
-                Ok(false) => {}
-                Err(e) => {
-                    debug!(
-                        pid = self.child.id(),
-                        "could not check whether the child exited: {e}"
-                    );
-                    return false;
-                }
-            }
-            let Some(left) = grace
-                .checked_sub(since.elapsed())
-                .filter(|left| !left.is_zero())
-            else {
-                return false;
-            };
-            thread::sleep(poll.min(left));
-            poll = poll.saturating_mul(2).min(POLL_LONGEST);
-        }
     }
 
     /// Reap a child that has just been killed, waiting at most

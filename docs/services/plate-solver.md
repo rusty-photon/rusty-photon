@@ -132,7 +132,7 @@ the plan. Each error code corresponds to one failure scenario:
 | `invalid_request` | Schema-invalid body, non-absolute `fits_path`, unparseable `timeout`. Rejected before any subprocess work. |
 | `fits_not_found` | `fits_path` does not exist or is not readable. Rejected before any subprocess work. |
 | `solve_failed` | ASTAP exited non-zero, OR exited zero but did not write a `.wcs`, OR wrote a `.wcs` missing required keys. The error message names which sub-condition triggered. |
-| `solve_timeout` | Wall-clock deadline expired. Service signaled the child (see [supervision](#subprocess-supervision)) and returned this error after the child exited (clean or forced). Both escalation outcomes share this code; `message` distinguishes them — `solve timed out (terminated)` when the child answered the graceful signal within the grace period, `solve timed out (killed)` when it had to be force-killed. |
+| `solve_timeout` | Wall-clock deadline expired. Service signaled the child (see [supervision](#subprocess-supervision)) and returned this error after the child exited (clean or forced), or 5 s after the force-kill if that had not ended it. Both escalation outcomes share this code; `message` distinguishes them — `solve timed out (terminated)` when the child answered the graceful signal within the grace period, `solve timed out (killed)` when it had to be force-killed. |
 | `internal` | Unexpected wrapper failure: broken pipe, `.wcs` parse panic, file-system error reading the sidecar. Should be rare; surfacing as a distinct code keeps it visible in monitoring. |
 
 `rp` always sees one of these five codes on failure. ASTAP's stderr
@@ -203,10 +203,14 @@ expiry is:
    dominate any signal-handling latency ASTAP might exhibit while
    staying short enough that a wedged child doesn't tie up the
    single-flight semaphore.
-3. The service waits for the child to fully exit (via `wait()`)
-   before returning the `solve_timeout` error. The semaphore is
-   released only after exit. This guarantees that a `solve_timeout`
-   response is always followed by a free slot for the next request.
+3. The service reaps the child before returning the `solve_timeout`
+   error, so the semaphore is released only after exit and a
+   `solve_timeout` response is followed by a free slot for the next
+   request. The reap waits at most 5 s after the force-kill: a child the
+   kill has not ended by then — one stuck in uninterruptible I/O on a
+   wedged device — is left to a background reaper (on Windows, not waited
+   for at all), and the response goes out, and the slot is freed, while
+   that ASTAP is still alive.
 
 Which stage the escalation reached is reported in the response
 `message` — `(terminated)` for stage 1, `(killed)` for stage 2 — so a
@@ -216,8 +220,9 @@ practice: the stages are only 2 s apart, which is inside the spread a
 loaded host puts on a request.
 
 The service does not leak child processes. The reap before the
-response is the **correctness contract** — it guarantees no leak on the
-normal deadline path. A solve that is abandoned instead — the client
+response is the **correctness contract** — on the normal deadline path
+no ASTAP outlives its response, short of one the force-kill cannot end
+within the reap's 5 s (step 3). A solve that is abandoned instead — the client
 went away and the handler's future was dropped, or anything else drops
 the run before it ends — stops ASTAP's tree at once (force-kill, no
 grace) and reaps it, on the thread that was waiting for it rather than

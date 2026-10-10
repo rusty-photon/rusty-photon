@@ -161,11 +161,13 @@ longer reaches the child:
 - launchd (Homebrew services on macOS) kills a job's leftover process group
   when the job exits. A service that exits normally drops its runs, and
   dropping a run stops it; but a service that crashes leaves its child to
-  finish on its own.
-- Nested runs: when a run's child is itself running a bounded child — the
-  aggregation's per-service `doctor` running `system_profiler` — the stop
+  finish on its own, and so does any service's exit with a run built to
+  finish if abandoned (below) still going.
+- Nested runs: when a run's child is itself running a bounded child, the stop
   reaches the first child's tree, not the second's, which is in a tree of its
-  own. The inner run is bounded by its own deadline, and finishes under it.
+  own. The inner deadline is enforced by the first child, so it dies with
+  it: the inner child then runs on until it next writes to its closed pipe,
+  or to its end if it never does. No caller nests runs today.
 
 systemd is unaffected: it stops a unit's whole cgroup, children included.
 
@@ -174,13 +176,17 @@ systemd is unaffected: it stops a unit's whole cgroup, children included.
 A `Running` that is dropped without being waited for force-stops the tree
 and reaps the child on the spot. A future that is dropped before it
 completes — an HTTP request whose client went away, a `select!` that took
-another branch — force-stops the run too, with no grace period, as `tokio`'s
+another branch — force-stops the run too, with no grace period (a run
+already in its deadline's grace is force-killed then), as `tokio`'s
 `kill_on_drop` would; the caller that walked away does not wait even for
 that, because the thread that was waiting for the child carries the stop out.
 
 **Unless the run must not be cut off halfway.** A run built with
 `.finish_if_abandoned()` is left to finish when its future is dropped —
-still under its deadline, still reaped, its result discarded. Sentinel's
+still under its deadline, still reaped, its result discarded. Both are the
+work of a thread of the caller's process, so they hold while that process
+runs: one that exits first leaves the child running, unbounded, unless
+something outside stops it (systemd stops a unit's whole cgroup). Sentinel's
 restart commands are built this way: a supervisor cancelled mid-restart must
 not kill `Restart-Service` or `brew services restart` between its stop and
 its start, which would leave the service down.
@@ -234,13 +240,13 @@ and below anything that would stall what waits on it:
 
 | Caller | Deadline | Output | Why that deadline |
 |---|---|---|---|
-| `rusty-photon-doctor-checks` USB inventory (`system_profiler`, PowerShell) | 10 s | stdout `Full` | A passive scan is a handful of cached reads; anything slower is a wedged child. It runs at camera-service startup. |
+| `rusty-photon-doctor-checks` USB inventory (`system_profiler`, PowerShell) | 10 s | stdout `Full` | A passive scan is a handful of cached reads; anything slower is a wedged child. It runs when `doctor` gathers its hardware facts. |
 | doctor's platform inspectors (`systemctl`, PowerShell CIM, `brew services`) | 30 s | stdout `Full`, stderr `Tail` (`is-active`: exit status only) | Above `systemctl`'s own 25 s D-Bus timeout, so when systemd is the problem `systemctl`'s error arrives first. |
 | doctor's aggregation (`<svc> doctor --json`) | 1 min | stdout `Full`, stderr `Head` | An SDK bus scan takes seconds. The report names stderr's first line. |
 | doctor's post-renewal hooks | 5 min | stderr `Tail` | Hooks copy certificates to other machines; an `scp` to an unreachable host takes about two minutes for TCP to give up. |
 | `plate-solver` ASTAP | the request's `timeout` | stderr `Tail` | Per request, see [plate-solver.md](../services/plate-solver.md#subprocess-supervision). |
 | `sentinel` discovery listings | 10 s, zero grace | stdout `Full`, stderr `Tail` | Listings are small and the tools quick. |
-| `sentinel` restart commands and recovery checks | their share of the restart budget, zero grace, finish if abandoned | stderr `Tail` | The budget is the caller's whole allowance for a restart and its recovery, so nothing runs past it; see [sentinel.md](../services/sentinel.md). |
+| `sentinel` restart commands and recovery checks | their share of the restart budget, zero grace, finish if abandoned | stderr `Tail` | The budget is the caller's whole allowance for a restart and its recovery, so nothing runs past it while sentinel runs; see [sentinel.md](../services/sentinel.md#service-health-supervision) for a shutdown mid-restart. |
 | `bdd-infra` ConformU runner, per mode | 30 min | stdout line callback, stderr `Inherit` | The `conformu.yml` step's own limit: no run is allowed longer anywhere CI runs it, and a local `cargo test` against a wedged ConformU now fails with the mode named instead of hanging. |
 
 ## Errors

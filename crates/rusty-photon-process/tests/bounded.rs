@@ -539,6 +539,45 @@ async fn test_dropping_the_future_stops_the_child() {
     .unwrap();
 }
 
+/// A future dropped while the deadline's stop is waiting out its grace cuts
+/// the grace short: the child is force-killed then, not when the grace ends.
+/// Unix-only for the fixture: the signal is ignored from before `exec`, so
+/// only the force-kill can stop the child before it leaves its mark.
+#[cfg(unix)]
+#[tokio::test]
+async fn test_dropping_the_future_during_the_grace_kills_the_child() {
+    use std::os::unix::process::CommandExt;
+    let dir = tempfile::tempdir().unwrap();
+    let mut cmd = shell_in("sleep 3; : > marker", dir.path());
+    // SAFETY: as in the test of a child ignoring the signal; signal(2) is
+    // async-signal-safe and the closure does nothing else.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::signal(libc::SIGTERM, libc::SIG_IGN) == libc::SIG_ERR {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    // Past the deadline, the stop is in a grace that outlasts the mark.
+    let finishing = Bounded::new(&mut cmd, STOPPED)
+        .grace(FINISHES)
+        .spawn()
+        .unwrap()
+        .into_future();
+    let waited = tokio::time::timeout(Duration::from_secs(1), finishing).await;
+    assert!(
+        waited.is_err(),
+        "the run ended before the future was dropped"
+    );
+    tokio::task::spawn_blocking({
+        let dir = dir.path().to_path_buf();
+        move || assert_never_marked(&dir)
+    })
+    .await
+    .unwrap();
+}
+
 /// A run built to finish if abandoned outlives the future that stopped
 /// waiting for it: the child completes, and leaves its mark.
 #[tokio::test]

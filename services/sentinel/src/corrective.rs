@@ -275,7 +275,8 @@ impl Restarter for ManagerRestarter {
 /// A caller that stops waiting (a supervisor cancelled mid-restart) does not
 /// stop the command: a restart cut off between its stop and its start would
 /// leave the service down. It runs on, detached, until it finishes or its
-/// budget runs out.
+/// budget runs out — a budget sentinel's own process enforces, so a command
+/// still running when sentinel exits is left to finish on its own.
 pub(crate) async fn run_shell(command: &str, budget: Duration) -> crate::Result<()> {
     debug!("running `{command}` (budget {budget:?})");
     let mut cmd = rusty_photon_process::shell(command);

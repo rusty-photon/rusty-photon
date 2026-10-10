@@ -141,8 +141,10 @@ impl Lines {
                 break;
             };
             self.partial.extend_from_slice(line);
-            if self.continued && self.partial.is_empty() {
-                // The newline ends a line already handed over in full.
+            if self.continued && matches!(self.partial.as_slice(), [] | [b'\r']) {
+                // The newline, or the CRLF, ends a line already handed over
+                // in full.
+                self.partial.clear();
                 self.continued = false;
             } else {
                 self.emit_line();
@@ -316,6 +318,20 @@ mod tests {
     fn test_a_newline_after_a_piece_ends_the_line_it_continues() {
         let long = vec![b'x'; MAX_LINE];
         let lines = collected(&[&long, b"\nnext\n"]);
+        assert_eq!(
+            lines.len(),
+            2,
+            "{:?}",
+            lines.iter().map(String::len).collect::<Vec<_>>()
+        );
+        assert_eq!(lines[1], "next");
+    }
+
+    /// The same with a CRLF ending, whose `\r` arrives with the newline.
+    #[test]
+    fn test_a_crlf_after_a_piece_ends_the_line_it_continues() {
+        let long = vec![b'x'; MAX_LINE];
+        let lines = collected(&[&long, b"\r\nnext\r\n"]);
         assert_eq!(
             lines.len(),
             2,
