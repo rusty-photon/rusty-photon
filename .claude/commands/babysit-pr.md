@@ -11,19 +11,20 @@ allowed-tools:
   - Bash(git push:*)
   - Bash(git diff:*)
   - Bash(git log:*)
+  - Bash(git rev-parse:*)
   - Bash(cargo fmt:*)
   - Bash(cargo build:*)
   - Bash(cargo test:*)
   - Bash(cargo clippy:*)
   - Bash(bazel build:*)
   - Bash(bazel test:*)
+  - Skill(code-review)
 ---
 
-Babysit a pull request to merge readiness: iterate with CI and Copilot
-review until CI is fully green, the latest Copilot round is quiet — it
-produced no findings, or every finding it produced was declined on the
-record — and every review finding — inline or suppressed — has a
-recorded response.
+Babysit a pull request to merge readiness: iterate with CI and code
+review until CI is fully green, the latest review of the current head is
+clean — it raised no findings, or every finding it raised was declined on
+the record — and every finding has a recorded response.
 
 ## Context
 
@@ -34,37 +35,22 @@ Arguments: $ARGUMENTS
 ## Steps
 
 1. Resolve the PR: `$ARGUMENTS` if it names one, otherwise the PR for the
-   current branch (above). If neither exists, stop and say so.
-2. Read `docs/skills/babysitting-prs.md` and run its loop — it defines
-   the exit criteria, the reply-per-thread rule, the exact `gh api`
-   calls, and the triage guidance. Rounds are drawn by the push: the
-   repo's Co-Pilot Code Reviews ruleset reviews on open and on every
-   push, so never request one by hand except in the fallback cases the
-   skill names (a bot-authored PR, a request that never appeared in the
-   timeline, a Copilot error notice that asks for a re-request), and
-   then with its `gh api` call, not `gh pr edit`.
-3. **Read the body of every Copilot review, not just
-   `pulls/<n>/comments`.** Most findings arrive *suppressed* — inside a
-   `<details><summary>Suppressed comments (n)</summary>` block in the
-   review body — where they create no thread, do not appear in the
-   comments endpoint, and do not stop the summary line from reading
-   "generated no new comments". Evaluate each one exactly like an inline
-   comment (same triage priors), fix or decline it, and record the
-   outcome as a PR comment, since there is no thread to reply on. A
-   round counts as quiet when it carries no findings at all, or when
-   every finding it carried — inline or suppressed — was declined with
-   its response recorded; a round with any fixed finding is not quiet,
-   and the push needs a fresh round. §Suppressed comments in the skill doc has
-   the `gh api .../reviews` + `jq` call — run it after every round, over
-   every review since your last push.
-4. Fixing anything means the full quality gate before pushing
-   (AGENTS.md rule 4) and the commit-author convention (rule 6).
-5. Between events, run the background watcher the skill doc mandates
-   (§Pacing) — exit on new Copilot round / failed check / no checks
-   pending — rather than sleeping on assumed durations. The watcher only
-   detects that a round landed; reading it is step 3's job, so never
-   treat a watcher exit as evidence the round was quiet. For unattended
+   current branch (above). If neither exists, stop and say so. Make sure
+   the checkout is at the PR head — the reviewer reads the working tree.
+2. Read `docs/skills/babysitting-prs.md` and `docs/skills/code-review.md`,
+   then run the loop the first one defines — exit criteria,
+   reply-per-thread rule, watcher, CI diagnosis.
+3. Review every new head with the Skill tool: `skill: "code-review"`,
+   `args: "high <n> --comment --max-findings all"`. Then post the round comment
+   (babysitting-prs.md, step 2 of the loop).
+4. Triage every finding (code-review.md §Triage), fix or decline each with
+   evidence, run the quality gate (AGENTS.md rule 4), commit (rule 6),
+   check the PR is still open, push once per round, and reply on every
+   thread.
+5. Between events, run the background CI watcher the skill doc mandates
+   (§Pacing) rather than sleeping on assumed durations. For unattended
    babysitting, wrap this command in `/loop`.
-6. When the exit criteria hold, report merge readiness — checks, review
-   rounds with per-round inline **and** suppressed counts, thread status
-   — and stop. Never merge the PR yourself.
+6. If the fourth review still raises findings you fix, stop and report to
+   the owner. When the exit criteria hold, report merge readiness —
+   checks, each review with its fixed / declined counts, thread status —
+   and stop. Never merge the PR yourself.

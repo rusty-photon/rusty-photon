@@ -9,6 +9,7 @@
       - Pushing code or running CI checks: read docs/skills/pre-push.md
       - Checking code coverage, or diagnosing a red coverage check: read docs/skills/coverage.md
       - Shepherding an open pull request through CI and code review to merge readiness: read docs/skills/babysitting-prs.md
+      - Reviewing a pull request, or triaging review findings: read docs/skills/code-review.md
       - Running ConformU against a physical device, or adding a record to docs/validation/: read docs/skills/hardware-validation.md
       - Archiving a completed plan (moving docs/plans/<plan>.md into docs/plans/archive/): read docs/skills/archiving-plans.md
 
@@ -52,3 +53,7 @@
 12. Investigations on `main` MUST be read-only. To inspect old code or compare states, use commands that write to stdout (`git show <ref>:<path>`, `git diff <ref>`, `git log -p`, `git cat-file -p`) — never commands that mutate the working tree or index (`git checkout <ref> -- <path>`, `git restore --source`, `git apply`, `git stash pop`). If you genuinely need to materialize an old state (e.g. to run tests against it), do it in a throwaway worktree (`git worktree add`), not on `main`. Before declaring any investigation complete, run `git status`; if it isn't clean, surface the diff to the user rather than silently leaving staged or modified files behind.
 
 13. Code you write or review MUST honor the project tenets in [docs/workspace.md](workspace.md#project-tenets) — in particular tenet 3, *no actuation on connect*: no code path reachable from service startup, driver connect/reconnect, config apply, or a passive/supervisory transition may physically actuate hardware (motion, homing, park slews, cover/lamp, cooler setpoints, power or dew toggles, filter moves, guide pulses). Stop-class commands (halt/abort) and cleanup inside an operator-started session are permitted. When reviewing a change to a connect path, handshake hook, or supervisory loop, check this explicitly.
+
+14. When the change the user asked you for is complete, you MUST open a pull request and babysit it to merge readiness, unless the user says otherwise: push the feature branch, open the PR with `gh pr create`, then follow docs/skills/babysitting-prs.md (in Claude Code, `/babysit-pr`). Babysitting includes a code review of every new head (docs/skills/code-review.md) and a recorded response to every finding. You MUST NEVER merge the PR yourself — merging is the repo owner's decision. A subagent doing one part of a larger task, or a review, leaves this to the session that delegated the work.
+
+15. When you review a pull request — as `/code-review` or any other reviewer — anchor every finding to what the PR is for, review a plan as a plan, and follow docs/skills/code-review.md §What to look for here. Never report predicted build, lint or format failures (CI settles those), style or naming, or claims about external tools and crates that you have not quoted from their manual or source; never propose a sleep, retry or readiness loop to tolerate a race — report the race.

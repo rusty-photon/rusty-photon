@@ -2,9 +2,13 @@
 
 ## When to Read This
 
-- After opening a pull request that must reach merge readiness
+- After opening a pull request that must reach merge readiness — the
+  agent that did the work babysits its PR (AGENTS.md rule 14)
 - When asked to "babysit" a PR
-- When addressing Copilot (or human) review comments on an open PR
+- When addressing review findings or human review comments on an open PR
+
+How a review is run and how its findings are triaged is in
+[code-review.md](code-review.md). Read it too.
 
 ## What "merge-ready" means
 
@@ -14,26 +18,23 @@ latest push:
 1. **CI fully green** — every required check plus any path-triggered
    workflow the PR woke up (e.g. `msi.yml` on packaging changes). A slow
    leg still running means not done.
-2. **A quiet Copilot round** — the most recent round either
-   produced zero new comments **and no suppressed-comments section**
-   (see *Suppressed comments* — the round summary says "generated no
-   new comments" even when it carries findings), or produced findings
-   that were **all declined**, each with its response recorded (thread
-   reply, or PR comment for suppressed findings). A decline changes no
-   code, so there is nothing for a follow-up round to re-review;
-   re-requesting one anyway just costs a redundant round — this is the
-   one state in which a manual request is not a no-op (see *The loop*).
-   Any finding
-   that led to a fix voids the round, and a quiet round only counts if
-   nothing was pushed after it; any later push (docs included) needs
-   one more round, which the push itself requests (see *The loop*). A
-   Copilot review whose body says it was **unable to review** — the
-   quota notice, or the "encountered an error" notice — is not a round:
-   it reviewed nothing, so it satisfies none of this, and it still
-   raises the round count (step 7).
-3. **Every review thread has a reply** (see the loop below) — and note
-   that thread coverage alone does not satisfy criterion 2, because
-   suppressed comments create no thread to cover.
+2. **A clean review of the head** — the newest review ran on the current
+   head SHA, and it either raised no findings or every finding it raised
+   was **declined** with the reason recorded. A decline changes no code,
+   so there is nothing new to review. A fix voids the review: the fix
+   push needs its own. Any later push needs one more review — docs
+   included, and a merge of `origin/main` too, since what landed on
+   `main` can change what the PR's code does. A review that errored,
+   was cut short, or returned no findings list reviewed nothing: run it
+   again.
+3. **Every finding has a recorded response** — a reply on every review
+   thread (the review's and any human reviewer's), an outcome for each
+   finding the review could not post inline, and an answer to every
+   human comment in the PR conversation. Check it by re-reading the PR's
+   reviews, review comments and conversation comments before reporting:
+   the watcher cannot see a comment from the account the loop posts as —
+   on this repo that is the owner's — nor any conversation comment
+   (§Pacing).
 4. **No merge conflicts** (`gh pr view <n> --json mergeable`).
 
 Then report merge readiness and stop. Merging is the repo owner's
@@ -42,193 +43,79 @@ on the feature branch, never on `main` (rule 5).
 
 ## The loop
 
-**Don't request a Copilot round by hand on a PR a human opened** —
-the fallback cases are in step 7 and nothing else qualifies. The
-*Co-Pilot Code Reviews* ruleset (rule type `copilot_code_review`,
-`review_on_push: true`, drafts excluded, active on every branch —
-`gh api 'repos/{owner}/{repo}/rules/branches/main'` shows it) requests
-a round when a non-draft PR opens, when a draft is marked ready (#900),
-and on every push. The PR's timeline shows it acting: a
-`review_requested` event 1–5 s after the push and a
-`copilot_work_started` event 30–95 s later —
+Start by classifying the PR — `gh pr view <n> --json
+state,isDraft,author,mergeable,headRefOid` — and make sure the local
+checkout is exactly its head: `git rev-parse HEAD` equals `headRefOid`
+and `git status --porcelain` prints nothing. The reviewer reads the
+working tree, including uncommitted changes, so anything else gets
+reviewed under the wrong SHA. Then, for each head:
 
-```sh
-gh api --paginate 'repos/{owner}/{repo}/issues/<n>/timeline' \
-  | jq -r '.[] | select((.event == "review_requested" and .requested_reviewer.login == "Copilot")
-                      or .event == "copilot_work_started"
-                      or (.event == "reviewed" and .user.login == "Copilot"))
-           | "\(.created_at // .submitted_at)\t\(.event)\t\(.commit_id[0:8] // "")"' \
-  | tail -5
-```
+1. **Start the CI watcher** (§Pacing) in the background, after stopping
+   the previous head's watcher if it is still running. Re-read the PR's
+   reviews, review comments and conversation comments, since the watcher
+   misses some of them (§Pacing).
+2. **Review the head** — `/code-review high <n> --comment --max-findings all`
+   (code-review.md §Running a review); change nothing in the checkout
+   while it runs. Compare the findings it returns with the inline
+   comments it actually posted, then record the round in one PR comment:
+   the head SHA, the level, how many findings it raised and how many
+   reached the PR inline, and every finding that did not. A review that
+   raises nothing leaves no other trace on the PR, and this comment is
+   what the merge-ready report cites:
 
-A manual request on top of the ruleset's is a no-op only while that
-request is pending: on PR #1387 nine POSTs, each seconds after a push,
-added neither an event nor a round (18 events for 18 opens-or-pushes).
-Once the round has landed, Copilot is no longer a requested reviewer,
-and a POST then draws a redundant round on unchanged code (#1364: a
-POST 14 s after a round drew a second review of the same SHA; #1314,
-#1352, #1277, #1279 likewise). Either way it buys nothing.
+   ```sh
+   gh pr comment <n> --body "Code review (high) of <sha>: <k> findings, <j> posted inline."
+   ```
 
-The ruleset acts on nothing a bot opened: 17 dependabot and
-github-actions PRs since #1263 drew zero requests across their opens,
-pushes and rebases. On a bot-authored PR the manual request in step 7
-is the only way to get a round — after the open and after every push
-you make. A reopen draws no round (#715), which is what makes the
-close-and-reopen trick under *When no checks appear at all* safe.
-
-Start by classifying the PR — `gh pr view <n> --json isDraft,author,mergeable`
-— then iterate:
-
-1. **Watch** CI (`gh pr checks <n>`), mergeability, and new review
-   comments (`gh api 'repos/{owner}/{repo}/pulls/<n>/comments'` — gh
-   fills the `{owner}`/`{repo}` placeholders from the current repo).
-2. **CI failure** → reproduce and fix locally; run the full quality gate
-   (rule 4) before every push.
-3. **Merge conflict** → merge `origin/main` into the branch (don't
-   rebase a branch that has review history), resolve, gate, push.
-   Conflict resolution can also import upstream scope changes — re-read
-   what landed on `main`, don't just take "ours".
-4. **Triage every new comment honestly:**
+3. **Triage every finding** (code-review.md §Triage), and every new
+   comment from a human reviewer:
    - Legitimate (even partially) → fix it.
-   - Factually wrong → decline **in the reply**, with evidence: a code
-     pointer, doc link, or reproduction. Wrong comments still get
-     replies.
+   - Wrong → decline **in the reply**, with evidence: a code pointer,
+     doc link, or reproduction.
    - Never fix silently, never ignore. If the same wrong claim keeps
      recurring, consider making the code or docs unambiguous instead of
      re-litigating — often cheaper than another round.
-5. **Push the fixes** (commit author per rule 6).
-6. **Reply on every thread** — what changed plus the commit SHA, or why
-   declined — before the round the push drew lands. It starts at the
-   push, and the SHA is known at commit time, so the replies can go up
-   before or right after pushing:
+   - A human reviewer you are inclined to decline: ask them rather than
+     unilaterally closing the discussion.
+4. **CI failure** → reproduce and diagnose; its fix joins the round's
+   fixes.
+5. **Merge conflict** → merge `origin/main` into the branch (don't rebase
+   a branch that has review history) and resolve. Conflict resolution
+   can also import upstream scope changes — re-read what landed on
+   `main`, don't just take "ours".
+6. **Gate and push** — the full quality gate (rule 4), one commit for the
+   round (author per rule 6), one push. Before pushing, confirm the PR is
+   still open (`gh pr view <n> --json state`): with
+   `delete_branch_on_merge` on, a push to a PR the owner has merged in
+   the meantime silently recreates its deleted branch (`remote: Create a
+   pull request … pull/new/…` in the push output is the tell).
+7. **Reply on every thread** — what changed plus the commit SHA, or why
+   declined — and record the outcome of each finding that was not posted
+   inline in one more PR comment, naming each finding (a conversation
+   comment has no reply thread):
 
    ```sh
    gh api 'repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies' \
        -X POST -f body="Fixed in <sha> — <what changed>."
    ```
 
-7. **Wait for the round the push drew, and read it before calling it
-   quiet.** The ruleset requested it the moment the push landed; the
-   watcher below exits when the Copilot round count rises. Then read
-   the review's body first: one that says Copilot was *unable to
-   review* — the quota notice, or "encountered an error … re-requesting
-   a review" — is not a round. It reviewed nothing and satisfies no
-   part of exit criterion 2. Quota is charged to the PR's author, so no
-   POST of yours changes it (#1363: a re-request four minutes later
-   drew the same notice in 6 s); stop and report it to the owner. The
-   error notice itself asks for a re-request, and that is a legitimate
-   manual request (#1267). A round whose findings were all declined on
-   the record needs no follow-up: nothing was pushed, so nothing drew
-   one, and a POST now would draw a redundant round on unchanged code.
+8. **Go to step 1 for the new head.** A round that declined every
+   finding pushed nothing, and its review is the clean review of the
+   head.
 
-   **Don't push while a round is in flight.** The push's request is
-   deferred until that round lands, the round that lands first is
-   stamped with the pre-push SHA, and the push's own round comes 3–6
-   minutes after it (nine cases across #902, #1308, #1309, #1314 and
-   #1335). Read the timeline tail before pushing — a newest Copilot
-   event of `review_requested` or `copilot_work_started` with no
-   `reviewed` after it means a round is in flight — and batch the fixes
-   instead. If you pushed anyway, expect two rounds and triage only the
-   second.
+Each review sees the PR as it stands, not the earlier rounds, so a
+finding you declined can come back: reply with a link to the earlier
+decline, and it counts as declined. Expect the review after a fix to
+find fallout from that fix — that is convergence, not churn.
 
-   **The fallback request is for a request that never appeared, not
-   for a slow round.** About a minute after the push (or after an
-   in-flight round lands), read the timeline: a `review_requested` →
-   Copilot event at or after your push means the ruleset acted — wait,
-   however long (median 4 minutes, 90 % within 8, up to 17 minutes
-   seen). None means it did not: request by hand, which is also the
-   only way on a bot-authored PR.
+Four reviews is the budget, not counting the re-run of a review that
+errored. If the fourth raises findings you would fix, stop and report to
+the owner, and don't start a fifth for any reason without their say.
+Findings that survive four rounds usually mean a design question that
+fixes cannot settle.
 
-   ```sh
-   gh api 'repos/{owner}/{repo}/pulls/<n>/requested_reviewers' \
-       -X POST -f 'reviewers[]=copilot-pull-request-reviewer[bot]'
-   ```
-
-   (`gh pr edit --add-reviewer Copilot` does **not** work; use the API
-   call above.)
-
-   **An empty `reviewRequests` afterwards does not mean the request
-   failed.** A 2xx is the confirmation. `gh pr view <n> --json
-   reviewRequests` never lists a Bot reviewer — gh's exporter handles
-   only User and Team entries — so `[]` says nothing about the request.
-   Read the REST endpoint `pulls/<n>/requested_reviewers`, or better the
-   timeline's `copilot_work_started` event, then wait for the round
-   count to rise. Re-POSTing on the strength of the empty list changes
-   nothing while the request is pending and draws a redundant round
-   once it is not.
-
-Repeat until the exit criteria hold. Comments from human reviewers go
-through the same loop, except: when inclined to decline, ask the
-reviewer rather than unilaterally closing the discussion.
-
-## Suppressed comments — the findings that create no thread
-
-Copilot hides some findings inside a `<details><summary>Suppressed
-comments (n)</summary>` block in the **review body**. They are ordinary
-review findings, often the sharpest ones, but they:
-
-- do **not** appear in `pulls/<n>/comments`,
-- do **not** create a review thread, so there is nothing to resolve or
-  reply to, and
-- do **not** stop the summary line from reading *"generated no new
-  comments"*.
-
-A loop that checks only inline comments and thread replies therefore
-satisfies both criteria while shipping every one of them. On PR #902
-this was not marginal: **17 suppressed findings across the rounds
-against 4 inline comments**, and the suppressed set included a real
-host-endianness bug, a test that could pass vacuously, a validation
-record asserting evidence it did not contain, and a factually wrong code
-comment.
-
-#902 is not an outlier; suppressed is where the findings normally land.
-PR #923 ran five rounds carrying **6 suppressed findings against 1
-inline comment**, and rounds 2–4 were suppressed-*only* — a loop keyed
-on threads would have seen "generated no new comments", found its single
-thread already replied, and declared merge readiness three rounds early.
-Two of the six were substantive: a constructor that silently disabled a
-validation rule, and one alignment constant spelled two different ways,
-which would have produced exactly the ConformU failure the code exists
-to prevent. Neither is reachable by any local gate — clippy, Bazel and
-the tests were green for all five rounds.
-
-Expect the round *after* a suppressed-comment fix to find fallout from
-that fix. On #923 rounds 3 and 4 flagged doc drift and a redundant shim
-that the previous round's own fixes introduced. That is convergence
-working, not review thrashing — but it does mean a small fix never
-justifies calling the PR ready before the round its push drew has
-landed and been read.
-
-So parse the body of every round:
-
-```sh
-# jq -s '.[][]' for the same reason as the watcher in §Pacing: --paginate
-# concatenates one array per page, which a bare '.[]' mishandles.
-#
-# Print each matching body whole. Do NOT pipe through `grep -A<n>`: that
-# caps the output at n lines per match, so a long or repeated suppressed
-# section is silently cut off — which is exactly the failure this section
-# exists to prevent. (On #902 a `grep -A100` form dropped 17 lines.)
-gh api --paginate 'repos/{owner}/{repo}/pulls/<n>/reviews' \
-  | jq -s -r '.[][]
-      | select(.user.login == "copilot-pull-request-reviewer[bot]")
-      | select(.body | test("Suppressed comments"))
-      | "=== \(.commit_id[0:8])\n\(.body)"'
-```
-
-Triage them exactly like inline comments (same priors below). Since
-there is no thread, record the outcome as a PR comment instead, so the
-reasoning is on the record. A suppressed finding declined this way
-counts toward criterion 2 exactly like a declined inline comment: a
-round whose findings were all declined is quiet.
-
-**Read every review since your last push, not just the newest.** A round
-can arrive as *two* review objects seconds apart, and taking only the
-last silently drops the other's findings. Worse, the `commit_id` on a
-review is not reliably the head SHA — on #902 the review carrying the
-findings was recorded against the *previous* commit while reviewing the
-head's content, so a watcher keyed on `commit_id == HEAD` matched the
-empty one and reported a quiet round that was not quiet.
+A bot-authored PR (dependabot, github-actions) or a draft PR is reviewed
+like any other.
 
 ## Pacing — watch, don't sleep
 
@@ -239,15 +126,28 @@ guessed interval, and never assume a leg's duration from memory: when a
 duration matters, measure it (`gh run list --workflow=<wf>.yml` shows
 real run times).
 
-A watcher exits on whichever comes first: a **new Copilot review**
-beyond the round count it started with, any **check failed**, or **no
-checks pending**. The shape:
+The review needs no watcher: it runs in the loop's foreground. The CI
+watcher exits on whichever comes first:
+the PR is **no longer open**, it is **conflicting**, any **check
+failed**, **no checks pending**, or a **new review from someone else**
+(a human reviewer) beyond the baseline it started with. It excludes
+reviews by the account `gh` is logged in as, because the loop's own
+posts would otherwise wake it, so it misses the owner's comments when
+the loop runs as the owner; it also ignores conversation comments. The
+re-read before reporting (merge-ready criterion 3) covers both. The
+shape:
 
 ```sh
-# watch-pr.sh <pr-number> <copilot-round-baseline>
+# watch-pr.sh <pr-number> <others-review-baseline>
 # ($1 must be the numeric PR id: the gh api call below cannot take a URL/branch)
+# The baseline is the same count taken just before starting the watcher:
+#   gh api --paginate 'repos/{owner}/{repo}/pulls/<n>/reviews' \
+#     | jq -s --arg me "$(gh api user --jq .login)" '[.[][] | select(.user.login != $me)] | length'
 # Bounded deliberately: an unbounded watch that has wedged looks exactly
 # like one that is still waiting, so give it a deadline it can report.
+me=$(gh api user --jq .login)
+# An empty login would count your own reviews as someone else's.
+[ -n "$me" ] || { echo "cannot resolve the gh user"; exit 1; }
 for _ in $(seq 1 90); do   # ~90 min at the 60 s poll at the foot of the loop
   # A merged/closed PR never settles: without this the loop runs to its
   # deadline while looking perfectly healthy. Empty defaults to OPEN on
@@ -256,17 +156,16 @@ for _ in $(seq 1 90); do   # ~90 min at the 60 s poll at the foot of the loop
   # surfaces, as the loop then hits the deadline and says so.
   state=$(gh pr view "$1" --json state --jq .state)
   [ "${state:-OPEN}" != "OPEN" ] && { echo "PR is $state"; exit 0; }
-  # A CONFLICTING PR gets no pull_request runs at all but still draws
-  # Copilot rounds (the ruleset reviews the head), so a quiet round on one
-  # proves nothing about CI — see "When no checks appear at all".
+  # A CONFLICTING PR gets no pull_request runs at all — see "When no
+  # checks appear at all".
   mergeable=$(gh pr view "$1" --json mergeable --jq .mergeable)
-  [ "${mergeable:-UNKNOWN}" = "CONFLICTING" ] && { echo "PR is CONFLICTING: no CI will run — merge origin/main (step 3)"; exit 0; }
+  [ "${mergeable:-UNKNOWN}" = "CONFLICTING" ] && { echo "PR is CONFLICTING: no CI will run — merge origin/main (step 5)"; exit 0; }
   # Every `--paginate` read slurps (`jq -s`): gh emits one array per page,
   # and `.[][]` reaches the reviews only once those arrays are gathered into
-  # one. Without `-s` the second `[]` walks each review's fields, and jq
-  # fails on the first number ("Cannot index number with string").
-  rounds=$(gh api --paginate "repos/{owner}/{repo}/pulls/$1/reviews" \
-    | jq -s '[.[][] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | length')
+  # one. Your own reviews — the inline findings `--comment` posts, and the
+  # review object GitHub creates for each thread reply — are excluded by login.
+  others=$(gh api --paginate "repos/{owner}/{repo}/pulls/$1/reviews" \
+    | jq -s --arg me "$me" '[.[][] | select(.user.login != $me)] | length')
   failed=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "fail")] | length')
   pending=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "pending")] | length')
   # `gh pr checks` exits non-zero with "no checks reported" when no run was
@@ -277,17 +176,14 @@ for _ in $(seq 1 90); do   # ~90 min at the 60 s poll at the foot of the loop
   [ "${nochecks:-0}" -ge 3 ] && { echo "no checks reported — see \"When no checks appear at all\""; exit 0; }
   # The :-defaults keep a transient gh/jq failure (empty variable) from
   # erroring the loop or reading as an exit condition: a failed query must
-  # never count as "no rounds", "check failed", or "nothing pending".
+  # never count as "check failed", "nothing pending" or a new review.
   if [ "${failed:-0}" -gt 0 ]; then
     sleep 15  # a job re-run's attempt switch can transiently surface the prior attempt's fail
     failed=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "fail")] | length')
     [ "${failed:-0}" -gt 0 ] && { echo "check failed"; exit 0; }
   fi
-  # Print the newest review's opening so a quota or error notice — a review
-  # object that reviewed nothing — is seen for what it is (step 7).
-  [ "${rounds:-0}" -gt "$2" ]  && { echo "new Copilot round:"; gh api --paginate "repos/{owner}/{repo}/pulls/$1/reviews" \
-    | jq -s -r '[.[][] | select(.user.login == "copilot-pull-request-reviewer[bot]")] | last | .body[0:160]'; exit 0; }
-  [ "${pending:-1}" -eq 0 ]    && { echo "no checks pending"; exit 0; }
+  [ "${others:-0}" -gt "$2" ] && { echo "new review from someone else"; exit 0; }
+  [ "${pending:-1}" -eq 0 ]   && { echo "no checks pending"; exit 0; }
   sleep 60
 done
 echo "watcher timed out"   # never silently: "nothing happened" is a result
@@ -302,11 +198,6 @@ the wait costs nothing and reaction time is one poll interval.
 
 Reference durations — for recognizing a stuck leg, never for sleeping:
 
-- Copilot rounds land a median 4 minutes after the push's request, 90 %
-  within 8, with a tail to ~17 minutes (241 rounds, #1263–#1393). The
-  `review_requested` event lands 1–5 s after the push and
-  `copilot_work_started` 30–95 s later; a push's request made while a
-  round is in flight is deferred until that round lands.
 - `bazel.yml` legs finish in ~4–10 minutes on a typical PR diff, on
   **all three platforms** — the remote cache limits work to the
   affected targets. Only a cold or invalidated cache, or a graph-wide
@@ -315,64 +206,48 @@ Reference durations — for recognizing a stuck leg, never for sleeping:
   pole at 40–90 minutes. That number applies to packaging workflows
   only — do not transfer it to the bazel test legs.
 
-Every push to a human-authored PR draws a round, so don't push code
-that is about to change again, and never push while a round is in
-flight (step 7): batch the fixes for a round into one push, docs tweaks
-included. A draft PR draws no round (the ruleset excludes drafts);
-marking it ready draws one (#900), and the step-7 timeline check tells
-you whether it did.
+Every push restarts CI and needs a review of its own, so don't push code
+that is about to change again: batch the fixes for a round into one
+push, docs tweaks included.
 
-Four things a watcher must get right — the first three each produced a
-wrong answer on #902:
+Three things a watcher must get right:
 
 - **Check the PR is still open first.** A merged or closed PR never
   settles, and the loop spins to its timeout looking healthy.
-- **Don't key "a new round" on `commit_id == HEAD`.** See *Suppressed
-  comments*: reviews are not reliably stamped with the head SHA. Take a
-  baseline count of Copilot reviews before the push and watch for it to
-  rise, as the snippet above does. Then read *every* review past the
-  baseline, not just the newest — one round can arrive as two objects.
-- **Count Copilot's reviews, not the endpoint's length.** The
-  `select(.user.login == "copilot-pull-request-reviewer[bot]")` filter
-  above is load-bearing, not tidiness: `pulls/<n>/reviews` also carries a
-  review object for **each reply you post to a review comment**. On #927
-  a bare `length` read 3 rounds where Copilot had submitted 1 — your own
-  two replies inflated it. That fires phantom "new round" events, and
-  since the inflation arrives right when you finish replying, it can make
-  a *stale* round look like the fresh one and end the loop early.
-- **Settled CI does not end a wait for review, and a quiet round does
-  not end a wait for CI.** They are separate criteria that can become
-  true minutes apart; exiting on the first one and reporting readiness
-  asserts something never checked.
+- **Exclude your own reviews from the review count.** `pulls/<n>/reviews`
+  carries a review object for every finding the review posts *and* for
+  each reply you post to a review comment; counting them fires phantom
+  "new review" events right after you finish replying.
+- **Green CI and a clean review are separate criteria.** Report
+  readiness only when both hold on the same head; one becoming true says
+  nothing about the other.
 
 ### When no checks appear at all
 
 `gh pr checks` saying *"no checks reported"* is not a slow queue — it
 means no run was created. Check the cheap cause first: **a PR that is
 `CONFLICTING` gets no `pull_request` runs at all**, because GitHub cannot
-build the merge commit those runs check out — while Copilot's own run,
-which works on the head commit, still appears, and the ruleset keeps
-drawing rounds on it (#1335) — so the PR looks reviewed but untested. `gh pr view <n> --json mergeable` answers it; merging
-`origin/main` into the branch (step 3 of the loop) makes the next push
-run normally. On PR #1335 two pushes in a row went un-run this way
-after `main` moved under the branch, with other PRs' runs landing
+build the merge commit those runs check out — so the PR can look
+reviewed but is untested. `gh pr view <n> --json mergeable` answers it;
+merging `origin/main` into the branch (step 5 of the loop) makes the
+next push run normally. On PR #1335 two pushes in a row went un-run this
+way after `main` moved under the branch, with other PRs' runs landing
 throughout. Only then look for an Actions-side cause: whether runs are
 being created **repo-wide** (`gh run list --limit 20`) and whether
 [githubstatus.com](https://www.githubstatus.com/api/v2/summary.json)
 shows an Actions incident. During the 2026-08-06 Actions outage, pushes
-produced Copilot runs but no `bazel`/`check` runs at all, while other
-branches' jobs sat `queued` for hours — nothing about any PR was wrong.
+produced no `bazel`/`check` runs at all, while other branches' jobs sat
+`queued` for hours — nothing about any PR was wrong.
 
 **GitHub does not replay missed `pull_request` triggers.** Once Actions
 recovers, the runs will not appear on their own. If every affected
 workflow uses a bare `pull_request:` trigger — no `types:` filter, so
 the default `[opened, synchronize, reopened]` applies, which is the case
 for `bazel.yml`, `check.yml` and `bazel-coverage.yml` — then closing and
-reopening the PR re-fires them **without a push**, which preserves an
-already-earned quiet Copilot round that an empty commit would invalidate
-(a reopen draws no Copilot round — #715 — so the earned round stands).
-Verify the triggers first; a workflow that filters `types:` may not
-include `reopened`.
+reopening the PR re-fires them **without a push**, which keeps the head
+unchanged and so preserves a clean review that an empty commit would
+void. Verify the triggers first; a workflow that filters `types:`
+may not include `reopened`.
 
 One caveat before closing a PR: with `delete_branch_on_merge` enabled,
 confirm the PR is not merged in the interim — a later `git push` to a
@@ -427,95 +302,3 @@ The last scenario printed is the one that stalled: cucumber's output is
 normalised, so every scenario before it has already finished
 ([testing.md §5.7](testing.md#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop)
 explains why one blocked step can freeze all of them).
-
-## Triage guidance
-
-Copilot is often right about edge cases (silent fall-throughs, masked
-errors, hard-coded values that will drift) and often wrong about
-repo-specific facts (labels, conventions, what other files already do).
-Verify every claim against the code before acting on it — in both
-directions: don't dismiss a real bug because the comment reads pedantic,
-and don't "fix" working code because the comment sounds confident.
-
-### What the record shows
-
-Classifying all 1492 Copilot review threads across PRs #142–#808 (230
-PRs that drew comments) gives a per-category prior worth triaging by.
-Share of a category's comments that led to a real improvement:
-
-| Category                        |   n | useful | harmful |
-| ------------------------------- | --: | -----: | ------: |
-| Races, locking, task lifetime    |  51 |    86% |      0% |
-| Security                         |  57 |    83% |      2% |
-| Validation / missing mirror site | 149 |    80% |      2% |
-| Logic bugs                       | 213 |    78% |      9% |
-| Error handling                   | 133 |    72% |      3% |
-| Test quality                     | 161 |    58% |      6% |
-| Doc / comment drift              | 562 |     9% |      3% |
-| Style nits                       |  75 |     3% |      3% |
-| "This won't compile"             |  32 |     0% |     84% |
-
-(Performance and uncategorized comments, 59 threads, are omitted.)
-
-One limit of this corpus: it was built from review *threads*, so it
-contains no suppressed comments at all. The priors describe the inline
-population only, and nothing here licenses discounting a suppressed
-finding — on the two PRs where the split was measured, suppressed
-findings were both the majority and, on average, the sharper half.
-
-Read the first five rows closely — that is where review has caught
-defects nothing else could. Doc drift is 38% of all comment volume and
-the least productive; the useful minority is the subset where following
-the text would cause a wrong action (bad units, a contradicted
-contract, a recovery procedure missing a step).
-
-Never act on a compile, borrow, lint or format claim: the Bazel and
-clippy gates settled those before the review ran, and 27 of 32 such
-claims were flatly wrong. The same applies to any confident assertion
-about external tool behavior (udev precedence, systemd unit resolution,
-rootless podman, Actions contexts, `shasum` flags) — verify against the
-tool's manual before believing it.
-
-Roughly one comment in eight is a duplicate: the same finding on
-sibling files, or re-raised in a later round against a commit that
-already fixed it. Check whether an intervening SHA addressed it before
-writing a reply.
-
-A suggested fix can be right about the defect and wrong about the
-remedy, so verify the remedy too. On #902 a comment correctly called a
-schema assertion too weak, then prescribed asserting on the definition's
-`enum` array — but `schemars` renders a *documented* fieldless enum as
-`oneOf[].const`, so implementing that literally would have asserted
-against a key that does not exist. Dumping the actual artefact before
-writing the assertion cost one command and caught it.
-
-### Steering Copilot
-
-`.github/copilot-instructions.md` and the path-scoped files in
-`.github/instructions/` encode the above as review instructions. Copilot
-code review reads **only the first 4000 characters** of each file, so
-keep them short; the budget is per file, which is why the guidance is
-split by `applyTo` path. Since July 2026 these are read from the PR's
-head branch, so changes can be tested on a feature branch before merge.
-
-Overflow is silent — the tail is simply never read, and nothing warns
-you. Check after editing:
-
-```sh
-for f in .github/copilot-instructions.md .github/instructions/*.md; do
-  printf '%5d  %s\n' "$(wc -c < "$f")" "$f"
-done
-```
-
-`wc -c` counts **bytes**, and the limit is stated in characters — these
-files carry em-dashes and curly quotes, so bytes run a little ahead
-(`copilot-instructions.md`: 3983 bytes, 3961 characters). That is
-deliberate: bytes ≥ characters, so passing the byte check guarantees
-passing the character limit, and unlike `wc -m` it does not depend on
-the caller's locale (`wc -m` silently counts bytes under `LC_ALL=C`).
-It costs a few characters of headroom and never gives a false pass.
-
-`docs/plans/**` has its own file: a plan records decisions and phasing,
-and reviewing its prose as though it were the implementation it
-describes produces detail findings that only an implementation can
-settle.
