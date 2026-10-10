@@ -515,9 +515,13 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   there too. The status named slot 3 throughout, at the pace of a wheel at
   rest, from the first read after each init: a status read takes ≈255 ms then,
   and ≈100 ms while the wheel travels. The SDK library's init code for the
-  QHY600 and QHY5III classes sends no filter-wheel command either. The QHY600M
-  + CFW on the Windows field rig has not been measured; `qhyccd-rs`'s
-  `cfw_probe home` is the measurement. A readout-mode change runs `InitQHYCCD`
+  QHY600 and QHY5III classes sends no filter-wheel command either. Rig2's
+  QHY600M + CFW under Windows did the same with SDK 24.01.09 and 26.07.28: its
+  wheel at slot 3 read slot 3 at the at-rest pace on every read through two
+  re-inits and a close and re-open
+  ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-first-move/README.md)). Power does home a CFW, before any connect: left at
+  slot 3 and at slot 4 with its 12 V off, the dev box's wheel read slot 0
+  once the 12 V came back. A readout-mode change runs `InitQHYCCD`
   too (RM1), so what holds for a connect holds there.
 - **C6.** A connect **clears every cache its handshake republishes** — the CCD
   info and effective area, the size reported from it, the valid binning modes,
@@ -1698,7 +1702,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
 - **FW1.** `Names` lists `filter_names` (or generated `Filter0..N`); `Position`
   returns the current slot, or the "moving" sentinel (`-1`/`None` → ASCOM moving)
-  while target ≠ actual. A **settled** wheel answers from the slot cached at
+  while target ≠ actual or the wheel reports itself moving (FW7). A **settled** wheel answers from the slot cached at
   connect or at the end of the last move — the SDK is read only while a move is
   outstanding. `GetQHYCCDCFWStatus` is a serial round-trip through the camera and
   measures **~260 ms** on a QHY178M + CFW3, which alone would put `Position` (and
@@ -1712,16 +1716,15 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   sends it (a `usize`), *before* it is narrowed to the SDK's `u32`, so a value
   past 2^32 is rejected rather than wrapped onto a real slot. The slot already
   commanded is not sent again, whether or not the wheel has reached it (FW5).
-- **FW2a.** A reported slot outside the wheel's own slot count is treated as a
-  status that does not name a slot, not as a slot. `cfw_ascii_to_slot` degrades
-  any nonstandard `CONTROL_CFWPORT` status byte to `byte - 0x30` rather than
-  failing, so anything past `'F'` decodes above slot 15 — `'N'` (0x4E) becomes
-  30 on a 7-slot wheel, which is what a wheel that is still moving looks like
-  from here. Per the ASCOM spec that is the moving sentinel (`Position` = -1 →
-  `None`), so the connect succeeds, caches no slot, and `Position` reports
-  moving until the wheel names a real one; the first that reads cleanly is
-  adopted as the settled slot and the cache resumes serving it. Reporting the
-  decoded number instead would have given `Names` an index it has no entry for.
+- **FW2a.** A status that names no slot of the wheel's is not a slot. `'N'` is
+  the wheel moving (FW7). Any other nonstandard `CONTROL_CFWPORT` status byte
+  `qhyccd-rs` degrades to `byte - 0x30` rather than failing, so anything past
+  `'F'` decodes above slot 15, outside the wheel's own count. Either way, per
+  the ASCOM spec, that is the moving sentinel (`Position` = -1 → `None`): the
+  connect succeeds, caches no slot, and `Position` reports moving until the
+  wheel names a real one; the first that reads cleanly is adopted as the
+  settled slot and the cache resumes serving it. Reporting the decoded number
+  instead would have given `Names` an index it has no entry for.
 - **FW3.** `FocusOffsets` returns zeros per filter in v0.
 - **FW4.** The wheel shares its camera's physical connection, so it shares C9:
   once the connection is marked lost — by the camera or by the wheel's own
@@ -1748,18 +1751,24 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   initiator. ConformU itself waits about a second after each arrival before
   its next move, which is why its runs never met the drop. With the rest, 20
   moves through the service, each commanded the moment `Position` named the
-  last, all arrived.
+  last, all arrived. The drop is the wheel's, not one SDK build's: a move sent
+  0 ms after the arrival read was dropped on the same QHY178M under Windows
+  (3 of 3 with each of SDK 26.06.04 and 26.07.28) and on rig2's QHY600M (4 of 4
+  with each of 24.01.09 and 26.07.28), and one sent 15 ms after arrived on the
+  QHY600M (1 of 1 with each) ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-first-move/README.md)).
 
   What a dropped move leaves behind is why the slot already commanded is
-  never sent again (FW2). While the wheel travels, its status names the slot
-  commanded before the move under way, not the slot the wheel left, and after
-  a dropped move those differ. Sent on to another slot, a wheel whose move to
+  never sent again (FW2). While the wheel travels, the Linux SDK's status names
+  the slot commanded before the move under way, not the slot the wheel left
+  (FW7), and after a dropped move those differ. Sent on to another slot, a wheel whose move to
   slot 4 had been dropped named slot 4 in transit while it travelled the
   3.9 s from slot 2, where it had stayed, and then named its target (2 of 2).
   Commanded the dropped slot once more instead, it did travel, but its status
   named the target from the first read, so the resend could not be told from
   an arrival. A move sent 0.6 s into that travel was dropped as well (2 of
-  2). The driver therefore has no way to recover a dropped move by itself,
+  2). On Windows, where the status reports the wheel moving instead, a resend
+  of a dropped slot travelled and read correctly (2 of 2 on each camera). The
+  driver therefore has no way to recover a dropped move by itself,
   and no deadline on one (Future Work); the rest is what keeps the move from
   being dropped.
 - **FW6.** **The camera's traffic and the wheel's travel do not disturb each
@@ -1776,6 +1785,45 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   read in flight (40 reads across 5 inits). So the wheel is kept out of the
   camera's claim and its lifecycle lock. A wheel move must not queue behind
   those anyway: the lifecycle lock is held across a disconnect's drain.
+- **FW7.** **What the status says while the wheel moves, and a connection's
+  first move.** A CFW answers `'N'` (0x4E) while it moves. The Windows SDK
+  passes it through: every status read of every move said `N`, on the dev
+  box's QHY178M + CFW3 in a Windows VM (SDK 26.06.04 and 26.07.28) and on
+  rig2's QHY600M + CFW (24.01.09 and 26.07.28), 2,251 reads in all.
+  `qhyccd-rs` decodes it as `CfwStatus::Moving`, and `Position` reports it as
+  the moving sentinel. The Linux SDK does not (26.06.04, QHY178M): in transit
+  its status names the slot commanded before the move under way, or slot 0
+  before the process has commanded any, and it keeps that slot across a
+  re-init and a close and re-open (2 of 2 each). The same camera, wheel and
+  SDK version answered `N` under Windows, so that is the Linux build's doing,
+  not the camera's.
+
+  On Linux, then, a status that names a move's target does not mean the wheel
+  has arrived when the target is the slot the SDK was last sent. FW2 never
+  sends the slot this driver last commanded, so once a connection has sent the
+  wheel a slot that cannot happen; before then, the driver does not know what
+  the SDK was last sent. Measured: a process's first move, from slot 3 to
+  slot 0, named slot 0 from its first read, 120 ms after the command, while
+  the wheel turned about 3.8 s more (2 of 2 with the probe). Through the
+  service before this rule, `Position` named slot 0 0.12 s after the write
+  (2 of 2).
+
+  So a connection's first move, on a wheel that has not reported itself
+  moving, first sends the wheel to the slot it stands on, reads until the
+  status names that slot (up to eight reads, or the move is refused), rests
+  (FW5), and only then sends its target. A CFW sent to its own slot does not
+  move: 38 to 40 reads over 10 s, every one at the at-rest pace naming that slot (2
+  of 2 on the QHY178M under Linux; 2 of 2 on the QHY600M under each Windows
+  SDK). The move after it names the slot it left until it arrives. Through the
+  service, `Position` then read −1 until 4.41 s after the write and slot 0
+  from 4.68 s (2 of 2). The first move pays for it: its `Position` write
+  returns in 0.77 s instead of 0.02 s, inside the 1 s ConformU allows an
+  asynchronous initiator; every later move goes straight out. The prime is
+  part of a move a client asked for, not of connecting (tenet 3). A wheel that
+  has once reported itself moving needs none for as long as the service runs,
+  which on Windows leaves only the first move after the service starts. A
+  wheel whose slot the connect could not read has no slot to go back to and is
+  sent its move as it is ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-first-move/README.md)).
 
 ---
 
@@ -2083,6 +2131,14 @@ Layered per [`testing.md`](../skills/testing.md).
   set while an exposure is in flight included — and what `Gain` and `Offset`
   then report; what an exposure arms, in what order and on every exposure
   (GO2, R2) is pinned by the unit tests against the mock's call log.
+- **A connection's first move (FW7)** is unit-tested against
+  `MockFilterWheelHandle`, whose status in transit names the slot commanded
+  before the move, as the Linux SDK's does, or reports the wheel moving with
+  `reports_moving` set, as the Windows SDK's does. It lists every slot
+  commanded (`commands`), lands a command to the slot the wheel stands on at
+  once, and `override_status` makes every read answer one status. BDD's
+  simulated CFW reports `N` in transit, so `filter_wheel.feature` pins the
+  moving sentinel through the service.
 - **The rest before a wheel move (FW5)** is unit-tested against
   `MockFilterWheelHandle`, which notes when each status read returned and
   each move was sent (`reads_returned`, `moves_sent`) and can hold a read in
@@ -2539,15 +2595,9 @@ the "how" decisions made while building.
   measured and not guarded: a move sent while the wheel still travels is
   dropped (FW5), so a client that changes its mind mid-move strands it. Whether to give up on a
   move after the longest travel the wheel could need, and what to report then,
-  is open.
-- **The first move after the SDK starts reads slot 0 in transit.** In transit
-  the status names the slot commanded before the move (FW5). On the QHY178M +
-  CFW3, before a process has commanded any, that is slot 0 (`0x30`): the
-  status names it through the whole of the first move a process makes. So a
-  first move *to* slot 0 reads as arrived at once, and
-  `Position` would report it settled while the wheel still turns. Seen in 34
-  of 34 fresh processes in the [2026-10-10 runs](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-wheel/README.md);
-  not handled.
+  is open. Under Windows a dropped move shows: the status names the slot the
+  wheel stayed on, at rest, where a move under way reads `N` from its first
+  read (FW7). The Linux SDK's status gives no such sign.
 
 ## Packaging
 

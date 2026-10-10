@@ -1,7 +1,7 @@
 use crate::Result;
 use tracing::error;
 
-use crate::{Camera, ControlType, QHYError};
+use crate::{Camera, CfwStatus, ControlType, QHYError};
 
 #[derive(Debug, PartialEq, Clone)]
 /// Filter wheels are directly connected to the QHY camera
@@ -139,7 +139,8 @@ impl FilterWheel {
         }
     }
 
-    /// Returns the current filter wheel position
+    /// Returns what the filter wheel's status reports: the slot it names, or
+    /// that it is moving (see [`CfwStatus`])
     /// # Errors
     /// Returns [`QHYError::Sdk`] if no filter wheel is plugged in; otherwise
     /// the position read's own errors ([`QHYError::GetParameter`],
@@ -151,9 +152,9 @@ impl FilterWheel {
     /// let fw = sdk.filter_wheels().last().expect("no filter wheel found");
     /// fw.open().expect("open failed");
     /// let current_position = fw.get_fw_position().expect("get_fw_position failed");
-    /// println!("Current position: {}", current_position);
+    /// println!("Current position: {:?}", current_position);
     /// ```
-    pub fn get_fw_position(&self) -> Result<u32> {
+    pub fn get_fw_position(&self) -> Result<CfwStatus> {
         if self
             .camera
             .is_control_available(ControlType::CfwPort)

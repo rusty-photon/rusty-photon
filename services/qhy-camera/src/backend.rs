@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
-use qhyccd_rs::{CCDChipArea, CCDChipInfo, ControlType, StreamMode};
+use qhyccd_rs::{CCDChipArea, CCDChipInfo, CfwStatus, ControlType, StreamMode};
 use tracing::{debug, warn};
 
 /// A QHYCCD SDK call failed. Carries the underlying error message; the ASCOM
@@ -436,13 +436,15 @@ pub trait FilterWheelHandle: std::fmt::Debug + Send + Sync {
     /// Returns a [`BackendError`] if the camera is not open, has no slot-count
     /// control, or the SDK read fails.
     fn get_number_of_filters(&self) -> BackendResult<u32>;
-    /// Current 0-indexed slot.
+    /// What the wheel's status reports: the 0-indexed slot it names, or that
+    /// the wheel is moving. On the Linux SDK a moving wheel names a slot too
+    /// (see [`CfwStatus`]).
     ///
     /// # Errors
     ///
     /// Returns a [`BackendError`] if the camera is not open, reports no wheel
     /// (no `CfwPort` control), or the SDK read fails.
-    fn get_position(&self) -> BackendResult<u32>;
+    fn get_position(&self) -> BackendResult<CfwStatus>;
     /// Command a move to a 0-indexed slot.
     ///
     /// # Errors
@@ -930,7 +932,7 @@ impl FilterWheelHandle for QhyFilterWheelHandle {
             .get_number_of_filters()
             .map_err(BackendError::from_err)
     }
-    fn get_position(&self) -> BackendResult<u32> {
+    fn get_position(&self) -> BackendResult<CfwStatus> {
         self.wheel.get_fw_position().map_err(BackendError::from_err)
     }
     fn set_position(&self, position: u32) -> BackendResult<()> {
@@ -2066,9 +2068,23 @@ pub(crate) mod mock {
         lifecycle: Arc<tokio::sync::Mutex<()>>,
         /// When set, `set_position` parks the target instead of applying it, so a
         /// move can be observed in flight; [`complete_move`](Self::complete_move)
-        /// then lands it.
+        /// then lands it. A command to the slot the wheel stands on lands at
+        /// once all the same: a CFW sent to its own slot does not move.
         pub defer_move: AtomicBool,
         pending: Mutex<Option<u32>>,
+        /// The slot last commanded, which the SDK keeps across a close and
+        /// re-open, as the real one does for as long as its process runs.
+        commanded: Mutex<Option<u32>>,
+        /// What the status names while the move in `pending` travels: the slot
+        /// commanded before it, or slot 0 before any — the Linux SDK's answer.
+        transit: Mutex<u32>,
+        /// The status reports a travelling wheel as moving instead, as the
+        /// Windows SDK passes the CFW's `'N'` through.
+        pub reports_moving: AtomicBool,
+        /// Every slot commanded, oldest first.
+        commands: Mutex<Vec<u32>>,
+        /// What every status read answers while set, whatever the wheel does.
+        status_override: Mutex<Option<CfwStatus>>,
         /// The camera the wheel hangs off has left the bus (C9, FW4): every
         /// wheel call fails and the wheel cannot be opened, while its handle
         /// stays open. Set through [`leave_bus`](Self::leave_bus).
@@ -2113,6 +2129,11 @@ pub(crate) mod mock {
                 lifecycle: Arc::new(tokio::sync::Mutex::new(())),
                 defer_move: AtomicBool::new(false),
                 pending: Mutex::new(None),
+                commanded: Mutex::new(None),
+                transit: Mutex::new(0),
+                reports_moving: AtomicBool::new(false),
+                commands: Mutex::new(Vec::new()),
+                status_override: Mutex::new(None),
                 departed: AtomicBool::new(false),
                 lost: AtomicBool::new(false),
                 reconnect_lands_after_verdict: AtomicBool::new(false),
@@ -2134,6 +2155,16 @@ pub(crate) mod mock {
         /// When each move was sent, oldest first.
         pub fn moves_sent(&self) -> Vec<std::time::Instant> {
             self.moves_sent.lock().clone()
+        }
+
+        /// Every slot commanded, oldest first.
+        pub fn commands(&self) -> Vec<u32> {
+            self.commands.lock().clone()
+        }
+
+        /// Have every status read answer `status` (`None` lifts it).
+        pub fn override_status(&self, status: Option<CfwStatus>) {
+            *self.status_override.lock() = status;
         }
 
         /// Park `get_position` inside the SDK until the returned hold drops.
@@ -2161,9 +2192,9 @@ pub(crate) mod mock {
             Ok(())
         }
 
-        /// Seed the slot the wheel reports, so a handshake can be handed a
-        /// position outside the wheel's own slot count — what the CFW status
-        /// decode produces for any nonstandard status byte.
+        /// Seed the slot the wheel stands on — also one outside the wheel's own
+        /// slot count, which is what the CFW status decode makes of a
+        /// nonstandard status byte other than `'N'`.
         pub fn set_reported_position(&self, position: u32) {
             *self.position.lock() = position;
         }
@@ -2308,7 +2339,7 @@ pub(crate) mod mock {
             }
             Ok(self.filters)
         }
-        fn get_position(&self) -> BackendResult<u32> {
+        fn get_position(&self) -> BackendResult<CfwStatus> {
             self.get_position_calls.fetch_add(1, Ordering::SeqCst);
             self.in_read.store(true, Ordering::SeqCst);
             let deadline = std::time::Instant::now() + Duration::from_mins(1);
@@ -2316,14 +2347,27 @@ pub(crate) mod mock {
                 std::thread::sleep(Duration::from_millis(1));
             }
             self.in_read.store(false, Ordering::SeqCst);
-            let read = self.on_bus().map(|()| *self.position.lock());
+            let read = self.on_bus().map(|()| {
+                if let Some(status) = *self.status_override.lock() {
+                    status
+                } else if self.pending.lock().is_none() {
+                    CfwStatus::Slot(*self.position.lock())
+                } else if self.reports_moving.load(Ordering::SeqCst) {
+                    CfwStatus::Moving
+                } else {
+                    CfwStatus::Slot(*self.transit.lock())
+                }
+            });
             self.reads_returned.lock().push(std::time::Instant::now());
             read
         }
         fn set_position(&self, position: u32) -> BackendResult<()> {
             self.moves_sent.lock().push(std::time::Instant::now());
             self.on_bus()?;
-            if self.defer_move.load(Ordering::SeqCst) {
+            self.commands.lock().push(position);
+            let before = self.commanded.lock().replace(position).unwrap_or(0);
+            if self.defer_move.load(Ordering::SeqCst) && position != *self.position.lock() {
+                *self.transit.lock() = before;
                 *self.pending.lock() = Some(position);
             } else {
                 *self.position.lock() = position;

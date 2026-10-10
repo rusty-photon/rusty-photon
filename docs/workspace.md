@@ -33,7 +33,7 @@ these away, the decision is wrong.
    [star-adventurer-gti.md](services/star-adventurer-gti.md#park-lifecycle));
    vendor-SDK init side effects outside our control (e.g. what QHY's
    `InitQHYCCD` does to a filter wheel, held to home it and measured not
-   to on a QHY178M + CFW3) are documented in the owning service's design
+   to on a QHY178M + CFW3 or a QHY600M) are documented in the owning service's design
    doc rather than silently accepted.
    Adopted 2026-07-20 after a connect-time park slewed a physically
    parked mount 90°/90° to a fabricated pose.

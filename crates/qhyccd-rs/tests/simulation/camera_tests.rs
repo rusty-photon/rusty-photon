@@ -5,8 +5,8 @@
 
 use qhyccd_rs::simulation::{ImageGenerator, ImagePattern, SimulatedCameraConfig};
 use qhyccd_rs::{
-    BayerPattern, CCDChipArea, Camera, ControlType, FilterWheel, FrameInfo, QHYError, SDKVersion,
-    Sdk, StreamMode,
+    BayerPattern, CCDChipArea, Camera, CfwStatus, ControlType, FilterWheel, FrameInfo, QHYError,
+    SDKVersion, Sdk, StreamMode,
 };
 
 /// Bytes in a frame with the given [`FrameInfo`] — mirrors the simulated
@@ -21,10 +21,10 @@ const fn frame_bytes(info: &FrameInfo) -> usize {
 }
 
 /// Poll the simulated filter wheel to arrival — the move settles over a few polls
-/// (advance-on-poll), so a single read after a command still reports the old slot.
+/// (advance-on-poll), so a single read after a command reports the wheel moving.
 fn cfw_arrive(camera: &Camera, target: u32) {
     for _ in 0..10 {
-        if camera.cfw_position().unwrap() == target {
+        if camera.cfw_position().unwrap() == CfwStatus::Slot(target) {
             return;
         }
     }
@@ -34,7 +34,7 @@ fn cfw_arrive(camera: &Camera, target: u32) {
 /// Poll a crate [`FilterWheel`] to arrival (the move settles over a few polls).
 fn fw_arrive(fw: &FilterWheel, target: u32) {
     for _ in 0..10 {
-        if fw.get_fw_position().unwrap() == target {
+        if fw.get_fw_position().unwrap() == CfwStatus::Slot(target) {
             return;
         }
     }
@@ -492,7 +492,7 @@ fn test_simulated_filter_wheel() {
 
     // Get initial position
     let pos = fw.get_fw_position().unwrap();
-    assert_eq!(pos, 0);
+    assert_eq!(pos, CfwStatus::Slot(0));
 
     // Set position; the move settles over a few polls (poll-to-arrival).
     fw.set_fw_position(3).unwrap();
@@ -1471,7 +1471,7 @@ fn cfw_position_uses_hex_ascii_for_high_slots() {
 }
 
 /// Audit #4: the simulated CFW move is NOT instantaneous — the first read after a
-/// command still reports the old slot (a consumer must poll to arrival), unlike
+/// command reports the wheel moving (a consumer must poll to arrival), unlike
 /// the former synchronous update that hid the real hardware settle time.
 #[test]
 fn cfw_move_is_not_instantaneous() {
@@ -1479,17 +1479,34 @@ fn cfw_move_is_not_instantaneous() {
     let camera = Camera::new_simulated(config);
     camera.open().unwrap();
 
-    // Start at slot 0, command slot 5. The next read must still report a
-    // non-target (moving) slot...
+    // Start at slot 0, command slot 5. The next read reports the wheel
+    // moving, as a CFW's 'N' does...
     camera.set_cfw_position(5).unwrap();
-    assert_ne!(
-        camera.cfw_position().unwrap(),
-        5,
-        "move should not be instantaneous"
+    assert_eq!(camera.cfw_position().unwrap(), CfwStatus::Moving);
+    // ...on the wire, too...
+    assert_eq!(
+        camera.get_parameter(ControlType::CfwPort).unwrap() as u32,
+        u32::from(b'N')
     );
-    // ...but it converges to the target with a few more polls.
+    // ...and it converges to the target with a few more polls.
     cfw_arrive(&camera, 5);
 
+    camera.close().unwrap();
+}
+
+/// A CFW commanded to the slot it stands on does not move, so its next read
+/// names that slot rather than reporting it moving.
+#[test]
+fn cfw_command_to_the_slot_it_stands_on_lands_at_once() {
+    let config = SimulatedCameraConfig::default().with_filter_wheel(7);
+    let camera = Camera::new_simulated(config);
+    camera.open().unwrap();
+    camera.set_cfw_position(3).unwrap();
+    cfw_arrive(&camera, 3);
+
+    camera.set_cfw_position(3).unwrap();
+
+    assert_eq!(camera.cfw_position().unwrap(), CfwStatus::Slot(3));
     camera.close().unwrap();
 }
 
@@ -1518,7 +1535,7 @@ fn cfw_command_rejects_a_slot_the_wheel_could_not_report() {
     );
 
     // The wheel stayed where it was, and reads still answer.
-    assert_eq!(camera.cfw_position().unwrap(), 4);
+    assert_eq!(camera.cfw_position().unwrap(), CfwStatus::Slot(4));
 
     camera.close().unwrap();
 }
@@ -1665,7 +1682,7 @@ fn test_filter_wheel_close_then_reopen() {
 
     // Position should still be accessible
     let pos = fw.get_fw_position().unwrap();
-    assert!(pos < 10); // Valid position range
+    assert!(matches!(pos, CfwStatus::Slot(slot) if slot < 10)); // Valid position range
 
     fw.close().unwrap();
 }

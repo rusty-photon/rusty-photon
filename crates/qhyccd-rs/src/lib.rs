@@ -122,7 +122,7 @@ mod types;
 pub mod simulation;
 
 // Public re-exports
-pub use camera::{Camera, ControlType};
+pub use camera::{Camera, CfwStatus, ControlType};
 pub use error::{check, QHYError, Result};
 pub use filter_wheel::FilterWheel;
 pub use sdk::Sdk;

@@ -86,10 +86,40 @@ fn cfw_ascii_to_slot(ascii: u32) -> u32 {
         .unwrap_or_else(|| ascii.saturating_sub(0x30))
 }
 
+/// The code a QHY CFW's status carries while the wheel is moving: `'N'`.
+pub const CFW_MOVING_CODE: u32 = 0x4E;
+
+/// What a QHY CFW's status read says: the slot it names, or that the wheel is
+/// moving.
+///
+/// The CFW answers `'N'` while it moves. The Windows SDK passes that through
+/// (measured with 24.01.09, 26.06.04 and 26.07.28 on a QHY178M and a QHY600M).
+/// The Linux SDK does not (26.06.04, QHY178M): in transit it names the slot
+/// commanded before the move under way, or slot 0 before the process has
+/// commanded any, so on Linux a [`CfwStatus::Slot`] does not mean the wheel is
+/// at rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CfwStatus {
+    /// The status names this 0-indexed slot.
+    Slot(u32),
+    /// The status says the wheel is moving (`'N'`).
+    Moving,
+}
+
+/// Decode a `CONTROL_CFWPORT` status read: `'N'` is the wheel moving, and any
+/// other code is a slot, through [`cfw_ascii_to_slot`] and its fallback.
+fn cfw_ascii_to_status(ascii: u32) -> CfwStatus {
+    if ascii == CFW_MOVING_CODE {
+        CfwStatus::Moving
+    } else {
+        CfwStatus::Slot(cfw_ascii_to_slot(ascii))
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod cfw_encoding_tests {
-    use super::{cfw_ascii_to_slot, cfw_slot_to_ascii};
+    use super::{cfw_ascii_to_slot, cfw_ascii_to_status, cfw_slot_to_ascii, CfwStatus};
 
     #[test]
     fn slot_to_ascii_uses_hex_digits() {
@@ -146,6 +176,19 @@ mod cfw_encoding_tests {
         // something nonstandard degrades to a number rather than panicking.
         assert_eq!(cfw_ascii_to_slot(u32::from(b'G')), 23); // 0x47 - 0x30
         assert_eq!(cfw_ascii_to_slot(0), 0); // saturates rather than wrapping
+    }
+
+    #[test]
+    fn a_status_of_n_is_the_wheel_moving() {
+        // Through the slot decode's fallback, 'N' (0x4E) would read as slot 30.
+        assert_eq!(cfw_ascii_to_status(u32::from(b'N')), CfwStatus::Moving);
+    }
+
+    #[test]
+    fn any_other_status_names_a_slot() {
+        assert_eq!(cfw_ascii_to_status(u32::from(b'0')), CfwStatus::Slot(0));
+        assert_eq!(cfw_ascii_to_status(u32::from(b'F')), CfwStatus::Slot(15));
+        assert_eq!(cfw_ascii_to_status(u32::from(b'G')), CfwStatus::Slot(23));
     }
 }
 
@@ -2129,9 +2172,13 @@ impl Camera {
             // Handle special controls
             match control {
                 ControlType::CfwPort => {
-                    // Position carried as its hex-ASCII code (see `cfw_slot_to_ascii`);
-                    // reading advances the simulated move one poll toward the target.
-                    let slot = state.poll_filter_wheel();
+                    // Position carried as its hex-ASCII code (see `cfw_slot_to_ascii`),
+                    // or the CFW's moving code while the wheel travels; reading
+                    // advances the simulated move one poll toward the target.
+                    let slot = match state.poll_filter_wheel() {
+                        CfwStatus::Moving => return Ok(f64::from(CFW_MOVING_CODE)),
+                        CfwStatus::Slot(slot) => slot,
+                    };
                     let Some(ascii) = cfw_slot_to_ascii(slot) else {
                         let error = QHYError::InvalidFilterSlot { slot };
                         tracing::error!(error = ?error);
@@ -2479,14 +2526,16 @@ impl Camera {
         ))
     }
 
-    /// Current 0-indexed filter-wheel position, decoding the SDK's hex-ASCII
-    /// `ControlType::CfwPort` value (`'0'` == slot 0 .. `'F'` == slot 15).
+    /// What the filter wheel's status reports, decoding the SDK's hex-ASCII
+    /// `ControlType::CfwPort` value: a 0-indexed slot (`'0'` == slot 0 .. `'F'`
+    /// == slot 15), or the wheel moving (`'N'`). See [`CfwStatus`] for what the
+    /// Linux SDK reports instead while the wheel moves.
     /// # Errors
     /// Returns [`QHYError::CameraNotOpen`] if the camera is not open,
     /// [`QHYError::GetParameter`] if the position cannot be read, or
     /// [`QHYError::InvalidFilterSlot`] if the reported code names no slot.
-    pub fn cfw_position(&self) -> Result<u32> {
-        Ok(cfw_ascii_to_slot(quantize::to_u32(
+    pub fn cfw_position(&self) -> Result<CfwStatus> {
+        Ok(cfw_ascii_to_status(quantize::to_u32(
             self.get_parameter(ControlType::CfwPort)?,
         )))
     }

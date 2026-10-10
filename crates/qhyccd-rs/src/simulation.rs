@@ -25,7 +25,9 @@
 //! ```
 
 use crate::quantize;
-use crate::{BayerPattern, CCDChipArea, CCDChipInfo, ControlType, QHYError, Result, StreamMode};
+use crate::{
+    BayerPattern, CCDChipArea, CCDChipInfo, CfwStatus, ControlType, QHYError, Result, StreamMode,
+};
 use rand::{Rng, RngExt};
 use rayon::prelude::*;
 use std::collections::HashMap;
@@ -665,8 +667,10 @@ impl SimulatedCameraState {
     }
 
     /// Command the simulated filter wheel to `target`. Like real hardware the move
-    /// is not instantaneous: subsequent position reads report the OLD slot until
-    /// `SIM_CFW_SETTLE_POLLS` polls have elapsed (see `poll_filter_wheel`).
+    /// is not instantaneous: subsequent position reads report the wheel moving,
+    /// as a CFW does, until `SIM_CFW_SETTLE_POLLS` polls have elapsed (see
+    /// `poll_filter_wheel`). A target the wheel already stands on lands at once:
+    /// a CFW commanded to its own slot does not move.
     ///
     /// A target with no `CONTROL_CFWPORT` code is rejected rather than commanded.
     /// The position read reports the wheel by *encoding* it, so accepting such a
@@ -688,18 +692,20 @@ impl SimulatedCameraState {
         Ok(())
     }
 
-    /// Read the simulated filter-wheel position, advancing the settle by one poll.
-    /// Returns the current (possibly still-moving) slot; it equals the target only
-    /// after `SIM_CFW_SETTLE_POLLS` reads, so a consumer's poll-to-arrival loop is
-    /// exercised instead of an unrealistic instantaneous move.
-    pub const fn poll_filter_wheel(&mut self) -> u32 {
+    /// Read the simulated filter-wheel status, advancing the settle by one poll.
+    /// Returns [`CfwStatus::Moving`] until the read that lands the move, which
+    /// names the target — the `SIM_CFW_SETTLE_POLLS`th — so a consumer's
+    /// poll-to-arrival loop is exercised instead of an unrealistic instantaneous
+    /// move. It answers as the Windows SDK does; see [`CfwStatus`] for Linux.
+    pub const fn poll_filter_wheel(&mut self) -> CfwStatus {
         if self.filter_wheel_settle_polls > 0 {
             self.filter_wheel_settle_polls = self.filter_wheel_settle_polls.saturating_sub(1);
-            if self.filter_wheel_settle_polls == 0 {
-                self.filter_wheel_position = self.filter_wheel_target;
+            if self.filter_wheel_settle_polls > 0 {
+                return CfwStatus::Moving;
             }
+            self.filter_wheel_position = self.filter_wheel_target;
         }
-        self.filter_wheel_position
+        CfwStatus::Slot(self.filter_wheel_position)
     }
 
     /// Roll whether this live-mode read reports "frame not ready" (a retryable

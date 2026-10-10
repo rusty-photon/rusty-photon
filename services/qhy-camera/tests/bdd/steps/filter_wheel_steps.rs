@@ -35,7 +35,7 @@ async fn set_position(world: &mut CameraWorld, _device: u32, position: usize) {
 #[when(regex = r"^the filter wheel move on device (\d+) completes$")]
 #[then(regex = r"^the filter wheel move on device (\d+) completes$")]
 async fn move_completes(world: &mut CameraWorld, _device: u32) {
-    // The simulated CFW moves instantly; poll until it is no longer "moving".
+    // The simulated CFW settles over a few reads; poll until it is no longer "moving".
     let filter_wheel = world.filter_wheel();
     for _ in 0..40 {
         if filter_wheel.position().await.unwrap().is_some() {
@@ -44,6 +44,11 @@ async fn move_completes(world: &mut CameraWorld, _device: u32) {
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     panic!("filter wheel move did not complete");
+}
+
+#[then(regex = r"^filterwheel device (\d+) reports Position as moving$")]
+async fn reports_moving(world: &mut CameraWorld, _device: u32) {
+    assert_eq!(world.filter_wheel().position().await.unwrap(), None);
 }
 
 #[then(regex = r"^filterwheel device (\d+) reports Position as (\d+)$")]

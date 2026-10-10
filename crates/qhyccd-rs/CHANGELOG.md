@@ -37,9 +37,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   commanding the slot the wheel stands on moves it. `CFW_PROBE_CAMERA` picks
   the camera by SDK id prefix. It logs only what the wheel reports, one JSON
   line per step.
+- `CfwStatus`: what a CFW's status read says, a slot (`CfwStatus::Slot`) or
+  the wheel moving (`CfwStatus::Moving`, the CFW's `'N'`). The Windows SDK
+  passes `'N'` through while the wheel moves; the Linux SDK names the slot
+  commanded before the move instead, and the type's docs say so.
 
 ### Changed
 
+- **Breaking:** `Camera::cfw_position` and `FilterWheel::get_fw_position`
+  return a `CfwStatus` rather than a `u32`, so the CFW's `'N'` reads as the
+  wheel moving. It used to reach the caller as slot 30, through the decode's
+  fallback for a byte that is not a hex digit, which every other such byte
+  still takes.
+- **Breaking:** the simulated filter wheel reports itself moving (`'N'`) while
+  it travels, as a real CFW does under the Windows SDK, rather than naming the
+  slot it left. `SimulatedCameraState::poll_filter_wheel` returns a
+  `CfwStatus`. Simulation only.
 - **Breaking:** simulated cameras now read out in whole pairs of pixels: a
   region whose width or height is odd arrives with the shape that was asked
   for and its trailing column or row left zero, on both the single-frame and
