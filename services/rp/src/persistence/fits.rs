@@ -12,7 +12,9 @@
 //!   about on-disk pixel type.
 //! - **Atomic-write durability** (stage→fsync→rename→fsync-parent)
 //!   lives in `rp_fits::atomic`. This file is just the rp-specific
-//!   layer that stamps `DOC_ID` and translates errors to `RpError`.
+//!   layer that stamps `DOC_ID` (ahead of the capture path's standard
+//!   keywords, built in `fits_header`) and translates errors to
+//!   `RpError`.
 
 use std::fs::File;
 use std::io::BufReader;
@@ -34,11 +36,21 @@ fn doc_id_keyword(doc_id: &str) -> Result<Keyword> {
         .map_err(|e| RpError::Imaging(format!("invalid DOC_ID keyword: {e}")))
 }
 
+/// `DOC_ID` first, then the caller's cards.
+fn header_cards(doc_id: &str, extra: Vec<Keyword>) -> Result<Vec<Keyword>> {
+    let mut cards = Vec::with_capacity(extra.len().saturating_add(1));
+    cards.push(doc_id_keyword(doc_id)?);
+    cards.extend(extra);
+    Ok(cards)
+}
+
 /// Write u16 pixel data as a FITS file (BITPIX=16 + BZERO=32768).
 ///
 /// Atomic and durable: stages to a sibling temp file, fsyncs, renames
 /// onto `path`, fsyncs the parent dir. `doc_id` is stamped into the
-/// primary HDU header as `DOC_ID = '<full-uuid>'`.
+/// primary HDU header as `DOC_ID = '<full-uuid>'`, followed by the
+/// `extra` cards — the capture path's standard keywords
+/// ([`super::fits_header`]).
 ///
 /// Used by the production capture path for the common 16-bit sensor
 /// case (QHY600 and similar). Cameras whose `max_adu` exceeds 65535
@@ -57,10 +69,12 @@ pub async fn write_fits_u16<P: AsRef<Path>>(
     width: usize,
     height: usize,
     doc_id: &str,
+    extra: &[Keyword],
 ) -> Result<()> {
     let path = path.as_ref().to_path_buf();
     let pixels = pixels.to_vec();
     let doc_id = doc_id.to_string();
+    let extra = extra.to_vec();
 
     debug!(
         width = width,
@@ -71,7 +85,7 @@ pub async fn write_fits_u16<P: AsRef<Path>>(
     );
 
     tokio::task::spawn_blocking(move || {
-        let kw = [doc_id_keyword(&doc_id)?];
+        let kw = header_cards(&doc_id, extra)?;
         write_atomic_with(&path, |w| write_u16_image(w, &pixels, width, height, &kw))
             .map_err(|e| translate_write_err(&e))
     })
@@ -80,7 +94,8 @@ pub async fn write_fits_u16<P: AsRef<Path>>(
 }
 
 /// Write i32 pixel data as a FITS file (BITPIX=32). Used for
-/// scientific cameras whose `max_adu` exceeds `u16::MAX`.
+/// scientific cameras whose `max_adu` exceeds `u16::MAX`. Header as
+/// [`write_fits_u16`]: `DOC_ID`, then the `extra` cards.
 ///
 /// # Errors
 ///
@@ -94,10 +109,12 @@ pub async fn write_fits_i32<P: AsRef<Path>>(
     width: usize,
     height: usize,
     doc_id: &str,
+    extra: &[Keyword],
 ) -> Result<()> {
     let path = path.as_ref().to_path_buf();
     let pixels = pixels.to_vec();
     let doc_id = doc_id.to_string();
+    let extra = extra.to_vec();
 
     debug!(
         width = width,
@@ -108,7 +125,7 @@ pub async fn write_fits_i32<P: AsRef<Path>>(
     );
 
     tokio::task::spawn_blocking(move || {
-        let kw = [doc_id_keyword(&doc_id)?];
+        let kw = header_cards(&doc_id, extra)?;
         write_atomic_with(&path, |w| write_i32_image(w, &pixels, width, height, &kw))
             .map_err(|e| translate_write_err(&e))
     })
@@ -233,7 +250,7 @@ mod tests {
         let path = dir.path().join("test.fits");
 
         let pixels = vec![100u16, 200, 300, 400];
-        write_fits_u16(&path, &pixels, 2, 2, "test-doc")
+        write_fits_u16(&path, &pixels, 2, 2, "test-doc", &[])
             .await
             .unwrap();
 
@@ -251,7 +268,7 @@ mod tests {
         let path = dir.path().join("test.fits");
 
         let pixels = vec![100i32, -200, 0, 1_000_000];
-        write_fits_i32(&path, &pixels, 2, 2, "test-doc")
+        write_fits_i32(&path, &pixels, 2, 2, "test-doc", &[])
             .await
             .unwrap();
 
@@ -265,7 +282,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bad.fits");
 
-        let err = write_fits_u16(&path, &[1u16, 2, 3, 4], 2, 3, "test-doc")
+        let err = write_fits_u16(&path, &[1u16, 2, 3, 4], 2, 3, "test-doc", &[])
             .await
             .unwrap_err();
         assert!(
@@ -282,7 +299,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nope.fits");
 
-        let err = write_fits_u16(&path, &[], usize::MAX, usize::MAX, "test-doc")
+        let err = write_fits_u16(&path, &[], usize::MAX, usize::MAX, "test-doc", &[])
             .await
             .unwrap_err();
         assert!(
@@ -290,7 +307,7 @@ mod tests {
             "unexpected error: {err}"
         );
 
-        let err = write_fits_i32(&path, &[], usize::MAX, usize::MAX, "test-doc")
+        let err = write_fits_i32(&path, &[], usize::MAX, usize::MAX, "test-doc", &[])
             .await
             .unwrap_err();
         assert!(
@@ -308,7 +325,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wide.fits");
         // Row 0: 1 2 3; row 1: 4 5 6.
-        write_fits_u16(&path, &[1u16, 2, 3, 4, 5, 6], 3, 2, "test-doc")
+        write_fits_u16(&path, &[1u16, 2, 3, 4, 5, 6], 3, 2, "test-doc", &[])
             .await
             .unwrap();
 
@@ -343,12 +360,31 @@ mod tests {
         let path = dir.path().join("img.fits");
         let doc_id = "550e8400-e29b-41d4-a716-446655440000";
 
-        write_fits_u16(&path, &[1u16, 2, 3, 4], 2, 2, doc_id)
+        write_fits_u16(&path, &[1u16, 2, 3, 4], 2, 2, doc_id, &[])
             .await
             .unwrap();
 
         let read_back = read_fits_doc_id(&path).unwrap();
         assert_eq!(read_back.as_deref(), Some(doc_id));
+    }
+
+    #[tokio::test]
+    async fn extra_cards_land_in_the_header_beside_doc_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("img.fits");
+        let doc_id = "550e8400-e29b-41d4-a716-446655440000";
+        let extra = [Keyword::new("EXPTIME", KeywordValue::Float(300.0)).unwrap()];
+
+        write_fits_i32(&path, &[1i32, 2, 3, 4], 2, 2, doc_id, &extra)
+            .await
+            .unwrap();
+
+        assert_eq!(read_fits_doc_id(&path).unwrap().as_deref(), Some(doc_id));
+        let file = File::open(&path).unwrap();
+        assert_eq!(
+            read_primary_keyword(BufReader::new(file), "EXPTIME").unwrap(),
+            Some(KeywordValue::Float(300.0))
+        );
     }
 
     #[test]
@@ -384,7 +420,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sub").join("dir").join("image.fits");
 
-        write_fits_u16(&path, &[42u16], 1, 1, "test-doc")
+        write_fits_u16(&path, &[42u16], 1, 1, "test-doc", &[])
             .await
             .unwrap();
 
@@ -405,10 +441,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("img.fits");
 
-        write_fits_u16(&path, &[1u16, 2, 3, 4], 2, 2, "test-doc")
+        write_fits_u16(&path, &[1u16, 2, 3, 4], 2, 2, "test-doc", &[])
             .await
             .unwrap();
-        write_fits_u16(&path, &[10u16, 20, 30, 40], 2, 2, "test-doc")
+        write_fits_u16(&path, &[10u16, 20, 30, 40], 2, 2, "test-doc", &[])
             .await
             .unwrap();
 
@@ -422,7 +458,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("img.fits");
 
-        write_fits_u16(&path, &[1u16, 2, 3, 4], 2, 2, "test-doc")
+        write_fits_u16(&path, &[1u16, 2, 3, 4], 2, 2, "test-doc", &[])
             .await
             .unwrap();
 
@@ -441,7 +477,7 @@ mod tests {
         let path = dir.path().join("img.fits");
         std::fs::create_dir(&path).unwrap();
 
-        let err = write_fits_u16(&path, &[1u16, 2, 3, 4], 2, 2, "test-doc")
+        let err = write_fits_u16(&path, &[1u16, 2, 3, 4], 2, 2, "test-doc", &[])
             .await
             .unwrap_err();
         assert!(
@@ -461,7 +497,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bad.fits");
 
-        let err = write_fits_i32(&path, &[1i32, 2, 3, 4], 2, 3, "test-doc")
+        let err = write_fits_i32(&path, &[1i32, 2, 3, 4], 2, 3, "test-doc", &[])
             .await
             .unwrap_err();
         assert!(
@@ -517,7 +553,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("img.fits");
 
-        write_fits_u16(&path, &[1u16, 2, 3, 4], 2, 2, "test-doc")
+        write_fits_u16(&path, &[1u16, 2, 3, 4], 2, 2, "test-doc", &[])
             .await
             .unwrap();
 
@@ -526,7 +562,7 @@ mod tests {
         readonly.set_mode(0o555);
         std::fs::set_permissions(dir.path(), readonly).unwrap();
 
-        let err = write_fits_u16(&path, &[9u16, 9, 9, 9], 2, 2, "test-doc")
+        let err = write_fits_u16(&path, &[9u16, 9, 9, 9], 2, 2, "test-doc", &[])
             .await
             .unwrap_err();
 

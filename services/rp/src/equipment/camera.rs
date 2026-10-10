@@ -25,8 +25,12 @@ use crate::config;
 /// device behind the same config entry — and installs the fresh reads
 /// with the fresh handle in one step, so the two cannot be paired
 /// across sessions.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct CameraInvariants {
+    /// The driver's ASCOM `Name` (e.g. `QHY600M`), persisted as the
+    /// sidecar's `camera_name` and the FITS header's `INSTRUME`. Not a
+    /// sensor property, but just as fixed for the life of a session.
+    pub name: Option<String>,
     /// Camera's `MaxADU` capability. Drives the FITS bit-depth
     /// (`u16` vs `i32`) and cache-variant selection in `do_capture`,
     /// and is persisted to the sidecar's `max_adu` field.
@@ -202,8 +206,9 @@ pub(super) async fn establish_camera(
     })
     .await?;
 
-    // The Alpaca device is now Connected — the eight physical-sensor
-    // properties below are invariant for the life of the session, so
+    // The Alpaca device is now Connected — the driver name and the
+    // eight physical-sensor properties below are invariant for the life
+    // of the session, so
     // they are read exactly once here and served from the cache to
     // every subsequent `do_capture`. Each read is independent: a
     // failure on one property only drops *that* field, not the whole
@@ -211,6 +216,7 @@ pub(super) async fn establish_camera(
     // succeeds because some Alpaca drivers reject property reads on
     // disconnected devices.
     let invariants = CameraInvariants {
+        name: cached_read(cam.name().await, &config.id, "name unavailable at session-establish time; downstream captures will omit camera_name and INSTRUME"),
         max_adu: cached_read(cam.max_adu().await, &config.id, "max_adu unavailable at session-establish time; downstream captures will persist max_adu: None and write FITS as i32"),
         pixel_size_x_um: cached_read(cam.pixel_size_x().await, &config.id, "pixel_size_x unavailable at session-establish time; downstream captures will omit the optics block"),
         pixel_size_y_um: cached_read(cam.pixel_size_y().await, &config.id, "pixel_size_y unavailable at session-establish time; downstream captures will omit the optics block"),
@@ -233,6 +239,7 @@ pub(super) async fn connect_camera(
         Ok((cam, invariants)) => {
             debug!(
                 camera_id = %config.id,
+                name = ?invariants.name,
                 max_adu = ?invariants.max_adu,
                 pixel_size_x_um = ?invariants.pixel_size_x_um,
                 pixel_size_y_um = ?invariants.pixel_size_y_um,

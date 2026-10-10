@@ -31,17 +31,35 @@ use crate::error::{Result, RpError};
 /// `sections` is an open map keyed by tool/plugin name (`image_analysis`,
 /// `flat_calibration`, `plate_solve`, etc.). Each section's shape is owned by
 /// its writer; `rp` does not validate them.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct ExposureDocument {
     pub id: String,
     /// RFC3339 timestamp of capture completion.
     pub captured_at: String,
+    /// RFC3339 timestamp (millisecond precision) of exposure *start*:
+    /// the camera's `LastExposureStartTime` when it falls inside the
+    /// window `rp` observed, else `rp`'s own clock reading taken as
+    /// `StartExposure` returned — see `docs/services/rp.md` §"Core
+    /// Fields". The FITS header's `DATE-OBS`. Present on every frame
+    /// this version captures; absent on older sidecars.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure_started_at: Option<String>,
     /// Absolute path to the FITS file on disk.
     pub file_path: String,
     pub width: u32,
     pub height: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera_id: Option<String>,
+    /// The driver's ASCOM `Name` for the capturing camera, read once per
+    /// connection. The FITS header's `INSTRUME`. Omitted when the
+    /// connect-time read failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_name: Option<String>,
+    /// The optical train that terminates in the capturing camera. The
+    /// FITS header's `TELESCOP`. Omitted for a camera outside every
+    /// train.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub train_id: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -62,6 +80,19 @@ pub struct ExposureDocument {
     /// all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binning: Option<rp_vocabulary::Binning>,
+    /// The filter in the camera's train filter wheel during the
+    /// exposure. Omitted for `Dark`/`Bias` frames, for a train without
+    /// a wheel, and when the wheel read failed — see
+    /// `docs/services/rp.md` §"Core Fields".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    /// The camera's ASCOM `Gain`, read on every capture. Omitted when
+    /// the driver does not implement it or the read failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gain: Option<i32>,
+    /// The camera's ASCOM `Offset`, under the same rule as `gain`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<i32>,
     /// Camera's `MaxADU` at the time of capture. The sidecar carries it
     /// forward so a disk-fallback rehydration of the image cache can
     /// pick the correct `CachedPixels` variant without needing the
@@ -82,6 +113,11 @@ pub struct ExposureDocument {
     /// misbehaved identifiable frame by frame.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sensor_temperature_c: Option<f64>,
+    /// Where the mount pointed during the exposure, read once as the
+    /// exposure started. Omitted when no mount is connected or the read
+    /// failed. The FITS header's `RA`/`DEC`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pointing: Option<MountPointing>,
     /// Optical-train geometry resolved at capture time. Carries both the raw
     /// Alpaca camera readings (`pixel_size_*_um`, `sensor_*_px`) and the
     /// derived pixel scale and FOV that consumers like `plate_solve` and
@@ -122,6 +158,17 @@ pub struct ExposureTarget {
     pub ra_hours: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dec_degrees: Option<f64>,
+}
+
+/// The exposure document's `pointing` field: where the mount pointed.
+///
+/// `RightAscension`/`Declination` exactly as the mount reported them, in
+/// its own equatorial system (`rp` does not convert) — distinct from
+/// [`ExposureTarget`]'s catalog coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MountPointing {
+    pub ra_hours: f64,
+    pub dec_degrees: f64,
 }
 
 impl From<&rp_targets::Target> for ExposureTarget {
@@ -366,6 +413,7 @@ mod tests {
             target: None,
             frame_type: None,
             sections: Map::new(),
+            ..ExposureDocument::default()
         }
     }
 
