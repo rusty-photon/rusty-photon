@@ -296,11 +296,16 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   realpath names the controller, its root hub's `version` gives the
   revision (`usbv2` / `usbv3` tell an xHCI's two root hubs apart), and
   the entry name after its bus number is the port chain — so nothing is
-  opened. A root hub's own port has no chain
-  (`pci-0000:00:14.0-usbv3`; udev publishes no revision path for a root
-  hub).
+  opened. The controller is named as udev's `path_id` names it, from the
+  PCI, platform, AMBA, ACPI or Xen ancestors above it; a bus udev names
+  that a USB host never hangs off on these hosts (`bcma`, `serio`, …)
+  adds nothing, and a controller that ends up with no name, or with
+  another's spelling, is a fault (below) rather than another socket's
+  port.
 
-  It departs from udev in one place. Where udev names a platform device
+  It departs from udev in two places. A root hub's own record, for which
+  udev publishes no revision path at all, is spelled with no chain
+  (`pci-0000:00:14.0-usbv3`). And where udev names a platform device
   whose instance number the kernel allocated in probe order — the
   `.auto` suffix the kernel adds to exactly those names, as in the
   `xhci-hcd.0.auto` a mainline dwc3 controller creates on a Rockchip
@@ -315,10 +320,15 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   A Linux record whose port cannot be spelled this way is a fault, not
   an inventory entry: a name that is neither a root hub's nor a port
   chain, an entry that sits under no root hub, a root hub whose
-  `version` names no revision, or a controller with no stable name. So is
-  every record under two root hubs whose spellings collide — possible
-  only where one stable ancestor sits over two `.auto` controllers of
-  the same revision — since a spelling two sockets share names neither.
+  `version` names no revision, a `subsystem` link above it that cannot
+  be read, or a controller with no stable name. So is every record under
+  two root hubs whose spellings collide — possible only where one stable
+  ancestor sits over two `.auto` controllers of the same revision —
+  since a spelling two sockets share names neither. A fault whose port
+  *could* be spelled — the collision, or a record whose `idProduct`
+  could not be read — carries that spelling as its location, so a claim
+  on the port finds the fault and its reason; the others carry the sysfs
+  entry name as a hint.
   An entry whose link points at nothing is skipped rather than
   reported: the device has left the bus, so it is not there to report.
   An entry that fails to resolve for any other reason (a permission
