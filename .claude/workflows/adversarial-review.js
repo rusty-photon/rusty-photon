@@ -1,0 +1,504 @@
+export const meta = {
+  name: 'adversarial-review',
+  description: 'One adversarial review round on a PR: path-gated specialist lenses, skeptics that try to refute every finding, and a ready-to-post GitHub review',
+  whenToUse: 'Reviewing a rusty-photon pull request, standalone or while babysitting. Args: a PR number ("1458", "1458 full"), or {pr, full?, round?, since?, skip?}. Run from a checkout of the PR head. Process: docs/skills/adversarial-review.md',
+  phases: [
+    { title: 'Scope', detail: 'PR purpose, files, delta since the last reviewed head' },
+    { title: 'Review', detail: 'path-gated specialist lenses in parallel' },
+    { title: 'Dedupe', detail: 'merge findings that name the same defect' },
+    { title: 'Verify', detail: 'skeptics try to refute each finding' },
+    { title: 'Anchor', detail: 'which findings sit on lines of the PR diff' },
+  ],
+}
+
+// ---------------------------------------------------------------- arguments
+
+let A = args
+if (A === undefined || A === null || typeof A === 'number' || typeof A === 'string') {
+  const toks = String(A ?? '').trim().split(/\s+/)
+  A = { pr: toks[0], full: toks.includes('full') }
+}
+const pr = Number(String(A.pr ?? '').trim().replace(/^#/, ''))
+if (!Number.isInteger(pr) || pr <= 0) {
+  throw new Error('adversarial-review: pass a PR number ("1458", "1458 full") or {pr, full?, round?, since?, skip?}')
+}
+const skip = Array.isArray(A.skip) ? A.skip : []
+
+// ------------------------------------------------------------------- lenses
+
+const LOCKFILE = /(^|\/)(Cargo\.lock|MODULE\.bazel\.lock)$/
+const CODE = /\.(rs|sh|py|ps1|js|mjs|ts)$/
+const CI = /^\.github\/(workflows|actions)\/|^scripts\/|^tools\/|^installer\/|(^|\/)pkg\/|(^|\/)BUILD\.bazel$|^MODULE\.bazel$|\.bzl$|^\.bazelrc$|(^|\/)Cargo\.toml$/
+const CONFIG = /\.(toml|ya?ml|json)$/
+const DOCS = /\.md$/
+const SERVICE_RUST = /^services\/.*\.rs$/
+const TESTS = /\.(rs|feature)$/
+
+const LENSES = [
+  { key: 'concurrency', agentType: 'review-concurrency', applies: f => CODE.test(f) },
+  { key: 'correctness', agentType: 'review-correctness', applies: f => CODE.test(f) || CI.test(f) || CONFIG.test(f) },
+  { key: 'safety', agentType: 'review-safety', applies: f => CODE.test(f) || CI.test(f) || CONFIG.test(f) },
+  { key: 'tests', agentType: 'review-tests', applies: f => TESTS.test(f) },
+  { key: 'silent-failures', agentType: 'pr-review-toolkit:silent-failure-hunter', plugin: true, applies: f => CODE.test(f) },
+  { key: 'ci-packaging', agentType: 'review-ci-packaging', applies: f => CI.test(f) },
+  { key: 'docs', agentType: 'review-docs', applies: f => DOCS.test(f) || SERVICE_RUST.test(f) },
+]
+
+const PLUGIN_INSTALL = 'claude plugin install pr-review-toolkit@claude-plugins-official --scope project'
+
+// The plugin agent is written for any codebase; this narrows it to the
+// failures that matter here and keeps it off the categories the record
+// rates lowest.
+const PLUGIN_BRIEF = [
+  'This repository is rusty-photon: Rust services that drive telescopes, cameras and focusers unattended overnight.',
+  'Report only failures whose masking produces a wrong action, wrong data, or a wedged state: an error converted into a plausible value, a fallback that hides a device or config failure, an error flattened so callers lose the variant they switch on.',
+  'Do not ask for extra logging, friendlier messages, or broader error types for their own sake. Do not report style.',
+  'Before reviewing, read docs/skills/adversarial-review.md section "Ground rules" and follow them. Never modify the checkout.',
+].join(' ')
+
+// ------------------------------------------------------------------ schemas
+
+const SCOPE = {
+  type: 'object',
+  properties: {
+    ok: { type: 'boolean' },
+    error: { type: 'string' },
+    title: { type: 'string' },
+    state: { type: 'string' },
+    base_ref: { type: 'string' },
+    purpose: { type: 'string', description: '2-4 sentences: the change the PR makes and the problem it solves' },
+    head_sha: { type: 'string' },
+    merge_base: { type: 'string' },
+    files: { type: 'array', items: { type: 'string' } },
+    last_round: { type: 'integer', description: 'highest round=N in any marker, 0 if none' },
+    last_head: { type: 'string', description: 'head=SHA from the newest marker that has one, empty if none' },
+    since: { type: 'string', description: 'the delta base actually used, empty if none' },
+    since_reachable: { type: 'boolean' },
+    delta_files: { type: 'array', items: { type: 'string' } },
+    prior: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          file: { type: 'string' },
+          line: { type: 'integer' },
+          title: { type: 'string' },
+          outcome: { type: 'string', enum: ['fixed', 'declined', 'open', 'unknown'] },
+          note: { type: 'string' },
+        },
+        required: ['id', 'title', 'outcome'],
+      },
+    },
+  },
+  required: ['ok'],
+}
+
+const FINDINGS = {
+  type: 'object',
+  properties: {
+    findings: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'one line naming the defect' },
+          file: { type: 'string', description: 'repo-relative path' },
+          line: { type: 'integer', description: '1-based line number at the PR head' },
+          severity: { type: 'string', enum: ['high', 'medium', 'low'] },
+          trigger: { type: 'string', description: 'the input, state or interleaving that causes it' },
+          consequence: { type: 'string', description: 'what goes wrong, concretely' },
+          evidence: { type: 'string', description: 'code pointers (path:line) and command output supporting it' },
+          remedy: { type: 'string', description: 'suggested fix, if any' },
+          also_at: { type: 'array', items: { type: 'string' }, description: 'sibling sites (path:line) with the same defect' },
+        },
+        required: ['title', 'file', 'line', 'severity', 'trigger', 'consequence', 'evidence'],
+      },
+    },
+    omitted: { type: 'integer', description: 'findings dropped to stay within the cap' },
+  },
+  required: ['findings'],
+}
+
+const GROUPS = {
+  type: 'object',
+  properties: {
+    groups: { type: 'array', items: { type: 'array', items: { type: 'integer' } } },
+  },
+  required: ['groups'],
+}
+
+const VERDICT = {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['confirmed', 'refuted', 'pre_existing'] },
+    reasoning: { type: 'string' },
+    evidence: { type: 'string', description: 'what you read or ran: path:line, command output' },
+    remedy_note: { type: 'string', description: 'set when the suggested remedy is wrong or incomplete' },
+  },
+  required: ['verdict', 'reasoning'],
+}
+
+const ANCHORS = {
+  type: 'object',
+  properties: {
+    anchors: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { index: { type: 'integer' }, in_diff: { type: 'boolean' } },
+        required: ['index', 'in_diff'],
+      },
+    },
+  },
+  required: ['anchors'],
+}
+
+// ------------------------------------------------------------------ helpers
+
+const tick = s => '`' + s + '`'
+const short = s => String(s || '').slice(0, 8)
+const SEV_RANK = { high: 0, medium: 1, low: 2 }
+const clip = (s, n) => {
+  const t = String(s || '').replace(/\s+/g, ' ').trim()
+  return t.length > n ? t.slice(0, n - 1) + '…' : t
+}
+
+// ==================================================================== Scope
+
+phase('Scope')
+const scope = await agent(
+  [
+    `You are the scope stage of an adversarial review of PR #${pr}. Run the commands below and report what they print. Do not review anything, and never modify the checkout beyond a git fetch.`,
+    '',
+    `1. gh pr view ${pr} --json title,body,state,baseRefName,headRefOid,files`,
+    '   Report title, state, base_ref (= baseRefName) and files (every files[].path).',
+    '   Write purpose: 2-4 sentences on the change the PR makes and the problem it solves, from the title, body and `git diff --stat`.',
+    '2. git rev-parse HEAD. It MUST equal headRefOid. If it does not, return ok=false with',
+    '   error = "checkout HEAD <sha> is not the head of PR #' + pr + ' (<headRefOid>): check out the PR head and re-run". Stop there.',
+    '   head_sha = headRefOid.',
+    '3. git fetch origin <baseRefName> --quiet, then merge_base = git merge-base origin/<baseRefName> HEAD.',
+    '4. Previous rounds. Each adversarial-review round left a marker in a review body:',
+    '   "<!-- adversarial-review round=N -->" or "<!-- adversarial-review round=N head=SHA -->". Read them with',
+    `   gh api --paginate 'repos/{owner}/{repo}/pulls/${pr}/reviews' | jq -s -r '.[][] | select(.body | test("<!-- adversarial-review round=")) | "\\(.id)\\t\\(.body | capture("<!-- adversarial-review (?<m>[^>]*)-->").m)"'`,
+    '   last_round = the highest round=N (0 if none). last_head = the head=SHA of the newest marker that has one ("" if none).',
+    '5. Delta base: ' + (A.full
+      ? 'none — this is a full review; since = "".'
+      : (A.since
+        ? `use ${A.since} (given by the caller); since = that value.`
+        : 'since = last_head (empty if none).')),
+    '   If since is non-empty: since_reachable = whether `git cat-file -e <since>^{commit}` succeeds (try `git fetch origin <since>` once if not).',
+    '   If reachable: delta_files = the paths from `git diff --name-only <since> HEAD` that are also in files.',
+    '6. Prior findings, if last_round > 0. For every review that carries a marker: its body lists "Outside the diff" findings by ID (R<round>.<k>);',
+    `   its inline comments (gh api --paginate 'repos/{owner}/{repo}/pulls/${pr}/reviews/<review-id>/comments') each start with an ID.`,
+    `   Outcomes are recorded in replies to those threads (gh api --paginate 'repos/{owner}/{repo}/pulls/${pr}/comments', in_reply_to_id) and in PR comments (gh api --paginate 'repos/{owner}/{repo}/issues/${pr}/comments').`,
+    '   For each ID report file, line, title, outcome (fixed / declined / open when nothing records one / unknown) and a one-line note quoting the recorded reason.',
+    '',
+    'Return ok=true with every field you could fill.',
+  ].join('\n'),
+  { label: 'scope', phase: 'Scope', schema: SCOPE, effort: 'low' },
+)
+
+if (!scope || !scope.ok) {
+  return { pr, error: (scope && scope.error) || 'the scope stage returned nothing' }
+}
+if (scope.state && scope.state !== 'OPEN') log(`PR #${pr} is ${scope.state}; reviewing it anyway`)
+
+const head = scope.head_sha
+const mb = scope.merge_base
+const round = Number.isInteger(A.round) ? A.round : (scope.last_round || 0) + 1
+const sinceWanted = A.full ? '' : (scope.since || '')
+const files = (scope.files || []).filter(f => !LOCKFILE.test(f))
+
+if (sinceWanted && sinceWanted === head) {
+  return { pr, round: scope.last_round, head, skipped: `head ${short(head)} was already reviewed (round ${scope.last_round}); push a change or pass full` }
+}
+
+let mode = 'full'
+let since = ''
+let covered = files
+if (sinceWanted && scope.since_reachable !== false && Array.isArray(scope.delta_files)) {
+  mode = 'delta'
+  since = sinceWanted
+  covered = scope.delta_files.filter(f => !LOCKFILE.test(f))
+} else if (sinceWanted) {
+  log(`delta base ${short(sinceWanted)} is not reachable; reviewing the whole PR`)
+}
+
+const prior = scope.prior || []
+const priorText = prior.length
+  ? prior.map(p => `- ${p.id} [${p.outcome}] ${p.file || '?'}:${p.line || '?'} — ${p.title}${p.note ? ' — ' + p.note : ''}`).join('\n')
+  : 'none'
+
+const selected = LENSES
+  .map(l => ({ ...l, files: covered.filter(l.applies) }))
+  .filter(l => l.files.length > 0)
+const lensesRequested = selected.filter(l => skip.includes(l.key)).map(l => l.key)
+const lenses = selected.filter(l => !skip.includes(l.key))
+log(`round ${round}, ${mode}${since ? ' since ' + short(since) : ''}: ${covered.length} file(s); lenses ${lenses.map(l => l.key).join(', ') || 'none'}${lensesRequested.length ? '; skipped by request: ' + lensesRequested.join(', ') : ''}`)
+
+// ------------------------------------------------------------------- record
+
+const marker = complete => `<!-- adversarial-review round=${round}${complete ? ' head=' + head : ''} -->`
+const header = (lensesRun, lensesFailed) => [
+  `### Adversarial review — round ${round}`,
+  '',
+  `Head ${tick(short(head))} · ` + (mode === 'full'
+    ? 'full review of the PR'
+    : `delta since ${tick(short(since))}`) + ` · lenses: ${lensesRun.join(', ') || 'none applied'}`
+    + (lensesRequested.length ? ` · skipped by request: ${lensesRequested.join(', ')}` : ''),
+  lensesFailed.length
+    ? `\n**Incomplete round:** ${lensesFailed.join(', ')} returned nothing` + (lensesFailed.includes('silent-failures') ? ` (is the plugin installed? ${tick(PLUGIN_INSTALL)})` : '') + '. This head does not count as reviewed.'
+    : null,
+].filter(x => x !== null).join('\n')
+
+if (lenses.length === 0) {
+  // Nothing the round covers is reviewable (lockfiles only, or no PR file
+  // changed since the last round): record the head as reviewed.
+  const body = [header([], []), '', 'Nothing in this round\'s files is covered by a lens. **No findings.**', '', marker(true)].join('\n')
+  return { pr, round, head, mode, since, quiet: true, complete: true, lenses_run: [], lenses_failed: [], findings: [], pre_existing: [], refuted: [], review: { commit_id: head, event: 'COMMENT', body, comments: [] } }
+}
+
+// =================================================================== Review
+
+phase('Review')
+
+const lensPrompt = l => [
+  `Adversarial review round ${round} of PR #${pr}: "${scope.title}". Your lens: ${l.key}.`,
+  '',
+  `What the PR is for: ${scope.purpose}`,
+  '',
+  `The working tree is checked out at the PR head ${head}. Merge-base with ${scope.base_ref || 'the base branch'}: ${mb}.`,
+  mode === 'full'
+    ? `Review the whole PR: git diff ${mb} ${head}`
+    : `This is a delta round. Review what changed since the last reviewed head: git diff ${since} ${head} -- <files below>. Report defects the delta introduced, and prior findings it claims to fix but does not. Read the full PR diff (git diff ${mb} ${head}) for context.`,
+  `Files in your lens's scope: ${l.files.join(', ')}`,
+  'Skip lockfiles (Cargo.lock, MODULE.bazel.lock).',
+  '',
+  'Findings from earlier rounds. Do not raise a fixed or declined one again without new evidence that its outcome is wrong, and say so if you do:',
+  priorText,
+  '',
+  l.plugin ? PLUGIN_BRIEF : 'Read docs/skills/adversarial-review.md section "Ground rules" first and follow them. Never modify the checkout.',
+  '',
+  'Report at most 8 findings, most severe first, and set omitted to how many more you dropped. Every line number is at the PR head. An empty list is the right answer when the code is right.',
+].join('\n')
+
+const runLens = async l => {
+  const opts = { label: `review:${l.key}`, phase: 'Review', schema: FINDINGS, agentType: l.agentType }
+  let r = null
+  try { r = await agent(lensPrompt(l), opts) } catch (e) { r = null }
+  if (!r) {
+    log(`lens ${l.key} returned nothing; retrying once`)
+    try { r = await agent(lensPrompt(l), { ...opts, label: `review:${l.key}:retry` }) } catch (e) { r = null }
+  }
+  return r
+}
+
+const lensResults = await parallel(lenses.map(l => () => runLens(l)))
+const lensesRun = []
+const lensesFailed = []
+const raw = []
+lensResults.forEach((r, i) => {
+  const l = lenses[i]
+  if (!r) {
+    lensesFailed.push(l.key)
+    log(`lens ${l.key} failed twice` + (l.plugin ? ` — is pr-review-toolkit installed? ${PLUGIN_INSTALL}` : ''))
+    return
+  }
+  lensesRun.push(l.key)
+  if (r.omitted > 0) log(`lens ${l.key} dropped ${r.omitted} lower-ranked finding(s) at the cap`)
+  for (const f of r.findings || []) raw.push({ ...f, lenses: [l.key], also_at: f.also_at || [] })
+})
+const complete = lensesFailed.length === 0
+
+// =================================================================== Dedupe
+
+phase('Dedupe')
+
+// Exact same anchor first: plain code, no agent.
+const byAnchor = new Map()
+for (const f of raw) {
+  const k = `${f.file}:${f.line}`
+  const seen = byAnchor.get(k)
+  if (!seen) { byAnchor.set(k, f); continue }
+  const [keep, drop] = SEV_RANK[f.severity] < SEV_RANK[seen.severity] ? [f, seen] : [seen, f]
+  keep.lenses = [...new Set([...keep.lenses, ...drop.lenses])]
+  keep.also_at = [...new Set([...keep.also_at, ...drop.also_at])]
+  keep.merged = [...(keep.merged || []), drop.title, ...(drop.merged || [])]
+  byAnchor.set(k, keep)
+}
+let findings = [...byAnchor.values()]
+
+if (findings.length >= 2) {
+  const listing = findings.map((f, i) => `${i}. [${f.lenses.join('+')}] ${f.file}:${f.line} — ${f.title} — ${clip(f.consequence, 200)}`).join('\n')
+  const g = await agent(
+    [
+      'These findings came from different reviewers of the same pull request. Group the indices that describe the same underlying defect — same root cause, so one fix resolves all of them.',
+      'Do not group findings that are merely nearby, in the same file, or in the same category. Omit singletons. Read the code if you need to.',
+      '',
+      listing,
+    ].join('\n'),
+    { label: 'dedupe', phase: 'Dedupe', schema: GROUPS, effort: 'low' },
+  )
+  const groups = ((g && g.groups) || [])
+    .map(grp => [...new Set(grp)].filter(i => Number.isInteger(i) && i >= 0 && i < findings.length))
+    .filter(grp => grp.length >= 2)
+  const absorbed = new Set()
+  for (const grp of groups) {
+    if (grp.some(i => absorbed.has(i))) continue
+    const members = grp.map(i => findings[i]).sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity])
+    const keep = members[0]
+    for (const m of members.slice(1)) {
+      keep.lenses = [...new Set([...keep.lenses, ...m.lenses])]
+      keep.also_at = [...new Set([...keep.also_at, `${m.file}:${m.line}`, ...m.also_at])]
+      keep.merged = [...(keep.merged || []), m.title]
+    }
+    grp.forEach(i => { if (findings[i] !== keep) absorbed.add(i) })
+  }
+  if (absorbed.size) log(`dedupe merged ${absorbed.size} duplicate finding(s)`)
+  findings = findings.filter((_, i) => !absorbed.has(i))
+}
+log(`${raw.length} raised, ${findings.length} after dedupe`)
+
+// =================================================================== Verify
+
+phase('Verify')
+
+const ANGLES = {
+  trace: 'Your angle: trace the trigger. Walk every link from the stated input or state to the stated consequence at the PR head; refute if any link fails.',
+  handled: 'Your angle: look for what already handles it at the PR head — an upstream guard, validation at load, a lock, a test that pins the behaviour, a later commit in the PR — and decide whether the PR introduced or touched it, or it is pre-existing.',
+  claims: 'Your angle: check every factual claim. The cited code says what is claimed; any external behaviour is documented; nothing predicts a build or lint outcome; the suggested remedy would actually fix it.',
+}
+
+const verifyPrompt = (f, angle) => [
+  `Verify one finding from adversarial review round ${round} of PR #${pr}: "${scope.title}".`,
+  `What the PR is for: ${scope.purpose}`,
+  `The working tree is at the PR head ${head}; the PR diff is git diff ${mb} ${head}.`,
+  '',
+  'Finding:',
+  JSON.stringify({ lens: f.lenses.join('+'), title: f.title, file: f.file, line: f.line, severity: f.severity, trigger: f.trigger, consequence: f.consequence, evidence: f.evidence, remedy: f.remedy || '', also_at: f.also_at }, null, 2),
+  '',
+  angle ? ANGLES[angle] : 'Apply every angle: ' + Object.values(ANGLES).join(' '),
+  'Earlier rounds\' findings, for spotting a duplicate of a fixed or declined one:',
+  priorText,
+].join('\n')
+
+const verifyOne = async f => {
+  const angles = f.severity === 'high' ? ['trace', 'handled', 'claims'] : [null]
+  const votes = (await parallel(angles.map(a => () => agent(verifyPrompt(f, a), {
+    label: `verify:${f.lenses[0]}:${f.file.split('/').pop()}:${f.line}${a ? ':' + a : ''}`,
+    phase: 'Verify',
+    schema: VERDICT,
+    agentType: 'review-verifier',
+  })))).filter(Boolean)
+  const expected = angles.length
+  const need = f.severity === 'high' ? 2 : 1
+  const alive = votes.filter(v => v.verdict !== 'refuted')
+  let status
+  if (alive.length >= need) {
+    const pre = alive.filter(v => v.verdict === 'pre_existing').length
+    status = pre > alive.length - pre ? 'pre_existing' : 'confirmed'
+  } else if (alive.length + (expected - votes.length) >= need) {
+    status = 'unverified' // skeptics died; never drop a finding silently
+  } else {
+    status = 'refuted'
+  }
+  const notes = votes.map(v => v.remedy_note).filter(Boolean)
+  const reasons = votes.filter(v => v.verdict === 'refuted').map(v => v.reasoning)
+  return { ...f, status, remedy_note: notes.join(' '), refuted_because: reasons[0] || '', votes: votes.length }
+}
+
+const verified = (await parallel(findings.map(f => () => verifyOne(f)))).filter(Boolean)
+if (verified.length < findings.length) log(`${findings.length - verified.length} finding(s) lost in verification; re-run the round`)
+
+const bySeverity = (a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity]
+const posted = verified.filter(f => f.status === 'confirmed' || f.status === 'unverified').sort(bySeverity)
+const preExisting = verified.filter(f => f.status === 'pre_existing').sort(bySeverity)
+const refuted = verified.filter(f => f.status === 'refuted')
+let k = 0
+for (const f of posted) f.id = `R${round}.${++k}`
+for (const f of preExisting) f.id = `R${round}.${++k}`
+log(`verified: ${posted.length} confirmed/unverified, ${preExisting.length} pre-existing, ${refuted.length} refuted`)
+
+// =================================================================== Anchor
+
+phase('Anchor')
+
+if (posted.length) {
+  const a = await agent(
+    [
+      'For each finding below, decide whether its line is inside a hunk of the pull request diff (so GitHub accepts an inline comment there).',
+      `For each distinct file run: git diff -U3 ${mb} ${head} -- <file> | awk '/^@@/{split($3,a,","); s=substr(a[1],2); n=(a[2]==""?1:a[2]); if (n>0) print s, s+n-1}'`,
+      'Each output line is an inclusive new-side range "start end". in_diff is true only if the line falls inside one of them. A file with no output has no commentable lines.',
+      '',
+      posted.map((f, i) => `${i}. ${f.file}:${f.line}`).join('\n'),
+    ].join('\n'),
+    { label: 'anchor', phase: 'Anchor', schema: ANCHORS, effort: 'low' },
+  )
+  for (const an of (a && a.anchors) || []) {
+    if (Number.isInteger(an.index) && posted[an.index]) posted[an.index].inline = an.in_diff === true
+  }
+}
+
+// ------------------------------------------------------------ review payload
+
+const findingBody = f => [
+  `**${f.id}** · ${f.lenses.join(' + ')} · ${f.severity}` + (f.status === 'unverified' ? ' · **unverified** (no skeptic returned)' : ''),
+  '',
+  `**${f.title}**`,
+  '',
+  `**Trigger:** ${f.trigger}`,
+  `**Consequence:** ${f.consequence}`,
+  `**Evidence:** ${f.evidence}`,
+  f.also_at.length ? `**Also at:** ${f.also_at.join(', ')}` : null,
+  f.merged && f.merged.length ? `**Also raised as:** ${f.merged.map(t => clip(t, 120)).join('; ')}` : null,
+  f.remedy ? `**Suggested remedy:** ${f.remedy}` : null,
+  f.remedy_note ? `**Skeptic on the remedy:** ${f.remedy_note}` : null,
+].filter(x => x !== null).join('\n')
+
+const inline = posted.filter(f => f.inline)
+const outside = posted.filter(f => !f.inline)
+
+const body = [
+  header(lensesRun, lensesFailed),
+  '',
+  `Raised ${raw.length} → ${posted.length} confirmed` + (posted.some(f => f.status === 'unverified') ? ` (${posted.filter(f => f.status === 'unverified').length} unverified)` : '') + `, ${preExisting.length} pre-existing, ${refuted.length} refuted.`
+    + (posted.length ? ` ${inline.length} inline, ${outside.length} below.` : ''),
+  posted.length ? null : '\n**No confirmed findings.**',
+  outside.length ? '\n#### Outside the diff\n\nRecord each outcome in a PR comment that names its ID.' : null,
+  ...outside.map(f => '\n' + findingBody(f) + `\n\n*At* ${tick(f.file + ':' + f.line)}`),
+  preExisting.length
+    ? `\n<details><summary>Pre-existing, not introduced by this PR (${preExisting.length}) — follow-up candidates, not findings</summary>\n\n`
+      + preExisting.map(f => `- **${f.id}** [${f.lenses.join('+')}] ${tick(f.file + ':' + f.line)} — ${clip(f.title, 160)} — ${clip(f.consequence, 240)}`).join('\n')
+      + '\n</details>'
+    : null,
+  refuted.length
+    ? `\n<details><summary>Refuted by the skeptics (${refuted.length}) — not findings; listed so the verifier can be audited</summary>\n\n`
+      + refuted.map(f => `- [${f.lenses.join('+')}] ${tick(f.file + ':' + f.line)} — ${clip(f.title, 160)} — *${clip(f.refuted_because, 300)}*`).join('\n')
+      + '\n</details>'
+    : null,
+  '',
+  marker(complete),
+].filter(x => x !== null).join('\n')
+
+return {
+  pr,
+  round,
+  head,
+  mode,
+  since,
+  complete,
+  quiet: complete && posted.length === 0,
+  lenses_run: lensesRun,
+  lenses_failed: lensesFailed,
+  lenses_skipped: lensesRequested,
+  findings: posted.map(f => ({ id: f.id, status: f.status, severity: f.severity, lenses: f.lenses, file: f.file, line: f.line, title: f.title, inline: !!f.inline })),
+  pre_existing: preExisting.map(f => ({ id: f.id, file: f.file, line: f.line, title: f.title })),
+  refuted: refuted.map(f => ({ lenses: f.lenses, file: f.file, line: f.line, title: f.title, because: f.refuted_because })),
+  review: {
+    commit_id: head,
+    event: 'COMMENT',
+    body,
+    comments: inline.map(f => ({ path: f.file, line: f.line, side: 'RIGHT', body: findingBody(f) })),
+  },
+}

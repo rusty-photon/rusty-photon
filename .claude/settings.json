@@ -12,6 +12,16 @@
       "Bash(cargo metadata:*)",
       "Bash(rustup run:*)",
       "Bash(conformu:*)"
+    ],
+    "deny": [
+      "Agent(pr-review-toolkit:code-reviewer)",
+      "Agent(pr-review-toolkit:code-simplifier)",
+      "Agent(pr-review-toolkit:comment-analyzer)",
+      "Agent(pr-review-toolkit:pr-test-analyzer)",
+      "Agent(pr-review-toolkit:type-design-analyzer)"
     ]
+  },
+  "enabledPlugins": {
+    "pr-review-toolkit@claude-plugins-official": true
   }
 }

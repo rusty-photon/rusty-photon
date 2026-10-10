@@ -9,6 +9,7 @@
       - Pushing code or running CI checks: read docs/skills/pre-push.md
       - Checking code coverage, or diagnosing a red coverage check: read docs/skills/coverage.md
       - Shepherding an open pull request through CI and code review to merge readiness: read docs/skills/babysitting-prs.md
+      - Reviewing a pull request (an adversarial review round, standalone or while babysitting): read docs/skills/adversarial-review.md
       - Running ConformU against a physical device, or adding a record to docs/validation/: read docs/skills/hardware-validation.md
       - Archiving a completed plan (moving docs/plans/<plan>.md into docs/plans/archive/): read docs/skills/archiving-plans.md
 
