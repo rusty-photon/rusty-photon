@@ -2,13 +2,13 @@
 
 ## When to Read This
 
-- After opening a pull request that must reach merge readiness
+- After opening a pull request that must reach merge readiness — the
+  agent that did the work babysits its PR (AGENTS.md rule 14)
 - When asked to "babysit" a PR
 - When addressing review findings or human review comments on an open PR
 
-Review rounds themselves — what runs, how findings are verified, how a
-round is recorded, how to triage — are in
-[adversarial-review.md](adversarial-review.md). Read it too.
+How a review is run and how its findings are triaged is in
+[code-review.md](code-review.md). Read it too.
 
 ## What "merge-ready" means
 
@@ -18,128 +18,90 @@ latest push:
 1. **CI fully green** — every required check plus any path-triggered
    workflow the PR woke up (e.g. `msi.yml` on packaging changes). A slow
    leg still running means not done.
-2. **A quiet review round on the head** — the newest adversarial-review
-   round's marker names the current head SHA (`head=` is present only on
-   a complete round, and only markers posted by someone with write
-   access count — adversarial-review.md §Recording a round), and that
-   round either confirmed no findings, or
-   every finding it confirmed was **declined** with its reason recorded.
-   A decline changes no code, so there is nothing for another round to
-   review. Any finding that led to a fix voids the round: the fix push
-   needs its own round. Any later push — docs included — needs one more
-   round, with one exception: a merge of `origin/main` that resolved no
-   conflicts adds nothing of the PR's own, so the earlier quiet round
+2. **A clean review of the head** — the newest review ran on the current
+   head SHA, and it either raised no findings or every finding it raised
+   was **declined** with the reason recorded. A decline changes no code,
+   so there is nothing new to review. A fix voids the review: the fix
+   push needs its own. Any later push — docs included — needs one more
+   review, with one exception: a merge of `origin/main` that resolved no
+   conflicts adds nothing of the PR's own, so the earlier clean review
    stands; say so in the report.
-3. **Every review finding has a recorded response** — a reply on every
-   thread (the rounds' inline findings and any human reviewer's), and a
-   PR comment covering each *Outside the diff* finding by ID.
+3. **Every finding has a recorded response** — a reply on every review
+   thread (the review's and any human reviewer's), and an outcome for
+   each finding the review could not post inline.
 4. **No merge conflicts** (`gh pr view <n> --json mergeable`).
 
 Then report merge readiness and stop. Merging is the repo owner's
 decision and action — never merge the PR yourself, and all work stays
 on the feature branch, never on `main` (rule 5).
 
-## Where to run it
-
-**In a fresh session** (or after `/clear`) — never in the session that
-wrote the change. Every step of the loop re-reads the session's whole
-context; on PR #1459, babysitting from the authoring session (300–490k
-tokens of context) cost more than three of its review rounds put
-together. A fresh session also brings no reasoning from the author to
-the triage.
-
-**With the hands-on work in a fresh subagent per round.** The session
-running the loop keeps only what a subagent cannot do — Claude Code
-removes the Workflow tool and `AskUserQuestion` from every subagent:
-
-| The loop session (thin) | The [`pr-round-fixer`](../../.claude/agents/pr-round-fixer.md) subagent (fresh each round) |
-| --- | --- |
-| launches review rounds and the CI watcher | triages every finding with no recorded outcome |
-| posts each round's review | fixes, runs the quality gate, commits, pushes |
-| asks the owner for decisions | replies on every thread; records outside-the-diff outcomes |
-| reports merge readiness | returns a short summary and any decision it needs |
-
-So the loop session's context grows by the fixer's summaries, not by
-file reads, diffs and gate output. Spawn the fixer as a new agent, never
-a fork of the loop session (a fork inherits the context this exists to
-avoid). It cannot ask the owner anything: it returns each decision it
-needs, the loop session asks, and the answer goes into the next fixer's
-prompt or a `SendMessage` to the same fixer. An operator without Claude
-Code does both halves by hand; the steps below are the same.
-
 ## The loop
 
 Start by classifying the PR — `gh pr view <n> --json
 state,isDraft,author,mergeable,headRefOid` — and make sure the local
-checkout is at its head (`git rev-parse HEAD`): review rounds read the
-working tree. Then iterate:
+checkout is at its head (`git rev-parse HEAD`): the reviewer reads the
+working tree. Then, for each head:
 
-1. **Start both waits after every push** (and once at the start): the
-   CI watcher (§Pacing) and a review round (the Workflow tool with
-   `scriptPath: ".claude/workflows/adversarial-review.js"`,
-   `args: {pr: <n>}` — by path, not by name, so the checkout's file
-   runs; adversarial-review.md §What a round is). Both run in the background; neither ends the
-   other's wait. **While the round runs, change nothing in the
-   checkout** — no edits, commits, merges or pushes: its reviewers are
-   reading that working tree (adversarial-review.md §What a round is).
-   Diagnose freely; hold the fixes.
-2. **CI failure** → reproduce and diagnose; once no round is running,
-   fix locally and run the full quality gate (rule 4) before the push.
-   A CI failure that lands mid-round waits for the round, and its fix
-   joins the round's fixes in one push.
-3. **Merge conflict** → once no round is running, merge `origin/main`
-   into the branch (don't rebase a branch that has review history),
-   resolve, gate, push. Conflict resolution can also import upstream
-   scope changes — re-read what landed on `main`, don't just take
-   "ours".
-4. **When the round lands, record it, then triage it.** Post its
-   `review` payload as described in adversarial-review.md §Recording a
-   round — a quiet round too, since its marker is the evidence for
-   criterion 2 — but only while its `commit_id` is still the PR head. A
-   round that returns `skipped` or `superseded` has nothing to post. A
-   round with `complete: false` is not a review of the head: fix the
-   cause it names (an uninstalled plugin, a checkout changed mid-round)
-   and run it again. Then hand steps 4–6 to a fresh `pr-round-fixer`
-   (§Where to run it) with the PR number, any CI failure to fix, and
-   any owner decisions already made; relay its summary and ask the owner
-   about any decision it returns. The fixer triages every finding
-   honestly (adversarial-review.md §Triage guidance):
+1. **Start the CI watcher** (§Pacing) in the background.
+2. **Review the head** — `/code-review high <n> --comment`
+   (code-review.md §Running a review); change nothing in the checkout
+   while it runs. Then record the round in one PR comment: the head SHA,
+   the level, how many findings it raised, and every finding it could
+   not post inline. A review that raises nothing leaves no other trace
+   on the PR, and this comment is what the merge-ready report cites:
+
+   ```sh
+   gh pr comment <n> --body "Code review (high) of <sha>: <k> findings, posted inline."
+   ```
+
+3. **Triage every finding** (code-review.md §Triage), and every new
+   comment from a human reviewer:
    - Legitimate (even partially) → fix it.
    - Wrong → decline **in the reply**, with evidence: a code pointer,
      doc link, or reproduction.
    - Never fix silently, never ignore. If the same wrong claim keeps
      recurring, consider making the code or docs unambiguous instead of
      re-litigating — often cheaper than another round.
-5. **Push the fixes** — batched, one push per round (commit author per
-   rule 6). Before pushing, confirm the PR is still open
-   (`gh pr view <n> --json state`): with `delete_branch_on_merge` on, a
-   push to a PR the owner has merged in the meantime silently recreates
-   its deleted branch (`remote: Create a pull request … pull/new/…` in
-   the push output is the tell).
-6. **Reply on every thread** — what changed plus the commit SHA, or why
-   declined — and post one PR comment with the outcome of each
-   *Outside the diff* finding, by ID. The next round's scope stage reads
-   these outcomes, so a declined finding is not raised again:
+   - A human reviewer you are inclined to decline: ask them rather than
+     unilaterally closing the discussion.
+4. **CI failure** → reproduce and diagnose; its fix joins the round's
+   fixes.
+5. **Merge conflict** → merge `origin/main` into the branch (don't rebase
+   a branch that has review history) and resolve. Conflict resolution
+   can also import upstream scope changes — re-read what landed on
+   `main`, don't just take "ours".
+6. **Gate and push** — the full quality gate (rule 4), one commit for the
+   round (author per rule 6), one push. Before pushing, confirm the PR is
+   still open (`gh pr view <n> --json state`): with
+   `delete_branch_on_merge` on, a push to a PR the owner has merged in
+   the meantime silently recreates its deleted branch (`remote: Create a
+   pull request … pull/new/…` in the push output is the tell).
+7. **Reply on every thread** — what changed plus the commit SHA, or why
+   declined — and give each finding that was not posted inline its
+   outcome in a reply to the round comment:
 
    ```sh
    gh api 'repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies' \
        -X POST -f body="Fixed in <sha> — <what changed>."
    ```
 
-7. **Go to step 1 for the new head.** The round reviews the delta since
-   the head the previous round reviewed.
+8. **Go to step 1 for the new head.** A round that declined every
+   finding pushed nothing, and its review is the clean review of the
+   head.
 
-Four rounds is the budget: if round 4 still confirms findings, stop and
-report to the owner instead of starting round 5
-(adversarial-review.md §Rounds and convergence).
+Each review sees the PR as it stands, not the earlier rounds, so a
+finding you declined can come back: reply with a link to the earlier
+decline, and it counts as declined. Expect the review after a fix to
+find fallout from that fix — that is convergence, not churn.
 
-Comments from human reviewers go through the same loop, except: when
-inclined to decline, ask the reviewer rather than unilaterally closing
-the discussion.
+Four reviews is the budget: if the fourth still raises findings you fix,
+stop and report to the owner instead of starting a fifth. Findings that
+survive four rounds usually mean a design question that fixes cannot
+settle.
 
-A bot-authored PR (dependabot, github-actions) needs a round only if you
-changed code on it; then the round covers your change. A draft PR is
-reviewed like any other.
+A bot-authored PR (dependabot, github-actions) needs a review only if
+you changed code on it; then the review covers your change. A draft PR
+is reviewed like any other.
 
 ## Pacing — watch, don't sleep
 
@@ -150,8 +112,8 @@ guessed interval, and never assume a leg's duration from memory: when a
 duration matters, measure it (`gh run list --workflow=<wf>.yml` shows
 real run times).
 
-The review round needs no watcher: it is a background workflow, and its
-completion notifies you. The CI watcher exits on whichever comes first:
+The review needs no watcher: it runs in the loop's foreground. The CI
+watcher exits on whichever comes first:
 the PR is **no longer open**, it is **conflicting**, any **check
 failed**, **no checks pending**, or a **new review from someone else**
 (a human reviewer) beyond the baseline it started with. The shape:
@@ -181,8 +143,8 @@ for _ in $(seq 1 90); do   # ~90 min at the 60 s poll at the foot of the loop
   [ "${mergeable:-UNKNOWN}" = "CONFLICTING" ] && { echo "PR is CONFLICTING: no CI will run — merge origin/main (step 3)"; exit 0; }
   # Every `--paginate` read slurps (`jq -s`): gh emits one array per page,
   # and `.[][]` reaches the reviews only once those arrays are gathered into
-  # one. Your own reviews — the rounds you post, and the review object
-  # GitHub creates for each thread reply — are excluded by login.
+  # one. Your own reviews — the inline findings `--comment` posts, and the
+  # review object GitHub creates for each thread reply — are excluded by login.
   others=$(gh api --paginate "repos/{owner}/{repo}/pulls/$1/reviews" \
     | jq -s --arg me "$me" '[.[][] | select(.user.login != $me)] | length')
   failed=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "fail")] | length')
@@ -225,22 +187,21 @@ Reference durations — for recognizing a stuck leg, never for sleeping:
   pole at 40–90 minutes. That number applies to packaging workflows
   only — do not transfer it to the bazel test legs.
 
-Every push restarts both waits, so don't push code that is about to
-change again: batch the fixes for a round into one push, docs tweaks
-included.
+Every push restarts CI and needs a review of its own, so don't push code
+that is about to change again: batch the fixes for a round into one
+push, docs tweaks included.
 
 Three things a watcher must get right:
 
 - **Check the PR is still open first.** A merged or closed PR never
   settles, and the loop spins to its timeout looking healthy.
 - **Exclude your own reviews from the review count.** `pulls/<n>/reviews`
-  carries a review object for every round you post *and* for each reply
-  you post to a review comment; counting them fires phantom "new review"
-  events right after you finish replying.
-- **Settled CI does not end a wait for the round, and a finished round
-  does not end a wait for CI.** They are separate criteria that can
-  become true minutes apart; exiting on the first one and reporting
-  readiness asserts something never checked.
+  carries a review object for every finding the review posts *and* for
+  each reply you post to a review comment; counting them fires phantom
+  "new review" events right after you finish replying.
+- **Green CI and a clean review are separate criteria.** Report
+  readiness only when both hold on the same head; one becoming true says
+  nothing about the other.
 
 ### When no checks appear at all
 
@@ -265,8 +226,8 @@ workflow uses a bare `pull_request:` trigger — no `types:` filter, so
 the default `[opened, synchronize, reopened]` applies, which is the case
 for `bazel.yml`, `check.yml` and `bazel-coverage.yml` — then closing and
 reopening the PR re-fires them **without a push**, which keeps the head
-unchanged and so preserves a quiet review round that an empty commit
-would void. Verify the triggers first; a workflow that filters `types:`
+unchanged and so preserves a clean review that an empty commit would
+void. Verify the triggers first; a workflow that filters `types:`
 may not include `reopened`.
 
 One caveat before closing a PR: with `delete_branch_on_merge` enabled,
