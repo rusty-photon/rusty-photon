@@ -259,14 +259,20 @@ impl MountDevice {
                         );
                         let t0 = Instant::now();
                         match self
-                            .send(Command::SetStepPeriod {
+                            .send_timed(Command::SetStepPeriod {
                                 axis,
                                 period: shifted,
                             })
                             .await
                         {
-                            Ok(_) => {
-                                debug!(shifted, trim, "pulse_guide: live rate change");
+                            Ok((_, timing)) => {
+                                let sent_after_t0 = timing.sent_at.saturating_duration_since(t0);
+                                debug!(
+                                    shifted,
+                                    trim,
+                                    ?sent_after_t0,
+                                    "pulse_guide: live rate change"
+                                );
                                 return Ok(PulsePlan {
                                     axis,
                                     id,
@@ -363,16 +369,25 @@ impl MountDevice {
         .await
         .map_err(ASCOMError::from)?;
         let t0 = Instant::now();
-        if let Err(e) = self.send(Command::StartMotion(axis)).await {
-            drop(lock);
-            if !is_refusal(&e) {
-                // The `:J` may have landed: do not leave the axis moving
-                // with no watcher to end it.
-                self.end_failed_start(axis, id, restore).await;
+        let timing = match self.send_timed(Command::StartMotion(axis)).await {
+            Ok((_, timing)) => timing,
+            Err(e) => {
+                drop(lock);
+                if !is_refusal(&e) {
+                    // The `:J` may have landed: do not leave the axis moving
+                    // with no watcher to end it.
+                    self.end_failed_start(axis, id, restore).await;
+                }
+                return Err(e.into());
             }
-            return Err(e.into());
-        }
-        debug!(?axis, shifted, "pulse_guide: started from rest");
+        };
+        let sent_after_t0 = timing.sent_at.saturating_duration_since(t0);
+        debug!(
+            ?axis,
+            shifted,
+            ?sent_after_t0,
+            "pulse_guide: started from rest"
+        );
         Ok(PulsePlan {
             axis,
             id,
@@ -617,10 +632,19 @@ impl PulseWatcher {
 
     /// Send the restore, retrying an ambiguous failure; fall back to the
     /// stop ladder when it cannot be made to land.
+    ///
+    /// A restore that goes out late runs the pulse long by as much, so
+    /// the `pulse ended` line says where the time went: `woke_late_by`
+    /// is the watcher's own wake past the deadline, `lock_wait` its wait
+    /// for `axis_ownership`, and `sent_late_by` the whole delay from the
+    /// deadline to the restore frame's send.
     async fn restore(&self, session: &Session<SkywatcherCodec>, plan: PulsePlan) {
         let axis = plan.axis;
+        let woke_late_by = Instant::now().saturating_duration_since(plan.deadline);
         for attempt in 1..=RESTORE_ATTEMPTS {
+            let lock_requested = Instant::now();
             let lock = self.axis_ownership.lock().await;
+            let lock_wait = lock_requested.elapsed();
             match self.ownership(plan).await {
                 Ownership::Owned => {}
                 Ownership::Superseded => {
@@ -639,13 +663,21 @@ impl PulseWatcher {
                 Restore::Rate { period } => Command::SetStepPeriod { axis, period },
                 Restore::Restart { .. } | Restore::Stop => Command::StopMotion(axis),
             };
-            match self.manager.send(session, command).await {
-                Ok(_) => {
+            match self.manager.send_timed(session, command).await {
+                Ok((_, timing)) => {
                     drop(lock);
+                    let sent_late_by = timing.sent_at.saturating_duration_since(plan.deadline);
                     if plan.restore == Restore::Stop && !self.stopped(session, axis).await {
                         self.escalate(session, plan).await;
                     }
-                    debug!(?axis, "pulse-guide watcher: pulse ended");
+                    debug!(
+                        ?axis,
+                        attempt,
+                        ?woke_late_by,
+                        ?lock_wait,
+                        ?sent_late_by,
+                        "pulse-guide watcher: pulse ended"
+                    );
                     return;
                 }
                 Err(e) if is_refusal(&e) => {

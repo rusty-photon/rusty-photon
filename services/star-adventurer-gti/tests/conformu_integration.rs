@@ -41,6 +41,25 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 
+/// What the service logs during the run when the caller has not set
+/// `RUST_LOG` itself.
+///
+/// The RA East/West legs measure each pulse in wall time, so a restore
+/// that reaches the wire late moves RA further and can fail a leg on a
+/// host that stalled. The pulse lines at `debug` time both edges against
+/// their schedule, and say whether a late restore waited on its timer,
+/// on the axis lock, or on the wire. The crate's `debug` stays
+/// event-driven, so the cost is about 500 lines a run, most of them
+/// slew-watcher snapshots. A blanket `debug` would add `ascom-alpaca`'s
+/// line for every request `ConformU` makes.
+const SERVICE_LOG_FILTER: &str = "info,star_adventurer_gti=debug";
+
+/// Startup deadline, matching the 30 s `ServiceHandle::try_start`
+/// applies. `start_with_env`, the only starter that takes child
+/// environment, has none of its own. The child is spawned
+/// `kill_on_drop`, so a timeout takes it down with the dropped future.
+const START_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[tokio::test]
 async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _lock = CONFORMU_LOCK.lock().unwrap();
@@ -100,13 +119,28 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 
-    let mut handle = ServiceHandle::try_start(
-        env!("CARGO_PKG_NAME"),
-        config_path
-            .to_str()
-            .expect("conformu temp path must be UTF-8"),
+    // A `RUST_LOG` the caller set reaches the child by inheritance, so
+    // the default filter goes in only when there is none.
+    let envs: &[(&str, &str)] = if std::env::var_os("RUST_LOG").is_some() {
+        &[]
+    } else {
+        &[("RUST_LOG", SERVICE_LOG_FILTER)]
+    };
+    let mut handle = tokio::time::timeout(
+        START_DEADLINE,
+        ServiceHandle::start_with_env(
+            env!("CARGO_PKG_NAME"),
+            &[
+                "--config",
+                config_path
+                    .to_str()
+                    .expect("conformu temp path must be UTF-8"),
+            ],
+            envs,
+        ),
     )
-    .await?;
+    .await
+    .map_err(|_| format!("star-adventurer-gti did not bind within {START_DEADLINE:?}"))?;
 
     println!("::group::ConformU Telescope Compliance Test Results");
     println!(

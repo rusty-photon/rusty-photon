@@ -1330,7 +1330,18 @@ drifted underneath it. This is not that:
 the frame that changes the rate — the `:I1` on the live path, the `:J`
 when starting from rest — and the restore frame goes out at
 `t0 + duration`, so both edges see the same send latency and the rate
-runs for `duration` from the host's point of view.
+runs for `duration` from the host's point of view. What the host cannot
+promise is that the restore goes out on time. The motor runs at the
+shifted rate until that frame lands, so a host that stalls past the
+deadline lengthens the pulse by the stall. Both edges are therefore
+logged at `debug` against their schedule. The start's line carries
+`sent_after_t0`: how long after `t0` its frame was sent. The watcher's
+`pulse ended` line carries `sent_late_by`: how long after the deadline
+the restore frame was sent. Two more fields break that delay down:
+`woke_late_by`, the watcher's own wake past the deadline, and
+`lock_wait`, its wait for `axis_ownership`. The rest of `sent_late_by`
+is the wait for the wire: the shared transport's command lock, and
+the task the exchange runs on.
 
 What the host cannot see is how the motor board applies a period
 change. Measured on the GTi (below), every rate change on a running
@@ -3317,6 +3328,27 @@ the RA legs came about five minutes into the step, while two to four
 other suites were still running (zwo-camera's image downloads among
 them on Linux), and stayed inside the scatter the idle host and the
 Windows jobs showed: 48 legs, none worse than 0.04 s against 0.07 s.
+
+The first leg to miss came on 2026-10-10, on Windows, where the suite
+has the runner to itself
+([#1457](https://github.com/rusty-photon/rusty-photon/issues/1457)).
+HA −3 West read −2.77 s against the expected −2.51 s. Two measurements
+put the cause at a late restore:
+
+- At the default 0.5× guide rate, the extra 0.26 s of RA is the pulse
+  running about 0.52 s long.
+- ConformU waited about 0.55 s longer for `IsPulseGuiding` to clear
+  than on any other Windows leg.
+
+The other 144 East/West legs since the package joined the rotation
+(six runs, three OSes) sat within 0.04 s.
+
+At 0.5× a leg can absorb about 0.13 s of lateness on either edge before
+it fails. The same holds for North/South: 1″ at 7.5″/s. Logs at the
+default `info` level cannot say where the time went. So the test runs
+the service with `RUST_LOG=info,star_adventurer_gti=debug` unless the
+caller sets `RUST_LOG` itself. The pulse lines then carry the edge
+timings that [§PulseGuide lifecycle](#pulseguide-lifecycle) describes.
 
 ### Expected ConformU report
 
