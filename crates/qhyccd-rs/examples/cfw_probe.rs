@@ -20,6 +20,16 @@
 //   cfw_probe lost <resend|next> drop a move, then send the same slot again or
 //                                go on to another
 //   cfw_probe reads <ms>...      status reads running across an init started <ms> in
+//   cfw_probe settle <slot>      bring the wheel to <slot> and leave it there
+//   cfw_probe zero               the process's first move goes to slot 0
+//   cfw_probe same               the process's first command names the slot the
+//                                wheel stands on; then a move to slot 0
+//   cfw_probe forget <how>       a move after the last command and a re-init
+//                                (reinit), a close, re-open and init (reopen), or
+//                                neither (none)
+//
+// It opens the last camera the SDK lists, or, with CFW_PROBE_CAMERA set, the
+// one whose SDK id starts with it (a host with several QHY cameras).
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, coverage(off))]
 // Dying loudly on a missing device or an unmet precondition is the intended
@@ -266,14 +276,74 @@ fn reads(cam: &Camera, args: &[String]) {
     }
 }
 
+fn settle(cam: &Camera, args: &[String]) {
+    settle_at(cam, arg(args, 2, "a slot"));
+}
+
+/// The slot a wheel at rest names, which must not be slot 0: a first move to
+/// slot 0 is the move under test.
+fn off_zero(cam: &Camera) -> u32 {
+    let from = read(cam, "start").expect("precondition: the status names a slot");
+    assert_ne!(
+        from, 0,
+        "precondition: the wheel stands off slot 0 (run `settle` first)"
+    );
+    thread::sleep(RESTED);
+    from
+}
+
+/// A move to slot 0, then the reads on past its arrival: the pace says when the
+/// wheel stopped, whatever slot the status named.
+fn to_zero(cam: &Camera) {
+    let sent = send(cam, 0, "zero");
+    outcome(cam, 0, sent, Duration::from_secs(10), "zero");
+    watch(cam, 8, "zero-after");
+}
+
+fn zero(cam: &Camera) {
+    off_zero(cam);
+    to_zero(cam);
+}
+
+fn same(cam: &Camera) {
+    let from = off_zero(cam);
+    let sent = send(cam, from, "same");
+    outcome(cam, from, sent, Duration::from_secs(5), "same");
+    // A full turn of a seven-slot wheel is ~8.5 s.
+    watch(cam, 10, "same-after");
+    thread::sleep(RESTED);
+    to_zero(cam);
+}
+
+fn forget(cam: &Camera, args: &[String]) {
+    let how: String = arg(args, 2, "none, reinit or reopen");
+    arrive_at(cam, FROM);
+    thread::sleep(RESTED);
+    match how.as_str() {
+        "none" => {}
+        "reinit" => assert!(init_sequence(cam, "forget"), "the re-init succeeds"),
+        "reopen" => {
+            cam.close().expect("close");
+            cam.open().expect("re-open");
+            assert!(init_sequence(cam, "forget"), "the init succeeds");
+        }
+        other => panic!("usage: no way to forget {other}"),
+    }
+    thread::sleep(RESTED);
+    let sent = send(cam, TO, "forget");
+    outcome(cam, TO, sent, Duration::from_secs(8), "forget");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let _ = ms();
     let sdk = Sdk::new().expect("SDK::new failed");
+    let wanted = std::env::var("CFW_PROBE_CAMERA").ok();
     let camera = sdk
         .cameras()
+        .filter(|c| wanted.as_deref().is_none_or(|w| c.id().starts_with(w)))
         .last()
-        .expect("precondition: a camera on the bus");
+        .expect("precondition: the camera on the bus");
     camera.open().expect("precondition: the camera opens");
     assert!(
         camera.is_cfw_plugged_in().expect("CFW plug query"),
@@ -295,12 +365,16 @@ fn main() {
 
     match args.get(1).map(String::as_str) {
         Some("home") => home(camera, &args),
+        Some("settle") => settle(camera, &args),
+        Some("zero") => zero(camera),
+        Some("same") => same(camera),
+        Some("forget") => forget(camera, &args),
         Some("rest") => rest(camera, &args),
         Some("during") => during(camera, &args),
         Some("overlap") => overlap(camera, &args),
         Some("lost") => lost(camera, &args),
         Some("reads") => reads(camera, &args),
-        _ => panic!("usage: cfw_probe home|rest|during|overlap|lost|reads ... (see the header)"),
+        _ => panic!("usage: cfw_probe home|rest|during|overlap|lost|reads|settle|zero|same|forget ... (see the header)"),
     }
     camera.close().expect("close");
     emit("\"ev\":\"done\"");

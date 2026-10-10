@@ -32,8 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `examples/cfw_probe.rs`, a hand-run hardware probe for a filter wheel driven
   through its camera: what an init or a re-open does to a settled wheel, how
   soon after the read that saw a move arrive the next move may be sent, what
-  the camera's own calls do to a wheel in travel, and what a dropped move
-  leaves behind. It logs only what the wheel reports, one JSON line per step.
+  the camera's own calls do to a wheel in travel, what a dropped move leaves
+  behind, what a process's first move reads in transit, and whether
+  commanding the slot the wheel stands on moves it. `CFW_PROBE_CAMERA` picks
+  the camera by SDK id prefix. It logs only what the wheel reports, one JSON
+  line per step.
 
 ### Changed
 
