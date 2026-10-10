@@ -86,7 +86,7 @@ pub fn header_keywords(doc: &ExposureDocument, ctx: &HeaderContext<'_>) -> Vec<K
         // below zero, and readers expect the canonical range.
         cards.real(
             "RA",
-            Some((pointing.ra_hours * 15.0).rem_euclid(360.0)),
+            Some(canonical_ra_degrees(pointing.ra_hours)),
             "[deg] mount right ascension",
         );
         cards.real(
@@ -162,7 +162,7 @@ impl Cards {
 
     fn string(&mut self, key: &'static str, value: Option<&str>, comment: &'static str) {
         if let Some(value) = value {
-            self.push(key, KeywordValue::Str(value.to_string()), comment);
+            self.push(key, KeywordValue::Str(fits_text(value)), comment);
         }
     }
 
@@ -197,6 +197,52 @@ fn fits_timestamp(rfc3339: &str) -> Option<String> {
             debug!(value = rfc3339, error = %e, "exposure_started_at is not RFC 3339; omitting DATE-OBS");
             None
         }
+    }
+}
+
+/// The longest string one FITS card holds, an apostrophe counting twice
+/// (FITS doubles it) — what `rp-fits` accepts.
+const MAX_CARD_TEXT: usize = 68;
+
+/// A free-text value — a target or filter name, a driver's camera name —
+/// as one FITS string card can carry it, so the card is never dropped:
+/// typographic dashes, quotes and spaces fold to their ASCII look-alikes,
+/// any other character outside printable ASCII becomes `?`, and the
+/// result is cut to [`MAX_CARD_TEXT`]. A folded value still groups
+/// consistently in a stacker, where a missing card would not group at
+/// all; the sidecar keeps the original.
+fn fits_text(value: &str) -> String {
+    let mut out = String::with_capacity(value.len().min(MAX_CARD_TEXT));
+    let mut width: usize = 0;
+    for c in value.chars() {
+        let folded = match c {
+            ' '..='~' => c,
+            '\u{00A0}' | '\u{2000}'..='\u{200A}' | '\u{202F}' => ' ',
+            '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
+            '\u{2018}' | '\u{2019}' | '\u{201B}' | '\u{2032}' => '\'',
+            '\u{201C}' | '\u{201D}' | '\u{2033}' => '"',
+            _ => '?',
+        };
+        let cost = if folded == '\'' { 2 } else { 1 };
+        let next = width.saturating_add(cost);
+        if next > MAX_CARD_TEXT {
+            break;
+        }
+        width = next;
+        out.push(folded);
+    }
+    out
+}
+
+/// Mount RA in degrees, wrapped into [0, 360): a mount on the 0h seam can
+/// report 24h or a hair below zero, and `rem_euclid` itself rounds a tiny
+/// negative up to exactly 360.
+fn canonical_ra_degrees(ra_hours: f64) -> f64 {
+    let degrees = (ra_hours * 15.0).rem_euclid(360.0);
+    if degrees >= 360.0 {
+        0.0
+    } else {
+        degrees
     }
 }
 
@@ -436,7 +482,7 @@ mod tests {
     #[test]
     fn ra_wraps_into_the_canonical_range() {
         let mut doc = full_document();
-        for (ra_hours, want) in [(24.0, 0.0), (-0.0001, 359.9985)] {
+        for (ra_hours, want) in [(24.0, 0.0), (-0.0001, 359.9985), (-1e-15, 0.0)] {
             doc.pointing = Some(MountPointing {
                 ra_hours,
                 dec_degrees: 0.0,
@@ -506,17 +552,34 @@ mod tests {
     }
 
     #[test]
-    fn a_value_rp_fits_refuses_drops_only_its_card() {
+    fn free_text_is_folded_into_one_card_rather_than_dropped() {
         let mut doc = full_document();
         doc.target.as_mut().unwrap().display_name = Some("Pleiades \u{2013} M45".to_string());
+        doc.filter = Some("H\u{3b1}".to_string());
         doc.camera_name = Some("x".repeat(80));
         let cards = cards(&doc, &HeaderContext::default());
-        assert_eq!(value_of(&cards, "OBJECT"), None);
-        assert_eq!(value_of(&cards, "INSTRUME"), None);
         assert_eq!(
-            value_of(&cards, "OBJCTRA"),
-            Some(KeywordValue::Str("00 42 44.28".into()))
+            value_of(&cards, "OBJECT"),
+            Some(KeywordValue::Str("Pleiades - M45".into()))
         );
+        assert_eq!(
+            value_of(&cards, "FILTER"),
+            Some(KeywordValue::Str("H?".into()))
+        );
+        assert_eq!(
+            value_of(&cards, "INSTRUME"),
+            Some(KeywordValue::Str("x".repeat(68)))
+        );
+    }
+
+    #[test]
+    fn fits_text_folds_typography_and_cuts_to_one_card() {
+        assert_eq!(fits_text("Bode\u{2019}s Galaxy"), "Bode's Galaxy");
+        assert_eq!(fits_text("\u{201C}M81\u{201D}"), "\"M81\"");
+        assert_eq!(fits_text("tab\there"), "tab?here");
+        // Apostrophes count twice: 34 of them fill the card exactly.
+        assert_eq!(fits_text(&"'".repeat(40)), "'".repeat(34));
+        assert_eq!(fits_text(&"x".repeat(70)).len(), 68);
     }
 
     #[test]

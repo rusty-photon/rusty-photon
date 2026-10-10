@@ -333,16 +333,23 @@ fn new_document_ids() -> (String, String) {
 /// `filter`): the filter's name and slot, `Ok(None)` when no filter
 /// applies — a `Dark`/`Bias` frame, or no wheel in the camera's train —
 /// and `Err` when the wheel failed the read, reported itself moving, or
-/// did not answer within [`AUXILIARY_READ_TIMEOUT`]. A templated capture
-/// fails on the `Err`; the document only drops its `filter` field.
+/// (for a capture whose filename does not depend on it) did not answer
+/// within [`AUXILIARY_READ_TIMEOUT`]. A templated capture fails on the
+/// `Err`; the document only drops its `filter` field.
 type FilterRead = std::result::Result<Option<(String, u32)>, String>;
 
 /// How long a capture waits on one of its auxiliary device reads — the
-/// mount's pointing, the filter wheel — before counting it as failed
-/// (rp.md § Core Fields). A healthy read answers in milliseconds; the
-/// bound keeps a wedged device from adding its whole Alpaca timeout to
-/// every frame.
+/// mount's pointing, the filter wheel, the camera's gain, offset and
+/// start time — before counting it as failed (rp.md § Core Fields). A
+/// healthy read answers in milliseconds; the bound keeps a wedged device
+/// from adding its whole Alpaca timeout to every frame.
 const AUXILIARY_READ_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How long a frame that is ready waits for a mount read still out: the
+/// read had the whole exposure to answer, so past this it is dropped
+/// rather than let the mount delay the frame (rp.md § Core Fields,
+/// `pointing`).
+const POINTING_GRACE: Duration = Duration::from_millis(500);
 
 /// Slack on each side of the exposure window `rp` observed, within
 /// which a driver's `LastExposureStartTime` is believed: clocks on the
@@ -351,40 +358,123 @@ const AUXILIARY_READ_TIMEOUT: Duration = Duration::from_secs(3);
 /// `exposure_started_at`).
 const EXPOSURE_START_SLACK_SECS: i64 = 2;
 
+/// `rp`'s own clock around one exposure: just before `StartExposure`
+/// was sent, the moment it returned, and the moment `ImageReady` came
+/// back.
+#[derive(Clone, Copy, Debug)]
+struct ExposureWindow {
+    requested: DateTime<Utc>,
+    start_returned: DateTime<Utc>,
+    ready: DateTime<Utc>,
+}
+
+impl ExposureWindow {
+    /// The latest the exposure can have begun: no later than
+    /// `StartExposure` returned, and no later than `ImageReady` less the
+    /// exposure itself — the bound that binds for a driver whose
+    /// `StartExposure` blocks through the exposure. Never before
+    /// `requested`, so a camera that reports ready a hair early cannot
+    /// empty the window.
+    fn began_by(self, exposure: Duration) -> DateTime<Utc> {
+        TimeDelta::from_std(exposure)
+            .ok()
+            .and_then(|exposure| self.ready.checked_sub_signed(exposure))
+            .unwrap_or(self.ready)
+            .min(self.start_returned)
+            .max(self.requested)
+    }
+}
+
 /// The exposure-start instant the document records: the driver's own
-/// `LastExposureStartTime` when it lies inside the window `rp` observed,
-/// widened by [`EXPOSURE_START_SLACK_SECS`] — no earlier than
-/// `requested_at`, just before `StartExposure` was sent, and no later
-/// than `ready_at` less the `exposure` itself, since an exposure that
-/// began after that could not have finished by `ImageReady`. A value
-/// outside is stale, stamped at readout, or from a skewed clock, and
-/// `rp`'s own `fallback` reading is recorded instead.
+/// `LastExposureStartTime` when it lies between `requested` and
+/// [`ExposureWindow::began_by`], widened by
+/// [`EXPOSURE_START_SLACK_SECS`] — a value outside is stale, stamped at
+/// the end of the exposure or at readout, or from a skewed clock. Else
+/// `rp`'s own bound, `began_by` itself: the moment `StartExposure`
+/// returned for the usual asynchronous driver, and never the end of the
+/// exposure for one that blocks through it.
 fn exposure_start(
     driver: Option<DateTime<Utc>>,
-    requested_at: DateTime<Utc>,
-    ready_at: DateTime<Utc>,
+    window: ExposureWindow,
     exposure: Duration,
-    fallback: DateTime<Utc>,
 ) -> DateTime<Utc> {
     let slack = TimeDelta::seconds(EXPOSURE_START_SLACK_SECS);
-    let earliest = requested_at
+    let earliest = window
+        .requested
         .checked_sub_signed(slack)
-        .unwrap_or(requested_at);
-    // Never before `requested_at`: a camera that reports ready a hair
-    // early must not empty the window.
-    let began_by = TimeDelta::from_std(exposure)
-        .ok()
-        .and_then(|exposure| ready_at.checked_sub_signed(exposure))
-        .unwrap_or(ready_at)
-        .max(requested_at);
+        .unwrap_or(window.requested);
+    let began_by = window.began_by(exposure);
     let latest = began_by.checked_add_signed(slack).unwrap_or(began_by);
     match driver {
         Some(at) if (earliest..=latest).contains(&at) => at,
         Some(at) => {
             debug!(driver = %at, %earliest, %latest, "LastExposureStartTime lies outside the observed exposure window; using rp's clock");
-            fallback
+            began_by
         }
-        None => fallback,
+        None => began_by,
+    }
+}
+
+/// The frame's one mount read (rp.md § Core Fields, `pointing`): RA,
+/// Dec and `Slewing` together, bounded by [`AUXILIARY_READ_TIMEOUT`].
+/// `None` for a read that fails, is non-finite or times out, and for a
+/// mount that is slewing — or cannot say whether it is: the motion gate
+/// only holds the mount still under an imaging-train exposure, and a
+/// mid-slew read names nowhere the frame saw. A driver without
+/// `Slewing` (`NOT_IMPLEMENTED`, a mount that cannot slew) counts as
+/// still.
+async fn read_pointing(mount: Arc<dyn ascom_alpaca::api::Telescope>) -> Option<MountPointing> {
+    let reads = async {
+        tokio::join!(
+            mount.right_ascension(),
+            mount.declination(),
+            mount.slewing()
+        )
+    };
+    let Ok((ra, dec, slewing)) = tokio::time::timeout(AUXILIARY_READ_TIMEOUT, reads).await else {
+        debug!(timeout = ?AUXILIARY_READ_TIMEOUT, "mount pointing read timed out; omitting it");
+        return None;
+    };
+    match slewing {
+        Ok(false) => {}
+        Err(e) if e.code == ascom_alpaca::ASCOMErrorCode::NOT_IMPLEMENTED => {}
+        other => {
+            debug!(slewing = ?other, "mount slewing, or unable to say; omitting pointing");
+            return None;
+        }
+    }
+    match (ra, dec) {
+        (Ok(ra_hours), Ok(dec_degrees)) if ra_hours.is_finite() && dec_degrees.is_finite() => {
+            Some(MountPointing {
+                ra_hours,
+                dec_degrees,
+            })
+        }
+        (ra, dec) => {
+            debug!(?ra, ?dec, "mount pointing unavailable; omitting it");
+            None
+        }
+    }
+}
+
+/// The pointing read's result once the frame is ready: what it found if
+/// it answers within [`POINTING_GRACE`], else `None` with the read
+/// abandoned — the mount never delays a frame.
+async fn finished_pointing(
+    read: Option<tokio::task::JoinHandle<Option<MountPointing>>>,
+) -> Option<MountPointing> {
+    let mut read = read?;
+    match tokio::time::timeout(POINTING_GRACE, &mut read).await {
+        Ok(Ok(pointing)) => pointing,
+        Ok(Err(e)) => {
+            debug!(error = %e, "mount pointing read failed to finish; omitting it");
+            None
+        }
+        Err(_elapsed) => {
+            read.abort();
+            debug!("mount pointing read still out after the frame was ready; omitting it");
+            None
+        }
     }
 }
 
@@ -1209,27 +1299,35 @@ impl McpHandler {
             cam.start_exposure(duration, true)
                 .await
                 .map_err(|e| format!("failed to start exposure: {e}"))?;
-            // rp's own reading of the exposure start — what the document
-            // records when the driver's `LastExposureStartTime` is
-            // unusable (rp.md § Core Fields, `exposure_started_at`).
+            // rp's own reading of the exposure start — what bounds, and
+            // stands in for, the driver's `LastExposureStartTime` (rp.md
+            // § Core Fields, `exposure_started_at`).
             let start_returned_at = chrono::Utc::now();
 
-            // The mount is read once, while the camera exposes: it is
-            // never the camera, so the read costs the capture nothing
-            // (rp.md § Core Fields, `pointing`). A failed or cancelled
-            // exposure drops the read with it.
-            let ((), pointing) = tokio::try_join!(
-                Self::wait_for_image_ready(&cam, duration, progress, cancel),
-                async { Ok(self.read_pointing().await) },
-            )?;
+            // The mount is read once, on its own task while the camera
+            // exposes: it is never the camera, and a read still out once
+            // the frame is ready is dropped, not waited on (rp.md § Core
+            // Fields, `pointing`).
+            let pointing_read = self.start_pointing_read();
+            let ready = Self::wait_for_image_ready(&cam, duration, progress, cancel).await;
+            let window = ExposureWindow {
+                requested: started_at,
+                start_returned: start_returned_at,
+                ready: chrono::Utc::now(),
+            };
+            let pointing = finished_pointing(pointing_read).await;
+            ready?;
 
             // The filter wheel is read once the exposure is done, beside
             // the camera's own reads: a camera-integrated wheel answers
             // through the camera's driver, which is not queried
-            // mid-exposure (rp.md § Core Fields, `filter`).
+            // mid-exposure. When the filename depends on it the read is
+            // waited out rather than timed (rp.md § Core Fields,
+            // `filter`).
+            let names_the_file = req.frame_type.is_some() && self.naming_templates.is_some();
             let (conditions, filter_read) = tokio::join!(
-                self.capture_conditions(camera_id, &cam, (started_at, start_returned_at), duration),
-                self.read_frame_filter(camera_id, req.frame_type),
+                self.capture_conditions(camera_id, &cam, window, duration),
+                self.read_frame_filter(camera_id, req.frame_type, !names_the_file),
             );
 
             // Decision 11 (rp.md § Capture Tool Details): `frame_type`
@@ -1519,93 +1617,61 @@ impl McpHandler {
     /// latency. Read after the exposure completes (rather than after the
     /// FITS write, as before Decision 11) because Decision 11's render
     /// step may need `sensor_temperature_c` to finalize `image_path`
-    /// before the FITS write happens. `captured_at` is likewise anchored
-    /// here — once, reused both for `{night_date}` and the document's
-    /// `captured_at` field — rather than read twice a few hundred
-    /// milliseconds apart. `started` is `rp`'s clock just before and just
-    /// after `StartExposure`: where the window the driver's start time
-    /// must fall in opens, and the fallback when it does not.
+    /// before the FITS write happens. `captured_at` is the window's
+    /// `ready` instant — once, reused both for `{night_date}` and the
+    /// document's `captured_at` field — rather than read twice a few
+    /// hundred milliseconds apart. The gain, offset and start-time reads
+    /// are bounded by [`AUXILIARY_READ_TIMEOUT`]; the temperature read,
+    /// which a `{sensor_temp}` filename can depend on, is not.
     async fn capture_conditions(
         &self,
         camera_id: &str,
         cam: &Arc<dyn Camera>,
-        started: (DateTime<Utc>, DateTime<Utc>),
+        window: ExposureWindow,
         exposure: Duration,
     ) -> CaptureConditions {
-        let (requested_at, start_returned_at) = started;
-        let captured_at = chrono::Utc::now();
         let cooler_setpoint_c = self
             .cooling
             .as_ref()
             .and_then(|cooling| cooling.rung_for(camera_id));
-        let (temperature, gain, offset, driver_start) = tokio::join!(
-            cam.ccd_temperature(),
-            cam.gain(),
-            cam.offset(),
-            cam.last_exposure_start_time(),
-        );
-        let driver_start = optional_read(
-            driver_start,
-            camera_id,
-            "LastExposureStartTime unavailable; recording rp's own exposure start",
-        )
-        .map(DateTime::from);
-        CaptureConditions {
-            captured_at,
-            exposure_started_at: exposure_start(
-                driver_start,
-                requested_at,
-                captured_at,
-                exposure,
-                start_returned_at,
+        let auxiliary = tokio::time::timeout(AUXILIARY_READ_TIMEOUT, async {
+            tokio::join!(cam.gain(), cam.offset(), cam.last_exposure_start_time())
+        });
+        let (temperature, auxiliary) = tokio::join!(cam.ccd_temperature(), auxiliary);
+        let (gain, offset, driver_start) = match auxiliary {
+            Ok((gain, offset, driver_start)) => (
+                optional_read(gain, camera_id, "gain unavailable; the frame omits it"),
+                optional_read(offset, camera_id, "offset unavailable; the frame omits it"),
+                optional_read(
+                    driver_start,
+                    camera_id,
+                    "LastExposureStartTime unavailable; recording rp's own exposure start",
+                )
+                .map(DateTime::from),
             ),
+            Err(_elapsed) => {
+                debug!(camera_id, timeout = ?AUXILIARY_READ_TIMEOUT, "gain/offset/start-time reads timed out; the frame omits them");
+                (None, None, None)
+            }
+        };
+        CaptureConditions {
+            captured_at: window.ready,
+            exposure_started_at: exposure_start(driver_start, window, exposure),
             cooler_setpoint_c,
             sensor_temperature_c: temperature.ok(),
-            gain: optional_read(gain, camera_id, "gain unavailable; the frame omits it"),
-            offset: optional_read(offset, camera_id, "offset unavailable; the frame omits it"),
+            gain,
+            offset,
         }
     }
 
-    /// The mount's pointing for the document's `pointing` field (rp.md
-    /// § Core Fields): one best-effort read. No mount, a disconnected
-    /// one, a mount found slewing, a read that fails, is non-finite or
-    /// takes longer than [`AUXILIARY_READ_TIMEOUT`] all yield `None`.
-    async fn read_pointing(&self) -> Option<MountPointing> {
-        let mount = match self.resolve_mount() {
-            Ok((_entry, mount)) => mount,
+    /// Start the frame's one mount read ([`read_pointing`]) on its own
+    /// task, so the exposure never waits on it. `None` — no pointing for
+    /// this frame — when no mount is configured or connected.
+    fn start_pointing_read(&self) -> Option<tokio::task::JoinHandle<Option<MountPointing>>> {
+        match self.resolve_mount() {
+            Ok((_entry, mount)) => Some(tokio::spawn(read_pointing(mount))),
             Err(reason) => {
                 debug!(%reason, "no mount pointing for this frame");
-                return None;
-            }
-        };
-        let reads = async {
-            tokio::join!(
-                mount.right_ascension(),
-                mount.declination(),
-                mount.slewing()
-            )
-        };
-        let Ok((ra, dec, slewing)) = tokio::time::timeout(AUXILIARY_READ_TIMEOUT, reads).await
-        else {
-            debug!(timeout = ?AUXILIARY_READ_TIMEOUT, "mount pointing read timed out; omitting it");
-            return None;
-        };
-        // The motion gate only holds the mount still under an
-        // imaging-train exposure; a camera outside that train can expose
-        // while it slews, and a mid-slew read names nowhere the frame saw.
-        if matches!(slewing, Ok(true)) {
-            debug!("mount is slewing; omitting pointing");
-            return None;
-        }
-        match (ra, dec) {
-            (Ok(ra_hours), Ok(dec_degrees)) if ra_hours.is_finite() && dec_degrees.is_finite() => {
-                Some(MountPointing {
-                    ra_hours,
-                    dec_degrees,
-                })
-            }
-            (ra, dec) => {
-                debug!(?ra, ?dec, "mount pointing unavailable; omitting it");
                 None
             }
         }
@@ -1930,17 +1996,23 @@ impl McpHandler {
     /// The capture's one filter-wheel read, feeding both the document's
     /// `filter` field and the `{filter}`/`{filter_position}` naming
     /// tokens: a live read from the camera's train filter wheel for a
-    /// `Light`, `Flat` or untyped frame, bounded by
-    /// [`AUXILIARY_READ_TIMEOUT`]; never a read for `Dark`/`Bias`, since
-    /// dark current isn't filter-dependent and an incidental wheel
+    /// `Light`, `Flat` or untyped frame; never a read for `Dark`/`Bias`,
+    /// since dark current isn't filter-dependent and an incidental wheel
     /// position on a dark is noise (rp.md § Capture Tool Details).
+    /// `bounded` caps it at [`AUXILIARY_READ_TIMEOUT`] — for a capture
+    /// whose filename does not depend on it, which a slow wheel must not
+    /// fail; a templated capture waits the wheel out, as it always has.
     async fn read_frame_filter(
         &self,
         camera_id: &str,
         frame_type: Option<FrameType>,
+        bounded: bool,
     ) -> FilterRead {
         if matches!(frame_type, Some(FrameType::Dark | FrameType::Bias)) {
             return Ok(None);
+        }
+        if !bounded {
+            return self.live_filter(camera_id).await;
         }
         match tokio::time::timeout(AUXILIARY_READ_TIMEOUT, self.live_filter(camera_id)).await {
             Ok(read) => read,
@@ -3210,18 +3282,24 @@ mod tests {
     }
 
     const REQUESTED: &str = "2026-03-02T01:15:00.000Z";
+    const START_RETURNED: &str = "2026-03-02T01:15:00.050Z";
     const READY: &str = "2026-03-02T01:20:01.000Z";
-    const FALLBACK: &str = "2026-03-02T01:15:00.050Z";
     /// A 300 s exposure: begun by 01:15:01 to be ready at 01:20:01.
     const EXPOSURE: Duration = Duration::from_secs(300);
+
+    fn window(requested: &str, start_returned: &str, ready: &str) -> ExposureWindow {
+        ExposureWindow {
+            requested: at(requested),
+            start_returned: at(start_returned),
+            ready: at(ready),
+        }
+    }
 
     fn start_with(driver: Option<&str>) -> DateTime<Utc> {
         exposure_start(
             driver.map(at),
-            at(REQUESTED),
-            at(READY),
+            window(REQUESTED, START_RETURNED, READY),
             EXPOSURE,
-            at(FALLBACK),
         )
     }
 
@@ -3241,41 +3319,90 @@ mod tests {
             at("2026-03-02T01:14:58.000Z")
         );
         assert_eq!(
-            start_with(Some("2026-03-02T01:15:03.000Z")),
-            at("2026-03-02T01:15:03.000Z")
+            start_with(Some("2026-03-02T01:15:02.050Z")),
+            at("2026-03-02T01:15:02.050Z")
         );
     }
 
     #[test]
     fn a_driver_start_outside_the_window_falls_back_to_rps_clock() {
         // Stale: the previous frame's start.
-        assert_eq!(start_with(Some("2026-03-02T01:09:00.000Z")), at(FALLBACK));
-        // Too late to have finished a 300 s exposure by ImageReady.
-        assert_eq!(start_with(Some("2026-03-02T01:15:03.001Z")), at(FALLBACK));
+        assert_eq!(
+            start_with(Some("2026-03-02T01:09:00.000Z")),
+            at(START_RETURNED)
+        );
+        // Later than StartExposure returned, past the slack.
+        assert_eq!(
+            start_with(Some("2026-03-02T01:15:02.051Z")),
+            at(START_RETURNED)
+        );
     }
 
     #[test]
-    fn a_driver_start_stamped_at_readout_falls_back_to_rps_clock() {
-        assert_eq!(start_with(Some("2026-03-02T01:20:00.000Z")), at(FALLBACK));
+    fn a_driver_start_stamped_at_the_end_or_at_readout_falls_back() {
+        for stamped in ["2026-03-02T01:20:00.000Z", "2026-03-02T01:20:00.900Z"] {
+            assert_eq!(start_with(Some(stamped)), at(START_RETURNED), "{stamped}");
+        }
     }
 
     #[test]
-    fn an_exposure_longer_than_the_observed_window_keeps_the_window_open() {
+    fn a_blocking_start_exposure_never_records_the_end_of_the_exposure() {
+        // StartExposure blocked for the whole 120 s exposure and the
+        // driver has no start time: rp's best bound is ImageReady less
+        // the exposure, not the moment StartExposure returned.
+        let started = exposure_start(
+            None,
+            window(
+                "2026-03-02T01:15:00.000Z",
+                "2026-03-02T01:17:00.000Z",
+                "2026-03-02T01:17:01.000Z",
+            ),
+            Duration::from_secs(120),
+        );
+        assert_eq!(started, at("2026-03-02T01:15:01.000Z"));
+    }
+
+    #[test]
+    fn an_early_ready_keeps_the_window_open_at_the_request() {
         // ImageReady came back sooner than the exposure is long (a
         // driver with a coarse clock): the window still opens at the
         // request rather than closing before it.
         let started = exposure_start(
             Some(at("2026-03-02T01:15:01.000Z")),
-            at(REQUESTED),
-            at("2026-03-02T01:15:00.100Z"),
+            window(
+                "2026-03-02T01:15:00.000Z",
+                "2026-03-02T01:15:00.010Z",
+                "2026-03-02T01:15:00.100Z",
+            ),
             Duration::from_secs(1),
-            at(FALLBACK),
         );
         assert_eq!(started, at("2026-03-02T01:15:01.000Z"));
     }
 
     #[test]
     fn no_driver_start_falls_back_to_rps_clock() {
-        assert_eq!(start_with(None), at(FALLBACK));
+        assert_eq!(start_with(None), at(START_RETURNED));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pointing_read_still_out_after_the_grace_is_dropped() {
+        let read = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            Some(MountPointing {
+                ra_hours: 1.0,
+                dec_degrees: 2.0,
+            })
+        });
+        assert_eq!(finished_pointing(Some(read)).await, None);
+    }
+
+    #[tokio::test]
+    async fn a_finished_pointing_read_is_kept() {
+        let pointing = MountPointing {
+            ra_hours: 1.0,
+            dec_degrees: 2.0,
+        };
+        let read = tokio::spawn(async move { Some(pointing) });
+        assert_eq!(finished_pointing(Some(read)).await, Some(pointing));
     }
 }
