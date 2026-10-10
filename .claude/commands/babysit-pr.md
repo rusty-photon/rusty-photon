@@ -44,12 +44,15 @@ Arguments: $ARGUMENTS
    diagnosis — with review rounds as the second one defines them.
 3. **Run a review round on every new head** with the Workflow tool:
    `name: "adversarial-review"`, `args: {pr: <n>}`. It runs in the
-   background next to the CI watcher. The round posts nothing itself:
-   post its `review` payload as a PR review (adversarial-review.md
-   §Recording a round), quiet rounds included — the marker in the body
-   is what makes the head count as reviewed. A `skipped` result needs no
-   post; a result with `complete: false` is not a review of the head —
-   fix the cause it names and re-run.
+   background next to the CI watcher, and it reads the working tree:
+   **change nothing in the checkout until it returns** — diagnose CI
+   failures, but hold every edit, commit, merge and push. The round
+   posts nothing itself: post its `review` payload as a PR review
+   (adversarial-review.md §Recording a round), quiet rounds included —
+   the marker in the body is what makes the head count as reviewed —
+   and only while its `commit_id` is still the PR head. A `skipped` or
+   `superseded` result needs no post; a result with `complete: false`
+   is not a review of the head — fix the cause it names and re-run.
 4. Triage every confirmed finding (adversarial-review.md §Triage
    guidance): fix it or decline it with evidence. Reply on every thread
    with the fix SHA or the reason; record *Outside the diff* findings'

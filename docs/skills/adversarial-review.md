@@ -32,8 +32,10 @@ A round has five stages:
    trigger, check whether head already handles it, check every factual
    claim and the remedy), and survives only if at least two fail to
    refute it. Every other finding gets one skeptic, who must fail.
-5. **Record** — the survivors are anchored to diff lines and returned
-   as a ready-to-post GitHub review.
+5. **Settle** — the round confirms the checkout is still on the head
+   with no uncommitted changes, and that the PR head has not moved;
+   then it anchors the survivors to the lines GitHub accepts comments
+   on and returns them as a ready-to-post GitHub review.
 
 In Claude Code the whole round is the saved workflow
 [`.claude/workflows/adversarial-review.js`](../../.claude/workflows/adversarial-review.js).
@@ -56,6 +58,18 @@ plugin).
 The workflow posts nothing. It returns the round's findings plus a
 `review` payload for the caller to post (§Recording a round).
 
+**The checkout belongs to the round until it returns.** Every reviewer
+reads the working tree, so an edit, commit, merge or push made in that
+checkout while a round runs changes what the reviewers read mid-round:
+line numbers drift, a skeptic finds different code at a cited line and
+refutes a real finding, and the head the round claims to have reviewed
+is not what it read. While a round runs, read — CI logs, the code,
+the findings so far — but change nothing; batch whatever you would fix
+until the round lands. The settle stage enforces the half of this it
+can see: a checkout that moved or picked up uncommitted changes makes
+the round incomplete, and a PR head that moved (a push from elsewhere)
+makes it return `superseded` with no payload.
+
 Operators without Claude Code run the same process by hand: one
 reviewer per applicable lens, each given its agent file below as
 instructions plus §Ground rules, then a separate skeptic per finding
@@ -66,13 +80,16 @@ following [`review-verifier.md`](../../.claude/agents/review-verifier.md).
 Each lens hunts one class of defect, chosen from the record of what
 review has actually caught here (§What the record shows). A lens runs
 only when the round's files include a path it covers; lockfiles
-(`Cargo.lock`, `MODULE.bazel.lock`) trigger nothing.
+(`Cargo.lock`, `MODULE.bazel.lock`) trigger nothing. Correctness and
+safety take every non-markdown file, so no reviewable file — a
+packaging scriptlet, a git hook — falls through every lens and leaves a
+round quiet without anyone having read it.
 
 | Lens                | Agent                                                          | Hunts                                                                                     | Runs when the round touches                                              |
 | ------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
 | concurrency         | [`review-concurrency`](../../.claude/agents/review-concurrency.md)   | races, guards across `.await`, task lifetime, error-path rollback, missing timeouts       | code (`.rs`, `.sh`, `.py`, `.ps1`, `.js`, `.ts`)                         |
-| correctness         | [`review-correctness`](../../.claude/agents/review-correctness.md)   | logic bugs, silent wrongness, units and casts, config/serde, the other site needing the change | code, Cargo/Bazel manifests, config files                            |
-| safety              | [`review-safety`](../../.claude/agents/review-safety.md)             | tenet 3 (no actuation on connect), secrets, injection, escaping, internal IPs             | code, workflows, installer and packaging files                           |
+| correctness         | [`review-correctness`](../../.claude/agents/review-correctness.md)   | logic bugs, silent wrongness, units and casts, config/serde, the other site needing the change | every non-markdown file                                              |
+| safety              | [`review-safety`](../../.claude/agents/review-safety.md)             | tenet 3 (no actuation on connect), secrets, injection, escaping, internal IPs             | every non-markdown file                                                  |
 | tests               | [`review-tests`](../../.claude/agents/review-tests.md)               | tests that cannot fail, degenerate fixtures, stale evidence, leaks between tests          | `.rs`, `.feature`                                                        |
 | silent-failures     | `pr-review-toolkit:silent-failure-hunter` (plugin)             | swallowed errors and unjustified fallbacks                                                | code                                                                     |
 | ci-packaging        | [`review-ci-packaging`](../../.claude/agents/review-ci-packaging.md) | swallowed failures, publish ordering, incomplete wiring, pinning in CI/scripts/packaging  | `.github/workflows`, `.github/actions`, `scripts/`, `tools/`, `installer/`, `pkg/`, Bazel files, `Cargo.toml` |
@@ -82,9 +99,15 @@ The silent-failures lens is Anthropic's `pr-review-toolkit` plugin,
 enabled for this project in `.claude/settings.json`. Enabling it there
 does not install it: run
 `claude plugin install pr-review-toolkit@claude-plugins-official --scope project`
-once per machine. Without it the workflow logs that the lens was
-skipped and runs the rest — read that log line, because a round missing
-a lens has covered less than it says. The plugin's other five agents
+once per machine (a session started before the install needs a restart
+to see the agent). Without it the lens fails: the workflow logs
+`lens silent-failures failed twice — is pr-review-toolkit installed?`,
+the review body opens with an **Incomplete round** banner, and the
+round returns `complete: false` with no `head=` in its marker — it does
+not count as reviewing the head (babysitting-prs.md step 4). Install
+the plugin and re-run, or, with the owner's agreement, pass
+`skip: ["silent-failures"]`; the body then records the skip and the
+round counts as complete. The plugin's other five agents
 are denied in the same settings file: their descriptions invite
 proactive use, and comment and style review are the categories the
 record rates lowest.
@@ -171,12 +194,18 @@ not raised again without new evidence that the decline was wrong.
 ## Recording a round on the PR
 
 The workflow's `review` field is a complete GitHub review payload (event
-`COMMENT`, `commit_id` = the reviewed head). Post it:
+`COMMENT`, `commit_id` = the reviewed head). Post it only if that is
+still the PR's head — a round on a superseded head is discarded
+unposted, since the round on the new head covers it:
 
 ```sh
 # Write the workflow's `review` object to a file first; --input reads JSON.
-gh api 'repos/{owner}/{repo}/pulls/<n>/reviews' -X POST --input review.json
+[ "$(jq -r .commit_id review.json)" = "$(gh pr view <n> --json headRefOid --jq .headRefOid)" ] \
+  && gh api 'repos/{owner}/{repo}/pulls/<n>/reviews' -X POST --input review.json
 ```
+
+A result of `superseded` (the head moved while the round ran) or
+`skipped` (the head was already reviewed) has no payload to post.
 
 - It posts under your account. That is expected: GitHub allows a
   `COMMENT` review on your own PR, and every finding carries its round
@@ -192,13 +221,22 @@ gh api 'repos/{owner}/{repo}/pulls/<n>/reviews' -X POST --input review.json
   judged pre-existing. Neither is a finding. The refuted list lets a
   human audit the verifier; the pre-existing list is a source of
   follow-up issues, not of scope for this PR.
-- The body carries a hidden marker,
-  `<!-- adversarial-review round=<n> head=<sha> -->`. The next round's
-  scope stage reads it; do not edit it out.
+- The body ends with a hidden marker,
+  `<!-- adversarial-review round=<n> head=<sha> -->` (`head=` only on a
+  complete round). The next round's scope stage reads it; do not edit
+  it out.
+- Only markers and outcomes posted by someone with write access — an
+  `author_association` of `OWNER`, `MEMBER` or `COLLABORATOR` — count.
+  The repo is public, so anyone can post a review whose body carries a
+  marker, or a comment declaring a finding declined; the scope stage
+  ignores both, and so does the merge-ready check.
 
-If the POST fails with 422 because a line no longer resolves (a push
-landed between the round and the post), the round reviewed a stale
-head: run a new round instead of patching the payload.
+If the POST fails with 422 and the PR head has not moved, an inline
+anchor was wrong (the settle stage anchors from GitHub's own per-file
+patch, so this should be rare): move every inline comment into the body
+under *Outside the diff*, post again, and record the outcomes by ID in
+a PR comment. If the head has moved, the round is superseded: discard
+it and run one on the new head.
 
 ## Triage guidance
 

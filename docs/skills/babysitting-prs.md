@@ -20,7 +20,9 @@ latest push:
    leg still running means not done.
 2. **A quiet review round on the head** — the newest adversarial-review
    round's marker names the current head SHA (`head=` is present only on
-   a complete round), and that round either confirmed no findings, or
+   a complete round, and only markers posted by someone with write
+   access count — adversarial-review.md §Recording a round), and that
+   round either confirmed no findings, or
    every finding it confirmed was **declined** with its reason recorded.
    A decline changes no code, so there is nothing for another round to
    review. Any finding that led to a fix voids the round: the fix push
@@ -48,19 +50,26 @@ working tree. Then iterate:
    CI watcher (§Pacing) and a review round (`/adversarial-review <n>`,
    or the Workflow tool with `name: "adversarial-review"`,
    `args: {pr: <n>}`). Both run in the background; neither ends the
-   other's wait.
-2. **CI failure** → reproduce and fix locally; run the full quality gate
-   (rule 4) before every push.
-3. **Merge conflict** → merge `origin/main` into the branch (don't
-   rebase a branch that has review history), resolve, gate, push.
-   Conflict resolution can also import upstream scope changes — re-read
-   what landed on `main`, don't just take "ours".
+   other's wait. **While the round runs, change nothing in the
+   checkout** — no edits, commits, merges or pushes: its reviewers are
+   reading that working tree (adversarial-review.md §What a round is).
+   Diagnose freely; hold the fixes.
+2. **CI failure** → reproduce and diagnose; once no round is running,
+   fix locally and run the full quality gate (rule 4) before the push.
+   A CI failure that lands mid-round waits for the round, and its fix
+   joins the round's fixes in one push.
+3. **Merge conflict** → once no round is running, merge `origin/main`
+   into the branch (don't rebase a branch that has review history),
+   resolve, gate, push. Conflict resolution can also import upstream
+   scope changes — re-read what landed on `main`, don't just take
+   "ours".
 4. **When the round lands, record it, then triage it.** Post its
    `review` payload as described in adversarial-review.md §Recording a
    round — a quiet round too, since its marker is the evidence for
-   criterion 2. A round that returns `skipped` reviewed nothing and
-   needs nothing posted. A round with `complete: false` is not a review
-   of the head: fix the cause it names (usually an uninstalled plugin)
+   criterion 2 — but only while its `commit_id` is still the PR head. A
+   round that returns `skipped` or `superseded` has nothing to post. A
+   round with `complete: false` is not a review of the head: fix the
+   cause it names (an uninstalled plugin, a checkout changed mid-round)
    and run it again. Then triage every finding honestly
    (adversarial-review.md §Triage guidance):
    - Legitimate (even partially) → fix it.
