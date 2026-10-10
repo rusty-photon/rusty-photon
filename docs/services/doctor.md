@@ -349,6 +349,17 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   with none is not a working device the inventory can place, so it is
   reported as a fault (below) rather than listed without a port.
 
+  The Windows collector lists **present** devices only (`Get-PnpDevice
+  -PresentOnly`). A device with no USB serial gets an instance id built
+  from its port, so Windows keeps one record per port it has used, and
+  a record whose device has gone stays behind, not present
+  (`CM_PROB_PHANTOM`) and still carrying that port's `LocationPaths`.
+  Read without the filter, a camera moved between ports would sit on
+  every port it ever used. Measured by moving a camera between ports of
+  a Windows 11 VM's USB controller
+  ([device-claims plan](../plans/device-claims-and-phd2-camera.md), D2
+  spike item 7).
+
   **A scan has three outcomes, and they must not be confused.**
 
   - **The inventory** — the devices that are alive and working, each with
