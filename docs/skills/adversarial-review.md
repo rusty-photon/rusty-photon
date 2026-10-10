@@ -87,20 +87,20 @@ round quiet without anyone having read it.
 
 | Lens                | Agent                                                          | Hunts                                                                                     | Runs when the round touches                                              |
 | ------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| concurrency         | [`review-concurrency`](../../.claude/agents/review-concurrency.md)   | races, guards across `.await`, task lifetime, error-path rollback, missing timeouts       | code (`.rs`, `.sh`, `.py`, `.ps1`, `.js`, `.ts`)                         |
+| concurrency         | [`review-concurrency`](../../.claude/agents/review-concurrency.md)   | races, guards across `.await`, task lifetime, error-path rollback, missing timeouts       | code (`.rs`, `.sh`, `.py`, `.ps1`, `.js`, `.ts`), and scripts by directory: `packaging/`, `pkg/`, `.cargo-husky/hooks/`, `scripts/`, `tools/`, `.github/workflows`, `.github/actions` |
 | correctness         | [`review-correctness`](../../.claude/agents/review-correctness.md)   | logic bugs, silent wrongness, units and casts, config/serde, the other site needing the change | every non-markdown file                                              |
 | safety              | [`review-safety`](../../.claude/agents/review-safety.md)             | tenet 3 (no actuation on connect), secrets, injection, escaping, internal IPs             | every non-markdown file                                                  |
 | tests               | [`review-tests`](../../.claude/agents/review-tests.md)               | tests that cannot fail, degenerate fixtures, stale evidence, leaks between tests          | `.rs`, `.feature`                                                        |
-| silent-failures     | `pr-review-toolkit:silent-failure-hunter` (plugin)             | swallowed errors and unjustified fallbacks                                                | code                                                                     |
-| ci-packaging        | [`review-ci-packaging`](../../.claude/agents/review-ci-packaging.md) | swallowed failures, publish ordering, incomplete wiring, pinning in CI/scripts/packaging  | `.github/workflows`, `.github/actions`, `scripts/`, `tools/`, `installer/`, `pkg/`, Bazel files, `Cargo.toml` |
+| silent-failures     | `pr-review-toolkit:silent-failure-hunter` (plugin)             | swallowed errors and unjustified fallbacks                                                | same as concurrency                                                      |
+| ci-packaging        | [`review-ci-packaging`](../../.claude/agents/review-ci-packaging.md) | swallowed failures, publish ordering, incomplete wiring, pinning in CI/scripts/packaging  | `.github/workflows`, `.github/actions`, `dependabot.yml`, `actionlint.yaml`, `scripts/`, `tools/`, `installer/`, `packaging/`, `pkg/`, `.cargo-husky/`, `.cargo/`, `third_party/`, Bazel files (`BUILD.bazel`, `MODULE.bazel`, `.bzl`, `.bazelrc`/`version`/`ignore`), `Cargo.toml` |
 | docs                | [`review-docs`](../../.claude/agents/review-docs.md)                 | text that would cause a wrong action; design docs a behaviour change left stale (rule 2); plans reviewed as plans | `.md`, or Rust under `services/`                         |
 
 The silent-failures lens is Anthropic's `pr-review-toolkit` plugin,
 enabled for this project in `.claude/settings.json`. Enabling it there
 does not install it: run
 `claude plugin install pr-review-toolkit@claude-plugins-official --scope project`
-once per machine (a session started before the install needs a restart
-to see the agent). Without it the lens fails: the workflow logs
+once per machine (a session that was already running sees the agent
+only after `/reload-plugins`). Without it the lens fails: the workflow logs
 `lens silent-failures failed twice — is pr-review-toolkit installed?`,
 the review body opens with an **Incomplete round** banner, and the
 round returns `complete: false` with no `head=` in its marker — it does
@@ -225,11 +225,14 @@ A result of `superseded` (the head moved while the round ran) or
   `<!-- adversarial-review round=<n> head=<sha> -->` (`head=` only on a
   complete round). The next round's scope stage reads it; do not edit
   it out.
-- Only markers and outcomes posted by someone with write access — an
-  `author_association` of `OWNER`, `MEMBER` or `COLLABORATOR` — count.
-  The repo is public, so anyone can post a review whose body carries a
-  marker, or a comment declaring a finding declined; the scope stage
-  ignores both, and so does the merge-ready check.
+- Only markers and outcomes posted by an account with write access —
+  one listed by `gh api 'repos/{owner}/{repo}/collaborators?permission=push'`
+  — count. The repo is public, so anyone can post a review whose body
+  carries a marker, or a comment declaring a finding declined; the scope
+  stage ignores both, and so does the merge-ready check. Don't use
+  `author_association` for this: `MEMBER` and `COLLABORATOR` also cover
+  read- and triage-only accounts. A failed read of that list, or of the
+  previous rounds, fails the round rather than reading as "no rounds".
 
 If the POST fails with 422 and the PR head has not moved, an inline
 anchor was wrong (the settle stage anchors from GitHub's own per-file

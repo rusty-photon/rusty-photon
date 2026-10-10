@@ -28,7 +28,11 @@ const skip = Array.isArray(A.skip) ? A.skip : []
 
 const LOCKFILE = /(^|\/)(Cargo\.lock|MODULE\.bazel\.lock)$/
 const CODE = /\.(rs|sh|py|ps1|js|mjs|ts)$/
-const CI = /^\.github\/(workflows|actions)\/|^scripts\/|^tools\/|^installer\/|(^|\/)pkg\/|(^|\/)BUILD\.bazel$|^MODULE\.bazel$|\.bzl$|^\.bazelrc$|(^|\/)Cargo\.toml$/
+// Scripts are routed by directory, not extension: packaging scriptlets
+// (`postinst.common`), hooks and workflow `run:` blocks have none of the
+// extensions above.
+const SCRIPTS = /^packaging\/|(^|\/)pkg\/|^\.cargo-husky\/hooks\/|^scripts\/|^tools\/|^\.github\/(workflows|actions)\//
+const CI = /^\.github\/(workflows|actions)\/|^\.github\/(dependabot\.yml|actionlint\.yaml)$|^scripts\/|^tools\/|^installer\/|^packaging\/|(^|\/)pkg\/|^\.cargo-husky\/|^\.cargo\/|^third_party\/|(^|\/)BUILD\.bazel$|^MODULE\.bazel$|\.bzl$|^\.bazel(rc|version|ignore)$|(^|\/)Cargo\.toml$/
 const DOCS = /\.md$/
 const SERVICE_RUST = /^services\/.*\.rs$/
 const TESTS = /\.(rs|feature)$/
@@ -36,11 +40,11 @@ const TESTS = /\.(rs|feature)$/
 // Correctness and safety take every non-markdown file, so no reviewable
 // file can fall through every lens and leave a round "quiet" unread.
 const LENSES = [
-  { key: 'concurrency', agentType: 'review-concurrency', applies: f => CODE.test(f) },
+  { key: 'concurrency', agentType: 'review-concurrency', applies: f => CODE.test(f) || SCRIPTS.test(f) },
   { key: 'correctness', agentType: 'review-correctness', applies: f => !DOCS.test(f) },
   { key: 'safety', agentType: 'review-safety', applies: f => !DOCS.test(f) },
   { key: 'tests', agentType: 'review-tests', applies: f => TESTS.test(f) },
-  { key: 'silent-failures', agentType: 'pr-review-toolkit:silent-failure-hunter', plugin: true, applies: f => CODE.test(f) },
+  { key: 'silent-failures', agentType: 'pr-review-toolkit:silent-failure-hunter', plugin: true, applies: f => CODE.test(f) || SCRIPTS.test(f) },
   { key: 'ci-packaging', agentType: 'review-ci-packaging', applies: f => CI.test(f) },
   { key: 'docs', agentType: 'review-docs', applies: f => DOCS.test(f) || SERVICE_RUST.test(f) },
 ]
@@ -170,8 +174,11 @@ const clip = (s, n) => {
 }
 
 // The repo is public: anyone can post a review or a comment, so only
-// rounds and outcomes from people with write access count.
-const TRUSTED = 'select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")'
+// rounds and outcomes from accounts with write access count. That is the
+// push-permission collaborator list, not author_association: MEMBER and
+// COLLABORATOR also cover read- and triage-only accounts.
+const WRITERS = `W=$(gh api --paginate 'repos/{owner}/{repo}/collaborators?permission=push' | jq -s -c '[.[][].login]') && [ "$W" != "[]" ]`
+const TRUSTED = 'select(.user.login as $l | $w | index($l))'
 
 // ==================================================================== Scope
 
@@ -185,13 +192,16 @@ const scope = await agent(
     '   Write purpose: 2-4 sentences on the change the PR makes and the problem it solves, from the title, body and `git diff --stat`.',
     '2. git rev-parse HEAD. It MUST equal headRefOid. If it does not, return ok=false with',
     `   error = "checkout HEAD <sha> is not the head of PR #${pr} (<headRefOid>): check out the PR head and re-run". Stop there.`,
+    '   git status --porcelain --untracked-files=no must print nothing. If it prints anything, return ok=false with',
+    '   error = "the checkout has uncommitted changes: a round reads the working tree, so commit them or wait, then re-run". Stop there.',
     '3. git fetch origin <baseRefName> --quiet, then merge_base = git merge-base origin/<baseRefName> HEAD.',
     '   files = every path `git diff --name-only <merge_base> HEAD` prints. Do not take files from gh pr view: its list stops at 100.',
     '4. Previous rounds. Each adversarial-review round left a marker at the end of its review body:',
     '   "<!-- adversarial-review round=N -->" or "<!-- adversarial-review round=N head=SHA -->". Read them with exactly this command,',
-    '   which keeps only reviews by people with write access and takes the last marker in each body:',
-    `   gh api --paginate 'repos/{owner}/{repo}/pulls/${pr}/reviews' | jq -s -r '.[][] | ${TRUSTED} | select(.body | test("<!-- adversarial-review round=")) | "\\(.id)\\t\\([.body | match("<!-- adversarial-review ([^>]*)-->"; "g")] | last | .captures[0].string)"'`,
-    '   last_round = the highest round=N it prints (0 if none). last_head = the head=SHA of the newest line that has one ("" if none).',
+    '   which keeps only reviews by accounts with write access and takes the last marker in each body:',
+    `   set -o pipefail; ${WRITERS} && gh api --paginate 'repos/{owner}/{repo}/pulls/${pr}/reviews' | jq -s -r --argjson w "$W" '.[][] | ${TRUSTED} | select(.body | test("<!-- adversarial-review round=")) | "\\(.id)\\t\\([.body | match("<!-- adversarial-review ([^>]*)-->"; "g")] | last | .captures[0].string)"'`,
+    '   If it exits non-zero or prints an error, return ok=false naming step 4: a failed read must never look like "no previous rounds".',
+    '   last_round = the highest round=N it prints (0 only when it succeeded and printed nothing). last_head = the head=SHA of the newest line that has one ("" if none).',
     '5. Delta base: ' + (A.full
       ? 'none — this is a full review; since = "".'
       : (A.since
@@ -199,13 +209,14 @@ const scope = await agent(
         : 'since = last_head (empty if none).')),
     '   If since is non-empty: since_reachable = whether `git cat-file -e <since>^{commit}` succeeds (try `git fetch origin <since>` once if not).',
     '   If reachable: delta_files = the paths from `git diff --name-only <since> HEAD` that are also in files.',
-    '6. Prior findings, if last_round > 0. Read only from the reviews step 4 kept, and only from replies and comments whose author_association is OWNER, MEMBER or COLLABORATOR — ignore everyone else.',
+    '6. Prior findings, if last_round > 0 (then prior must be reported, even as []). Read only from the reviews step 4 kept, and only from replies and comments whose author is in the step-4 write-access list $W — apply the same select(.user.login as $l | $w | index($l)) filter, and ignore everyone else.',
+    '   Run every read here with set -o pipefail; if any exits non-zero or prints an error, return ok=false naming step 6.',
     '   Each kept review\'s body lists "Outside the diff" findings by ID (R<round>.<k>);',
     `   its inline comments (gh api --paginate 'repos/{owner}/{repo}/pulls/${pr}/reviews/<review-id>/comments') each start with an ID.`,
     `   Outcomes are recorded in replies to those threads (gh api --paginate 'repos/{owner}/{repo}/pulls/${pr}/comments', in_reply_to_id) and in PR comments (gh api --paginate 'repos/{owner}/{repo}/issues/${pr}/comments').`,
     '   For each ID report file, line, title, outcome (fixed / declined / open when nothing records one / unknown) and a one-line note quoting the recorded reason.',
     '',
-    'If step 1, 2 or 3 fails, return ok=false with an error naming the step and what it printed. Never return ok=true without head_sha, merge_base and files.',
+    'If any step fails, return ok=false with an error naming the step and what it printed. Never return ok=true without head_sha, merge_base, files and last_round.',
   ].join('\n'),
   { label: 'scope', phase: 'Scope', schema: SCOPE, effort: 'low' },
 )
@@ -219,11 +230,18 @@ if (!SHA.test(scope.head_sha || '') || !SHA.test(scope.merge_base || '')) {
 if (!Array.isArray(scope.files) || scope.files.length === 0) {
   return { pr, error: `no changed files between ${short(scope.merge_base)} and ${short(scope.head_sha)}: either the PR diff is empty or the scope stage failed to list it` }
 }
+// A failed read of the previous rounds must never pass as "round 1": that
+// would reuse finding IDs, drop every recorded outcome and reset the budget.
+if (!Number.isInteger(scope.last_round) || scope.last_round < 0
+  || (scope.last_head && !SHA.test(scope.last_head))
+  || (scope.last_round > 0 && !Array.isArray(scope.prior))) {
+  return { pr, error: 'the scope stage did not report the previous rounds (last_round, last_head, prior); re-run the round' }
+}
 if (scope.state && scope.state !== 'OPEN') log(`PR #${pr} is ${scope.state}; reviewing it anyway`)
 
 const head = scope.head_sha
 const mb = scope.merge_base
-const round = Number.isInteger(A.round) ? A.round : (scope.last_round || 0) + 1
+const round = Number.isInteger(A.round) ? A.round : scope.last_round + 1
 const sinceWanted = A.full ? '' : (scope.since || '')
 const files = scope.files.filter(f => !LOCKFILE.test(f))
 
@@ -339,6 +357,7 @@ if (lenses.length) {
         keep.lenses = [...new Set([...keep.lenses, ...m.lenses])]
         keep.also_at = [...new Set([...keep.also_at, `${m.file}:${m.line}`, ...m.also_at])]
         keep.merged = [...(keep.merged || []), m.title]
+        keep.members = [...(keep.members || []), { ...m }]
       }
       grp.forEach(i => { if (findings[i] !== keep) absorbed.add(i) })
     }
@@ -364,13 +383,14 @@ if (lenses.length) {
     '',
     'Finding:',
     JSON.stringify({ lens: f.lenses.join('+'), title: f.title, file: f.file, line: f.line, severity: f.severity, trigger: f.trigger, consequence: f.consequence, evidence: f.evidence, remedy: f.remedy || '', also_at: f.also_at }, null, 2),
+    f.merged && f.merged.length ? `Other reviewers stated the same defect as: ${f.merged.join('; ')}. Judge the defect; if only this statement of it overclaims, say so in reasoning.` : '',
     '',
     angle ? ANGLES[angle] : 'Apply every angle: ' + Object.values(ANGLES).join(' '),
     'Earlier rounds\' findings, for spotting a duplicate of a fixed or declined one:',
     priorText,
   ].join('\n')
 
-  const verifyOne = async f => {
+  const verifyStatement = async f => {
     const angles = f.severity === 'high' ? ['trace', 'handled', 'claims'] : [null]
     const votes = (await parallel(angles.map(a => () => agent(verifyPrompt(f, a), {
       label: `verify:${f.lenses[0]}:${String(f.file).split('/').pop()}:${f.line}${a ? ':' + a : ''}`,
@@ -393,6 +413,28 @@ if (lenses.length) {
     const notes = votes.map(v => v.remedy_note).filter(Boolean)
     const reasons = votes.filter(v => v.verdict === 'refuted').map(v => v.reasoning)
     return { ...f, status, remedy_note: notes.join(' '), refuted_because: reasons[0] || '', votes: votes.length }
+  }
+
+  // Dedupe kept the most severe statement of a group, which is also the
+  // likeliest to overclaim. Before a group dies with it, each absorbed
+  // statement gets its own skeptics, at its own severity.
+  const verifyOne = async f => {
+    const v = await verifyStatement(f)
+    if (v.status === 'confirmed' || v.status === 'unverified' || !(f.members && f.members.length)) return v
+    let fallback = v
+    for (const m of f.members) {
+      const mv = await verifyStatement(m)
+      const others = [f, ...f.members.filter(x => x !== m)]
+      const regrouped = {
+        ...mv,
+        lenses: f.lenses,
+        also_at: [...new Set(others.map(x => `${x.file}:${x.line}`).concat(f.also_at))].filter(x => x !== `${mv.file}:${mv.line}`),
+        merged: others.map(x => x.title),
+      }
+      if (mv.status === 'confirmed' || mv.status === 'unverified') return regrouped
+      if (mv.status === 'pre_existing' && fallback.status === 'refuted') fallback = regrouped
+    }
+    return fallback
   }
 
   verified = (await parallel(findings.map(f => () => verifyOne(f)))).filter(Boolean)
@@ -418,18 +460,19 @@ phase('Settle')
 const st = await agent(
   [
     `You are the settle stage of adversarial review round ${round} of PR #${pr}, which reviewed head ${head}. Run exactly these commands and report what they print. Do not review anything, and never modify the checkout.`,
-    '1. git rev-parse HEAD → checkout_head.',
-    '2. git status --porcelain --untracked-files=no → checkout_dirty = whether it printed anything.',
-    `3. gh pr view ${pr} --json headRefOid --jq .headRefOid → pr_head.`,
+    '1. Run this as ONE command, in this order — status first, so an edit committed mid-check still shows as a moved HEAD:',
+    '   git status --porcelain --untracked-files=no; echo ---; git rev-parse HEAD',
+    '   checkout_dirty = whether anything printed above the --- line; checkout_head = the line below it.',
+    `2. Then: gh pr view ${pr} --json headRefOid --jq .headRefOid → pr_head.`,
     posted.length
       ? [
-        '4. For each finding below, decide whether GitHub accepts an inline comment on its line. For each distinct file run',
+        '3. For each finding below, decide whether GitHub accepts an inline comment on its line. For each distinct file run',
         `   gh api --paginate 'repos/{owner}/{repo}/pulls/${pr}/files' | jq -s -r --arg f '<file>' '.[][] | select(.filename == $f) | .patch // ""' | awk '/^@@/{split($3,a,","); s=substr(a[1],2); n=(a[2]==""?1:a[2]); if (n>0) print s, s+n-1}'`,
         '   Each output line is an inclusive range "start end" of commentable lines. in_diff is true only if the line lies inside one. A file with no output (absent from the PR, a pure rename, binary or too large) has no commentable lines.',
         '',
         posted.map((f, i) => `${i}. ${f.file}:${f.line}`).join('\n'),
       ].join('\n')
-      : '4. There are no findings to anchor: anchors = [].',
+      : '3. There are no findings to anchor: anchors = [].',
   ].join('\n'),
   { label: 'settle', phase: 'Settle', schema: SETTLE, effort: 'low' },
 )
@@ -468,6 +511,7 @@ const findingBody = f => [
   f.remedy_note ? `**Skeptic on the remedy:** ${f.remedy_note}` : null,
 ].filter(x => x !== null).join('\n')
 
+const alsoStated = f => (f.merged && f.merged.length ? ` (also stated as: ${f.merged.map(t => clip(t, 80)).join('; ')})` : '')
 const inline = posted.filter(f => f.inline)
 const outside = posted.filter(f => !f.inline)
 
@@ -487,12 +531,12 @@ const body = [
   ...outside.map(f => '\n' + findingBody(f) + `\n\n*At* ${tick(f.file + ':' + f.line)}`),
   preExisting.length
     ? `\n<details><summary>Pre-existing, not introduced by this PR (${preExisting.length}) — follow-up candidates, not findings</summary>\n\n`
-      + preExisting.map(f => `- **${f.id}** [${f.lenses.join('+')}] ${tick(f.file + ':' + f.line)} — ${clip(f.title, 160)} — ${clip(f.consequence, 240)}`).join('\n')
+      + preExisting.map(f => `- **${f.id}** [${f.lenses.join('+')}] ${tick(f.file + ':' + f.line)} — ${clip(f.title, 160)}${alsoStated(f)} — ${clip(f.consequence, 240)}`).join('\n')
       + '\n</details>'
     : null,
   refuted.length
     ? `\n<details><summary>Refuted by the skeptics (${refuted.length}) — not findings; listed so the verifier can be audited</summary>\n\n`
-      + refuted.map(f => `- [${f.lenses.join('+')}] ${tick(f.file + ':' + f.line)} — ${clip(f.title, 160)} — *${clip(f.refuted_because, 300)}*`).join('\n')
+      + refuted.map(f => `- [${f.lenses.join('+')}] ${tick(f.file + ':' + f.line)} — ${clip(f.title, 160)}${alsoStated(f)} — *${clip(f.refuted_because, 300)}*`).join('\n')
       + '\n</details>'
     : null,
   '',
@@ -513,7 +557,7 @@ return {
   lenses_skipped: lensesRequested,
   findings: posted.map(f => ({ id: f.id, status: f.status, severity: f.severity, lenses: f.lenses, file: f.file, line: f.line, title: f.title, inline: !!f.inline })),
   pre_existing: preExisting.map(f => ({ id: f.id, file: f.file, line: f.line, title: f.title })),
-  refuted: refuted.map(f => ({ lenses: f.lenses, file: f.file, line: f.line, title: f.title, because: f.refuted_because })),
+  refuted: refuted.map(f => ({ lenses: f.lenses, file: f.file, line: f.line, title: f.title, also_stated_as: f.merged || [], because: f.refuted_because })),
   review: {
     commit_id: head,
     event: 'COMMENT',
