@@ -140,10 +140,11 @@ impl CameraEntry {
     }
 }
 
-/// One session-establish metadata read: a failure only drops *that*
-/// field (logged with its downstream consequence), never the whole
-/// session.
-fn cached_read<T, E: std::fmt::Display>(
+/// One auxiliary device read — a session-establish invariant, or a
+/// capture's per-frame metadata: a failure only drops *that* field
+/// (logged with its downstream consequence), never the whole session or
+/// capture.
+pub(crate) fn optional_read<T, E: std::fmt::Display>(
     result: Result<T, E>,
     camera_id: &str,
     consequence: &str,
@@ -216,15 +217,15 @@ pub(super) async fn establish_camera(
     // succeeds because some Alpaca drivers reject property reads on
     // disconnected devices.
     let invariants = CameraInvariants {
-        name: cached_read(cam.name().await, &config.id, "name unavailable at session-establish time; downstream captures will omit camera_name and INSTRUME"),
-        max_adu: cached_read(cam.max_adu().await, &config.id, "max_adu unavailable at session-establish time; downstream captures will persist max_adu: None and write FITS as i32"),
-        pixel_size_x_um: cached_read(cam.pixel_size_x().await, &config.id, "pixel_size_x unavailable at session-establish time; downstream captures will omit the optics block"),
-        pixel_size_y_um: cached_read(cam.pixel_size_y().await, &config.id, "pixel_size_y unavailable at session-establish time; downstream captures will omit the optics block"),
-        sensor_width_px: cached_read(cam.camera_x_size().await, &config.id, "camera_x_size unavailable at session-establish time; downstream captures will omit the optics block"),
-        sensor_height_px: cached_read(cam.camera_y_size().await, &config.id, "camera_y_size unavailable at session-establish time; downstream captures will omit the optics block"),
-        max_bin_x: cached_read(cam.max_bin_x().await, &config.id, "max_bin_x unavailable at session-establish time; a capture's binning will not be range-checked before it reaches the driver"),
-        max_bin_y: cached_read(cam.max_bin_y().await, &config.id, "max_bin_y unavailable at session-establish time; a capture's binning will not be range-checked before it reaches the driver"),
-        can_asymmetric_bin: cached_read(cam.can_asymmetric_bin().await, &config.id, "can_asymmetric_bin unavailable at session-establish time; an asymmetric binning will not be rejected before it reaches the driver"),
+        name: optional_read(cam.name().await, &config.id, "name unavailable at session-establish time; downstream captures will omit camera_name and INSTRUME"),
+        max_adu: optional_read(cam.max_adu().await, &config.id, "max_adu unavailable at session-establish time; downstream captures will persist max_adu: None and write FITS as i32"),
+        pixel_size_x_um: optional_read(cam.pixel_size_x().await, &config.id, "pixel_size_x unavailable at session-establish time; downstream captures will omit the optics block"),
+        pixel_size_y_um: optional_read(cam.pixel_size_y().await, &config.id, "pixel_size_y unavailable at session-establish time; downstream captures will omit the optics block"),
+        sensor_width_px: optional_read(cam.camera_x_size().await, &config.id, "camera_x_size unavailable at session-establish time; downstream captures will omit the optics block"),
+        sensor_height_px: optional_read(cam.camera_y_size().await, &config.id, "camera_y_size unavailable at session-establish time; downstream captures will omit the optics block"),
+        max_bin_x: optional_read(cam.max_bin_x().await, &config.id, "max_bin_x unavailable at session-establish time; a capture's binning will not be range-checked before it reaches the driver"),
+        max_bin_y: optional_read(cam.max_bin_y().await, &config.id, "max_bin_y unavailable at session-establish time; a capture's binning will not be range-checked before it reaches the driver"),
+        can_asymmetric_bin: optional_read(cam.can_asymmetric_bin().await, &config.id, "can_asymmetric_bin unavailable at session-establish time; an asymmetric binning will not be rejected before it reaches the driver"),
     };
     Ok((cam, invariants))
 }

@@ -118,9 +118,17 @@ struct MockCamera {
     /// When set, `gain()` fails with a non-`NOT_IMPLEMENTED` error —
     /// a transport blip on a camera that does have the property.
     fail_gain: bool,
-    /// `Some` ⇒ `last_exposure_start_time()` answers it; `None`
-    /// (default) ⇒ `NOT_IMPLEMENTED`.
+    /// `Some` ⇒ `last_exposure_start_time()` answers it, whenever the
+    /// exposure ran — a stale or skewed driver clock.
     last_exposure_start: Option<std::time::SystemTime>,
+    /// `Some(d)` ⇒ `last_exposure_start_time()` answers the instant
+    /// `start_exposure` was called, less `d` — a driver whose clock or
+    /// whole-second resolution puts its start a little before rp's.
+    /// Takes precedence over `last_exposure_start`; neither set ⇒
+    /// `NOT_IMPLEMENTED`.
+    exposure_start_lead: Option<Duration>,
+    /// The start `exposure_start_lead` stamped, as reported.
+    stamped_exposure_start: std::sync::Mutex<Option<std::time::SystemTime>>,
     /// `Some` ⇒ `image_array()` returns this frame (Alpaca's
     /// `(width, height, planes)` shape) instead of the 2 × 2 zeros —
     /// drives the pixel-order and colour-plane capture tests.
@@ -199,6 +207,10 @@ impl ascom_alpaca::api::Camera for MockCamera {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail_start_exposure {
             return Err(ASCOMError::invalid_operation("shutter jammed"));
+        }
+        if let Some(lead) = self.exposure_start_lead {
+            *self.stamped_exposure_start.lock().unwrap() =
+                Some(std::time::SystemTime::now() - lead);
         }
         let [bin_x, bin_y] = self.reported_bin();
         self.exposure_log
@@ -400,6 +412,13 @@ impl ascom_alpaca::api::Camera for MockCamera {
     }
 
     async fn last_exposure_start_time(&self) -> ascom_alpaca::ASCOMResult<std::time::SystemTime> {
+        if self.exposure_start_lead.is_some() {
+            return self
+                .stamped_exposure_start
+                .lock()
+                .unwrap()
+                .ok_or(ASCOMError::NOT_IMPLEMENTED);
+        }
         self.last_exposure_start.ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 }
@@ -1128,15 +1147,15 @@ const MOCK_CAMERA_MAX_ADU: u32 = 65535;
 const MOCK_CAMERA_PIXEL_SIZE_UM: f64 = 3.76;
 const MOCK_CAMERA_SENSOR_PX: u32 = 1024;
 
+/// The driver `Name` the test registry caches for its camera.
+const MOCK_CAMERA_NAME: &str = "Mock Camera";
+
 /// Per-call overrides for the cached invariant-metadata fields on
 /// `CameraEntry`. Defaults mirror `MockCamera`'s static reads so tests
 /// that don't care about metadata get the same shape `connect_camera`
 /// would have produced. Tests that want to model a connect-time read
 /// failure (or a scientific camera with `max_adu > u16::MAX`) override
 /// the relevant field.
-/// The driver `Name` the test registry caches for its camera.
-const MOCK_CAMERA_NAME: &str = "Mock Camera";
-
 #[derive(Clone, Copy)]
 struct CachedCameraMeta {
     max_adu: Option<u32>,
@@ -2578,18 +2597,18 @@ fn exposure_started_at(doc: &ExposureDocument) -> chrono::DateTime<chrono::Utc> 
 
 #[tokio::test]
 async fn test_capture_records_the_drivers_exposure_start() {
-    // A driver that reports whole seconds, a little before rp asked —
-    // within the slack rp allows its window.
-    let driver_start = std::time::SystemTime::now() - Duration::from_millis(1500);
-    let cam = MockCamera {
-        last_exposure_start: Some(driver_start),
+    // A driver whose start lands a little before rp's request (a
+    // whole-second clock) — within the slack rp allows its window.
+    let cam = Arc::new(MockCamera {
+        exposure_start_lead: Some(Duration::from_millis(900)),
         ..Default::default()
-    };
+    });
     let doc = capture_and_read_sidecar(
-        camera_registry(Arc::new(cam)),
+        camera_registry(cam.clone()),
         crate::equipment::trains::TrainModel::default(),
     )
     .await;
+    let driver_start = cam.stamped_exposure_start.lock().unwrap().unwrap();
     let expected = chrono::DateTime::<chrono::Utc>::from(driver_start);
     let recorded = exposure_started_at(&doc);
     assert!(

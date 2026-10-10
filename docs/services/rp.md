@@ -242,11 +242,13 @@ sidecar stays the authority.
   readout while the capture still holds the camera (so the next
   capture's `StartExposure` cannot have overwritten it). `rp` accepts
   the driver's value only when it falls inside the window `rp` itself
-  observed — from just before `StartExposure` was sent until
-  `ImageReady` — widened by 2 s on each side for clock differences
-  between the camera's host and `rp`'s. A driver that does not
-  implement the property, fails the read, or reports a time outside
-  that window gets `rp`'s own clock reading instead, taken the moment
+  observed — no earlier than just before `StartExposure` was sent, and
+  no later than `ImageReady` less the exposure time, since an exposure
+  begun after that could not have finished — widened by 2 s on each
+  side for clock differences between the camera's host and `rp`'s. A
+  driver that does not implement the property, fails the read, or
+  reports a time outside that window (a stale start, or one stamped at
+  readout) gets `rp`'s own clock reading instead, taken the moment
   `StartExposure` returned. Present on every frame this version
   captures. `captured_at` is unchanged: it marks capture *completion*
   (after readout), which is what `{night_date}` is keyed on.
@@ -257,13 +259,17 @@ sidecar stays the authority.
   the camera; omitted for a camera outside every train.
 - `filter` — the filter in the camera's train filter wheel, named from
   the wheel's configured `filters` (`"Filter <n>"` for an unnamed
-  slot). Read live for `Light`, `Flat` and untyped captures; omitted
-  for `Dark`/`Bias` (dark current is not filter-dependent, and an
-  incidental wheel position on a dark is noise) and when the train has
-  no wheel, or the wheel is disconnected, moving, or fails the read.
-  When the naming template renders `{filter}`, the one read feeds both
-  the filename and this field, so they cannot disagree — and there a
-  failed read still fails the capture
+  slot). Read live for `Light`, `Flat` and untyped captures, once the
+  exposure completes and while the capture still holds the camera —
+  never mid-exposure, because a camera-integrated wheel (a QHY CFW)
+  answers through the camera's own driver. Omitted for `Dark`/`Bias`
+  (dark current is not filter-dependent, and an incidental wheel
+  position on a dark is noise) and when the train has no wheel, or the
+  wheel is disconnected, moving, fails the read, or does not answer
+  within 3 s. When a naming template is configured
+  (`session.file_naming_pattern`), the one read feeds both the filename
+  and this field, so they cannot disagree — and there a failed read
+  fails a typed capture, whether or not the pattern names `{filter}`
   ([Capture Tool Details](#capture-tool-details), *Filter resolution*).
 - `gain`, `offset` — the camera's ASCOM `Gain`/`Offset`, read on every
   capture while it holds the camera. Never cached: both are
@@ -275,8 +281,11 @@ sidecar stays the authority.
   system (often JNow; `rp` does not convert). Read once, right after
   `StartExposure` returns, concurrently with the exposure; the
   [mount motion gate](#mount-motion-gate) keeps the mount from slewing
-  under an imaging-train exposure, so one read describes the frame.
-  Omitted when no mount is configured or connected, or the read fails.
+  under an imaging-train exposure, so one read describes the frame. A
+  camera outside the imaging train is not held by the gate, so a mount
+  that reports `Slewing` at the read leaves the field out rather than
+  record a point mid-move. Also omitted when no mount is configured or
+  connected, or the read fails or does not answer within 3 s.
   Distinct from `target.ra_hours`/`target.dec_degrees`, which are the
   catalog (J2000) coordinates of what the frame is *of*.
 
@@ -537,8 +546,8 @@ The keyword set below is a contract, pinned field by field in
 | `OBJECT` | string | `target.display_name` | the frame resolved a target-store row (not a reserved `dark`/`flat`/`bias` slug) |
 | `OBJCTRA` | string | `target.ra_hours`, sexagesimal `'HH MM SS.ss'` (J2000) | as `OBJECT` |
 | `OBJCTDEC` | string | `target.dec_degrees`, sexagesimal `'+DD MM SS.s'` (J2000) | as `OBJECT` |
-| `RA` | real | `pointing.ra_hours × 15`, degrees | `pointing` present |
-| `DEC` | real | `pointing.dec_degrees`, degrees | `pointing` present |
+| `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) | `pointing` present |
+| `DEC` | real | `pointing.dec_degrees`, degrees | `pointing` present and within ±90° |
 | `INSTRUME` | string | `camera_name` | `camera_name` present |
 | `TELESCOP` | string | `train_id` | `train_id` present |
 | `FILTER` | string | `filter` | `filter` present |
@@ -1597,13 +1606,13 @@ name/position live when a filter wheel is present, else renders the
 fixed literal `"NA"` / position `0`. For `Dark`/`Bias`, `capture`
 always renders `"NA"`/`0`, even when a wheel is present — recording an
 incidental filter position on a dark/bias would be noise, not signal.
-The read happens once per capture, right after `StartExposure` returns
-(concurrently with the exposure), and the same value becomes the
-document's `filter` field and the header's `FILTER` card — those leave
-the field out where the filename renders `"NA"`. A failed read (the
-wheel errors, or reports itself moving) fails a templated capture once
-the exposure completes, rather than mis-filing the frame; for a capture
-that renders no filename it only drops the `filter` field.
+The read happens once per capture, once the exposure completes, and the
+same value becomes the document's `filter` field and the header's
+`FILTER` card — those leave the field out where the filename renders
+`"NA"`. A failed read (the wheel errors, reports itself moving, or does
+not answer within 3 s) fails a templated capture rather than mis-filing
+the frame; for a capture that renders no filename it only drops the
+`filter` field.
 
 *Directory/file rendering.* Once `target`/`frame_type` are resolved,
 `capture` renders `session.directory_pattern` then

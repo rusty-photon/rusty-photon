@@ -261,12 +261,15 @@ fn header_pointing_mirrors_document(world: &mut RpWorld) {
         .expect("pointing.dec_degrees");
     let ra_deg = header_real(world, "RA");
     let dec_deg = header_real(world, "DEC");
+    // The header carries 11 significant digits (`%20.10E`), so an RA of
+    // 100 deg or more is good to 1e-8 deg, not 1e-9: compare relatively.
+    let within = |actual: f64, want: f64| (actual - want).abs() <= 1e-9 * want.abs().max(1.0);
     assert!(
-        (ra_deg - ra_hours * 15.0).abs() <= 1e-9,
+        within(ra_deg, (ra_hours * 15.0).rem_euclid(360.0)),
         "RA {ra_deg} is not pointing.ra_hours {ra_hours} x 15"
     );
     assert!(
-        (dec_deg - dec_degrees).abs() <= 1e-9,
+        within(dec_deg, dec_degrees),
         "DEC {dec_deg} is not pointing.dec_degrees {dec_degrees}"
     );
 }

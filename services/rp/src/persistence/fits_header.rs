@@ -78,12 +78,18 @@ pub fn header_keywords(doc: &ExposureDocument, ctx: &HeaderContext<'_>) -> Vec<K
         );
     }
     if let Some(pointing) = doc.pointing {
+        // Into [0, 360): a mount on the 0h seam can report 24h or a hair
+        // below zero, and readers expect the canonical range.
         cards.real(
             "RA",
-            Some(pointing.ra_hours * 15.0),
+            Some((pointing.ra_hours * 15.0).rem_euclid(360.0)),
             "[deg] mount right ascension",
         );
-        cards.real("DEC", Some(pointing.dec_degrees), "[deg] mount declination");
+        cards.real(
+            "DEC",
+            Some(pointing.dec_degrees).filter(|dec| dec.abs() <= 90.0),
+            "[deg] mount declination",
+        );
     }
     cards.string("INSTRUME", doc.camera_name.as_deref(), "camera");
     cards.string("TELESCOP", doc.train_id.as_deref(), "optical train");
@@ -391,6 +397,32 @@ mod tests {
         let dec = value_of(&cards, "DEC").and_then(|v| v.as_real()).unwrap();
         assert!((ra - 0.7121 * 15.0).abs() < 1e-9, "RA {ra}");
         assert!((dec - 41.2702).abs() < 1e-9, "DEC {dec}");
+    }
+
+    #[test]
+    fn ra_wraps_into_the_canonical_range() {
+        let mut doc = full_document();
+        for (ra_hours, want) in [(24.0, 0.0), (-0.0001, 359.9985)] {
+            doc.pointing = Some(MountPointing {
+                ra_hours,
+                dec_degrees: 0.0,
+            });
+            let cards = cards(&doc, &HeaderContext::default());
+            let ra = value_of(&cards, "RA").and_then(|v| v.as_real()).unwrap();
+            assert!((ra - want).abs() < 1e-9, "RA {ra} for {ra_hours}h");
+        }
+    }
+
+    #[test]
+    fn a_declination_beyond_the_pole_drops_only_dec() {
+        let mut doc = full_document();
+        doc.pointing = Some(MountPointing {
+            ra_hours: 1.0,
+            dec_degrees: 90.5,
+        });
+        let cards = cards(&doc, &HeaderContext::default());
+        assert_eq!(value_of(&cards, "DEC"), None);
+        assert!(value_of(&cards, "RA").is_some());
     }
 
     #[test]

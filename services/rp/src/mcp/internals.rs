@@ -26,7 +26,7 @@ use rp_vocabulary::{Binning, FrameType};
 
 use crate::config::naming_template;
 use crate::equipment::alpaca::retry_idempotent_read;
-use crate::equipment::camera::CameraInvariants;
+use crate::equipment::camera::{optional_read, CameraInvariants};
 use crate::equipment::trains::TrainDeviceKind;
 use crate::events::EventEnvelope;
 use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
@@ -332,10 +332,17 @@ fn new_document_ids() -> (String, String) {
 /// What a capture's one filter-wheel read found (rp.md § Core Fields,
 /// `filter`): the filter's name and slot, `Ok(None)` when no filter
 /// applies — a `Dark`/`Bias` frame, or no wheel in the camera's train —
-/// and `Err` when the wheel failed the read or reported itself moving.
-/// A templated capture fails on the `Err`; the document only drops its
-/// `filter` field.
+/// and `Err` when the wheel failed the read, reported itself moving, or
+/// did not answer within [`AUXILIARY_READ_TIMEOUT`]. A templated capture
+/// fails on the `Err`; the document only drops its `filter` field.
 type FilterRead = std::result::Result<Option<(String, u32)>, String>;
+
+/// How long a capture waits on one of its auxiliary device reads — the
+/// mount's pointing, the filter wheel — before counting it as failed
+/// (rp.md § Core Fields). A healthy read answers in milliseconds; the
+/// bound keeps a wedged device from adding its whole Alpaca timeout to
+/// every frame.
+const AUXILIARY_READ_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Slack on each side of the exposure window `rp` observed, within
 /// which a driver's `LastExposureStartTime` is believed: clocks on the
@@ -345,22 +352,32 @@ type FilterRead = std::result::Result<Option<(String, u32)>, String>;
 const EXPOSURE_START_SLACK_SECS: i64 = 2;
 
 /// The exposure-start instant the document records: the driver's own
-/// `LastExposureStartTime` when it lies inside `[requested_at,
-/// ready_at]` widened by [`EXPOSURE_START_SLACK_SECS`] — `rp` sent
-/// `StartExposure` no earlier than the first and saw `ImageReady` at the
-/// second, so a value outside is stale or from a skewed clock — else
-/// `rp`'s own `fallback` reading.
+/// `LastExposureStartTime` when it lies inside the window `rp` observed,
+/// widened by [`EXPOSURE_START_SLACK_SECS`] — no earlier than
+/// `requested_at`, just before `StartExposure` was sent, and no later
+/// than `ready_at` less the `exposure` itself, since an exposure that
+/// began after that could not have finished by `ImageReady`. A value
+/// outside is stale, stamped at readout, or from a skewed clock, and
+/// `rp`'s own `fallback` reading is recorded instead.
 fn exposure_start(
     driver: Option<DateTime<Utc>>,
     requested_at: DateTime<Utc>,
     ready_at: DateTime<Utc>,
+    exposure: Duration,
     fallback: DateTime<Utc>,
 ) -> DateTime<Utc> {
     let slack = TimeDelta::seconds(EXPOSURE_START_SLACK_SECS);
     let earliest = requested_at
         .checked_sub_signed(slack)
         .unwrap_or(requested_at);
-    let latest = ready_at.checked_add_signed(slack).unwrap_or(ready_at);
+    // Never before `requested_at`: a camera that reports ready a hair
+    // early must not empty the window.
+    let began_by = TimeDelta::from_std(exposure)
+        .ok()
+        .and_then(|exposure| ready_at.checked_sub_signed(exposure))
+        .unwrap_or(ready_at)
+        .max(requested_at);
+    let latest = began_by.checked_add_signed(slack).unwrap_or(began_by);
     match driver {
         Some(at) if (earliest..=latest).contains(&at) => at,
         Some(at) => {
@@ -369,32 +386,6 @@ fn exposure_start(
         }
         None => fallback,
     }
-}
-
-/// Drive `side` while `main` runs — the metadata reads a capture makes
-/// while its camera exposes. `main`'s error returns at once, abandoning
-/// `side`: an exposure that failed or was cancelled does not wait out a
-/// slow mount read. Otherwise both results, `side`'s awaited to the end
-/// if `main` finished first.
-async fn alongside<M, S, T, E>(main: M, side: S) -> std::result::Result<(T, S::Output), E>
-where
-    M: std::future::Future<Output = std::result::Result<T, E>>,
-    S: std::future::Future,
-{
-    tokio::pin!(main);
-    tokio::pin!(side);
-    let mut side_output = None;
-    let main_output = loop {
-        tokio::select! {
-            result = &mut main => break result?,
-            output = &mut side, if side_output.is_none() => side_output = Some(output),
-        }
-    };
-    let side_output = match side_output {
-        Some(output) => output,
-        None => side.await,
-    };
-    Ok((main_output, side_output))
 }
 
 /// What `capture_conditions` reads once the frame is ready, while the
@@ -423,23 +414,6 @@ struct FrameRecord<'a> {
     filter_read: FilterRead,
     target: Option<persistence::ExposureTarget>,
     frame_type: Option<FrameType>,
-}
-
-/// One optional camera property for the document (`gain`/`offset`):
-/// `None` when the driver does not implement it or the read failed —
-/// auxiliary metadata never fails a capture.
-fn optional_reading<T>(
-    camera_id: &str,
-    property: &str,
-    result: ascom_alpaca::ASCOMResult<T>,
-) -> Option<T> {
-    match result {
-        Ok(value) => Some(value),
-        Err(e) => {
-            debug!(camera_id, property, error = %e, "camera property unavailable; omitting it");
-            None
-        }
-    }
 }
 
 /// What one capture holds for its pipeline: the per-exposure snapshot
@@ -1240,25 +1214,23 @@ impl McpHandler {
             // unusable (rp.md § Core Fields, `exposure_started_at`).
             let start_returned_at = chrono::Utc::now();
 
-            // The mount and the filter wheel are read once, while the
-            // camera exposes: neither touches the camera, so the reads
-            // cost the capture nothing, and the motion gate keeps the
-            // mount still under an imaging-train exposure (rp.md § Core
-            // Fields, `pointing` / `filter`).
-            let ((), (pointing, filter_read)) = alongside(
+            // The mount is read once, while the camera exposes: it is
+            // never the camera, so the read costs the capture nothing
+            // (rp.md § Core Fields, `pointing`). A failed or cancelled
+            // exposure drops the read with it.
+            let ((), pointing) = tokio::try_join!(
                 Self::wait_for_image_ready(&cam, duration, progress, cancel),
-                async {
-                    tokio::join!(
-                        self.read_pointing(),
-                        self.read_frame_filter(camera_id, req.frame_type)
-                    )
-                },
-            )
-            .await?;
+                async { Ok(self.read_pointing().await) },
+            )?;
 
-            let conditions = self
-                .capture_conditions(camera_id, &cam, started_at, start_returned_at)
-                .await;
+            // The filter wheel is read once the exposure is done, beside
+            // the camera's own reads: a camera-integrated wheel answers
+            // through the camera's driver, which is not queried
+            // mid-exposure (rp.md § Core Fields, `filter`).
+            let (conditions, filter_read) = tokio::join!(
+                self.capture_conditions(camera_id, &cam, (started_at, start_returned_at), duration),
+                self.read_frame_filter(camera_id, req.frame_type),
+            );
 
             // Decision 11 (rp.md § Capture Tool Details): `frame_type`
             // stamps the document's `target`/`frame_type` fields.
@@ -1549,16 +1521,17 @@ impl McpHandler {
     /// before the FITS write happens. `captured_at` is likewise anchored
     /// here — once, reused both for `{night_date}` and the document's
     /// `captured_at` field — rather than read twice a few hundred
-    /// milliseconds apart. `requested_at`/`start_returned_at` bracket
-    /// `StartExposure`: the window the driver's start time must fall in,
-    /// and the fallback when it does not.
+    /// milliseconds apart. `started` is `rp`'s clock just before and just
+    /// after `StartExposure`: where the window the driver's start time
+    /// must fall in opens, and the fallback when it does not.
     async fn capture_conditions(
         &self,
         camera_id: &str,
         cam: &Arc<dyn Camera>,
-        requested_at: DateTime<Utc>,
-        start_returned_at: DateTime<Utc>,
+        started: (DateTime<Utc>, DateTime<Utc>),
+        exposure: Duration,
     ) -> CaptureConditions {
+        let (requested_at, start_returned_at) = started;
         let captured_at = chrono::Utc::now();
         let cooler_setpoint_c = self
             .cooling
@@ -1570,26 +1543,32 @@ impl McpHandler {
             cam.offset(),
             cam.last_exposure_start_time(),
         );
-        let driver_start =
-            optional_reading(camera_id, "LastExposureStartTime", driver_start).map(DateTime::from);
+        let driver_start = optional_read(
+            driver_start,
+            camera_id,
+            "LastExposureStartTime unavailable; recording rp's own exposure start",
+        )
+        .map(DateTime::from);
         CaptureConditions {
             captured_at,
             exposure_started_at: exposure_start(
                 driver_start,
                 requested_at,
                 captured_at,
+                exposure,
                 start_returned_at,
             ),
             cooler_setpoint_c,
             sensor_temperature_c: temperature.ok(),
-            gain: optional_reading(camera_id, "Gain", gain),
-            offset: optional_reading(camera_id, "Offset", offset),
+            gain: optional_read(gain, camera_id, "gain unavailable; the frame omits it"),
+            offset: optional_read(offset, camera_id, "offset unavailable; the frame omits it"),
         }
     }
 
     /// The mount's pointing for the document's `pointing` field (rp.md
     /// § Core Fields): one best-effort read. No mount, a disconnected
-    /// one, or a failed or non-finite read all yield `None`.
+    /// one, a mount found slewing, a read that fails, is non-finite or
+    /// takes longer than [`AUXILIARY_READ_TIMEOUT`] all yield `None`.
     async fn read_pointing(&self) -> Option<MountPointing> {
         let mount = match self.resolve_mount() {
             Ok((_entry, mount)) => mount,
@@ -1598,7 +1577,25 @@ impl McpHandler {
                 return None;
             }
         };
-        let (ra, dec) = tokio::join!(mount.right_ascension(), mount.declination());
+        let reads = async {
+            tokio::join!(
+                mount.right_ascension(),
+                mount.declination(),
+                mount.slewing()
+            )
+        };
+        let Ok((ra, dec, slewing)) = tokio::time::timeout(AUXILIARY_READ_TIMEOUT, reads).await
+        else {
+            debug!(timeout = ?AUXILIARY_READ_TIMEOUT, "mount pointing read timed out; omitting it");
+            return None;
+        };
+        // The motion gate only holds the mount still under an
+        // imaging-train exposure; a camera outside that train can expose
+        // while it slews, and a mid-slew read names nowhere the frame saw.
+        if matches!(slewing, Ok(true)) {
+            debug!("mount is slewing; omitting pointing");
+            return None;
+        }
         match (ra, dec) {
             (Ok(ra_hours), Ok(dec_degrees)) if ra_hours.is_finite() && dec_degrees.is_finite() => {
                 Some(MountPointing {
@@ -1932,8 +1929,9 @@ impl McpHandler {
     /// The capture's one filter-wheel read, feeding both the document's
     /// `filter` field and the `{filter}`/`{filter_position}` naming
     /// tokens: a live read from the camera's train filter wheel for a
-    /// `Light`, `Flat` or untyped frame; never a read for `Dark`/`Bias`,
-    /// since dark current isn't filter-dependent and an incidental wheel
+    /// `Light`, `Flat` or untyped frame, bounded by
+    /// [`AUXILIARY_READ_TIMEOUT`]; never a read for `Dark`/`Bias`, since
+    /// dark current isn't filter-dependent and an incidental wheel
     /// position on a dark is noise (rp.md § Capture Tool Details).
     async fn read_frame_filter(
         &self,
@@ -1943,7 +1941,12 @@ impl McpHandler {
         if matches!(frame_type, Some(FrameType::Dark | FrameType::Bias)) {
             return Ok(None);
         }
-        self.live_filter(camera_id).await
+        match tokio::time::timeout(AUXILIARY_READ_TIMEOUT, self.live_filter(camera_id)).await {
+            Ok(read) => read,
+            Err(_elapsed) => Err(format!(
+                "filter wheel read timed out after {AUXILIARY_READ_TIMEOUT:?}"
+            )),
+        }
     }
 
     /// Reads the live filter name + position from `camera_id`'s train,
@@ -3208,9 +3211,17 @@ mod tests {
     const REQUESTED: &str = "2026-03-02T01:15:00.000Z";
     const READY: &str = "2026-03-02T01:20:01.000Z";
     const FALLBACK: &str = "2026-03-02T01:15:00.050Z";
+    /// A 300 s exposure: begun by 01:15:01 to be ready at 01:20:01.
+    const EXPOSURE: Duration = Duration::from_secs(300);
 
     fn start_with(driver: Option<&str>) -> DateTime<Utc> {
-        exposure_start(driver.map(at), at(REQUESTED), at(READY), at(FALLBACK))
+        exposure_start(
+            driver.map(at),
+            at(REQUESTED),
+            at(READY),
+            EXPOSURE,
+            at(FALLBACK),
+        )
     }
 
     #[test]
@@ -3229,8 +3240,8 @@ mod tests {
             at("2026-03-02T01:14:58.000Z")
         );
         assert_eq!(
-            start_with(Some("2026-03-02T01:20:03.000Z")),
-            at("2026-03-02T01:20:03.000Z")
+            start_with(Some("2026-03-02T01:15:03.000Z")),
+            at("2026-03-02T01:15:03.000Z")
         );
     }
 
@@ -3238,46 +3249,32 @@ mod tests {
     fn a_driver_start_outside_the_window_falls_back_to_rps_clock() {
         // Stale: the previous frame's start.
         assert_eq!(start_with(Some("2026-03-02T01:09:00.000Z")), at(FALLBACK));
-        // From the future: a skewed camera-host clock.
-        assert_eq!(start_with(Some("2026-03-02T01:20:03.001Z")), at(FALLBACK));
+        // Too late to have finished a 300 s exposure by ImageReady.
+        assert_eq!(start_with(Some("2026-03-02T01:15:03.001Z")), at(FALLBACK));
+    }
+
+    #[test]
+    fn a_driver_start_stamped_at_readout_falls_back_to_rps_clock() {
+        assert_eq!(start_with(Some("2026-03-02T01:20:00.000Z")), at(FALLBACK));
+    }
+
+    #[test]
+    fn an_exposure_longer_than_the_observed_window_keeps_the_window_open() {
+        // ImageReady came back sooner than the exposure is long (a
+        // driver with a coarse clock): the window still opens at the
+        // request rather than closing before it.
+        let started = exposure_start(
+            Some(at("2026-03-02T01:15:01.000Z")),
+            at(REQUESTED),
+            at("2026-03-02T01:15:00.100Z"),
+            Duration::from_secs(1),
+            at(FALLBACK),
+        );
+        assert_eq!(started, at("2026-03-02T01:15:01.000Z"));
     }
 
     #[test]
     fn no_driver_start_falls_back_to_rps_clock() {
         assert_eq!(start_with(None), at(FALLBACK));
-    }
-
-    #[tokio::test]
-    async fn alongside_returns_both_results_when_main_finishes_first() {
-        let (main, side) = alongside(async { Ok::<_, String>(1) }, async {
-            tokio::task::yield_now().await;
-            2
-        })
-        .await
-        .unwrap();
-        assert_eq!((main, side), (1, 2));
-    }
-
-    #[tokio::test]
-    async fn alongside_returns_both_results_when_side_finishes_first() {
-        let (main, side) = alongside(
-            async {
-                tokio::task::yield_now().await;
-                Ok::<_, String>(1)
-            },
-            async { 2 },
-        )
-        .await
-        .unwrap();
-        assert_eq!((main, side), (1, 2));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn alongside_abandons_side_when_main_fails() {
-        let result = alongside(async { Err::<(), _>("exposure failed") }, async {
-            tokio::time::sleep(Duration::from_secs(3600)).await;
-        })
-        .await;
-        assert_eq!(result.unwrap_err(), "exposure failed");
     }
 }
