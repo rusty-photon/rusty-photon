@@ -244,13 +244,16 @@ sidecar stays the authority.
   capture's `StartExposure` cannot have overwritten it). `rp` accepts
   the driver's value only when it falls inside the window `rp` itself
   observed — no earlier than just before `StartExposure` was sent, and
-  no later than `ImageReady` less the exposure time, since an exposure
-  begun after that could not have finished — widened by 2 s on each
-  side for clock differences between the camera's host and `rp`'s. A
-  driver that does not implement the property, fails the read, or
-  reports a time outside that window (a stale start, or one stamped at
-  readout) gets `rp`'s own clock reading instead, taken the moment
-  `StartExposure` returned. Present on every frame this version
+  no later than the earlier of the moment `StartExposure` returned and
+  `ImageReady` less the exposure time (the bound that holds for a driver
+  whose `StartExposure` blocks through the exposure) — widened by 2 s on
+  each side for clock differences between the camera's host and
+  `rp`'s. A driver that does not implement the property, fails the
+  read, or reports a time outside that window (a stale start, or one
+  stamped at the end of the exposure or at readout) gets that latest
+  bound instead: `rp`'s clock as `StartExposure` returned for the usual
+  asynchronous driver, and never the end of the exposure for a
+  blocking one. Present on every frame this version
   captures. `captured_at` is unchanged: it marks capture *completion*
   (after readout), which is what `{night_date}` is keyed on.
 - `camera_name` — the driver's ASCOM `Name` (e.g. `"QHY600M"`), read
@@ -269,8 +272,11 @@ sidecar stays the authority.
   answers through the camera's own driver. Omitted for `Dark`/`Bias`
   (dark current is not filter-dependent, and an incidental wheel
   position on a dark is noise) and when the train has no wheel, or the
-  wheel is disconnected, moving, fails the read, or does not answer
-  within 3 s. When a naming template is configured
+  wheel is disconnected, moving, fails the read, or — when the frame's
+  filename does not depend on it — does not answer within 3 s (a
+  templated capture waits the wheel out, as it always has, rather than
+  lose a finished exposure to a slow read). When a naming template is
+  configured
   (`session.file_naming_pattern`), the one read feeds both the filename
   and this field, so they cannot disagree — and there a failed read
   fails a typed capture, whether or not the pattern names `{filter}`
@@ -278,8 +284,11 @@ sidecar stays the authority.
 - `gain`, `offset` — the camera's ASCOM `Gain`/`Offset`, read on every
   capture while it holds the camera. Never cached: both are
   operator-mutable, the same reason `get_camera_info` reads them live.
-  Omitted when the driver does not implement them (common on CCDs) or
-  the read fails.
+  Omitted when the driver does not implement them (common on CCDs), or
+  the read fails or does not answer within 3 s (the bound
+  `LastExposureStartTime` shares). Recorded as the driver reports them:
+  for a driver in ASCOM's gain-index mode that is the index into its
+  `Gains` list, which still keeps frames at different gains apart.
 - `pointing` — where the mount was pointing: `ra_hours`/`dec_degrees`
   exactly as the mount reports them, in the mount's own equatorial
   system (often JNow; `rp` does not convert). Read once, right after
@@ -287,9 +296,13 @@ sidecar stays the authority.
   [mount motion gate](#mount-motion-gate) keeps the mount from slewing
   under an imaging-train exposure, so one read describes the frame. A
   camera outside the imaging train is not held by the gate, so a mount
-  that reports `Slewing` at the read leaves the field out rather than
-  record a point mid-move. Also omitted when no mount is configured or
-  connected, or the read fails or does not answer within 3 s.
+  that reports `Slewing` at the read — or fails to say — leaves the
+  field out rather than record a point mid-move (a driver without
+  `Slewing` counts as still). The read runs on its own task and the
+  frame waits for it at most half a second once the image is ready, so
+  the mount never delays a frame; a read still out then is dropped.
+  Also omitted when no mount is configured or connected, or the read
+  fails.
   Distinct from `target.ra_hours`/`target.dec_degrees`, which are the
   catalog (J2000) coordinates of what the frame is *of*.
 
@@ -591,11 +604,17 @@ Rules the table does not show:
 - **No `SITEELEV`**: the site carries no elevation
   ([Site Configuration](#site-configuration)).
 - **Absent means unknown, never a placeholder.** A keyword whose source
-  is missing is omitted rather than written as `0`, `''` or `'NA'`. A
-  value that cannot be written as a FITS card — a string with
-  non-ASCII characters, or too long for one 80-byte card — drops that
-  card (logged at `debug!`); the sidecar still carries the value. No
-  header problem fails a capture.
+  is missing is omitted rather than written as `0`, `''` or `'NA'`.
+- **Free text is folded, not dropped.** A string a FITS card cannot
+  carry as it is — a target named `Pleiades – M45`, a filter named
+  `Hα`, a name longer than one card — is folded: typographic dashes,
+  quotes and spaces become their ASCII look-alikes, any other character
+  outside printable ASCII becomes `?`, and the value is cut to the
+  card's 68 characters (an apostrophe counting twice). A folded value
+  still groups consistently in a stacker, where a missing card would
+  not; the sidecar keeps the original. `telescope` is validated at
+  config load instead, so it is never folded. No header problem fails
+  a capture.
 - Reals are written in the FITS exponential form
   (`EXPTIME = 3.0000000000E+02`), which every reader accepts.
 
@@ -1615,10 +1634,11 @@ incidental filter position on a dark/bias would be noise, not signal.
 The read happens once per capture, once the exposure completes, and the
 same value becomes the document's `filter` field and the header's
 `FILTER` card — those leave the field out where the filename renders
-`"NA"`. A failed read (the wheel errors, reports itself moving, or does
-not answer within 3 s) fails a templated capture rather than mis-filing
-the frame; for a capture that renders no filename it only drops the
-`filter` field.
+`"NA"`. A failed read (the wheel errors or reports itself moving) fails
+a templated capture rather than mis-filing the frame — and a templated
+capture waits a slow wheel out rather than time it; for a capture that
+renders no filename the read is bounded at 3 s and a failure only drops
+the `filter` field.
 
 *Directory/file rendering.* Once `target`/`frame_type` are resolved,
 `capture` renders `session.directory_pattern` then
