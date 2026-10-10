@@ -146,9 +146,12 @@ impl FilterWheelState {
                     "the filter wheel did not reach slot {commanded} within {deadline:?}; its status names {names}"
                 );
                 warn!(%failure, "filter wheel move failed");
+                // Where the wheel stopped is not known: under Linux the status
+                // of a wheel that has not stopped names the slot sent before
+                // the move, not the one it is on.
                 *target = None;
                 *self.move_sent_at.lock() = None;
-                *self.settled_position.lock() = actual;
+                *self.settled_position.lock() = None;
                 *self.failed_move.lock() = Some(failure.clone());
                 Err(failure)
             }
@@ -192,16 +195,22 @@ impl FilterWheelState {
         if let Some(under_way) = commanded.filter(|_| self.move_sent_at.lock().is_some()) {
             return Ok(Write::Refused { under_way });
         }
+        // The client has acted on a failed move: from here `Position` reads
+        // the wheel again, whatever becomes of this write (FW8).
+        *self.failed_move.lock() = None;
         if !self.reports_moving.load(Ordering::SeqCst)
             && last_sent.is_none_or(|last| last == target)
         {
             // No move of this connection's is under way, so the wheel stands on
-            // the slot last read. One whose slot is not known has no slot to go
-            // back to.
-            let stands_at = self
-                .settled_position
-                .lock()
-                .and_then(|slot| u32::try_from(slot).ok());
+            // the slot last read. Where none is held, as after a failed move,
+            // the status is read afresh; a wheel it names no slot for has no
+            // slot to go back to.
+            let held = *self.settled_position.lock();
+            let stands_at = match held {
+                Some(slot) => Some(slot),
+                None => named_slot(self.read_status(h)?, count),
+            }
+            .and_then(|slot| u32::try_from(slot).ok());
             if let Some(stands_at) = stands_at {
                 *last_sent = None;
                 self.prime(h, stands_at)?;
@@ -211,7 +220,6 @@ impl FilterWheelState {
         if sent.is_ok() {
             *self.target_position.lock() = Some(slot);
             *self.move_sent_at.lock() = Some(Instant::now());
-            *self.failed_move.lock() = None;
         }
         *last_sent = sent.is_ok().then_some(target);
         drop(last_sent);
@@ -224,7 +232,7 @@ impl FilterWheelState {
     fn prime(&self, h: &dyn FilterWheelHandle, stands_at: u32) -> Result<(), BackendError> {
         debug!(
             slot = stands_at,
-            "sending the wheel to the slot it stands on before the connection's first move"
+            "sending the wheel to the slot it stands on first, so its status cannot name the move's own slot in transit"
         );
         self.command_slot(h, stands_at)?;
         for _ in 0..PRIME_CONFIRM_READS {
@@ -1365,21 +1373,45 @@ mod tests {
         assert_eq!(handle.commands(), vec![0, 2, 3, 3]);
     }
 
-    /// Where a failed move leaves the wheel is where its status names, which
-    /// is the slot a move to the failed slot goes through (FW7).
+    /// Where a wheel stands when a failed move's slot is sent again need not
+    /// be where the driver last knew it: a CFW whose power comes back homes to
+    /// slot 0, and under Linux the status of a wheel that has not stopped
+    /// names the slot sent before the move. Sent back to a slot it is not on,
+    /// the prime would move it, so the status is read afresh.
     #[tokio::test]
-    async fn a_failed_move_leaves_the_wheel_where_its_status_names() {
+    async fn the_failed_slot_goes_through_the_slot_the_wheel_stands_on_when_it_is_sent_again() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        let device = connected_with_test_deadline(&handle).await;
+        device.set_position(2).await.unwrap();
+        assert_eq!(device.position().await.unwrap(), Some(2));
+        handle.drop_next_move.store(true, Ordering::SeqCst);
+        device.set_position(3).await.unwrap();
+        tokio::time::sleep(TEST_DEADLINE).await;
+        device.position().await.unwrap_err();
+        handle.set_reported_position(0);
+
+        device.set_position(3).await.unwrap();
+
+        assert_eq!(handle.commands(), vec![0, 2, 3, 0, 3]);
+    }
+
+    /// The failure is reported until the client acts on it, not until the
+    /// client's next move succeeds: a write that fails leaves `Position`
+    /// reading the wheel.
+    #[tokio::test]
+    async fn a_write_that_fails_after_a_failed_move_leaves_position_reading_the_wheel() {
         let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
         handle.drop_next_move.store(true, Ordering::SeqCst);
         let device = connected_with_test_deadline(&handle).await;
         device.set_position(3).await.unwrap();
-        handle.override_status(Some(CfwStatus::Slot(2)));
         tokio::time::sleep(TEST_DEADLINE).await;
         device.position().await.unwrap_err();
+        handle.fail_next_move.store(true, Ordering::SeqCst);
 
-        device.set_position(3).await.unwrap();
+        let err = device.set_position(5).await.unwrap_err();
 
-        assert_eq!(handle.commands(), vec![0, 3, 2, 3]);
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(device.position().await.unwrap(), Some(0));
     }
 
     /// A write that comes after the deadline, before any read saw it pass, is

@@ -2076,6 +2076,8 @@ pub(crate) mod mock {
         /// SDK takes the slot and the wheel stays where it is, its status naming
         /// that slot at rest.
         pub drop_next_move: AtomicBool,
+        /// One shot: the next command the SDK is sent fails.
+        pub fail_next_move: AtomicBool,
         pending: Mutex<Option<u32>>,
         /// The slot last commanded, which the SDK keeps across a close and
         /// re-open, as the real one does for as long as its process runs.
@@ -2134,6 +2136,7 @@ pub(crate) mod mock {
                 lifecycle: Arc::new(tokio::sync::Mutex::new(())),
                 defer_move: AtomicBool::new(false),
                 drop_next_move: AtomicBool::new(false),
+                fail_next_move: AtomicBool::new(false),
                 pending: Mutex::new(None),
                 commanded: Mutex::new(None),
                 transit: Mutex::new(0),
@@ -2370,6 +2373,9 @@ pub(crate) mod mock {
         fn set_position(&self, position: u32) -> BackendResult<()> {
             self.moves_sent.lock().push(std::time::Instant::now());
             self.on_bus()?;
+            if self.fail_next_move.swap(false, Ordering::SeqCst) {
+                return Err(BackendError("simulated move failure".to_string()));
+            }
             self.commands.lock().push(position);
             let before = self.commanded.lock().replace(position).unwrap_or(0);
             if position != *self.position.lock()
