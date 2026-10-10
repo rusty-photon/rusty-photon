@@ -29,16 +29,22 @@ the author is most of what a review is worth.
 
 **Level: `high`**, chosen on 2026-10-10 as the starting point; revisit
 it once a few PRs have been through. The level trades cost for recall.
-On Opus 5, as of Claude Code 2.1.296:
+With Opus 5.5 on Claude Code 2.1.296:
 
-| Level            | What runs                                                                                   | Reports |
-| ---------------- | ------------------------------------------------------------------------------------------- | ------: |
-| `low`            | one pass over the diff hunks, test files skipped, no verification                          |    ≤ 4 |
-| `medium`, `high` | one careful pass by a single reviewer that reads the surrounding code; no verification     |   ≤ 15 |
-| `xhigh`          | ten review angles worked through in one context, then a gap sweep; no verification         |   ≤ 15 |
-| `max`            | ten independent finder agents, a verifier per candidate, then a gap sweep                   |   ≤ 15 |
+| Level            | What runs                                                                   | Reports |
+| ---------------- | --------------------------------------------------------------------------- | ------: |
+| `low`            | one pass over the diff hunks, test files skipped, no verification          |    ≤ 4 |
+| `medium`, `high` | one agent works through eight review angles and dedups; no verification    |   ≤ 10 |
+| `xhigh`          | one agent works through ten angles, then a gap sweep; no verification      |   ≤ 15 |
+| `max`            | ten independent finder agents, a verifier per candidate, then a gap sweep   |   ≤ 15 |
 
-`--max-findings <n>|all` raises the cap. `/code-review ultra`, a cloud
+What runs depends on the model and the Claude Code version, so check
+before relying on this table: the review's prompt opens with a one-line
+summary of its recipe, visible in the review agent's transcript. The
+`high` review of #1459 on 2026-10-10 opened with
+`high effort → 8 inline angles → dedup (no verify) → ≤10 findings`; it
+took about three minutes and 94k tokens. `--max-findings <n>|all`
+raises the cap. `/code-review ultra`, a cloud
 review, can only be launched by a person. If real defects keep reaching
 merge past `high`, move the default up and record why here.
 
@@ -46,6 +52,17 @@ Without Claude Code, any careful reviewer works: give them the section
 below, and triage what they find the same way.
 
 ## What to look for here
+
+AGENTS.md rule 15 carries the short form of this section to every
+reviewer, `/code-review` included, because CLAUDE.md is the one file
+Claude Code loads into every review.
+
+**Anchor every finding to what the PR is for.** A finding must bear on
+whether the PR achieves its purpose, or breaks something on the way; it
+is not a licence to audit the surrounding system or to ask for work the
+PR defers. **Review a plan as a plan** (`docs/plans/`): contradictions,
+false claims about the code, a step that cannot work — not lock
+ordering, timeouts or exact APIs that prose is not meant to carry.
 
 The defect classes review has actually caught in this repo (§What the
 record shows), most productive first:

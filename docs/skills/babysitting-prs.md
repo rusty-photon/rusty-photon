@@ -22,13 +22,17 @@ latest push:
    head SHA, and it either raised no findings or every finding it raised
    was **declined** with the reason recorded. A decline changes no code,
    so there is nothing new to review. A fix voids the review: the fix
-   push needs its own. Any later push — docs included — needs one more
-   review, with one exception: a merge of `origin/main` that resolved no
-   conflicts adds nothing of the PR's own, so the earlier clean review
-   stands; say so in the report.
+   push needs its own. Any later push needs one more review — docs
+   included, and a merge of `origin/main` too, since what landed on
+   `main` can change what the PR's code does.
 3. **Every finding has a recorded response** — a reply on every review
-   thread (the review's and any human reviewer's), and an outcome for
-   each finding the review could not post inline.
+   thread (the review's and any human reviewer's), an outcome for each
+   finding the review could not post inline, and an answer to every
+   human comment in the PR conversation. Check it by re-reading the PR's
+   reviews, review comments and conversation comments before reporting:
+   the watcher cannot see a comment from the account the loop posts as —
+   on this repo that is the owner's — nor any conversation comment
+   (§Pacing).
 4. **No merge conflicts** (`gh pr view <n> --json mergeable`).
 
 Then report merge readiness and stop. Merging is the repo owner's
@@ -116,7 +120,12 @@ The review needs no watcher: it runs in the loop's foreground. The CI
 watcher exits on whichever comes first:
 the PR is **no longer open**, it is **conflicting**, any **check
 failed**, **no checks pending**, or a **new review from someone else**
-(a human reviewer) beyond the baseline it started with. The shape:
+(a human reviewer) beyond the baseline it started with. It excludes
+reviews by the account `gh` is logged in as, because the loop's own
+posts would otherwise wake it, so it misses the owner's comments when
+the loop runs as the owner; it also ignores conversation comments. The
+re-read before reporting (merge-ready criterion 3) covers both. The
+shape:
 
 ```sh
 # watch-pr.sh <pr-number> <others-review-baseline>
@@ -140,7 +149,7 @@ for _ in $(seq 1 90); do   # ~90 min at the 60 s poll at the foot of the loop
   # A CONFLICTING PR gets no pull_request runs at all — see "When no
   # checks appear at all".
   mergeable=$(gh pr view "$1" --json mergeable --jq .mergeable)
-  [ "${mergeable:-UNKNOWN}" = "CONFLICTING" ] && { echo "PR is CONFLICTING: no CI will run — merge origin/main (step 3)"; exit 0; }
+  [ "${mergeable:-UNKNOWN}" = "CONFLICTING" ] && { echo "PR is CONFLICTING: no CI will run — merge origin/main (step 5)"; exit 0; }
   # Every `--paginate` read slurps (`jq -s`): gh emits one array per page,
   # and `.[][]` reaches the reviews only once those arrays are gathered into
   # one. Your own reviews — the inline findings `--comment` posts, and the
@@ -210,7 +219,7 @@ means no run was created. Check the cheap cause first: **a PR that is
 `CONFLICTING` gets no `pull_request` runs at all**, because GitHub cannot
 build the merge commit those runs check out — so the PR can look
 reviewed but is untested. `gh pr view <n> --json mergeable` answers it;
-merging `origin/main` into the branch (step 3 of the loop) makes the
+merging `origin/main` into the branch (step 5 of the loop) makes the
 next push run normally. On PR #1335 two pushes in a row went un-run this
 way after `main` moved under the branch, with other PRs' runs landing
 throughout. Only then look for an Actions-side cause: whether runs are
