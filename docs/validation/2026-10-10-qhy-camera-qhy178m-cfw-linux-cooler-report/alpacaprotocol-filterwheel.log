@@ -1,0 +1,19 @@
+11:05:19.565 Check Alpaca Protocol - Conform Universal 4.5.0 (Build 53834.49ab847) 
+11:05:19.565                                     
+11:05:19.565 Test FilterWheel device:  - 127.0.0.1:11121 through URL: http://127.0.0.1:11121 
+11:05:19.565                                     
+11:05:19.570 OK messages are suppressed, they can be enabled through the Alpaca and COM settings page. 
+11:05:19.570                                     
+11:05:19.570 Connecting to device...             
+11:05:20.626                                     
+11:05:20.626 Successfully connected to device, disconnecting in order to test that connection using a different PUT parameter order is successful... 
+11:05:20.728                                     
+11:05:20.728 Successfully disconnected from device, re-connecting using re-ordered PUT parameters... 
+11:05:20.728                                     
+11:05:21.742 Successfully connected to device using re-ordered PUT parameters, testing device... 
+11:05:21.742                                     
+11:05:21.746 Device exposes interface version 3  
+11:05:23.915                                     
+11:05:23.915 Successfully disconnected from device. 
+11:05:23.915                                     
+11:05:23.915 Congratulations there were no errors, issues or information alerts - Your device passes ASCOM Alpaca protocol validation!! 

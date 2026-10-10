@@ -7,14 +7,39 @@
 //! returns `None` while the commanded target differs from the actual slot (ASCOM
 //! "moving" sentinel); `FocusOffsets` is zero per filter in v0.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use ascom_alpaca::api::{Device, FilterWheel};
 use ascom_alpaca::{ASCOMError, ASCOMResult};
 use parking_lot::Mutex;
+use qhyccd_rs::CfwStatus;
 use tracing::debug;
 
-use crate::backend::{FilterWheelHandle, Verdict};
+use crate::backend::{BackendError, FilterWheelHandle, Verdict};
+
+/// The least time between the wheel's last status read returning and the next
+/// move it is sent (FW5). A QHY CFW drops a move commanded within ~10 ms of the
+/// read that saw the previous move arrive: the wheel never starts, and its
+/// status goes on naming the slot it is at. 15 ms was already enough on a
+/// QHY178M + CFW3; this is the margin, and a move takes seconds anyway.
+const REST_AFTER_STATUS_READ: Duration = Duration::from_millis(250);
+
+/// How many status reads a prime waits for the wheel to name the slot it was
+/// sent back to (FW7). The first read named it every time it was measured; a
+/// read of a wheel at rest takes ~255 ms, so this gives up after about 2 s.
+const PRIME_CONFIRM_READS: u32 = 8;
+
+/// The slot a status read names on a wheel of `count` slots: none while the
+/// wheel reports itself moving (FW7), and none for a slot outside the count,
+/// which is what the status decode makes of any other nonstandard byte.
+fn named_slot(status: CfwStatus, count: usize) -> Option<usize> {
+    match status {
+        CfwStatus::Slot(slot) => usize::try_from(slot).ok().filter(|slot| *slot < count),
+        CfwStatus::Moving => None,
+    }
+}
 
 /// Slots are `usize` throughout because that is what every consumer is: the
 /// ASCOM `Position`, and the `Names` / `FocusOffsets` lengths that must match
@@ -28,6 +53,97 @@ struct FilterWheelState {
     /// while a move is in flight, so a settled `Position` costs no SDK call —
     /// see [`QhyFilterWheelDevice::position`].
     settled_position: Mutex<Option<usize>>,
+    /// When the wheel's last status read returned. Every status read and every
+    /// move holds this lock across its SDK call, so a move can neither go out
+    /// beside a read still in flight nor follow a finished one by less than
+    /// [`REST_AFTER_STATUS_READ`] (FW5).
+    last_status_read: Mutex<Option<Instant>>,
+    /// Whether this connection has sent the wheel a slot (FW7). Until it has,
+    /// the Linux SDK may name a move's own target while the wheel travels;
+    /// once it has, the slot named in transit is the one this driver last
+    /// commanded, which FW2 never sends again. Cleared at every connect, and by
+    /// a send that fails. Every move holds this lock for its whole sequence, so
+    /// a prime and the move it serves go out together.
+    sent_this_connection: Mutex<bool>,
+    /// The wheel has reported itself moving (`'N'`, FW7), so its status never
+    /// names a slot in transit and no move needs a prime. That is the SDK
+    /// build's doing, so it holds for as long as the service runs.
+    reports_moving: AtomicBool,
+}
+
+impl FilterWheelState {
+    /// Read what the wheel's status reports, noting when the read returned
+    /// (FW5) and whether it said the wheel is moving (FW7).
+    fn read_status(&self, h: &dyn FilterWheelHandle) -> Result<CfwStatus, BackendError> {
+        let mut last_read = self.last_status_read.lock();
+        let status = h.get_position();
+        *last_read = Some(Instant::now());
+        drop(last_read);
+        if matches!(status, Ok(CfwStatus::Moving)) {
+            self.reports_moving.store(true, Ordering::SeqCst);
+        }
+        status
+    }
+
+    /// Send the wheel to `slot`: first, on a connection's first move, back to
+    /// the slot it stands on, when its status could otherwise name `slot`
+    /// before the wheel gets there (FW7).
+    fn move_to(&self, h: &dyn FilterWheelHandle, slot: u32) -> Result<(), BackendError> {
+        let mut sent_before = self.sent_this_connection.lock();
+        if !*sent_before && !self.reports_moving.load(Ordering::SeqCst) {
+            // Nothing has been sent on this connection, so no move of its own
+            // is under way: the wheel stands on the slot last read. One whose
+            // slot the connect could not read has no slot to go back to.
+            let stands_at = self
+                .settled_position
+                .lock()
+                .and_then(|slot| u32::try_from(slot).ok());
+            if let Some(stands_at) = stands_at {
+                self.prime(h, stands_at)?;
+            }
+        }
+        let sent = self.command_slot(h, slot);
+        *sent_before = sent.is_ok();
+        sent
+    }
+
+    /// Send the wheel to the slot it stands on, which does not move it, and
+    /// read until the status names that slot. A move sent next then names this
+    /// slot in transit, not its own target (FW7).
+    fn prime(&self, h: &dyn FilterWheelHandle, stands_at: u32) -> Result<(), BackendError> {
+        debug!(
+            slot = stands_at,
+            "sending the wheel to the slot it stands on before the connection's first move"
+        );
+        self.command_slot(h, stands_at)?;
+        for _ in 0..PRIME_CONFIRM_READS {
+            if self.read_status(h)? == CfwStatus::Slot(stands_at) {
+                return Ok(());
+            }
+        }
+        Err(BackendError(format!(
+            "the wheel's status did not name slot {stands_at}, the one it stands on"
+        )))
+    }
+
+    /// Send the wheel to `slot`, no sooner than [`REST_AFTER_STATUS_READ`]
+    /// after its last status read returned (FW5).
+    fn command_slot(&self, h: &dyn FilterWheelHandle, slot: u32) -> Result<(), BackendError> {
+        let last_read = self.last_status_read.lock();
+        let rest = last_read.map_or(Duration::ZERO, |at| {
+            REST_AFTER_STATUS_READ.saturating_sub(at.elapsed())
+        });
+        if !rest.is_zero() {
+            debug!(
+                ?rest,
+                slot, "the wheel's status was just read; resting before the move"
+            );
+            std::thread::sleep(rest);
+        }
+        let sent = h.set_position(slot);
+        drop(last_read);
+        sent
+    }
 }
 
 /// One ASCOM `FilterWheel` device per discovered CFW.
@@ -64,6 +180,9 @@ impl QhyFilterWheelDevice {
                 number_of_filters: Mutex::new(None),
                 target_position: Mutex::new(None),
                 settled_position: Mutex::new(None),
+                last_status_read: Mutex::new(None),
+                sent_this_connection: Mutex::new(false),
+                reports_moving: AtomicBool::new(false),
             }),
         }
     }
@@ -184,34 +303,35 @@ impl QhyFilterWheelDevice {
         // an idle wheel reads the SDK: from here on the slot only changes when
         // this driver commands it, so `position` serves the settled value from
         // cache (FW1).
-        let position = self
-            .handle
-            .get_position()
+        let status = self
+            .state
+            .read_status(self.handle.as_ref())
             .map_err(|_| ASCOMError::NOT_CONNECTED)?;
         // The slot count sizes `Names` and `FocusOffsets`, so a wheel reporting
         // one this target cannot address has not handshaken.
         let Ok(count) = usize::try_from(count) else {
             return Err(ASCOMError::NOT_CONNECTED);
         };
-        // The slot is different: `cfw_ascii_to_slot` degrades a nonstandard CFW
-        // status byte into `byte - 0x30` rather than failing, so a value outside
-        // the wheel's own count is what a wheel that is not reporting a slot —
-        // one still moving, most likely — looks like from here. ASCOM's answer
+        // The status is different: a wheel that reports itself moving, or
+        // names no slot it has, is still on its way somewhere. ASCOM's answer
         // for that is the moving sentinel (`Position` = -1), not a refused
         // connect, so cache no slot and let `position` adopt one as soon as the
         // wheel reports a real one.
-        let settled = usize::try_from(position).ok().filter(|slot| *slot < count);
+        let settled = named_slot(status, count);
         if settled.is_none() {
             debug!(
                 filter_wheel = %self.unique_id,
                 slots = count,
-                reported = position,
-                "CFW reported no readable slot at connect; Position stays the moving sentinel until it does"
+                ?status,
+                "CFW reported no slot at connect; Position stays the moving sentinel until it does"
             );
         }
         *self.state.number_of_filters.lock() = Some(count);
         *self.state.target_position.lock() = settled;
         *self.state.settled_position.lock() = settled;
+        // The SDK keeps the slot it was last sent across a close and re-open,
+        // and this connection does not know which that is (FW7).
+        *self.state.sent_this_connection.lock() = false;
         debug!(filter_wheel = %self.unique_id, slots = count, "filter wheel connected");
         Ok(())
     }
@@ -354,13 +474,15 @@ impl FilterWheel for QhyFilterWheelDevice {
             return Ok(target);
         }
 
-        let actual = self
-            .on_handle(|h| h.get_position().map_err(|_| ASCOMError::INVALID_OPERATION))
+        let state = Arc::clone(&self.state);
+        let status = self
+            .on_handle(move |h| {
+                state
+                    .read_status(h)
+                    .map_err(|_| ASCOMError::INVALID_OPERATION)
+            })
             .await?;
-        // The SDK answers in `u32` and decodes any nonstandard status byte to
-        // `byte - 0x30`, so a slot outside the wheel's own count is a status
-        // that does not name a slot rather than a slot to report.
-        let actual = usize::try_from(actual).ok().filter(|slot| *slot < count);
+        let actual = named_slot(status, count);
 
         // `None` is the ASCOM "moving" sentinel (`Position` = -1).
         match (actual, target) {
@@ -391,13 +513,19 @@ impl FilterWheel for QhyFilterWheelDevice {
                 "filter position {position} out of range (0..{count})"
             )));
         }
+        // The slot already commanded is not sent again, settled or not. In
+        // transit the Linux SDK's status names the slot commanded before the
+        // move, so a resend of a dropped move names its own slot from the first
+        // read and would read as an arrival while the wheel still turns (FW5).
         if *self.state.target_position.lock() == Some(position) {
             return Ok(());
         }
         // `position < count`, and the count itself came from an SDK `u32`.
         let target = u32::try_from(position).map_err(|_| ASCOMError::INVALID_OPERATION)?;
+        let state = Arc::clone(&self.state);
         self.on_handle(move |h| {
-            h.set_position(target)
+            state
+                .move_to(h, target)
                 .map_err(|_| ASCOMError::INVALID_OPERATION)
         })
         .await?;
@@ -553,6 +681,94 @@ mod tests {
         assert_eq!(handle.get_position_calls.load(Ordering::SeqCst), settled);
     }
 
+    /// FW5: a client that commands the next slot as soon as `Position` names
+    /// the last one gets its move sent only after the wheel has rested from
+    /// the read that saw it arrive — sent straight after, a CFW drops it.
+    #[tokio::test]
+    async fn a_move_rests_after_the_read_that_saw_the_last_one_arrive() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.defer_move.store(true, Ordering::SeqCst);
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().await.unwrap();
+        device.set_position(3).await.unwrap();
+        handle.complete_move();
+        assert_eq!(device.position().await.unwrap(), Some(3));
+
+        device.set_position(5).await.unwrap();
+
+        let arrival_read = *handle.reads_returned().last().unwrap();
+        let next_move = *handle.moves_sent().last().unwrap();
+        assert!(
+            next_move.duration_since(arrival_read) >= REST_AFTER_STATUS_READ,
+            "the move went out {:?} after the read that saw the wheel arrive",
+            next_move.duration_since(arrival_read)
+        );
+    }
+
+    /// FW5: the rest is what is left of it, not a delay on every move — a
+    /// wheel that has been still for longer is sent its move at once.
+    #[tokio::test]
+    async fn a_move_to_a_rested_wheel_goes_out_at_once() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().await.unwrap();
+        // Past the connection's first move, whose prime reads the status
+        // straight before it (FW7).
+        device.set_position(3).await.unwrap();
+        assert_eq!(device.position().await.unwrap(), Some(3));
+        tokio::time::sleep(REST_AFTER_STATUS_READ).await;
+
+        let asked = std::time::Instant::now();
+        device.set_position(5).await.unwrap();
+
+        let sent = *handle.moves_sent().last().unwrap();
+        assert!(
+            sent.duration_since(asked) < REST_AFTER_STATUS_READ / 2,
+            "a rested wheel's move waited {:?}",
+            sent.duration_since(asked)
+        );
+    }
+
+    /// FW5: a move does not go out beside a status read still in flight — a
+    /// second client's `Position` poll — but waits for it, then rests.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_move_waits_for_a_status_read_in_flight_and_then_rests() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.defer_move.store(true, Ordering::SeqCst);
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().await.unwrap();
+        device.set_position(3).await.unwrap();
+        let sent_before = handle.moves_sent().len();
+
+        let hold = handle.hold_read_until_dropped();
+        let poller = device.clone();
+        let poll = tokio::spawn(async move { poller.position().await });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !handle.is_in_read() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the poll never reached the SDK"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        let mover = device.clone();
+        let next = tokio::spawn(async move { mover.set_position(5).await });
+        // Long enough for a move that did not wait for the read to have gone.
+        tokio::time::sleep(REST_AFTER_STATUS_READ * 2).await;
+        assert_eq!(
+            handle.moves_sent().len(),
+            sent_before,
+            "a move was sent while a status read was still in flight"
+        );
+
+        drop(hold);
+        assert_eq!(poll.await.unwrap().unwrap(), None);
+        next.await.unwrap().unwrap();
+        let read = *handle.reads_returned().last().unwrap();
+        let next_move = *handle.moves_sent().last().unwrap();
+        assert!(next_move.duration_since(read) >= REST_AFTER_STATUS_READ);
+    }
+
     #[tokio::test]
     async fn failed_handshake_closes_the_handle() {
         // open() succeeds but the post-open handshake fails: a failed connect
@@ -676,10 +892,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_wheel_naming_no_slot_at_connect_reports_moving_then_adopts_one() {
-        // `cfw_ascii_to_slot` decodes any nonstandard CFW status byte as
-        // `byte - 0x30`, which for anything past 'F' lands outside the wheel's
-        // slot count — 'N' (0x4E) decodes to 30 on a 7-slot wheel. That is a
-        // status which does not name a slot, most likely a wheel still moving.
+        // The status decode makes any nonstandard CFW status byte other than
+        // 'N' into `byte - 0x30`, which for anything past 'F' lands outside the
+        // wheel's slot count. That is a status which does not name a slot.
         // ASCOM's answer is the moving sentinel (`Position` = -1), not a
         // refused connect and not a slot `Names` has no entry for.
         let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
@@ -699,6 +914,159 @@ mod tests {
         let settled = handle.get_position_calls.load(Ordering::SeqCst);
         assert_eq!(device.position().await.unwrap(), Some(4));
         assert_eq!(handle.get_position_calls.load(Ordering::SeqCst), settled);
+    }
+
+    /// A wheel already on its way somewhere when the client connects, on an
+    /// SDK that passes the CFW's `'N'` through (FW7).
+    #[tokio::test]
+    async fn a_wheel_moving_at_connect_reports_moving_then_adopts_its_slot() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.reports_moving.store(true, Ordering::SeqCst);
+        handle.defer_move.store(true, Ordering::SeqCst);
+        handle.set_position(4).unwrap();
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+
+        device.connect().await.unwrap();
+        assert_eq!(device.position().await.unwrap(), None);
+        assert_eq!(device.names().await.unwrap().len(), 7);
+
+        handle.complete_move();
+        assert_eq!(device.position().await.unwrap(), Some(4));
+    }
+
+    // --- FW7: the status in transit, and a connection's first move ----------
+
+    /// The Linux SDK names the slot commanded before a move for as long as the
+    /// move travels, and slot 0 before any. Sent straight to slot 0, a
+    /// connection's first move would read as arrived at once.
+    #[tokio::test]
+    async fn a_first_move_to_slot_zero_reads_moving_until_the_wheel_arrives() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.set_reported_position(3);
+        handle.defer_move.store(true, Ordering::SeqCst);
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().await.unwrap();
+
+        device.set_position(0).await.unwrap();
+
+        assert_eq!(
+            device.position().await.unwrap(),
+            None,
+            "the wheel is still on its way to slot 0"
+        );
+        handle.complete_move();
+        assert_eq!(device.position().await.unwrap(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn a_connections_first_move_goes_through_the_slot_the_wheel_stands_on() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.set_reported_position(3);
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().await.unwrap();
+        let reads_before = handle.get_position_calls.load(Ordering::SeqCst);
+
+        device.set_position(5).await.unwrap();
+
+        assert_eq!(handle.commands(), vec![3, 5]);
+        assert_eq!(
+            handle.get_position_calls.load(Ordering::SeqCst),
+            reads_before + 1,
+            "one read confirmed the slot the wheel stands on"
+        );
+        let confirmed = *handle.reads_returned().last().unwrap();
+        let sent = *handle.moves_sent().last().unwrap();
+        assert!(
+            sent.duration_since(confirmed) >= REST_AFTER_STATUS_READ,
+            "the move went out {:?} after the read that confirmed the prime",
+            sent.duration_since(confirmed)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_later_move_goes_straight_to_its_slot() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().await.unwrap();
+        device.set_position(3).await.unwrap();
+        assert_eq!(device.position().await.unwrap(), Some(3));
+
+        device.set_position(5).await.unwrap();
+
+        assert_eq!(handle.commands(), vec![0, 3, 5]);
+    }
+
+    /// The SDK keeps the slot it was last sent across a close and re-open, but
+    /// a connection does not take that on trust.
+    #[tokio::test]
+    async fn a_reconnect_primes_its_first_move_again() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.set_connected(true).await.unwrap();
+        device.set_position(3).await.unwrap();
+        assert_eq!(device.position().await.unwrap(), Some(3));
+        device.set_connected(false).await.unwrap();
+        device.set_connected(true).await.unwrap();
+
+        device.set_position(5).await.unwrap();
+
+        assert_eq!(handle.commands(), vec![0, 3, 3, 5]);
+    }
+
+    /// The Windows SDK passes the CFW's `'N'` through, so a wheel that has
+    /// reported itself moving never names a slot in transit, on any connection.
+    #[tokio::test]
+    async fn a_wheel_that_has_reported_itself_moving_is_not_primed_again() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.reports_moving.store(true, Ordering::SeqCst);
+        handle.defer_move.store(true, Ordering::SeqCst);
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.set_connected(true).await.unwrap();
+        device.set_position(3).await.unwrap();
+        assert_eq!(device.position().await.unwrap(), None);
+        handle.complete_move();
+        assert_eq!(device.position().await.unwrap(), Some(3));
+        device.set_connected(false).await.unwrap();
+        device.set_connected(true).await.unwrap();
+
+        device.set_position(5).await.unwrap();
+
+        assert_eq!(handle.commands(), vec![0, 3, 5]);
+    }
+
+    /// A wheel whose status does not name the slot it was sent back to is not
+    /// where the driver thinks; the move is refused rather than sent blind.
+    #[tokio::test]
+    async fn a_prime_the_status_does_not_confirm_refuses_the_move() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().await.unwrap();
+        handle.override_status(Some(CfwStatus::Slot(2)));
+
+        let err = device.set_position(3).await.unwrap_err();
+
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(handle.commands(), vec![0], "the move itself was not sent");
+        assert_eq!(device.position().await.unwrap(), Some(0));
+
+        // The next move is primed again.
+        handle.override_status(None);
+        device.set_position(3).await.unwrap();
+        assert_eq!(handle.commands(), vec![0, 0, 3]);
+    }
+
+    /// With no slot read at connect there is no slot to send the wheel back
+    /// to, so the move goes out as it is.
+    #[tokio::test]
+    async fn a_wheel_whose_slot_the_connect_could_not_read_is_sent_its_move_unprimed() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.set_reported_position(30);
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().await.unwrap();
+
+        device.set_position(3).await.unwrap();
+
+        assert_eq!(handle.commands(), vec![3]);
     }
 
     #[tokio::test]

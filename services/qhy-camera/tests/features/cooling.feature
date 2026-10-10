@@ -6,6 +6,8 @@ Feature: Cooling
   supported, CCDTemperature reads the current sensor temperature (K2),
   SetCCDTemperature validates the target against [-273.15, 80] and reads it
   back (K3), and CoolerOn / CoolerPower map to the SDK PWM controls (K4).
+  CoolerOn reports what survived a reconnect's init: a cooler still drawing
+  power after it reads on, and one the init switched off reads off (K4).
   The simulated QHY178M-Simulated camera has a cooler.
 
   Background:
@@ -36,3 +38,12 @@ Feature: Cooling
     When I turn the cooler on for camera device 0
     Then camera device 0 reports CoolerOn as true
     And camera device 0 reports a CoolerPower between 0 and 100
+
+  Scenario: A cooler still regulating through a reconnect is still reported on
+    When I set the target CCD temperature to -10.0 on camera device 0
+    And I turn the cooler on for camera device 0
+    And I wait for the cooler on camera device 0 to draw power
+    And I disconnect camera device 0
+    And I connect camera device 0
+    Then camera device 0 reports CoolerOn as true
+    And camera device 0 reports SetCCDTemperature as -10.0

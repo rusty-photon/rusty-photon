@@ -506,16 +506,23 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   sequence (`SetQHYCCDReadMode`, `InitQHYCCD`) has run, whether it succeeded or
   failed at any step (RM4). A connect reads the camera's gain and offset and
   writes neither; they reach the camera only inside a `StartExposure` (GO1,
-  GO2). **Known vendor-SDK side
-  effect outside our control:** `OpenQHYCCD`/`InitQHYCCD` run on connect (C1),
-  and QHY filter wheels auto-home at the firmware level on init — a physical
-  wheel rotation the SDK performs on its own. Operators with a CFW should
-  expect the wheel to home when a client first connects the camera. No
-  validation record has observed that homing yet, and the SDK library's init
-  code for the QHY600 and QHY5III classes sends no filter-wheel command, so the
-  statement stands as the vendor's rather than a measured one. A readout-mode
-  change runs `InitQHYCCD` too (RM1), so whatever init does on connect it also
-  does there — on a path a client started, not on connect.
+  GO2). **A connect does not home the filter wheel (measured).**
+  `OpenQHYCCD`/`InitQHYCCD` run on connect (C1), and QHY's filter wheels were
+  held to home at the firmware level on init. On the dev box's QHY178M + CFW3
+  ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-wheel/README.md)),
+  a wheel settled at slot 3 stayed there through two re-inits on an open
+  handle and a close and re-open with its init. A fresh SDK start left it
+  there too. The status named slot 3 throughout, at the pace of a wheel at
+  rest, from the first read after each init: a status read takes ≈255 ms then,
+  and ≈100 ms while the wheel travels. The SDK library's init code for the
+  QHY600 and QHY5III classes sends no filter-wheel command either. Rig2's
+  QHY600M + CFW under Windows did the same with SDK 24.01.09 and 26.07.28: its
+  wheel at slot 3 read slot 3 at the at-rest pace on every read through two
+  re-inits and a close and re-open
+  ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-first-move/README.md)). Power does home a CFW, before any connect: left at
+  slot 5 and at slot 4 with its 12 V off, the dev box's wheel read slot 0
+  once the 12 V came back. A readout-mode change runs `InitQHYCCD`
+  too (RM1), so what holds for a connect holds there.
 - **C6.** A connect **clears every cache its handshake republishes** — the CCD
   info and effective area, the size reported from it, the valid binning modes,
   the cached ROI and bin, the exposure/gain/offset limits and the gain and
@@ -533,8 +540,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   no list supports, `VALUE_NOT_SET` for the geometry, for `BinX`/`BinY`, for
   the gain and offset bounds and values — a `Gain` or `Offset` write among
   them — and for `ReadoutMode`, `ReadoutModes` and a
-  `ReadoutMode` write, and a refused `StartExposure` — *not ready yet*
-  rather than the previous session's numbers. `BinX` is `VALUE_NOT_SET` rather
+  `ReadoutMode` write — *not ready yet* rather than the previous session's
+  numbers. A `StartExposure` there is refused as busy (E2), since the connect
+  owns the device (below). `BinX` is `VALUE_NOT_SET` rather
   than the 1 the handshake settles on because that 1 belongs to the geometry
   the handshake has not read yet, and is published with it and with the list
   a bin is checked against (B1): answered in the window, it would be a bin for
@@ -619,13 +627,48 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   claim, ask it once, when they hold the lock a mode change holds and before
   their SDK write (RM4): they can wait there for as long as a mode change runs.
 
-  A connect's own handshake answers to the same rule: it publishes **in the
-  session it established, or not at all.** A disconnect or a later connect
-  arriving while its reads were running has taken the device somewhere else, and
-  the snapshot in its hands describes where the camera used to be. Such a
-  handshake also leaves the handle alone on its way out — the device is no
-  longer its to close, and closing it would take down the session that replaced
-  it. **Reaching the close ends the session** too — whether or not
+  **A connect owns the device from before its open until its caches are live.**
+  It takes the device claim a mode change takes (B4) before anything else —
+  before its session begins and before `OpenQHYCCD` — and holds it, inside the
+  connection's lifecycle lock (C8), across the whole handshake: the stream
+  mode, the readout mode, `InitQHYCCD`, the transfer depth,
+  `normalize_geometry`'s bin and resolution, and the commit. Those are writes
+  to the *camera*, the same ones a mode change makes, and they get the same
+  ownership: no capture, no abort's SDK cancel and no disconnect's close can
+  reach the camera between them, because every one of those owns the device
+  first. A claim found already held — a capture from the session before still
+  inside the SDK, or an abort's cancel finishing on the closed handle — refuses
+  the connect with `INVALID_OPERATION`, rather than running `InitQHYCCD` under a
+  live readout or letting that cancel land on the reopened handle. Refused
+  there, the connect has changed nothing: no session begun, no cache cleared,
+  and a retry goes through once the owner lets go. The claim is released when
+  the connect returns, succeeded or failed. While it is held the device reports
+  itself busy on the terms B4 describes, and the cooler holds still (RM4): a
+  `CoolerOn` or `SetCCDTemperature` sent while a connect runs waits for it and
+  lands after its `InitQHYCCD`, which would otherwise undo it. That wait has no
+  deadline, as a mode change's has none: a cooler command that never comes back
+  from the SDK holds the connect, and the lifecycle transitions behind it, as
+  an `InitQHYCCD` that never returns would (B4).
+
+  The claim orders the device's *owners* — the paths that write to the camera
+  or close it — not every SDK call. Reads that take no claim go into the SDK
+  during the handshake as they do during a mode change: `CCDTemperature`,
+  `CoolerPower`, `CoolerOn`'s and the capability members' probes. A client is
+  not released into that window (C7), so such a read comes from a second client;
+  one that fails there answers as a failed read does (C3, C9).
+
+  A connect's own handshake also answers to the session rule: it publishes **in
+  the session it established, or not at all** — the commit every cache writer
+  makes. Neither half of that check can fail on a connect today: with the
+  device held and the lifecycle lock taken, nothing else begins a session or
+  closes the handle, and C9 gives no presence verdict while the lifecycle lock
+  is held, so a camera that leaves mid-handshake shows up as a failed SDK call
+  and a failed connect, not as a refused commit. The check is kept as the rule
+  every cache writer follows, as a mode change keeps its second one. A
+  handshake that fails closes the handle it opened, and with the claim held
+  that handle can be no one else's: a disconnect waits for the claim rather than
+  overtaking the handshake, and a later connect waits on the lifecycle lock in
+  front of it. **Reaching the close ends the session** too — whether or not
   `CloseQHYCCD` succeeds, because the handle's connected flag is cleared before
   that call and stays clear when it errors, so a close that failed has still
   disconnected the device and `Connected` reads false. That is what stops a
@@ -639,12 +682,14 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   values and bounds into hand — each value just ahead of its bounds, so the
   offset bounds remain the last thing it asks the device — and makes the caches
   live in one section at its end.
-  Published as they were read, the geometry and the exposure range together are
-  enough for a `StartExposure` to arm the SDK while the connect is still
-  questioning the device — two owners on one handle, which is the state the
-  capture claim exists to prevent. Readers take no lock, so those few stores are
-  not atomic against them; what the section removes is the handshake-long
-  stretch in which some caches answered and others did not.
+  Published as they were read, the geometry and the exposure range would answer
+  while the connect is still questioning the device, beside caches that do not
+  answer yet. A `StartExposure` in that window is refused as busy by the claim
+  the connect holds (E2), whatever has been published, so what the single
+  section buys is the cache surface:
+  readers take no lock, so those few stores are not atomic against them, but the
+  handshake-long stretch in which some caches answered and others did not is
+  gone.
 - **C7.** `Connect` and `Disconnect` are asynchronous and `Connecting` is what a
   client waits on, so `Connecting` is the only thing standing between a client
   and the C6 window: a client told the operation has finished is entitled to
@@ -743,7 +788,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
   The verdict is withheld in two places, because **a false "lost" costs more
   than a late one**: it ends a live session, and the reconnect a supervisor
-  answers it with runs `InitQHYCCD`, which homes a CFW (C5). It is not given on
+  answers it with re-initializes the camera — its geometry, its readout mode
+  and, with `disable_auto_cooler` set, its cooler (K4). It is not given on
   a handle this device no longer holds — that is the disconnect race C3 already
   reports. Nor is it given while a connect, a disconnect or a readout-mode
   change holds the connection's lifecycle lock (C8): those run `OpenQHYCCD`,
@@ -1064,7 +1110,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   being taken*. A sequential client never sees it: the setter has returned
   before its next request is read. A second, concurrent client can, and *busy*
   is the honest answer to give it, for the length of an `InitQHYCCD` (RM1),
-  during which a frame already taken cannot be downloaded either.
+  during which a frame already taken cannot be downloaded either. A connect
+  holds the same claim across its handshake (C6) and reports the same busy:
+  `CameraState` reads `Exposing` from the open until the connect returns. A
+  client that waits on `Connecting` (C7), or on a blocking `Connected = true`,
+  is never released into that window.
 
   **Busy is not the same as ended, so the claim records which kind of owner it
   is.** Every owner shares one slot, but only a geometry write has no exposure
@@ -1178,7 +1228,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 ### Exposure
 
 - **E1.** `StartExposure` while disconnected returns `NOT_CONNECTED`.
-- **E2.** `StartExposure` while exposing returns `INVALID_OPERATION`.
+- **E2.** `StartExposure` while exposing returns `INVALID_OPERATION` — and
+  while anything else owns the device: a connect's handshake (C6), a
+  readout-mode change (B4), an abort's SDK cancel (E7) or a disconnect (C3).
 - **E3.** `StartExposure` `Duration` outside `[ExposureMin, ExposureMax]` returns
   `INVALID_VALUE`. The range is read in the section that claims the device,
   under the lock a readout-mode change publishes under, so it is the range of
@@ -1544,9 +1596,9 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   sensor warming while `CoolerOn` read true. That
   restores what a client commanded, on a path a client started; it is not an
   actuation on connect (C5). A cooler nobody engaged is not touched, and nor is
-  one engaged before a reconnect: `CoolerOn` outlives a reconnect as the last
-  command given (K4), but the command was given to a session that has ended,
-  and a mode change in the next one does not act on it. The filter wheel is not
+  one engaged before a reconnect: `CoolerOn` outlives a reconnect when the TEC
+  does (K4), but the command was given to a session that has ended, and a mode
+  change in the next one does not act on it. The filter wheel is not
   commanded: the SDK's init sends it nothing on the QHY600 and QHY5III classes
   (C5 has what is claimed beyond that).
 
@@ -1564,6 +1616,20 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   (C6). A `CoolerOn` that passes the check records that session as the one its
   cooler was engaged in, which is the session a later mode change re-asserts it
   for.
+
+  **A connect holds the cooler still the same way** (C6), from before its open
+  until its caches are live, because its handshake runs the same `InitQHYCCD`.
+  Unheld, a `CoolerOn` or `SetCCDTemperature` landing between the open and the
+  init — a second client's, since the client connecting is waiting on
+  `Connecting` (C7) — would reach the camera, record the cooler as engaged in
+  the new session, and then be undone by the init on a rig with
+  `disable_auto_cooler`: `CoolerOn` reading true and `SetCCDTemperature` the
+  new target while the TEC is off — 3 runs out of 3 on the QHY178M with the
+  write unheld, and none with it held, in the
+  [2026-10-09 record](../validation/2026-10-09-qhy-camera-qhy178m-cfw-linux-connect/README.md).
+  Held, the write waits and lands after the init. The connect re-asserts nothing itself: unlike a mode change, there is
+  no command given in its session for it to restore, and pushing an earlier
+  session's would be an actuation on connect (C5, K4).
 
   **Gain and offset do not wait.** Their setters store into the cache under the
   lock the change publishes under (GO2), so a set made while a change runs
@@ -1592,11 +1658,32 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   asserted). `CoolerPower` remains the normalized `CurPWM` percent (read via
   `handle.cooler_power_raw()`). A readout-mode change re-asserts a cooler
   engaged in the same session after its `InitQHYCCD`, so `CoolerOn` stays true
-  of the camera across one (RM4). A reconnect is not like that: `CoolerOn` and
-  the target survive it as the last command given, and nothing re-asserts them,
-  so on a rig whose `qhyccd.ini` sets `disable_auto_cooler` the connect's own
-  init leaves the TEC off beside a `CoolerOn` that still reads true, until a
-  client sends `CoolerOn` again. Service start is one more such init, with no
+  of the camera across one (RM4). A reconnect re-asserts nothing (C5), and what
+  its own `InitQHYCCD` does to a running TEC depends on the SDK's `qhyccd.ini`.
+  By default the TEC regulates straight through: on the QHY178M its drive read
+  the same before the reconnect and a millisecond after it, and the sensor kept
+  cooling. With `disable_auto_cooler=true` the init sets the drive to zero and
+  the sensor warms. Both are measured in the
+  [2026-10-10 record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-cooler-report/README.md),
+  which also shows the reporting below at work; the
+  [2026-10-09 record](../validation/2026-10-09-qhy-camera-qhy178m-cfw-linux-connect/README.md)
+  shows `CoolerOn` still reading true through that warming before it.
+  So **`CoolerOn` reports what survived the connect's init**, not only the last
+  command: when a client had the cooler on, the connect reads the TEC's drive
+  straight after its init, and a drive of zero means the init stopped it —
+  `CoolerOn` then reads false, the service logs a warning, and the cooler stays
+  off until a client turns it on again, at the target `SetCCDTemperature` still
+  reports. A drive that reads anything else leaves `CoolerOn` true, and one that
+  cannot be read leaves it as the client set it. A TEC regulating at or above
+  ambient also reads zero, having nothing to drive, and reads off after a
+  reconnect: the safe error, since a client that sees it off turns it on
+  again, where the opposite one images on a warm sensor. A `CoolerOn` sent
+  while the connect is still running waits for its handshake and lands after
+  that init (RM4), so it is not undone by it. On Linux the SDK reads
+  `qhyccd.ini` from the service process's **working directory** — it logs
+  `Load ini filePath = <that directory>` as it starts — so the file that
+  decides this for a service is the one where that service runs, not the copy
+  the SDK installs under `/usr/local/lib`. Service start is one more such init, with no
   client involved: to find each camera's filter wheel, `build()` opens every
   camera and runs `InitQHYCCD` before `IsQHYCCDCFWPlugged`, the order indi-qhy
   uses in its connect. So on such a rig, a TEC still running when the service
@@ -1615,7 +1702,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
 - **FW1.** `Names` lists `filter_names` (or generated `Filter0..N`); `Position`
   returns the current slot, or the "moving" sentinel (`-1`/`None` → ASCOM moving)
-  while target ≠ actual. A **settled** wheel answers from the slot cached at
+  while target ≠ actual or the wheel reports itself moving (FW7). A **settled** wheel answers from the slot cached at
   connect or at the end of the last move — the SDK is read only while a move is
   outstanding. `GetQHYCCDCFWStatus` is a serial round-trip through the camera and
   measures **~260 ms** on a QHY178M + CFW3, which alone would put `Position` (and
@@ -1627,17 +1714,17 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **FW2.** `set_position` validates `index < filter_count` and commands the SDK;
   out-of-range returns `INVALID_VALUE`. The check runs on the slot as ASCOM
   sends it (a `usize`), *before* it is narrowed to the SDK's `u32`, so a value
-  past 2^32 is rejected rather than wrapped onto a real slot.
-- **FW2a.** A reported slot outside the wheel's own slot count is treated as a
-  status that does not name a slot, not as a slot. `cfw_ascii_to_slot` degrades
-  any nonstandard `CONTROL_CFWPORT` status byte to `byte - 0x30` rather than
-  failing, so anything past `'F'` decodes above slot 15 — `'N'` (0x4E) becomes
-  30 on a 7-slot wheel, which is what a wheel that is still moving looks like
-  from here. Per the ASCOM spec that is the moving sentinel (`Position` = -1 →
-  `None`), so the connect succeeds, caches no slot, and `Position` reports
-  moving until the wheel names a real one; the first that reads cleanly is
-  adopted as the settled slot and the cache resumes serving it. Reporting the
-  decoded number instead would have given `Names` an index it has no entry for.
+  past 2^32 is rejected rather than wrapped onto a real slot. The slot already
+  commanded is not sent again, whether or not the wheel has reached it (FW5).
+- **FW2a.** A status that names no slot of the wheel's is not a slot. `'N'` is
+  the wheel moving (FW7). Any other nonstandard `CONTROL_CFWPORT` status byte
+  `qhyccd-rs` degrades to `byte - 0x30` rather than failing, so anything past
+  `'F'` decodes above slot 15, outside the wheel's own count. Either way, per
+  the ASCOM spec, that is the moving sentinel (`Position` = -1 → `None`): the
+  connect succeeds, caches no slot, and `Position` reports moving until the
+  wheel names a real one; the first that reads cleanly is adopted as the
+  settled slot and the cache resumes serving it. Reporting the decoded number
+  instead would have given `Names` an index it has no entry for.
 - **FW3.** `FocusOffsets` returns zeros per filter in v0.
 - **FW4.** The wheel shares its camera's physical connection, so it shares C9:
   once the connection is marked lost — by the camera or by the wheel's own
@@ -1645,6 +1732,104 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   `Connected == false` and its members answer `NOT_CONNECTED`. `Connected =
   false` releases it, and a reconnect is refused until the camera has been
   released too.
+- **FW5.** **A move waits 250 ms after the wheel's last status read.** A QHY
+  CFW drops a move commanded straight after the read that saw the previous
+  move arrive. Measured on the dev box's QHY178M + CFW3 ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-wheel/README.md)):
+  sent 0–10 ms after that read, the move never started, 7 times of 7; its
+  status went on naming the slot the wheel was on, at the pace of a wheel at
+  rest (a status read takes ≈255 ms then, ≈100 ms while the wheel travels).
+  Sent 15 or 20 ms after it, every move arrived (4 of 4). An idle read
+  straight before a rested wheel's move drops nothing (2 of 2). A client that
+  commands the next filter as soon as `Position` names the last one makes
+  exactly that sequence, and through the service it stranded the wheel on the
+  first try, `Position` reading the moving sentinel with no end. So every
+  status read and every move on the wheel holds one lock across its SDK call,
+  the read noting when it returned, and a move goes out no sooner than 250 ms
+  after the last read. That is over ten times the measured edge, against
+  moves that take 1.5–4 s. A `Position` write that follows a read that closely
+  returns after ~270 ms, well inside the 1 s ConformU allows an asynchronous
+  initiator. ConformU itself waits about a second after each arrival before
+  its next move, which is why its runs never met the drop. With the rest, 20
+  moves through the service, each commanded the moment `Position` named the
+  last, all arrived. The drop is the wheel's, not one SDK build's: a move sent
+  0 ms after the arrival read was dropped on the same QHY178M under Windows
+  (3 of 3 with each of SDK 26.06.04 and 26.07.28) and on rig2's QHY600M (4 of 4
+  with each of 24.01.09 and 26.07.28), and one sent 15 ms after arrived on the
+  QHY600M (1 of 1 with each) ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-first-move/README.md)).
+
+  What a dropped move leaves behind is why the slot already commanded is
+  never sent again (FW2). While the wheel travels, the Linux SDK's status names
+  the slot commanded before the move under way, not the slot the wheel left
+  (FW7), and after a dropped move those differ. Sent on to another slot, a wheel whose move to
+  slot 4 had been dropped named slot 4 in transit while it travelled the
+  3.9 s from slot 2, where it had stayed, and then named its target (2 of 2).
+  Commanded the dropped slot once more instead, it did travel, but its status
+  named the target from the first read, so the resend could not be told from
+  an arrival. A move sent 0.6 s into that travel was dropped as well (2 of
+  2). On Windows, where the status reports the wheel moving instead, a resend
+  of a dropped slot travelled and read correctly (2 of 2 on each camera). The
+  driver therefore has no way to recover a dropped move by itself,
+  and no deadline on one (Future Work); the rest is what keeps the move from
+  being dropped.
+- **FW6.** **The camera's traffic and the wheel's travel do not disturb each
+  other (measured).** The camera and the wheel share one handle but not a
+  lock: a camera connect or readout-mode change owns the *camera* (C6, B4) and
+  the connection's lifecycle (C8), and a wheel move takes neither. On the same
+  rig nothing the camera does disturbed a wheel in travel. The handshake's init
+  sequence (stream mode, readout mode, `InitQHYCCD`) was run 300, 1500 and 2200
+  ms into a move, and a move was sent 0–300 ms into that sequence. A
+  readout-mode write, a stream-mode write, ten temperature and PWM reads and a
+  1 ms exposure were each made mid-travel. Every one of those moves arrived in
+  its usual time (16 of 16). Status reads running across an init all named
+  the wheel's slot, and every init succeeded: the SDK held the init behind a
+  read in flight (40 reads across 5 inits). So the wheel is kept out of the
+  camera's claim and its lifecycle lock. A wheel move must not queue behind
+  those anyway: the lifecycle lock is held across a disconnect's drain.
+- **FW7.** **What the status says while the wheel moves, and a connection's
+  first move.** A CFW answers `'N'` (0x4E) while it moves. The Windows SDK
+  passes it through: every status read of every move said `N`, on the dev
+  box's QHY178M + CFW3 in a Windows VM (SDK 26.06.04 and 26.07.28) and on
+  rig2's QHY600M + CFW (24.01.09 and 26.07.28), 2,251 reads in all.
+  `qhyccd-rs` decodes it as `CfwStatus::Moving`, and `Position` reports it as
+  the moving sentinel. The Linux SDK does not (26.06.04, QHY178M): in transit
+  its status names the slot commanded before the move under way, or slot 0
+  before the process has commanded any, and it keeps that slot across a
+  re-init and a close and re-open (2 of 2 each). The same camera, wheel and
+  SDK version answered `N` under Windows, so that is the Linux build's doing,
+  not the camera's.
+
+  On Linux, then, a status that names a move's target does not mean the wheel
+  has arrived when the target is the slot the SDK was last sent. FW2 never
+  sends the slot this driver last commanded, so once a connection has sent the
+  wheel a slot that cannot happen; before then, the driver does not know what
+  the SDK was last sent. Measured: a process's first move, from slot 3 to
+  slot 0, named slot 0 from its first read, 120 ms after the command, while
+  the wheel turned about 3.8 s more (2 of 2 with the probe). Through the
+  service before this rule, `Position` named slot 0 0.12 s after the write
+  (2 of 2).
+
+  So a connection's first move, on a wheel that has not reported itself
+  moving, first sends the wheel to the slot it stands on, reads until the
+  status names that slot (up to eight reads, or the move is refused), rests
+  (FW5), and only then sends its target. A CFW sent to its own slot does not
+  move: 38 to 40 reads over 10 s, every one at the at-rest pace naming that slot (2
+  of 2 on the QHY178M under Linux; 2 of 2 on the QHY600M under each Windows
+  SDK). The move after it names the slot it left until it arrives. Through the
+  service, `Position` then read −1 until 4.41 s after the write and slot 0
+  from 4.68 s (2 of 2). The first move pays for it, mostly in the read that
+  confirms the slot: the first status read after a CFW is sent its own slot
+  takes 455–482 ms, against ≈255 ms at rest (both cameras, 6 of 6). Its
+  `Position` write returns in 0.77 s on the QHY178M under Linux and in
+  0.81 s by ConformU's clock on the QHY600M under Windows, instead of
+  0.01–0.05 s, inside the 1 s ConformU allows an asynchronous initiator;
+  every later move goes straight out. The prime is part of a move a client
+  asked for, not of connecting (tenet 3). A wheel that has once reported
+  itself moving needs none for as long as the service runs, which on Windows
+  leaves only the first move after the service starts: on the QHY600M a
+  reconnect's first move went straight out (2 of 2). A wheel whose slot the
+  connect could not read has no slot to go back to and is sent its move as it
+  is (records: [Linux](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-first-move/README.md),
+  [Windows](../validation/2026-10-10-qhy-camera-qhy600m-cfw-windows-first-move/README.md)).
 
 ---
 
@@ -1923,10 +2108,13 @@ Layered per [`testing.md`](../skills/testing.md).
   cost in RM1's *Measured on hardware* (2026-09-28), and a gain and offset
   carried across a switch and armed by the next exposure in the
   [2026-10-03 record](../validation/2026-10-03-qhy-camera-qhy600m-cfw-windows/README.md).
-  Two of the knobs model behaviour no camera here has shown — an init that
-  resets gain and offset (reported for a QHYminiCam8M) and an init that
-  switches the cooler off (`disable_auto_cooler=true`; rig2 runs with it
-  false) — so for those the mock is still the reading alone.
+  An init that switches the cooler off (`disable_auto_cooler=true`; rig2 runs
+  with it false) is measured on the dev box's QHY178M in the
+  [2026-10-09 record](../validation/2026-10-09-qhy-camera-qhy178m-cfw-linux-connect/README.md):
+  a plain reconnect leaves the TEC at 0 % beside `CoolerOn` true, and a
+  `CoolerOn` sent into a connect's handshake is switched off by the rest of it.
+  An init that resets gain and offset (reported for a QHYminiCam8M) is the one
+  knob no camera here has shown, so for it the mock is still the reading alone.
 - **Windows DLL resolution** — the preflight's candidate ordering/selection are
   pure functions with **injected** environment and fs-existence checkers, and
   the doctor's check assembly / prompt parsing are pure over plain data —
@@ -1949,6 +2137,20 @@ Layered per [`testing.md`](../skills/testing.md).
   set while an exposure is in flight included — and what `Gain` and `Offset`
   then report; what an exposure arms, in what order and on every exposure
   (GO2, R2) is pinned by the unit tests against the mock's call log.
+- **A connection's first move (FW7)** is unit-tested against
+  `MockFilterWheelHandle`, whose status in transit names the slot commanded
+  before the move, as the Linux SDK's does, or reports the wheel moving with
+  `reports_moving` set, as the Windows SDK's does. It lists every slot
+  commanded (`commands`), lands a command to the slot the wheel stands on at
+  once, and `override_status` makes every read answer one status. BDD's
+  simulated CFW reports `N` in transit, so `filter_wheel.feature` pins the
+  moving sentinel through the service.
+- **The rest before a wheel move (FW5)** is unit-tested against
+  `MockFilterWheelHandle`, which notes when each status read returned and
+  each move was sent (`reads_returned`, `moves_sent`) and can hold a read in
+  flight (`hold_read_until_dropped`). The simulated wheel drops no move, so
+  BDD cannot reach it; the hardware evidence is the
+  [2026-10-10 wheel record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-wheel/README.md).
 - **A camera that leaves the bus (C9, FW4)** — `camera_departure.feature`
   starts the `simulation` binary with the hidden `--simulation-departure-file
   <path>` flag, which builds the default simulated camera
@@ -2390,25 +2592,18 @@ the "how" decisions made while building.
 - **TLS / Basic Auth** via `rusty-photon-tls` / `rp-auth`.
 - **`ElectronsPerADU` / `FullWellCapacity`** real values if a signal model is
   added.
-- **A connect's own handshake takes no device claim.** `set_readout_mode`
-  holds the device across its SDK writes (B4), and a bin reaches the camera
-  only inside an exposure's claim (B1), but a connect's handshake still writes the stream mode, the readout mode, the
-  transfer bit and `normalize_geometry`'s bin and resolution with no ownership
-  at all. A superseded handshake publishes nothing, so the caches stay honest,
-  but nothing puts the *camera* back — and a check placed immediately before a
-  write only races that write. It needs the same claim a mode change takes
-  (B4), held from the open through to the caches going live.
-
-  The racing *connect* this was originally written against is gone: C8
-  serializes every transition on one physical connection, so no second connect
-  can be opening the handle while a handshake runs, and the two bullets that
-  used to sit here — lifecycle transitions unserialized in either direction, and
-  concurrent connects to one camera — are closed with it. What remains is the
-  narrower question the lifecycle lock does not answer, because it is not the
-  lock's to answer: the handshake's SDK writes are not serialized against the
-  paths that hold the *capture* claim, an abort's SDK cancel among them. The
-  cache-publication order (see C6) is what keeps a `StartExposure` out of the
-  handshake window today, rather than ownership.
+- **A wheel move that never arrives.** `Position` reads the moving sentinel
+  for as long as the status does not name the commanded slot, with no
+  deadline, and the slot already commanded is not sent again (FW2, FW5). The
+  rest in FW5 keeps the one measured cause from dropping a move. A move lost
+  any other way strands the wheel until a client commands a different slot,
+  which is the move that was measured to recover it. One other way is
+  measured and not guarded: a move sent while the wheel still travels is
+  dropped (FW5), so a client that changes its mind mid-move strands it. Whether to give up on a
+  move after the longest travel the wheel could need, and what to report then,
+  is open. Under Windows a dropped move shows: the status names the slot the
+  wheel stayed on, at rest, where a move under way reads `N` from its first
+  read (FW7). The Linux SDK's status gives no such sign.
 
 ## Packaging
 

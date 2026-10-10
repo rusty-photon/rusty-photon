@@ -563,7 +563,8 @@ date. (`name` is display text, never a key.)
    never do is **actuate**: [workspace tenet 3](../workspace.md#project-tenets)
    binds every reload, with or without this list, and `qhy-camera`'s
    reload reruns the CFW probe, whose precondition `InitQHYCCD` may
-   auto-home a filter wheel — the vendor's statement, not yet observed
+   auto-home a filter wheel — the vendor's statement, measured not to on a
+   QHY178M + CFW3 or a QHY600M
    ([`qhy-camera.md`](../services/qhy-camera.md) C5). That is C4's problem
    for every reload (D6), not a property of this field.
 2. **Placing an SDK camera on a port is a join.** None of the three SDKs
@@ -1274,7 +1275,8 @@ reduces to whatever the camera itself needs.
 **Stage 2 is still not safe at startup, and this is the sharpest thing
 in Part A.** Filtering to the cameras this driver serves stops the probe reaching
 *other people's* devices, but it does not make the probe itself
-permissible: `InitQHYCCD` is what may auto-home a connected CFW, and
+permissible: `InitQHYCCD` is what may auto-home a connected CFW (measured not
+to on a QHY178M + CFW3 or a QHY600M — `qhy-camera.md` C5), and
 [workspace tenet 3](../workspace.md#project-tenets) forbids any code path
 reachable from **service startup, reconnect, or config apply** from
 physically actuating hardware. A filter changes who gets actuated, not

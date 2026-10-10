@@ -39,6 +39,20 @@ async fn turn_cooler_on(world: &mut CameraWorld, _device: u32) {
     world.camera().set_cooler_on(true).await.unwrap();
 }
 
+/// The simulated cooler moves one step per `CCDTemperature` read, so the
+/// sensor is read until the TEC reports a drive — bounded, so a cooler that
+/// never engages fails here rather than hanging the scenario.
+#[when(regex = r"^I wait for the cooler on camera device (\d+) to draw power$")]
+async fn wait_for_cooler_power(world: &mut CameraWorld, _device: u32) {
+    for _ in 0..50 {
+        world.camera().ccd_temperature().await.unwrap();
+        if world.camera().cooler_power().await.unwrap() > 0.0 {
+            return;
+        }
+    }
+    panic!("the cooler never drew power");
+}
+
 #[then(regex = r"^camera device (\d+) reports a CoolerPower between 0 and 100$")]
 async fn cooler_power_in_range(world: &mut CameraWorld, _device: u32) {
     let power = world.camera().cooler_power().await.unwrap();

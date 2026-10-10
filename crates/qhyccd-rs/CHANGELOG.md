@@ -29,9 +29,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under `simulation` (a QHY178M with a 7-position filter wheel and a cooler), so
   a host can start from it and change one setting. `Sdk::new()` now builds its
   camera from it. Simulation only.
+- `examples/cfw_probe.rs`, a hand-run hardware probe for a filter wheel driven
+  through its camera: what an init or a re-open does to a settled wheel, how
+  soon after the read that saw a move arrive the next move may be sent, what
+  the camera's own calls do to a wheel in travel, what a dropped move leaves
+  behind, what a process's first move reads in transit, and whether
+  commanding the slot the wheel stands on moves it. `CFW_PROBE_CAMERA` picks
+  the camera by SDK id prefix. It logs only what the wheel reports, one JSON
+  line per step.
+- `CfwStatus`: what a CFW's status read says, a slot (`CfwStatus::Slot`) or
+  the wheel moving (`CfwStatus::Moving`, the CFW's `'N'`). The Windows SDK
+  passes `'N'` through while the wheel moves; the Linux SDK names the slot
+  commanded before the move instead, and the type's docs say so.
 
 ### Changed
 
+- **Breaking:** `Camera::cfw_position` and `FilterWheel::get_fw_position`
+  return a `CfwStatus` rather than a `u32`, so the CFW's `'N'` reads as the
+  wheel moving. It used to reach the caller as slot 30, through the decode's
+  fallback for a byte that is not a hex digit, which every other such byte
+  still takes.
+- **Breaking:** the simulated filter wheel reports itself moving (`'N'`) while
+  it travels, as a real CFW does under the Windows SDK, rather than naming the
+  slot it left. `SimulatedCameraState::poll_filter_wheel` returns a
+  `CfwStatus`. Simulation only.
 - Both crates require Rust 1.98.1 (`qhyccd-rs` was 1.85.0, `libqhyccd-sys`
   1.68.0): they now declare the rusty-photon workspace's MSRV.
 - `Camera::id` and `FilterWheel::id` are `const fn`.

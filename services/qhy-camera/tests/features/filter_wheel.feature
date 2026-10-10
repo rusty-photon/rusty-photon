@@ -4,7 +4,8 @@ Feature: Filter wheel
   alongside the cameras (detection is the source of truth). Names lists the
   configured filter_names or generated Filter0..FilterN when none are given
   (FW1). Position returns the current slot, or the ASCOM moving sentinel
-  while the target slot differs from the actual slot. set_position validates
+  while the target slot differs from the actual slot or the wheel reports
+  itself moving, as the simulated CFW does in transit (FW7). set_position validates
   that the index is less than the filter count and rejects an out-of-range
   index with INVALID_VALUE (FW2). FocusOffsets returns zero for every filter
   in v0 (FW3). The simulated CFW has 7 positions.
@@ -21,6 +22,12 @@ Feature: Filter wheel
     When I set filterwheel device 0 to position 3
     And the filter wheel move on device 0 completes
     Then filterwheel device 0 reports Position as 3
+
+  Scenario: Position reads the moving sentinel while the wheel reports itself moving
+    When I set filterwheel device 0 to position 3
+    Then filterwheel device 0 reports Position as moving
+    And the filter wheel move on device 0 completes
+    And filterwheel device 0 reports Position as 3
 
   Scenario Outline: An out-of-range slot is rejected
     When I try to set filterwheel device 0 to position <slot>
