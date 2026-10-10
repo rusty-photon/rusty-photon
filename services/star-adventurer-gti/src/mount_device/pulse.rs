@@ -267,10 +267,12 @@ impl MountDevice {
                         {
                             Ok((_, timing)) => {
                                 let sent_after_t0 = timing.sent_at.saturating_duration_since(t0);
+                                let send_gap = timing.send_gap();
                                 debug!(
                                     shifted,
                                     trim,
                                     ?sent_after_t0,
+                                    ?send_gap,
                                     "pulse_guide: live rate change"
                                 );
                                 return Ok(PulsePlan {
@@ -382,10 +384,12 @@ impl MountDevice {
             }
         };
         let sent_after_t0 = timing.sent_at.saturating_duration_since(t0);
+        let send_gap = timing.send_gap();
         debug!(
             ?axis,
             shifted,
             ?sent_after_t0,
+            ?send_gap,
             "pulse_guide: started from rest"
         );
         Ok(PulsePlan {
@@ -634,10 +638,16 @@ impl PulseWatcher {
     /// stop ladder when it cannot be made to land.
     ///
     /// A restore that goes out late runs the pulse long by as much, so
-    /// the `pulse ended` line says where the time went: `woke_late_by`
-    /// is the watcher's own wake past the deadline, `lock_wait` its wait
-    /// for `axis_ownership`, and `sent_late_by` the whole delay from the
-    /// deadline to the restore frame's send.
+    /// the `restore sent` line says where the time went. `sent_late_by`
+    /// is the whole delay from the deadline to the restore frame's send.
+    /// `woke_late_by` is the watcher's own wake past the deadline,
+    /// `lock_wait` its wait for `axis_ownership`, and `wire_wait` its
+    /// wait for the wire: the transport's command lock and the task the
+    /// exchange runs on. What none of them covers is the ownership
+    /// check's reads of the state and the session slot. `send_gap` is
+    /// the write itself, normally microseconds. On a retried restore the
+    /// waits are the last attempt's, and `sent_late_by` also covers the
+    /// failed attempts and their backoff.
     async fn restore(&self, session: &Session<SkywatcherCodec>, plan: PulsePlan) {
         let axis = plan.axis;
         let woke_late_by = Instant::now().saturating_duration_since(plan.deadline);
@@ -663,21 +673,26 @@ impl PulseWatcher {
                 Restore::Rate { period } => Command::SetStepPeriod { axis, period },
                 Restore::Restart { .. } | Restore::Stop => Command::StopMotion(axis),
             };
+            let send_requested = Instant::now();
             match self.manager.send_timed(session, command).await {
                 Ok((_, timing)) => {
                     drop(lock);
                     let sent_late_by = timing.sent_at.saturating_duration_since(plan.deadline);
-                    if plan.restore == Restore::Stop && !self.stopped(session, axis).await {
-                        self.escalate(session, plan).await;
-                    }
+                    let wire_wait = timing.sent_at.saturating_duration_since(send_requested);
+                    let send_gap = timing.send_gap();
                     debug!(
                         ?axis,
                         attempt,
                         ?woke_late_by,
                         ?lock_wait,
+                        ?wire_wait,
+                        ?send_gap,
                         ?sent_late_by,
-                        "pulse-guide watcher: pulse ended"
+                        "pulse-guide watcher: restore sent"
                     );
+                    if plan.restore == Restore::Stop && !self.stopped(session, axis).await {
+                        self.escalate(session, plan).await;
+                    }
                     return;
                 }
                 Err(e) if is_refusal(&e) => {

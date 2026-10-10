@@ -52,13 +52,12 @@ static CONFORMU_LOCK: Mutex<()> = Mutex::new(());
 /// event-driven, so the cost is about 500 lines a run, most of them
 /// slew-watcher snapshots. A blanket `debug` would add `ascom-alpaca`'s
 /// line for every request `ConformU` makes.
+///
+/// A non-empty `RUST_LOG` in the test's environment reaches the child
+/// by inheritance and replaces this filter, even one meant for the test
+/// harness, so it must keep `star_adventurer_gti=debug` for the edge
+/// timings to show. An empty one counts as unset.
 const SERVICE_LOG_FILTER: &str = "info,star_adventurer_gti=debug";
-
-/// Startup deadline, matching the 30 s `ServiceHandle::try_start`
-/// applies. `start_with_env`, the only starter that takes child
-/// environment, has none of its own. The child is spawned
-/// `kill_on_drop`, so a timeout takes it down with the dropped future.
-const START_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[tokio::test]
 async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -119,28 +118,23 @@ async fn conformu_compliance_tests() -> Result<(), Box<dyn std::error::Error + S
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
 
-    // A `RUST_LOG` the caller set reaches the child by inheritance, so
-    // the default filter goes in only when there is none.
-    let envs: &[(&str, &str)] = if std::env::var_os("RUST_LOG").is_some() {
+    let caller_set_rust_log = std::env::var_os("RUST_LOG").is_some_and(|v| !v.is_empty());
+    let envs: &[(&str, &str)] = if caller_set_rust_log {
         &[]
     } else {
         &[("RUST_LOG", SERVICE_LOG_FILTER)]
     };
-    let mut handle = tokio::time::timeout(
-        START_DEADLINE,
-        ServiceHandle::start_with_env(
-            env!("CARGO_PKG_NAME"),
-            &[
-                "--config",
-                config_path
-                    .to_str()
-                    .expect("conformu temp path must be UTF-8"),
-            ],
-            envs,
-        ),
+    let mut handle = ServiceHandle::try_start_with_env(
+        env!("CARGO_PKG_NAME"),
+        &[
+            "--config",
+            config_path
+                .to_str()
+                .expect("conformu temp path must be UTF-8"),
+        ],
+        envs,
     )
-    .await
-    .map_err(|_| format!("star-adventurer-gti did not bind within {START_DEADLINE:?}"))?;
+    .await?;
 
     println!("::group::ConformU Telescope Compliance Test Results");
     println!(

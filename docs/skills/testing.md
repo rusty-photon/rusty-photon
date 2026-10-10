@@ -661,6 +661,14 @@ per-scenario **environment** takes `start_with_env` (e.g. sentinel's
 Never `std::env::set_var` for a spawned child: scenarios run concurrently in
 one process, so process-global env mutation races across scenarios.
 
+`start`, `start_with_args` and `start_with_env` panic on a failed start, and
+wait for the bound address with no deadline. `try_start`, `try_start_with_args`
+and `try_start_with_env` take the same inputs, give the child 30 s to bind, and
+return the failure as an error that carries the child's exit status. A test
+that holds a lock across the start, as most `ConformU` tests do, should use one
+of the `try_` forms. There, a panic would poison the lock, and a child that
+never binds would hang the test until the Bazel timeout.
+
 **Binary discovery order:**
 
 1. Explicit env var `{PACKAGE_UPPER_SNAKE}_BINARY` (e.g., `FILEMONITOR_BINARY=/path/to/bin`).

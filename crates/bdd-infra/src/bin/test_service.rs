@@ -5,7 +5,9 @@
 //! the interface expected by `ServiceHandle`.
 //!
 //! If the config file contains the text "fail", exits immediately
-//! with code 1 (simulates a service that fails to start).
+//! with code 1 (simulates a service that fails to start). A literal
+//! `fail` argument, or `TEST_SERVICE_FAIL` set in the environment, does
+//! the same.
 //!
 //! `--epipe-probe <marker>` (stdout) / `--epipe-probe-stderr <marker>`
 //! (stderr) enable the broken-pipe regression probe used by the
@@ -46,6 +48,11 @@ fn main() {
     // exits before binding. Used to prove `start_with_args` /
     // `try_start_with_args` pass their argument vector through to the process.
     if args.iter().any(|a| a == "fail") {
+        std::process::exit(1);
+    }
+    // `TEST_SERVICE_FAIL` in the environment exits the same way. Used to
+    // prove `try_start_with_env` passes its environment through.
+    if std::env::var_os("TEST_SERVICE_FAIL").is_some() {
         std::process::exit(1);
     }
     if let Some(idx) = args.iter().position(|a| a == "--config") {

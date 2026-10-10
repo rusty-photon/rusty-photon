@@ -1331,17 +1331,40 @@ the frame that changes the rate — the `:I1` on the live path, the `:J`
 when starting from rest — and the restore frame goes out at
 `t0 + duration`, so both edges see the same send latency and the rate
 runs for `duration` from the host's point of view. What the host cannot
-promise is that the restore goes out on time. The motor runs at the
-shifted rate until that frame lands, so a host that stalls past the
-deadline lengthens the pulse by the stall. Both edges are therefore
-logged at `debug` against their schedule. The start's line carries
-`sent_after_t0`: how long after `t0` its frame was sent. The watcher's
-`pulse ended` line carries `sent_late_by`: how long after the deadline
-the restore frame was sent. Two more fields break that delay down:
-`woke_late_by`, the watcher's own wake past the deadline, and
-`lock_wait`, its wait for `axis_ownership`. The rest of `sent_late_by`
-is the wait for the wire: the shared transport's command lock, and
-the task the exchange runs on.
+promise is that each frame goes out on time. The motor runs at the
+shifted rate from the first frame's landing to the restore's. A host
+that stalls before the restore lengthens the pulse by the stall, and
+one that stalls before the start frame shortens it, because the
+deadline stays anchored on `t0`.
+
+So both edges are logged at `debug` against their schedule, on the two
+paths that end through the watcher's restore: the live-rate pulse, and
+a pulse started from rest. The restart fallback (once the mount has
+refused a live rate change) and a restore that never lands log no
+timing.
+
+- The start's line carries `sent_after_t0`: how long after `t0` its
+  frame was sent.
+- The watcher's `restore sent` line carries `sent_late_by`: how long
+  after the deadline the restore frame was sent. Three fields break
+  that delay down:
+  - `woke_late_by`: the watcher's own wake past the deadline;
+  - `lock_wait`: its wait for `axis_ownership`;
+  - `wire_wait`: its wait for the wire, meaning the shared
+    transport's command lock and the task the exchange runs on.
+
+  What is left over is the ownership check's reads of the driver state
+  and the session slot. On a retried restore (`attempt` above 1) the
+  waits are the last attempt's, and `sent_late_by` also covers the
+  failed attempts and their backoff.
+- Both lines carry `send_gap`: from the send stamp to the frame's hand-off
+  to the OS, normally microseconds. The mock applies each frame inside
+  that write, under its own state lock, so against the mock a stall
+  there shows in `send_gap` and in no other field.
+
+The pulse runs long by the restore's `sent_late_by` less the start's
+`sent_after_t0`, give or take the difference between their two
+`send_gap`s.
 
 What the host cannot see is how the motor board applies a period
 change. Measured on the GTi (below), every rate change on a running
@@ -3347,8 +3370,11 @@ At 0.5× a leg can absorb about 0.13 s of lateness on either edge before
 it fails. The same holds for North/South: 1″ at 7.5″/s. Logs at the
 default `info` level cannot say where the time went. So the test runs
 the service with `RUST_LOG=info,star_adventurer_gti=debug` unless the
-caller sets `RUST_LOG` itself. The pulse lines then carry the edge
-timings that [§PulseGuide lifecycle](#pulseguide-lifecycle) describes.
+caller sets a non-empty `RUST_LOG` itself. A caller's `RUST_LOG`
+reaches the service by inheritance and replaces the filter, so it has
+to keep `star_adventurer_gti=debug` for the timings to show. The pulse
+lines then carry the edge timings that
+[§PulseGuide lifecycle](#pulseguide-lifecycle) describes.
 
 ### Expected ConformU report
 

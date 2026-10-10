@@ -485,8 +485,8 @@ impl ServiceHandle {
     /// Panics if the binary cannot be found or spawned, if its stdout or
     /// stderr pipe cannot be captured, or if it exits without printing a
     /// `bound_addr=` line. There is no deadline: a child that neither prints
-    /// one nor exits blocks here — [`try_start`](Self::try_start) bounds the
-    /// wait.
+    /// one nor exits blocks here —
+    /// [`try_start_with_env`](Self::try_start_with_env) bounds the wait.
     pub async fn start_with_env(package_name: &str, args: &[&str], envs: &[(&str, &str)]) -> Self {
         let binary = require_binary(package_name);
         let label = next_spawn_label(package_name);
@@ -539,6 +539,22 @@ impl ServiceHandle {
     ///
     /// # Errors
     ///
+    /// [`try_start_with_env`](Self::try_start_with_env)'s.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the binary cannot be located or spawned, as
+    /// [`try_start`](Self::try_start) does.
+    pub async fn try_start_with_args(package_name: &str, args: &[&str]) -> Result<Self, String> {
+        Self::try_start_with_env(package_name, args, &[]).await
+    }
+
+    /// Like [`try_start_with_args`](Self::try_start_with_args), additionally
+    /// setting environment variables on the child process (see
+    /// [`start_with_env`](Self::start_with_env)).
+    ///
+    /// # Errors
+    ///
     /// Returns a message if the child's stdout or stderr pipe cannot be
     /// captured, if the child exits without printing its bound address (the
     /// exit status is included), or if it has not printed one within 30
@@ -548,11 +564,15 @@ impl ServiceHandle {
     ///
     /// Panics if the binary cannot be located or spawned, as
     /// [`try_start`](Self::try_start) does.
-    pub async fn try_start_with_args(package_name: &str, args: &[&str]) -> Result<Self, String> {
+    pub async fn try_start_with_env(
+        package_name: &str,
+        args: &[&str],
+        envs: &[(&str, &str)],
+    ) -> Result<Self, String> {
         let binary = require_binary(package_name);
         let label = next_spawn_label(package_name);
 
-        let mut child = spawn_process(&binary, package_name, args, &[]);
+        let mut child = spawn_process(&binary, package_name, args, envs);
 
         let stderr = child
             .stderr

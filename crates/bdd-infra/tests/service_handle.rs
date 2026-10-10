@@ -139,6 +139,27 @@ async fn test_try_start_with_args_passes_arguments_through() {
 }
 
 #[tokio::test]
+async fn test_try_start_with_env_passes_environment_through() {
+    init_test_binary_env();
+    let config = empty_config();
+
+    // `TEST_SERVICE_FAIL` makes test_service exit before binding, which is
+    // only observable if the environment actually reaches the process.
+    let result = ServiceHandle::try_start_with_env(
+        "test-service",
+        &["--config", config.path().to_str().unwrap()],
+        &[("TEST_SERVICE_FAIL", "1")],
+    )
+    .await;
+
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("exited without binding"),
+        "unexpected error: {err}"
+    );
+}
+
+#[tokio::test]
 async fn test_try_start_succeeds_with_valid_binary() {
     init_test_binary_env();
     let config = empty_config();
