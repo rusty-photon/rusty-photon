@@ -1751,15 +1751,17 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   last, all arrived.
 
   What a dropped move leaves behind is why the slot already commanded is
-  never sent again (FW2). Commanded once more, a CFW whose move
-  was dropped named that slot within ~120 ms, without travelling — the slot it
-  had recorded, not one it had reached — and the move after that travelled
-  without ever naming its own target (2 of 2). Sent on to another slot
-  instead, the wheel travelled the distance from where it really stood and
-  arrived: 3.9 s, the travel from the slot it had stayed on (2 of 2). The
-  driver therefore has no way to recover a dropped move by itself, and no
-  deadline on one (Future Work); the rest is what keeps the move from being
-  dropped.
+  never sent again (FW2). While the wheel travels, its status names the slot
+  commanded before the move under way, not the slot the wheel left, and after
+  a dropped move those differ. Sent on to another slot, a wheel whose move to
+  slot 4 had been dropped named slot 4 in transit while it travelled the
+  3.9 s from slot 2, where it had stayed, and then named its target (2 of 2).
+  Commanded the dropped slot once more instead, it did travel, but its status
+  named the target from the first read, so the resend could not be told from
+  an arrival. A move sent 0.6 s into that travel was dropped as well (2 of
+  2). The driver therefore has no way to recover a dropped move by itself,
+  and no deadline on one (Future Work); the rest is what keeps the move from
+  being dropped.
 - **FW6.** **The camera's traffic and the wheel's travel do not disturb each
   other (measured).** The camera and the wheel share one handle but not a
   lock: a camera connect or readout-mode change owns the *camera* (C6, B4) and
@@ -2533,13 +2535,16 @@ the "how" decisions made while building.
   deadline, and the slot already commanded is not sent again (FW2, FW5). The
   rest in FW5 keeps the one measured cause from dropping a move. A move lost
   any other way strands the wheel until a client commands a different slot,
-  which is the move that was measured to recover it. Whether to give up on a
+  which is the move that was measured to recover it. One other way is
+  measured and not guarded: a move sent while the wheel still travels is
+  dropped (FW5), so a client that changes its mind mid-move strands it. Whether to give up on a
   move after the longest travel the wheel could need, and what to report then,
   is open.
-- **The first move after the SDK starts reads slot 0 in transit.** On the
-  QHY178M + CFW3 the status names slot 0 (`0x30`) through the whole of the
-  first move a process makes, where every later move goes on naming the slot
-  it left. So a first move *to* slot 0 reads as arrived at once, and
+- **The first move after the SDK starts reads slot 0 in transit.** In transit
+  the status names the slot commanded before the move (FW5). On the QHY178M +
+  CFW3, before a process has commanded any, that is slot 0 (`0x30`): the
+  status names it through the whole of the first move a process makes. So a
+  first move *to* slot 0 reads as arrived at once, and
   `Position` would report it settled while the wheel still turns. Seen in 34
   of 34 fresh processes in the [2026-10-10 runs](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-wheel/README.md);
   not handled.

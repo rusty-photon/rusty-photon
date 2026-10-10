@@ -107,13 +107,17 @@ second later the probe either sends slot 4 again or goes on to slot 5.
 
 | Then | Result (2 of 2 each) |
 |---|---|
-| Slot 4 again | The status named slot 4 after 120.7 ms and 120.6 ms. That is one status read, with no travel: two slots take ≈2.7 s. The move to slot 5 after it read at the travelling pace for ≈1.8 s, then at the at-rest pace naming slot 4, and never named slot 5 in the 10 s watched. |
+| Slot 4 again | The wheel travelled, though its status named slot 4 from the first read. That read took 120.7 ms and 120.6 ms, the travelling pace, and the reads stayed at that pace until ≈2.35 s after the resend: the travel for two slots, from slot 2 (≈2.7 s). The probe took the first read for the arrival and sent slot 5 half a second later, ≈0.6 s into that travel. That move was dropped: once the wheel came to rest, the status named slot 4 at the at-rest pace and never named slot 5 in the 10 s watched. |
 | Slot 5 | Reached in 3884 ms and 3883 ms, the travel for three slots, from slot 2. One slot, from slot 4, takes ≈1.5 s. In transit the status named slot 4, the dropped target. |
 
-So a dropped move leaves the CFW holding the target it never travelled to. Re-sending
-that slot gets an immediate "arrived", and the next move goes wrong. Commanding a
-different slot moves the wheel properly from where it really stands. This is why the
-driver does not re-send a commanded slot (FW2) and has no recovery of its own.
+So while the wheel travels, its status names the slot commanded before the move under
+way, not the slot the wheel left. After a dropped move the two differ: the wheel left
+slot 2, and the status named slot 4, where it had never been. A resend of the dropped
+slot therefore names its own target from the first read, and cannot be told from an
+arrival while the wheel turns. A move sent during that travel is dropped as well.
+Commanding a different slot moves the wheel properly from where it really stands, and
+reads correctly. This is why the driver does not re-send a commanded slot (FW2) and has
+no recovery of its own.
 
 ### 4. The camera's traffic during the wheel's travel (FW6)
 
@@ -162,8 +166,10 @@ process had left it.
 
 In all 34 processes that moved the wheel, the status named slot 0 (`0x30`) for the
 whole of the first move. That held whatever slot the move started from or went to. Every
-later move in a process named the slot it had left until it arrived. A first move *to*
-slot 0 therefore reads as arrived on its first read. The driver does not handle this yet
+later move in a process named the slot commanded before it until it arrived, which for
+those moves was also the slot it left (§3). So in transit the status names the previous
+command, and slot 0 before the process has commanded any. A first move *to* slot 0
+therefore reads as arrived on its first read. The driver does not handle this yet
 ([Future Work](../../services/qhy-camera.md#future-work)).
 
 ## Afterwards

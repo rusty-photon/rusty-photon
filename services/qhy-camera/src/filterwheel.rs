@@ -439,10 +439,10 @@ impl FilterWheel for QhyFilterWheelDevice {
                 "filter position {position} out of range (0..{count})"
             )));
         }
-        // The slot already commanded is not sent again, settled or not. A CFW
-        // whose move was dropped answers a resend of that slot with the slot at
-        // once, without travelling, so a resend would read as an arrival at a
-        // filter the wheel never reached (FW5).
+        // The slot already commanded is not sent again, settled or not. In
+        // transit a CFW's status names the slot commanded before the move, so
+        // a resend of a dropped move names its own slot from the first read and
+        // would read as an arrival while the wheel still turns (FW5).
         if *self.state.target_position.lock() == Some(position) {
             return Ok(());
         }
