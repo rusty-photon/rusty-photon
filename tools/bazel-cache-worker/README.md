@@ -103,12 +103,28 @@ heuristic misses — entries are regenerable either way.
 CAS keys are content hashes — a key's bytes can never legitimately change —
 so the Worker serves `/cas/` GETs from Cloudflare's per-datacenter cache
 (`caches.default`, `max-age` 1 day) and only falls through to R2 on a miss
-(with one retry on transient R2 read errors). The common CI shape — the
-Linux/macOS/Windows build+test legs plus the coverage job pulling the same
-blobs within hours of each other — is served at edge latency, and an R2
+(with one retry on transient R2 read errors). Its readers are the jobs on
+GitHub-hosted runners: the macOS leg (push-to-main and the nightly schedule;
+`bazel.yml` drops macOS from every PR), and the Linux/Windows legs and the
+coverage job on the nightly schedule, on fork PRs, and whenever a pool kill
+switch is off — otherwise push-to-main and same-repo PRs route those to the
+self-hosted pool and its LAN cache. Legs pulling the same blobs within hours
+of each other are served at edge latency, and an R2
 latency spike or transient error can't stall an edge-cached read. `/ac/`
 entries are mutable (a re-executed action re-uploads under the same key), so
 they always read R2 and are never edge-cached.
+
+On an edge miss the client's response streams straight from R2, and the
+edge copy is written from a *second*, independent R2 read — not by tee-ing
+the client's body with `response.clone()`. A tee makes the runtime buffer
+whatever the slower branch hasn't consumed, with no limit and no
+backpressure; the slower branch is Bazel, and the blobs that miss are the
+big test binaries (~88 MiB for `rp_unit_test`) against a 128 MB isolate
+memory limit. The second read costs one Class B operation per edge miss.
+This was changed as a suspect in the macOS `bazel build` wedge
+([#765](https://github.com/rusty-photon/rusty-photon/issues/765)) — on
+push-to-main, with the pool switches on, macOS is the only leg that still
+reads this Worker.
 
 Interplay with retention: an edge hit never reaches R2, so it cannot touch —
 a hot blob's R2 clock only advances on the origin reads between TTL
