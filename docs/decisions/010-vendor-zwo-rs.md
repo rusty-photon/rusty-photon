@@ -83,7 +83,7 @@ Because they are **unpublished today**, this includes the **first** `0.1.0` publ
 standalone repo is retired. This works cleanly because the inter-crate dep carries
 both a `version` and a `path`: `cargo publish` rewrites the path dep to the `version`,
 while local + Bazel builds use the `path`. To stay publishable, the vendored
-manifests **keep independent explicit `version` / `edition` / `rust-version` /
+manifests **keep independent explicit `version` / `edition` /
 `license` / `authors` / `description` / `keywords` / `categories`** (NOT
 `*.workspace = true` — they release on their own cadence) and retain their
 `CHANGELOG` / `README` / `LICENSE-MIT` / `LICENSE-APACHE` and the SDK headers'
@@ -129,7 +129,7 @@ production target that accidentally links the sim variant.
   it (flip prod targets to real everywhere, or keep the prod-real target
   non-Windows). The Cargo prod build (MSVC) is the source of truth regardless.
 - **A small convention deviation:** these two members keep explicit, independent
-  package **identity metadata** (`version` / `edition` / `rust-version` /
+  package **identity metadata** (`version` / `edition` /
   `license` / `authors` / `description` / …) rather than `*.workspace = true`,
   because they are independently published on their own cadence. Their **shared
   dependencies** still inherit the workspace pin (`dep.workspace = true`,
@@ -152,14 +152,10 @@ The crates publish from their vendored subdirs; `cargo publish` rewrites the
 inter-crate `path` dep to its `version`. Publish the sys-crate first so the
 wrapper's dependency resolves on crates.io.
 
-1. **Publish-readiness MUST be green** for the crate being released — it verifies
-   the published-in-isolation guarantees (MSRV, direct-minimal-versions, semver,
-   docs.rs) that the in-workspace checks cannot: `gh workflow run
-   publish-readiness.yml` (or rely on the last green nightly). A red run BLOCKS the
-   release. The crates declare explicit lower MSRVs (`libzwo-sys` 1.71.0, `zwo-rs`
-   1.87.0 — the latter pending an `is_multiple_of` refactor to reach ~1.71); if a
-   change raises a floor, bump that crate's `rust-version`. See
-   [docs/plans/archive/publish-readiness-checks.md](../plans/archive/publish-readiness-checks.md).
+1. Run `cargo semver-checks --package libzwo-sys` and `cargo semver-checks
+   --package zwo-rs`; the version bump in step 2 must cover what they report.
+   Skip this for a crate's first publish: with no crates.io baseline there is
+   nothing to compare against.
 2. Bump `version` in `crates/zwo-rs/libzwo-sys/Cargo.toml` and/or
    `crates/zwo-rs/Cargo.toml` as needed; update each crate's `CHANGELOG.md`.
 3. If the wrapper's `version` changed, bump the `libzwo-sys = { version = "…" }`
@@ -173,6 +169,11 @@ wrapper's dependency resolves on crates.io.
 *Amended 2026-10-03:* the version bump itself needs a repin, because
 `MODULE.bazel.lock` records a hash of `Cargo.lock` and of every workspace
 `Cargo.toml`, the root's included. Run `scripts/repin-bazel-lock.sh` in the bump commit (Rule 10).
-The original text said a repin was needed only when external deps changed. The
+The original text said a repin was needed only when external deps changed.
+*Amended 2026-10-08:* step 1 used to require a green run of the
+`publish-readiness.yml` workflow, which verified the crates out of the workspace
+against their own lower MSRVs. Every workspace member now shares the workspace
+MSRV, so the workflow was removed and both crates inherit `rust-version` and
+`[lints]` from the workspace ([`docs/workspace.md`](../workspace.md#msrv)). The
 standalone `ivonnyssen/zwo-rs` repo is archived once the first publish-from-monorepo
 is verified; thereafter the monorepo is the sole source of truth.

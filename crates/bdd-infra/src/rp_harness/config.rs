@@ -214,6 +214,9 @@ pub struct OpticalTrainConfig {
     /// `"imaging"` or `"guiding"`. `None` ⇒ omit the field (rp
     /// defaults to imaging).
     pub purpose: Option<String>,
+    /// The telescope the light path looks through (rp.md § Optical
+    /// Trains) — the frames' FITS `TELESCOP`. `None` ⇒ omit the field.
+    pub telescope: Option<String>,
     /// Clear aperture of the light path in millimetres (rp.md § Train
     /// optics). `None` ⇒ omit the field.
     pub aperture_mm: Option<f64>,
@@ -838,6 +841,9 @@ impl RpConfigBuilder {
                 if let Some(p) = &t.purpose {
                     set_key(&mut obj, "purpose", serde_json::json!(p));
                 }
+                if let Some(name) = &t.telescope {
+                    set_key(&mut obj, "telescope", serde_json::json!(name));
+                }
                 if let Some(f) = t.focal_length_mm {
                     set_key(&mut obj, "focal_length_mm", serde_json::json!(f));
                 }
@@ -1133,6 +1139,7 @@ mod tests {
             microns_per_step: Some(2.5),
         });
         b.add_optical_train(OpticalTrainConfig {
+            telescope: None,
             id: "main".to_string(),
             purpose: None,
             aperture_mm: Some(200.0),
@@ -1157,6 +1164,7 @@ mod tests {
 
         let mut b = RpConfigBuilder::new();
         b.add_optical_train(OpticalTrainConfig {
+            telescope: None,
             id: "main".to_string(),
             purpose: Some("imaging".to_string()),
             aperture_mm: None,
@@ -1176,6 +1184,7 @@ mod tests {
             }),
         });
         b.add_optical_train(OpticalTrainConfig {
+            telescope: None,
             id: "guide".to_string(),
             purpose: None,
             aperture_mm: None,

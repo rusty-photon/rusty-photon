@@ -5107,14 +5107,9 @@ fn pre_flip_side_for_latitude_picks_west_in_north_and_east_in_south() {
     assert_eq!(pre_flip_side_for_latitude(-33.0), PierSide::East);
 }
 
-#[tokio::test]
-async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
-    // `Device::set_connected(false)` calls `reset_for_disconnect` on
-    // the in-memory state. This test pins the contract directly: every
-    // session-scoped field returns to its `Default::default` value,
-    // and `at_park` plus `slew_settle_time` survive (mechanical state
-    // and operator-tuned settings persist across reconnects).
-    let mut s = DriverState {
+/// A [`DriverState`] with every field away from its default.
+const fn driver_state_with_every_field_set() -> DriverState {
+    DriverState {
         tracking_requested: true,
         at_park: true,
         target_ra_hours: Some(12.0),
@@ -5132,7 +5127,17 @@ async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
             dec: Some(PulseId(2)),
         },
         next_pulse_id: 3,
-    };
+    }
+}
+
+#[tokio::test]
+async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
+    // `Device::set_connected(false)` calls `reset_for_disconnect` on
+    // the in-memory state. This test pins the contract directly: every
+    // session-scoped field returns to its `Default::default` value,
+    // and `at_park` plus `slew_settle_time` survive (mechanical state
+    // and operator-tuned settings persist across reconnects).
+    let mut s = driver_state_with_every_field_set();
 
     s.reset_for_disconnect();
 
@@ -5160,6 +5165,139 @@ async fn reset_for_disconnect_clears_session_state_but_keeps_mechanical() {
     // overwritten by the next slew. Pin that behaviour so a future
     // change has to be deliberate.
     assert_eq!(s.target_pier_side, Some(PierSide::East));
+}
+
+#[test]
+fn a_reload_starts_from_at_park_and_the_settle_override_alone() {
+    // What a reload carries is what a disconnect keeps; everything else
+    // starts from its default, `target_pier_side` included — the slew
+    // that set it belonged to the lifecycle that ended.
+    let s = DriverState::with_retained(driver_state_with_every_field_set().retained());
+
+    assert!(s.at_park);
+    assert_eq!(s.slew_settle_time, Some(Duration::from_secs(7)));
+
+    assert!(!s.tracking_requested);
+    assert_eq!(s.target_ra_hours, None);
+    assert_eq!(s.target_dec_degrees, None);
+    assert_eq!(s.park_ra_ticks, None);
+    assert_eq!(s.park_dec_ticks, None);
+    assert!(!s.frame_anchored);
+    assert_eq!(s.preferred_ap_park, None);
+    assert_eq!(s.target_pier_side, None);
+    assert!((s.guide_rate_ra_fraction - DEFAULT_GUIDE_RATE_FRACTION).abs() < 1e-9);
+    assert!((s.guide_rate_dec_fraction - DEFAULT_GUIDE_RATE_FRACTION).abs() < 1e-9);
+    assert_eq!(s.pulse_guiding.ra, None);
+    assert_eq!(s.pulse_guiding.dec, None);
+    assert_eq!(s.next_pulse_id, 0);
+}
+
+#[tokio::test]
+async fn a_device_built_with_retained_state_reports_it() {
+    let d = device().with_retained(RetainedState {
+        at_park: true,
+        slew_settle_time: Some(Duration::from_secs(7)),
+    });
+
+    assert!(d.at_park().await.unwrap());
+    assert_eq!(d.slew_settle_time().await.unwrap(), Duration::from_secs(7));
+}
+
+#[tokio::test]
+async fn retire_hands_over_a_finished_park_and_the_settle_override() {
+    let d = fast_settle_connected().await;
+    d.park().await.unwrap();
+    wait_for_at_park(&d).await;
+    // After the park: the override is also the park watcher's settle.
+    d.set_slew_settle_time(Duration::from_secs(7))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        d.retire().await,
+        RetainedState {
+            at_park: true,
+            slew_settle_time: Some(Duration::from_secs(7)),
+        }
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn retire_puts_only_stops_on_the_wire() {
+    // Retiring is the device's own disconnect: the last-disconnect stop
+    // and nothing else (no actuation on a reload).
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    let from = mock.lock().await.command_log.len();
+
+    d.retire().await;
+
+    let m = mock.lock().await;
+    let frames = setter_frames_since(&m, from);
+    assert!(
+        frames
+            .iter()
+            .all(|f| f.starts_with(":L") || f.starts_with(":K")),
+        "retire sent more than stops: {frames:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_retired_device_puts_no_motion_on_the_wire() {
+    // Whatever in the old lifecycle still runs after the retire — the
+    // tracking guard's auto-flip, which is a SetSideOfPier, among it —
+    // finds the device disconnected and never reaches the wire.
+    let (d, mock) = pulse_device(NO_TRIM, |_| {}).await;
+    d.retire().await;
+    let from = mock.lock().await.command_log.len();
+
+    let lst = d.sidereal_time().await.unwrap();
+    let slew = d
+        .slew_to_coordinates_async((lst + 1.0).rem_euclid(24.0), 30.0)
+        .await
+        .unwrap_err();
+    let flip = d.set_side_of_pier(PierSide::East).await.unwrap_err();
+
+    assert!(!d.connected().await.unwrap());
+    assert_eq!(slew.code, ASCOMErrorCode::NOT_CONNECTED, "{slew}");
+    assert_eq!(flip.code, ASCOMErrorCode::NOT_CONNECTED, "{flip}");
+    let m = mock.lock().await;
+    assert_eq!(setter_frames_since(&m, from), Vec::<String>::new());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_park_retired_during_its_settle_is_not_handed_over_or_marked_parked() {
+    // The reload's safety stop comes after the retire and halts a park
+    // in flight, which its watcher would take for an arrival. The park
+    // watcher here sleeps out its settle once the axes have stopped; a
+    // retire inside that sleep must hand over "not parked", and the
+    // watcher must not mark the retired device parked when it wakes.
+    let (d, _mock) = pulse_device(NO_TRIM, |_| {}).await;
+    let reservation = SlewReservation::try_acquire(&d.slew_in_progress, &d.axis_ownership).unwrap();
+    spawn_park_completion_watcher(
+        Arc::clone(&d.state),
+        Arc::clone(&d.manager),
+        Arc::clone(&d.session),
+        reservation.claim(),
+        Duration::from_millis(20),
+        Duration::from_secs(1),
+    )
+    .await
+    .unwrap();
+    reservation.dismiss();
+    // Past the watcher's first poll of the stopped axes: inside the settle.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let retained = d.retire().await;
+
+    assert!(
+        !retained.at_park,
+        "a park still settling was handed over as parked"
+    );
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        !d.at_park().await.unwrap(),
+        "a retired park's watcher marked the mount parked"
+    );
 }
 
 #[tokio::test]

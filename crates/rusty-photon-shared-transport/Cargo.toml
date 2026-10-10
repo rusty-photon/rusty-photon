@@ -20,5 +20,16 @@ tokio-serial = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 
+[features]
+# `SharedTransport::reconnect_now`, a test hook. Nothing in production may
+# call it — a teardown cannot join the attempt it starts — so production
+# builds do not compile it, and a caller there fails to build.
+test-util = []
+
 [dev-dependencies]
+# This crate's own tests reach `test-util` through a dev-dependency on
+# itself, so the feature is on for `cargo test` here and never for a
+# dependent's build. Not `required-features` on the test targets: that
+# skips them silently when the feature is off, instead of failing.
+rusty-photon-shared-transport = { path = ".", features = ["test-util"] }
 tokio = { workspace = true, features = ["full", "test-util", "macros"] }

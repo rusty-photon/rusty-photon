@@ -482,8 +482,9 @@ fn usb_faults(hw: &HardwareFacts, checks: &mut Vec<Check>) {
 }
 
 /// The fault's record, plus whatever it carries that the record does not
-/// already spell out: a Windows instance id names its ids and a sysfs path
-/// its port, but not the other way round.
+/// already spell out: a Windows instance id names its ids but not its port,
+/// and a sysfs path names its entry but neither its ids nor the port it is
+/// spelled at.
 fn describe_fault(fault: &rusty_photon_doctor_checks::UsbFault) -> String {
     use std::fmt::Write as _;
     let mut described = fault.record.clone();
@@ -801,8 +802,25 @@ mod tests {
         );
     }
 
-    /// A sysfs path already names the port, so only the ids it does not
-    /// carry are added — an unread product shown as such.
+    /// A sysfs record whose port could be spelled carries that spelling,
+    /// which its path does not show, so both it and the ids are added.
+    #[test]
+    fn test_describe_fault_adds_the_port_a_sysfs_record_is_spelled_at() {
+        let described = describe_fault(&fault(
+            "/sys/bus/usb/devices/2-9",
+            Some("03c3"),
+            None,
+            Some("pci-0000:00:14.0-usbv3-0:9"),
+        ));
+        assert_eq!(
+            described,
+            "/sys/bus/usb/devices/2-9 (03c3:????) at pci-0000:00:14.0-usbv3-0:9"
+        );
+    }
+
+    /// A sysfs record whose port could not be spelled carries its entry
+    /// name as a hint, which its path already shows, so only the ids it
+    /// does not carry are added — an unread product shown as such.
     #[test]
     fn test_describe_fault_adds_the_ids_a_sysfs_record_lacks() {
         let described = describe_fault(&fault(

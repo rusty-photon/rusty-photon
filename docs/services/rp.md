@@ -155,10 +155,16 @@ The document accumulates data as it flows through the system.
   },
   "frame_type": "Light",
   "camera_id": "main-camera-1",
+  "camera_name": "QHY600M",
+  "train_id": "main",
+  "telescope": "Takahashi FSQ-106EDX4",
   "binning": "1x1",
   "filter": "Luminance",
+  "gain": 26,
+  "offset": 30,
   "exposure_time_secs": 300,
   "planned_at": "2026-03-02T01:15:00Z",
+  "exposure_started_at": "2026-03-02T01:15:00.412+00:00",
   "captured_at": "2026-03-02T01:20:02Z",
   "file_path": "/data/lights/M31/M31_L_5m_001.fits",
   "session_id": "session-2026-03-01",
@@ -166,6 +172,10 @@ The document accumulates data as it flows through the system.
   "max_adu": 65535,
   "cooler_setpoint_c": -10,
   "sensor_temperature_c": -9.8,
+  "pointing": {
+    "ra_hours": 0.7121,
+    "dec_degrees": 41.2702
+  },
   "optics": {
     "focal_length_mm": 1000.0,
     "pixel_size_x_um": 3.76,
@@ -180,7 +190,8 @@ The document accumulates data as it flows through the system.
 }
 ```
 
-**`target` and `frame_type` are landed (Decision 11); `filter`,
+**`target` and `frame_type` are landed (Decision 11); `filter` and the
+other per-frame acquisition facts below are landed (issue #1180);
 `session_id`, `sequence_number`, and `planned_at` remain aspirational —
 no code path writes them onto the document yet.** `target` and
 `frame_type` are populated only when `capture`'s `frame_type` parameter
@@ -219,6 +230,68 @@ omitted (absent, not `null`) when unavailable — no ladder configured,
 cooling skipped or unreachable, or the temperature read failed. See
 [Camera Cooling](#camera-cooling); like `optics`, both are auxiliary
 metadata, never gating capture.
+
+**Per-frame acquisition facts** (issue #1180) record what the rig was
+doing while the frame was exposed. Like `optics`, each is auxiliary: a
+failed read drops that one field (logged at `debug!`), never the
+capture, and an unavailable field is omitted (absent, not `null`). The
+FITS header carries the same values ([FITS header](#fits-header)); the
+sidecar stays the authority.
+
+- `exposure_started_at` — when the exposure began, RFC 3339 UTC. It is
+  the camera's own record, ASCOM `LastExposureStartTime`, read after
+  readout while the capture still holds the camera (so the next
+  capture's `StartExposure` cannot have overwritten it). `rp` accepts
+  the driver's value only when it falls inside the window `rp` itself
+  observed — no earlier than just before `StartExposure` was sent, and
+  no later than `ImageReady` less the exposure time, since an exposure
+  begun after that could not have finished — widened by 2 s on each
+  side for clock differences between the camera's host and `rp`'s. A
+  driver that does not implement the property, fails the read, or
+  reports a time outside that window (a stale start, or one stamped at
+  readout) gets `rp`'s own clock reading instead, taken the moment
+  `StartExposure` returned. Present on every frame this version
+  captures. `captured_at` is unchanged: it marks capture *completion*
+  (after readout), which is what `{night_date}` is keyed on.
+- `camera_name` — the driver's ASCOM `Name` (e.g. `"QHY600M"`), read
+  once per connection with the other invariants and cached on
+  `CameraEntry`. `camera_id` remains the rig-local identity.
+- `train_id` — the [optical train](#optical-trains) that terminates in
+  the camera; omitted for a camera outside every train.
+- `telescope` — that train's configured `telescope`, as it stood when
+  the frame was taken (a later config edit does not reach back);
+  omitted outside every train or when the train names none.
+- `filter` — the filter in the camera's train filter wheel, named from
+  the wheel's configured `filters` (`"Filter <n>"` for an unnamed
+  slot). Read live for `Light`, `Flat` and untyped captures, once the
+  exposure completes and while the capture still holds the camera —
+  never mid-exposure, because a camera-integrated wheel (a QHY CFW)
+  answers through the camera's own driver. Omitted for `Dark`/`Bias`
+  (dark current is not filter-dependent, and an incidental wheel
+  position on a dark is noise) and when the train has no wheel, or the
+  wheel is disconnected, moving, fails the read, or does not answer
+  within 3 s. When a naming template is configured
+  (`session.file_naming_pattern`), the one read feeds both the filename
+  and this field, so they cannot disagree — and there a failed read
+  fails a typed capture, whether or not the pattern names `{filter}`
+  ([Capture Tool Details](#capture-tool-details), *Filter resolution*).
+- `gain`, `offset` — the camera's ASCOM `Gain`/`Offset`, read on every
+  capture while it holds the camera. Never cached: both are
+  operator-mutable, the same reason `get_camera_info` reads them live.
+  Omitted when the driver does not implement them (common on CCDs) or
+  the read fails.
+- `pointing` — where the mount was pointing: `ra_hours`/`dec_degrees`
+  exactly as the mount reports them, in the mount's own equatorial
+  system (often JNow; `rp` does not convert). Read once, right after
+  `StartExposure` returns, concurrently with the exposure; the
+  [mount motion gate](#mount-motion-gate) keeps the mount from slewing
+  under an imaging-train exposure, so one read describes the frame. A
+  camera outside the imaging train is not held by the gate, so a mount
+  that reports `Slewing` at the read leaves the field out rather than
+  record a point mid-move. Also omitted when no mount is configured or
+  connected, or the read fails or does not answer within 3 s.
+  Distinct from `target.ra_hours`/`target.dec_degrees`, which are the
+  catalog (J2000) coordinates of what the frame is *of*.
 
 `optics` carries the camera + optical-train geometry that consumers
 need to interpret the frame without re-deriving it from a plate
@@ -456,6 +529,75 @@ making each FITS self-describing for lineage, downstream tools, and
 disambiguation when multiple files in the data directory happen to
 share an 8-char suffix. The sidecar's `id` field carries the same
 full UUID as a fallback authority.
+
+#### FITS header
+
+Third-party tools — ASTAP, PixInsight, Siril, astrometry.net — read
+the standard FITS keywords, not the sidecar: plate-solve hints,
+calibration matching, archival lineage and stacking-time weighting all
+come from the header. So the primary HDU carries a portable copy of the
+document's core fields, and a frame stays self-describing after it
+leaves `rp` without its sidecar. The sidecar remains the authority; the
+header is written from the same capture-time values in the same step.
+The keyword set below is a contract, pinned field by field in
+`services/rp/tests/features/capture_fits_header.feature`.
+
+| Keyword | Type | Value | Present when |
+|---|---|---|---|
+| `DATE-OBS` | string | `exposure_started_at` in FITS form, `'2026-03-02T01:15:00.412'` (UTC, millisecond precision, no zone suffix) | always |
+| `EXPTIME` | real | exposure duration, seconds | always |
+| `IMAGETYP` | string | `'Light Frame'` / `'Dark Frame'` / `'Flat Field'` / `'Bias Frame'` | `frame_type` supplied |
+| `OBJECT` | string | `target.display_name` | the frame resolved a target-store row (not a reserved `dark`/`flat`/`bias` slug) |
+| `OBJCTRA` | string | `target.ra_hours`, sexagesimal `'HH MM SS.ss'` (J2000) | as `OBJECT` |
+| `OBJCTDEC` | string | `target.dec_degrees`, sexagesimal `'+DD MM SS.s'` (J2000) | as `OBJECT` |
+| `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) | `pointing` present |
+| `DEC` | real | `pointing.dec_degrees`, degrees | `pointing` present and within ±90° |
+| `INSTRUME` | string | `camera_name` | `camera_name` present |
+| `TELESCOP` | string | `telescope` | `telescope` present |
+| `FILTER` | string | `filter` | `filter` present |
+| `GAIN` | integer | `gain` | `gain` present |
+| `OFFSET` | integer | `offset` | `offset` present |
+| `CCD-TEMP` | real | `sensor_temperature_c`, °C | `sensor_temperature_c` present |
+| `SET-TEMP` | real | `cooler_setpoint_c`, °C | `cooler_setpoint_c` present |
+| `XBINNING` / `YBINNING` | integer | `binning` factors | always |
+| `XPIXSZ` / `YPIXSZ` | real | `PixelSizeX`/`PixelSizeY` × `XBINNING`/`YBINNING`, µm | the connect-time pixel-size read succeeded |
+| `FOCALLEN` | real | the train's `focal_length_mm`, mm | the camera's train declares a focal length |
+| `APTDIA` | real | the train's `aperture_mm`, mm | the camera's train declares an aperture |
+| `FOCRATIO` | real | `focal_length_mm / aperture_mm`, as `get_train_info` derives it | the train declares both |
+| `SITELAT` | real | `site.latitude_degrees`, degrees north | a `site` is configured |
+| `SITELONG` | real | `site.longitude_degrees`, degrees east | a `site` is configured |
+| `SWCREATE` | string | `'rusty-photon rp <version>'` | always |
+| `DOC_ID` | string | the document's full UUID | always |
+
+Rules the table does not show:
+
+- **`XPIXSZ`/`YPIXSZ` are the binned pixel.** The long-standing
+  convention (MaxIm DL, followed by NINA and read that way by ASTAP)
+  is the pixel size *after* binning, and plate solvers derive the
+  frame's pixel scale from `XPIXSZ` and `FOCALLEN`. The sidecar's
+  `optics` block is unbinned by design (§ Core Fields), so the two
+  differ by the binning factor on a binned frame. `XPIXSZ`,
+  `FOCALLEN` and `APTDIA` are each written whenever their own input
+  exists — the header does not drop them just because the sidecar's
+  all-or-nothing `optics` block is missing a different input.
+- **`RA`/`DEC` are pointing; `OBJCTRA`/`OBJCTDEC` are the object.**
+  The first pair is the mount's live read (`pointing`), the second the
+  target store's catalog coordinates. No `EQUINOX`/`RADESYS` card is
+  written for `RA`/`DEC`: they are in the mount's own equatorial
+  system, which `rp` does not query or convert.
+- **Untyped captures** (`frame_type` omitted — `auto_focus` and
+  `center_on_target` frames among them) carry every keyword except
+  `IMAGETYP`, `OBJECT`, `OBJCTRA` and `OBJCTDEC`.
+- **No `SITEELEV`**: the site carries no elevation
+  ([Site Configuration](#site-configuration)).
+- **Absent means unknown, never a placeholder.** A keyword whose source
+  is missing is omitted rather than written as `0`, `''` or `'NA'`. A
+  value that cannot be written as a FITS card — a string with
+  non-ASCII characters, or too long for one 80-byte card — drops that
+  card (logged at `debug!`); the sidecar still carries the value. No
+  header problem fails a capture.
+- Reals are written in the FITS exponential form
+  (`EXPTIME = 3.0000000000E+02`), which every reader accepts.
 
 Both the FITS file and the sidecar JSON are written atomically:
 staged to a sibling temp file, fsynced, renamed into place, parent
@@ -1064,7 +1206,7 @@ tool across the line with `safety.gate` (§ Configuration).
 
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
-| `capture` | Ungated | camera_id *or* train_id (exactly one), duration, binning (optional `"AxB"`, default `"1x1"`), target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. Sets the binning and the full-frame subframe on the camera before every exposure, so nothing a foreign client left on it beforehand reaches the frame (a *concurrent* same-camera capture is a separate matter — see [Capture Tool Details](#capture-tool-details), Concurrency). `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
+| `capture` | Ungated | camera_id *or* train_id (exactly one), duration, binning (optional `"AxB"`, default `"1x1"`), target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. Sets the binning and the full-frame subframe on the camera before every exposure, so nothing a foreign client left on it beforehand reaches the frame. `rp`'s captures through one camera run one at a time: a call through a camera `rp` is already capturing on waits its turn rather than failing (a client outside `rp` is not queued — see [Capture Tool Details](#capture-tool-details), Concurrency), and the deadlines below start once it has the camera. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
 | `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, max_bin_x, max_bin_y, can_asymmetric_bin, gain, offset | Read camera capabilities and current settings. `max_bin_x`/`max_bin_y`/`can_asymmetric_bin` are the binning envelope a caller picks a `capture` binning inside; they are read once at connect time with the other invariant sensor properties, and are `null` when that read failed. `gain` and `offset` are read from the driver on every call, never cached by rp — for the SDK camera drivers they are the values the camera's next exposure is taken at (their GO1); `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at (calibrator-flats-provider plan, D4/D5) |
 | `move_focuser` | Ungated | focuser_id, position | actual_position, backlash_compensated | Move focuser to absolute position (blocks polling `is_moving` until idle **and** the read-back position equals the target; with a `backlash` block on the focuser the move arrives from the configured direction via an overshoot leg — see [Focuser Tool Details](#focuser-tool-details)). Bounded by a **predicted deadline per leg**: `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` (current position read before the move) and a compensated move is the overshoot hop then the return hop; the envelope's `predicted`/`max` are the sums over the legs. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
 | `get_focuser_position` | Ungated | focuser_id | position, min_position, max_position, backlash | Read the current focuser position together with the configured travel bounds and backlash block — `min_position` / `max_position` and `backlash` (`{ "approach", "steps" }`) from the focuser's config block, each `null` when the config sets none. See [Focuser Tool Details](#focuser-tool-details) |
@@ -1236,8 +1378,9 @@ e.g. `"500ms"`, `"30s"`, `"1m30s"`).
 After the exposure completes and `image_ready` returns true, `capture`
 downloads the camera's `image_array`, writes it as a FITS file via
 `rp-fits` (BITPIX=16+BZERO=32768 for the common 16-bit sensor case;
-BITPIX=32 when `max_adu > u16::MAX`) with `DOC_ID = '<full-uuid>'` in the
-primary HDU header, and creates a sidecar exposure document JSON
+BITPIX=32 when `max_adu > u16::MAX`) with the standard acquisition
+keywords and `DOC_ID = '<full-uuid>'` in the primary HDU header
+([FITS header](#fits-header)), and creates a sidecar exposure document JSON
 alongside it. The base filename is `<doc_uuid_8>`; both files share
 that base (`<doc_uuid_8>.fits` and `<doc_uuid_8>.json`). Both are
 written atomically (stage to a sibling temp file, fsync, rename, fsync
@@ -1278,10 +1421,10 @@ call that asked for it. The cost is six property writes and one
 read-back per exposure.
 
 That covers state the camera was **already in** when the capture
-started, which is the whole of the problem on a rig where `rp` is the
-only thing capturing. It does not cover a second capture arriving
-through the same camera *while* this one runs — see Concurrency at the
-end of this section.
+started. A second `rp` capture arriving through the same camera *while*
+this one runs cannot interleave its writes with these: captures through
+one camera run one at a time — see Concurrency at the end of this
+section.
 
 The write order is fixed, and all four properties are written:
 
@@ -1291,8 +1434,8 @@ The write order is fixed, and all four properties are written:
    is exposed. Sizing the subframe from factors the sensor is not at
    would write a crop, not a full frame; and since a goal is keyed by
    binning, a frame at a binning nobody asked for is worse than no
-   frame. This read is also the one moment that catches another client
-   re-binning the camera between these writes.
+   frame. This read is also the one moment that catches a client
+   outside `rp` re-binning the camera between these writes.
 3. `StartX`, `StartY` = `0`.
 4. `NumX`, `NumY` = `CameraXSize / BinX`, `CameraYSize / BinY`
    (integer division). The sensor dimensions come from the connect-time
@@ -1348,22 +1491,63 @@ parameter error rather than a started/failed pair, and stops a run
 before the focuser moves or the loop starts rather than at the first
 frame.
 
-**Concurrency.** These writes are not serialized against a second
-capture through the same camera. `rp` has never serialized same-camera
-captures — the [mount motion gate](#mount-motion-gate) is about mount
-motion, and the drivers reject a second concurrent `StartExposure` —
-so two overlapping captures can interleave their geometry writes.
+**Concurrency.** Captures through one camera run one at a time. Each
+camera has a capture slot, and a capture holds it from its first
+geometry write until its image is downloaded, so the geometry it
+wrote, the exposure it started and the frame it reads back are all its
+own. Without that, two overlapping captures could interleave their
+writes: step 2's read-back catches an interleaving that lands before
+it, but not one that lands after it — the other capture re-bins the
+camera while this one is still writing its subframe, and the frame
+runs at a binning its document and filename do not name.
 
-Step 2's read-back narrows that window; it does **not** close it. An
-interleaving that lands *before* the read-back is caught and fails the
-call. One that lands *after* it is not: the other capture can re-bin
-the camera while this one is still writing its subframe, and the frame
-then runs at a binning the document and the filename do not name.
-Nothing short of holding the camera from the first write through
-`StartExposure` fixes that, which is a change to `rp`'s concurrency
-contract rather than to this path — tracked as
-[issue #1217](https://github.com/rusty-photon/rusty-photon/issues/1217).
-Until then: one capture per camera at a time.
+A `capture` — or an internal capture of `auto_focus`, `refocus_train`
+or `center_on_target` — through a camera whose slot is held **waits
+its turn rather than failing**, and waiters take the slot in arrival
+order. An orchestrator does not have to track which camera is busy.
+Captures through different cameras never wait for each other.
+
+- **Released at download, not at persistence.** Writing the FITS file
+  and the sidecar and inserting into the cache touch no camera, so the
+  next exposure starts while the previous frame is still being written
+  (tenet 2).
+- **Taken before the motion gate.** A capture waits for its camera
+  first and only then takes the [mount motion gate](#mount-motion-gate)
+  shared. A capture queued behind a busy camera therefore holds no
+  permit and never delays a pending slew or dither. Nothing in `rp`
+  holds the gate and then waits for a camera, so the two waits cannot
+  deadlock.
+- **Cancel-aware.** The wait is raced against the call's cancellation,
+  like the motion-gate acquire ([In-Flight Tool
+  Calls](#in-flight-tool-calls)). A call cancelled while it waits — its
+  caller disconnected, or the unsafe transition swept it — leaves the
+  queue at once with `cancelled: <reason>` and never touches the
+  camera. Stop-class commands never take the slot: the safety
+  enforcer's `AbortExposure` goes straight to the device.
+- **Session read after the wait.** The camera's handle and its
+  connect-time metadata are read once the capture holds the camera, so
+  one queued across a reconnect exposes on the re-established session
+  ([Device Session Recovery](#device-session-recovery)) — which may put
+  a different device behind the entry — not on the one it queued on. A
+  camera that has never connected is refused before it queues.
+- **Silent while queued, deadlines exclude the wait.** Like a capture
+  waiting on the motion gate, a queued call emits nothing — no event,
+  no `notifications/progress` — until it holds the camera.
+  `exposure_started` and its advisory deadline follow the acquire, so
+  they describe this capture's own exposure rather than its time in
+  the queue.
+- **Bounded.** The wait adds no timeout of its own, and needs none:
+  the capture ahead holds the slot for at most its `duration` plus the
+  readout backstop and its download. A wedged exposure therefore holds
+  up its camera's next capture for that long, and no other camera's.
+
+The slot serializes `rp`'s own captures; it cannot hold a client
+outside `rp`. A NINA session, a ConformU run or a probe exposing
+through the same camera concurrently is not queued by it — the
+rusty-photon drivers reject a second concurrent `StartExposure`, and
+step 2 catches a re-bin that lands before the read-back, but nothing
+in `rp` can see one that lands after it. Capture through a camera from
+one client at a time.
 
 **Target linkage (Decision 11 — landed).** `capture` gains two optional
 parameters: `target` (a slug string) and `frame_type`
@@ -1428,6 +1612,13 @@ name/position live when a filter wheel is present, else renders the
 fixed literal `"NA"` / position `0`. For `Dark`/`Bias`, `capture`
 always renders `"NA"`/`0`, even when a wheel is present — recording an
 incidental filter position on a dark/bias would be noise, not signal.
+The read happens once per capture, once the exposure completes, and the
+same value becomes the document's `filter` field and the header's
+`FILTER` card — those leave the field out where the filename renders
+`"NA"`. A failed read (the wheel errors, reports itself moving, or does
+not answer within 3 s) fails a templated capture rather than mis-filing
+the frame; for a capture that renders no filename it only drops the
+`filter` field.
 
 *Directory/file rendering.* Once `target`/`frame_type` are resolved,
 `capture` renders `session.directory_pattern` then
@@ -2539,8 +2730,11 @@ in the catalog. Safety is enforced at the tool level, universally:
 - **Parameter validation**: focuser position within min/max bounds,
   exposure duration within configured limits, slew coordinates above
   horizon.
-- **State validation**: cannot capture while another capture is in
-  progress on the same camera, cannot slew during an exposure.
+- **State sequencing**: a capture through a camera that is already
+  capturing waits for it to finish
+  ([Capture Tool Details](#capture-tool-details), Concurrency), and a
+  slew waits for the in-flight imaging-train exposures
+  ([Mount Motion Gate](#mount-motion-gate)).
 - **Safety override**: a safety event (unsafe transition) immediately
   cancels every in-flight gated tool call (§ Safety → [In-Flight Tool
   Calls](#in-flight-tool-calls)) — the caller sees the tool error
@@ -2755,7 +2949,8 @@ decisions recorded there are fixed.
 
 ```jsonc
 "optical_trains": [
-  { "id": "main",  "purpose": "imaging", "focal_length_mm": 1000.0,
+  { "id": "main",  "purpose": "imaging", "telescope": "Celestron EdgeHD 8",
+    "focal_length_mm": 1000.0,
     "aperture_mm": 200.0, "default_position_angle_degrees": 254.0,
     "devices": ["flat-panel", "main-focuser", "main-fw", "falcon", "main-cam"],
     "auto_focus": { "duration": "3s", "step_size": 100, "half_width": 1000,
@@ -2792,6 +2987,14 @@ Semantics:
   The guiding train tells rp which camera's focus and rotation state
   the guider depends on; at most one train may carry it, and it
   requires `equipment.mount.guiding`.
+- `telescope` names the telescope the light path looks through (e.g.
+  `"Takahashi FSQ-106EDX4"`). Optional. Frames through the train's
+  camera carry it as the FITS `TELESCOP` card and the sidecar's
+  `telescope`; omitted, they carry neither — the train id is not
+  substituted, since it names a light path, not an instrument. It must
+  fit one FITS string card: 1 to 68 printable ASCII characters, an
+  apostrophe counting twice. Anything else is rejected at load, so the
+  card can never be dropped at capture time.
 - `focal_length_mm` is the effective focal length of that light path
   in millimetres — a positive finite number, rejected at load
   otherwise. Optional: omitted, captures through that train's camera
@@ -2801,7 +3004,8 @@ Semantics:
   Optional. With `focal_length_mm` it gives the train's focal ratio,
   which `get_train_info.optics` reports and a focus provider sizes its
   sweep from ([Train optics](#train-optics)); omitted, `focal_ratio`
-  is `null`.
+  is `null`. Frames through the train carry both as the FITS `APTDIA`
+  and `FOCRATIO` cards ([FITS header](#fits-header)).
 - `default_position_angle_degrees` is the train's default framing
   angle in degrees east of north, sky frame — the same domain as
   `move_rotator`'s `angle` (`0.0 ≤ angle < 360.0`, finite), rejected
@@ -3038,7 +3242,7 @@ Acquisition rules:
 |---|---|---|
 | `slew` — including `center_on_target`'s inner slews and orchestrator-driven meridian flips, which reach the mount as slews | Exclusive | Acquired before the pre-slew pointing read, so the predictive deadline never includes gate wait |
 | `dither` | Exclusive | Acquired after parameter and unit resolution (invalid calls fail fast without waiting), before the proxy call to the guider service; held through settle. A dither cancelled mid-settle answers its caller at once but hands the permit to a detached holder that keeps the gate exclusive until the guider's settle RPC ends — bounded by the settle timeout plus 15 s, or 90 s when the call named none — so no capture starts into the tail of guide pulses |
-| `capture` through a camera terminating an **imaging** train — including the internal captures of `auto_focus`, `refocus_train`, and `center_on_target` | Shared | Held for the full exposure-to-persistence pipeline; concurrent imaging-train captures share freely |
+| `capture` through a camera terminating an **imaging** train — including the internal captures of `auto_focus`, `refocus_train`, and `center_on_target` | Shared | Held for the full exposure-to-persistence pipeline; concurrent imaging-train captures share freely. A capture takes its camera's slot first and the gate second, so one queued behind another capture through the same camera holds no permit while it waits ([Capture Tool Details](#capture-tool-details), Concurrency) |
 
 Queueing semantics (Decision 5 of the
 [optical-trains plan](../plans/optical-trains.md)):

@@ -53,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it travels, as a real CFW does under the Windows SDK, rather than naming the
   slot it left. `SimulatedCameraState::poll_filter_wheel` returns a
   `CfwStatus`. Simulation only.
+- Both crates require Rust 1.98.1 (`qhyccd-rs` was 1.85.0, `libqhyccd-sys`
+  1.68.0): they now declare the rusty-photon workspace's MSRV.
+- `Camera::id` and `FilterWheel::id` are `const fn`.
 - **Breaking:** simulated cameras now read out in whole pairs of pixels: a
   region whose width or height is odd arrives with the shape that was asked
   for and its trailing column or row left zero, on both the single-frame and

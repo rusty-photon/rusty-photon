@@ -82,6 +82,7 @@ async fn rp_with_camera_in_train(world: &mut RpWorld, focal_length_mm: f64) {
     ensure_omnisim(world).await;
     add_camera(world);
     world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
         aperture_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
@@ -99,6 +100,7 @@ async fn rp_with_camera_and_wheel_in_train(world: &mut RpWorld) {
     add_camera(world);
     add_filter_wheel(world);
     world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
         aperture_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
@@ -121,6 +123,7 @@ async fn rp_with_calibrator_wheel_and_camera_in_train(world: &mut RpWorld) {
     add_filter_wheel(world);
     crate::steps::cover_calibrator_steps::add_cover_calibrator(world);
     world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
         aperture_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
@@ -170,6 +173,7 @@ async fn rp_with_optics_train(
     add_focuser(world, None, None, None);
     add_filter_wheel(world);
     world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
         id: train_id,
         purpose: Some("imaging".to_string()),
         aperture_mm: Some(aperture_mm),
@@ -193,6 +197,7 @@ async fn camera_and_focuser_in_train(world: &mut RpWorld, train_id: String) {
     add_camera(world);
     add_focuser(world, None, None, None);
     world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
         id: train_id,
         purpose: Some("imaging".to_string()),
         aperture_mm: None,
@@ -224,6 +229,7 @@ async fn rp_with_stub_focuser_train(world: &mut RpWorld, train_id: String) {
         .expect("no focuser — add 'rp is configured with a focuser on the stub service' first");
     add_offline_camera(world, "main-cam");
     world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
         id: train_id,
         purpose: Some("imaging".to_string()),
         aperture_mm: None,

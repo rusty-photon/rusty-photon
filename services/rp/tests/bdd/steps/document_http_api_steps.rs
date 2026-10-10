@@ -80,7 +80,7 @@ async fn fetch_document_remembered(world: &mut RpWorld, name: String) {
     fetch_document(world, &document_id).await;
 }
 
-async fn fetch_document(world: &mut RpWorld, document_id: &str) {
+pub async fn fetch_document(world: &mut RpWorld, document_id: &str) {
     let url = format!("{}/api/documents/{}", world.rp_url(), document_id);
     let client = reqwest::Client::new();
     let resp = client

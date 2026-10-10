@@ -215,18 +215,20 @@ fn report_pixels(buf: &[u8], image_type: ImageType) {
         }
         ImageType::Raw16 => {
             let pixels: Vec<u16> = buf
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 // Little-endian on the wire regardless of host. This probe's
                 // output is the measured evidence behind the MaxADU ceilings,
                 // so it must not depend on the machine that gathered it.
-                .map(|c| u16::from_le_bytes(c.try_into().expect("chunks_exact(2) yields pairs")))
+                .map(|&c| u16::from_le_bytes(c))
                 .collect();
             let (min, max, sum) = pixels
                 .iter()
                 .fold((u16::MAX, 0u16, 0u64), |(lo, hi, sum), &p| {
                     (lo.min(p), hi.max(p), sum + u64::from(p))
                 });
-            let high_bytes_all_zero = buf.chunks_exact(2).all(|c| c.get(1) == Some(&0));
+            let high_bytes_all_zero = buf.as_chunks::<2>().0.iter().all(|&[_, high]| high == 0);
             println!(
                 "    pixels (16-bit)      : min {min} max {max} mean {:.1}{}",
                 sum as f64 / pixels.len() as f64,

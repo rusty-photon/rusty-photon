@@ -96,7 +96,7 @@ recorded here so the option is not lost.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | C0 | This plan | Merged; revised 2026-09-29 and 2026-10-01 | [#1263](https://github.com/rusty-photon/rusty-photon/pull/1263), [#1365](https://github.com/rusty-photon/rusty-photon/pull/1365) |
-| C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Landed except the spike's different-port move (see D2), which still blocks C2: `port`/`serial` extraction, the failed-vs-empty inventory, the staged synthetic inventory, and faults (a record that is not a working device is a fault, not a failed scan — D4.4). The Linux port drops the bus number before C2 (D2) | `chore/device-claims-c1-spike` ([#1306](https://github.com/rusty-photon/rusty-photon/pull/1306)), `chore/device-claims-c1-synthetic-inventory` ([#1308](https://github.com/rusty-photon/rusty-photon/pull/1308)), `fix/doctor-usb-faults-1322` ([#1365](https://github.com/rusty-photon/rusty-photon/pull/1365)) |
+| C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Landed except the spike's different-port move (see D2), which still blocks C2: `port`/`serial` extraction, the failed-vs-empty inventory, the staged synthetic inventory, and faults (a record that is not a working device is a fault, not a failed scan — D4.4), and the Linux port spelled by controller and USB revision instead of bus number (D2) | `chore/device-claims-c1-spike` ([#1306](https://github.com/rusty-photon/rusty-photon/pull/1306)), `chore/device-claims-c1-synthetic-inventory` ([#1308](https://github.com/rusty-photon/rusty-photon/pull/1308)), `fix/doctor-usb-faults-1322` ([#1365](https://github.com/rusty-photon/rusty-photon/pull/1365)) |
 | C2 | `usb_devices` schema + `svbony-camera` — port placement (the join), listed numbers, placeholders (their fixed connect error code, which rp treats as permanent for the pass, and their config actions), the failed-scan re-scan, each simulation backend's synthetic inventory, and `svbony-camera doctor --devices` (D5's listing and paste-ready block; the `usb-devices.*` checks stay in C5), so no driver serves the list before its paste source exists. `usb_devices` is part of `config.schema`/`config.apply` from the phase that adds it, under the ordinary `Reload` disposition (D4.1), and D3's validation rejects a bad list in `config.apply` as well as at load. The easy case; proves schema, join and placeholder behaviour | Not started | |
 | C3 | `usb_devices` in `zwo-camera`, with its `doctor --devices` listing; a failed identity open is a per-camera outcome (D7) | Not started | |
 | C4 | `usb_devices` in `qhy-camera`, with its `doctor --devices` listing and each entry's declared filter wheel (D4.7) + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup and reload entirely** (the split alone narrows the tenet-3 problem, it does not discharge it) | Not started | |
@@ -209,6 +209,45 @@ passively and cross-platform for the D4 `hardware.usb-device` check, with
   name. It is built from sysfs alone (the entry's realpath and its root
   hub's `version`), so it stays passive. The `1-4.2` examples elsewhere
   in this plan stand for that spelling.
+
+  **Landed, with one departure from udev for a device** (a root hub's
+  own record, which udev gives no revision path, is spelled with no
+  chain: `pci-0000:00:14.0-usbv3`). udev names the innermost
+  platform device above `usbN`, and on mainline dwc3 boards (Rockchip,
+  i.MX) that is the `xhci-hcd.N.auto` child the glue driver creates —
+  an id the kernel allocates in probe order and marks with `.auto` for
+  exactly that reason. Copying udev there would bring back the
+  bus-number problem under another name, so the collector skips
+  `.auto` names and names the nearest platform ancestor that has a
+  stable one (`platform-fc000000.usb-usbv3-0:1`); a run of nothing but
+  `.auto` names contributes nothing and the PCI device above it names
+  the controller. A plain instance number is explicit and kept. The
+  Raspberry Pi 5 is the case that mattered, and udev's spelling was
+  already safe there: read on `pier1` 2026-10-08, its two RP1
+  controllers are `xhci-hcd.0` and `xhci-hcd.1`, under
+  `1f00200000.usb` and `1f00300000.usb`, and the Pi kernel takes that
+  number from the devicetree's `usb` alias, not from probe order
+  (`of_alias_get_id(…, "usb")` in its `dwc3/host.c`). So a Pi 5 port
+  reads `platform-xhci-hcd.1-usbv2-0:2.1`, byte-identical to
+  `udevadm info`. The collector itself was run against two real trees
+  the same day and matched udev's `ID_PATH_WITH_USB_REVISION` for every
+  device, with no faults: `pier1`'s 10, across both RP1 controllers, and
+  19 on an x86 dev box, on two PCI xHCI controllers sitting one and
+  three PCIe bridges deep. The `.auto` path was not checked on Rockchip
+  hardware, because the Orange Pi 5 Ultra was unreachable. Its tests
+  use a synthetic tree.
+
+  A record whose spelling cannot be built is a fault (D4.4): a name that
+  is no port chain, an entry under no root hub, a root-hub `version`
+  that names no revision, an unreadable `subsystem` link, or a
+  controller with no stable name. So is every record under two root hubs
+  that end up with one spelling. Platform device names are unique, so
+  that can only happen where one stable ancestor sits over two `.auto`
+  controllers of the same revision. No observed host has one, but a
+  collision would let one string name two sockets. A fault whose port
+  could still be spelled (the collision, or a record whose `idProduct`
+  could not be read) carries the spelling as its `location`, which is
+  what D4.5's match of a fault to a listed port needs.
 - **macOS** — `system_profiler -json SPUSBDataType`, which carries
   `location_id` (a hex encoding of the port chain) per device.
 - **Windows** — `Get-PnpDevice` + `Get-PnpDeviceProperty`. Today it reads
@@ -369,8 +408,9 @@ ASI662MC      PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)    Port_#0004.Hub_#0
    not document the panel layout, so it needs a look at the hardware.
 
 **The port string is the platform's native spelling, not a normalised
-invention.** `1-4.2` on Linux, the location path on Windows, the location
-id on macOS. A config file already names one specific host's hardware; it
+invention.** udev's `ID_PATH_WITH_USB_REVISION` on Linux (with the one
+departure above), the location path on Windows, the location id on
+macOS. A config file already names one specific host's hardware; it
 is not portable across an OS boundary, and inventing a canonical form only
 creates a second thing that can disagree with what the OS says. Doctor
 prints the exact string to paste (D5), so the operator never types one.
@@ -966,9 +1006,12 @@ date. (`name` is display text, never a key.)
    USB 2.0 companion (`rig2`'s UPBv2 is the `USB5807` / `USB2807` pair,
    D2 spike item 6). A USB 3 camera whose SuperSpeed link does not
    train — a marginal or USB 2 cable, a loose seat — enumerates on the
-   companion under a different native spelling: `1-1.3` (the USB 2 root
-   hub's bus) instead of `2-1.3` on Linux, `…#USB(2)#USB(3)` instead of
-   `…#USB(14)#USB(3)` on Windows. The key is the native spelling (D2),
+   companion under a different native spelling: `…-usbv2-0:1.3` (the
+   USB 2 root hub) instead of `…-usbv3-0:1.3` on Linux,
+   `…#USB(2)#USB(3)` instead of `…#USB(14)#USB(3)` on Windows. The chain
+   need not stay the same — the two root hubs number their ports
+   independently, and only the port's `peer` link (below) says which
+   halves pair. The key is the native spelling (D2),
    so the twin is a different port, never an alias, and `usb_port` takes
    one spelling, not a list: accepting both halves would let one socket
    answer to two entries. With a list, the listed number becomes a placeholder and the
@@ -2107,7 +2150,7 @@ review.
 | # | Decision | Why |
 |---|---|---|
 | 1 | **The USB port path is the only device key** (D1) | Serial does not exist for every camera (the ASI1600 exposes neither serial nor flash id); three ways to name one device means three code paths and a config whose meaning depends on which key the author reached for. Serial and model stay as internal join signals and doctor display columns, never config surface. |
-| 2 | **C1 is a blocking hardware spike** (D2) | The Windows port spelling was the one leg still unchosen; the Linux directory name was chosen, but its bus number depends on controller registration order, so it gives way to a controller-anchored spelling before C2 (D2). Prove the Windows spelling on the real box — direct and behind a hub, across replug and reboot — before any schema commits to a spelling. An unstable key on one platform is worse than no key. |
+| 2 | **C1 is a blocking hardware spike** (D2) | The Windows port spelling was the one leg still unchosen; the Linux directory name was chosen first, but its bus number depends on controller registration order, so it gave way to a controller-anchored spelling (D2). Prove the Windows spelling on the real box — direct and behind a hub, across replug and reboot — before any schema commits to a spelling. An unstable key on one platform is worse than no key. |
 | 3 | **The facade listens on 11128** (D10) | It joins the Alpaca device block because a port should say what a client finds there, and what is there is an ASCOM Camera. Its hosting process is not a client-visible fact. The port is a second listener under a new nested `camera.server` block — not a reuse of the existing REST `server` — and it brings catalog, packaging and firewall registration with it. |
 | 4 | **`PixelSizeX`/`Y` come from config alone — as two fields** (D10) | ASCOM clients and ConformU read `PixelSizeX` right after connect, before any exposure, and tenet 3 forbids capturing a frame on connect to discover it. A FITS-header cross-check was dropped as a second source of truth for a value typed once per rig. `pixel_size_x_um` and `pixel_size_y_um` are separate because ASCOM and rp treat them as separate invariants; one value would advertise square pixels for a rectangular sensor. |
 | 5 | **No list is the permanent default: every camera the USB scan can place, numbered by port order; cameras it cannot place are refused** (D3, D4.3, D4.4, D4.7) | No deprecation and no future release demanding the list: an existing file stays valid and single-camera rigs never meet the block. The default's behaviour still changes once, in C5 (row 6): a multi-camera no-list rig can be renumbered and look-alikes it serves today are refused, so rp's device numbers may need revisiting once (D3). Port order is stable while the set of cameras is unchanged. Refusing unplaceable cameras (look-alikes, unrecognised models, faults, a failed scan) keeps every served number tied to a socket, at the price of a failed scan leaving a no-list rig with no cameras until a background re-scan succeeds (row 14). Doctor's `usb-devices.implicit` finding nudges only the multi-camera case. |
@@ -2130,9 +2173,8 @@ C4's tenet-3-safe probe path, the macOS `system_profiler` check before
 C5's no-list flip, and C7's focus-model reconciliation):
 
 - **C1 — the Windows port spelling**, largely answered on `rig2` 2026-09-21 (D2): `DEVPKEY_Device_LocationPaths` is the property, and the spelling held across a port power cycle and a sibling's absence. Still waiting on hardware for a move to a *different* port; reboot stability was proven on the
-  same rig the same day. The Linux spelling also changes before C2 — the
-  bus number gives way to the controller path plus the USB revision (D2)
-  — but that is an implementation step, not evidence to wait for.
+  same rig the same day. (The Linux spelling's change — the bus number
+  replaced by the controller plus the USB revision — has landed, D2.)
 - **C6 — the capture completion watermark**, waiting on one measurement
   against a live PHD2 (D9). Until it exists the facade cannot tell a
   finished exposure from the frame before it.

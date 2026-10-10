@@ -38,7 +38,7 @@ impl FilterWheel {
     /// println!("Filter wheel id: {}", fw.id());
     /// ```
     #[must_use]
-    pub fn id(&self) -> &str {
+    pub const fn id(&self) -> &str {
         self.camera.id()
     }
 

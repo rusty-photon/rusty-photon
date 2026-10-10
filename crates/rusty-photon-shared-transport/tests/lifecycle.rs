@@ -570,6 +570,32 @@ async fn start_after_shutdown_reopens_cleanly() {
     assert_eq!(counting.shutdown_calls.load(Ordering::SeqCst), 2);
 }
 
+#[tokio::test]
+async fn a_second_shutdown_finds_nothing_to_close_and_leaves_the_transport_restartable() {
+    let cfg = FactoryConfig::default();
+    let factory: std::sync::Arc<dyn TransportFactory> =
+        std::sync::Arc::new(ProgrammableFactory::new(cfg.clone()));
+    let counting = CountingHooks::default();
+    let st = build_with_factory_and_hooks(factory, counting.hooks());
+
+    st.start().await.unwrap();
+    st.shutdown().await.unwrap();
+    st.shutdown().await.unwrap();
+
+    assert_eq!(
+        counting.shutdown_calls.load(Ordering::SeqCst),
+        1,
+        "the second shutdown has no conduit to run its hook on"
+    );
+    assert!(!st.is_available());
+
+    st.start().await.unwrap();
+    let s = st.acquire().await.unwrap();
+    s.close().await.unwrap();
+    st.shutdown().await.unwrap();
+    assert_eq!(cfg.opens(), 2, "the start after both shutdowns re-opens");
+}
+
 // ---------------------------------------------------------------------------
 // LazyAcquire mode preservation
 // ---------------------------------------------------------------------------

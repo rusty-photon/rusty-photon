@@ -118,6 +118,17 @@ struct MockCamera {
     /// When set, `gain()` fails with a non-`NOT_IMPLEMENTED` error —
     /// a transport blip on a camera that does have the property.
     fail_gain: bool,
+    /// `Some` ⇒ `last_exposure_start_time()` answers it, whenever the
+    /// exposure ran — a stale or skewed driver clock.
+    last_exposure_start: Option<std::time::SystemTime>,
+    /// `Some(d)` ⇒ `last_exposure_start_time()` answers the instant
+    /// `start_exposure` was called, less `d` — a driver whose clock or
+    /// whole-second resolution puts its start a little before rp's.
+    /// Takes precedence over `last_exposure_start`; neither set ⇒
+    /// `NOT_IMPLEMENTED`.
+    exposure_start_lead: Option<Duration>,
+    /// The start `exposure_start_lead` stamped, as reported.
+    stamped_exposure_start: std::sync::Mutex<Option<std::time::SystemTime>>,
     /// `Some` ⇒ `image_array()` returns this frame (Alpaca's
     /// `(width, height, planes)` shape) instead of the 2 × 2 zeros —
     /// drives the pixel-order and colour-plane capture tests.
@@ -141,6 +152,10 @@ struct MockCamera {
     /// phase would complete in one poll and the select would never look
     /// at its cancel branch again.
     cancel_during_geometry: std::sync::Mutex<Option<Cancel>>,
+    /// Every exposure start (with the binning the camera was at when it
+    /// started) and every frame download, in the order they arrived —
+    /// what tells a test whether two captures' exposures overlapped.
+    exposure_log: std::sync::Mutex<Vec<String>>,
 }
 
 impl MockCamera {
@@ -154,6 +169,11 @@ impl MockCamera {
     /// Every geometry write so far, in order.
     fn geometry_writes(&self) -> Vec<String> {
         self.geometry_writes.lock().unwrap().clone()
+    }
+
+    /// Every exposure start and frame download so far, in order.
+    fn exposure_log(&self) -> Vec<String> {
+        self.exposure_log.lock().unwrap().clone()
     }
 
     /// What the camera answers for its binning: the override when one
@@ -188,6 +208,15 @@ impl ascom_alpaca::api::Camera for MockCamera {
         if self.fail_start_exposure {
             return Err(ASCOMError::invalid_operation("shutter jammed"));
         }
+        if let Some(lead) = self.exposure_start_lead {
+            *self.stamped_exposure_start.lock().unwrap() =
+                Some(std::time::SystemTime::now() - lead);
+        }
+        let [bin_x, bin_y] = self.reported_bin();
+        self.exposure_log
+            .lock()
+            .unwrap()
+            .push(format!("start {bin_x}x{bin_y}"));
         Ok(())
     }
 
@@ -243,6 +272,10 @@ impl ascom_alpaca::api::Camera for MockCamera {
         if self.fail_image_array {
             return Err(ASCOMError::invalid_operation("download timeout"));
         }
+        self.exposure_log
+            .lock()
+            .unwrap()
+            .push("download".to_string());
         if let Some(frame) = &self.frame {
             return Ok(frame.clone().into());
         }
@@ -376,6 +409,17 @@ impl ascom_alpaca::api::Camera for MockCamera {
 
     async fn offset(&self) -> ascom_alpaca::ASCOMResult<i32> {
         self.offset.ok_or(ASCOMError::NOT_IMPLEMENTED)
+    }
+
+    async fn last_exposure_start_time(&self) -> ascom_alpaca::ASCOMResult<std::time::SystemTime> {
+        if self.exposure_start_lead.is_some() {
+            return self
+                .stamped_exposure_start
+                .lock()
+                .unwrap()
+                .ok_or(ASCOMError::NOT_IMPLEMENTED);
+        }
+        self.last_exposure_start.ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 }
 
@@ -1103,6 +1147,9 @@ const MOCK_CAMERA_MAX_ADU: u32 = 65535;
 const MOCK_CAMERA_PIXEL_SIZE_UM: f64 = 3.76;
 const MOCK_CAMERA_SENSOR_PX: u32 = 1024;
 
+/// The driver `Name` the test registry caches for its camera.
+const MOCK_CAMERA_NAME: &str = "Mock Camera";
+
 /// Per-call overrides for the cached invariant-metadata fields on
 /// `CameraEntry`. Defaults mirror `MockCamera`'s static reads so tests
 /// that don't care about metadata get the same shape `connect_camera`
@@ -1177,6 +1224,7 @@ fn camera_registry_with_meta(
             crate::equipment::DeviceSession::connected_with(
                 cam,
                 crate::equipment::CameraInvariants {
+                    name: Some(MOCK_CAMERA_NAME.to_string()),
                     max_bin_x: meta.max_bin_x,
                     max_bin_y: meta.max_bin_y,
                     can_asymmetric_bin: meta.can_asymmetric_bin,
@@ -2404,12 +2452,28 @@ async fn capture_and_read_sidecar(
     trains: crate::equipment::trains::TrainModel,
 ) -> ExposureDocument {
     let temp = tempfile::tempdir().unwrap();
+    let doc = capture_into(temp.path(), registry, trains).await;
+    // Explicit drop pins the TempDir lifetime past the sidecar read
+    // — without it the borrow checker is happy but the temp dir could
+    // be cleaned up at any drop point the optimizer chose.
+    drop(temp);
+    doc
+}
+
+/// One untyped capture through camera "cam" into `data_directory`,
+/// returning the sidecar it wrote; the FITS file stays on disk for as
+/// long as the caller keeps the directory.
+async fn capture_into(
+    data_directory: &std::path::Path,
+    registry: crate::equipment::EquipmentRegistry,
+    trains: crate::equipment::trains::TrainModel,
+) -> ExposureDocument {
     let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0);
     let handler = McpHandler::new(
         Arc::new(registry),
         Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
         SessionConfig {
-            data_directory: temp.path().to_string_lossy().to_string(),
+            data_directory: data_directory.to_string_lossy().to_string(),
         },
         cache,
         None,
@@ -2439,12 +2503,172 @@ async fn capture_and_read_sidecar(
     let json: serde_json::Value = serde_json::from_str(&text).unwrap();
     let image_path = json["image_path"].as_str().unwrap().to_string();
     let sidecar = persistence::ExposureDocument::sidecar_path_for(&image_path).unwrap();
-    let doc = persistence::ExposureDocument::read_sidecar_sync(&sidecar).unwrap();
-    // Explicit drop pins the TempDir lifetime past the sidecar read
-    // — without it the borrow checker is happy but the temp dir could
-    // be cleaned up at any drop point the optimizer chose.
+    persistence::ExposureDocument::read_sidecar_sync(&sidecar).unwrap()
+}
+
+/// One card from a captured frame's FITS header.
+fn fits_header_card(path: &str, key: &str) -> Option<rp_fits::writer::KeywordValue> {
+    let file = std::fs::File::open(path).unwrap();
+    rp_fits::reader::read_primary_keyword(std::io::BufReader::new(file), key).unwrap()
+}
+
+// -----------------------------------------------------------------------
+// capture — per-frame acquisition facts and the FITS header
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_capture_records_camera_facts_in_sidecar_and_header() {
+    use rp_fits::writer::KeywordValue;
+    let cam = MockCamera {
+        gain: Some(26),
+        offset: Some(30),
+        ..Default::default()
+    };
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
+        "optical_trains": [{
+            "id": "main", "telescope": "Mock Refractor 80", "focal_length_mm": 400.0,
+            "aperture_mm": 80.0, "devices": ["cam"]
+        }]
+    }))
+    .unwrap();
+    let trains = crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let doc = capture_into(temp.path(), camera_registry(Arc::new(cam)), trains).await;
+
+    assert_eq!(doc.camera_name.as_deref(), Some(MOCK_CAMERA_NAME));
+    assert_eq!(doc.train_id.as_deref(), Some("main"));
+    assert_eq!(doc.telescope.as_deref(), Some("Mock Refractor 80"));
+    assert_eq!(doc.gain, Some(26));
+    assert_eq!(doc.offset, Some(30));
+    let card = |key| fits_header_card(&doc.file_path, key);
+    assert_eq!(
+        card("INSTRUME"),
+        Some(KeywordValue::Str(MOCK_CAMERA_NAME.into()))
+    );
+    assert_eq!(
+        card("TELESCOP"),
+        Some(KeywordValue::Str("Mock Refractor 80".into()))
+    );
+    assert_eq!(card("GAIN"), Some(KeywordValue::Int(26)));
+    assert_eq!(card("OFFSET"), Some(KeywordValue::Int(30)));
+    assert_eq!(card("EXPTIME"), Some(KeywordValue::Float(0.1)));
+    assert_eq!(card("XBINNING"), Some(KeywordValue::Int(1)));
+    assert_eq!(
+        card("XPIXSZ"),
+        Some(KeywordValue::Float(MOCK_CAMERA_PIXEL_SIZE_UM))
+    );
+    assert_eq!(card("FOCALLEN"), Some(KeywordValue::Float(400.0)));
+    assert_eq!(card("APTDIA"), Some(KeywordValue::Float(80.0)));
+    assert_eq!(card("FOCRATIO"), Some(KeywordValue::Float(5.0)));
+    assert_eq!(card("DOC_ID"), Some(KeywordValue::Str(doc.id.clone())));
+    // An untyped capture names no frame type, and this rig has no
+    // wheel, mount or site.
+    for absent in ["IMAGETYP", "OBJECT", "FILTER", "RA", "DEC", "SITELAT"] {
+        assert_eq!(card(absent), None, "{absent}");
+    }
     drop(temp);
-    doc
+}
+
+#[tokio::test]
+async fn test_capture_omits_gain_and_offset_the_driver_lacks() {
+    let doc = capture_and_read_sidecar(
+        camera_registry(Arc::new(MockCamera::default())),
+        crate::equipment::trains::TrainModel::default(),
+    )
+    .await;
+    assert_eq!(doc.gain, None);
+    assert_eq!(doc.offset, None);
+    assert_eq!(doc.train_id, None);
+}
+
+#[tokio::test]
+async fn test_capture_omits_gain_when_its_read_fails() {
+    let cam = MockCamera {
+        fail_gain: true,
+        offset: Some(30),
+        ..Default::default()
+    };
+    let doc = capture_and_read_sidecar(
+        camera_registry(Arc::new(cam)),
+        crate::equipment::trains::TrainModel::default(),
+    )
+    .await;
+    assert_eq!(doc.gain, None);
+    assert_eq!(doc.offset, Some(30));
+}
+
+/// The document's exposure start, parsed back.
+fn exposure_started_at(doc: &ExposureDocument) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339(doc.exposure_started_at.as_deref().unwrap())
+        .unwrap()
+        .with_timezone(&chrono::Utc)
+}
+
+#[tokio::test]
+async fn test_capture_records_the_drivers_exposure_start() {
+    // A driver whose start lands a little before rp's request (a
+    // whole-second clock) — within the slack rp allows its window.
+    let cam = Arc::new(MockCamera {
+        exposure_start_lead: Some(Duration::from_millis(900)),
+        ..Default::default()
+    });
+    let doc = capture_and_read_sidecar(
+        camera_registry(cam.clone()),
+        crate::equipment::trains::TrainModel::default(),
+    )
+    .await;
+    let driver_start = cam.stamped_exposure_start.lock().unwrap().unwrap();
+    let expected = chrono::DateTime::<chrono::Utc>::from(driver_start);
+    let recorded = exposure_started_at(&doc);
+    assert!(
+        (recorded - expected).num_milliseconds().abs() <= 1,
+        "recorded {recorded}, driver said {expected}"
+    );
+}
+
+#[tokio::test]
+async fn test_capture_falls_back_to_rp_clock_for_a_stale_driver_start() {
+    let stale = std::time::SystemTime::now() - Duration::from_secs(3600);
+    let cam = MockCamera {
+        last_exposure_start: Some(stale),
+        ..Default::default()
+    };
+    let before = chrono::Utc::now();
+    let doc = capture_and_read_sidecar(
+        camera_registry(Arc::new(cam)),
+        crate::equipment::trains::TrainModel::default(),
+    )
+    .await;
+    let after = chrono::Utc::now();
+    let recorded = exposure_started_at(&doc);
+    // Millisecond precision: `before` may carry sub-millisecond digits
+    // the record truncated.
+    assert!(
+        recorded >= before - chrono::TimeDelta::milliseconds(1) && recorded <= after,
+        "recorded {recorded} outside the call [{before}, {after}]"
+    );
+}
+
+#[tokio::test]
+async fn test_capture_falls_back_to_rp_clock_when_the_driver_has_no_start_time() {
+    let before = chrono::Utc::now();
+    let doc = capture_and_read_sidecar(
+        camera_registry(Arc::new(MockCamera::default())),
+        crate::equipment::trains::TrainModel::default(),
+    )
+    .await;
+    let after = chrono::Utc::now();
+    let recorded = exposure_started_at(&doc);
+    assert!(
+        recorded >= before - chrono::TimeDelta::milliseconds(1) && recorded <= after,
+        "recorded {recorded} outside the call [{before}, {after}]"
+    );
+    let captured = chrono::DateTime::parse_from_rfc3339(&doc.captured_at).unwrap();
+    assert!(
+        recorded <= captured,
+        "start {recorded} after capture {captured}"
+    );
 }
 
 #[tokio::test]
@@ -2608,6 +2832,7 @@ async fn test_persist_capture_artifact_skips_cache_on_sidecar_failure() {
         sensor_temperature_c: None,
         optics: None,
         sections: serde_json::Map::new(),
+        ..ExposureDocument::default()
     };
     let cached = CachedPixels::from_i32_pixels(vec![1, 2, 3, 4], 2, 2, 65535);
 
@@ -3504,6 +3729,7 @@ async fn test_compute_image_stats_persists_section_via_document_id() {
         sensor_temperature_c: None,
         optics: None,
         sections: serde_json::Map::new(),
+        ..ExposureDocument::default()
     };
 
     cache.insert(
@@ -6439,6 +6665,7 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
             crate::equipment::DeviceSession::connected_with(
                 Arc::new(camera),
                 crate::equipment::CameraInvariants {
+                    name: None,
                     max_bin_x: Some(4),
                     max_bin_y: Some(4),
                     can_asymmetric_bin: Some(true),
@@ -10085,6 +10312,252 @@ async fn capture_through_an_untrained_camera_ignores_the_gate() {
     assert!(json["image_path"].as_str().is_some());
 }
 
+// -----------------------------------------------------------------------
+// Same-camera capture serialization (rp.md § Capture Tool Details,
+// "Binning" → Concurrency)
+// -----------------------------------------------------------------------
+// The slot's queueing is tokio's mutex; these pin how `do_capture` uses
+// it — held until the frame is downloaded, per camera, taken before the
+// motion gate, and left when the call is cancelled.
+
+/// A handler over the mock camera "cam" whose FITS writes land in a
+/// sandbox, with the sandbox's guard.
+fn capture_handler(cam: Arc<MockCamera>) -> (McpHandler, tempfile::TempDir) {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let mut handler = test_handler(camera_registry(cam));
+    handler.session_config = SessionConfig {
+        data_directory: tmp.path().to_string_lossy().to_string(),
+    };
+    (handler, tmp)
+}
+
+fn capture_request(camera_id: &str, binning: u8) -> CaptureRequest<'_> {
+    CaptureRequest {
+        camera_id,
+        duration: Duration::from_millis(100),
+        binning: rp_vocabulary::Binning {
+            x: binning,
+            y: binning,
+        },
+        target: None,
+        frame_type: None,
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_through_a_busy_camera_waits_for_it_before_touching_it() {
+    let cam = Arc::new(MockCamera::default());
+    let (handler, _tmp) = capture_handler(cam.clone());
+    let slot = handler
+        .equipment
+        .find_camera("cam")
+        .unwrap()
+        .capture_slot()
+        .await;
+
+    let capture = {
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            handler
+                .do_capture(capture_request("cam", 2), None, &Cancel::never())
+                .await
+        })
+    };
+
+    for _ in 0..20 {
+        assert!(
+            cam.geometry_writes().is_empty() && calls(&cam.start_exposure_calls) == 0,
+            "a capture queued behind a busy camera touched it: {:?}",
+            cam.geometry_writes()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    drop(slot);
+    capture
+        .await
+        .unwrap()
+        .expect("the queued capture runs once the camera is free");
+    assert_eq!(calls(&cam.start_exposure_calls), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_queued_across_a_reconnect_runs_against_the_reestablished_session() {
+    let lost = Arc::new(MockCamera::default());
+    let reestablished = Arc::new(MockCamera::default());
+    let (handler, _tmp) = capture_handler(lost.clone());
+    let entry = handler.equipment.find_camera("cam").unwrap();
+    let slot = entry.capture_slot().await;
+
+    let capture = {
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            handler
+                .do_capture(capture_request("cam", 1), None, &Cancel::never())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !capture.is_finished(),
+        "the capture must still be queued on the camera"
+    );
+    let handle: Arc<dyn ascom_alpaca::api::Camera> = reestablished.clone();
+    entry.session.install(handle, entry.invariants());
+
+    drop(slot);
+    capture
+        .await
+        .unwrap()
+        .expect("the queued capture runs once the camera is free");
+    assert_eq!(
+        calls(&reestablished.start_exposure_calls),
+        1,
+        "the exposure must run on the session live when the capture got the camera"
+    );
+    assert_eq!(
+        calls(&lost.start_exposure_calls),
+        0,
+        "the session the capture queued on was replaced while it waited"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_cancelled_while_queued_leaves_without_touching_the_camera() {
+    let cam = Arc::new(MockCamera::default());
+    let (handler, _tmp) = capture_handler(cam.clone());
+    let _slot = handler
+        .equipment
+        .find_camera("cam")
+        .unwrap()
+        .capture_slot()
+        .await;
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::ClientDisconnected);
+    let started = tokio::time::Instant::now();
+
+    // The slot is never released, so a wait that ignored the cancel
+    // would hang; the timeout turns that into a failure.
+    let err = tokio::time::timeout(
+        Duration::from_mins(1),
+        handler.do_capture(capture_request("cam", 1), None, &cancel),
+    )
+    .await
+    .expect("a capture cancelled while queued must not wait for the camera")
+    .expect_err("a capture cancelled while queued must fail");
+
+    assert_eq!(err, "cancelled: client disconnected");
+    assert_eq!(
+        started.elapsed(),
+        CANCEL_AT,
+        "the queued call must leave as the cancel lands, not when the camera frees"
+    );
+    assert_eq!(cam.geometry_writes(), Vec::<String>::new());
+    assert_eq!(calls(&cam.start_exposure_calls), 0);
+    assert_eq!(
+        calls(&cam.abort_exposure_calls),
+        0,
+        "nothing was exposing for this call to abort"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_queued_behind_a_busy_camera_holds_no_motion_gate_permit() {
+    let (handler, _tmp) = capture_handler(Arc::new(MockCamera::default()));
+    let handler = handler.with_trains(cam_trains(1000.0));
+    let slot = handler
+        .equipment
+        .find_camera("cam")
+        .unwrap()
+        .capture_slot()
+        .await;
+
+    let capture = {
+        let handler = handler.clone();
+        tokio::spawn(async move {
+            handler
+                .do_capture(capture_request("cam", 1), None, &Cancel::never())
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !capture.is_finished(),
+        "the capture must still be queued on the camera"
+    );
+
+    let exclusive = tokio::time::timeout(
+        Duration::from_secs(1),
+        handler.motion_gate.exclusive("slew"),
+    )
+    .await
+    .expect("a mount motion must not wait on a capture queued behind a busy camera");
+
+    drop(exclusive);
+    drop(slot);
+    capture
+        .await
+        .unwrap()
+        .expect("the queued capture runs once the camera and the gate are free");
+}
+
+#[tokio::test(start_paused = true)]
+async fn overlapping_captures_through_one_camera_expose_one_after_the_other() {
+    // Three seconds of polls keep the first exposure in flight while
+    // the second capture arrives; the counter is shared, so the second
+    // exposure is ready at its first poll.
+    let cam = Arc::new(MockCamera {
+        not_ready_count: 30,
+        ..Default::default()
+    });
+    let (handler, _tmp) = capture_handler(cam.clone());
+    let cancel = Cancel::never();
+
+    // `join!` polls in argument order, so the 2x2 capture takes the
+    // camera first.
+    let (first, second) = tokio::join!(
+        handler.do_capture(capture_request("cam", 2), None, &cancel),
+        handler.do_capture(capture_request("cam", 1), None, &cancel),
+    );
+
+    first.expect("the capture that took the camera first completes");
+    second.expect("the capture queued behind it completes instead of failing");
+    assert_eq!(
+        cam.exposure_log(),
+        vec!["start 2x2", "download", "start 1x1", "download"],
+        "the second exposure must start only once the first frame is downloaded, at its own binning"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn captures_through_different_cameras_do_not_wait_for_each_other() {
+    let free = Arc::new(MockCamera::default());
+    let mut registry = camera_registry(Arc::new(MockCamera::default()));
+    let mut other = camera_registry(free.clone()).cameras.remove(0);
+    other.id = "other-cam".to_string();
+    registry.cameras.push(other);
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let mut handler = test_handler(registry);
+    handler.session_config = SessionConfig {
+        data_directory: tmp.path().to_string_lossy().to_string(),
+    };
+    let _slot = handler
+        .equipment
+        .find_camera("cam")
+        .unwrap()
+        .capture_slot()
+        .await;
+
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        handler.do_capture(capture_request("other-cam", 1), None, &Cancel::never()),
+    )
+    .await
+    .expect("a capture through another camera must not wait on this one's slot")
+    .expect("the capture through the free camera completes");
+    assert_eq!(calls(&free.start_exposure_calls), 1);
+}
+
 /// Build a handler with a configured guider client. Pass
 /// `configure` to wire up mock expectations before the handler is
 /// built.
@@ -10459,6 +10932,7 @@ fn dither_dual_camera_registry() -> crate::equipment::EquipmentRegistry {
             lost_session(
                 Arc::new(MockCamera::default()),
                 crate::equipment::CameraInvariants {
+                    name: None,
                     max_bin_x: Some(4),
                     max_bin_y: Some(4),
                     can_asymmetric_bin: Some(true),

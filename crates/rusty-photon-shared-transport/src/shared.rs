@@ -216,12 +216,14 @@ impl Drop for AbortDetachedGuard {
 /// That is what the returning path asks too; a `Drop` cannot take the
 /// async mutex the handle lives behind, which is what the mirrored
 /// flag is for.
+#[cfg(feature = "test-util")]
 struct ManualReconnectGuard<'a> {
     reconnecting: &'a AtomicBool,
     supervisor_live: &'a AtomicBool,
     armed: bool,
 }
 
+#[cfg(feature = "test-util")]
 impl Drop for ManualReconnectGuard<'_> {
     fn drop(&mut self) {
         if !self.armed {
@@ -289,11 +291,11 @@ pub struct SharedTransport<C: Codec> {
     /// [`acquire`]: SharedTransport::acquire
     acquire_lock: Mutex<()>,
     /// When the last reconnect attempt started, from either entry
-    /// point. The supervisor's cadence floor reads it; `reconnect_now`
-    /// stamps it without waiting on it, because an explicit operator
-    /// action should be prompt. Keeping it here rather than local to
-    /// the supervisor is what makes the first retry after a manual
-    /// attempt observe the interval like every other one.
+    /// point. The supervisor's cadence floor reads it; a manual
+    /// attempt (`reconnect_now`, a `test-util` hook) stamps it without
+    /// waiting on it. Keeping it here rather than local to the
+    /// supervisor is what makes the first retry after a manual attempt
+    /// observe the interval like every other one.
     last_attempt: Mutex<Option<Instant>>,
     /// Set when an `on_last_disconnect` could not land — its commands
     /// went to a conduit that was already dead or closed, which is what
@@ -330,9 +332,10 @@ pub struct SharedTransport<C: Codec> {
     /// `Drop` answering "is anything going to retry this?" on an
     /// unwind.
     supervisor_live: AtomicBool,
-    /// Fired by [`Connection::request`] on every `TransportError` and by
-    /// [`SharedTransport::reconnect_now`]. The supervisor `tokio::select!`s
-    /// between this and its periodic ticker.
+    /// Fired by [`Connection::request`] on every `TransportError` that
+    /// came off the wire, and by a last-client cleanup whose stop the
+    /// device answered without asserting. The supervisor
+    /// `tokio::select!`s between this and its periodic ticker.
     reconnect_signal: Arc<Notify>,
     /// Period between reconnect attempts while in the `Reconnecting`
     /// state. Configurable per service via
@@ -341,7 +344,7 @@ pub struct SharedTransport<C: Codec> {
     reconnect_interval: Mutex<Duration>,
     /// Serialises [`attempt_reconnect`](Self::attempt_reconnect) so
     /// the supervisor's periodic / signal-driven tick can't race
-    /// [`reconnect_now`](Self::reconnect_now) (or two concurrent
+    /// `reconnect_now`, the `test-util` hook (or two concurrent
     /// `reconnect_now` callers). Without this both paths would call
     /// `attempt_reconnect` directly and could run overlapping
     /// `factory.open` → handshake → cell swap → `while_open` respawn
@@ -1306,8 +1309,9 @@ impl<C: Codec> SharedTransport<C> {
         // connection on their next `request()` call.
         //
         // Publish under the slot guard, and only into the cell still in
-        // the slot. `shutdown()` and the `LazyAcquire` 1→0 cleanup both
-        // take the slot, and neither is excluded from this path —
+        // the slot. `shutdown()` (once its hook has run) and the
+        // `LazyAcquire` 1→0 cleanup both take the slot, and neither is
+        // excluded from this path —
         // taking `acquire_lock` here instead would deadlock against
         // `shutdown()`, which holds it while joining the supervisor
         // that is running this very attempt. So an attempt in flight
@@ -1542,8 +1546,17 @@ impl<C: Codec> SharedTransport<C> {
 
     /// Trigger an immediate reconnect attempt outside the supervisor's
     /// usual cadence. Returns once the attempt completes (success or
-    /// failure). Useful for the on-acquire eager path (Phase 0b
-    /// follow-up) and for tests / a future operator CLI.
+    /// failure).
+    ///
+    /// A test hook, compiled only with the `test-util` feature, which
+    /// this crate's own tests turn on through a dev-dependency on
+    /// itself. No production build has it, and none may grow a caller:
+    /// unlike the supervisor's attempts, nothing joins this one, so a
+    /// teardown cannot wait it out. An attempt it starts can publish a
+    /// conduit, respawn a poll task or report the transport available
+    /// after `shutdown()` has torn the lifecycle down. Never call it
+    /// from a hook, a `while_open` body, or a task either of them
+    /// spawns.
     ///
     /// Replacing the conduit means closing the current one first (see
     /// [`attempt_reconnect`](Self::attempt_reconnect)), so calling this
@@ -1580,6 +1593,7 @@ impl<C: Codec> SharedTransport<C> {
     /// catches. The second is the one to know about, because opening
     /// and handshaking both succeeded: `Err` here means the transport
     /// is deliberately not being advertised, not that the link is bad.
+    #[cfg(feature = "test-util")]
     pub async fn reconnect_now(self: &Arc<Self>) -> Result<(), SessionError<C::Error>> {
         self.reconnecting.store(true, Ordering::SeqCst);
         self.available.store(false, Ordering::SeqCst);
@@ -1632,6 +1646,11 @@ impl<C: Codec> SharedTransport<C> {
     /// [`Hooks::shutdown`], close the connection (releasing the port).
     /// Called from the service's SIGTERM handler, and by the reload
     /// loop between two runs of the service body.
+    ///
+    /// What gets closed is whatever the slot holds once the hook has
+    /// run, as well as the conduit the hook ran on, so a replacement a
+    /// reconnect attempt published while the hook ran does not keep its
+    /// port.
     ///
     /// Live sessions are not force-closed; their requests fail from
     /// here on. The port is released regardless of how many of them
@@ -1761,9 +1780,29 @@ impl<C: Codec> SharedTransport<C> {
             drop(cell);
         }
 
-        // Only now: the conduit is closed, so an empty slot is the
-        // truth rather than a conduit nobody can reach.
-        *self.slot.lock().await = None;
+        // Only now, with the hook done, take the slot, and close what
+        // its cell holds at this moment rather than only the conduit
+        // the hook ran on. They differ when a replacement was published
+        // while the hook ran: an attempt the supervisor's join did not
+        // reach, one abandoned when that join timed out, still finds
+        // this cell in the slot and so passes the publish guard. Closing
+        // only the hook's conduit would leave the replacement holding
+        // its port, with no slot left to find it by.
+        //
+        // Read and taken under one guard, so that is the last publish:
+        // one after it finds the slot empty and closes its own conduit.
+        // The close itself runs after the guard is released, because it
+        // waits for any exchange still on the wire.
+        let held = {
+            let mut slot = self.slot.lock().await;
+            match slot.take() {
+                Some(cell) => Some(cell.read().await.clone()),
+                None => None,
+            }
+        };
+        if let Some(held) = held {
+            held.close().await;
+        }
 
         self.reconnecting.store(false, Ordering::SeqCst);
 
@@ -2198,9 +2237,11 @@ mod tests {
     use async_trait::async_trait;
     use tokio::sync::Notify;
 
+    use std::sync::atomic::AtomicU32;
+
     use super::{Arc, Codec, Hooks, Ordering, SharedTransport, TransportError, TransportFactory};
     use crate::transport::FrameTransport;
-    use crate::SessionError;
+    use crate::{Connection, SessionError};
 
     /// The publish gate does no I/O, so a factory that refuses to open
     /// is all a transport needs to exist for these tests.
@@ -2373,6 +2414,138 @@ mod tests {
             !st.is_reconnecting(),
             "and the recovering flag is cleared only by a publish that happened"
         );
+    }
+
+    /// Hooks whose shutdown hook parks until released, so a test can
+    /// act while `shutdown` is inside it.
+    fn parking_shutdown(entered: Arc<Notify>, release: Arc<Notify>) -> Hooks<NoCodec> {
+        Hooks {
+            shutdown: Box::new(move |_| {
+                let entered = Arc::clone(&entered);
+                let release = Arc::clone(&release);
+                Box::pin(async move {
+                    entered.notify_one();
+                    release.notified().await;
+                })
+            }),
+            ..Hooks::noop()
+        }
+    }
+
+    /// Hooks whose handshake parks on its `nth` call only, until
+    /// released; every other call returns at once.
+    fn handshake_parking_on(
+        nth: u32,
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    ) -> Hooks<NoCodec> {
+        let calls = Arc::new(AtomicU32::new(0));
+        Hooks {
+            handshake: Box::new(move |_| {
+                let calls = Arc::clone(&calls);
+                let entered = Arc::clone(&entered);
+                let release = Arc::clone(&release);
+                Box::pin(async move {
+                    if calls.fetch_add(1, Ordering::SeqCst).saturating_add(1) == nth {
+                        entered.notify_one();
+                        release.notified().await;
+                    }
+                    Ok(())
+                })
+            }),
+            ..Hooks::noop()
+        }
+    }
+
+    /// A replacement published while the shutdown hook runs is what an
+    /// attempt the supervisor's join did not reach would leave behind.
+    /// It is written into the cell directly, under the slot guard as a
+    /// publish would, because the attempt that would do it has to have
+    /// outlived an aborted supervisor, which no test can schedule.
+    #[tokio::test]
+    async fn shutdown_closes_the_conduit_the_cell_holds_when_it_empties_the_slot() {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let st = SharedTransport::new(
+            Arc::new(AlwaysOpens),
+            NoCodec,
+            parking_shutdown(Arc::clone(&entered), Arc::clone(&release)),
+        );
+        st.start().await.unwrap();
+        let stopping = tokio::spawn({
+            let st = Arc::clone(&st);
+            async move { st.shutdown().await }
+        });
+        entered.notified().await;
+
+        let replacement = Arc::new(Connection::new(Box::new(Echo), NoCodec));
+        {
+            let slot = st.slot.lock().await;
+            let cell = slot.as_ref().unwrap();
+            *cell.write().await = Arc::clone(&replacement);
+        }
+        // The premise: the replacement is open and answering.
+        replacement.request(()).await.unwrap();
+        release.notify_one();
+        stopping.await.unwrap().unwrap();
+
+        let err = replacement.request(()).await.unwrap_err();
+        assert!(
+            err.to_string().contains("transport closed"),
+            "the replacement keeps its port unless shutdown closes it, got: {err}"
+        );
+    }
+
+    /// `shutdown` clears `available` before it joins the supervisor and
+    /// again after. An attempt that finishes in between publishes a
+    /// recovery over the first store, and only the second withdraws it.
+    /// Left standing, a later `start()` would find the transport
+    /// available and promote in place onto the slot `shutdown` emptied,
+    /// and every `acquire()` would then fail for the rest of the process.
+    #[tokio::test]
+    async fn a_recovery_published_inside_the_shutdown_join_is_withdrawn_after_it() {
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        // The cold start's handshake is the first; the attempt's parks.
+        let st = SharedTransport::new(
+            Arc::new(AlwaysOpens),
+            NoCodec,
+            handshake_parking_on(2, Arc::clone(&entered), Arc::clone(&release)),
+        );
+        st.start().await.unwrap();
+
+        // A failure on the wire wakes the supervisor into an attempt.
+        st.reconnect_signal.notify_one();
+        entered.notified().await;
+
+        // Holding the supervisor's slot stops `shutdown` in
+        // `take_supervisor`: past its first store, before its join.
+        let supervisor = st.supervisor_state.lock().await;
+        let stopping = tokio::spawn({
+            let st = Arc::clone(&st);
+            async move { st.shutdown().await }
+        });
+        while st.acquire_lock.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+
+        release.notify_one();
+        while !st.is_available() {
+            tokio::task::yield_now().await;
+        }
+        drop(supervisor);
+        stopping.await.unwrap().unwrap();
+
+        assert!(
+            !st.is_available(),
+            "the recovery published during shutdown must be withdrawn"
+        );
+        assert!(!st.is_reconnecting());
+        st.start().await.unwrap();
+        let session = st.acquire().await.unwrap();
+        session.request(()).await.unwrap();
+        session.close().await.unwrap();
+        st.shutdown().await.unwrap();
     }
 
     /// The cold open drains a pending reconnect notification by

@@ -270,9 +270,9 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   probed path. Never an `open`.
 - **USB inventory** — per device: vendor:product, the product string, the
   **port path**, and the **serial** when the bus publishes one. Sources:
-  sysfs on Linux (`/sys/bus/usb/devices/*/idVendor` …, where the entry's
-  own directory name *is* the port path — `1-4.2` reads as bus 1, root
-  port 4, hub port 2 — and `serial` sits beside it); `Get-PnpDevice` plus
+  sysfs on Linux (`/sys/bus/usb/devices/*/idVendor` …, with `serial`
+  beside it; the port path is built from sysfs too, below);
+  `Get-PnpDevice` plus
   `DEVPKEY_Device_LocationPaths` and `DEVPKEY_Device_BusReportedDeviceDesc`
   on Windows; `system_profiler -json SPUSBDataType` with `location_id` on
   macOS. All of it is cached by the kernel at enumeration, so nothing is
@@ -282,6 +282,58 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   invention: a config that names it names one specific host's hardware and
   is not portable across an OS boundary anyway, and a canonical form would
   only be a second thing that can disagree with what the OS says.
+
+  On Linux the native spelling is **udev's `ID_PATH_WITH_USB_REVISION`**
+  — `pci-0000:00:14.0-usbv3-0:4.2` is the USB 3 root hub of the
+  controller at PCI `0000:00:14.0`, root port 4, hub port 2 — which
+  `udevadm info` already shows (the `/dev/serial/by-path/` links use the
+  same path without the `v3`). The
+  sysfs entry name (`2-4.2`) is **not** the key: its leading bus number
+  is handed out in the order host controllers register, so on a host
+  with more than one controller two cameras could swap numbers after a
+  kernel update and each still look like a valid port. The collector
+  builds the spelling from sysfs alone, as udev does — the entry's
+  realpath names the controller, its root hub's `version` gives the
+  revision (`usbv2` / `usbv3` tell an xHCI's two root hubs apart), and
+  the entry name after its bus number is the port chain — so nothing is
+  opened. The controller is named as udev's `path_id` names it, from the
+  PCI, platform, AMBA, ACPI or Xen ancestors above it; a bus udev names
+  that a USB host never hangs off on these hosts (`bcma`, `serio`, …)
+  adds nothing, and a controller that ends up with no name, or with
+  another's spelling, is a fault (below) rather than another socket's
+  port.
+
+  It departs from udev in two places. A root hub's own record, for which
+  udev publishes no revision path at all, is spelled with no chain
+  (`pci-0000:00:14.0-usbv3`). And where udev names a platform device
+  whose instance number the kernel allocated in probe order — the
+  `.auto` suffix the kernel adds to exactly those names, as in the
+  `xhci-hcd.0.auto` a mainline dwc3 controller creates on a Rockchip
+  board — the collector names the device's nearest ancestor that was
+  not numbered that way (`platform-fc000000.usb-usbv3-0:1`), because a
+  probe-order number is the bus-number problem again. A plain instance
+  number is an explicit one and is kept: the Raspberry Pi 5 kernel
+  numbers its two `xhci-hcd.N` controllers from the devicetree's `usb`
+  aliases, so its spelling (`platform-xhci-hcd.1-usbv2-0:2.1`) is
+  udev's unchanged.
+
+  A Linux record whose port cannot be spelled this way is a fault, not
+  an inventory entry: a name that is neither a root hub's nor a port
+  chain, an entry that sits under no root hub, a root hub whose
+  `version` names no revision, a `subsystem` link above it that cannot
+  be read, or a controller with no stable name. So is every record under
+  two root hubs whose spellings collide — possible only where one stable
+  ancestor sits over two `.auto` controllers of the same revision —
+  since a spelling two sockets share names neither. A fault whose port
+  *could* be spelled — the collision, or a record whose `idProduct`
+  could not be read — carries that spelling as its location, so a claim
+  on the port finds the fault and its reason; the others carry the sysfs
+  entry name as a hint.
+  An entry whose link points at nothing is skipped rather than
+  reported: the device has left the bus, so it is not there to report.
+  An entry that fails to resolve for any other reason (a permission
+  error, a link loop) is a fault naming the error, since skipping it
+  would quietly shorten the inventory.
 
   On Windows `DEVPKEY_Device_LocationPaths` is **multi-valued** — a device
   typically publishes both a `PCIROOT(…)`-rooted chain and an `ACPI(…)`
@@ -471,8 +523,9 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   stores what the platform reported with nothing around it — the sysfs read
   is trimmed, each `LocationPaths` element is trimmed before the `PCIROOT(`
   one is selected, and a macOS location id is a single whitespace-split
-  token — so `" 1-4.2"` is a state none of them can reach, and it compares
-  unequal to `"1-4.2"`: the same silent no-match, just quieter than a blank.
+  token — so `" pci-0000:00:14.0-usbv3-0:4.2"` is a state none of them can
+  reach, and it compares unequal to `"pci-0000:00:14.0-usbv3-0:4.2"`: the
+  same silent no-match, just quieter than a blank.
   Rejected rather than trimmed on the way in, because silently rewriting a
   staged document hides the mistake instead of reporting it.
 

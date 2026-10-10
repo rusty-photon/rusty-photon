@@ -142,8 +142,8 @@ string_slice = "deny"
 # The L5 ladder's three: zeroed rung by rung across every inheriting crate
 # (docs/plans/archive/workspace-lints.md §L5), flipped to deny 2026-08-14 after the
 # full-workspace --all-targets --all-features census read zero outside the
-# dual-homed FFI crates (then outside the [lints] mechanism; the L7 ladder
-# now mirrors this table into them — see the dual-homed note below the table).
+# dual-homed FFI crates (then outside the [lints] mechanism; they inherit this
+# table with `[lints] workspace = true` now, like every other member).
 as_conversions = "deny"
 arithmetic_side_effects = "deny"
 indexing_slicing = "deny"
@@ -158,17 +158,6 @@ indexing_slicing = "deny"
 # new sites — fix them, or grow the curated test-scope list above.
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
-#
-# Dual-homed FFI crates (qhyccd-rs, zwo-rs, svbony-rs and their -sys shims)
-# cannot inherit this table: the nightly publish-readiness check builds each
-# family copied out of the workspace, where `workspace = true` has nothing to
-# resolve against. Each family instead adopts a concrete, verbatim copy of
-# [workspace.lints.rust] + [workspace.lints.clippy] on its L7 rung
-# (docs/plans/archive/workspace-lints.md §L7; all three families — zwo, svbony and
-# qhy — carry it today), and
-# tools/ci/check_lints_parity.py — a step of the required `stable / clippy`
-# gate — fails on any drift. Editing this table therefore means mirroring the
-# edit into every copy in the same change.
 
 [workspace.dependencies]
 bdd-infra = { path = "crates/bdd-infra" }
@@ -190,8 +179,7 @@ async-trait = "0.1.89"
 # 2.1 is the current minor, not a hard floor: the workspace uses only the
 # `Debug` and `Display` derives, both of which exist in 2.0, and none of the
 # dual-homed FFI crates (qhyccd-rs, zwo-rs, svbony-rs and their -sys shims)
-# depends on derive_more at all — so publish-readiness's direct-minimal-versions
-# build never exercises this requirement.
+# depends on derive_more at all.
 #
 # `display` is enabled here rather than per-member. A whole-workspace build
 # unifies features and enables it anyway, so a member that uses
@@ -247,8 +235,7 @@ tokio-serial = "5.4.5"
 # so dual-home standalone releases are unaffected.
 # Floor is 0.10.1, not 0.10: rand 0.10.0's feature table references `rand/getrandom`
 # as a `dep:`-only dependency (no implicit feature), so a direct-minimal-versions
-# build of the dual-homed sim crates fails to resolve it (fixed in 0.10.1; caught
-# by the publish-readiness check).
+# build of the dual-homed sim crates fails to resolve it (fixed in 0.10.1).
 rand = "0.10.1"
 rayon = "1.10"
 # QHYCCD camera SDK FFI. Vendored first-party at `crates/qhyccd-rs` (with its

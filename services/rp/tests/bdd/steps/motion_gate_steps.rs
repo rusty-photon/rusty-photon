@@ -83,6 +83,7 @@ async fn rp_with_guiding_train_and_slow_guider(
     add_camera(world);
     add_stub_guider(world, Duration::from_millis(delay_ms)).await;
     world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
         aperture_mm: None,
         id: train_id,
         purpose: Some("guiding".to_string()),
@@ -180,5 +181,6 @@ async fn background_call_succeeds(world: &mut RpWorld, tool: String) {
             handle.abort();
             panic!("background '{tool}' call did not finish within 60s");
         };
-    result.unwrap_or_else(|e| panic!("background '{tool}' call failed: {e}"));
+    let value = result.unwrap_or_else(|e| panic!("background '{tool}' call failed: {e}"));
+    world.last_background_result = Some(value);
 }

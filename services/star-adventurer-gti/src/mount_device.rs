@@ -40,6 +40,7 @@ use std::time::Duration;
 use ascom_alpaca::api::telescope::PierSide;
 use rusty_photon_shared_transport::Session;
 use tokio::sync::RwLock;
+use tracing::debug;
 
 use rusty_photon_driver::ConfigActionCtx;
 
@@ -128,6 +129,21 @@ struct DriverState {
     next_pulse_id: u64,
 }
 
+/// What a reload carries from one driver lifecycle to the next: the part
+/// of [`DriverState`] that [`DriverState::reset_for_disconnect`] keeps.
+///
+/// A reload rebuilds the driver, not the mount, so it keeps what a
+/// disconnect keeps — `AtPark`, because the encoders have not moved, and a
+/// `SlewSettleTime` a client set — and nothing else. [`MountDevice::retire`]
+/// hands it over; [`MountDevice::with_retained`] starts the next lifecycle
+/// from it. The default is what a fresh process starts from: not parked,
+/// no settle override.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RetainedState {
+    at_park: bool,
+    slew_settle_time: Option<Duration>,
+}
+
 /// Identity of one `PulseGuide` call, held in [`PulseGuiding`] for as long
 /// as that pulse owns its axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -207,6 +223,23 @@ impl Default for DriverState {
 }
 
 impl DriverState {
+    /// A fresh state starting from what an earlier lifecycle kept.
+    fn with_retained(retained: RetainedState) -> Self {
+        Self {
+            at_park: retained.at_park,
+            slew_settle_time: retained.slew_settle_time,
+            ..Self::default()
+        }
+    }
+
+    /// The part of this state a reload carries over.
+    const fn retained(&self) -> RetainedState {
+        RetainedState {
+            at_park: self.at_park,
+            slew_settle_time: self.slew_settle_time,
+        }
+    }
+
     /// Allocate the next [`PulseId`].
     const fn allocate_pulse_id(&mut self) -> PulseId {
         let id = PulseId(self.next_pulse_id);
@@ -231,6 +264,8 @@ impl DriverState {
     /// `slew_settle_time` override is also preserved so a client that
     /// has already tuned it keeps the value across reconnects, and
     /// `target_pier_side` is left to be overwritten by the next slew.
+    /// A reload keeps `at_park` and the `slew_settle_time` override as
+    /// well, as [`RetainedState`]; it does not keep `target_pier_side`.
     ///
     /// Clear:
     ///   - `target_ra_hours` / `target_dec_degrees` — latched from a
@@ -363,6 +398,59 @@ impl MountDevice {
     pub fn with_config_actions(mut self, ctx: ConfigActionCtx<StarAdvDriver>) -> Self {
         self.config_ctx = Some(ctx);
         self
+    }
+
+    /// Start from what an earlier lifecycle of this driver kept (see
+    /// [`RetainedState`]). Call it while building the device, before any
+    /// clone of it exists: it replaces the state the clones would share.
+    #[must_use]
+    pub fn with_retained(mut self, retained: RetainedState) -> Self {
+        debug!(
+            ?retained,
+            "starting from the state the previous lifecycle kept"
+        );
+        self.state = Arc::new(RwLock::new(DriverState::with_retained(retained)));
+        self
+    }
+
+    /// End this lifecycle for a reload and hand over what the next one
+    /// keeps.
+    ///
+    /// To the device a reload is a disconnect, and this is that
+    /// disconnect, run by the driver itself once serving has ended and
+    /// before the transport shuts down. It leaves the old lifecycle inert:
+    ///
+    /// - The session slot empties, so nothing in this lifecycle can put a
+    ///   command on the wire through it: the tracking guard ends, and an
+    ///   auto-flip that has not reached the wire fails `NOT_CONNECTED`.
+    /// - A park still in flight loses its claim on the slew slot, so its
+    ///   watcher cannot take the shutdown's halt for an arrival. A park
+    ///   watcher marks the mount parked only while holding
+    ///   `axis_ownership` and its claim, so it either finished before the
+    ///   slot emptied, and the park is carried, or never will: the state
+    ///   read below is final.
+    /// - [`DriverState::reset_for_disconnect`] keeps exactly what
+    ///   [`RetainedState`] carries.
+    ///
+    /// On the wire it is only the stop-class commands a disconnect sends
+    /// (the last-disconnect `:L1`, `:L2`, `:K1` when this was the last
+    /// session). The slot is emptied again afterwards, under the axes, so
+    /// the claim is void whichever way the disconnect went: with no client
+    /// connected there was no disconnect to run, and a disconnect returns
+    /// before its own clear if closing the session fails — which the
+    /// shared transport documents as unreachable, hence only the warning.
+    pub async fn retire(&self) -> RetainedState {
+        use ascom_alpaca::api::Device as _;
+        if let Err(e) = self.set_connected(false).await {
+            tracing::warn!(error = %e, "retiring the mount: its disconnect did not complete");
+        }
+        {
+            let _axes = self.axis_ownership.lock().await;
+            self.slew_in_progress.clear();
+        }
+        let retained = self.state.read().await.retained();
+        debug!(?retained, "retired the mount for a reload");
+        retained
     }
 
     /// Send one command through the device's session and return the

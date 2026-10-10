@@ -265,7 +265,7 @@ fn a_camera_without_the_even_extent_readout_keeps_its_odd_edge() {
     camera.start_single_frame_exposure().unwrap();
     let image = camera.get_single_frame(&mut buf).unwrap();
     assert_eq!((image.width, image.height), (101, 101));
-    let rows: Vec<&[u8]> = buf.chunks_exact(202).take(101).collect();
+    let rows: Vec<&[u8; 202]> = buf.as_chunks::<202>().0.iter().take(101).collect();
     assert!(
         rows[100].iter().any(|&b| b != 0),
         "the last row was blanked on a camera that reads an odd region whole"

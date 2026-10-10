@@ -235,6 +235,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             usize::try_from(WIDTH)?,
             usize::try_from(HEIGHT)?,
             &doc_id,
+            &[],
         )
         .await?;
         println!("  {}  HFR={:.3} px  → {}", name, hfr, path.display());

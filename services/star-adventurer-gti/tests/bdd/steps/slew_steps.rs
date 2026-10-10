@@ -15,6 +15,23 @@ async fn configured_with_post_slew_settle(world: &mut StarAdventurerWorld, secs:
     world.start_service().await;
 }
 
+#[when(expr = "I set SlewSettleTime to {int} seconds")]
+async fn set_slew_settle_time(world: &mut StarAdventurerWorld, secs: u64) {
+    world
+        .mount()
+        .set_slew_settle_time(Duration::from_secs(secs))
+        .await
+        .unwrap();
+}
+
+#[then(expr = "SlewSettleTime should be {int} seconds")]
+async fn slew_settle_time_should_be(world: &mut StarAdventurerWorld, secs: u64) {
+    assert_eq!(
+        world.mount().slew_settle_time().await.unwrap(),
+        Duration::from_secs(secs)
+    );
+}
+
 #[given("the device is parked")]
 async fn device_is_parked(world: &mut StarAdventurerWorld) {
     // Connect, park, wait for the watcher to set AtPark = true.

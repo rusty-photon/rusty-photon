@@ -108,6 +108,7 @@ fn result_position_angle_null(world: &mut RpWorld) {
 
 fn push_imaging_train(world: &mut RpWorld, default_position_angle_degrees: Option<f64>) {
     world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
         aperture_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),

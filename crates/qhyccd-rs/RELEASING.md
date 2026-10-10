@@ -29,16 +29,10 @@ mechanic dictates the publish **order** and the version-bump rules below.
 
 ## MSRV
 
-Both crates declare an **explicit, lower-than-workspace** `rust-version` (not
-`workspace = true`, which would publish the workspace's `1.98.1`), and the two now
-differ: **`qhyccd-rs` is `1.85.0`** (its `simulation` feature pulls rand 0.10, MSRV
-1.85; the base build is held to 1.81 by derive_more 2.1) while **`libqhyccd-sys` is
-`1.68.0`** (dependency-free hand-written FFI). The nightly publish-readiness check
-verifies each floor builds with minimal dependency versions, and its advisory
-`find` leg reports the true lowest. If a change raises the floor (a new std API, a
-dependency MSRV bump), **bump that crate's `rust-version`** to the value the check
-accepts; to keep it low, prefer APIs/deps available on the declared MSRV.
-See [docs/plans/archive/publish-readiness-checks.md](../../docs/plans/archive/publish-readiness-checks.md).
+Both crates inherit the **workspace MSRV** (`rust-version.workspace = true`, see
+[docs/workspace.md](../../docs/workspace.md#msrv)); `cargo publish` writes the
+concrete value into the published manifest. The nightly `msrv` job in
+`check.yml` verifies it.
 
 ## Steps
 
@@ -49,12 +43,10 @@ verification build **links the real static SDK**.
 ```bash
 # 0. Preflight
 git status                      # must be clean
-bazel test //...                # build + test gate
-# Publish-readiness MUST be green for the crate being released — it verifies the
-# published-in-isolation guarantees (MSRV, direct-minimal-versions, semver,
-# docs.rs) that the in-workspace checks cannot. Trigger it and confirm it passes:
-#   gh workflow run publish-readiness.yml      # or rely on the last green nightly
-# A red run BLOCKS the release. See docs/plans/archive/publish-readiness-checks.md.
+bazel build //... && bazel test //...   # build + test gate
+# The version bump in step 1 must cover every API change since the last release:
+cargo semver-checks --package libqhyccd-sys
+cargo semver-checks --package qhyccd-rs
 
 # 1. Bump versions + changelogs
 #    - crates/qhyccd-rs/libqhyccd-sys/Cargo.toml : version = "0.1.5" (etc.)

@@ -16,6 +16,8 @@ use std::time::Duration;
 
 use ascom_alpaca::api::camera::{CameraState, ImageArray};
 use ascom_alpaca::api::Camera;
+use chrono::{DateTime, TimeDelta, Utc};
+use rp_fits::writer::Keyword;
 use tokio::time::Instant;
 use tracing::debug;
 use uuid::Uuid;
@@ -24,11 +26,12 @@ use rp_vocabulary::{Binning, FrameType};
 
 use crate::config::naming_template;
 use crate::equipment::alpaca::retry_idempotent_read;
-use crate::equipment::camera::CameraInvariants;
+use crate::equipment::camera::{optional_read, CameraInvariants};
 use crate::equipment::trains::TrainDeviceKind;
 use crate::events::EventEnvelope;
 use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
-use crate::persistence::{self, CachedImage, CachedPixels, ExposureDocument};
+use crate::persistence::fits_header::{self, HeaderContext};
+use crate::persistence::{self, CachedImage, CachedPixels, ExposureDocument, MountPointing};
 
 use super::handler::McpHandler;
 use super::inflight::Cancel;
@@ -326,24 +329,134 @@ fn new_document_ids() -> (String, String) {
     (document_id, uuid8)
 }
 
-/// The per-exposure snapshot of connect-time invariants, copied out of
-/// the equipment-registry borrow so it need not outlive any await.
+/// What a capture's one filter-wheel read found (rp.md § Core Fields,
+/// `filter`): the filter's name and slot, `Ok(None)` when no filter
+/// applies — a `Dark`/`Bias` frame, or no wheel in the camera's train —
+/// and `Err` when the wheel failed the read, reported itself moving, or
+/// did not answer within [`AUXILIARY_READ_TIMEOUT`]. A templated capture
+/// fails on the `Err`; the document only drops its `filter` field.
+type FilterRead = std::result::Result<Option<(String, u32)>, String>;
+
+/// How long a capture waits on one of its auxiliary device reads — the
+/// mount's pointing, the filter wheel — before counting it as failed
+/// (rp.md § Core Fields). A healthy read answers in milliseconds; the
+/// bound keeps a wedged device from adding its whole Alpaca timeout to
+/// every frame.
+const AUXILIARY_READ_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Slack on each side of the exposure window `rp` observed, within
+/// which a driver's `LastExposureStartTime` is believed: clocks on the
+/// camera's host and `rp`'s rarely agree to the millisecond, and some
+/// drivers report whole seconds (rp.md § Core Fields,
+/// `exposure_started_at`).
+const EXPOSURE_START_SLACK_SECS: i64 = 2;
+
+/// The exposure-start instant the document records: the driver's own
+/// `LastExposureStartTime` when it lies inside the window `rp` observed,
+/// widened by [`EXPOSURE_START_SLACK_SECS`] — no earlier than
+/// `requested_at`, just before `StartExposure` was sent, and no later
+/// than `ready_at` less the `exposure` itself, since an exposure that
+/// began after that could not have finished by `ImageReady`. A value
+/// outside is stale, stamped at readout, or from a skewed clock, and
+/// `rp`'s own `fallback` reading is recorded instead.
+fn exposure_start(
+    driver: Option<DateTime<Utc>>,
+    requested_at: DateTime<Utc>,
+    ready_at: DateTime<Utc>,
+    exposure: Duration,
+    fallback: DateTime<Utc>,
+) -> DateTime<Utc> {
+    let slack = TimeDelta::seconds(EXPOSURE_START_SLACK_SECS);
+    let earliest = requested_at
+        .checked_sub_signed(slack)
+        .unwrap_or(requested_at);
+    // Never before `requested_at`: a camera that reports ready a hair
+    // early must not empty the window.
+    let began_by = TimeDelta::from_std(exposure)
+        .ok()
+        .and_then(|exposure| ready_at.checked_sub_signed(exposure))
+        .unwrap_or(ready_at)
+        .max(requested_at);
+    let latest = began_by.checked_add_signed(slack).unwrap_or(began_by);
+    match driver {
+        Some(at) if (earliest..=latest).contains(&at) => at,
+        Some(at) => {
+            debug!(driver = %at, %earliest, %latest, "LastExposureStartTime lies outside the observed exposure window; using rp's clock");
+            fallback
+        }
+        None => fallback,
+    }
+}
+
+/// What `capture_conditions` reads once the frame is ready, while the
+/// capture still holds the camera.
+struct CaptureConditions {
+    captured_at: DateTime<Utc>,
+    exposure_started_at: DateTime<Utc>,
+    cooler_setpoint_c: Option<i32>,
+    sensor_temperature_c: Option<f64>,
+    gain: Option<i32>,
+    offset: Option<i32>,
+}
+
+/// What a capture knows about its frame once the image is downloaded:
+/// the inputs to its exposure document and FITS header.
+struct FrameRecord<'a> {
+    document_id: &'a str,
+    image_path: &'a str,
+    camera_id: &'a str,
+    duration: Duration,
+    binning: Binning,
+    invariants: &'a CameraInvariants,
+    focal_length_mm: Option<f64>,
+    conditions: CaptureConditions,
+    pointing: Option<MountPointing>,
+    filter_read: FilterRead,
+    target: Option<persistence::ExposureTarget>,
+    frame_type: Option<FrameType>,
+}
+
+/// What one capture holds for its pipeline: the per-exposure snapshot
+/// of connect-time invariants, the camera's capture slot (rp.md
+/// § Capture Tool Details, "Binning" → Concurrency), and — through an
+/// imaging-train camera — the shared motion-gate permit (§ Mount Motion
+/// Gate).
 ///
 /// The handle and the invariants come out of the session slot
 /// together, so an exposure always runs against metadata read from the
 /// session its handle belongs to, whatever the reconnect supervisor
 /// does underneath it.
-struct CaptureSnapshot {
+struct CameraClaim<'a> {
     cam: Arc<dyn Camera>,
     focal_length_mm: Option<f64>,
     readout_time_estimate: Duration,
     invariants: CameraInvariants,
+    slot: tokio::sync::MutexGuard<'a, ()>,
+    motion_permit: Option<tokio::sync::RwLockReadGuard<'a, ()>>,
+}
+
+/// Download the finished frame and give up the camera's capture slot
+/// (rp.md § Capture Tool Details, "Binning" → Concurrency). Nothing a
+/// capture does after its download touches the camera, so the next
+/// queued capture can start its exposure while this frame is still
+/// being written (tenet 2); taking the guard by value is what makes
+/// the download the last camera access the slot covers.
+async fn download_frame(
+    cam: &Arc<dyn Camera>,
+    slot: tokio::sync::MutexGuard<'_, ()>,
+) -> std::result::Result<ImageArray, String> {
+    let image_array = cam
+        .image_array()
+        .await
+        .map_err(|e| format!("failed to download image array: {e}"))?;
+    drop(slot);
+    Ok(image_array)
 }
 
 /// Dispatch on `max_adu`, collecting pixels directly into the
-/// narrowest type each path needs, writing the FITS file, and reusing
-/// the same buffer for the cache insert. `None` when the cache insert
-/// is skipped (unknown `max_adu`).
+/// narrowest type each path needs, writing the FITS file (with `header`
+/// beside `DOC_ID`), and reusing the same buffer for the cache insert.
+/// `None` when the cache insert is skipped (unknown `max_adu`).
 ///
 /// Alpaca's `image_array` is width-major (`[x][y]`, `x` outermost);
 /// FITS and the cache are row-major (rp.md § Capture Tool Details,
@@ -355,6 +468,7 @@ async fn write_pixels(
     image_array: ImageArray,
     shape: (usize, usize),
     document_id: &str,
+    header: &[Keyword],
     captured_max_adu: Option<u32>,
 ) -> std::result::Result<Option<CachedPixels>, String> {
     let (width, height) = shape;
@@ -367,17 +481,31 @@ async fn write_pixels(
                 .map(|p| u16::try_from(p.clamp(0, max_adu_i32)).unwrap_or(u16::MAX))
                 .collect();
             drop(image_array);
-            persistence::write_fits_u16(image_path, &u16_pixels, width, height, document_id)
-                .await
-                .map_err(|e| format!("failed to write FITS file: {e}"))?;
+            persistence::write_fits_u16(
+                image_path,
+                &u16_pixels,
+                width,
+                height,
+                document_id,
+                header,
+            )
+            .await
+            .map_err(|e| format!("failed to write FITS file: {e}"))?;
             Ok(CachedPixels::from_u16_pixels(u16_pixels, width, height))
         }
         _ => {
             let i32_pixels: Vec<i32> = row_major_pixels(&image_array)?.collect();
             drop(image_array);
-            persistence::write_fits_i32(image_path, &i32_pixels, width, height, document_id)
-                .await
-                .map_err(|e| format!("failed to write FITS file: {e}"))?;
+            persistence::write_fits_i32(
+                image_path,
+                &i32_pixels,
+                width,
+                height,
+                document_id,
+                header,
+            )
+            .await
+            .map_err(|e| format!("failed to write FITS file: {e}"))?;
             Ok(captured_max_adu
                 .and_then(|m| CachedPixels::from_i32_pixels(i32_pixels, width, height, m)))
         }
@@ -410,7 +538,6 @@ fn row_major_pixels(
 /// The per-exposure inputs `render_templated_path` needs beyond the
 /// camera handle and target slug.
 struct TemplateRenderCtx<'a> {
-    camera_id: &'a str,
     frame_type: FrameType,
     duration: Duration,
     /// The binning read back off the camera in `apply_frame_geometry`,
@@ -419,6 +546,9 @@ struct TemplateRenderCtx<'a> {
     binning: Binning,
     captured_at: chrono::DateTime<chrono::Utc>,
     sensor_temperature_c: Option<f64>,
+    /// The capture's one filter-wheel read — the same value the
+    /// document's `filter` field records.
+    filter: &'a FilterRead,
     uuid8: &'a str,
 }
 
@@ -1016,21 +1146,27 @@ impl McpHandler {
     ) -> std::result::Result<(String, String), String> {
         let camera_id = req.camera_id;
         let duration = req.duration;
-        let CaptureSnapshot {
-            cam,
-            focal_length_mm,
-            readout_time_estimate,
-            invariants,
-        } = self.capture_snapshot(camera_id)?;
-
+        // One capture through a camera at a time (rp.md § Capture Tool
+        // Details, "Binning" → Concurrency): the slot is held from the
+        // first geometry write until the frame is downloaded, so a
+        // second capture through this camera queues here rather than
+        // interleaving its writes with this one's.
+        //
         // Imaging-train exposures contend with mount motion (rp.md
         // § Mount Motion Gate): hold the gate shared for the whole
         // pipeline, so a pending slew/dither delays this exposure's
         // start rather than trailing its stars. Un-trained and
         // guiding-train cameras bypass the gate — trains are
         // enrichment, not a gate. `exposure_started` below is emitted
-        // only after the acquire, keeping its deadline honest.
-        let _motion_permit = self.imaging_permit(camera_id, cancel).await?;
+        // only after both waits, keeping its deadline honest.
+        let CameraClaim {
+            cam,
+            focal_length_mm,
+            readout_time_estimate,
+            invariants,
+            slot: camera_slot,
+            motion_permit: _motion_permit,
+        } = self.claim_camera(camera_id, cancel).await?;
 
         // Frame geometry is written before `exposure_started` is
         // emitted: a rejected `binning` or an unreachable camera then
@@ -1073,11 +1209,28 @@ impl McpHandler {
             cam.start_exposure(duration, true)
                 .await
                 .map_err(|e| format!("failed to start exposure: {e}"))?;
+            // rp's own reading of the exposure start — what the document
+            // records when the driver's `LastExposureStartTime` is
+            // unusable (rp.md § Core Fields, `exposure_started_at`).
+            let start_returned_at = chrono::Utc::now();
 
-            Self::wait_for_image_ready(&cam, duration, progress, cancel).await?;
+            // The mount is read once, while the camera exposes: it is
+            // never the camera, so the read costs the capture nothing
+            // (rp.md § Core Fields, `pointing`). A failed or cancelled
+            // exposure drops the read with it.
+            let ((), pointing) = tokio::try_join!(
+                Self::wait_for_image_ready(&cam, duration, progress, cancel),
+                async { Ok(self.read_pointing().await) },
+            )?;
 
-            let (captured_at, cooler_setpoint_c, sensor_temperature_c) =
-                self.capture_conditions(camera_id, &cam).await;
+            // The filter wheel is read once the exposure is done, beside
+            // the camera's own reads: a camera-integrated wheel answers
+            // through the camera's driver, which is not queried
+            // mid-exposure (rp.md § Core Fields, `filter`).
+            let (conditions, filter_read) = tokio::join!(
+                self.capture_conditions(camera_id, &cam, (started_at, start_returned_at), duration),
+                self.read_frame_filter(camera_id, req.frame_type),
+            );
 
             // Decision 11 (rp.md § Capture Tool Details): `frame_type`
             // stamps the document's `target`/`frame_type` fields.
@@ -1097,12 +1250,12 @@ impl McpHandler {
                 resolved_frame_type = Some(frame_type);
 
                 let ctx = TemplateRenderCtx {
-                    camera_id,
                     frame_type,
                     duration,
                     binning,
-                    captured_at,
-                    sensor_temperature_c,
+                    captured_at: conditions.captured_at,
+                    sensor_temperature_c: conditions.sensor_temperature_c,
+                    filter: &filter_read,
                     uuid8: &uuid8,
                 };
                 if let Some(rendered) = self.render_templated_path(target_slug, ctx).await? {
@@ -1110,59 +1263,26 @@ impl McpHandler {
                 }
             }
 
-            let image_array = cam
-                .image_array()
-                .await
-                .map_err(|e| format!("failed to download image array: {e}"))?;
+            let image_array = download_frame(&cam, camera_slot).await?;
 
-            let (width, height, _planes) = image_array.dim();
-            let (doc_width, doc_height) = sidecar_dims(width, height)?;
-
-            // `captured_max_adu` decides whether we need a u16 or i32 buffer,
-            // so it is consulted *before* collecting pixels to let us collect
-            // straight into the destination type and avoid the wasted i32→u16
-            // round trip.
-            //
-            // max_adu feeds three consumers: on-disk FITS bit-depth, cache
-            // variant, and the exposure document's `max_adu` field
-            // (sidecar self-describing for rehydration/archival lineage).
-            // The value was read once at connect time and stashed on
-            // `CameraEntry` — see its docstring for the connect-time-failure
-            // semantics. When `None` we still persist the document with
-            // `max_adu: None`, write the FITS as i32 (lossless fallback), and
-            // skip the cache insert.
-            let captured_max_adu: Option<u32> = invariants.max_adu;
-
-            let optics = derive_optics(camera_id, focal_length_mm, &invariants);
-
-            let cached_pixels = write_pixels(
-                &image_path,
+            self.persist_frame(
+                FrameRecord {
+                    document_id: &document_id,
+                    image_path: &image_path,
+                    camera_id,
+                    duration,
+                    binning,
+                    invariants: &invariants,
+                    focal_length_mm,
+                    conditions,
+                    pointing,
+                    filter_read,
+                    target: exposure_target,
+                    frame_type: resolved_frame_type,
+                },
                 image_array,
-                (width, height),
-                &document_id,
-                captured_max_adu,
             )
             .await?;
-
-            let doc = ExposureDocument {
-                id: document_id.clone(),
-                captured_at: captured_at.to_rfc3339(),
-                file_path: image_path.clone(),
-                width: doc_width,
-                height: doc_height,
-                camera_id: Some(camera_id.to_string()),
-                duration: Some(duration),
-                binning: Some(binning),
-                max_adu: captured_max_adu,
-                cooler_setpoint_c,
-                sensor_temperature_c,
-                optics,
-                target: exposure_target,
-                frame_type: resolved_frame_type,
-                sections: serde_json::Map::new(),
-            };
-            self.persist_capture_artifact(doc, cached_pixels, captured_max_adu)
-                .await;
 
             Ok(())
         }
@@ -1176,6 +1296,97 @@ impl McpHandler {
             &image_path,
         );
         capture_result.map(|()| (image_path, document_id))
+    }
+
+    /// Write a downloaded frame and its exposure document (rp.md
+    /// § Persistence). The document is assembled first, because the FITS
+    /// header is its portable copy (§ FITS header); then the pixels go to
+    /// disk under that header, then the sidecar and the cache entry.
+    async fn persist_frame(
+        &self,
+        frame: FrameRecord<'_>,
+        image_array: ImageArray,
+    ) -> std::result::Result<(), String> {
+        let (width, height, _planes) = image_array.dim();
+        let (doc_width, doc_height) = sidecar_dims(width, height)?;
+
+        // `captured_max_adu` decides whether we need a u16 or i32 buffer,
+        // so it is consulted *before* collecting pixels to let us collect
+        // straight into the destination type and avoid the wasted i32→u16
+        // round trip.
+        //
+        // max_adu feeds three consumers: on-disk FITS bit-depth, cache
+        // variant, and the exposure document's `max_adu` field
+        // (sidecar self-describing for rehydration/archival lineage).
+        // The value was read once at connect time and stashed on
+        // `CameraEntry` — see its docstring for the connect-time-failure
+        // semantics. When `None` we still persist the document with
+        // `max_adu: None`, write the FITS as i32 (lossless fallback), and
+        // skip the cache insert.
+        let captured_max_adu: Option<u32> = frame.invariants.max_adu;
+
+        let optics = derive_optics(frame.camera_id, frame.focal_length_mm, frame.invariants);
+        let train = self.trains.train_for_camera(frame.camera_id);
+        let filter = match frame.filter_read {
+            Ok(read) => read.map(|(name, _position)| name),
+            Err(e) => {
+                debug!(camera_id = frame.camera_id, error = %e, "filter read failed; omitting the document's filter");
+                None
+            }
+        };
+
+        let doc = ExposureDocument {
+            id: frame.document_id.to_string(),
+            captured_at: frame.conditions.captured_at.to_rfc3339(),
+            exposure_started_at: Some(fits_header::document_timestamp(
+                frame.conditions.exposure_started_at,
+            )),
+            file_path: frame.image_path.to_string(),
+            width: doc_width,
+            height: doc_height,
+            camera_id: Some(frame.camera_id.to_string()),
+            camera_name: frame.invariants.name.clone(),
+            train_id: train.map(|train| train.id.clone()),
+            telescope: train.and_then(|train| train.telescope.clone()),
+            duration: Some(frame.duration),
+            binning: Some(frame.binning),
+            filter,
+            gain: frame.conditions.gain,
+            offset: frame.conditions.offset,
+            max_adu: captured_max_adu,
+            cooler_setpoint_c: frame.conditions.cooler_setpoint_c,
+            sensor_temperature_c: frame.conditions.sensor_temperature_c,
+            pointing: frame.pointing,
+            optics,
+            target: frame.target,
+            frame_type: frame.frame_type,
+            sections: serde_json::Map::new(),
+        };
+        let header = fits_header::header_keywords(
+            &doc,
+            &HeaderContext {
+                pixel_size_x_um: frame.invariants.pixel_size_x_um,
+                pixel_size_y_um: frame.invariants.pixel_size_y_um,
+                focal_length_mm: frame.focal_length_mm,
+                aperture_mm: train.and_then(|train| train.aperture_mm),
+                focal_ratio: train.and_then(crate::equipment::trains::Train::focal_ratio),
+                site: self.site.as_ref(),
+            },
+        );
+
+        let cached_pixels = write_pixels(
+            frame.image_path,
+            image_array,
+            (width, height),
+            frame.document_id,
+            &header,
+            captured_max_adu,
+        )
+        .await?;
+
+        self.persist_capture_artifact(doc, cached_pixels, captured_max_adu)
+            .await;
+        Ok(())
     }
 
     /// The shared motion-gate permit an imaging-train exposure holds
@@ -1296,29 +1507,108 @@ impl McpHandler {
         }
     }
 
+    /// What the camera can tell about the frame once it is ready, read
+    /// while the capture still holds the camera — before the next
+    /// capture's `StartExposure` could overwrite `LastExposureStartTime`.
     /// Cooling metadata (rp.md § Camera Cooling): the rung the
-    /// controller currently holds for this camera, and a best-effort
-    /// post-readout temperature read. Both are auxiliary — a failed
-    /// read only drops the field, never the capture. Read after the
-    /// exposure completes (rather than after the FITS write, as before
-    /// Decision 11) because Decision 11's render step may need
-    /// `sensor_temperature_c` to finalize `image_path` before the FITS
-    /// write happens. `captured_at` is likewise anchored here — once,
-    /// reused both for `{night_date}` and the document's `captured_at`
-    /// field — rather than read twice a few hundred milliseconds
-    /// apart.
+    /// controller currently holds for this camera and a best-effort
+    /// post-readout temperature; `Gain`/`Offset`, read live because they
+    /// are operator-mutable; and the exposure start (rp.md § Core
+    /// Fields). All auxiliary — a failed read only drops its field, never
+    /// the capture — and issued together, so they cost one round-trip of
+    /// latency. Read after the exposure completes (rather than after the
+    /// FITS write, as before Decision 11) because Decision 11's render
+    /// step may need `sensor_temperature_c` to finalize `image_path`
+    /// before the FITS write happens. `captured_at` is likewise anchored
+    /// here — once, reused both for `{night_date}` and the document's
+    /// `captured_at` field — rather than read twice a few hundred
+    /// milliseconds apart. `started` is `rp`'s clock just before and just
+    /// after `StartExposure`: where the window the driver's start time
+    /// must fall in opens, and the fallback when it does not.
     async fn capture_conditions(
         &self,
         camera_id: &str,
         cam: &Arc<dyn Camera>,
-    ) -> (chrono::DateTime<chrono::Utc>, Option<i32>, Option<f64>) {
+        started: (DateTime<Utc>, DateTime<Utc>),
+        exposure: Duration,
+    ) -> CaptureConditions {
+        let (requested_at, start_returned_at) = started;
         let captured_at = chrono::Utc::now();
         let cooler_setpoint_c = self
             .cooling
             .as_ref()
             .and_then(|cooling| cooling.rung_for(camera_id));
-        let sensor_temperature_c = cam.ccd_temperature().await.ok();
-        (captured_at, cooler_setpoint_c, sensor_temperature_c)
+        let (temperature, gain, offset, driver_start) = tokio::join!(
+            cam.ccd_temperature(),
+            cam.gain(),
+            cam.offset(),
+            cam.last_exposure_start_time(),
+        );
+        let driver_start = optional_read(
+            driver_start,
+            camera_id,
+            "LastExposureStartTime unavailable; recording rp's own exposure start",
+        )
+        .map(DateTime::from);
+        CaptureConditions {
+            captured_at,
+            exposure_started_at: exposure_start(
+                driver_start,
+                requested_at,
+                captured_at,
+                exposure,
+                start_returned_at,
+            ),
+            cooler_setpoint_c,
+            sensor_temperature_c: temperature.ok(),
+            gain: optional_read(gain, camera_id, "gain unavailable; the frame omits it"),
+            offset: optional_read(offset, camera_id, "offset unavailable; the frame omits it"),
+        }
+    }
+
+    /// The mount's pointing for the document's `pointing` field (rp.md
+    /// § Core Fields): one best-effort read. No mount, a disconnected
+    /// one, a mount found slewing, a read that fails, is non-finite or
+    /// takes longer than [`AUXILIARY_READ_TIMEOUT`] all yield `None`.
+    async fn read_pointing(&self) -> Option<MountPointing> {
+        let mount = match self.resolve_mount() {
+            Ok((_entry, mount)) => mount,
+            Err(reason) => {
+                debug!(%reason, "no mount pointing for this frame");
+                return None;
+            }
+        };
+        let reads = async {
+            tokio::join!(
+                mount.right_ascension(),
+                mount.declination(),
+                mount.slewing()
+            )
+        };
+        let Ok((ra, dec, slewing)) = tokio::time::timeout(AUXILIARY_READ_TIMEOUT, reads).await
+        else {
+            debug!(timeout = ?AUXILIARY_READ_TIMEOUT, "mount pointing read timed out; omitting it");
+            return None;
+        };
+        // The motion gate only holds the mount still under an
+        // imaging-train exposure; a camera outside that train can expose
+        // while it slews, and a mid-slew read names nowhere the frame saw.
+        if matches!(slewing, Ok(true)) {
+            debug!("mount is slewing; omitting pointing");
+            return None;
+        }
+        match (ra, dec) {
+            (Ok(ra_hours), Ok(dec_degrees)) if ra_hours.is_finite() && dec_degrees.is_finite() => {
+                Some(MountPointing {
+                    ra_hours,
+                    dec_degrees,
+                })
+            }
+            (ra, dec) => {
+                debug!(?ra, ?dec, "mount pointing unavailable; omitting it");
+                None
+            }
+        }
     }
 
     /// The flat `<data_directory>/<doc_uuid_8>.fits` path every
@@ -1333,28 +1623,54 @@ impl McpHandler {
         )
     }
 
-    /// Snapshot the connected camera handle, the train-derived focal
-    /// length, and the invariant physical-sensor properties cached at
-    /// connect time. The `CameraEntry` is a borrow off
-    /// `self.equipment`; the snapshot copies out the `Copy`/
-    /// `Option<Copy>` values so the borrow does not have to outlive
-    /// `do_capture`'s awaits — which is also what lets `do_capture`
-    /// avoid the 5 Alpaca round-trips per exposure it used to pay for
-    /// these properties (see `CameraEntry` docs). The readout estimate
-    /// sizes the predictive exposure deadline (§2.4); omitted in
-    /// config → the conservative built-in default. rp does not enforce
-    /// it; it rides the `exposure_started` envelope for the Sentinel
-    /// watchdog (the camera driver owns the exposure, and
+    /// Claim the camera for one capture: wait for it, then snapshot it.
+    ///
+    /// The two waits come in this order (rp.md § Capture Tool Details,
+    /// "Binning" → Concurrency): the camera's capture slot, then the
+    /// motion-gate permit. Slot first, so a capture queued behind a busy
+    /// camera holds no permit and never delays a pending slew; nothing
+    /// holds the gate and then waits for a camera, so the two waits
+    /// cannot deadlock. Both are raced against `cancel`: a call
+    /// cancelled in either returns `Err` without touching the camera. A
+    /// camera that has never connected is refused before either wait.
+    ///
+    /// The snapshot follows the waits: the connected camera handle, the
+    /// train-derived focal length, and the invariant physical-sensor
+    /// properties (plus the driver name) cached at connect time, cloned
+    /// out of the `CameraEntry` borrow — which is
+    /// what lets `do_capture` avoid the 5 Alpaca round-trips per
+    /// exposure it used to pay for these properties (see `CameraEntry`
+    /// docs). A capture can queue for a whole exposure, and a reconnect
+    /// in that time may put a different device behind the entry (rp.md
+    /// § Device Session Recovery), so the snapshot is taken once the
+    /// capture holds the camera: it exposes on the session live when it
+    /// got the camera, not the one live when it queued. The readout
+    /// estimate sizes the predictive exposure deadline (§2.4); omitted
+    /// in config → the conservative built-in default. rp does not
+    /// enforce it; it rides the `exposure_started` envelope for the
+    /// Sentinel watchdog (the camera driver owns the exposure, and
     /// `CAPTURE_READOUT_GRACE` remains rp's own readout backstop).
-    fn capture_snapshot(&self, camera_id: &str) -> std::result::Result<CaptureSnapshot, String> {
+    async fn claim_camera(
+        &self,
+        camera_id: &str,
+        cancel: &Cancel,
+    ) -> std::result::Result<CameraClaim<'_>, String> {
         let cam_entry = self
             .equipment
             .find_camera(camera_id)
             .ok_or_else(|| format!("camera not found: {camera_id}"))?;
-        let (cam, invariants) = cam_entry
-            .snapshot()
-            .ok_or_else(|| format!("camera not connected: {camera_id}"))?;
-        Ok(CaptureSnapshot {
+        let not_connected = || format!("camera not connected: {camera_id}");
+        if cam_entry.device().is_none() {
+            return Err(not_connected());
+        }
+        let slot = tokio::select! {
+            biased;
+            () = cancel.cancelled() => return Err(cancel.error()),
+            slot = cam_entry.capture_slot() => slot,
+        };
+        let motion_permit = self.imaging_permit(camera_id, cancel).await?;
+        let (cam, invariants) = cam_entry.snapshot().ok_or_else(not_connected)?;
+        Ok(CameraClaim {
             cam,
             focal_length_mm: self.trains.focal_length_for_camera(camera_id),
             readout_time_estimate: cam_entry
@@ -1362,6 +1678,8 @@ impl McpHandler {
                 .readout_time_estimate
                 .unwrap_or(DEFAULT_READOUT_TIME_ESTIMATE),
             invariants,
+            slot,
+            motion_permit,
         })
     }
 
@@ -1494,9 +1812,15 @@ impl McpHandler {
         let Some(templates) = self.naming_templates.as_ref() else {
             return Ok(None);
         };
-        let (filter_name, filter_position) = self
-            .resolve_capture_filter(ctx.camera_id, ctx.frame_type)
-            .await?;
+        // `{filter}`/`{filter_position}` render the fixed `"NA"`/`0`
+        // where no filter applies; a failed read fails the capture
+        // rather than mis-filing the frame (rp.md § Capture Tool
+        // Details, *Filter resolution*).
+        let (filter_name, filter_position) = match ctx.filter {
+            Ok(Some((name, position))) => (name.clone(), *position),
+            Ok(None) => ("NA".to_string(), 0),
+            Err(e) => return Err(e.clone()),
+        };
         let binning = ctx.binning;
         let night_date = self
             .site
@@ -1603,24 +1927,26 @@ impl McpHandler {
         }
     }
 
-    /// Resolves `do_capture`'s `{filter}`/`{filter_position}` naming-
-    /// template values: a live read from the resolved camera's train
-    /// filter wheel for `Light`/`Flat` when one is present, else the
-    /// fixed `"NA"`/`0` — always `"NA"`/`0` for `Dark`/`Bias`
-    /// regardless of whether a wheel is present, since dark current
-    /// isn't filter-dependent (rp.md § Capture Tool Details).
-    async fn resolve_capture_filter(
+    /// The capture's one filter-wheel read, feeding both the document's
+    /// `filter` field and the `{filter}`/`{filter_position}` naming
+    /// tokens: a live read from the camera's train filter wheel for a
+    /// `Light`, `Flat` or untyped frame, bounded by
+    /// [`AUXILIARY_READ_TIMEOUT`]; never a read for `Dark`/`Bias`, since
+    /// dark current isn't filter-dependent and an incidental wheel
+    /// position on a dark is noise (rp.md § Capture Tool Details).
+    async fn read_frame_filter(
         &self,
         camera_id: &str,
-        frame_type: FrameType,
-    ) -> std::result::Result<(String, u32), String> {
-        let reads_live = matches!(frame_type, FrameType::Light | FrameType::Flat);
-        if !reads_live {
-            return Ok(("NA".to_string(), 0));
+        frame_type: Option<FrameType>,
+    ) -> FilterRead {
+        if matches!(frame_type, Some(FrameType::Dark | FrameType::Bias)) {
+            return Ok(None);
         }
-        match self.live_filter(camera_id).await? {
-            Some((name, position)) => Ok((name, position)),
-            None => Ok(("NA".to_string(), 0)),
+        match tokio::time::timeout(AUXILIARY_READ_TIMEOUT, self.live_filter(camera_id)).await {
+            Ok(read) => read,
+            Err(_elapsed) => Err(format!(
+                "filter wheel read timed out after {AUXILIARY_READ_TIMEOUT:?}"
+            )),
         }
     }
 
@@ -2869,5 +3195,87 @@ pub(crate) async fn poll_slewing_until_idle(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    fn at(rfc3339: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(rfc3339)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    const REQUESTED: &str = "2026-03-02T01:15:00.000Z";
+    const READY: &str = "2026-03-02T01:20:01.000Z";
+    const FALLBACK: &str = "2026-03-02T01:15:00.050Z";
+    /// A 300 s exposure: begun by 01:15:01 to be ready at 01:20:01.
+    const EXPOSURE: Duration = Duration::from_secs(300);
+
+    fn start_with(driver: Option<&str>) -> DateTime<Utc> {
+        exposure_start(
+            driver.map(at),
+            at(REQUESTED),
+            at(READY),
+            EXPOSURE,
+            at(FALLBACK),
+        )
+    }
+
+    #[test]
+    fn a_driver_start_inside_the_window_is_believed() {
+        assert_eq!(
+            start_with(Some("2026-03-02T01:15:00.031Z")),
+            at("2026-03-02T01:15:00.031Z")
+        );
+    }
+
+    #[test]
+    fn the_window_allows_two_seconds_of_clock_slack_each_side() {
+        // A driver reporting whole seconds lands before rp's request.
+        assert_eq!(
+            start_with(Some("2026-03-02T01:14:58.000Z")),
+            at("2026-03-02T01:14:58.000Z")
+        );
+        assert_eq!(
+            start_with(Some("2026-03-02T01:15:03.000Z")),
+            at("2026-03-02T01:15:03.000Z")
+        );
+    }
+
+    #[test]
+    fn a_driver_start_outside_the_window_falls_back_to_rps_clock() {
+        // Stale: the previous frame's start.
+        assert_eq!(start_with(Some("2026-03-02T01:09:00.000Z")), at(FALLBACK));
+        // Too late to have finished a 300 s exposure by ImageReady.
+        assert_eq!(start_with(Some("2026-03-02T01:15:03.001Z")), at(FALLBACK));
+    }
+
+    #[test]
+    fn a_driver_start_stamped_at_readout_falls_back_to_rps_clock() {
+        assert_eq!(start_with(Some("2026-03-02T01:20:00.000Z")), at(FALLBACK));
+    }
+
+    #[test]
+    fn an_exposure_longer_than_the_observed_window_keeps_the_window_open() {
+        // ImageReady came back sooner than the exposure is long (a
+        // driver with a coarse clock): the window still opens at the
+        // request rather than closing before it.
+        let started = exposure_start(
+            Some(at("2026-03-02T01:15:01.000Z")),
+            at(REQUESTED),
+            at("2026-03-02T01:15:00.100Z"),
+            Duration::from_secs(1),
+            at(FALLBACK),
+        );
+        assert_eq!(started, at("2026-03-02T01:15:01.000Z"));
+    }
+
+    #[test]
+    fn no_driver_start_falls_back_to_rps_clock() {
+        assert_eq!(start_with(None), at(FALLBACK));
     }
 }

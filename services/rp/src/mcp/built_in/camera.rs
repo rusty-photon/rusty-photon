@@ -32,9 +32,11 @@ pub struct CaptureParams {
     /// an acquisition goal uses. Omitted means `"1x1"`: rp writes the
     /// binning and the full-frame subframe before every exposure, so
     /// nothing another client left on the camera beforehand reaches
-    /// the frame. A concurrent same-camera capture is a different
-    /// matter — see docs/services/rp.md § Capture Tool Details,
-    /// "Binning" → Concurrency.
+    /// the frame. A capture through a camera rp is already capturing on
+    /// waits for that capture, so two overlapping calls cannot
+    /// interleave their writes; a client outside rp is not queued — see
+    /// docs/services/rp.md § Capture Tool Details, "Binning" →
+    /// Concurrency.
     #[serde(default)]
     pub binning: Option<rp_vocabulary::Binning>,
     /// Sky-target slug this capture belongs to (Decision 11). Required
@@ -71,7 +73,10 @@ impl McpHandler {
         description = "Capture an image, download image_array, save FITS file. Optional \
                         binning (\"AxB\", default \"1x1\") is written to the camera along with \
                         a full-frame subframe before every exposure, so a binning or crop \
-                        another client left on it beforehand never reaches the frame. Optional \
+                        another client left on it beforehand never reaches the frame. A \
+                        capture through a camera rp is already capturing on waits for that \
+                        capture to finish instead of failing; a camera another client \
+                        (outside rp) is exposing on is not queued. Optional \
                         target (slug) + frame_type (Light/Dark/Flat/Bias) link the frame to \
                         the target store and render session.directory_pattern/ \
                         file_naming_pattern into the final path (Decision 11) — omit both to \

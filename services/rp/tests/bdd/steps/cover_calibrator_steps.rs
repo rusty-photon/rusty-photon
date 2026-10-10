@@ -255,6 +255,7 @@ fn tool_result_value(world: &RpWorld) -> &serde_json::Value {
 
 fn imaging_train(id: &str, devices: Vec<String>) -> OpticalTrainConfig {
     OpticalTrainConfig {
+        telescope: None,
         aperture_mm: None,
         id: id.to_string(),
         purpose: Some("imaging".to_string()),

@@ -13,6 +13,12 @@ Feature: Connection lifecycle
   driver halts the mount on the way up for the reason it halts it on the
   way down.
 
+  A reload (a config.apply that needs one) rebuilds the driver, not the
+  mount. To a client it looks like a disconnect, and it keeps what a
+  disconnect keeps: AtPark, because the encoders have not moved, and a
+  SlewSettleTime the client set. Everything else starts afresh. A process
+  restart keeps nothing.
+
   Scenario: Device starts disconnected
     Given a running star-adventurer service
     Then the device should be disconnected
@@ -73,6 +79,45 @@ Feature: Connection lifecycle
     When config.apply pins the bound port and sets the mount description to "Reloaded Mount"
     Then the reloaded service serves mount description "Reloaded Mount"
     And the mount should have been initialised and halted a second time
+
+  Scenario: A parked mount is still parked after a reload
+    The reload changes nothing the mount can see, so once a client
+    connects again the mount still reads parked, and the parked interlock
+    still refuses to start tracking.
+    Given a running star-adventurer service
+    And the device is parked
+    When config.apply pins the bound port and sets the mount description to "Reloaded Mount"
+    And the reloaded service serves mount description "Reloaded Mount"
+    And I connect the device
+    Then AtPark should be true
+    When I try to enable tracking
+    Then the operation should fail with invalid-while-parked
+
+  Scenario: A SlewSettleTime a client set survives a reload that changes the configured settle
+    The client's value keeps winning over mount.settle_after_slew, even
+    when the reload is the one that changed that field.
+    Given a running star-adventurer service
+    When I connect the device
+    And I set SlewSettleTime to 7 seconds
+    And config.apply pins the bound port, sets the mount description to "Reloaded Mount" and the post-slew settle to 4 seconds
+    And the reloaded service serves mount description "Reloaded Mount"
+    And I connect the device
+    Then SlewSettleTime should be 7 seconds
+
+  Scenario: A park the reload interrupts is not reported parked
+    The park is still sleeping out its 3 second settle when the reload
+    lands, so it has not finished. The reload voids it, as a disconnect
+    would, and the safety stop halts the mount where it stands; nothing
+    left over from the old driver may mark the mount parked afterwards.
+    The window outlasts the settle the voided park was waiting on.
+    Given a star-adventurer service configured with a 3 second post-slew settle
+    When I connect the device
+    And I start parking the mount
+    Then Slewing should be true
+    When config.apply pins the bound port and sets the mount description to "Reloaded Mount"
+    And the reloaded service serves mount description "Reloaded Mount"
+    And I connect the device
+    Then AtPark should stay false for 5 seconds
 
   Scenario: Startup populates the parameter cache from handshake replies
     The cache is seeded by the startup handshake, not by a connect: the

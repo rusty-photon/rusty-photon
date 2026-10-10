@@ -290,6 +290,7 @@ async fn rp_with_shared_focuser(world: &mut FocusModelWorld) {
         cooler_targets_c: Vec::new(),
     });
     world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
         aperture_mm: None,
         id: "guide".to_string(),
         purpose: Some("guiding".to_string()),
@@ -653,6 +654,7 @@ fn configure_rig(world: &mut FocusModelWorld, aperture_mm: Option<f64>) {
 
 fn push_train(world: &mut FocusModelWorld, devices: Vec<String>) {
     world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
         aperture_mm: world.aperture_mm_for_train,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),

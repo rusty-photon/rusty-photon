@@ -760,6 +760,7 @@ mod tests {
             sensor_temperature_c: None,
             optics: None,
             sections: Map::new(),
+            ..ExposureDocument::default()
         }
     }
 
@@ -933,7 +934,7 @@ mod tests {
         let uuid8 = &doc_uuid[..8];
         let fits_path = dir.join(format!("{uuid8}.fits"));
         let sidecar_path = dir.join(format!("{uuid8}.json"));
-        crate::persistence::write_fits_u16(&fits_path, pixels, width, height, doc_uuid)
+        crate::persistence::write_fits_u16(&fits_path, pixels, width, height, doc_uuid, &[])
             .await
             .unwrap();
         let mut doc = dummy_document(doc_uuid);
@@ -1040,9 +1041,16 @@ mod tests {
         // instead: a manually-renamed legacy file with `_<uuid8>.fits`
         // form sharing the suffix.
         let target_path = dir.path().join("deadbeef.fits");
-        crate::persistence::write_fits_u16(&target_path, &[10u16, 20, 30, 40], 2, 2, target_uuid)
-            .await
-            .unwrap();
+        crate::persistence::write_fits_u16(
+            &target_path,
+            &[10u16, 20, 30, 40],
+            2,
+            2,
+            target_uuid,
+            &[],
+        )
+        .await
+        .unwrap();
         let mut target_doc = dummy_document(target_uuid);
         target_doc.file_path = target_path.to_string_lossy().into_owned();
         target_doc.width = 2;
@@ -1056,7 +1064,7 @@ mod tests {
 
         // Ghost has the suffix `_deadbeef.fits` but a different DOC_ID.
         let ghost_path = dir.path().join("legacy_deadbeef.fits");
-        crate::persistence::write_fits_u16(&ghost_path, &[99u16; 4], 2, 2, ghost_uuid)
+        crate::persistence::write_fits_u16(&ghost_path, &[99u16; 4], 2, 2, ghost_uuid, &[])
             .await
             .unwrap();
         let mut ghost_doc = dummy_document(ghost_uuid);
@@ -1095,7 +1103,7 @@ mod tests {
         let doc_uuid = "22222222-2222-2222-2222-222222222222";
         let uuid8 = &doc_uuid[..8];
         let fits_path = dir.path().join(format!("{uuid8}.fits"));
-        crate::persistence::write_fits_u16(&fits_path, &[0u16; 4], 2, 2, doc_uuid)
+        crate::persistence::write_fits_u16(&fits_path, &[0u16; 4], 2, 2, doc_uuid, &[])
             .await
             .unwrap();
         let mut doc = dummy_document(doc_uuid);
@@ -1242,7 +1250,7 @@ mod tests {
         let stem =
             naming_template::frame_stem(Some("m33_Ha_1x1_0001_2m_fpos_1_-10C"), &doc_uuid[..8]);
         let fits_path = dir.join(format!("{stem}.fits"));
-        crate::persistence::write_fits_u16(&fits_path, &[1u16, 2, 3, 4], 2, 2, doc_uuid)
+        crate::persistence::write_fits_u16(&fits_path, &[1u16, 2, 3, 4], 2, 2, doc_uuid, &[])
             .await
             .unwrap();
         let mut doc = dummy_document(doc_uuid);

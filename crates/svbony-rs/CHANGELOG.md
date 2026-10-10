@@ -58,6 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Both crates require Rust 1.98.1 (`svbony-rs` was 1.85.0, `libsvbony-sys`
+  1.68.0): they now declare the rusty-photon workspace's MSRV.
 - The `simulation` backend recovers from a poisoned state lock
   (`PoisonError::into_inner`) instead of panicking, matching `zwo-rs`: a
   panic on one thread no longer cascades into every later accessor call.
