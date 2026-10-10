@@ -98,6 +98,73 @@ impl TryFrom<f64> for ApertureMm {
     }
 }
 
+/// The telescope a train looks through (`optical_trains[].telescope`,
+/// rp.md § Optical Trains), e.g. `Takahashi FSQ-106EDX4` — the FITS
+/// header's `TELESCOP`.
+///
+/// Validated at load to what one FITS string card can carry: 1 to 68
+/// printable ASCII characters, an apostrophe counting twice because
+/// FITS doubles it. A name the card could not hold is a load error
+/// rather than a header card silently dropped at capture time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "String", into = "String")]
+pub struct TelescopeName(String);
+
+impl TelescopeName {
+    /// The longest value one FITS string card holds, once embedded
+    /// apostrophes are doubled.
+    const MAX_CARD_CHARS: usize = 68;
+
+    /// The single validating constructor.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field if `value` is empty, carries
+    /// a character outside printable ASCII, or is too long for one FITS
+    /// string card.
+    pub fn try_new(value: String) -> Result<Self, String> {
+        if value.trim().is_empty() {
+            return Err("telescope must not be empty; omit it to leave TELESCOP out".into());
+        }
+        if value.bytes().any(|b| !(0x20..=0x7E).contains(&b)) {
+            return Err(format!(
+                "telescope must be printable ASCII (a FITS header card), got {value:?}"
+            ));
+        }
+        let card_chars = value
+            .len()
+            .saturating_add(value.bytes().filter(|b| *b == b'\'').count());
+        if card_chars > Self::MAX_CARD_CHARS {
+            return Err(format!(
+                "telescope must fit one FITS card ({} characters, an apostrophe counting \
+                 twice), got {card_chars}: {value:?}",
+                Self::MAX_CARD_CHARS
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// The telescope's name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for TelescopeName {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<TelescopeName> for String {
+    fn from(name: TelescopeName) -> Self {
+        name.0
+    }
+}
+
 /// A train's default framing angle in degrees east of north, sky frame
 /// (`optical_trains[].default_position_angle_degrees`).
 ///
@@ -448,6 +515,11 @@ pub struct OpticalTrainConfig {
     pub id: String,
     #[serde(default)]
     pub purpose: TrainPurpose,
+    /// The telescope this light path looks through, written as the
+    /// FITS `TELESCOP` card and the sidecar's `telescope`. Omitted →
+    /// frames through this train carry neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telescope: Option<TelescopeName>,
     /// Effective focal length of this light path. Omitted → captures
     /// through this train's camera carry no `optics` block, exactly
     /// like a camera outside any train.
@@ -512,6 +584,80 @@ mod tests {
         assert_eq!(train.purpose, TrainPurpose::Imaging);
         assert!(train.focal_length_mm.is_none());
         assert_eq!(train.devices, vec!["main-cam"]);
+    }
+
+    #[test]
+    fn telescope_name_accepts_a_fits_card_value() {
+        let name = TelescopeName::try_new("Takahashi FSQ-106EDX4".to_string()).unwrap();
+        assert_eq!(name.as_str(), "Takahashi FSQ-106EDX4");
+        assert!(TelescopeName::try_new("x".repeat(68)).is_ok());
+        // 66 characters plus an apostrophe is exactly 68 on the card.
+        assert!(TelescopeName::try_new(format!("{}'", "x".repeat(66))).is_ok());
+    }
+
+    #[test]
+    fn telescope_name_rejects_what_a_fits_card_cannot_hold() {
+        for (value, needle) in [
+            (String::new(), "empty"),
+            ("   ".to_string(), "empty"),
+            (
+                "Celestron C11 \u{2013} EdgeHD".to_string(),
+                "printable ASCII",
+            ),
+            ("x".repeat(69), "one FITS card"),
+            // 68 characters, but the apostrophe doubles to 69 on the card.
+            (format!("{}'", "x".repeat(67)), "one FITS card"),
+        ] {
+            let err = TelescopeName::try_new(value.clone()).unwrap_err();
+            assert!(err.contains(needle), "{value:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn telescope_loads_from_the_train_entry() {
+        let (_dir, path) = write_config(
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "cameras": [
+                        {"id": "main-cam", "alpaca_url": "http://localhost:11120"}
+                    ],
+                    "optical_trains": [
+                        {"id": "main", "telescope": "Takahashi FSQ-106EDX4",
+                         "devices": ["main-cam"]}
+                    ]
+                },
+                "server": { "port": 0 }
+            }"#,
+        );
+        let config = load_config(&path).unwrap();
+        assert_eq!(
+            config.equipment.optical_trains[0]
+                .telescope
+                .as_ref()
+                .map(TelescopeName::as_str),
+            Some("Takahashi FSQ-106EDX4")
+        );
+    }
+
+    #[test]
+    fn a_telescope_no_card_can_hold_fails_the_load() {
+        let (_dir, path) = write_config(
+            r#"{
+                "session": {"data_directory": "/tmp/rp-test"},
+                "equipment": {
+                    "cameras": [
+                        {"id": "main-cam", "alpaca_url": "http://localhost:11120"}
+                    ],
+                    "optical_trains": [
+                        {"id": "main", "telescope": "", "devices": ["main-cam"]}
+                    ]
+                },
+                "server": { "port": 0 }
+            }"#,
+        );
+        let err = format!("{:#}", load_config(&path).unwrap_err());
+        assert!(err.contains("telescope"), "{err}");
     }
 
     #[test]

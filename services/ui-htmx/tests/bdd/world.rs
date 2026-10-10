@@ -610,6 +610,7 @@ impl UiWorld {
             cooler_targets_c: Vec::new(),
         });
         builder.add_optical_train(bdd_infra::rp_harness::OpticalTrainConfig {
+            telescope: None,
             aperture_mm: None,
             id: "main".to_string(),
             purpose: Some("imaging".to_string()),

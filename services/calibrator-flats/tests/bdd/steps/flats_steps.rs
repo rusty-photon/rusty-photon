@@ -488,6 +488,7 @@ async fn configure_rig(world: &mut CalibratorFlatsWorld, wheel: bool) {
         poll_interval: Some(Duration::from_millis(100)),
     });
     world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
         aperture_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),

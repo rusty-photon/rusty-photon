@@ -15,9 +15,10 @@
 pub mod cache;
 pub mod document;
 pub mod fits;
+pub mod fits_header;
 
 pub use cache::{CachedImage, CachedPixels, ImageCache};
-pub use document::{CameraGeometry, ExposureDocument, ExposureTarget, Optics};
+pub use document::{CameraGeometry, ExposureDocument, ExposureTarget, MountPointing, Optics};
 pub use fits::{
     read_fits_array, read_fits_doc_id, read_fits_pixels, write_fits_i32, write_fits_u16,
 };

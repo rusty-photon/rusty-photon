@@ -136,10 +136,7 @@ impl McpHandler {
                     .map(MicronsPerStep::value)
                     .or_else(|| entry.invariants().step_size_um)
             });
-        let focal_ratio = match (train.focal_length_mm, train.aperture_mm) {
-            (Some(focal_length), Some(aperture)) => Some(focal_length / aperture),
-            _ => None,
-        };
+        let focal_ratio = train.focal_ratio();
         let pixel_scale_arcsec_per_pixel = match (pixel_size_um, train.focal_length_mm) {
             (Some(px), Some(focal_length)) => Some(ARCSEC_PER_MM_PER_UM * px / focal_length),
             _ => None,

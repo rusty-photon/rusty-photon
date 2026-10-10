@@ -118,6 +118,17 @@ struct MockCamera {
     /// When set, `gain()` fails with a non-`NOT_IMPLEMENTED` error —
     /// a transport blip on a camera that does have the property.
     fail_gain: bool,
+    /// `Some` ⇒ `last_exposure_start_time()` answers it, whenever the
+    /// exposure ran — a stale or skewed driver clock.
+    last_exposure_start: Option<std::time::SystemTime>,
+    /// `Some(d)` ⇒ `last_exposure_start_time()` answers the instant
+    /// `start_exposure` was called, less `d` — a driver whose clock or
+    /// whole-second resolution puts its start a little before rp's.
+    /// Takes precedence over `last_exposure_start`; neither set ⇒
+    /// `NOT_IMPLEMENTED`.
+    exposure_start_lead: Option<Duration>,
+    /// The start `exposure_start_lead` stamped, as reported.
+    stamped_exposure_start: std::sync::Mutex<Option<std::time::SystemTime>>,
     /// `Some` ⇒ `image_array()` returns this frame (Alpaca's
     /// `(width, height, planes)` shape) instead of the 2 × 2 zeros —
     /// drives the pixel-order and colour-plane capture tests.
@@ -196,6 +207,10 @@ impl ascom_alpaca::api::Camera for MockCamera {
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.fail_start_exposure {
             return Err(ASCOMError::invalid_operation("shutter jammed"));
+        }
+        if let Some(lead) = self.exposure_start_lead {
+            *self.stamped_exposure_start.lock().unwrap() =
+                Some(std::time::SystemTime::now() - lead);
         }
         let [bin_x, bin_y] = self.reported_bin();
         self.exposure_log
@@ -394,6 +409,17 @@ impl ascom_alpaca::api::Camera for MockCamera {
 
     async fn offset(&self) -> ascom_alpaca::ASCOMResult<i32> {
         self.offset.ok_or(ASCOMError::NOT_IMPLEMENTED)
+    }
+
+    async fn last_exposure_start_time(&self) -> ascom_alpaca::ASCOMResult<std::time::SystemTime> {
+        if self.exposure_start_lead.is_some() {
+            return self
+                .stamped_exposure_start
+                .lock()
+                .unwrap()
+                .ok_or(ASCOMError::NOT_IMPLEMENTED);
+        }
+        self.last_exposure_start.ok_or(ASCOMError::NOT_IMPLEMENTED)
     }
 }
 
@@ -1121,6 +1147,9 @@ const MOCK_CAMERA_MAX_ADU: u32 = 65535;
 const MOCK_CAMERA_PIXEL_SIZE_UM: f64 = 3.76;
 const MOCK_CAMERA_SENSOR_PX: u32 = 1024;
 
+/// The driver `Name` the test registry caches for its camera.
+const MOCK_CAMERA_NAME: &str = "Mock Camera";
+
 /// Per-call overrides for the cached invariant-metadata fields on
 /// `CameraEntry`. Defaults mirror `MockCamera`'s static reads so tests
 /// that don't care about metadata get the same shape `connect_camera`
@@ -1195,6 +1224,7 @@ fn camera_registry_with_meta(
             crate::equipment::DeviceSession::connected_with(
                 cam,
                 crate::equipment::CameraInvariants {
+                    name: Some(MOCK_CAMERA_NAME.to_string()),
                     max_bin_x: meta.max_bin_x,
                     max_bin_y: meta.max_bin_y,
                     can_asymmetric_bin: meta.can_asymmetric_bin,
@@ -2422,12 +2452,28 @@ async fn capture_and_read_sidecar(
     trains: crate::equipment::trains::TrainModel,
 ) -> ExposureDocument {
     let temp = tempfile::tempdir().unwrap();
+    let doc = capture_into(temp.path(), registry, trains).await;
+    // Explicit drop pins the TempDir lifetime past the sidecar read
+    // — without it the borrow checker is happy but the temp dir could
+    // be cleaned up at any drop point the optimizer chose.
+    drop(temp);
+    doc
+}
+
+/// One untyped capture through camera "cam" into `data_directory`,
+/// returning the sidecar it wrote; the FITS file stays on disk for as
+/// long as the caller keeps the directory.
+async fn capture_into(
+    data_directory: &std::path::Path,
+    registry: crate::equipment::EquipmentRegistry,
+    trains: crate::equipment::trains::TrainModel,
+) -> ExposureDocument {
     let cache = ImageCache::new(64, 4, std::path::PathBuf::from("/nonexistent"), 0);
     let handler = McpHandler::new(
         Arc::new(registry),
         Arc::new(crate::events::EventBus::from_config(&[], None).unwrap()),
         SessionConfig {
-            data_directory: temp.path().to_string_lossy().to_string(),
+            data_directory: data_directory.to_string_lossy().to_string(),
         },
         cache,
         None,
@@ -2457,12 +2503,172 @@ async fn capture_and_read_sidecar(
     let json: serde_json::Value = serde_json::from_str(&text).unwrap();
     let image_path = json["image_path"].as_str().unwrap().to_string();
     let sidecar = persistence::ExposureDocument::sidecar_path_for(&image_path).unwrap();
-    let doc = persistence::ExposureDocument::read_sidecar_sync(&sidecar).unwrap();
-    // Explicit drop pins the TempDir lifetime past the sidecar read
-    // — without it the borrow checker is happy but the temp dir could
-    // be cleaned up at any drop point the optimizer chose.
+    persistence::ExposureDocument::read_sidecar_sync(&sidecar).unwrap()
+}
+
+/// One card from a captured frame's FITS header.
+fn fits_header_card(path: &str, key: &str) -> Option<rp_fits::writer::KeywordValue> {
+    let file = std::fs::File::open(path).unwrap();
+    rp_fits::reader::read_primary_keyword(std::io::BufReader::new(file), key).unwrap()
+}
+
+// -----------------------------------------------------------------------
+// capture — per-frame acquisition facts and the FITS header
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_capture_records_camera_facts_in_sidecar_and_header() {
+    use rp_fits::writer::KeywordValue;
+    let cam = MockCamera {
+        gain: Some(26),
+        offset: Some(30),
+        ..Default::default()
+    };
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
+        "optical_trains": [{
+            "id": "main", "telescope": "Mock Refractor 80", "focal_length_mm": 400.0,
+            "aperture_mm": 80.0, "devices": ["cam"]
+        }]
+    }))
+    .unwrap();
+    let trains = crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap();
+    let temp = tempfile::tempdir().unwrap();
+    let doc = capture_into(temp.path(), camera_registry(Arc::new(cam)), trains).await;
+
+    assert_eq!(doc.camera_name.as_deref(), Some(MOCK_CAMERA_NAME));
+    assert_eq!(doc.train_id.as_deref(), Some("main"));
+    assert_eq!(doc.telescope.as_deref(), Some("Mock Refractor 80"));
+    assert_eq!(doc.gain, Some(26));
+    assert_eq!(doc.offset, Some(30));
+    let card = |key| fits_header_card(&doc.file_path, key);
+    assert_eq!(
+        card("INSTRUME"),
+        Some(KeywordValue::Str(MOCK_CAMERA_NAME.into()))
+    );
+    assert_eq!(
+        card("TELESCOP"),
+        Some(KeywordValue::Str("Mock Refractor 80".into()))
+    );
+    assert_eq!(card("GAIN"), Some(KeywordValue::Int(26)));
+    assert_eq!(card("OFFSET"), Some(KeywordValue::Int(30)));
+    assert_eq!(card("EXPTIME"), Some(KeywordValue::Float(0.1)));
+    assert_eq!(card("XBINNING"), Some(KeywordValue::Int(1)));
+    assert_eq!(
+        card("XPIXSZ"),
+        Some(KeywordValue::Float(MOCK_CAMERA_PIXEL_SIZE_UM))
+    );
+    assert_eq!(card("FOCALLEN"), Some(KeywordValue::Float(400.0)));
+    assert_eq!(card("APTDIA"), Some(KeywordValue::Float(80.0)));
+    assert_eq!(card("FOCRATIO"), Some(KeywordValue::Float(5.0)));
+    assert_eq!(card("DOC_ID"), Some(KeywordValue::Str(doc.id.clone())));
+    // An untyped capture names no frame type, and this rig has no
+    // wheel, mount or site.
+    for absent in ["IMAGETYP", "OBJECT", "FILTER", "RA", "DEC", "SITELAT"] {
+        assert_eq!(card(absent), None, "{absent}");
+    }
     drop(temp);
-    doc
+}
+
+#[tokio::test]
+async fn test_capture_omits_gain_and_offset_the_driver_lacks() {
+    let doc = capture_and_read_sidecar(
+        camera_registry(Arc::new(MockCamera::default())),
+        crate::equipment::trains::TrainModel::default(),
+    )
+    .await;
+    assert_eq!(doc.gain, None);
+    assert_eq!(doc.offset, None);
+    assert_eq!(doc.train_id, None);
+}
+
+#[tokio::test]
+async fn test_capture_omits_gain_when_its_read_fails() {
+    let cam = MockCamera {
+        fail_gain: true,
+        offset: Some(30),
+        ..Default::default()
+    };
+    let doc = capture_and_read_sidecar(
+        camera_registry(Arc::new(cam)),
+        crate::equipment::trains::TrainModel::default(),
+    )
+    .await;
+    assert_eq!(doc.gain, None);
+    assert_eq!(doc.offset, Some(30));
+}
+
+/// The document's exposure start, parsed back.
+fn exposure_started_at(doc: &ExposureDocument) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::parse_from_rfc3339(doc.exposure_started_at.as_deref().unwrap())
+        .unwrap()
+        .with_timezone(&chrono::Utc)
+}
+
+#[tokio::test]
+async fn test_capture_records_the_drivers_exposure_start() {
+    // A driver whose start lands a little before rp's request (a
+    // whole-second clock) — within the slack rp allows its window.
+    let cam = Arc::new(MockCamera {
+        exposure_start_lead: Some(Duration::from_millis(900)),
+        ..Default::default()
+    });
+    let doc = capture_and_read_sidecar(
+        camera_registry(cam.clone()),
+        crate::equipment::trains::TrainModel::default(),
+    )
+    .await;
+    let driver_start = cam.stamped_exposure_start.lock().unwrap().unwrap();
+    let expected = chrono::DateTime::<chrono::Utc>::from(driver_start);
+    let recorded = exposure_started_at(&doc);
+    assert!(
+        (recorded - expected).num_milliseconds().abs() <= 1,
+        "recorded {recorded}, driver said {expected}"
+    );
+}
+
+#[tokio::test]
+async fn test_capture_falls_back_to_rp_clock_for_a_stale_driver_start() {
+    let stale = std::time::SystemTime::now() - Duration::from_secs(3600);
+    let cam = MockCamera {
+        last_exposure_start: Some(stale),
+        ..Default::default()
+    };
+    let before = chrono::Utc::now();
+    let doc = capture_and_read_sidecar(
+        camera_registry(Arc::new(cam)),
+        crate::equipment::trains::TrainModel::default(),
+    )
+    .await;
+    let after = chrono::Utc::now();
+    let recorded = exposure_started_at(&doc);
+    // Millisecond precision: `before` may carry sub-millisecond digits
+    // the record truncated.
+    assert!(
+        recorded >= before - chrono::TimeDelta::milliseconds(1) && recorded <= after,
+        "recorded {recorded} outside the call [{before}, {after}]"
+    );
+}
+
+#[tokio::test]
+async fn test_capture_falls_back_to_rp_clock_when_the_driver_has_no_start_time() {
+    let before = chrono::Utc::now();
+    let doc = capture_and_read_sidecar(
+        camera_registry(Arc::new(MockCamera::default())),
+        crate::equipment::trains::TrainModel::default(),
+    )
+    .await;
+    let after = chrono::Utc::now();
+    let recorded = exposure_started_at(&doc);
+    assert!(
+        recorded >= before - chrono::TimeDelta::milliseconds(1) && recorded <= after,
+        "recorded {recorded} outside the call [{before}, {after}]"
+    );
+    let captured = chrono::DateTime::parse_from_rfc3339(&doc.captured_at).unwrap();
+    assert!(
+        recorded <= captured,
+        "start {recorded} after capture {captured}"
+    );
 }
 
 #[tokio::test]
@@ -2626,6 +2832,7 @@ async fn test_persist_capture_artifact_skips_cache_on_sidecar_failure() {
         sensor_temperature_c: None,
         optics: None,
         sections: serde_json::Map::new(),
+        ..ExposureDocument::default()
     };
     let cached = CachedPixels::from_i32_pixels(vec![1, 2, 3, 4], 2, 2, 65535);
 
@@ -3522,6 +3729,7 @@ async fn test_compute_image_stats_persists_section_via_document_id() {
         sensor_temperature_c: None,
         optics: None,
         sections: serde_json::Map::new(),
+        ..ExposureDocument::default()
     };
 
     cache.insert(
@@ -6457,6 +6665,7 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
             crate::equipment::DeviceSession::connected_with(
                 Arc::new(camera),
                 crate::equipment::CameraInvariants {
+                    name: None,
                     max_bin_x: Some(4),
                     max_bin_y: Some(4),
                     can_asymmetric_bin: Some(true),
@@ -10723,6 +10932,7 @@ fn dither_dual_camera_registry() -> crate::equipment::EquipmentRegistry {
             lost_session(
                 Arc::new(MockCamera::default()),
                 crate::equipment::CameraInvariants {
+                    name: None,
                     max_bin_x: Some(4),
                     max_bin_y: Some(4),
                     can_asymmetric_bin: Some(true),

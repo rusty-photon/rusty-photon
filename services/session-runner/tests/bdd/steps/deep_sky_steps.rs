@@ -295,6 +295,7 @@ async fn guiding_train_on_simulator_focuser(world: &mut SessionRunnerWorld, trai
         cooler_targets_c: Vec::new(),
     });
     world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
         aperture_mm: None,
         id: train_id,
         purpose: Some("guiding".to_string()),
@@ -533,6 +534,7 @@ async fn configure_deep_sky_equipment(world: &mut SessionRunnerWorld, with_focus
         (vec!["main-cam".to_string()], None)
     };
     world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
         aperture_mm: None,
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),

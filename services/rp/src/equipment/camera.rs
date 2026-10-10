@@ -25,8 +25,12 @@ use crate::config;
 /// device behind the same config entry — and installs the fresh reads
 /// with the fresh handle in one step, so the two cannot be paired
 /// across sessions.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct CameraInvariants {
+    /// The driver's ASCOM `Name` (e.g. `QHY600M`), persisted as the
+    /// sidecar's `camera_name` and the FITS header's `INSTRUME`. Not a
+    /// sensor property, but just as fixed for the life of a session.
+    pub name: Option<String>,
     /// Camera's `MaxADU` capability. Drives the FITS bit-depth
     /// (`u16` vs `i32`) and cache-variant selection in `do_capture`,
     /// and is persisted to the sidecar's `max_adu` field.
@@ -136,10 +140,11 @@ impl CameraEntry {
     }
 }
 
-/// One session-establish metadata read: a failure only drops *that*
-/// field (logged with its downstream consequence), never the whole
-/// session.
-fn cached_read<T, E: std::fmt::Display>(
+/// One auxiliary device read — a session-establish invariant, or a
+/// capture's per-frame metadata: a failure only drops *that* field
+/// (logged with its downstream consequence), never the whole session or
+/// capture.
+pub(crate) fn optional_read<T, E: std::fmt::Display>(
     result: Result<T, E>,
     camera_id: &str,
     consequence: &str,
@@ -202,8 +207,9 @@ pub(super) async fn establish_camera(
     })
     .await?;
 
-    // The Alpaca device is now Connected — the eight physical-sensor
-    // properties below are invariant for the life of the session, so
+    // The Alpaca device is now Connected — the driver name and the
+    // eight physical-sensor properties below are invariant for the life
+    // of the session, so
     // they are read exactly once here and served from the cache to
     // every subsequent `do_capture`. Each read is independent: a
     // failure on one property only drops *that* field, not the whole
@@ -211,14 +217,15 @@ pub(super) async fn establish_camera(
     // succeeds because some Alpaca drivers reject property reads on
     // disconnected devices.
     let invariants = CameraInvariants {
-        max_adu: cached_read(cam.max_adu().await, &config.id, "max_adu unavailable at session-establish time; downstream captures will persist max_adu: None and write FITS as i32"),
-        pixel_size_x_um: cached_read(cam.pixel_size_x().await, &config.id, "pixel_size_x unavailable at session-establish time; downstream captures will omit the optics block"),
-        pixel_size_y_um: cached_read(cam.pixel_size_y().await, &config.id, "pixel_size_y unavailable at session-establish time; downstream captures will omit the optics block"),
-        sensor_width_px: cached_read(cam.camera_x_size().await, &config.id, "camera_x_size unavailable at session-establish time; downstream captures will omit the optics block"),
-        sensor_height_px: cached_read(cam.camera_y_size().await, &config.id, "camera_y_size unavailable at session-establish time; downstream captures will omit the optics block"),
-        max_bin_x: cached_read(cam.max_bin_x().await, &config.id, "max_bin_x unavailable at session-establish time; a capture's binning will not be range-checked before it reaches the driver"),
-        max_bin_y: cached_read(cam.max_bin_y().await, &config.id, "max_bin_y unavailable at session-establish time; a capture's binning will not be range-checked before it reaches the driver"),
-        can_asymmetric_bin: cached_read(cam.can_asymmetric_bin().await, &config.id, "can_asymmetric_bin unavailable at session-establish time; an asymmetric binning will not be rejected before it reaches the driver"),
+        name: optional_read(cam.name().await, &config.id, "name unavailable at session-establish time; downstream captures will omit camera_name and INSTRUME"),
+        max_adu: optional_read(cam.max_adu().await, &config.id, "max_adu unavailable at session-establish time; downstream captures will persist max_adu: None and write FITS as i32"),
+        pixel_size_x_um: optional_read(cam.pixel_size_x().await, &config.id, "pixel_size_x unavailable at session-establish time; downstream captures will omit the optics block"),
+        pixel_size_y_um: optional_read(cam.pixel_size_y().await, &config.id, "pixel_size_y unavailable at session-establish time; downstream captures will omit the optics block"),
+        sensor_width_px: optional_read(cam.camera_x_size().await, &config.id, "camera_x_size unavailable at session-establish time; downstream captures will omit the optics block"),
+        sensor_height_px: optional_read(cam.camera_y_size().await, &config.id, "camera_y_size unavailable at session-establish time; downstream captures will omit the optics block"),
+        max_bin_x: optional_read(cam.max_bin_x().await, &config.id, "max_bin_x unavailable at session-establish time; a capture's binning will not be range-checked before it reaches the driver"),
+        max_bin_y: optional_read(cam.max_bin_y().await, &config.id, "max_bin_y unavailable at session-establish time; a capture's binning will not be range-checked before it reaches the driver"),
+        can_asymmetric_bin: optional_read(cam.can_asymmetric_bin().await, &config.id, "can_asymmetric_bin unavailable at session-establish time; an asymmetric binning will not be rejected before it reaches the driver"),
     };
     Ok((cam, invariants))
 }
@@ -233,6 +240,7 @@ pub(super) async fn connect_camera(
         Ok((cam, invariants)) => {
             debug!(
                 camera_id = %config.id,
+                name = ?invariants.name,
                 max_adu = ?invariants.max_adu,
                 pixel_size_x_um = ?invariants.pixel_size_x_um,
                 pixel_size_y_um = ?invariants.pixel_size_y_um,

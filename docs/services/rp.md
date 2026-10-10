@@ -155,10 +155,16 @@ The document accumulates data as it flows through the system.
   },
   "frame_type": "Light",
   "camera_id": "main-camera-1",
+  "camera_name": "QHY600M",
+  "train_id": "main",
+  "telescope": "Takahashi FSQ-106EDX4",
   "binning": "1x1",
   "filter": "Luminance",
+  "gain": 26,
+  "offset": 30,
   "exposure_time_secs": 300,
   "planned_at": "2026-03-02T01:15:00Z",
+  "exposure_started_at": "2026-03-02T01:15:00.412+00:00",
   "captured_at": "2026-03-02T01:20:02Z",
   "file_path": "/data/lights/M31/M31_L_5m_001.fits",
   "session_id": "session-2026-03-01",
@@ -166,6 +172,10 @@ The document accumulates data as it flows through the system.
   "max_adu": 65535,
   "cooler_setpoint_c": -10,
   "sensor_temperature_c": -9.8,
+  "pointing": {
+    "ra_hours": 0.7121,
+    "dec_degrees": 41.2702
+  },
   "optics": {
     "focal_length_mm": 1000.0,
     "pixel_size_x_um": 3.76,
@@ -180,7 +190,8 @@ The document accumulates data as it flows through the system.
 }
 ```
 
-**`target` and `frame_type` are landed (Decision 11); `filter`,
+**`target` and `frame_type` are landed (Decision 11); `filter` and the
+other per-frame acquisition facts below are landed (issue #1180);
 `session_id`, `sequence_number`, and `planned_at` remain aspirational —
 no code path writes them onto the document yet.** `target` and
 `frame_type` are populated only when `capture`'s `frame_type` parameter
@@ -219,6 +230,68 @@ omitted (absent, not `null`) when unavailable — no ladder configured,
 cooling skipped or unreachable, or the temperature read failed. See
 [Camera Cooling](#camera-cooling); like `optics`, both are auxiliary
 metadata, never gating capture.
+
+**Per-frame acquisition facts** (issue #1180) record what the rig was
+doing while the frame was exposed. Like `optics`, each is auxiliary: a
+failed read drops that one field (logged at `debug!`), never the
+capture, and an unavailable field is omitted (absent, not `null`). The
+FITS header carries the same values ([FITS header](#fits-header)); the
+sidecar stays the authority.
+
+- `exposure_started_at` — when the exposure began, RFC 3339 UTC. It is
+  the camera's own record, ASCOM `LastExposureStartTime`, read after
+  readout while the capture still holds the camera (so the next
+  capture's `StartExposure` cannot have overwritten it). `rp` accepts
+  the driver's value only when it falls inside the window `rp` itself
+  observed — no earlier than just before `StartExposure` was sent, and
+  no later than `ImageReady` less the exposure time, since an exposure
+  begun after that could not have finished — widened by 2 s on each
+  side for clock differences between the camera's host and `rp`'s. A
+  driver that does not implement the property, fails the read, or
+  reports a time outside that window (a stale start, or one stamped at
+  readout) gets `rp`'s own clock reading instead, taken the moment
+  `StartExposure` returned. Present on every frame this version
+  captures. `captured_at` is unchanged: it marks capture *completion*
+  (after readout), which is what `{night_date}` is keyed on.
+- `camera_name` — the driver's ASCOM `Name` (e.g. `"QHY600M"`), read
+  once per connection with the other invariants and cached on
+  `CameraEntry`. `camera_id` remains the rig-local identity.
+- `train_id` — the [optical train](#optical-trains) that terminates in
+  the camera; omitted for a camera outside every train.
+- `telescope` — that train's configured `telescope`, as it stood when
+  the frame was taken (a later config edit does not reach back);
+  omitted outside every train or when the train names none.
+- `filter` — the filter in the camera's train filter wheel, named from
+  the wheel's configured `filters` (`"Filter <n>"` for an unnamed
+  slot). Read live for `Light`, `Flat` and untyped captures, once the
+  exposure completes and while the capture still holds the camera —
+  never mid-exposure, because a camera-integrated wheel (a QHY CFW)
+  answers through the camera's own driver. Omitted for `Dark`/`Bias`
+  (dark current is not filter-dependent, and an incidental wheel
+  position on a dark is noise) and when the train has no wheel, or the
+  wheel is disconnected, moving, fails the read, or does not answer
+  within 3 s. When a naming template is configured
+  (`session.file_naming_pattern`), the one read feeds both the filename
+  and this field, so they cannot disagree — and there a failed read
+  fails a typed capture, whether or not the pattern names `{filter}`
+  ([Capture Tool Details](#capture-tool-details), *Filter resolution*).
+- `gain`, `offset` — the camera's ASCOM `Gain`/`Offset`, read on every
+  capture while it holds the camera. Never cached: both are
+  operator-mutable, the same reason `get_camera_info` reads them live.
+  Omitted when the driver does not implement them (common on CCDs) or
+  the read fails.
+- `pointing` — where the mount was pointing: `ra_hours`/`dec_degrees`
+  exactly as the mount reports them, in the mount's own equatorial
+  system (often JNow; `rp` does not convert). Read once, right after
+  `StartExposure` returns, concurrently with the exposure; the
+  [mount motion gate](#mount-motion-gate) keeps the mount from slewing
+  under an imaging-train exposure, so one read describes the frame. A
+  camera outside the imaging train is not held by the gate, so a mount
+  that reports `Slewing` at the read leaves the field out rather than
+  record a point mid-move. Also omitted when no mount is configured or
+  connected, or the read fails or does not answer within 3 s.
+  Distinct from `target.ra_hours`/`target.dec_degrees`, which are the
+  catalog (J2000) coordinates of what the frame is *of*.
 
 `optics` carries the camera + optical-train geometry that consumers
 need to interpret the frame without re-deriving it from a plate
@@ -456,6 +529,75 @@ making each FITS self-describing for lineage, downstream tools, and
 disambiguation when multiple files in the data directory happen to
 share an 8-char suffix. The sidecar's `id` field carries the same
 full UUID as a fallback authority.
+
+#### FITS header
+
+Third-party tools — ASTAP, PixInsight, Siril, astrometry.net — read
+the standard FITS keywords, not the sidecar: plate-solve hints,
+calibration matching, archival lineage and stacking-time weighting all
+come from the header. So the primary HDU carries a portable copy of the
+document's core fields, and a frame stays self-describing after it
+leaves `rp` without its sidecar. The sidecar remains the authority; the
+header is written from the same capture-time values in the same step.
+The keyword set below is a contract, pinned field by field in
+`services/rp/tests/features/capture_fits_header.feature`.
+
+| Keyword | Type | Value | Present when |
+|---|---|---|---|
+| `DATE-OBS` | string | `exposure_started_at` in FITS form, `'2026-03-02T01:15:00.412'` (UTC, millisecond precision, no zone suffix) | always |
+| `EXPTIME` | real | exposure duration, seconds | always |
+| `IMAGETYP` | string | `'Light Frame'` / `'Dark Frame'` / `'Flat Field'` / `'Bias Frame'` | `frame_type` supplied |
+| `OBJECT` | string | `target.display_name` | the frame resolved a target-store row (not a reserved `dark`/`flat`/`bias` slug) |
+| `OBJCTRA` | string | `target.ra_hours`, sexagesimal `'HH MM SS.ss'` (J2000) | as `OBJECT` |
+| `OBJCTDEC` | string | `target.dec_degrees`, sexagesimal `'+DD MM SS.s'` (J2000) | as `OBJECT` |
+| `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) | `pointing` present |
+| `DEC` | real | `pointing.dec_degrees`, degrees | `pointing` present and within ±90° |
+| `INSTRUME` | string | `camera_name` | `camera_name` present |
+| `TELESCOP` | string | `telescope` | `telescope` present |
+| `FILTER` | string | `filter` | `filter` present |
+| `GAIN` | integer | `gain` | `gain` present |
+| `OFFSET` | integer | `offset` | `offset` present |
+| `CCD-TEMP` | real | `sensor_temperature_c`, °C | `sensor_temperature_c` present |
+| `SET-TEMP` | real | `cooler_setpoint_c`, °C | `cooler_setpoint_c` present |
+| `XBINNING` / `YBINNING` | integer | `binning` factors | always |
+| `XPIXSZ` / `YPIXSZ` | real | `PixelSizeX`/`PixelSizeY` × `XBINNING`/`YBINNING`, µm | the connect-time pixel-size read succeeded |
+| `FOCALLEN` | real | the train's `focal_length_mm`, mm | the camera's train declares a focal length |
+| `APTDIA` | real | the train's `aperture_mm`, mm | the camera's train declares an aperture |
+| `FOCRATIO` | real | `focal_length_mm / aperture_mm`, as `get_train_info` derives it | the train declares both |
+| `SITELAT` | real | `site.latitude_degrees`, degrees north | a `site` is configured |
+| `SITELONG` | real | `site.longitude_degrees`, degrees east | a `site` is configured |
+| `SWCREATE` | string | `'rusty-photon rp <version>'` | always |
+| `DOC_ID` | string | the document's full UUID | always |
+
+Rules the table does not show:
+
+- **`XPIXSZ`/`YPIXSZ` are the binned pixel.** The long-standing
+  convention (MaxIm DL, followed by NINA and read that way by ASTAP)
+  is the pixel size *after* binning, and plate solvers derive the
+  frame's pixel scale from `XPIXSZ` and `FOCALLEN`. The sidecar's
+  `optics` block is unbinned by design (§ Core Fields), so the two
+  differ by the binning factor on a binned frame. `XPIXSZ`,
+  `FOCALLEN` and `APTDIA` are each written whenever their own input
+  exists — the header does not drop them just because the sidecar's
+  all-or-nothing `optics` block is missing a different input.
+- **`RA`/`DEC` are pointing; `OBJCTRA`/`OBJCTDEC` are the object.**
+  The first pair is the mount's live read (`pointing`), the second the
+  target store's catalog coordinates. No `EQUINOX`/`RADESYS` card is
+  written for `RA`/`DEC`: they are in the mount's own equatorial
+  system, which `rp` does not query or convert.
+- **Untyped captures** (`frame_type` omitted — `auto_focus` and
+  `center_on_target` frames among them) carry every keyword except
+  `IMAGETYP`, `OBJECT`, `OBJCTRA` and `OBJCTDEC`.
+- **No `SITEELEV`**: the site carries no elevation
+  ([Site Configuration](#site-configuration)).
+- **Absent means unknown, never a placeholder.** A keyword whose source
+  is missing is omitted rather than written as `0`, `''` or `'NA'`. A
+  value that cannot be written as a FITS card — a string with
+  non-ASCII characters, or too long for one 80-byte card — drops that
+  card (logged at `debug!`); the sidecar still carries the value. No
+  header problem fails a capture.
+- Reals are written in the FITS exponential form
+  (`EXPTIME = 3.0000000000E+02`), which every reader accepts.
 
 Both the FITS file and the sidecar JSON are written atomically:
 staged to a sibling temp file, fsynced, renamed into place, parent
@@ -1236,8 +1378,9 @@ e.g. `"500ms"`, `"30s"`, `"1m30s"`).
 After the exposure completes and `image_ready` returns true, `capture`
 downloads the camera's `image_array`, writes it as a FITS file via
 `rp-fits` (BITPIX=16+BZERO=32768 for the common 16-bit sensor case;
-BITPIX=32 when `max_adu > u16::MAX`) with `DOC_ID = '<full-uuid>'` in the
-primary HDU header, and creates a sidecar exposure document JSON
+BITPIX=32 when `max_adu > u16::MAX`) with the standard acquisition
+keywords and `DOC_ID = '<full-uuid>'` in the primary HDU header
+([FITS header](#fits-header)), and creates a sidecar exposure document JSON
 alongside it. The base filename is `<doc_uuid_8>`; both files share
 that base (`<doc_uuid_8>.fits` and `<doc_uuid_8>.json`). Both are
 written atomically (stage to a sibling temp file, fsync, rename, fsync
@@ -1469,6 +1612,13 @@ name/position live when a filter wheel is present, else renders the
 fixed literal `"NA"` / position `0`. For `Dark`/`Bias`, `capture`
 always renders `"NA"`/`0`, even when a wheel is present — recording an
 incidental filter position on a dark/bias would be noise, not signal.
+The read happens once per capture, once the exposure completes, and the
+same value becomes the document's `filter` field and the header's
+`FILTER` card — those leave the field out where the filename renders
+`"NA"`. A failed read (the wheel errors, reports itself moving, or does
+not answer within 3 s) fails a templated capture rather than mis-filing
+the frame; for a capture that renders no filename it only drops the
+`filter` field.
 
 *Directory/file rendering.* Once `target`/`frame_type` are resolved,
 `capture` renders `session.directory_pattern` then
@@ -2799,7 +2949,8 @@ decisions recorded there are fixed.
 
 ```jsonc
 "optical_trains": [
-  { "id": "main",  "purpose": "imaging", "focal_length_mm": 1000.0,
+  { "id": "main",  "purpose": "imaging", "telescope": "Celestron EdgeHD 8",
+    "focal_length_mm": 1000.0,
     "aperture_mm": 200.0, "default_position_angle_degrees": 254.0,
     "devices": ["flat-panel", "main-focuser", "main-fw", "falcon", "main-cam"],
     "auto_focus": { "duration": "3s", "step_size": 100, "half_width": 1000,
@@ -2836,6 +2987,14 @@ Semantics:
   The guiding train tells rp which camera's focus and rotation state
   the guider depends on; at most one train may carry it, and it
   requires `equipment.mount.guiding`.
+- `telescope` names the telescope the light path looks through (e.g.
+  `"Takahashi FSQ-106EDX4"`). Optional. Frames through the train's
+  camera carry it as the FITS `TELESCOP` card and the sidecar's
+  `telescope`; omitted, they carry neither — the train id is not
+  substituted, since it names a light path, not an instrument. It must
+  fit one FITS string card: 1 to 68 printable ASCII characters, an
+  apostrophe counting twice. Anything else is rejected at load, so the
+  card can never be dropped at capture time.
 - `focal_length_mm` is the effective focal length of that light path
   in millimetres — a positive finite number, rejected at load
   otherwise. Optional: omitted, captures through that train's camera
@@ -2845,7 +3004,8 @@ Semantics:
   Optional. With `focal_length_mm` it gives the train's focal ratio,
   which `get_train_info.optics` reports and a focus provider sizes its
   sweep from ([Train optics](#train-optics)); omitted, `focal_ratio`
-  is `null`.
+  is `null`. Frames through the train carry both as the FITS `APTDIA`
+  and `FOCRATIO` cards ([FITS header](#fits-header)).
 - `default_position_angle_degrees` is the train's default framing
   angle in degrees east of north, sky frame — the same domain as
   `move_rotator`'s `angle` (`0.0 ≤ angle < 360.0`, finite), rejected

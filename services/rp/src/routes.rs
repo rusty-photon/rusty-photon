@@ -825,6 +825,7 @@ mod tests {
             sensor_temperature_c: None,
             optics: None,
             sections: serde_json::Map::new(),
+            ..ExposureDocument::default()
         }
     }
 
@@ -962,7 +963,7 @@ mod tests {
         let doc_uuid = "44444444-4444-4444-4444-444444444444";
         let uuid8 = &doc_uuid[..8];
         let fits_path = dir.path().join(format!("{uuid8}.fits"));
-        crate::persistence::write_fits_u16(&fits_path, &[0u16; 4], 2, 2, doc_uuid)
+        crate::persistence::write_fits_u16(&fits_path, &[0u16; 4], 2, 2, doc_uuid, &[])
             .await
             .unwrap();
         let doc = ExposureDocument {
@@ -981,6 +982,7 @@ mod tests {
             sensor_temperature_c: None,
             optics: None,
             sections: serde_json::Map::new(),
+            ..ExposureDocument::default()
         };
         std::fs::write(
             dir.path().join(format!("{uuid8}.json")),

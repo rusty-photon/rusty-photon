@@ -30,6 +30,7 @@ async fn rp_running_with_capture_rig(world: &mut RpWorld) {
     add_camera(world);
     add_filter_wheel(world);
     world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
         aperture_mm: None,
         id: "main".to_string(),
         purpose: None,
@@ -48,6 +49,7 @@ async fn rp_running_with_capture_rig_no_templates(world: &mut RpWorld) {
     add_camera(world);
     add_filter_wheel(world);
     world.optical_trains.push(OpticalTrainConfig {
+        telescope: None,
         aperture_mm: None,
         id: "main".to_string(),
         purpose: None,
