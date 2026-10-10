@@ -24,7 +24,8 @@ const FITS_TIMESTAMP_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.3f";
 // Given
 // ---------------------------------------------------------------------------
 
-/// Camera + filter wheel in train `main` (1000 mm), a mount, and a site
+/// Camera + filter wheel in train `main` (a Takahashi FSQ-106EDX4,
+/// 530 mm at 106 mm aperture), a mount, and a site
 /// — every source the header draws on, so each keyword has something to
 /// mirror. The site is the simulator mount's own: rp refuses to start
 /// when the configured site disagrees with the mount's (rp.md § Site
@@ -41,10 +42,11 @@ async fn rp_running_with_fully_equipped_rig(world: &mut RpWorld) {
         settle_after_slew: None,
     });
     world.optical_trains.push(OpticalTrainConfig {
-        aperture_mm: None,
+        telescope: Some("Takahashi FSQ-106EDX4".to_string()),
+        aperture_mm: Some(106.0),
         id: "main".to_string(),
         purpose: Some("imaging".to_string()),
-        focal_length_mm: Some(1000.0),
+        focal_length_mm: Some(530.0),
         default_position_angle_degrees: None,
         devices: vec!["main-fw".to_string(), "main-cam".to_string()],
         auto_focus: None,

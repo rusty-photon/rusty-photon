@@ -2524,16 +2524,21 @@ async fn test_capture_records_camera_facts_in_sidecar_and_header() {
         offset: Some(30),
         ..Default::default()
     };
+    let equipment: crate::config::EquipmentConfig = serde_json::from_value(serde_json::json!({
+        "cameras": [{"id": "cam", "alpaca_url": "http://localhost:1"}],
+        "optical_trains": [{
+            "id": "main", "telescope": "Mock Refractor 80", "focal_length_mm": 400.0,
+            "aperture_mm": 80.0, "devices": ["cam"]
+        }]
+    }))
+    .unwrap();
+    let trains = crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap();
     let temp = tempfile::tempdir().unwrap();
-    let doc = capture_into(
-        temp.path(),
-        camera_registry(Arc::new(cam)),
-        cam_trains(1000.0),
-    )
-    .await;
+    let doc = capture_into(temp.path(), camera_registry(Arc::new(cam)), trains).await;
 
     assert_eq!(doc.camera_name.as_deref(), Some(MOCK_CAMERA_NAME));
     assert_eq!(doc.train_id.as_deref(), Some("main"));
+    assert_eq!(doc.telescope.as_deref(), Some("Mock Refractor 80"));
     assert_eq!(doc.gain, Some(26));
     assert_eq!(doc.offset, Some(30));
     let card = |key| fits_header_card(&doc.file_path, key);
@@ -2541,7 +2546,10 @@ async fn test_capture_records_camera_facts_in_sidecar_and_header() {
         card("INSTRUME"),
         Some(KeywordValue::Str(MOCK_CAMERA_NAME.into()))
     );
-    assert_eq!(card("TELESCOP"), Some(KeywordValue::Str("main".into())));
+    assert_eq!(
+        card("TELESCOP"),
+        Some(KeywordValue::Str("Mock Refractor 80".into()))
+    );
     assert_eq!(card("GAIN"), Some(KeywordValue::Int(26)));
     assert_eq!(card("OFFSET"), Some(KeywordValue::Int(30)));
     assert_eq!(card("EXPTIME"), Some(KeywordValue::Float(0.1)));
@@ -2550,7 +2558,9 @@ async fn test_capture_records_camera_facts_in_sidecar_and_header() {
         card("XPIXSZ"),
         Some(KeywordValue::Float(MOCK_CAMERA_PIXEL_SIZE_UM))
     );
-    assert_eq!(card("FOCALLEN"), Some(KeywordValue::Float(1000.0)));
+    assert_eq!(card("FOCALLEN"), Some(KeywordValue::Float(400.0)));
+    assert_eq!(card("APTDIA"), Some(KeywordValue::Float(80.0)));
+    assert_eq!(card("FOCRATIO"), Some(KeywordValue::Float(5.0)));
     assert_eq!(card("DOC_ID"), Some(KeywordValue::Str(doc.id.clone())));
     // An untyped capture names no frame type, and this rig has no
     // wheel, mount or site.

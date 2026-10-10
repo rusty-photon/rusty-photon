@@ -11,9 +11,10 @@ Feature: FITS header on captured frames
   placeholder, and no header problem fails a capture. The simulator camera
   implements neither Gain nor Offset and these rigs configure no cooling,
   so their frames carry no GAIN, OFFSET or SET-TEMP. XPIXSZ/YPIXSZ are the
-  pixel size after binning. RA/DEC are where the mount pointed;
-  OBJCTRA/OBJCTDEC are the target's catalog coordinates. DATE-OBS is the
-  exposure start, the document's `exposure_started_at`.
+  pixel size after binning. TELESCOP is the train's configured telescope,
+  and APTDIA/FOCRATIO its aperture and focal ratio. RA/DEC are where the
+  mount pointed; OBJCTRA/OBJCTDEC are the target's catalog coordinates.
+  DATE-OBS is the exposure start, the document's `exposure_started_at`.
 
   In the tables, `{version}` stands for rp's own version and
   `{document_id}` for the capture's document id.
@@ -31,14 +32,16 @@ Feature: FITS header on captured frames
       | OBJCTRA  | string  | 00 42 44.28               |
       | OBJCTDEC | string  | +41 16 08.0               |
       | INSTRUME | string  | Alpaca Camera Simulator   |
-      | TELESCOP | string  | main                      |
+      | TELESCOP | string  | Takahashi FSQ-106EDX4     |
       | FILTER   | string  | Luminance                 |
       | CCD-TEMP | real    | 10                        |
       | XBINNING | integer | 1                         |
       | YBINNING | integer | 1                         |
       | XPIXSZ   | real    | 5.6                       |
       | YPIXSZ   | real    | 5.6                       |
-      | FOCALLEN | real    | 1000                      |
+      | FOCALLEN | real    | 530                       |
+      | APTDIA   | real    | 106                       |
+      | FOCRATIO | real    | 5                         |
       | SITELAT  | real    | 51.0786                   |
       | SITELONG | real    | -0.2944                   |
       | SWCREATE | string  | rusty-photon rp {version} |
@@ -59,6 +62,7 @@ Feature: FITS header on captured frames
     Then the tool call should succeed
     And the document field "camera_name" should be "Alpaca Camera Simulator"
     And the document field "train_id" should be "main"
+    And the document field "telescope" should be "Takahashi FSQ-106EDX4"
     And the document field "filter" should be "Luminance"
     And the document body should not contain "gain"
     And the document body should not contain "offset"
@@ -111,9 +115,9 @@ Feature: FITS header on captured frames
       | keyword  | type   | value                   |
       | EXPTIME  | real   | 0.1                     |
       | INSTRUME | string | Alpaca Camera Simulator |
-      | TELESCOP | string | main                    |
+      | TELESCOP | string | Takahashi FSQ-106EDX4   |
       | FILTER   | string | Luminance               |
-      | FOCALLEN | real   | 1000                    |
+      | FOCALLEN | real   | 530                     |
     And the captured FITS header should not carry these keywords:
       | keyword  |
       | IMAGETYP |
@@ -148,6 +152,8 @@ Feature: FITS header on captured frames
       | keyword  |
       | TELESCOP |
       | FOCALLEN |
+      | APTDIA   |
+      | FOCRATIO |
       | FILTER   |
       | RA       |
       | DEC      |

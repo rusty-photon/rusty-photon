@@ -157,6 +157,7 @@ The document accumulates data as it flows through the system.
   "camera_id": "main-camera-1",
   "camera_name": "QHY600M",
   "train_id": "main",
+  "telescope": "Takahashi FSQ-106EDX4",
   "binning": "1x1",
   "filter": "Luminance",
   "gain": 26,
@@ -257,6 +258,9 @@ sidecar stays the authority.
   `CameraEntry`. `camera_id` remains the rig-local identity.
 - `train_id` — the [optical train](#optical-trains) that terminates in
   the camera; omitted for a camera outside every train.
+- `telescope` — that train's configured `telescope`, as it stood when
+  the frame was taken (a later config edit does not reach back);
+  omitted outside every train or when the train names none.
 - `filter` — the filter in the camera's train filter wheel, named from
   the wheel's configured `filters` (`"Filter <n>"` for an unnamed
   slot). Read live for `Light`, `Flat` and untyped captures, once the
@@ -549,7 +553,7 @@ The keyword set below is a contract, pinned field by field in
 | `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) | `pointing` present |
 | `DEC` | real | `pointing.dec_degrees`, degrees | `pointing` present and within ±90° |
 | `INSTRUME` | string | `camera_name` | `camera_name` present |
-| `TELESCOP` | string | `train_id` | `train_id` present |
+| `TELESCOP` | string | `telescope` | `telescope` present |
 | `FILTER` | string | `filter` | `filter` present |
 | `GAIN` | integer | `gain` | `gain` present |
 | `OFFSET` | integer | `offset` | `offset` present |
@@ -558,6 +562,8 @@ The keyword set below is a contract, pinned field by field in
 | `XBINNING` / `YBINNING` | integer | `binning` factors | always |
 | `XPIXSZ` / `YPIXSZ` | real | `PixelSizeX`/`PixelSizeY` × `XBINNING`/`YBINNING`, µm | the connect-time pixel-size read succeeded |
 | `FOCALLEN` | real | the train's `focal_length_mm`, mm | the camera's train declares a focal length |
+| `APTDIA` | real | the train's `aperture_mm`, mm | the camera's train declares an aperture |
+| `FOCRATIO` | real | `focal_length_mm / aperture_mm`, as `get_train_info` derives it | the train declares both |
 | `SITELAT` | real | `site.latitude_degrees`, degrees north | a `site` is configured |
 | `SITELONG` | real | `site.longitude_degrees`, degrees east | a `site` is configured |
 | `SWCREATE` | string | `'rusty-photon rp <version>'` | always |
@@ -570,10 +576,10 @@ Rules the table does not show:
   is the pixel size *after* binning, and plate solvers derive the
   frame's pixel scale from `XPIXSZ` and `FOCALLEN`. The sidecar's
   `optics` block is unbinned by design (§ Core Fields), so the two
-  differ by the binning factor on a binned frame. `XPIXSZ` and
-  `FOCALLEN` are each written whenever their own input exists — the
-  header does not drop them just because the sidecar's all-or-nothing
-  `optics` block is missing a different input.
+  differ by the binning factor on a binned frame. `XPIXSZ`,
+  `FOCALLEN` and `APTDIA` are each written whenever their own input
+  exists — the header does not drop them just because the sidecar's
+  all-or-nothing `optics` block is missing a different input.
 - **`RA`/`DEC` are pointing; `OBJCTRA`/`OBJCTDEC` are the object.**
   The first pair is the mount's live read (`pointing`), the second the
   target store's catalog coordinates. No `EQUINOX`/`RADESYS` card is
@@ -2943,7 +2949,8 @@ decisions recorded there are fixed.
 
 ```jsonc
 "optical_trains": [
-  { "id": "main",  "purpose": "imaging", "focal_length_mm": 1000.0,
+  { "id": "main",  "purpose": "imaging", "telescope": "Celestron EdgeHD 8",
+    "focal_length_mm": 1000.0,
     "aperture_mm": 200.0, "default_position_angle_degrees": 254.0,
     "devices": ["flat-panel", "main-focuser", "main-fw", "falcon", "main-cam"],
     "auto_focus": { "duration": "3s", "step_size": 100, "half_width": 1000,
@@ -2980,6 +2987,14 @@ Semantics:
   The guiding train tells rp which camera's focus and rotation state
   the guider depends on; at most one train may carry it, and it
   requires `equipment.mount.guiding`.
+- `telescope` names the telescope the light path looks through (e.g.
+  `"Takahashi FSQ-106EDX4"`). Optional. Frames through the train's
+  camera carry it as the FITS `TELESCOP` card and the sidecar's
+  `telescope`; omitted, they carry neither — the train id is not
+  substituted, since it names a light path, not an instrument. It must
+  fit one FITS string card: 1 to 68 printable ASCII characters, an
+  apostrophe counting twice. Anything else is rejected at load, so the
+  card can never be dropped at capture time.
 - `focal_length_mm` is the effective focal length of that light path
   in millimetres — a positive finite number, rejected at load
   otherwise. Optional: omitted, captures through that train's camera
@@ -2989,7 +3004,8 @@ Semantics:
   Optional. With `focal_length_mm` it gives the train's focal ratio,
   which `get_train_info.optics` reports and a focus provider sizes its
   sweep from ([Train optics](#train-optics)); omitted, `focal_ratio`
-  is `null`.
+  is `null`. Frames through the train carry both as the FITS `APTDIA`
+  and `FOCRATIO` cards ([FITS header](#fits-header)).
 - `default_position_angle_degrees` is the train's default framing
   angle in degrees east of north, sky frame — the same domain as
   `move_rotator`'s `angle` (`0.0 ≤ angle < 360.0`, finite), rejected

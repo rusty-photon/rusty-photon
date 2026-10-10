@@ -1326,6 +1326,7 @@ impl McpHandler {
         let captured_max_adu: Option<u32> = frame.invariants.max_adu;
 
         let optics = derive_optics(frame.camera_id, frame.focal_length_mm, frame.invariants);
+        let train = self.trains.train_for_camera(frame.camera_id);
         let filter = match frame.filter_read {
             Ok(read) => read.map(|(name, _position)| name),
             Err(e) => {
@@ -1345,10 +1346,8 @@ impl McpHandler {
             height: doc_height,
             camera_id: Some(frame.camera_id.to_string()),
             camera_name: frame.invariants.name.clone(),
-            train_id: self
-                .trains
-                .train_for_camera(frame.camera_id)
-                .map(|train| train.id.clone()),
+            train_id: train.map(|train| train.id.clone()),
+            telescope: train.and_then(|train| train.telescope.clone()),
             duration: Some(frame.duration),
             binning: Some(frame.binning),
             filter,
@@ -1369,6 +1368,8 @@ impl McpHandler {
                 pixel_size_x_um: frame.invariants.pixel_size_x_um,
                 pixel_size_y_um: frame.invariants.pixel_size_y_um,
                 focal_length_mm: frame.focal_length_mm,
+                aperture_mm: train.and_then(|train| train.aperture_mm),
+                focal_ratio: train.and_then(crate::equipment::trains::Train::focal_ratio),
                 site: self.site.as_ref(),
             },
         );

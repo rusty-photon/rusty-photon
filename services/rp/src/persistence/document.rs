@@ -55,11 +55,15 @@ pub struct ExposureDocument {
     /// connect-time read failed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub camera_name: Option<String>,
-    /// The optical train that terminates in the capturing camera. The
-    /// FITS header's `TELESCOP`. Omitted for a camera outside every
-    /// train.
+    /// The optical train that terminates in the capturing camera.
+    /// Omitted for a camera outside every train.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub train_id: Option<String>,
+    /// That train's configured telescope (`optical_trains[].telescope`)
+    /// at capture time — the FITS header's `TELESCOP`. Omitted when the
+    /// camera is outside every train or its train names none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telescope: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

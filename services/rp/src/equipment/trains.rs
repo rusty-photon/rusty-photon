@@ -55,6 +55,9 @@ pub struct TrainDevice {
 pub struct Train {
     pub id: String,
     pub purpose: TrainPurpose,
+    /// The telescope the train looks through (rp.md § Optical
+    /// Trains) — the FITS `TELESCOP` of frames through its camera.
+    pub telescope: Option<String>,
     pub focal_length_mm: Option<f64>,
     /// The train's clear aperture in millimetres (rp.md § Train
     /// optics); with the focal length, its focal ratio.
@@ -71,6 +74,16 @@ pub struct Train {
 }
 
 impl Train {
+    /// The focal ratio, `focal_length_mm / aperture_mm` (rp.md § Train
+    /// optics); `None` unless both are configured.
+    #[must_use]
+    pub fn focal_ratio(&self) -> Option<f64> {
+        match (self.focal_length_mm, self.aperture_mm) {
+            (Some(focal_length), Some(aperture)) => Some(focal_length / aperture),
+            _ => None,
+        }
+    }
+
     /// The camera this train terminates in. Always `Some` for a
     /// validated train (never empty, last entry a camera); `Option`
     /// keeps the accessor total.
@@ -497,6 +510,10 @@ impl TrainModel {
                 trains.push(Train {
                     id: train.id.clone(),
                     purpose: train.purpose,
+                    telescope: train
+                        .telescope
+                        .as_ref()
+                        .map(|name| name.as_str().to_string()),
                     focal_length_mm: train
                         .focal_length_mm
                         .map(super::super::config::optical_train::FocalLengthMm::value),

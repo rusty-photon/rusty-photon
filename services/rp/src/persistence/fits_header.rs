@@ -34,6 +34,10 @@ pub struct HeaderContext<'a> {
     pub pixel_size_y_um: Option<f64>,
     /// The camera's train focal length, mm.
     pub focal_length_mm: Option<f64>,
+    /// The camera's train clear aperture, mm.
+    pub aperture_mm: Option<f64>,
+    /// The train's focal ratio, as `get_train_info` derives it.
+    pub focal_ratio: Option<f64>,
     /// The configured observer site.
     pub site: Option<&'a rp_ephemeris::Site>,
 }
@@ -92,7 +96,7 @@ pub fn header_keywords(doc: &ExposureDocument, ctx: &HeaderContext<'_>) -> Vec<K
         );
     }
     cards.string("INSTRUME", doc.camera_name.as_deref(), "camera");
-    cards.string("TELESCOP", doc.train_id.as_deref(), "optical train");
+    cards.string("TELESCOP", doc.telescope.as_deref(), "telescope");
     cards.string("FILTER", doc.filter.as_deref(), "filter");
     cards.integer("GAIN", doc.gain, "camera gain");
     cards.integer("OFFSET", doc.offset, "camera offset");
@@ -123,6 +127,8 @@ pub fn header_keywords(doc: &ExposureDocument, ctx: &HeaderContext<'_>) -> Vec<K
         );
     }
     cards.real("FOCALLEN", ctx.focal_length_mm, "[mm] focal length");
+    cards.real("APTDIA", ctx.aperture_mm, "[mm] aperture diameter");
+    cards.real("FOCRATIO", ctx.focal_ratio, "focal ratio");
     if let Some(site) = ctx.site {
         cards.real(
             "SITELAT",
@@ -303,6 +309,7 @@ mod tests {
             camera_id: Some("main-cam".to_string()),
             camera_name: Some("QHY600M".to_string()),
             train_id: Some("main".to_string()),
+            telescope: Some("Takahashi FSQ-106EDX4".to_string()),
             duration: Some(Duration::from_secs(300)),
             binning: Some(rp_vocabulary::Binning { x: 2, y: 2 }),
             filter: Some("Luminance".to_string()),
@@ -331,7 +338,9 @@ mod tests {
         HeaderContext {
             pixel_size_x_um: Some(3.76),
             pixel_size_y_um: Some(3.76),
-            focal_length_mm: Some(1000.0),
+            focal_length_mm: Some(530.0),
+            aperture_mm: Some(106.0),
+            focal_ratio: Some(5.0),
             site: Some(site),
         }
     }
@@ -345,8 +354,8 @@ mod tests {
             [
                 "DATE-OBS", "EXPTIME", "IMAGETYP", "OBJECT", "OBJCTRA", "OBJCTDEC", "RA", "DEC",
                 "INSTRUME", "TELESCOP", "FILTER", "GAIN", "OFFSET", "CCD-TEMP", "SET-TEMP",
-                "XBINNING", "YBINNING", "XPIXSZ", "YPIXSZ", "FOCALLEN", "SITELAT", "SITELONG",
-                "SWCREATE",
+                "XBINNING", "YBINNING", "XPIXSZ", "YPIXSZ", "FOCALLEN", "APTDIA", "FOCRATIO",
+                "SITELAT", "SITELONG", "SWCREATE",
             ]
         );
     }
@@ -366,7 +375,10 @@ mod tests {
             ("OBJCTRA", KeywordValue::Str("00 42 44.28".into())),
             ("OBJCTDEC", KeywordValue::Str("+41 16 08.0".into())),
             ("INSTRUME", KeywordValue::Str("QHY600M".into())),
-            ("TELESCOP", KeywordValue::Str("main".into())),
+            (
+                "TELESCOP",
+                KeywordValue::Str("Takahashi FSQ-106EDX4".into()),
+            ),
             ("FILTER", KeywordValue::Str("Luminance".into())),
             ("GAIN", KeywordValue::Int(26)),
             ("OFFSET", KeywordValue::Int(30)),
@@ -374,7 +386,9 @@ mod tests {
             ("SET-TEMP", KeywordValue::Float(-10.0)),
             ("XBINNING", KeywordValue::Int(2)),
             ("YBINNING", KeywordValue::Int(2)),
-            ("FOCALLEN", KeywordValue::Float(1000.0)),
+            ("FOCALLEN", KeywordValue::Float(530.0)),
+            ("APTDIA", KeywordValue::Float(106.0)),
+            ("FOCRATIO", KeywordValue::Float(5.0)),
             ("SITELAT", KeywordValue::Float(47.6062)),
             ("SITELONG", KeywordValue::Float(-122.3321)),
         ];
@@ -397,6 +411,26 @@ mod tests {
         let dec = value_of(&cards, "DEC").and_then(|v| v.as_real()).unwrap();
         assert!((ra - 0.7121 * 15.0).abs() < 1e-9, "RA {ra}");
         assert!((dec - 41.2702).abs() < 1e-9, "DEC {dec}");
+    }
+
+    #[test]
+    fn a_train_without_a_telescope_or_aperture_carries_neither_card() {
+        let mut doc = full_document();
+        doc.telescope = None;
+        let cards = cards(
+            &doc,
+            &HeaderContext {
+                focal_length_mm: Some(530.0),
+                ..HeaderContext::default()
+            },
+        );
+        for key in ["TELESCOP", "APTDIA", "FOCRATIO"] {
+            assert_eq!(value_of(&cards, key), None, "{key}");
+        }
+        assert_eq!(
+            value_of(&cards, "FOCALLEN"),
+            Some(KeywordValue::Float(530.0))
+        );
     }
 
     #[test]
