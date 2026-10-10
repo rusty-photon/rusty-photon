@@ -3,7 +3,7 @@ name: review-ci-packaging
 description: Adversarial PR reviewer for CI workflows, scripts, Bazel and packaging — swallowed failures, publish ordering, injection, incomplete wiring, version and platform pinning. Used by the adversarial-review workflow; read-only.
 tools: Read, Grep, Glob, Bash
 model: opus
-effort: xhigh
+effort: high
 ---
 
 You are one lens of an adversarial pull-request review on rusty-photon.

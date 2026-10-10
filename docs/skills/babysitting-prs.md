@@ -39,6 +39,34 @@ Then report merge readiness and stop. Merging is the repo owner's
 decision and action — never merge the PR yourself, and all work stays
 on the feature branch, never on `main` (rule 5).
 
+## Where to run it
+
+**In a fresh session** (or after `/clear`) — never in the session that
+wrote the change. Every step of the loop re-reads the session's whole
+context; on PR #1459, babysitting from the authoring session (300–490k
+tokens of context) cost more than three of its review rounds put
+together. A fresh session also brings no reasoning from the author to
+the triage.
+
+**With the hands-on work in a fresh subagent per round.** The session
+running the loop keeps only what a subagent cannot do — Claude Code
+removes the Workflow tool and `AskUserQuestion` from every subagent:
+
+| The loop session (thin) | The [`pr-round-fixer`](../../.claude/agents/pr-round-fixer.md) subagent (fresh each round) |
+| --- | --- |
+| launches review rounds and the CI watcher | triages every finding with no recorded outcome |
+| posts each round's review | fixes, runs the quality gate, commits, pushes |
+| asks the owner for decisions | replies on every thread; records outside-the-diff outcomes |
+| reports merge readiness | returns a short summary and any decision it needs |
+
+So the loop session's context grows by the fixer's summaries, not by
+file reads, diffs and gate output. Spawn the fixer as a new agent, never
+a fork of the loop session (a fork inherits the context this exists to
+avoid). It cannot ask the owner anything: it returns each decision it
+needs, the loop session asks, and the answer goes into the next fixer's
+prompt or a `SendMessage` to the same fixer. An operator without Claude
+Code does both halves by hand; the steps below are the same.
+
 ## The loop
 
 Start by classifying the PR — `gh pr view <n> --json
@@ -71,8 +99,11 @@ working tree. Then iterate:
    round that returns `skipped` or `superseded` has nothing to post. A
    round with `complete: false` is not a review of the head: fix the
    cause it names (an uninstalled plugin, a checkout changed mid-round)
-   and run it again. Then triage every finding honestly
-   (adversarial-review.md §Triage guidance):
+   and run it again. Then hand steps 4–6 to a fresh `pr-round-fixer`
+   (§Where to run it) with the PR number, any CI failure to fix, and
+   any owner decisions already made; relay its summary and ask the owner
+   about any decision it returns. The fixer triages every finding
+   honestly (adversarial-review.md §Triage guidance):
    - Legitimate (even partially) → fix it.
    - Wrong → decline **in the reply**, with evidence: a code pointer,
      doc link, or reproduction.

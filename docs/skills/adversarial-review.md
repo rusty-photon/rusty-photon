@@ -129,10 +129,13 @@ record rates lowest.
 ### Model and effort
 
 The workflow pins them rather than inheriting the session's, so a round
-reviews with the same strength whoever runs it: lenses and skeptics on
-`opus` at `xhigh` effort, and the scope, dedupe and settle stages —
-which run given commands and make no judgement — on `opus` at `low`.
-The constants are `MODEL`, `REVIEW_EFFORT` and `CHORE_EFFORT` at the
+reviews with the same strength whoever runs it: lenses on `opus` at
+`high` effort, skeptics on `opus` at `xhigh`, and the scope, dedupe and
+settle stages — which run given commands and make no judgement — on
+`opus` at `low`. Rigor buys the most at the skeptic: a lens that
+over-reports costs one skeptic run, while a skeptic that lets a wrong
+finding through costs a maintainer a researched rebuttal. The constants
+are `MODEL`, `LENS_EFFORT`, `VERIFY_EFFORT` and `CHORE_EFFORT` at the
 top of the workflow; every review body states them, and the result
 returns them as `models`. The lens and verifier agent files carry the
 same `model` and `effort` for when they are used outside the workflow.
@@ -140,11 +143,21 @@ The plugin agent's own frontmatter inherits, which the workflow
 overrides. Inheriting is the failure this prevents: until the pin, the
 effort came from whatever the babysitting session was set to, invisibly.
 
-Measured on PR #1459 (a docs + 500-line JavaScript change, all lenses
-on Opus at `xhigh`): a full round cost 13–17 agents, 820–840k subagent
-tokens and 10–14 minutes; delta rounds 8–12 agents, 410–650k tokens and
-7–9 minutes. Lowering `REVIEW_EFFORT` is the lever if that is too much,
-and a change worth recording in the PR that makes it.
+Measured on PR #1459 (a docs + 500-line JavaScript change, lenses and
+skeptics both on Opus at `xhigh`), price-weighted in input-token
+equivalents: a full round 2.0–2.1M, a delta round 0.7–1.4M, 7–14
+minutes each. Those numbers predate the move of the lenses to `high`.
+Change the pins deliberately, and record the change in the PR that
+makes it.
+
+Each review agent starts from a fresh context of about 17k tokens (its
+brief plus `CLAUDE.md`), not from the conversation that launched it.
+What does grow with the conversation is the session that runs the
+babysitting loop: on #1459 that loop, run in the same session that
+wrote the change, cost more than three of the review rounds put
+together, almost all of it re-reading a 300–490k-token context on every
+step. Run babysitting in a fresh session or subagent
+([babysitting-prs.md](babysitting-prs.md) §Where to run it).
 
 ## Ground rules
 

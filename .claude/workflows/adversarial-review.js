@@ -55,9 +55,14 @@ const PLUGIN_INSTALL = 'claude plugin install pr-review-toolkit@claude-plugins-o
 // whatever model and effort the session that runs it is set to. Every
 // review body states them.
 const MODEL = 'opus'
-const REVIEW_EFFORT = 'xhigh' // lenses and skeptics
+// Lenses cast a wide net and skeptics prune it, so rigor buys the most
+// at the skeptic: a lens that over-reports costs a skeptic run, while a
+// skeptic that lets a wrong finding through costs a maintainer.
+const LENS_EFFORT = 'high'
+const VERIFY_EFFORT = 'xhigh'
 const CHORE_EFFORT = 'low' // scope, dedupe, settle: run given commands, no judgement
-const REVIEW = { model: MODEL, effort: REVIEW_EFFORT }
+const LENS = { model: MODEL, effort: LENS_EFFORT }
+const VERIFY = { model: MODEL, effort: VERIFY_EFFORT }
 const CHORE = { model: MODEL, effort: CHORE_EFFORT }
 
 // The plugin agent is written for any codebase; this narrows it to the
@@ -317,7 +322,7 @@ if (lenses.length) {
   ].join('\n')
 
   const runLens = async l => {
-    const opts = { label: `review:${l.key}`, phase: 'Review', schema: FINDINGS, agentType: l.agentType, ...REVIEW }
+    const opts = { label: `review:${l.key}`, phase: 'Review', schema: FINDINGS, agentType: l.agentType, ...LENS }
     let r = null
     try { r = await agent(lensPrompt(l), opts) } catch (e) { r = null }
     if (!r) {
@@ -420,7 +425,7 @@ if (lenses.length) {
       phase: 'Verify',
       schema: VERDICT,
       agentType: 'review-verifier',
-      ...REVIEW,
+      ...VERIFY,
     })))).filter(Boolean)
     const expected = angles.length
     const need = f.severity === 'high' ? 2 : 1
@@ -586,7 +591,7 @@ const body = [
   `Head ${tick(short(head))} · ` + (mode === 'full' ? 'full review of the PR' : `delta since ${tick(short(since))}`)
     + ` · lenses: ${lensesRun.join(', ') || 'none applied'}`
     + (lensesRequested.length ? ` · skipped by request: ${lensesRequested.join(', ')}` : ''),
-  `Lenses and skeptics: ${MODEL} at ${REVIEW_EFFORT} effort · scope, dedupe, settle: ${MODEL} at ${CHORE_EFFORT}`,
+  `Lenses: ${MODEL} at ${LENS_EFFORT} effort · skeptics: ${MODEL} at ${VERIFY_EFFORT} · scope, dedupe, settle: ${MODEL} at ${CHORE_EFFORT}`,
   incomplete.length ? `\n**Incomplete round** — this head does not count as reviewed: ${incomplete.join('; ')}.` : null,
   lenses.length ? null : '\nNo file in this round is covered by a lens.',
   '',
@@ -618,7 +623,7 @@ return {
   complete,
   quiet: complete && posted.length === 0,
   incomplete,
-  models: { review: REVIEW, chore: CHORE },
+  models: { lens: LENS, verify: VERIFY, chore: CHORE },
   lenses_run: lensesRun,
   lenses_failed: lensesFailed,
   lenses_skipped: lensesRequested,

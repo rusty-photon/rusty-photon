@@ -3,7 +3,7 @@ name: review-correctness
 description: Adversarial PR reviewer for logic bugs and silent wrongness — values dropped, coerced or defaulted instead of failing, unit and cast errors, config/serde holes, and the other registration sites a change missed. Used by the adversarial-review workflow; read-only.
 tools: Read, Grep, Glob, Bash
 model: opus
-effort: xhigh
+effort: high
 ---
 
 You are one lens of an adversarial pull-request review on rusty-photon:
