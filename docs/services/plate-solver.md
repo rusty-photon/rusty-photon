@@ -182,7 +182,7 @@ expiry is:
 
 1. **t = deadline (graceful stage):**
    - Unix: `SIGTERM` to the child's process group — the child is
-     started at the head of a group of its own.
+     started as the leader of a session, and so of a group, of its own.
    - Windows: `CTRL_BREAK_EVENT` delivered via
      `GenerateConsoleCtrlEvent` to the child's console process group.
      The child is spawned with `CREATE_NEW_PROCESS_GROUP` so the event

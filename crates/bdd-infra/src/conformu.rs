@@ -55,9 +55,10 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use rusty_photon_process::{Bounded, Capture, Outcome, OUTPUT_LIMIT, STDERR_TAIL};
+use rusty_photon_process::{Bounded, Capture, Outcome};
 use tempfile::TempDir;
 
 use crate::scratch;
@@ -684,17 +685,24 @@ async fn run_mode(
     }
 
     // Stream ConformU's (unstructured) stdout into the test log so progress is
-    // visible, and keep it: the protocol suite's verdict includes its summary
-    // line. stderr is kept too, and printed once the mode ends.
+    // visible, and keep its lines: the protocol suite's verdict includes its
+    // summary line. stderr goes straight to the test log, live, so a wedged
+    // run's last words are there even when the deadline stops it.
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&lines);
     let prefix = format!("[conformu {mode}]");
     let outcome = Bounded::new(&mut command, MODE_DEADLINE)
-        .stdout(Capture::Full(OUTPUT_LIMIT))
-        .stderr(Capture::Tail(STDERR_TAIL))
-        .on_stdout_line(move |line| println!("{prefix} {line}"))
+        .stderr(Capture::Inherit)
+        .on_stdout_line(move |line| {
+            println!("{prefix} {line}");
+            sink.lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(line.to_owned());
+        })
         .spawn()?
         .await?;
-    let output = match outcome {
-        Outcome::Exited(output) => output,
+    let status = match outcome {
+        Outcome::Exited(output) => output.status,
         Outcome::TimedOut(stop) => {
             return Err(format!(
                 "ConformU {mode} did not finish within {MODE_DEADLINE:?} and was stopped ({stop:?})"
@@ -702,18 +710,8 @@ async fn run_mode(
             .into());
         }
     };
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    for line in stderr.lines() {
-        eprintln!("[conformu {mode} stderr] {line}");
-    }
-
-    Ok(ModeRun {
-        status: output.status,
-        output: String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .map(str::to_owned)
-            .collect(),
-    })
+    let output = std::mem::take(&mut *lines.lock().unwrap_or_else(PoisonError::into_inner));
+    Ok(ModeRun { status, output })
 }
 
 #[cfg(test)]

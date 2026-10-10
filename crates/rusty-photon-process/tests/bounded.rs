@@ -35,7 +35,7 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rusty_photon_process::{Bounded, Capture, Error, Outcome, Output, Stop, Stream};
+use rusty_photon_process::{shell, Bounded, Capture, Error, Outcome, Output, Stop, Stream};
 
 /// For runs expected to finish: generous, because only a hang reaches it.
 const FINISHES: Duration = Duration::from_secs(30);
@@ -83,23 +83,6 @@ mod script {
     pub const GRANDCHILD_MARKS: &str =
         "start /b \"\" cmd /C \"ping -n 3 127.0.0.1 >nul & type nul > marker\" & ping -n 31 127.0.0.1 >nul";
     pub const EXIT_LEAVING_STDOUT_OPEN: &str = "start /b \"\" ping -n 31 127.0.0.1 & echo done";
-}
-
-#[cfg(unix)]
-fn shell(script: &str) -> Command {
-    let mut cmd = Command::new("/bin/sh");
-    cmd.args(["-c", script]);
-    cmd
-}
-
-/// `cmd` does not understand the backslash-escaped quotes std would put
-/// around an argument, so the line goes to it verbatim.
-#[cfg(windows)]
-fn shell(script: &str) -> Command {
-    use std::os::windows::process::CommandExt;
-    let mut cmd = Command::new("cmd");
-    cmd.raw_arg(format!("/C {script}"));
-    cmd
 }
 
 fn shell_in(script: &str, dir: &Path) -> Command {
@@ -336,6 +319,60 @@ fn test_stdout_lines_reach_the_callback_and_the_capture() {
     );
 }
 
+/// A line callback that panics fails the run at once with a read error. The
+/// stream it was reading is nobody's any more, so waiting on it would only
+/// turn the panic into a timeout a deadline later.
+#[test]
+fn test_a_panicking_line_callback_fails_the_run_instead_of_timing_out() {
+    let error = Bounded::new(&mut shell(script::WRITE_LINES), FINISHES)
+        .on_stdout_line(|_| panic!("a line callback that fails"))
+        .run()
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            Error::Read {
+                stream: Stream::Stdout,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn test_a_head_capture_keeps_the_start_of_the_stream() {
+    let dir = tempfile::tempdir().unwrap();
+    write_bulk(dir.path());
+    let output = exited(
+        Bounded::new(&mut shell_in(script::COPY_BULK, dir.path()), FINISHES)
+            .stdout(Capture::Head(3))
+            .run()
+            .unwrap(),
+    );
+    assert_eq!(output.stdout, b"xxx");
+}
+
+/// The child has no controlling terminal — it leads a session of its own —
+/// so one that wants a terminal fails at once instead of being stopped
+/// waiting for it. Linux-only for the fixture: `/proc` names the session.
+#[cfg(target_os = "linux")]
+#[test]
+fn test_the_child_leads_a_session_of_its_own() {
+    let output = exited(
+        Bounded::new(
+            &mut shell("read -r _ _ _ _ _ session _ < /proc/$$/stat; echo \"$$ $session\""),
+            FINISHES,
+        )
+        .stdout(Capture::Full(1024))
+        .run()
+        .unwrap(),
+    );
+    let text = text(&output.stdout);
+    let (pid, session) = text.split_once(' ').unwrap();
+    assert_eq!(pid, session, "the child's session is not its own");
+}
+
 #[test]
 fn test_a_child_that_cannot_start_is_a_spawn_error() {
     let error = Bounded::new(
@@ -497,6 +534,30 @@ async fn test_dropping_the_future_stops_the_child() {
     tokio::task::spawn_blocking({
         let dir = dir.path().to_path_buf();
         move || assert_never_marked(&dir)
+    })
+    .await
+    .unwrap();
+}
+
+/// A run built to finish if abandoned outlives the future that stopped
+/// waiting for it: the child completes, and leaves its mark.
+#[tokio::test]
+async fn test_a_run_that_finishes_if_abandoned_outlives_its_future() {
+    let dir = tempfile::tempdir().unwrap();
+    let finishing = Bounded::new(&mut shell_in(script::WAIT_THEN_MARK, dir.path()), FINISHES)
+        .finish_if_abandoned()
+        .spawn()
+        .unwrap()
+        .into_future();
+    let waited = tokio::time::timeout(Duration::from_millis(200), finishing).await;
+    assert!(
+        waited.is_err(),
+        "the child finished before the future was dropped"
+    );
+    let marker = dir.path().join("marker");
+    tokio::task::spawn_blocking(move || {
+        std::thread::sleep(SURVIVOR_WOULD_HAVE_WRITTEN);
+        assert!(marker.exists(), "the abandoned run was stopped anyway");
     })
     .await
     .unwrap();

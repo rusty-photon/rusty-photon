@@ -14,13 +14,18 @@ use crate::{Error, Event, Outcome, Running};
 /// The future of a [`Running`] being awaited.
 ///
 /// Dropping it before it completes force-stops the run: its thread kills the
-/// child's tree and reaps the child, without waiting for a grace period.
+/// child's tree and reaps the child, without waiting for a grace period —
+/// unless the run was built with [`Bounded::finish_if_abandoned`], in which
+/// case the thread waits the run out under its deadline instead.
+///
+/// [`Bounded::finish_if_abandoned`]: crate::Bounded::finish_if_abandoned
 #[derive(Debug)]
 #[must_use = "a run is stopped when the future waiting for it is dropped"]
 pub struct Finishing {
     shared: Arc<Mutex<Slot>>,
     /// Tells the waiting thread the run was abandoned. `None` once the
-    /// result has been taken, when there is nothing left to abandon.
+    /// result has been taken, when there is nothing left to abandon, and
+    /// from the start for a run that finishes if abandoned.
     abandon: Option<Sender<Event>>,
 }
 
@@ -36,7 +41,8 @@ impl IntoFuture for Running {
 
     fn into_future(self) -> Finishing {
         let shared = Arc::new(Mutex::new(Slot::default()));
-        let abandon = self.events.clone();
+        // A run that finishes when abandoned is never told it was.
+        let abandon = (!self.finish_if_abandoned).then(|| self.events.clone());
         let mut delivery = Delivery {
             shared: Arc::clone(&shared),
             delivered: false,
@@ -51,10 +57,7 @@ impl IntoFuture for Running {
             // here.
             lock(&shared).result = Some(Err(Error::Thread(error)));
         }
-        Finishing {
-            shared,
-            abandon: Some(abandon),
-        }
+        Finishing { shared, abandon }
     }
 }
 

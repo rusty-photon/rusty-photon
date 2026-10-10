@@ -92,6 +92,36 @@ pub const STDERR_TAIL: usize = 4096;
 const POLL_FIRST: Duration = Duration::from_millis(1);
 const POLL_LONGEST: Duration = Duration::from_millis(50);
 
+/// How long a force-killed child is waited for before it is handed to a
+/// background thread to reap. A kill lands at once on a running process; one
+/// in uninterruptible sleep — a read from a wedged USB device — dies only
+/// when that I/O returns, and a process the kill was not permitted to reach
+/// does not die of it at all. Neither may hold up the caller.
+const REAP_BOUND: Duration = Duration::from_secs(5);
+
+/// The platform shell running `line`: `sh -c` on Unix, `cmd /C` on Windows.
+///
+/// On Windows the line reaches `cmd` verbatim. `cmd` does not understand the
+/// backslash-escaped quotes std puts around an argument containing quotes,
+/// so a redirect to a quoted path (`echo ok > "C:\path with spaces\x"`) would
+/// arrive mangled and silently do nothing.
+#[must_use]
+pub fn shell(line: &str) -> Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut command = Command::new("cmd");
+        command.raw_arg(format!("/C {line}"));
+        command
+    }
+    #[cfg(not(windows))]
+    {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(line);
+        command
+    }
+}
+
 /// What a run keeps of one of the child's output streams.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Capture {
@@ -103,8 +133,42 @@ pub enum Capture {
     /// force-stopped and the run fails with [`Error::OutputLimit`]: output a
     /// caller parses must not arrive truncated and read as complete.
     Full(usize),
+    /// The first this-many bytes; everything after them is read and dropped.
+    Head(usize),
     /// The last this-many bytes; everything before them is read and dropped.
     Tail(usize),
+    /// Nothing: the child writes straight to the caller's own stream, live —
+    /// unless a line callback needs stdout, in which case it is read and
+    /// dropped. For a harness whose log is the right place for the child's
+    /// output.
+    Inherit,
+}
+
+/// How a stream is connected to the child.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wiring {
+    Null,
+    Piped,
+    Inherited,
+}
+
+impl Wiring {
+    const fn of(capture: Capture, read_lines: bool) -> Self {
+        match capture {
+            _ if read_lines => Self::Piped,
+            Capture::Discard => Self::Null,
+            Capture::Inherit => Self::Inherited,
+            Capture::Full(_) | Capture::Head(_) | Capture::Tail(_) => Self::Piped,
+        }
+    }
+
+    fn stdio(self) -> Stdio {
+        match self {
+            Self::Null => Stdio::null(),
+            Self::Piped => Stdio::piped(),
+            Self::Inherited => Stdio::inherit(),
+        }
+    }
 }
 
 /// One of the child's output streams.
@@ -129,8 +193,8 @@ pub enum Outcome {
     /// The child exited and closed its output before the deadline. A
     /// non-zero exit is the caller's to judge.
     Exited(Output),
-    /// The deadline came first. The child has been stopped and reaped; its
-    /// output is not returned, being incomplete by definition.
+    /// The deadline came first. The child has been stopped; its output is
+    /// not returned, being incomplete by definition.
     TimedOut(Stop),
 }
 
@@ -150,12 +214,14 @@ pub enum Stop {
     /// The child exited within the grace period after the graceful signal.
     Terminated,
     /// The child had to be force-killed: it ignored the signal, the signal
-    /// could not be delivered, or the run's grace was zero.
+    /// could not be delivered, or the run's grace was zero. A child the kill
+    /// cannot land on promptly is left to a background thread to reap (see
+    /// the crate's design doc).
     Killed,
 }
 
 /// Why a run could not be carried out. Every error after the spawn has
-/// force-stopped the child's tree and reaped the child before it is returned.
+/// force-stopped the child's tree before it is returned.
 ///
 /// The messages call the child "the child": its command line can carry text
 /// a log should not repeat, so the caller adds the context it knows is safe.
@@ -181,10 +247,11 @@ pub enum Error {
 ///
 /// The caller builds the command — program, arguments, environment, working
 /// directory. `Bounded` owns the rest and overwrites whatever the caller set
-/// there: stdin is always null, stdout and stderr are piped or null as their
-/// [`Capture`] says, and the child starts at the root of a process group of
-/// its own (on Windows, `CREATE_NEW_PROCESS_GROUP` replaces any creation
-/// flags).
+/// there: stdin is always null, stdout and stderr are wired as their
+/// [`Capture`] says, and the child starts at the root of a process tree of
+/// its own — on Unix the leader of a new session, with no controlling
+/// terminal; on Windows in a new console process group
+/// (`CREATE_NEW_PROCESS_GROUP` replaces any creation flags) and a job object.
 #[must_use = "a Bounded does nothing until it is run or spawned"]
 pub struct Bounded<'a> {
     command: &'a mut Command,
@@ -193,6 +260,7 @@ pub struct Bounded<'a> {
     stdout: Capture,
     stderr: Capture,
     on_stdout_line: Option<LineSink>,
+    finish_if_abandoned: bool,
 }
 
 impl fmt::Debug for Bounded<'_> {
@@ -204,6 +272,7 @@ impl fmt::Debug for Bounded<'_> {
             .field("stdout", &self.stdout)
             .field("stderr", &self.stderr)
             .field("on_stdout_line", &self.on_stdout_line.is_some())
+            .field("finish_if_abandoned", &self.finish_if_abandoned)
             .finish()
     }
 }
@@ -220,6 +289,7 @@ impl<'a> Bounded<'a> {
             stdout: Capture::Discard,
             stderr: Capture::Discard,
             on_stdout_line: None,
+            finish_if_abandoned: false,
         }
     }
 
@@ -246,9 +316,21 @@ impl<'a> Bounded<'a> {
     /// [`Bounded::stdout`] keeps. Lines are split on `\n` with a trailing
     /// `\r` dropped and invalid UTF-8 replaced; an unterminated last line
     /// arrives at end-of-file, and a line over 64 KiB arrives in pieces.
-    /// `sink` runs on the thread reading stdout.
+    /// `sink` runs on the thread reading stdout; if it panics, the run fails
+    /// with [`Error::Read`].
     pub fn on_stdout_line(mut self, sink: impl FnMut(&str) + Send + 'static) -> Self {
         self.on_stdout_line = Some(Box::new(sink));
+        self
+    }
+
+    /// When the future awaiting the run is dropped before the run ends, let
+    /// the child finish — still under its deadline, still reaped — instead
+    /// of force-stopping it. For a command that must not be cut off halfway
+    /// because its caller stopped waiting: a service restart killed between
+    /// its stop and its start leaves the service down. A [`Running`] dropped
+    /// without being awaited still stops the child.
+    pub const fn finish_if_abandoned(mut self) -> Self {
+        self.finish_if_abandoned = true;
         self
     }
 
@@ -268,13 +350,12 @@ impl<'a> Bounded<'a> {
             stdout,
             stderr,
             on_stdout_line,
+            finish_if_abandoned,
         } = self;
-        let stdout_piped = stdout != Capture::Discard || on_stdout_line.is_some();
-        let stderr_piped = stderr != Capture::Discard;
         command
             .stdin(Stdio::null())
-            .stdout(piped_or_null(stdout_piped))
-            .stderr(piped_or_null(stderr_piped));
+            .stdout(Wiring::of(stdout, on_stdout_line.is_some()).stdio())
+            .stderr(Wiring::of(stderr, false).stdio());
         tree::prepare(command);
 
         let mut child = command.spawn().map_err(Error::Spawn)?;
@@ -321,6 +402,7 @@ impl<'a> Bounded<'a> {
             events,
             stdout,
             stderr,
+            finish_if_abandoned,
         })
     }
 
@@ -334,14 +416,6 @@ impl<'a> Bounded<'a> {
     }
 }
 
-fn piped_or_null(piped: bool) -> Stdio {
-    if piped {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    }
-}
-
 fn read_on_a_thread(
     source: impl Read + Send + 'static,
     stream: Stream,
@@ -349,17 +423,47 @@ fn read_on_a_thread(
     sink: Option<LineSink>,
     events: &Sender<Event>,
 ) -> Result<(), Error> {
-    let events = events.clone();
+    let mut report = Report {
+        events: Some(events.clone()),
+        stream,
+    };
     thread::Builder::new()
         .name(format!("bounded-{stream}"))
         .spawn(move || {
             let drained = drain::drain(source, stream, capture, sink);
-            // A closed channel means the run already ended without this
-            // stream; nobody wants it any more.
-            drop(events.send(Event::Drained(stream, drained)));
+            report.send(drained);
         })
         .map(drop)
         .map_err(Error::Thread)
+}
+
+/// A reader thread's report of its stream. If the thread ends without
+/// sending one — a line callback that panicked — the drop sends a failure,
+/// so the run fails at once instead of waiting out its deadline on a stream
+/// nobody is reading any more.
+struct Report {
+    events: Option<Sender<Event>>,
+    stream: Stream,
+}
+
+impl Report {
+    fn send(&mut self, drained: Result<Vec<u8>, Error>) {
+        if let Some(events) = self.events.take() {
+            // A closed channel means the run already ended without this
+            // stream; nobody wants it any more.
+            drop(events.send(Event::Drained(self.stream, drained)));
+        }
+    }
+}
+
+impl Drop for Report {
+    fn drop(&mut self) {
+        let stream = self.stream;
+        self.send(Err(Error::Read {
+            stream,
+            source: io::Error::other("the thread reading it ended without finishing"),
+        }));
+    }
 }
 
 /// What the run's wait is told while it waits.
@@ -406,6 +510,7 @@ pub struct Running {
     events: Sender<Event>,
     stdout: Drained,
     stderr: Drained,
+    finish_if_abandoned: bool,
 }
 
 impl Running {
@@ -426,34 +531,26 @@ impl Running {
                 .checked_sub(self.started.elapsed())
                 .filter(|remaining| !remaining.is_zero())
             else {
+                // A child that finished while the last wait was timing out
+                // finished in time.
+                if let Some(ended) = self.finished_by_now() {
+                    return ended;
+                }
                 debug!(pid = self.guard.child.id(), "the child missed its deadline");
                 return Ok(Outcome::TimedOut(self.guard.stop(self.grace)));
             };
 
             // Output first: a child is not finished while a stream is open,
             // and its exit is not worth polling for until then.
-            if self.stdout.is_waiting() || self.stderr.is_waiting() {
+            if self.output_pending() {
                 if let Some(ended) = self.receive(remaining) {
                     return ended;
                 }
                 continue;
             }
 
-            match self.guard.child.try_wait() {
-                Ok(Some(status)) => {
-                    self.guard.reaped = true;
-                    debug!(pid = self.guard.child.id(), %status, "the bounded child finished");
-                    return Ok(Outcome::Exited(Output {
-                        status,
-                        stdout: self.stdout.take(),
-                        stderr: self.stderr.take(),
-                    }));
-                }
-                Ok(None) => {}
-                Err(e) => {
-                    self.guard.kill();
-                    return Err(Error::Wait(e));
-                }
+            if let Some(ended) = self.exited() {
+                return ended;
             }
             // Waiting on the channel rather than sleeping, so an abandoned
             // run is stopped at once.
@@ -464,14 +561,57 @@ impl Running {
         }
     }
 
+    const fn output_pending(&self) -> bool {
+        self.stdout.is_waiting() || self.stderr.is_waiting()
+    }
+
+    /// Whether the run has ended by now, looking only at what has already
+    /// happened: the events already sent, and an exit already made.
+    fn finished_by_now(&mut self) -> Option<Result<Outcome, Error>> {
+        while let Ok(event) = self.inbox.try_recv() {
+            if let Some(ended) = self.handle(event) {
+                return Some(ended);
+            }
+        }
+        if self.output_pending() {
+            return None;
+        }
+        self.exited()
+    }
+
+    /// `Some` once the child has exited, or once its exit status cannot be
+    /// collected.
+    fn exited(&mut self) -> Option<Result<Outcome, Error>> {
+        match self.guard.child.try_wait() {
+            Ok(Some(status)) => {
+                self.guard.reaped = true;
+                debug!(pid = self.guard.child.id(), %status, "the bounded child finished");
+                Some(Ok(Outcome::Exited(Output {
+                    status,
+                    stdout: self.stdout.take(),
+                    stderr: self.stderr.take(),
+                })))
+            }
+            Ok(None) => None,
+            Err(e) => {
+                self.guard.kill();
+                Some(Err(Error::Wait(e)))
+            }
+        }
+    }
+
     /// Wait up to `timeout` for the next event. `Some` when it ends the run.
     fn receive(&mut self, timeout: Duration) -> Option<Result<Outcome, Error>> {
-        let event = match self.inbox.recv_timeout(timeout) {
-            Ok(event) => event,
+        match self.inbox.recv_timeout(timeout) {
+            Ok(event) => self.handle(event),
             // `self.events` keeps the channel open, so only the timeout is
             // reachable; either way there is nothing to act on.
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return None,
-        };
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => None,
+        }
+    }
+
+    /// Act on one event. `Some` when it ends the run.
+    fn handle(&mut self, event: Event) -> Option<Result<Outcome, Error>> {
         match event {
             Event::Drained(Stream::Stdout, Ok(bytes)) => {
                 self.stdout = Drained::Done(bytes);
@@ -557,11 +697,35 @@ impl Guard {
         }
     }
 
+    /// Reap a child that has just been killed, waiting at most
+    /// [`REAP_BOUND`]; past it, a background thread takes over.
     fn reap(&mut self) {
-        if let Err(e) = self.child.wait() {
-            debug!(pid = self.child.id(), "could not reap the child: {e}");
-        }
         self.reaped = true;
+        let since = Instant::now();
+        let mut poll = POLL_FIRST;
+        loop {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => {}
+                Err(e) => {
+                    debug!(pid = self.child.id(), "could not reap the child: {e}");
+                    return;
+                }
+            }
+            let Some(left) = REAP_BOUND
+                .checked_sub(since.elapsed())
+                .filter(|left| !left.is_zero())
+            else {
+                break;
+            };
+            thread::sleep(poll.min(left));
+            poll = poll.saturating_mul(2).min(POLL_LONGEST);
+        }
+        debug!(
+            pid = self.child.id(),
+            "the child outlived its kill; leaving it to a background reaper"
+        );
+        tree::reap_later(&self.child);
     }
 }
 
@@ -573,6 +737,37 @@ impl Drop for Guard {
                 "stopping a child dropped before it finished"
             );
             self.kill();
+        }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_a_kept_stream_is_piped() {
+        for capture in [Capture::Full(1), Capture::Head(1), Capture::Tail(1)] {
+            assert_eq!(Wiring::of(capture, false), Wiring::Piped, "{capture:?}");
+        }
+    }
+
+    #[test]
+    fn test_a_discarded_stream_is_null() {
+        assert_eq!(Wiring::of(Capture::Discard, false), Wiring::Null);
+    }
+
+    #[test]
+    fn test_an_inherited_stream_is_the_callers() {
+        assert_eq!(Wiring::of(Capture::Inherit, false), Wiring::Inherited);
+    }
+
+    /// The callback reads the stream, so it is piped whatever is kept.
+    #[test]
+    fn test_a_stream_read_for_lines_is_piped_whatever_it_keeps() {
+        for capture in [Capture::Discard, Capture::Inherit, Capture::Tail(1)] {
+            assert_eq!(Wiring::of(capture, true), Wiring::Piped, "{capture:?}");
         }
     }
 }

@@ -1449,9 +1449,11 @@ run in order (`sh -c` / `cmd /C`) — the multi-machine distribution hook
 from ADR-002. Every hook runs even if an earlier one fails; any failure
 exits 2, because a silently-failed hook means a remote machine keeps its
 old cert until it expires — exactly the unattended night-time failure
-this command exists to prevent. A hook runs with no stdin and its stdout
-discarded (doctor's own stdout carries the report; a hook's can carry key
-material), its stderr's tail kept for the failure message, and under a
+this command exists to prevent. A hook runs with no stdin, no terminal (one
+that would prompt — `ssh` for a passphrase, `sudo` for a password — fails at
+once instead of waiting), and its stdout discarded (doctor's own stdout
+carries the report; a hook's can carry key material), its stderr's tail kept
+for the failure message, and under a
 5-minute deadline: above the ~2 minutes an `scp` to an unreachable host
 takes for TCP to give up. A hook still running then is stopped, with
 anything it started, and counts as failed — and the hooks after it still

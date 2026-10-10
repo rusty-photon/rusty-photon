@@ -15,7 +15,7 @@
 use std::process::Command;
 use std::time::Duration;
 
-use rusty_photon_process::{Bounded, Capture, Outcome, OUTPUT_LIMIT};
+use rusty_photon_process::{Bounded, Capture, Outcome, OUTPUT_LIMIT, STDERR_TAIL};
 use serde::Deserialize;
 use tracing::debug;
 
@@ -483,10 +483,11 @@ async fn run_child_doctor(
         .arg("--config")
         .arg(config);
 
-    // stderr whole, not a tail: the report names its first line.
+    // stderr's head, not its tail: the report names its first line, and a
+    // child logging verbosely must not cost the report on stdout.
     let run = match Bounded::new(&mut command, timeout)
         .stdout(Capture::Full(OUTPUT_LIMIT))
-        .stderr(Capture::Full(OUTPUT_LIMIT))
+        .stderr(Capture::Head(STDERR_TAIL))
         .spawn()
     {
         Ok(running) => running.await,

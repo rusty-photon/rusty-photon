@@ -4244,18 +4244,17 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
         }
     }
 
-    /// Fixtures for the bounded-subprocess helper. It ships on macOS and
-    /// Windows, so the tests run on both rather than on the Unix family
-    /// alone — the platforms differ in exactly the mechanics under test
-    /// (spawn, pipe, kill), which is what makes a Unix-only pass a weak
-    /// signal for the Windows collector.
-    #[cfg(any(unix, windows))]
     /// The collectors' side of a bounded query: what reaches a caller as an
-    /// inventory and what reaches it as a failure. The mechanism under it —
-    /// the drain, the stop, the reap — is tested in `rusty-photon-process`.
+    /// inventory and what reaches it as a failure, on Windows as well as
+    /// the Unix family, since the helper ships on macOS and Windows. The
+    /// mechanism under it — the drain, the stop, the reap — is tested in
+    /// `rusty-photon-process`.
+    #[cfg(any(unix, windows))]
     mod bounded_capture {
         use std::process::Command;
         use std::time::Duration;
+
+        use rusty_photon_process::shell;
 
         use super::super::bounded;
 
@@ -4275,20 +4274,6 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
         const NEVER_FINISHES: &str = "sleep 30";
         #[cfg(windows)]
         const NEVER_FINISHES: &str = "ping -n 31 127.0.0.1 >nul";
-
-        #[cfg(unix)]
-        fn shell(script: &str) -> Command {
-            let mut cmd = Command::new("/bin/sh");
-            cmd.args(["-c", script]);
-            cmd
-        }
-
-        #[cfg(windows)]
-        fn shell(script: &str) -> Command {
-            let mut cmd = Command::new("cmd");
-            cmd.args(["/C", script]);
-            cmd
-        }
 
         #[test]
         fn test_capture_returns_what_the_child_wrote() {

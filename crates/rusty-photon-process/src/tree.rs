@@ -1,28 +1,71 @@
-//! The child's process tree: started at the root of a group of its own, so
+//! The child's process tree: started at the root of a tree of its own, so
 //! that stopping it reaches everything it started.
 //!
-//! Unix puts the child at the head of its own process group and signals the
-//! group. Windows gives it a console process group of its own — what
-//! `CTRL_BREAK_EVENT` addresses — and a job object, which is what a
-//! force-kill terminates.
+//! Unix makes the child the leader of a new session — and so of a new
+//! process group — and signals the group. Windows gives it a console process
+//! group of its own — what `CTRL_BREAK_EVENT` addresses — and a job object,
+//! which is what a force-kill terminates.
 
 #[cfg(unix)]
-pub use unix::{has_exited, prepare, Tree};
+pub use unix::{has_exited, prepare, reap_later, Tree};
 #[cfg(windows)]
-pub use windows::{has_exited, prepare, Tree};
+pub use windows::{has_exited, prepare, reap_later, Tree};
 
 #[cfg(unix)]
 mod unix {
     use std::io;
     use std::os::unix::process::CommandExt;
     use std::process::{Child, Command};
+    use std::thread;
 
     use tracing::debug;
 
-    /// Start the child as the leader of a new process group, whose id is
-    /// then the child's own pid.
+    /// Start the child as the leader of a new session, which makes it the
+    /// leader of a new process group whose id is its own pid.
+    ///
+    /// A new session rather than only a new process group: a session has no
+    /// controlling terminal, so a child that wants one — `ssh` asking for a
+    /// passphrase, `sudo` for a password — fails at once with an error to
+    /// report. In a background group of the caller's session it would be
+    /// stopped by `SIGTTIN` instead, and sit silent until its deadline.
     pub fn prepare(command: &mut Command) {
-        command.process_group(0);
+        // SAFETY: the closure runs in the forked child before `exec`, where
+        // only async-signal-safe calls are allowed: setsid(2) is one, and
+        // reading errno is too. `EPERM` means the child already leads a
+        // group — a second `prepare` of the same command — which is what this
+        // asks for.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    let err = io::Error::last_os_error();
+                    if err.raw_os_error() != Some(libc::EPERM) {
+                        return Err(err);
+                    }
+                }
+                Ok(())
+            });
+        }
+    }
+
+    /// Reap a killed child that has not died yet, on a thread of its own,
+    /// whenever it does. Until then it holds its pid, and so its group id,
+    /// which is what the kill was sent to: no other group can be given it.
+    pub fn reap_later(child: &Child) {
+        let pid = child.id().cast_signed();
+        let spawned = thread::Builder::new()
+            .name("bounded-reap".to_string())
+            .spawn(move || loop {
+                // SAFETY: waitpid(2) with a null status pointer writes
+                // nothing. The pid is this process's own unreaped child: its
+                // `Child` is never waited on again.
+                let ret = unsafe { libc::waitpid(pid, std::ptr::null_mut(), 0) };
+                if ret != -1 || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+                    break;
+                }
+            });
+        if let Err(e) = spawned {
+            debug!(pid, "could not start a thread to reap the child later: {e}");
+        }
     }
 
     /// The child's process group.
@@ -246,4 +289,9 @@ mod windows {
     pub fn has_exited(child: &mut Child) -> io::Result<bool> {
         child.try_wait().map(|status| status.is_some())
     }
+
+    /// Nothing to do: Windows has no zombies. Closing the child's handle when
+    /// its `Child` drops is all the cleanup an exited process needs, and the
+    /// kill already sent ends it once the I/O holding it returns.
+    pub const fn reap_later(_child: &Child) {}
 }

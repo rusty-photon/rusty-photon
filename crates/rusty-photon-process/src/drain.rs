@@ -73,12 +73,19 @@ impl Kept {
     /// these bytes would exceed; nothing of them is kept then.
     pub fn push(&mut self, bytes: &[u8]) -> Result<(), usize> {
         match self.capture {
-            Capture::Discard => Ok(()),
+            // An inherited stream is read only for a line callback.
+            Capture::Discard | Capture::Inherit => Ok(()),
             Capture::Full(limit) => {
                 if bytes.len() > limit.saturating_sub(self.bytes.len()) {
                     return Err(limit);
                 }
                 self.bytes.extend_from_slice(bytes);
+                Ok(())
+            }
+            Capture::Head(len) => {
+                let room = len.saturating_sub(self.bytes.len());
+                let kept = bytes.get(..room.min(bytes.len())).unwrap_or_default();
+                self.bytes.extend_from_slice(kept);
                 Ok(())
             }
             Capture::Tail(len) => {
@@ -114,6 +121,9 @@ impl Kept {
 pub struct Lines {
     sink: LineSink,
     partial: Vec<u8>,
+    /// The line in `partial` continues one already handed over in part, so
+    /// its newline ends that line rather than an empty one of its own.
+    continued: bool,
 }
 
 impl Lines {
@@ -121,6 +131,7 @@ impl Lines {
         Self {
             sink,
             partial: Vec::new(),
+            continued: false,
         }
     }
 
@@ -130,26 +141,44 @@ impl Lines {
                 break;
             };
             self.partial.extend_from_slice(line);
-            self.emit();
+            if self.continued && self.partial.is_empty() {
+                // The newline ends a line already handed over in full.
+                self.continued = false;
+            } else {
+                self.emit_line();
+            }
             // `rest` starts with the newline just found.
             bytes = rest.get(1..).unwrap_or_default();
         }
         self.partial.extend_from_slice(bytes);
         if self.partial.len() >= MAX_LINE {
-            self.emit();
+            self.emit_piece();
         }
     }
 
     pub fn finish(&mut self) {
         if !self.partial.is_empty() {
-            self.emit();
+            self.emit_line();
         }
     }
 
-    fn emit(&mut self) {
+    /// Hand over a whole line, or a long line's last piece.
+    fn emit_line(&mut self) {
         if self.partial.last() == Some(&b'\r') {
             self.partial.pop();
         }
+        self.emit();
+        self.continued = false;
+    }
+
+    /// Hand over a piece of a line too long to hold back. A `\r` it ends on
+    /// is the line's, not a line ending.
+    fn emit_piece(&mut self) {
+        self.emit();
+        self.continued = true;
+    }
+
+    fn emit(&mut self) {
         let line = String::from_utf8_lossy(&self.partial);
         (self.sink)(&line);
         self.partial.clear();
@@ -207,6 +236,24 @@ mod tests {
     }
 
     #[test]
+    fn test_head_keeps_the_first_bytes_across_pushes() {
+        assert_eq!(
+            kept(Capture::Head(4), &[b"ab", b"cdef", b"gh"]).unwrap(),
+            b"abcd"
+        );
+    }
+
+    #[test]
+    fn test_head_never_fails_on_more_output() {
+        assert_eq!(kept(Capture::Head(2), &[&[b'x'; 10_000]]).unwrap(), b"xx");
+    }
+
+    #[test]
+    fn test_inherit_keeps_nothing_of_a_stream_read_for_lines() {
+        assert_eq!(kept(Capture::Inherit, &[b"abc"]).unwrap(), b"");
+    }
+
+    #[test]
     fn test_tail_of_zero_keeps_nothing() {
         assert_eq!(kept(Capture::Tail(0), &[b"abc"]).unwrap(), b"");
     }
@@ -259,6 +306,33 @@ mod tests {
             lines.iter().map(String::len).collect::<Vec<_>>()
         );
         assert_eq!(lines[0].len(), MAX_LINE);
+        assert_eq!(lines[1], "rest");
+    }
+
+    /// A piece handed over at the limit, with the line's newline arriving in
+    /// the next read: the newline ends that line, and is not a line of its
+    /// own.
+    #[test]
+    fn test_a_newline_after_a_piece_ends_the_line_it_continues() {
+        let long = vec![b'x'; MAX_LINE];
+        let lines = collected(&[&long, b"\nnext\n"]);
+        assert_eq!(
+            lines.len(),
+            2,
+            "{:?}",
+            lines.iter().map(String::len).collect::<Vec<_>>()
+        );
+        assert_eq!(lines[1], "next");
+    }
+
+    /// A `\r` a piece happens to end on belongs to the line.
+    #[test]
+    fn test_a_piece_keeps_a_carriage_return_it_ends_on() {
+        let mut long = vec![b'x'; MAX_LINE - 1];
+        long.push(b'\r');
+        let lines = collected(&[&long, b"rest\n"]);
+        assert_eq!(lines[0].len(), MAX_LINE);
+        assert!(lines[0].ends_with('\r'));
         assert_eq!(lines[1], "rest");
     }
 

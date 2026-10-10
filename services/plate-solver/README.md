@@ -96,8 +96,9 @@ shells out to when probes fail.
 > or by any other external `/health` watchdog (Prometheus blackbox
 > exporter, Nagios, a small cron-driven probe). The wrapper does not
 > hang waiting for `astap_cli`: every request is bounded by a
-> wall-clock deadline that escalates to SIGKILL / TerminateProcess
-> after a 2-second grace.
+> wall-clock deadline that escalates from a graceful signal to a
+> force-kill of the child's whole process tree (SIGKILL to its process
+> group / TerminateJobObject) after a 2-second grace.
 
 ### Linux / systemd
 

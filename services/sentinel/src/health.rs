@@ -399,7 +399,8 @@ impl ServiceHealthSupervisor {
         let attempt = tokio::select! {
             result = self.ctx.restarts.restart(&self.name) => result,
             // A cancelled restart drops its gate slot; the
-            // platform command runs to completion detached.
+            // platform command runs to completion detached, still
+            // bounded by its budget.
             () = cancel.cancelled() => return false,
         };
         match attempt {

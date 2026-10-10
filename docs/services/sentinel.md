@@ -712,7 +712,7 @@ one restart of a given service runs at any time:
 | Restart command fails (non-zero, spawn failure, over budget) | Counts as an attempt: notification carries the failure detail, backoff advances, probing continues. |
 | Service flaps (recovers, fails again) | Each recovery fully resets the state machine; a new outage starts at 3 fresh failures and the initial 60 s backoff. |
 | Service answers `503` mid-outage | Same reset as a recovery — the HTTP loop answering proves whatever the restarts were for is over; the service is now waiting on a dependency no restart can supply. |
-| Shutdown during an in-flight autonomous restart | The supervisor returns immediately (restart await is raced against the cancellation token); the gate slot is released and the shell child runs to completion detached. |
+| Shutdown during an in-flight autonomous restart | The supervisor returns immediately (restart await is raced against the cancellation token); the gate slot is released and the shell child runs to completion detached, still bounded by the restart budget. |
 | Operator stops a service mid-outage (`running` → `stopped`) | Its supervisor is stood down on the next discovery refresh (≤ 60 s); no further probes or restarts. The threshold-and-90-s detection window means an operator stop is seen before any probe-driven restart can fire. |
 | Package removed mid-outage | The service leaves the discovered set; its supervisor and dashboard entry are reaped. |
 | Service is `inert`, `stopped`, or `disabled` | Displayed on the dashboard, never probed, never restarted, never notified. |

@@ -748,7 +748,7 @@ impl ServiceManager for StubServiceManager {
 async fn shell_capture(command: &str) -> crate::Result<String> {
     const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
     let failed = |e| crate::SentinelError::Monitor(format!("failed to run `{command}`: {e}"));
-    let mut cmd = crate::corrective::shell_command(command);
+    let mut cmd = rusty_photon_process::shell(command);
     let outcome = Bounded::new(&mut cmd, CAPTURE_TIMEOUT)
         .grace(Duration::ZERO)
         .stdout(Capture::Full(OUTPUT_LIMIT))
@@ -764,8 +764,9 @@ async fn shell_capture(command: &str) -> crate::Result<String> {
     };
     if !output.status.success() {
         return Err(crate::SentinelError::Monitor(format!(
-            "`{command}` exited with {}",
-            output.status
+            "`{command}` exited with {}{}",
+            output.status,
+            crate::corrective::stderr_detail(&output.stderr)
         )));
     }
     String::from_utf8(output.stdout)

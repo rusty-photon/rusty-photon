@@ -1,10 +1,12 @@
 Feature: Subprocess supervision (timeout escalation, single-flight queueing)
 
   Every solve is bounded by a wall-clock deadline. On expiry the wrapper
-  signals the child gracefully (SIGTERM on Unix, CTRL_BREAK_EVENT on
-  Windows), waits a fixed 2-second grace period, then force-kills
-  (SIGKILL / TerminateProcess). The wrapper always waits the child
-  fully before returning; no orphaned child processes.
+  signals the child's process tree gracefully (SIGTERM to its process
+  group on Unix, CTRL_BREAK_EVENT to its console process group on
+  Windows), waits a fixed 2-second grace period, then force-kills what is
+  left of the tree (SIGKILL to the group / TerminateJobObject). The
+  wrapper always reaps the child before returning; no orphaned child
+  processes.
 
   Overlapping requests queue behind a single-flight semaphore (default
   capacity 1). Queue wait time is not counted against the per-request

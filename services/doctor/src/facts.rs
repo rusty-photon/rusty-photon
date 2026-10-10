@@ -328,9 +328,9 @@ pub fn parse_failed_unit_listing(listing: &str) -> Vec<String> {
 fn systemd_unit_is_active(name: &str) -> Option<bool> {
     let mut cmd = Command::new("systemctl");
     cmd.args(["is-active", "--quiet", &format!("{name}.service")]);
-    let outcome = Bounded::new(&mut cmd, QUERY_DEADLINE)
-        .stderr(Capture::Tail(STDERR_TAIL))
-        .run();
+    // The exit status is the whole answer: non-zero is "inactive", not a
+    // failure with an error message worth keeping.
+    let outcome = Bounded::new(&mut cmd, QUERY_DEADLINE).run();
     match outcome {
         Ok(Outcome::Exited(output)) => Some(output.status.success()),
         Ok(Outcome::TimedOut(stop)) => {
@@ -843,7 +843,7 @@ mod tests {
     fn test_run_degrades_on_a_query_that_never_finishes() {
         let mut cmd = Command::new("sleep");
         cmd.arg("30");
-        assert!(run_within(&mut cmd, Duration::from_millis(100)).is_none());
+        assert_eq!(run_within(&mut cmd, Duration::from_millis(100)), None);
     }
 
     /// Exercises the real host-gathering path end to end: on a systemd host

@@ -11,7 +11,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use rusty_photon_process::{Bounded, Capture, Outcome, STDERR_TAIL};
+use rusty_photon_process::{shell, Bounded, Capture, Outcome, STDERR_TAIL};
 use tracing::debug;
 
 use super::{acme, acme_config, cert, dns, expiry};
@@ -369,7 +369,7 @@ fn run_hooks_within(hooks: &[String], deadline: Duration) -> Result<(), String> 
     let mut failed: Vec<String> = Vec::new();
     for hook in hooks {
         debug!(hook, "running post-renewal hook");
-        let outcome = Bounded::new(&mut shell_command(hook), deadline)
+        let outcome = Bounded::new(&mut shell(hook), deadline)
             .stderr(Capture::Tail(STDERR_TAIL))
             .run();
         match outcome {
@@ -409,25 +409,6 @@ fn run_hooks_within(hooks: &[String], deadline: Duration) -> Result<(), String> 
             failed.join(", ")
         ))
     }
-}
-
-#[cfg(unix)]
-fn shell_command(hook: &str) -> std::process::Command {
-    let mut command = std::process::Command::new("sh");
-    command.arg("-c").arg(hook);
-    command
-}
-
-#[cfg(windows)]
-fn shell_command(hook: &str) -> std::process::Command {
-    use std::os::windows::process::CommandExt;
-    let mut command = std::process::Command::new("cmd");
-    // raw_arg: std's argument quoting wraps the hook in escaped quotes,
-    // which cmd.exe does not unescape — a hook with a quoted path (or any
-    // redirect) reaches cmd mangled and silently does nothing. cmd wants
-    // the line verbatim after /C.
-    command.arg("/C").raw_arg(hook);
-    command
 }
 
 #[cfg(test)]
