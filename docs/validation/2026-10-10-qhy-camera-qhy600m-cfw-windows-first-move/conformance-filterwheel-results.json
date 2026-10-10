@@ -1,0 +1,144 @@
+{
+  "ErrorCount": 0,
+  "IssueCount": 0,
+  "ConfigurationAlertCount": 0,
+  "TimingIssuesCount": 0,
+  "TimingCount": 33,
+  "Errors": [],
+  "Issues": [],
+  "ConfigurationAlerts": [],
+  "Timings": [
+    {
+      "Key": "Connect",
+      "Value": "At 18:04:51.605 Connect                  0.002 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "InterfaceVersion",
+      "Value": "At 18:04:52.626 InterfaceVersion         0.000 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Connected",
+      "Value": "At 18:04:52.628 Connected                0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Description",
+      "Value": "At 18:04:52.632 Description              0.003 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DriverInfo",
+      "Value": "At 18:04:52.633 DriverInfo               0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DriverVersion",
+      "Value": "At 18:04:52.634 DriverVersion            0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Name",
+      "Value": "At 18:04:52.635 Name                     0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "SupportedActions",
+      "Value": "At 18:04:52.644 SupportedActions         0.009 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "DeviceState",
+      "Value": "At 18:04:52.655 DeviceState              0.011 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "FocusOffsets",
+      "Value": "At 18:04:54.214 FocusOffsets             0.013 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Names",
+      "Value": "At 18:04:54.218 Names                    0.003 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Position",
+      "Value": "At 18:04:54.219 Position                 0.001 seconds. \u2713 (FAST)"
+    },
+    {
+      "Key": "Move to position 0",
+      "Value": "At 18:04:55.035 Move to position 0       0.814 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 1",
+      "Value": "At 18:05:00.136 Move to position 1       0.033 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 2",
+      "Value": "At 18:05:02.955 Move to position 2       0.032 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 3",
+      "Value": "At 18:05:05.787 Move to position 3       0.048 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 4",
+      "Value": "At 18:05:08.607 Move to position 4       0.049 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 5",
+      "Value": "At 18:05:11.401 Move to position 5       0.033 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 6",
+      "Value": "At 18:05:14.243 Move to position 6       0.049 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 6",
+      "Value": "At 18:05:17.027 Move to position 6       0.010 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 5",
+      "Value": "At 18:05:18.090 Move to position 5       0.049 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 4",
+      "Value": "At 18:05:20.897 Move to position 4       0.034 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 3",
+      "Value": "At 18:05:23.707 Move to position 3       0.047 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 2",
+      "Value": "At 18:05:26.500 Move to position 2       0.033 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 1",
+      "Value": "At 18:05:29.300 Move to position 1       0.043 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 0",
+      "Value": "At 18:05:32.104 Move to position 0       0.033 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 0",
+      "Value": "At 18:05:34.617 Move to position 0       0.011 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 6",
+      "Value": "At 18:05:35.665 Move to position 6       0.033 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 5",
+      "Value": "At 18:05:38.523 Move to position 5       0.049 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 0",
+      "Value": "At 18:05:41.318 Move to position 0       0.033 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 3",
+      "Value": "At 18:05:45.219 Move to position 3       0.054 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Move to position 0",
+      "Value": "At 18:05:50.267 Move to position 0       0.049 seconds. \u2713 (STANDARD)"
+    },
+    {
+      "Key": "Disconnect",
+      "Value": "At 18:05:55.289 Disconnect               0.001 seconds. \u2713 (STANDARD)"
+    }
+  ]
+}

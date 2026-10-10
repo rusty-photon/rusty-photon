@@ -1816,14 +1816,20 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   of 2 on the QHY178M under Linux; 2 of 2 on the QHY600M under each Windows
   SDK). The move after it names the slot it left until it arrives. Through the
   service, `Position` then read −1 until 4.41 s after the write and slot 0
-  from 4.68 s (2 of 2). The first move pays for it: its `Position` write
-  returns in 0.77 s instead of 0.02 s, inside the 1 s ConformU allows an
-  asynchronous initiator; every later move goes straight out. The prime is
-  part of a move a client asked for, not of connecting (tenet 3). A wheel that
-  has once reported itself moving needs none for as long as the service runs,
-  which on Windows leaves only the first move after the service starts. A
-  wheel whose slot the connect could not read has no slot to go back to and is
-  sent its move as it is ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-first-move/README.md)).
+  from 4.68 s (2 of 2). The first move pays for it, mostly in the read that
+  confirms the slot: the first status read after a CFW is sent its own slot
+  takes 455–482 ms, against ≈255 ms at rest (both cameras, 6 of 6). Its
+  `Position` write returns in 0.77 s on the QHY178M under Linux and in
+  0.81 s by ConformU's clock on the QHY600M under Windows, instead of
+  0.01–0.05 s, inside the 1 s ConformU allows an asynchronous initiator;
+  every later move goes straight out. The prime is part of a move a client
+  asked for, not of connecting (tenet 3). A wheel that has once reported
+  itself moving needs none for as long as the service runs, which on Windows
+  leaves only the first move after the service starts: on the QHY600M a
+  reconnect's first move went straight out (2 of 2). A wheel whose slot the
+  connect could not read has no slot to go back to and is sent its move as it
+  is (records: [Linux](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-first-move/README.md),
+  [Windows](../validation/2026-10-10-qhy-camera-qhy600m-cfw-windows-first-move/README.md)).
 
 ---
 

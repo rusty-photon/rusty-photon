@@ -112,9 +112,9 @@ slot it stands on, reads for 10 s, rests 2 s and then makes the same move.
 
 | Setup | `zero`: slot 0 named | `same`: after the command to slot 3 | `same`: slot 0 named |
 |---|---|---|---|
-| QHY178M, Linux | at 120.5 and 120.6 ms; travelling-pace reads went on to ≈3.4 s | 40 reads over 10.2 s, every one at the at-rest pace naming slot 3 (2 of 2) | at 3.857 s; slot 3 named in transit (2 of 2) |
+| QHY178M, Linux | at 120.5 and 120.6 ms; travelling-pace reads went on to ≈3.4 s | slot 3 named by the first read, which took 482 ms; then 40 reads over 10.2 s, every one at the at-rest pace naming slot 3 (2 of 2) | at 3.857 s; slot 3 named in transit (2 of 2) |
 | QHY178M, Windows VM, each SDK | at 3.84–3.86 s, `N` before (2 of 2) | not run | not run |
-| QHY600M, rig2, each SDK | at 4.00–4.02 s, `N` before (2 of 2) | 38 reads over 10 s, every one at the at-rest pace naming slot 3 (2 of 2) | at 4.01–4.03 s, `N` before (2 of 2) |
+| QHY600M, rig2, each SDK | at 4.00–4.02 s, `N` before (2 of 2) | slot 3 named by the first read, which took 455–476 ms; then 38 reads over 10 s, every one at the at-rest pace naming slot 3 (2 of 2) | at 4.01–4.03 s, `N` before (2 of 2) |
 
 ### 3. What a re-init or a re-open keeps
 
