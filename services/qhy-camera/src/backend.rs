@@ -963,13 +963,14 @@ pub(crate) mod mock {
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
     use std::time::Duration;
 
-    /// A mock `open` held until this drops. A test whose assertion fails while
-    /// the open is held then fails at once, instead of leaving the runtime's
-    /// shutdown to wait out the held open's one-minute backstop.
-    #[must_use = "the open is released as soon as the hold is dropped"]
-    pub struct OpenHold<'a>(&'a AtomicBool);
+    /// A mock SDK call — an `open`, or a wheel's status read — held until this
+    /// drops. A test whose assertion fails while the call is held then fails at
+    /// once, instead of leaving the runtime's shutdown to wait out the held
+    /// call's one-minute backstop.
+    #[must_use = "the call is released as soon as the hold is dropped"]
+    pub struct CallHold<'a>(&'a AtomicBool);
 
-    impl Drop for OpenHold<'_> {
+    impl Drop for CallHold<'_> {
         fn drop(&mut self) {
             self.0.store(false, Ordering::SeqCst);
         }
@@ -1612,9 +1613,9 @@ pub(crate) mod mock {
 
         /// [`hold_open`](Self::hold_open), released when the returned hold
         /// drops, however the test ends.
-        pub fn hold_open_until_dropped(&self) -> OpenHold<'_> {
+        pub fn hold_open_until_dropped(&self) -> CallHold<'_> {
             self.hold_open();
-            OpenHold(&self.open_held)
+            CallHold(&self.open_held)
         }
 
         /// Whether an `open` is currently parked.
@@ -2084,6 +2085,15 @@ pub(crate) mod mock {
         /// request's SDK call failed but before its presence question, so the
         /// question would be put to the fresh handle.
         pub reconnect_lands_before_verdict: AtomicBool,
+        /// When each status read returned and each move was sent, so a test
+        /// can measure the rest between them (FW5).
+        reads_returned: Mutex<Vec<std::time::Instant>>,
+        moves_sent: Mutex<Vec<std::time::Instant>>,
+        /// Holds `get_position` inside the SDK until the test's hold drops, so
+        /// a move can be sent while a status read is in flight.
+        read_held: AtomicBool,
+        /// Set while `get_position` is parked.
+        in_read: AtomicBool,
     }
 
     impl MockFilterWheelHandle {
@@ -2109,7 +2119,32 @@ pub(crate) mod mock {
                 presence: Mutex::new(()),
                 generation: AtomicU64::new(0),
                 reconnect_lands_before_verdict: AtomicBool::new(false),
+                reads_returned: Mutex::new(Vec::new()),
+                moves_sent: Mutex::new(Vec::new()),
+                read_held: AtomicBool::new(false),
+                in_read: AtomicBool::new(false),
             }
+        }
+
+        /// When each status read returned, oldest first.
+        pub fn reads_returned(&self) -> Vec<std::time::Instant> {
+            self.reads_returned.lock().clone()
+        }
+
+        /// When each move was sent, oldest first.
+        pub fn moves_sent(&self) -> Vec<std::time::Instant> {
+            self.moves_sent.lock().clone()
+        }
+
+        /// Park `get_position` inside the SDK until the returned hold drops.
+        pub fn hold_read_until_dropped(&self) -> CallHold<'_> {
+            self.read_held.store(true, Ordering::SeqCst);
+            CallHold(&self.read_held)
+        }
+
+        /// Whether a status read is currently parked.
+        pub fn is_in_read(&self) -> bool {
+            self.in_read.load(Ordering::SeqCst)
         }
 
         /// Take the camera the wheel hangs off off the bus, with the wheel's
@@ -2154,9 +2189,9 @@ pub(crate) mod mock {
 
         /// [`hold_open`](Self::hold_open), released when the returned hold
         /// drops, however the test ends.
-        pub fn hold_open_until_dropped(&self) -> OpenHold<'_> {
+        pub fn hold_open_until_dropped(&self) -> CallHold<'_> {
             self.hold_open();
-            OpenHold(&self.open_held)
+            CallHold(&self.open_held)
         }
 
         /// Whether an `open` is currently parked.
@@ -2275,10 +2310,18 @@ pub(crate) mod mock {
         }
         fn get_position(&self) -> BackendResult<u32> {
             self.get_position_calls.fetch_add(1, Ordering::SeqCst);
-            self.on_bus()?;
-            Ok(*self.position.lock())
+            self.in_read.store(true, Ordering::SeqCst);
+            let deadline = std::time::Instant::now() + Duration::from_mins(1);
+            while self.read_held.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            self.in_read.store(false, Ordering::SeqCst);
+            let read = self.on_bus().map(|()| *self.position.lock());
+            self.reads_returned.lock().push(std::time::Instant::now());
+            read
         }
         fn set_position(&self, position: u32) -> BackendResult<()> {
+            self.moves_sent.lock().push(std::time::Instant::now());
             self.on_bus()?;
             if self.defer_move.load(Ordering::SeqCst) {
                 *self.pending.lock() = Some(position);

@@ -506,16 +506,19 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   sequence (`SetQHYCCDReadMode`, `InitQHYCCD`) has run, whether it succeeded or
   failed at any step (RM4). A connect reads the camera's gain and offset and
   writes neither; they reach the camera only inside a `StartExposure` (GO1,
-  GO2). **Known vendor-SDK side
-  effect outside our control:** `OpenQHYCCD`/`InitQHYCCD` run on connect (C1),
-  and QHY filter wheels auto-home at the firmware level on init — a physical
-  wheel rotation the SDK performs on its own. Operators with a CFW should
-  expect the wheel to home when a client first connects the camera. No
-  validation record has observed that homing yet, and the SDK library's init
-  code for the QHY600 and QHY5III classes sends no filter-wheel command, so the
-  statement stands as the vendor's rather than a measured one. A readout-mode
-  change runs `InitQHYCCD` too (RM1), so whatever init does on connect it also
-  does there — on a path a client started, not on connect.
+  GO2). **A connect does not home the filter wheel (measured).**
+  `OpenQHYCCD`/`InitQHYCCD` run on connect (C1), and QHY's filter wheels were
+  held to home at the firmware level on init. On the dev box's QHY178M + CFW3
+  ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-wheel/README.md)),
+  a wheel settled at slot 3 stayed there through two re-inits on an open
+  handle and a close and re-open with its init. A fresh SDK start left it
+  there too. The status named slot 3 throughout, at the pace of a wheel at
+  rest, from the first read after each init: a status read takes ≈255 ms then,
+  and ≈100 ms while the wheel travels. The SDK library's init code for the
+  QHY600 and QHY5III classes sends no filter-wheel command either. The QHY600M
+  + CFW on the Windows field rig has not been measured; `qhyccd-rs`'s
+  `cfw_probe home` is the measurement. A readout-mode change runs `InitQHYCCD`
+  too (RM1), so what holds for a connect holds there.
 - **C6.** A connect **clears every cache its handshake republishes** — the CCD
   info and effective area, the size reported from it, the valid binning modes,
   the cached ROI and bin, the exposure/gain/offset limits and the gain and
@@ -781,7 +784,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
   The verdict is withheld in two places, because **a false "lost" costs more
   than a late one**: it ends a live session, and the reconnect a supervisor
-  answers it with runs `InitQHYCCD`, which homes a CFW (C5). It is not given on
+  answers it with re-initializes the camera — its geometry, its readout mode
+  and, with `disable_auto_cooler` set, its cooler (K4). It is not given on
   a handle this device no longer holds — that is the disconnect race C3 already
   reports. Nor is it given while a connect, a disconnect or a readout-mode
   change holds the connection's lifecycle lock (C8): those run `OpenQHYCCD`,
@@ -1706,7 +1710,8 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **FW2.** `set_position` validates `index < filter_count` and commands the SDK;
   out-of-range returns `INVALID_VALUE`. The check runs on the slot as ASCOM
   sends it (a `usize`), *before* it is narrowed to the SDK's `u32`, so a value
-  past 2^32 is rejected rather than wrapped onto a real slot.
+  past 2^32 is rejected rather than wrapped onto a real slot. The slot already
+  commanded is not sent again, whether or not the wheel has reached it (FW5).
 - **FW2a.** A reported slot outside the wheel's own slot count is treated as a
   status that does not name a slot, not as a slot. `cfw_ascii_to_slot` degrades
   any nonstandard `CONTROL_CFWPORT` status byte to `byte - 0x30` rather than
@@ -1724,6 +1729,51 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   `Connected == false` and its members answer `NOT_CONNECTED`. `Connected =
   false` releases it, and a reconnect is refused until the camera has been
   released too.
+- **FW5.** **A move waits 250 ms after the wheel's last status read.** A QHY
+  CFW drops a move commanded straight after the read that saw the previous
+  move arrive. Measured on the dev box's QHY178M + CFW3 ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-wheel/README.md)):
+  sent 0–10 ms after that read, the move never started, 7 times of 7; its
+  status went on naming the slot the wheel was on, at the pace of a wheel at
+  rest (a status read takes ≈255 ms then, ≈100 ms while the wheel travels).
+  Sent 15 or 20 ms after it, every move arrived (4 of 4). An idle read
+  straight before a rested wheel's move drops nothing (2 of 2). A client that
+  commands the next filter as soon as `Position` names the last one makes
+  exactly that sequence, and through the service it stranded the wheel on the
+  first try, `Position` reading the moving sentinel with no end. So every
+  status read and every move on the wheel holds one lock across its SDK call,
+  the read noting when it returned, and a move goes out no sooner than 250 ms
+  after the last read. That is over ten times the measured edge, against
+  moves that take 1.5–4 s. A `Position` write that follows a read that closely
+  returns after ~270 ms, well inside the 1 s ConformU allows an asynchronous
+  initiator. ConformU itself waits about a second after each arrival before
+  its next move, which is why its runs never met the drop. With the rest, 20
+  moves through the service, each commanded the moment `Position` named the
+  last, all arrived.
+
+  What a dropped move leaves behind is why the slot already commanded is
+  never sent again (FW2). Commanded once more, a CFW whose move
+  was dropped named that slot within ~120 ms, without travelling — the slot it
+  had recorded, not one it had reached — and the move after that travelled
+  without ever naming its own target (2 of 2). Sent on to another slot
+  instead, the wheel travelled the distance from where it really stood and
+  arrived: 3.9 s, the travel from the slot it had stayed on (2 of 2). The
+  driver therefore has no way to recover a dropped move by itself, and no
+  deadline on one (Future Work); the rest is what keeps the move from being
+  dropped.
+- **FW6.** **The camera's traffic and the wheel's travel do not disturb each
+  other (measured).** The camera and the wheel share one handle but not a
+  lock: a camera connect or readout-mode change owns the *camera* (C6, B4) and
+  the connection's lifecycle (C8), and a wheel move takes neither. On the same
+  rig nothing the camera does disturbed a wheel in travel. The handshake's init
+  sequence (stream mode, readout mode, `InitQHYCCD`) was run 300, 1500 and 2200
+  ms into a move, and a move was sent 0–300 ms into that sequence. A
+  readout-mode write, a stream-mode write, ten temperature and PWM reads and a
+  1 ms exposure were each made mid-travel. Every one of those moves arrived in
+  its usual time (16 of 16). Status reads running across an init all named
+  the wheel's slot, and every init succeeded: the SDK held the init behind a
+  read in flight (40 reads across 5 inits). So the wheel is kept out of the
+  camera's claim and its lifecycle lock. A wheel move must not queue behind
+  those anyway: the lifecycle lock is held across a disconnect's drain.
 
 ---
 
@@ -2031,6 +2081,12 @@ Layered per [`testing.md`](../skills/testing.md).
   set while an exposure is in flight included — and what `Gain` and `Offset`
   then report; what an exposure arms, in what order and on every exposure
   (GO2, R2) is pinned by the unit tests against the mock's call log.
+- **The rest before a wheel move (FW5)** is unit-tested against
+  `MockFilterWheelHandle`, which notes when each status read returned and
+  each move was sent (`reads_returned`, `moves_sent`) and can hold a read in
+  flight (`hold_read_until_dropped`). The simulated wheel drops no move, so
+  BDD cannot reach it; the hardware evidence is the
+  [2026-10-10 wheel record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-wheel/README.md).
 - **A camera that leaves the bus (C9, FW4)** — `camera_departure.feature`
   starts the `simulation` binary with the hidden `--simulation-departure-file
   <path>` flag, which builds the default simulated camera
@@ -2472,15 +2528,21 @@ the "how" decisions made while building.
 - **TLS / Basic Auth** via `rusty-photon-tls` / `rp-auth`.
 - **`ElectronsPerADU` / `FullWellCapacity`** real values if a signal model is
   added.
-- **A filter-wheel move during the camera's `InitQHYCCD`.** A connect's
-  handshake and a mode change own the *camera* (C6, B4) and the connection's
-  lifecycle (C8), but a wheel `Position` write takes neither — the camera's
-  claim is the camera's, and the lifecycle lock is held across a disconnect's
-  drain, which a wheel move must not queue behind. So a wheel already connected
-  can be commanded while the camera on its handle runs `InitQHYCCD`, two threads
-  in the SDK on one `OpenQHYCCD`. Whether the SDK serializes a CFW command
-  against an init itself, and whether the wheel or the camera notices when it
-  does not, is unmeasured; it wants a hardware probe before it wants a lock.
+- **A wheel move that never arrives.** `Position` reads the moving sentinel
+  for as long as the status does not name the commanded slot, with no
+  deadline, and the slot already commanded is not sent again (FW2, FW5). The
+  rest in FW5 keeps the one measured cause from dropping a move. A move lost
+  any other way strands the wheel until a client commands a different slot,
+  which is the move that was measured to recover it. Whether to give up on a
+  move after the longest travel the wheel could need, and what to report then,
+  is open.
+- **The first move after the SDK starts reads slot 0 in transit.** On the
+  QHY178M + CFW3 the status names slot 0 (`0x30`) through the whole of the
+  first move a process makes, where every later move goes on naming the slot
+  it left. So a first move *to* slot 0 reads as arrived at once, and
+  `Position` would report it settled while the wheel still turns. Seen in 34
+  of 34 fresh processes in the [2026-10-10 runs](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-wheel/README.md);
+  not handled.
 
 ## Packaging
 

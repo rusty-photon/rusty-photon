@@ -111,6 +111,9 @@ Download and install the QHYCCD SDK from the [official website](https://www.qhyc
 
 [examples/SingleFrameMode.rs](https://github.com/rusty-photon/rusty-photon/blob/main/crates/qhyccd-rs/examples/SingleFrameMode.rs)
 
+[examples/cfw_probe.rs](https://github.com/rusty-photon/rusty-photon/blob/main/crates/qhyccd-rs/examples/cfw_probe.rs) —
+a hardware probe for a filter wheel driven through its camera (see its header for the modes)
+
 ## Simulation Feature
 
 The `simulation` feature enables testing and development without physical hardware. When enabled, `Sdk::new()` automatically provides a simulated camera environment with realistic behavior.

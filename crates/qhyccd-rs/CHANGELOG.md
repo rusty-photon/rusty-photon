@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under `simulation` (a QHY178M with a 7-position filter wheel and a cooler), so
   a host can start from it and change one setting. `Sdk::new()` now builds its
   camera from it. Simulation only.
+- `examples/cfw_probe.rs`, a hand-run hardware probe for a filter wheel driven
+  through its camera: what an init or a re-open does to a settled wheel, how
+  soon after the read that saw a move arrive the next move may be sent, what
+  the camera's own calls do to a wheel in travel, and what a dropped move
+  leaves behind. It logs only what the wheel reports, one JSON line per step.
 
 ### Changed
 

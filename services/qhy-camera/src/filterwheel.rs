@@ -8,13 +8,21 @@
 //! "moving" sentinel); `FocusOffsets` is zero per filter in v0.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use ascom_alpaca::api::{Device, FilterWheel};
 use ascom_alpaca::{ASCOMError, ASCOMResult};
 use parking_lot::Mutex;
 use tracing::debug;
 
-use crate::backend::{FilterWheelHandle, Verdict};
+use crate::backend::{BackendError, FilterWheelHandle, Verdict};
+
+/// The least time between the wheel's last status read returning and the next
+/// move it is sent (FW5). A QHY CFW drops a move commanded within ~10 ms of the
+/// read that saw the previous move arrive: the wheel never starts, and its
+/// status goes on naming the slot it is at. 15 ms was already enough on a
+/// QHY178M + CFW3; this is the margin, and a move takes seconds anyway.
+const REST_AFTER_STATUS_READ: Duration = Duration::from_millis(250);
 
 /// Slots are `usize` throughout because that is what every consumer is: the
 /// ASCOM `Position`, and the `Names` / `FocusOffsets` lengths that must match
@@ -28,6 +36,40 @@ struct FilterWheelState {
     /// while a move is in flight, so a settled `Position` costs no SDK call —
     /// see [`QhyFilterWheelDevice::position`].
     settled_position: Mutex<Option<usize>>,
+    /// When the wheel's last status read returned. Every status read and every
+    /// move holds this lock across its SDK call, so a move can neither go out
+    /// beside a read still in flight nor follow a finished one by less than
+    /// [`REST_AFTER_STATUS_READ`] (FW5).
+    last_status_read: Mutex<Option<Instant>>,
+}
+
+impl FilterWheelState {
+    /// Read the slot the wheel reports, noting when the read returned (FW5).
+    fn read_slot(&self, h: &dyn FilterWheelHandle) -> Result<u32, BackendError> {
+        let mut last_read = self.last_status_read.lock();
+        let slot = h.get_position();
+        *last_read = Some(Instant::now());
+        slot
+    }
+
+    /// Send the wheel to `slot`, no sooner than [`REST_AFTER_STATUS_READ`]
+    /// after its last status read returned (FW5).
+    fn command_slot(&self, h: &dyn FilterWheelHandle, slot: u32) -> Result<(), BackendError> {
+        let last_read = self.last_status_read.lock();
+        let rest = last_read.map_or(Duration::ZERO, |at| {
+            REST_AFTER_STATUS_READ.saturating_sub(at.elapsed())
+        });
+        if !rest.is_zero() {
+            debug!(
+                ?rest,
+                slot, "the wheel's status was just read; resting before the move"
+            );
+            std::thread::sleep(rest);
+        }
+        let sent = h.set_position(slot);
+        drop(last_read);
+        sent
+    }
 }
 
 /// One ASCOM `FilterWheel` device per discovered CFW.
@@ -64,6 +106,7 @@ impl QhyFilterWheelDevice {
                 number_of_filters: Mutex::new(None),
                 target_position: Mutex::new(None),
                 settled_position: Mutex::new(None),
+                last_status_read: Mutex::new(None),
             }),
         }
     }
@@ -185,8 +228,8 @@ impl QhyFilterWheelDevice {
         // this driver commands it, so `position` serves the settled value from
         // cache (FW1).
         let position = self
-            .handle
-            .get_position()
+            .state
+            .read_slot(self.handle.as_ref())
             .map_err(|_| ASCOMError::NOT_CONNECTED)?;
         // The slot count sizes `Names` and `FocusOffsets`, so a wheel reporting
         // one this target cannot address has not handshaken.
@@ -354,8 +397,13 @@ impl FilterWheel for QhyFilterWheelDevice {
             return Ok(target);
         }
 
+        let state = Arc::clone(&self.state);
         let actual = self
-            .on_handle(|h| h.get_position().map_err(|_| ASCOMError::INVALID_OPERATION))
+            .on_handle(move |h| {
+                state
+                    .read_slot(h)
+                    .map_err(|_| ASCOMError::INVALID_OPERATION)
+            })
             .await?;
         // The SDK answers in `u32` and decodes any nonstandard status byte to
         // `byte - 0x30`, so a slot outside the wheel's own count is a status
@@ -391,13 +439,19 @@ impl FilterWheel for QhyFilterWheelDevice {
                 "filter position {position} out of range (0..{count})"
             )));
         }
+        // The slot already commanded is not sent again, settled or not. A CFW
+        // whose move was dropped answers a resend of that slot with the slot at
+        // once, without travelling, so a resend would read as an arrival at a
+        // filter the wheel never reached (FW5).
         if *self.state.target_position.lock() == Some(position) {
             return Ok(());
         }
         // `position < count`, and the count itself came from an SDK `u32`.
         let target = u32::try_from(position).map_err(|_| ASCOMError::INVALID_OPERATION)?;
+        let state = Arc::clone(&self.state);
         self.on_handle(move |h| {
-            h.set_position(target)
+            state
+                .command_slot(h, target)
                 .map_err(|_| ASCOMError::INVALID_OPERATION)
         })
         .await?;
@@ -551,6 +605,89 @@ mod tests {
         let settled = handle.get_position_calls.load(Ordering::SeqCst);
         assert_eq!(device.position().await.unwrap(), Some(3));
         assert_eq!(handle.get_position_calls.load(Ordering::SeqCst), settled);
+    }
+
+    /// FW5: a client that commands the next slot as soon as `Position` names
+    /// the last one gets its move sent only after the wheel has rested from
+    /// the read that saw it arrive — sent straight after, a CFW drops it.
+    #[tokio::test]
+    async fn a_move_rests_after_the_read_that_saw_the_last_one_arrive() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.defer_move.store(true, Ordering::SeqCst);
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().await.unwrap();
+        device.set_position(3).await.unwrap();
+        handle.complete_move();
+        assert_eq!(device.position().await.unwrap(), Some(3));
+
+        device.set_position(5).await.unwrap();
+
+        let arrival_read = *handle.reads_returned().last().unwrap();
+        let next_move = *handle.moves_sent().last().unwrap();
+        assert!(
+            next_move.duration_since(arrival_read) >= REST_AFTER_STATUS_READ,
+            "the move went out {:?} after the read that saw the wheel arrive",
+            next_move.duration_since(arrival_read)
+        );
+    }
+
+    /// FW5: the rest is what is left of it, not a delay on every move — a
+    /// wheel that has been still for longer is sent its move at once.
+    #[tokio::test]
+    async fn a_move_to_a_rested_wheel_goes_out_at_once() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().await.unwrap();
+        tokio::time::sleep(REST_AFTER_STATUS_READ).await;
+
+        let asked = std::time::Instant::now();
+        device.set_position(3).await.unwrap();
+
+        let sent = *handle.moves_sent().last().unwrap();
+        assert!(
+            sent.duration_since(asked) < REST_AFTER_STATUS_READ / 2,
+            "a rested wheel's move waited {:?}",
+            sent.duration_since(asked)
+        );
+    }
+
+    /// FW5: a move does not go out beside a status read still in flight — a
+    /// second client's `Position` poll — but waits for it, then rests.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_move_waits_for_a_status_read_in_flight_and_then_rests() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.defer_move.store(true, Ordering::SeqCst);
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().await.unwrap();
+        device.set_position(3).await.unwrap();
+
+        let hold = handle.hold_read_until_dropped();
+        let poller = device.clone();
+        let poll = tokio::spawn(async move { poller.position().await });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !handle.is_in_read() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the poll never reached the SDK"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        let mover = device.clone();
+        let next = tokio::spawn(async move { mover.set_position(5).await });
+        // Long enough for a move that did not wait for the read to have gone.
+        tokio::time::sleep(REST_AFTER_STATUS_READ * 2).await;
+        assert_eq!(
+            handle.moves_sent().len(),
+            1,
+            "a move was sent while a status read was still in flight"
+        );
+
+        drop(hold);
+        assert_eq!(poll.await.unwrap().unwrap(), None);
+        next.await.unwrap().unwrap();
+        let read = *handle.reads_returned().last().unwrap();
+        let next_move = *handle.moves_sent().last().unwrap();
+        assert!(next_move.duration_since(read) >= REST_AFTER_STATUS_READ);
     }
 
     #[tokio::test]
