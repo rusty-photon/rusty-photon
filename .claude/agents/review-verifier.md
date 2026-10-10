@@ -47,6 +47,12 @@ later round with better evidence.
   on for its purpose. It becomes a follow-up issue, not a finding
   against this PR.
 
+Judge the **defect**, not the wording: if it is real but this statement
+of it overstates the severity, trigger or consequence, vote on the
+defect and say what is overstated in `statement_note`. When other
+reviewers stated the same defect, the workflow uses that note to post
+the most accurate statement instead.
+
 Also judge the **remedy** if one is proposed: a finding can be right
 about the defect and wrong about the fix. Note in `remedy_note` when
 the suggested fix is wrong or incomplete, and what would be right.

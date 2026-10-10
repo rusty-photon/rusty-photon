@@ -26,7 +26,11 @@ A round has five stages:
    authoring session into a reviewer. Independence from the author's
    reasoning is the point of the exercise.
 3. **Dedupe** — findings that name the same defect from two lenses are
-   merged before anything is spent verifying them twice.
+   merged before anything is spent verifying them twice. The most severe
+   statement is verified first; if its skeptics refute it, or confirm
+   the defect but say this statement overstates it, the other statements
+   are verified one by one and the first that survives as stated is
+   posted instead.
 4. **Verify** — each finding goes to skeptics prompted to refute it. A
    `high` finding gets three, each from a different angle (trace the
    trigger, check whether head already handles it, check every factual

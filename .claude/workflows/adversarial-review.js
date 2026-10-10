@@ -140,6 +140,7 @@ const VERDICT = {
     reasoning: { type: 'string' },
     evidence: { type: 'string', description: 'what you read or ran: path:line, command output' },
     remedy_note: { type: 'string', description: 'set when the suggested remedy is wrong or incomplete' },
+    statement_note: { type: 'string', description: 'set when the defect is real but this statement overstates its severity, trigger or consequence: say what is overstated' },
   },
   required: ['verdict', 'reasoning'],
 }
@@ -209,11 +210,15 @@ const scope = await agent(
         : 'since = last_head (empty if none).')),
     '   If since is non-empty: since_reachable = whether `git cat-file -e <since>^{commit}` succeeds (try `git fetch origin <since>` once if not).',
     '   If reachable: delta_files = the paths from `git diff --name-only <since> HEAD` that are also in files.',
-    '6. Prior findings, if last_round > 0 (then prior must be reported, even as []). Read only from the reviews step 4 kept, and only from replies and comments whose author is in the step-4 write-access list $W — apply the same select(.user.login as $l | $w | index($l)) filter, and ignore everyone else.',
-    '   Run every read here with set -o pipefail; if any exits non-zero or prints an error, return ok=false naming step 6.',
-    '   Each kept review\'s body lists "Outside the diff" findings by ID (R<round>.<k>);',
-    `   its inline comments (gh api --paginate 'repos/{owner}/{repo}/pulls/${pr}/reviews/<review-id>/comments') each start with an ID.`,
-    `   Outcomes are recorded in replies to those threads (gh api --paginate 'repos/{owner}/{repo}/pulls/${pr}/comments', in_reply_to_id) and in PR comments (gh api --paginate 'repos/{owner}/{repo}/issues/${pr}/comments').`,
+    '6. Prior findings, if last_round > 0 (then prior must be reported, even as []). Shell variables do not survive between commands, so run each',
+    '   read exactly as written: each recomputes the write-access list and keeps only its authors. If any exits non-zero or prints an error,',
+    '   return ok=false naming step 6.',
+    `   set -o pipefail; ${WRITERS} && gh api --paginate 'repos/{owner}/{repo}/pulls/${pr}/comments' | jq -s --argjson w "$W" '[.[][] | ${TRUSTED} | {id, in_reply_to_id, path, line, body}]'`,
+    `   set -o pipefail; ${WRITERS} && gh api --paginate 'repos/{owner}/{repo}/issues/${pr}/comments' | jq -s --argjson w "$W" '[.[][] | ${TRUSTED} | {id, body}]'`,
+    `   gh api 'repos/{owner}/{repo}/pulls/${pr}/reviews/<review-id>' --jq .body   (only for the review ids step 4 printed)`,
+    '   Inline findings are the review comments whose body starts with an ID (**R<round>.<k>**) and whose in_reply_to_id is null; their outcomes are',
+    '   the replies whose in_reply_to_id is that comment\'s id. "Outside the diff" findings are listed by ID in the step-4 reviews\' bodies; their',
+    '   outcomes are in the PR comments that name the ID.',
     '   For each ID report file, line, title, outcome (fixed / declined / open when nothing records one / unknown) and a one-line note quoting the recorded reason.',
     '',
     'If any step fails, return ok=false with an error naming the step and what it printed. Never return ok=true without head_sha, merge_base, files and last_round.',
@@ -345,12 +350,20 @@ if (lenses.length) {
       ].join('\n'),
       { label: 'dedupe', phase: 'Dedupe', schema: GROUPS, effort: 'low' },
     )
-    const groups = ((g && g.groups) || [])
-      .map(grp => [...new Set(grp)].filter(i => Number.isInteger(i) && i >= 0 && i < findings.length))
-      .filter(grp => grp.length >= 2)
+    // "Same root cause" is transitive: overlapping groups are one group.
+    // Merging them into connected components first means no finding is
+    // ever absorbed into one that is itself absorbed later.
+    const parent = findings.map((_, i) => i)
+    const rootOf = i => (parent[i] === i ? i : (parent[i] = rootOf(parent[i])))
+    for (const grp of (g && g.groups) || []) {
+      const ok = [...new Set(grp)].filter(i => Number.isInteger(i) && i >= 0 && i < findings.length)
+      for (const i of ok.slice(1)) parent[rootOf(i)] = rootOf(ok[0])
+    }
+    const components = new Map()
+    findings.forEach((_, i) => components.set(rootOf(i), [...(components.get(rootOf(i)) || []), i]))
+    const groups = [...components.values()].filter(grp => grp.length >= 2)
     const absorbed = new Set()
     for (const grp of groups) {
-      if (grp.some(i => absorbed.has(i))) continue
       const members = grp.map(i => findings[i]).sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity])
       const keep = members[0]
       for (const m of members.slice(1)) {
@@ -383,7 +396,8 @@ if (lenses.length) {
     '',
     'Finding:',
     JSON.stringify({ lens: f.lenses.join('+'), title: f.title, file: f.file, line: f.line, severity: f.severity, trigger: f.trigger, consequence: f.consequence, evidence: f.evidence, remedy: f.remedy || '', also_at: f.also_at }, null, 2),
-    f.merged && f.merged.length ? `Other reviewers stated the same defect as: ${f.merged.join('; ')}. Judge the defect; if only this statement of it overclaims, say so in reasoning.` : '',
+    f.merged && f.merged.length ? `Other reviewers stated the same defect as: ${f.merged.join('; ')}.` : '',
+    'Judge the defect. If it is real but this statement overstates it — its severity, trigger or consequence — vote on the defect and say what is overstated in statement_note.',
     '',
     angle ? ANGLES[angle] : 'Apply every angle: ' + Object.values(ANGLES).join(' '),
     'Earlier rounds\' findings, for spotting a duplicate of a fixed or declined one:',
@@ -412,15 +426,20 @@ if (lenses.length) {
     }
     const notes = votes.map(v => v.remedy_note).filter(Boolean)
     const reasons = votes.filter(v => v.verdict === 'refuted').map(v => v.reasoning)
-    return { ...f, status, remedy_note: notes.join(' '), refuted_because: reasons[0] || '', votes: votes.length }
+    const overstated = alive.map(v => v.statement_note).filter(Boolean)
+    return { ...f, status, remedy_note: notes.join(' '), statement_note: overstated.join(' '), refuted_because: reasons[0] || '', votes: votes.length }
   }
 
   // Dedupe kept the most severe statement of a group, which is also the
-  // likeliest to overclaim. Before a group dies with it, each absorbed
-  // statement gets its own skeptics, at its own severity.
+  // likeliest to overclaim. When its skeptics refute it, or confirm the
+  // defect while saying this statement overstates it, each absorbed
+  // statement gets its own skeptics at its own severity, and the first
+  // that survives as stated is posted instead. A pre-existing verdict is
+  // a judgement on the defect, not the wording, so it stands.
   const verifyOne = async f => {
     const v = await verifyStatement(f)
-    if (v.status === 'confirmed' || v.status === 'unverified' || !(f.members && f.members.length)) return v
+    const overstated = (v.status === 'confirmed' || v.status === 'unverified') && v.statement_note
+    if (!(f.members && f.members.length) || !(v.status === 'refuted' || overstated)) return v
     let fallback = v
     for (const m of f.members) {
       const mv = await verifyStatement(m)
@@ -431,7 +450,9 @@ if (lenses.length) {
         also_at: [...new Set(others.map(x => `${x.file}:${x.line}`).concat(f.also_at))].filter(x => x !== `${mv.file}:${mv.line}`),
         merged: others.map(x => x.title),
       }
-      if (mv.status === 'confirmed' || mv.status === 'unverified') return regrouped
+      const survives = mv.status === 'confirmed' || mv.status === 'unverified'
+      if (survives && !mv.statement_note) return regrouped
+      if (survives && fallback.status === 'refuted') fallback = regrouped
       if (mv.status === 'pre_existing' && fallback.status === 'refuted') fallback = regrouped
     }
     return fallback
@@ -508,6 +529,7 @@ const findingBody = f => [
   f.also_at.length ? `**Also at:** ${f.also_at.join(', ')}` : null,
   f.merged && f.merged.length ? `**Also raised as:** ${f.merged.map(t => clip(t, 120)).join('; ')}` : null,
   f.remedy ? `**Suggested remedy:** ${f.remedy}` : null,
+  f.statement_note ? `**Skeptic on the statement:** ${f.statement_note}` : null,
   f.remedy_note ? `**Skeptic on the remedy:** ${f.remedy_note}` : null,
 ].filter(x => x !== null).join('\n')
 
