@@ -27,10 +27,13 @@ A round has five stages:
    reasoning is the point of the exercise.
 3. **Dedupe** — findings that name the same defect from two lenses are
    merged before anything is spent verifying them twice. The most severe
-   statement is verified first; if its skeptics refute it, or confirm
-   the defect but say this statement overstates it, the other statements
-   are verified one by one and the first that survives as stated is
-   posted instead.
+   statement is verified first. Unless its skeptics confirm it as stated,
+   or judge the defect pre-existing, the other statements are verified
+   too and the best-ranked one is posted: confirmed as stated, then
+   confirmed but overstated (posted with the skeptic's note on what is
+   overstated), then unverified, pre-existing, refuted. Only a strictly
+   better rank replaces the current best, so the order the statements
+   are tried in never decides the outcome.
 4. **Verify** — each finding goes to skeptics prompted to refute it. A
    `high` finding gets three, each from a different angle (trace the
    trigger, check whether head already handles it, check every factual

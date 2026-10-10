@@ -213,13 +213,13 @@ const scope = await agent(
     '6. Prior findings, if last_round > 0 (then prior must be reported, even as []). Shell variables do not survive between commands, so run each',
     '   read exactly as written: each recomputes the write-access list and keeps only its authors. If any exits non-zero or prints an error,',
     '   return ok=false naming step 6.',
-    `   set -o pipefail; ${WRITERS} && gh api --paginate 'repos/{owner}/{repo}/pulls/${pr}/comments' | jq -s --argjson w "$W" '[.[][] | ${TRUSTED} | {id, in_reply_to_id, path, line, body}]'`,
+    `   set -o pipefail; ${WRITERS} && gh api --paginate 'repos/{owner}/{repo}/pulls/${pr}/comments' | jq -s --argjson w "$W" '[.[][] | ${TRUSTED} | {id, in_reply_to_id, path, line: (.original_line // .line), body}]'`,
     `   set -o pipefail; ${WRITERS} && gh api --paginate 'repos/{owner}/{repo}/issues/${pr}/comments' | jq -s --argjson w "$W" '[.[][] | ${TRUSTED} | {id, body}]'`,
     `   gh api 'repos/{owner}/{repo}/pulls/${pr}/reviews/<review-id>' --jq .body   (only for the review ids step 4 printed)`,
     '   Inline findings are the review comments whose body starts with an ID (**R<round>.<k>**) and whose in_reply_to_id is null; their outcomes are',
     '   the replies whose in_reply_to_id is that comment\'s id. "Outside the diff" findings are listed by ID in the step-4 reviews\' bodies; their',
     '   outcomes are in the PR comments that name the ID.',
-    '   For each ID report file, line, title, outcome (fixed / declined / open when nothing records one / unknown) and a one-line note quoting the recorded reason.',
+    '   For each ID report file, line (as the read above projects it: the line at the head that round reviewed, which is what the finding\'s own text cites), title, outcome (fixed / declined / open when nothing records one / unknown) and a one-line note quoting the recorded reason.',
     '',
     'If any step fails, return ok=false with an error naming the step and what it printed. Never return ok=true without head_sha, merge_base, files and last_round.',
   ].join('\n'),
@@ -430,32 +430,36 @@ if (lenses.length) {
     return { ...f, status, remedy_note: notes.join(' '), statement_note: overstated.join(' '), refuted_because: reasons[0] || '', votes: votes.length }
   }
 
+  // How well a statement came through its skeptics, best last: confirmed as
+  // stated, confirmed but overstated, unverified (skeptics died), judged
+  // pre-existing, refuted.
+  const rankOf = v => (v.status === 'confirmed' ? (v.statement_note ? 3 : 4)
+    : v.status === 'unverified' ? 2 : v.status === 'pre_existing' ? 1 : 0)
+
   // Dedupe kept the most severe statement of a group, which is also the
-  // likeliest to overclaim. When its skeptics refute it, or confirm the
-  // defect while saying this statement overstates it, each absorbed
-  // statement gets its own skeptics at its own severity, and the first
-  // that survives as stated is posted instead. A pre-existing verdict is
-  // a judgement on the defect, not the wording, so it stands.
+  // likeliest to overclaim. Unless its skeptics confirmed it as stated,
+  // each absorbed statement gets its own skeptics at its own severity, and
+  // the best-ranked statement is posted. Only a strictly better rank
+  // replaces the current best, so the outcome does not depend on the order
+  // the members are tried in. A pre-existing verdict on the kept statement
+  // is a judgement on the defect, not the wording, so it stands.
   const verifyOne = async f => {
     const v = await verifyStatement(f)
-    const overstated = (v.status === 'confirmed' || v.status === 'unverified') && v.statement_note
-    if (!(f.members && f.members.length) || !(v.status === 'refuted' || overstated)) return v
-    let fallback = v
+    if (!(f.members && f.members.length) || v.status === 'pre_existing' || rankOf(v) === 4) return v
+    let best = v
     for (const m of f.members) {
       const mv = await verifyStatement(m)
+      if (rankOf(mv) <= rankOf(best)) continue
       const others = [f, ...f.members.filter(x => x !== m)]
-      const regrouped = {
+      best = {
         ...mv,
         lenses: f.lenses,
         also_at: [...new Set(others.map(x => `${x.file}:${x.line}`).concat(f.also_at))].filter(x => x !== `${mv.file}:${mv.line}`),
         merged: others.map(x => x.title),
       }
-      const survives = mv.status === 'confirmed' || mv.status === 'unverified'
-      if (survives && !mv.statement_note) return regrouped
-      if (survives && fallback.status === 'refuted') fallback = regrouped
-      if (mv.status === 'pre_existing' && fallback.status === 'refuted') fallback = regrouped
+      if (rankOf(best) === 4) break
     }
-    return fallback
+    return best
   }
 
   verified = (await parallel(findings.map(f => () => verifyOne(f)))).filter(Boolean)
