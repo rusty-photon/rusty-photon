@@ -169,8 +169,9 @@ whole of the first move. That held whatever slot the move started from or went t
 later move in a process named the slot commanded before it until it arrived, which for
 those moves was also the slot it left (§3). So in transit the status names the previous
 command, and slot 0 before the process has commanded any. A first move *to* slot 0
-therefore reads as arrived on its first read. The driver does not handle this yet
-([Future Work](../../services/qhy-camera.md#future-work)).
+therefore reads as arrived on its first read. That is the Linux SDK's doing, and
+[FW7](../../services/qhy-camera.md#filterwheel-when-a-cfw-is-detected) handles it
+([first-move record](../2026-10-10-qhy-camera-qhy178m-cfw-linux-first-move/README.md)).
 
 ## Afterwards
 

@@ -520,7 +520,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   wheel at slot 3 read slot 3 at the at-rest pace on every read through two
   re-inits and a close and re-open
   ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-first-move/README.md)). Power does home a CFW, before any connect: left at
-  slot 3 and at slot 4 with its 12 V off, the dev box's wheel read slot 0
+  slot 5 and at slot 4 with its 12 V off, the dev box's wheel read slot 0
   once the 12 V came back. A readout-mode change runs `InitQHYCCD`
   too (RM1), so what holds for a connect holds there.
 - **C6.** A connect **clears every cache its handshake republishes** — the CCD
