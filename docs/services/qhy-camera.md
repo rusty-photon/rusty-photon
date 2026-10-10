@@ -1655,9 +1655,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   By default the TEC regulates straight through: on the QHY178M its drive read
   the same before the reconnect and a millisecond after it, and the sensor kept
   cooling. With `disable_auto_cooler=true` the init sets the drive to zero and
-  the sensor warms, as the
+  the sensor warms. Both are measured in the
+  [2026-10-10 record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-cooler-report/README.md),
+  which also shows the reporting below at work; the
   [2026-10-09 record](../validation/2026-10-09-qhy-camera-qhy178m-cfw-linux-connect/README.md)
-  measured.
+  shows `CoolerOn` still reading true through that warming before it.
   So **`CoolerOn` reports what survived the connect's init**, not only the last
   command: when a client had the cooler on, the connect reads the TEC's drive
   straight after its init, and a drive of zero means the init stopped it —
