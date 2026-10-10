@@ -37,9 +37,8 @@ Feature: Subprocess supervision (timeout escalation, single-flight queueing)
   # CTRL_BREAK_EVENT is subject to console-attach quirks), so the child
   # dies before the 2s grace elapses -- the wrapper then reports
   # "(terminated)" and both assertions below fail. Mirrors the
-  # #[cfg(unix)] gate on the equivalent test in
-  # supervision_integration.rs; the wrapper's force-kill contract holds on
-  # both platforms regardless.
+  # #[cfg(unix)] gate on the equivalent test in runner_integration.rs;
+  # the wrapper's force-kill contract holds on both platforms regardless.
   @unix
   Scenario: Hung child ignoring graceful signal is force-killed after grace
     Given mock_astap is configured for "ignore_sigterm" mode

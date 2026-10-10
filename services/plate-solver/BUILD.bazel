@@ -12,6 +12,7 @@ exports_files(
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
+    "//crates/rusty-photon-process:rusty-photon-process",
     "//crates/rusty-photon-server-config:rusty-photon-server-config",
     "//crates/rp-auth:rp-auth",
     "//crates/rusty-photon-tls:rusty-photon-tls",
@@ -79,35 +80,9 @@ rust_test(
     ),
 )
 
-rust_test(
-    name = "supervision_integration",
-    size = "small",
-    srcs = ["tests/supervision_integration.rs"],
-    aliases = aliases(
-        normal_dev = True,
-        proc_macro_dev = True,
-    ),
-    data = [":mock_astap"],
-    edition = "2021",
-    # Spawns mock_astap; bazel sets MOCK_ASTAP_BINARY via env so the test
-    # discovers the binary. See tests/supervision_integration.rs.
-    env = {
-        "MOCK_ASTAP_BINARY": "$(rootpath :mock_astap)",
-        "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :mock_astap)",
-    },
-    proc_macro_deps = all_crate_deps(
-        proc_macro = True,
-        proc_macro_dev = True,
-    ),
-    deps = [":plate-solver_lib"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
-        normal = True,
-        normal_dev = True,
-    ),
-)
-
 # Drives AstapCliRunner::solve() end-to-end against mock_astap in each of its
-# failure modes (success / ExitStatus / NoWcs / MalformedWcs). Same mock_astap
-# discovery as supervision_integration: MOCK_ASTAP_BINARY points at the binary.
+# modes (success / ExitStatus / NoWcs / MalformedWcs / both timeouts). Spawns
+# mock_astap; bazel sets MOCK_ASTAP_BINARY via env so the test discovers it.
 rust_test(
     name = "runner_integration",
     size = "small",

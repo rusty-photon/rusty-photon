@@ -57,7 +57,7 @@ rust_library(
 # tests use run_conformu() to drive the ConformU CLI directly, replacing
 # ascom_alpaca::test::ConformUTestBuilder so they no longer need the
 # ascom-alpaca/test feature (whose transitive `dtor` dep crate_universe can't
-# resolve). No extra deps.
+# resolve). Each mode runs under a deadline through rusty-photon-process.
 rust_library(
     name = "bdd-infra_conformu",
     srcs = glob(
@@ -70,7 +70,7 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True),
+    deps = ["//crates/rusty-photon-process"] + all_crate_deps(normal = True),
 )
 
 # Variant with the tls-auth feature enabled: the shared PKI + credentials
@@ -250,7 +250,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(
+    deps = ["//crates/rusty-photon-process"] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

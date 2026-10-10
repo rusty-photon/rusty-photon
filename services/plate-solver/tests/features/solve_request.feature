@@ -1,7 +1,7 @@
 Feature: POST /api/v1/solve — request handling and error surface
 
   The solve endpoint accepts a FITS path plus optional pointing/FOV/
-  search-radius hints, spawns ASTAP under the supervision module, and
+  search-radius hints, runs ASTAP under the request's deadline, and
   returns the parsed WCS solution or one of the five frozen error codes.
 
   The complete HTTP contract — request fields, response fields, error

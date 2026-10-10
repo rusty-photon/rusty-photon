@@ -175,22 +175,29 @@ restart-looping it (issue #595). Anything else that speaks HTTP
 
 ### Subprocess Supervision
 
-Every solve request is bounded by a wall-clock deadline. The
-escalation sequence on deadline expiry is:
+Every solve request is bounded by a wall-clock deadline. The mechanism
+is [`rusty-photon-process`](../crates/rusty-photon-process.md)'s; this
+section is the service's contract. The escalation sequence on deadline
+expiry is:
 
 1. **t = deadline (graceful stage):**
-   - Unix: `SIGTERM` to the child.
+   - Unix: `SIGTERM` to the child's process group — the child is
+     started at the head of a group of its own.
    - Windows: `CTRL_BREAK_EVENT` delivered via
-     `GenerateConsoleCtrlEvent` to the child's process group. The
-     child is spawned with `CREATE_NEW_PROCESS_GROUP` so the event
-     reaches it without affecting the wrapper. Pattern follows
-     `crates/bdd-infra/src/lib.rs`.
+     `GenerateConsoleCtrlEvent` to the child's console process group.
+     The child is spawned with `CREATE_NEW_PROCESS_GROUP` so the event
+     reaches it without affecting the wrapper. A wrapper with no
+     console to send it through (one running as a Windows service)
+     cannot deliver it, and goes straight to the force-kill stage.
 
    ASTAP normally responds cleanly within ~100 ms.
-2. **t = deadline + 2 s (force-kill stage):** if the child has not
-   exited, escalate:
-   - Unix: `SIGKILL`.
-   - Windows: `TerminateProcess`.
+2. **t = deadline + 2 s (force-kill stage):** whatever is left of the
+   child's tree is killed — the child, if it has not exited, and
+   anything it started either way:
+   - Unix: `SIGKILL` to the process group.
+   - Windows: `TerminateJobObject` on the job object the child is placed
+     in at spawn (`TerminateProcess` on the child alone if no job could
+     be set up).
 
    The 2 s grace is a fixed constant, not configurable — chosen to
    dominate any signal-handling latency ASTAP might exhibit while
@@ -208,17 +215,16 @@ request. The distinction is not inferable from wall-clock duration in
 practice: the stages are only 2 s apart, which is inside the spread a
 loaded host puts on a request.
 
-The service does not leak child processes. The explicit `wait()` is
-the **correctness contract** — it guarantees no leak on the normal
-deadline path. The wrapper additionally spawns every child with
-`Command::kill_on_drop(true)` (and, on Windows, places the child in
-a job object that auto-terminates members on handle close) as the
-**safety net** for unexpected wrapper-side failures: a panic before
-`wait()`, a future-cancellation that abandons the child, or any
-other code path that drops the `Child` without explicit termination.
-Tokio's default `Child` drop *detaches* the process, which is why
-`kill_on_drop(true)` is required for the safety-net guarantee to
-hold.
+The service does not leak child processes. The reap before the
+response is the **correctness contract** — it guarantees no leak on the
+normal deadline path. A solve that is abandoned instead — the client
+went away and the handler's future was dropped, or anything else drops
+the run before it ends — stops ASTAP's tree at once (force-kill, no
+grace) and reaps it, on the thread that was waiting for it rather than
+on the dropped request. What no in-process path can cover is the
+wrapper itself being killed outright: the job object is not
+kill-on-close, so ASTAP then finishes on its own (on Linux, systemd's
+stop of the unit's cgroup takes it down with the wrapper).
 
 ### Single-Flight Concurrency
 
@@ -457,7 +463,7 @@ for "where is ASTAP" — see [Configuration Validation](#configuration-validatio
 ## Subprocess Test Doubles
 
 The service ships an in-tree `mock_astap` `[[bin]]` that mimics the
-ASTAP CLI surface and is used in BDD and supervision unit tests. The
+ASTAP CLI surface and is used in BDD and runner integration tests. The
 pattern mirrors `services/phd2-guider/src/bin/mock_phd2.rs`.
 
 Behavior is selected via the `MOCK_ASTAP_MODE` environment variable
@@ -483,7 +489,7 @@ loaded CI runners). Per-child files avoid a shared handle — cross-process
 appends to one file dropped writes on Windows.
 
 This binary is **not feature-gated** — it builds with every
-`cargo build --all-targets`. BDD and supervision integration tests
+`cargo build --all-targets`. BDD and runner integration tests
 discover it in this order: explicit `MOCK_ASTAP_BINARY` env var
 (set by Bazel test targets) → `option_env!("CARGO_BIN_EXE_mock_astap")`
 (set by Cargo for `[[test]]` crates). Both fallbacks let the suite
@@ -524,7 +530,7 @@ executor of Sentinel's restart command; see the
 |--------|------------|-----------|--------|
 | `rp` (gateway) | Sentinel health supervision and/or the operator's process supervisor (systemd / launchd / NSSM) | Sentinel `GET /health` probes; process exit (panic, OOM, etc.) | Sentinel runs the configured restart command after consecutive failed probes (with backoff); the OS supervisor restarts on exit per its policy (`Restart=on-failure`, `KeepAlive`, etc.) |
 | `plate-solver` (this service) | Sentinel health supervision and/or the operator's process supervisor | Sentinel `GET /health` probes (crash **and** hang coverage); process exit | Same as above. The wrapper exits non-zero on config-validation failure and on internal panic; a hung-but-alive wrapper fails its probes and gets restarted by Sentinel. |
-| `astap_cli` (child) | This service | Per-request wall-clock deadline | Graceful signal → 2 s grace → force-kill. Unix: `SIGTERM` → `SIGKILL`. Windows: `CTRL_BREAK_EVENT` (with `CREATE_NEW_PROCESS_GROUP` at spawn) → `TerminateProcess`. |
+| `astap_cli` (child) | This service | Per-request wall-clock deadline | Graceful signal → 2 s grace → force-kill of the child's tree. Unix: `SIGTERM` → `SIGKILL` to its process group. Windows: `CTRL_BREAK_EVENT` (with `CREATE_NEW_PROCESS_GROUP` at spawn) → `TerminateJobObject`. |
 
 ### Belt-and-Suspenders Outer Timeout
 

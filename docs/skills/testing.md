@@ -79,6 +79,9 @@ the feature file rather than buried in step code).
 - They self-skip unless `CONFORMU_PATH` names a ConformU binary, so they
   are inert in the ordinary `cargo` / `bazel` suites and run in the nightly
   `conformu.yml` rotation (locally: `bazel test --config=conformu`)
+- Each ConformU mode runs under a 30-minute deadline — the `conformu.yml`
+  step's own limit — so a wedged ConformU fails the test naming the mode
+  instead of hanging a local `cargo test`
 
 **Two runners, one rule.** `bdd_infra::run_conformu` drives ConformU's
 URL-argument verbs, which call `SetFullTest()` after reading any settings

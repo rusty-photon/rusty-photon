@@ -142,7 +142,7 @@ pub struct ConcurrentResult {
 
 impl PlateSolverWorld {
     /// Locate the in-tree `mock_astap` binary the same way
-    /// `tests/supervision_integration.rs` does.
+    /// `tests/runner_integration.rs` does.
     pub fn mock_astap_path() -> PathBuf {
         if let Ok(p) = std::env::var("MOCK_ASTAP_BINARY") {
             let path = PathBuf::from(p);

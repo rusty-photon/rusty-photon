@@ -76,8 +76,8 @@ pub enum RunnerError {
     #[error("solve timed out (killed after grace)")]
     TimedOutKilled,
 
-    #[error("io: {0}")]
-    Io(#[from] std::io::Error),
+    #[error("running ASTAP: {0}")]
+    Process(#[from] rusty_photon_process::Error),
 }
 
 #[cfg_attr(test, mockall::automock)]

@@ -54,11 +54,11 @@
 //! a summary line whose whole error and issue counts are both zero.
 
 use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Stdio};
+use std::process::{Command, ExitStatus};
+use std::time::Duration;
 
+use rusty_photon_process::{Bounded, Capture, Outcome, OUTPUT_LIMIT, STDERR_TAIL};
 use tempfile::TempDir;
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
 
 use crate::scratch;
 
@@ -636,6 +636,11 @@ pub async fn run_conformu_from_settings(
     Ok(ConformuRun::Passed)
 }
 
+/// How long one `ConformU` mode may run: the `conformu.yml` step's own limit,
+/// so no run is allowed longer anywhere CI runs it, and a local `cargo test`
+/// against a wedged `ConformU` fails naming the mode instead of hanging.
+const MODE_DEADLINE: Duration = Duration::from_mins(30);
+
 /// What one `ConformU` mode left behind: its exit status and every line it
 /// printed to stdout.
 struct ModeRun {
@@ -643,8 +648,9 @@ struct ModeRun {
     output: Vec<String>,
 }
 
-/// Run a single `ConformU` mode, streaming its output into the test log, and
-/// return its exit status and output for the caller to judge. `results_file` adds
+/// Run a single `ConformU` mode under [`MODE_DEADLINE`], streaming its output
+/// into the test log, and return its exit status and output for the caller to
+/// judge. `results_file` adds
 /// `--resultsfile` (the conformance suites); `device_url` is the positional
 /// device argument for the URL-based commands and `None` for the `*-settings`
 /// commands, which read the device from the settings file.
@@ -676,23 +682,37 @@ async fn run_mode(
     if let Some(url) = device_url {
         command.arg(url);
     }
-    let mut child = command.stdout(Stdio::piped()).spawn()?;
 
     // Stream ConformU's (unstructured) stdout into the test log so progress is
-    // visible and a verbose run can't deadlock on an undrained pipe, and keep
-    // it: the protocol suite's verdict includes its summary line.
-    let mut output = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        let mut lines = BufReader::new(stdout).lines();
-        while let Some(line) = lines.next_line().await? {
-            println!("[conformu {mode}] {line}");
-            output.push(line);
+    // visible, and keep it: the protocol suite's verdict includes its summary
+    // line. stderr is kept too, and printed once the mode ends.
+    let prefix = format!("[conformu {mode}]");
+    let outcome = Bounded::new(&mut command, MODE_DEADLINE)
+        .stdout(Capture::Full(OUTPUT_LIMIT))
+        .stderr(Capture::Tail(STDERR_TAIL))
+        .on_stdout_line(move |line| println!("{prefix} {line}"))
+        .spawn()?
+        .await?;
+    let output = match outcome {
+        Outcome::Exited(output) => output,
+        Outcome::TimedOut(stop) => {
+            return Err(format!(
+                "ConformU {mode} did not finish within {MODE_DEADLINE:?} and was stopped ({stop:?})"
+            )
+            .into());
         }
+    };
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stderr.lines() {
+        eprintln!("[conformu {mode} stderr] {line}");
     }
 
     Ok(ModeRun {
-        status: child.wait().await?,
-        output,
+        status: output.status,
+        output: String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_owned)
+            .collect(),
     })
 }
 

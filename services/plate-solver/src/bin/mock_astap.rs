@@ -202,8 +202,8 @@ fn run_exit_failure() -> std::process::ExitCode {
 }
 
 fn run_hang() -> std::process::ExitCode {
-    // Sleep indefinitely. The supervision module's deadline will signal
-    // us with the platform's graceful signal; default Unix SIGTERM handler
+    // Sleep indefinitely. The runner's deadline will signal us with the
+    // platform's graceful signal; default Unix SIGTERM handler
     // exits, default Windows behavior on CTRL_BREAK_EVENT terminates the
     // process — both are fine for this mode.
     loop {
@@ -214,7 +214,7 @@ fn run_hang() -> std::process::ExitCode {
 #[cfg(unix)]
 fn run_ignore_sigterm() -> std::process::ExitCode {
     // Install a SIGTERM handler that ignores the signal, then sleep
-    // forever. The supervision module must escalate to SIGKILL.
+    // forever. The runner's deadline must escalate to SIGKILL.
     unsafe {
         libc::signal(libc::SIGTERM, libc::SIG_IGN);
     }

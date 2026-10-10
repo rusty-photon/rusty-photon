@@ -188,6 +188,14 @@ and are therefore not discovered or supervised.
 | Windows (MSI, SCM) | SCM services named `rusty-photon-*` | service status + start type |
 | macOS (Homebrew) | `brew services list` filtered to `rusty-photon-*` | brew service status |
 
+Each listing runs under a 10 s bound; a platform tool that wedges past it
+is killed rather than left running, and that discovery round fails (the
+previous registry is kept). Restart commands and recovery checks are bounded
+the same way, by their share of the restart budget, and killed at it with no
+grace period beyond it — see
+[`rusty-photon-process`](../crates/rusty-photon-process.md) for the
+mechanism.
+
 Each discovered service is classified by run state, which decides what
 supervision does with it:
 
@@ -723,7 +731,9 @@ POST /api/services/{name}/restart
 `{name}` is the name of a [discovered service](#service-discovery)
 (`dsd-fp2`, not `rusty-photon-dsd-fp2`). Sentinel does **not** spawn
 or own the processes — it shells out to the derived restart command (the OS
-supervisor owns relaunch), then polls the derived recovery check
+supervisor owns relaunch; a command still running at the budget is killed
+along with anything it started, and a failing one's error carries the end of
+its stderr), then polls the derived recovery check
 (`systemctl is-active`-style; on platforms without one, recovery
 confirmation is skipped) until it exits 0 or the 300 s restart budget
 elapses (each probe is bounded to its per-attempt slice of the budget, so

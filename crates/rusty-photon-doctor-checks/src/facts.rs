@@ -1237,103 +1237,36 @@ mod linux {
 
 /// Running a passive inventory query as a child process, under a deadline.
 ///
-/// Extracted shape, not a general facility: see the tracking issue for
-/// folding this and `plate-solver`'s `spawn_with_deadline` into one crate.
+/// The mechanism — the drain that keeps a full pipe from wedging a healthy
+/// `system_profiler`, the stop, the reap — is `rusty-photon-process`'s; what
+/// stays here is the collectors' contract: stdout or a reason, and a child
+/// that fails or runs out of time is a failed scan, never a short one.
 // `test` joins the platform gates so the deadline logic is compiled —
 // and therefore linted and exercised — on every CI leg, not only the
 // two that ship it. The same reason the `windows` parsers below are
 // gated that way.
 #[cfg(any(target_os = "macos", windows, test))]
 mod bounded {
-    use std::io::Read;
-    use std::process::{Child, Command, Stdio};
-    use std::sync::mpsc;
-    use std::thread;
-    use std::time::{Duration, Instant};
+    use std::process::Command;
+    use std::time::Duration;
+
+    use rusty_photon_process::{Bounded, Capture, Outcome, OUTPUT_LIMIT};
 
     /// A passive USB scan is a handful of cached reads; anything slower is
     /// a wedged child, not a slow one.
     pub const DEADLINE: Duration = Duration::from_secs(10);
 
-    /// How long a child gets to exit after closing stdout, before it is
-    /// killed. It has already produced its output at this point.
-    pub(super) const REAP_GRACE: Duration = Duration::from_secs(1);
-
     /// Run `cmd` and return its stdout, or why it could not be trusted.
-    ///
-    /// The deadline is on **draining the child's output**, not on the
-    /// child exiting, and that distinction is the whole point: a child
-    /// that fills its stdout pipe buffer blocks writing and never exits,
-    /// so waiting on exit would kill a healthy `system_profiler` on a
-    /// machine with a populated bus. Reading continuously means the buffer
-    /// never fills and EOF arrives when the child closes stdout.
     pub fn capture(cmd: &mut Command, deadline: Duration) -> Result<Vec<u8>, String> {
-        let mut child = cmd
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| format!("could not start {cmd:?}: {e}"))?;
-        let mut stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| format!("{cmd:?} produced no stdout pipe"))?;
-
-        let (tx, rx) = mpsc::channel();
-        thread::spawn(move || {
-            let mut buffer = Vec::new();
-            let outcome = stdout.read_to_end(&mut buffer).map(|_| buffer);
-            // A closed receiver means the deadline already fired; the
-            // child is being killed and nobody wants this any more.
-            drop(tx.send(outcome));
-        });
-
-        match rx.recv_timeout(deadline) {
-            Ok(Ok(bytes)) => match reap(&mut child) {
-                Ok(status) if status.success() => Ok(bytes),
-                Ok(status) => Err(format!("{cmd:?} exited with {status}")),
-                Err(e) => Err(e),
-            },
-            Ok(Err(e)) => {
-                kill(&mut child);
-                Err(format!("{cmd:?} output could not be read: {e}"))
-            }
-            Err(_) => {
-                kill(&mut child);
-                Err(format!("{cmd:?} did not finish within {deadline:?}"))
-            }
+        let outcome = Bounded::new(cmd, deadline)
+            .stdout(Capture::Full(OUTPUT_LIMIT))
+            .run();
+        match outcome {
+            Ok(Outcome::Exited(output)) if output.status.success() => Ok(output.stdout),
+            Ok(Outcome::Exited(output)) => Err(format!("{cmd:?} exited with {}", output.status)),
+            Ok(Outcome::TimedOut(_)) => Err(format!("{cmd:?} did not finish within {deadline:?}")),
+            Err(e) => Err(format!("{cmd:?}: {e}")),
         }
-    }
-
-    /// Wait for a child that has already closed stdout, bounded — so that
-    /// a process which lingers after producing its output cannot hang the
-    /// gather either.
-    pub(super) fn reap(child: &mut Child) -> Result<std::process::ExitStatus, String> {
-        // Measured as elapsed time rather than a precomputed instant: adding
-        // to an `Instant` can overflow, and there is no sensible answer for a
-        // clock that cannot represent one second from now.
-        let waiting_since = Instant::now();
-        loop {
-            match child.try_wait() {
-                Ok(Some(status)) => return Ok(status),
-                Ok(None) if waiting_since.elapsed() < REAP_GRACE => {
-                    thread::sleep(Duration::from_millis(10));
-                }
-                Ok(None) => {
-                    kill(child);
-                    return Err("child produced output but did not exit".to_string());
-                }
-                Err(e) => return Err(format!("child could not be reaped: {e}")),
-            }
-        }
-    }
-
-    /// Kill and reap, so no child is orphaned. Both steps are best-effort:
-    /// the caller is already reporting a failure and has nothing better to
-    /// do with a second one.
-    fn kill(child: &mut Child) {
-        drop(child.kill());
-        drop(child.wait());
     }
 }
 
@@ -4317,9 +4250,12 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
     /// (spawn, pipe, kill), which is what makes a Unix-only pass a weak
     /// signal for the Windows collector.
     #[cfg(any(unix, windows))]
+    /// The collectors' side of a bounded query: what reaches a caller as an
+    /// inventory and what reaches it as a failure. The mechanism under it —
+    /// the drain, the stop, the reap — is tested in `rusty-photon-process`.
     mod bounded_capture {
         use std::process::Command;
-        use std::time::{Duration, Instant};
+        use std::time::Duration;
 
         use super::super::bounded;
 
@@ -4340,17 +4276,6 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
         #[cfg(windows)]
         const NEVER_FINISHES: &str = "ping -n 31 127.0.0.1 >nul";
 
-        /// Waits, then leaves a mark. Killed on time, the mark never appears.
-        #[cfg(unix)]
-        const WAIT_THEN_MARK: &str = "sleep 1; : > marker";
-        #[cfg(windows)]
-        const WAIT_THEN_MARK: &str = "ping -n 3 127.0.0.1 >nul & echo . > marker";
-
-        #[cfg(unix)]
-        const COPY_BULK: &str = "cat bulk";
-        #[cfg(windows)]
-        const COPY_BULK: &str = "type bulk";
-
         #[cfg(unix)]
         fn shell(script: &str) -> Command {
             let mut cmd = Command::new("/bin/sh");
@@ -4365,32 +4290,12 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
             cmd
         }
 
-        /// The success path, and with it `reap`: a child that writes and
-        /// exits hands back what it wrote.
         #[test]
         fn test_capture_returns_what_the_child_wrote() {
             let output = bounded::capture(&mut shell(WRITE_HELLO), bounded::DEADLINE).unwrap();
             // Trimmed: `cmd`'s `echo` appends a newline where `printf` does
             // not, and which one ran is not what this test is about.
             assert_eq!(String::from_utf8_lossy(&output).trim(), "hello");
-        }
-
-        /// Why the deadline is on the *drain* and not on the child exiting:
-        /// a child whose output exceeds the pipe buffer blocks writing until
-        /// someone reads, so a wait-then-read implementation deadlocks here.
-        #[test]
-        fn test_capture_drains_more_than_one_pipe_buffer() {
-            let dir = tempfile::tempdir().unwrap();
-            std::fs::write(dir.path().join("bulk"), vec![b'x'; 200_000]).unwrap();
-            let mut cmd = shell(COPY_BULK);
-            cmd.current_dir(dir.path());
-            let output = bounded::capture(&mut cmd, bounded::DEADLINE).unwrap();
-            // Trimmed rather than length-matched: a shell may add a line
-            // ending of its own, and the claim under test is that none of
-            // the payload was lost.
-            let payload = output.trim_ascii();
-            assert_eq!(payload.len(), 200_000);
-            assert!(payload.iter().all(|b| *b == b'x'));
         }
 
         /// A child that fails is a failed scan, not a short one — its partial
@@ -4411,42 +4316,11 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
             assert!(error.contains("did not finish within"), "{error}");
         }
 
-        /// The grace period itself, which no `capture` fixture reaches: the
-        /// deadline one never gets past `recv_timeout`, and the success one
-        /// exits before the first poll. So the guard this commit changed is
-        /// pinned directly — a child that lingers gets the grace and no more.
         #[test]
-        fn test_reap_waits_out_the_grace_period_then_gives_up() {
-            let mut cmd = shell(NEVER_FINISHES);
-            cmd.stdout(std::process::Stdio::null());
-            let mut child = cmd.spawn().unwrap();
-            let started = Instant::now();
-            let error = bounded::reap(&mut child).unwrap_err();
-            let waited = started.elapsed();
-            assert!(error.contains("did not exit"), "{error}");
-            // Bounded both ways, because both regressions are silent: a guard
-            // that never waits returns at once, and one that never expires
-            // hangs here rather than reporting.
-            assert!(waited >= bounded::REAP_GRACE, "gave up after {waited:?}");
-            assert!(waited < Duration::from_secs(5), "waited {waited:?}");
-        }
-
-        /// And it kills what it gave up on. An orphan would outlive the
-        /// scan, still holding whatever it had open — observable here as the
-        /// mark it would have left after the deadline had passed.
-        #[test]
-        fn test_capture_kills_the_child_it_gave_up_on() {
-            let dir = tempfile::tempdir().unwrap();
-            let mut cmd = shell(WAIT_THEN_MARK);
-            cmd.current_dir(dir.path());
-            bounded::capture(&mut cmd, Duration::from_millis(200)).unwrap_err();
-            // Well past when the mark would have been written had the child
-            // survived the deadline.
-            std::thread::sleep(Duration::from_secs(3));
-            assert!(
-                !dir.path().join("marker").exists(),
-                "the child outlived the deadline that killed it"
-            );
+        fn test_capture_reports_a_child_that_cannot_start() {
+            let mut cmd = Command::new("/nonexistent/doctor-checks-test-binary");
+            let error = bounded::capture(&mut cmd, bounded::DEADLINE).unwrap_err();
+            assert!(error.contains("could not start"), "{error}");
         }
     }
 

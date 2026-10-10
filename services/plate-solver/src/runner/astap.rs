@@ -1,21 +1,18 @@
 //! Real `AstapRunner` implementation: builds an `astap_cli` `Command`,
-//! spawns it under the supervision module, and parses the resulting
-//! `.wcs` sidecar.
+//! runs it under the request's deadline with `rusty-photon-process`, and
+//! parses the resulting `.wcs` sidecar.
 //!
 //! The argv-mapping behavior is unit-tested in this file. The spawn-based
-//! end-to-end behavior (real `mock_astap` child + supervision arms) lives
-//! in `tests/supervision_integration.rs`.
+//! end-to-end behavior (real `mock_astap` child, every outcome the runner
+//! maps) lives in `tests/runner_integration.rs`; the deadline mechanism
+//! itself belongs to the crate, and is tested there.
 
 use super::wcs::read_wcs_sidecar;
 use super::{AstapRunner, RunnerError, SolveOutcome, SolveRequest};
-use crate::supervision::{spawn_with_deadline, SpawnOutcome};
 use async_trait::async_trait;
+use rusty_photon_process::{Bounded, Capture, Outcome, Stop, STDERR_TAIL};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use tokio::process::Command;
-
-#[cfg(windows)]
-const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+use std::process::Command;
 
 /// Wraps `astap_cli` invocations.
 pub struct AstapCliRunner {
@@ -70,20 +67,8 @@ impl AstapCliRunner {
             cmd.arg("-r").arg(format!("{r:.10}"));
         }
 
-        cmd.stdout(Stdio::null());
-        cmd.stderr(Stdio::piped());
-
         for (k, v) in &self.extra_env {
             cmd.env(k, v);
-        }
-
-        #[cfg(windows)]
-        {
-            // `tokio::process::Command::creation_flags` is an inherent
-            // method on Windows; no `CommandExt` trait import needed
-            // (importing the std-process one would just trip
-            // unused_imports under -D warnings).
-            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
         }
 
         cmd
@@ -95,17 +80,19 @@ impl AstapRunner for AstapCliRunner {
     async fn solve(&self, request: SolveRequest) -> Result<SolveOutcome, RunnerError> {
         let timeout = request.timeout;
         let fits_path = request.fits_path.clone();
-        let cmd = self.build_command(&request);
-        let outcome = spawn_with_deadline(cmd, timeout).await?;
+        let mut cmd = self.build_command(&request);
+        // stdout carries nothing the service reads (the answer is the .wcs
+        // sidecar); stderr's tail is the context a failed solve reports.
+        let outcome = Bounded::new(&mut cmd, timeout)
+            .stderr(Capture::Tail(STDERR_TAIL))
+            .spawn()?
+            .await?;
         match outcome {
-            SpawnOutcome::Exited {
-                status,
-                stderr_tail,
-            } => {
-                if !status.success() {
+            Outcome::Exited(output) => {
+                if !output.status.success() {
                     return Err(RunnerError::ExitStatus {
-                        status: status.code().unwrap_or(-1),
-                        stderr_tail,
+                        status: output.status.code().unwrap_or(-1),
+                        stderr_tail: String::from_utf8_lossy(&output.stderr).into_owned(),
                     });
                 }
                 let wcs_path = wcs_sidecar_path(&fits_path);
@@ -114,8 +101,8 @@ impl AstapRunner for AstapCliRunner {
                 }
                 read_wcs_sidecar(&wcs_path).map_err(|e| RunnerError::MalformedWcs(e.to_string()))
             }
-            SpawnOutcome::TimedOutTerminated => Err(RunnerError::TimedOutTerminated),
-            SpawnOutcome::TimedOutKilled => Err(RunnerError::TimedOutKilled),
+            Outcome::TimedOut(Stop::Terminated) => Err(RunnerError::TimedOutTerminated),
+            Outcome::TimedOut(Stop::Killed) => Err(RunnerError::TimedOutKilled),
         }
     }
 }
@@ -150,8 +137,7 @@ mod tests {
     }
 
     fn argv(cmd: &Command) -> Vec<String> {
-        cmd.as_std()
-            .get_args()
+        cmd.get_args()
             .map(|s| s.to_string_lossy().into_owned())
             .collect()
     }

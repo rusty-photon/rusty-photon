@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use rusty_photon_process::{Bounded, Capture, Outcome, STDERR_TAIL};
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
@@ -266,14 +267,14 @@ impl Restarter for ManagerRestarter {
 
 /// Build the platform shell invocation for `command`.
 #[cfg(unix)]
-pub(crate) fn shell_command(command: &str) -> tokio::process::Command {
-    let mut c = tokio::process::Command::new("sh");
+pub(crate) fn shell_command(command: &str) -> std::process::Command {
+    let mut c = std::process::Command::new("sh");
     c.arg("-c").arg(command);
     c
 }
 
 #[cfg(windows)]
-pub(crate) fn shell_command(command: &str) -> tokio::process::Command {
+pub(crate) fn shell_command(command: &str) -> std::process::Command {
     use std::os::windows::process::CommandExt;
     // `cmd` does not understand backslash-escaped quotes, so std's default
     // argv encoding (quote the whole argument, escape its inner quotes as
@@ -282,32 +283,45 @@ pub(crate) fn shell_command(command: &str) -> tokio::process::Command {
     // verbatim instead.
     let mut c = std::process::Command::new("cmd");
     c.raw_arg(format!("/C {command}"));
-    tokio::process::Command::from(c)
+    c
 }
 
 /// Run `command` through the platform shell, bounded by `budget`. `Ok` iff it
 /// exits 0 in time — the execution primitive behind every platform service
-/// manager's derived commands.
+/// manager's derived commands. A command still running at the budget is
+/// killed, along with whatever it started, before this returns — at the
+/// budget, with no grace period after it, because the budget is the caller's
+/// whole allowance; a failing one's error carries the end of its stderr.
 pub(crate) async fn run_shell(command: &str, budget: Duration) -> crate::Result<()> {
     debug!("running `{command}` (budget {budget:?})");
-    let mut child = shell_command(command)
+    let mut cmd = shell_command(command);
+    let running = Bounded::new(&mut cmd, budget)
+        .grace(Duration::ZERO)
+        .stderr(Capture::Tail(STDERR_TAIL))
         .spawn()
         .map_err(|e| crate::SentinelError::Monitor(format!("failed to spawn `{command}`: {e}")))?;
-    match tokio::time::timeout(budget, child.wait()).await {
-        Ok(Ok(status)) if status.success() => Ok(()),
-        Ok(Ok(status)) => Err(crate::SentinelError::Monitor(format!(
-            "`{command}` exited with {status}"
-        ))),
-        Ok(Err(e)) => Err(crate::SentinelError::Monitor(format!(
-            "`{command}` wait failed: {e}"
-        ))),
-        Err(_) => {
-            let _ = child.start_kill();
+    match running.await {
+        Ok(Outcome::Exited(output)) if output.status.success() => Ok(()),
+        Ok(Outcome::Exited(output)) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = stderr.trim();
+            let detail = if stderr.is_empty() {
+                String::new()
+            } else {
+                format!(": {stderr}")
+            };
             Err(crate::SentinelError::Monitor(format!(
-                "`{command}` exceeded {}",
-                humantime::format_duration(budget)
+                "`{command}` exited with {}{detail}",
+                output.status
             )))
         }
+        Ok(Outcome::TimedOut(_stop)) => Err(crate::SentinelError::Monitor(format!(
+            "`{command}` exceeded {}",
+            humantime::format_duration(budget)
+        ))),
+        Err(e) => Err(crate::SentinelError::Monitor(format!(
+            "`{command}` wait failed: {e}"
+        ))),
     }
 }
 
@@ -1002,6 +1016,17 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("exited"), "{err}");
+    }
+
+    /// The operator reads why a restart failed in the escalation, not only
+    /// that it did.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_shell_failure_carries_the_commands_stderr() {
+        let err = run_shell("echo unit not found >&2; exit 5", Duration::from_secs(5))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().ends_with(": unit not found"), "{err}");
     }
 
     #[cfg(unix)]

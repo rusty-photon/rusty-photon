@@ -12,9 +12,10 @@
 //! Both probes are bounded (a short HTTP timeout, a generous shell-out
 //! one), and an answer that never comes is a diagnosis, not a crash.
 
-use std::process::Stdio;
+use std::process::Command;
 use std::time::Duration;
 
+use rusty_photon_process::{Bounded, Capture, Outcome, OUTPUT_LIMIT};
 use serde::Deserialize;
 use tracing::debug;
 
@@ -475,19 +476,24 @@ async fn run_child_doctor(
     let service = Some(name.to_string());
     debug!(service = name, binary = %binary.display(), "running the per-service doctor");
 
-    let mut command = tokio::process::Command::new(binary);
+    let mut command = Command::new(binary);
     command
         .arg("doctor")
         .arg("--json")
         .arg("--config")
-        .arg(config)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .arg(config);
 
-    let output = match tokio::time::timeout(timeout, command.output()).await {
-        Err(_elapsed) => {
+    // stderr whole, not a tail: the report names its first line.
+    let run = match Bounded::new(&mut command, timeout)
+        .stdout(Capture::Full(OUTPUT_LIMIT))
+        .stderr(Capture::Full(OUTPUT_LIMIT))
+        .spawn()
+    {
+        Ok(running) => running.await,
+        Err(e) => Err(e),
+    };
+    let output = match run {
+        Ok(Outcome::TimedOut(_stop)) => {
             return vec![Check::warn(
                 "service.doctor-probe",
                 service,
@@ -499,7 +505,7 @@ async fn run_child_doctor(
                 None,
             )];
         }
-        Ok(Err(e)) => {
+        Err(e) => {
             return vec![Check::warn(
                 "service.doctor-probe",
                 service,
@@ -507,7 +513,7 @@ async fn run_child_doctor(
                 None,
             )];
         }
-        Ok(Ok(output)) => output,
+        Ok(Outcome::Exited(output)) => output,
     };
 
     match serde_json::from_slice::<Report>(&output.stdout) {
@@ -568,18 +574,12 @@ mod tests {
     /// `.cmd` on Windows, a `chmod +x` shell script elsewhere (the same two
     /// shapes the BDD aggregation steps stage as stub binaries).
     ///
-    /// Neither body leaves a grandchild behind. `kill_on_drop` reaches only
-    /// the direct child — the interpreter — and a surviving grandchild keeps
-    /// its inherited copy of the probe's stdout/stderr pipes open for its
-    /// whole lifetime, so those pipes never reach EOF. Tokio backs child
-    /// stdio with blocking reads on Windows, and a read that cannot be
-    /// cancelled parks a blocking-pool thread that the runtime's drop then
-    /// waits out — far past the timeout under test. Redirecting the
-    /// grandchild's output is not enough: it only reassigns the std handles,
-    /// while the pipe handles stay inheritable and come along regardless.
-    /// So `exec` replaces the shell outright, and the `.cmd` spins inside
-    /// `cmd.exe` on the internal `for /l` (step 0 never reaches its bound)
-    /// rather than shelling out to `ping` or `timeout` for the delay.
+    /// Neither body leaves a grandchild behind: `exec` replaces the shell
+    /// outright, and the `.cmd` spins inside `cmd.exe` on the internal
+    /// `for /l` (step 0 never reaches its bound) rather than shelling out to
+    /// `ping` or `timeout` for the delay. The stop reaches a grandchild too,
+    /// but a fixture that is one process keeps this test about the timeout
+    /// arm rather than about the tree.
     fn stage_hanging_binary(dir: &std::path::Path) -> std::path::PathBuf {
         #[cfg(windows)]
         {

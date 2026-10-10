@@ -14,7 +14,7 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True),
+    deps = ["//crates/rusty-photon-process"] + all_crate_deps(normal = True),
 )
 
 # The staged USB inventory exists only under the `mock` feature, and features
@@ -36,7 +36,7 @@ rust_library(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
-    deps = all_crate_deps(normal = True),
+    deps = ["//crates/rusty-photon-process"] + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -55,7 +55,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(
+    deps = ["//crates/rusty-photon-process"] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -77,7 +77,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = all_crate_deps(
+    deps = ["//crates/rusty-photon-process"] + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
