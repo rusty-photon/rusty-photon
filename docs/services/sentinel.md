@@ -188,6 +188,14 @@ and are therefore not discovered or supervised.
 | Windows (MSI, SCM) | SCM services named `rusty-photon-*` | service status + start type |
 | macOS (Homebrew) | `brew services list` filtered to `rusty-photon-*` | brew service status |
 
+Each listing runs under a 10 s bound; a platform tool that wedges past it
+is killed rather than left running, and that discovery round fails (the
+previous registry is kept). Restart commands and recovery checks are bounded
+the same way, by their share of the restart budget, and killed at it with no
+grace period beyond it — see
+[`rusty-photon-process`](../crates/rusty-photon-process.md) for the
+mechanism.
+
 Each discovered service is classified by run state, which decides what
 supervision does with it:
 
@@ -704,7 +712,7 @@ one restart of a given service runs at any time:
 | Restart command fails (non-zero, spawn failure, over budget) | Counts as an attempt: notification carries the failure detail, backoff advances, probing continues. |
 | Service flaps (recovers, fails again) | Each recovery fully resets the state machine; a new outage starts at 3 fresh failures and the initial 60 s backoff. |
 | Service answers `503` mid-outage | Same reset as a recovery — the HTTP loop answering proves whatever the restarts were for is over; the service is now waiting on a dependency no restart can supply. |
-| Shutdown during an in-flight autonomous restart | The supervisor returns immediately (restart await is raced against the cancellation token); the gate slot is released and the shell child runs to completion detached. |
+| Shutdown during an in-flight autonomous restart | The supervisor returns immediately (restart await is raced against the cancellation token) and the gate slot is released. The shell child is not killed — cut off between its stop and its start it would leave the service down — but its restart budget is enforced from inside sentinel's process, so the bound ends when sentinel exits: on Linux systemd stops the child with sentinel's cgroup; on Windows and macOS it runs on to completion, unbounded. |
 | Operator stops a service mid-outage (`running` → `stopped`) | Its supervisor is stood down on the next discovery refresh (≤ 60 s); no further probes or restarts. The threshold-and-90-s detection window means an operator stop is seen before any probe-driven restart can fire. |
 | Package removed mid-outage | The service leaves the discovered set; its supervisor and dashboard entry are reaped. |
 | Service is `inert`, `stopped`, or `disabled` | Displayed on the dashboard, never probed, never restarted, never notified. |
@@ -723,7 +731,9 @@ POST /api/services/{name}/restart
 `{name}` is the name of a [discovered service](#service-discovery)
 (`dsd-fp2`, not `rusty-photon-dsd-fp2`). Sentinel does **not** spawn
 or own the processes — it shells out to the derived restart command (the OS
-supervisor owns relaunch), then polls the derived recovery check
+supervisor owns relaunch; a command still running at the budget is killed
+along with anything it started, and a failing one's error carries the end of
+its stderr), then polls the derived recovery check
 (`systemctl is-active`-style; on platforms without one, recovery
 confirmation is skipped) until it exits 0 or the 300 s restart budget
 elapses (each probe is bounded to its per-attempt slice of the budget, so

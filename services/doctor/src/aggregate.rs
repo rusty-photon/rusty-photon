@@ -12,9 +12,10 @@
 //! Both probes are bounded (a short HTTP timeout, a generous shell-out
 //! one), and an answer that never comes is a diagnosis, not a crash.
 
-use std::process::Stdio;
+use std::process::Command;
 use std::time::Duration;
 
+use rusty_photon_process::{Bounded, Capture, Outcome, OUTPUT_LIMIT, STDERR_TAIL};
 use serde::Deserialize;
 use tracing::debug;
 
@@ -475,19 +476,25 @@ async fn run_child_doctor(
     let service = Some(name.to_string());
     debug!(service = name, binary = %binary.display(), "running the per-service doctor");
 
-    let mut command = tokio::process::Command::new(binary);
+    let mut command = Command::new(binary);
     command
         .arg("doctor")
         .arg("--json")
         .arg("--config")
-        .arg(config)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .arg(config);
 
-    let output = match tokio::time::timeout(timeout, command.output()).await {
-        Err(_elapsed) => {
+    // stderr's head, not its tail: the report names its first line, and a
+    // child logging verbosely must not cost the report on stdout.
+    let run = match Bounded::new(&mut command, timeout)
+        .stdout(Capture::Full(OUTPUT_LIMIT))
+        .stderr(Capture::Head(STDERR_TAIL))
+        .spawn()
+    {
+        Ok(running) => running.await,
+        Err(e) => Err(e),
+    };
+    let output = match run {
+        Ok(Outcome::TimedOut(_stop)) => {
             return vec![Check::warn(
                 "service.doctor-probe",
                 service,
@@ -499,7 +506,7 @@ async fn run_child_doctor(
                 None,
             )];
         }
-        Ok(Err(e)) => {
+        Err(e) => {
             return vec![Check::warn(
                 "service.doctor-probe",
                 service,
@@ -507,7 +514,7 @@ async fn run_child_doctor(
                 None,
             )];
         }
-        Ok(Ok(output)) => output,
+        Ok(Outcome::Exited(output)) => output,
     };
 
     match serde_json::from_slice::<Report>(&output.stdout) {
@@ -568,18 +575,12 @@ mod tests {
     /// `.cmd` on Windows, a `chmod +x` shell script elsewhere (the same two
     /// shapes the BDD aggregation steps stage as stub binaries).
     ///
-    /// Neither body leaves a grandchild behind. `kill_on_drop` reaches only
-    /// the direct child — the interpreter — and a surviving grandchild keeps
-    /// its inherited copy of the probe's stdout/stderr pipes open for its
-    /// whole lifetime, so those pipes never reach EOF. Tokio backs child
-    /// stdio with blocking reads on Windows, and a read that cannot be
-    /// cancelled parks a blocking-pool thread that the runtime's drop then
-    /// waits out — far past the timeout under test. Redirecting the
-    /// grandchild's output is not enough: it only reassigns the std handles,
-    /// while the pipe handles stay inheritable and come along regardless.
-    /// So `exec` replaces the shell outright, and the `.cmd` spins inside
-    /// `cmd.exe` on the internal `for /l` (step 0 never reaches its bound)
-    /// rather than shelling out to `ping` or `timeout` for the delay.
+    /// Neither body leaves a grandchild behind: `exec` replaces the shell
+    /// outright, and the `.cmd` spins inside `cmd.exe` on the internal
+    /// `for /l` (step 0 never reaches its bound) rather than shelling out to
+    /// `ping` or `timeout` for the delay. The stop reaches a grandchild too,
+    /// but a fixture that is one process keeps this test about the timeout
+    /// arm rather than about the tree.
     fn stage_hanging_binary(dir: &std::path::Path) -> std::path::PathBuf {
         #[cfg(windows)]
         {
@@ -595,6 +596,84 @@ mod tests {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
             path
         }
+    }
+
+    /// Stage an executable that writes `first` and then about 8 KiB — twice
+    /// `STDERR_TAIL` — to stderr, then `stdout` as one line, and exits 0: a
+    /// child that logs verbosely, in the same two shapes as
+    /// `stage_hanging_binary`.
+    fn stage_verbose_binary(
+        dir: &std::path::Path,
+        first: &str,
+        stdout: &str,
+    ) -> std::path::PathBuf {
+        let filler = "x".repeat(80);
+        #[cfg(windows)]
+        {
+            let path = dir.join("verbose.cmd");
+            let body = format!(
+                "@echo off\r\necho {first} 1>&2\r\n\
+                 for /l %%i in (1,1,100) do @echo {filler} 1>&2\r\necho {stdout}\r\n"
+            );
+            std::fs::write(&path, body).unwrap();
+            path
+        }
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let path = dir.join("verbose.sh");
+            let body = format!(
+                "#!/bin/sh\necho '{first}' >&2\ni=0\n\
+                 while [ $i -lt 100 ]; do echo {filler} >&2; i=$((i + 1)); done\n\
+                 echo '{stdout}'\n"
+            );
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        }
+    }
+
+    /// A child's verbose stderr does not cost the report on its stdout.
+    #[tokio::test]
+    async fn test_run_child_doctor_merges_a_report_behind_verbose_stderr() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = stage_verbose_binary(
+            dir.path(),
+            "starting",
+            r#"{"checks":[{"name":"stub.check","status":"ok"}]}"#,
+        );
+        let config = dir.path().join("svc.json");
+        std::fs::write(&config, "{}").unwrap();
+
+        let checks = run_child_doctor("svc", &binary, &config, Duration::from_secs(30)).await;
+
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0].name, "stub.check");
+        assert_eq!(checks[0].status, Status::Ok);
+        assert_eq!(checks[0].service.as_deref(), Some("svc"));
+    }
+
+    /// A child that produced no report is described by the first line of
+    /// its stderr, however much followed it.
+    #[tokio::test]
+    async fn test_run_child_doctor_names_the_first_stderr_line_of_a_verbose_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let binary = stage_verbose_binary(dir.path(), "doctor: the first line", "not a report");
+        let config = dir.path().join("svc.json");
+        std::fs::write(&config, "{}").unwrap();
+
+        let checks = run_child_doctor("svc", &binary, &config, Duration::from_secs(30)).await;
+
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(checks[0].name, "service.doctor-probe");
+        assert_eq!(checks[0].status, Status::Warn);
+        assert!(
+            checks[0]
+                .detail
+                .contains("(exit 0; stderr: doctor: the first line)"),
+            "{}",
+            checks[0].detail
+        );
     }
 
     #[tokio::test]

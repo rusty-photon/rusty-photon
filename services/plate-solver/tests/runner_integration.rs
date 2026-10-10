@@ -159,3 +159,63 @@ async fn malformed_wcs_maps_to_malformed_wcs_error() {
         other => panic!("expected MalformedWcs, got {other:?}"),
     }
 }
+
+/// A child that answers the graceful signal at the deadline is a
+/// `TimedOutTerminated` — the `(terminated)` the HTTP contract reports.
+#[tokio::test]
+async fn hang_maps_to_timed_out_terminated() {
+    let (runner, dir) = runner("hang");
+    let mut request = req(dir.path().join("test.fits"));
+    request.timeout = Duration::from_millis(100);
+
+    let err = runner.solve(request).await.unwrap_err();
+    assert!(
+        matches!(err, RunnerError::TimedOutTerminated),
+        "expected TimedOutTerminated, got {err:?}"
+    );
+}
+
+/// A child that ignores the graceful signal is force-killed after the grace:
+/// `TimedOutKilled`.
+///
+/// The mock ignores SIGTERM only once its `main` runs, so a signal that beat
+/// it there would find the default disposition, terminate it, and read as
+/// `TimedOutTerminated`. Nothing at this level can close that window — the
+/// runner builds the command, so no `pre_exec` can set the disposition before
+/// `exec` (the crate's own test of this escalation does exactly that). The
+/// deadline is sized against it instead: the start-up path measured ~5 ms on
+/// an idle host and ~19 ms with the CPU 4x oversubscribed, and 2 s is a
+/// hundred times the latter. Unix-only for the same reason as the BDD
+/// scenario: the Windows mock's console handler is subject to console-attach
+/// quirks.
+#[cfg(unix)]
+#[tokio::test]
+async fn ignore_sigterm_maps_to_timed_out_killed() {
+    let (runner, dir) = runner("ignore_sigterm");
+    let mut request = req(dir.path().join("test.fits"));
+    request.timeout = Duration::from_secs(2);
+
+    let err = runner.solve(request).await.unwrap_err();
+    assert!(
+        matches!(err, RunnerError::TimedOutKilled),
+        "expected TimedOutKilled, got {err:?}"
+    );
+}
+
+/// A binary that cannot be started is a process error, not a solve failure.
+#[tokio::test]
+async fn unstartable_binary_maps_to_process_error() {
+    let dir = TempDir::new().unwrap();
+    let runner = AstapCliRunner::new(dir.path().join("no-such-astap"), dir.path().to_path_buf());
+    let err = runner
+        .solve(req(dir.path().join("test.fits")))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            RunnerError::Process(rusty_photon_process::Error::Spawn(_))
+        ),
+        "expected a spawn error, got {err:?}"
+    );
+}

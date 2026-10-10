@@ -1,0 +1,28 @@
+[package]
+name = "rusty-photon-process"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Bounded subprocess execution: run a command to completion under a deadline, drain its output while it runs, and stop its whole process tree when the deadline comes"
+
+[lints]
+workspace = true
+
+# No async runtime, on purpose: `rusty-photon-doctor-checks` is linked by every
+# service and stays synchronous, and the awaitable form waits on a thread of its
+# own rather than on an executor. See docs/crates/rusty-photon-process.md.
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+# Process groups and their signals. Windows needs no crate: the five kernel32
+# calls it makes are declared in src/tree.rs.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }

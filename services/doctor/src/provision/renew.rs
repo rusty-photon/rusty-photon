@@ -11,6 +11,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use rusty_photon_process::{shell, Bounded, Capture, Outcome, STDERR_TAIL};
 use tracing::debug;
 
 use super::{acme, acme_config, cert, dns, expiry};
@@ -344,27 +345,38 @@ async fn order_with_retry(
     ))
 }
 
+/// How long one post-renewal hook may run. Hooks copy certificates to other
+/// machines, and an `scp` to an unreachable host takes about two minutes for
+/// TCP to give up; a hook still running well past that is wedged, and the
+/// hooks after it must still run.
+const HOOK_DEADLINE: Duration = Duration::from_mins(5);
+
 /// Run every post-renewal hook in order, even after one fails — a skipped
 /// hook is a remote machine keeping its old certificate. Any failure is an
-/// overall error (exit 2) naming the hook. Hook output is captured, never
-/// inherited: doctor's stdout is reserved for its own report (`--json`
-/// consumers parse it), so a chatty hook must not write through to it.
+/// overall error (exit 2) naming the hook; a hook that does not finish
+/// within [`HOOK_DEADLINE`] is stopped and is one. Hook output never
+/// reaches doctor's stdout, which is reserved for its own report (`--json`
+/// consumers parse it): stdout is discarded — it can carry key material,
+/// which must not land in logs either — and stderr's tail is kept for the
+/// failure message.
 fn run_hooks(hooks: &[String]) -> Result<(), String> {
+    run_hooks_within(hooks, HOOK_DEADLINE)
+}
+
+/// [`run_hooks`] under a given per-hook deadline, so tests can reach the
+/// timeout arm without waiting out the production one.
+fn run_hooks_within(hooks: &[String], deadline: Duration) -> Result<(), String> {
     let mut failed: Vec<String> = Vec::new();
     for hook in hooks {
         debug!(hook, "running post-renewal hook");
-        let output = shell_command(hook).output();
-        match output {
-            Ok(output) if output.status.success() => {
-                // Length only: a hook's stdout can carry key material,
-                // which must not land in logs even at debug level.
-                debug!(
-                    hook,
-                    stdout_bytes = output.stdout.len(),
-                    "post-renewal hook succeeded"
-                );
+        let outcome = Bounded::new(&mut shell(hook), deadline)
+            .stderr(Capture::Tail(STDERR_TAIL))
+            .run();
+        match outcome {
+            Ok(Outcome::Exited(output)) if output.status.success() => {
+                debug!(hook, "post-renewal hook succeeded");
             }
-            Ok(output) => {
+            Ok(Outcome::Exited(output)) => {
                 let status = output.status;
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let snippet = stderr.trim().chars().take(200).collect::<String>();
@@ -374,6 +386,13 @@ fn run_hooks(hooks: &[String]) -> Result<(), String> {
                 } else {
                     failed.push(format!("`{hook}` ({status}: {snippet})"));
                 }
+            }
+            Ok(Outcome::TimedOut(stop)) => {
+                debug!(hook, ?stop, "post-renewal hook did not finish in time");
+                failed.push(format!(
+                    "`{hook}` (did not finish within {} and was stopped)",
+                    humantime::format_duration(deadline)
+                ));
             }
             Err(e) => {
                 debug!(hook, "post-renewal hook could not run: {e}");
@@ -390,25 +409,6 @@ fn run_hooks(hooks: &[String]) -> Result<(), String> {
             failed.join(", ")
         ))
     }
-}
-
-#[cfg(unix)]
-fn shell_command(hook: &str) -> std::process::Command {
-    let mut command = std::process::Command::new("sh");
-    command.arg("-c").arg(hook);
-    command
-}
-
-#[cfg(windows)]
-fn shell_command(hook: &str) -> std::process::Command {
-    use std::os::windows::process::CommandExt;
-    let mut command = std::process::Command::new("cmd");
-    // raw_arg: std's argument quoting wraps the hook in escaped quotes,
-    // which cmd.exe does not unescape — a hook with a quoted path (or any
-    // redirect) reaches cmd mangled and silently does nothing. cmd wants
-    // the line verbatim after /C.
-    command.arg("/C").raw_arg(hook);
-    command
 }
 
 #[cfg(test)]
@@ -926,6 +926,31 @@ mod tests {
     fn test_run_hooks_succeeds_when_all_pass() {
         run_hooks(&["exit 0".to_string()]).unwrap();
         run_hooks(&[]).unwrap();
+    }
+
+    /// A wedged hook is stopped and named, and the hooks after it still run —
+    /// one unreachable machine must not cost every other its certificate.
+    #[test]
+    fn test_run_hooks_stops_a_wedged_hook_and_runs_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("marker");
+        let hooks = if cfg!(windows) {
+            vec![
+                "ping -n 31 127.0.0.1 >nul".to_string(),
+                format!("echo ran > \"{}\"", marker.display()),
+            ]
+        } else {
+            vec![
+                "sleep 30".to_string(),
+                format!("echo ran > '{}'", marker.display()),
+            ]
+        };
+        let err = run_hooks_within(&hooks, Duration::from_millis(300)).unwrap_err();
+        assert!(err.contains("did not finish within 300ms"), "{err}");
+        assert!(
+            marker.is_file(),
+            "the hook after the wedged one must still run"
+        );
     }
 
     fn acme_test_config() -> acme_config::AcmeConfig {

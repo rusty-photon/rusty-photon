@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use rusty_photon_process::{Bounded, Capture, Outcome, STDERR_TAIL};
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
@@ -264,50 +265,53 @@ impl Restarter for ManagerRestarter {
     }
 }
 
-/// Build the platform shell invocation for `command`.
-#[cfg(unix)]
-pub(crate) fn shell_command(command: &str) -> tokio::process::Command {
-    let mut c = tokio::process::Command::new("sh");
-    c.arg("-c").arg(command);
-    c
-}
-
-#[cfg(windows)]
-pub(crate) fn shell_command(command: &str) -> tokio::process::Command {
-    use std::os::windows::process::CommandExt;
-    // `cmd` does not understand backslash-escaped quotes, so std's default
-    // argv encoding (quote the whole argument, escape its inner quotes as
-    // `\"`) mangles any command containing quotes — e.g. a redirect target
-    // like `echo ok > "C:\path\marker.txt"` exits 1. Hand `cmd` the line
-    // verbatim instead.
-    let mut c = std::process::Command::new("cmd");
-    c.raw_arg(format!("/C {command}"));
-    tokio::process::Command::from(c)
-}
-
 /// Run `command` through the platform shell, bounded by `budget`. `Ok` iff it
 /// exits 0 in time — the execution primitive behind every platform service
-/// manager's derived commands.
+/// manager's derived commands. A command still running at the budget is
+/// killed, along with whatever it started, before this returns — at the
+/// budget, with no grace period after it, because the budget is the caller's
+/// whole allowance; a failing one's error carries the end of its stderr.
+///
+/// A caller that stops waiting (a supervisor cancelled mid-restart) does not
+/// stop the command: a restart cut off between its stop and its start would
+/// leave the service down. It runs on, detached, until it finishes or its
+/// budget runs out — a budget sentinel's own process enforces, so a command
+/// still running when sentinel exits is left to finish on its own.
 pub(crate) async fn run_shell(command: &str, budget: Duration) -> crate::Result<()> {
     debug!("running `{command}` (budget {budget:?})");
-    let mut child = shell_command(command)
+    let mut cmd = rusty_photon_process::shell(command);
+    let running = Bounded::new(&mut cmd, budget)
+        .grace(Duration::ZERO)
+        .stderr(Capture::Tail(STDERR_TAIL))
+        .finish_if_abandoned()
         .spawn()
         .map_err(|e| crate::SentinelError::Monitor(format!("failed to spawn `{command}`: {e}")))?;
-    match tokio::time::timeout(budget, child.wait()).await {
-        Ok(Ok(status)) if status.success() => Ok(()),
-        Ok(Ok(status)) => Err(crate::SentinelError::Monitor(format!(
-            "`{command}` exited with {status}"
+    match running.await {
+        Ok(Outcome::Exited(output)) if output.status.success() => Ok(()),
+        Ok(Outcome::Exited(output)) => Err(crate::SentinelError::Monitor(format!(
+            "`{command}` exited with {}{}",
+            output.status,
+            stderr_detail(&output.stderr)
         ))),
-        Ok(Err(e)) => Err(crate::SentinelError::Monitor(format!(
+        Ok(Outcome::TimedOut(_stop)) => Err(crate::SentinelError::Monitor(format!(
+            "`{command}` exceeded {}",
+            humantime::format_duration(budget)
+        ))),
+        Err(e) => Err(crate::SentinelError::Monitor(format!(
             "`{command}` wait failed: {e}"
         ))),
-        Err(_) => {
-            let _ = child.start_kill();
-            Err(crate::SentinelError::Monitor(format!(
-                "`{command}` exceeded {}",
-                humantime::format_duration(budget)
-            )))
-        }
+    }
+}
+
+/// `": <stderr>"` for a failure message, or nothing when the command wrote
+/// nothing to stderr.
+pub(crate) fn stderr_detail(stderr: &[u8]) -> String {
+    let stderr = String::from_utf8_lossy(stderr);
+    let stderr = stderr.trim();
+    if stderr.is_empty() {
+        String::new()
+    } else {
+        format!(": {stderr}")
     }
 }
 
@@ -1002,6 +1006,43 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("exited"), "{err}");
+    }
+
+    /// The operator reads why a restart failed in the escalation, not only
+    /// that it did.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_shell_failure_carries_the_commands_stderr() {
+        let err = run_shell("echo unit not found >&2; exit 5", Duration::from_secs(5))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().ends_with(": unit not found"), "{err}");
+    }
+
+    /// A restart whose caller stops waiting — the supervisor cancelled
+    /// mid-restart — runs to completion: cut off between its stop and its
+    /// start, it would leave the service down.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn run_shell_finishes_a_command_its_caller_stopped_waiting_for() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("restarted");
+        let command = format!("sleep 1; : > '{}'", marker.display());
+        let waited = tokio::time::timeout(
+            Duration::from_millis(200),
+            run_shell(&command, Duration::from_secs(30)),
+        )
+        .await;
+        assert!(
+            waited.is_err(),
+            "the command finished before its caller left"
+        );
+        tokio::task::spawn_blocking(move || {
+            std::thread::sleep(Duration::from_secs(4));
+            assert!(marker.exists(), "the abandoned restart command was stopped");
+        })
+        .await
+        .unwrap();
     }
 
     #[cfg(unix)]

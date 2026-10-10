@@ -11,7 +11,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
+use rusty_photon_process::{Bounded, Capture, Outcome, OUTPUT_LIMIT, STDERR_TAIL};
 use serde::{Deserialize, Serialize};
 use tracing::debug;
 
@@ -190,14 +192,30 @@ impl PlatformFacts {
     }
 }
 
+/// How long one service-manager query may take. Above `systemctl`'s own
+/// 25 s D-Bus timeout, so when systemd itself is the problem, `systemctl`'s
+/// error is the one that arrives; a query still running past it is wedged.
+const QUERY_DEADLINE: Duration = Duration::from_secs(30);
+
 /// Run a command and return stdout on success; `None` (with a `debug!`
-/// trail) when the binary is missing or exits non-zero.
+/// trail) when the binary is missing, exits non-zero, or does not finish
+/// within [`QUERY_DEADLINE`].
 fn run(cmd: &mut Command) -> Option<String> {
-    match cmd.output() {
-        Ok(output) if output.status.success() => {
+    run_within(cmd, QUERY_DEADLINE)
+}
+
+/// [`run`] under a given deadline, so tests can reach the timeout arm
+/// without waiting out the production one.
+fn run_within(cmd: &mut Command, deadline: Duration) -> Option<String> {
+    let outcome = Bounded::new(cmd, deadline)
+        .stdout(Capture::Full(OUTPUT_LIMIT))
+        .stderr(Capture::Tail(STDERR_TAIL))
+        .run();
+    match outcome {
+        Ok(Outcome::Exited(output)) if output.status.success() => {
             Some(String::from_utf8_lossy(&output.stdout).into_owned())
         }
-        Ok(output) => {
+        Ok(Outcome::Exited(output)) => {
             let stderr = String::from_utf8_lossy(&output.stderr);
             debug!(
                 command = ?cmd,
@@ -205,6 +223,10 @@ fn run(cmd: &mut Command) -> Option<String> {
                 stderr = %stderr,
                 "service-manager query failed"
             );
+            None
+        }
+        Ok(Outcome::TimedOut(stop)) => {
+            debug!(command = ?cmd, ?stop, ?deadline, "service-manager query did not finish in time");
             None
         }
         Err(e) => {
@@ -300,14 +322,25 @@ pub fn parse_failed_unit_listing(listing: &str) -> Vec<String> {
 }
 
 /// Whether a systemd unit is active right now. `is-active --quiet` exits 0
-/// iff active; a command that cannot run at all leaves the fact ungathered.
+/// iff active; a command that cannot run at all, or does not finish within
+/// [`QUERY_DEADLINE`], leaves the fact ungathered.
 #[cfg(target_os = "linux")]
 fn systemd_unit_is_active(name: &str) -> Option<bool> {
-    match Command::new("systemctl")
-        .args(["is-active", "--quiet", &format!("{name}.service")])
-        .status()
-    {
-        Ok(status) => Some(status.success()),
+    let mut cmd = Command::new("systemctl");
+    cmd.args(["is-active", "--quiet", &format!("{name}.service")]);
+    // The exit status is the whole answer: non-zero is "inactive", not a
+    // failure with an error message worth keeping.
+    let outcome = Bounded::new(&mut cmd, QUERY_DEADLINE).run();
+    match outcome {
+        Ok(Outcome::Exited(output)) => Some(output.status.success()),
+        Ok(Outcome::TimedOut(stop)) => {
+            debug!(
+                unit = name,
+                ?stop,
+                "the unit's active-state query did not finish in time"
+            );
+            None
+        }
         Err(e) => {
             debug!(unit = name, error = %e, "could not query the unit's active state");
             None
@@ -801,6 +834,16 @@ mod tests {
             run(&mut Command::new("/nonexistent/doctor-test-binary")).is_none(),
             "missing binary"
         );
+    }
+
+    /// A wedged service-manager query degrades like a failed one rather than
+    /// hanging the gather.
+    #[cfg(unix)]
+    #[test]
+    fn test_run_degrades_on_a_query_that_never_finishes() {
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30");
+        assert_eq!(run_within(&mut cmd, Duration::from_millis(100)), None);
     }
 
     /// Exercises the real host-gathering path end to end: on a systemd host

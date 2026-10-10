@@ -161,7 +161,7 @@ async fn solve(
         }),
         Err(RunnerError::TimedOutTerminated) => Err(AppError::SolveTimeoutTerminated),
         Err(RunnerError::TimedOutKilled) => Err(AppError::SolveTimeoutKilled),
-        Err(RunnerError::Io(e)) => Err(AppError::Internal(format!("io: {e}"))),
+        Err(e @ RunnerError::Process(_)) => Err(AppError::Internal(e.to_string())),
     }
 }
 

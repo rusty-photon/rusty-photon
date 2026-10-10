@@ -22,6 +22,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use rusty_photon_process::{Bounded, Capture, Outcome, OUTPUT_LIMIT, STDERR_TAIL};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
@@ -741,23 +742,31 @@ impl ServiceManager for StubServiceManager {
 
 /// Run a command through the platform shell and capture stdout. Enumeration
 /// listings are small and the commands quick; a fixed bound keeps a wedged
-/// platform tool from stalling the discovery loop.
+/// platform tool from stalling the discovery loop, and the tool is killed at
+/// the bound rather than left running.
 #[allow(dead_code)] // unused on platforms whose backend needs no capture
 async fn shell_capture(command: &str) -> crate::Result<String> {
     const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
-    let output = tokio::time::timeout(
-        CAPTURE_TIMEOUT,
-        crate::corrective::shell_command(command).output(),
-    )
-    .await
-    .map_err(|_| {
-        crate::SentinelError::Monitor(format!("`{command}` exceeded {CAPTURE_TIMEOUT:?}"))
-    })?
-    .map_err(|e| crate::SentinelError::Monitor(format!("failed to run `{command}`: {e}")))?;
+    let failed = |e| crate::SentinelError::Monitor(format!("failed to run `{command}`: {e}"));
+    let mut cmd = rusty_photon_process::shell(command);
+    let outcome = Bounded::new(&mut cmd, CAPTURE_TIMEOUT)
+        .grace(Duration::ZERO)
+        .stdout(Capture::Full(OUTPUT_LIMIT))
+        .stderr(Capture::Tail(STDERR_TAIL))
+        .spawn()
+        .map_err(failed)?
+        .await
+        .map_err(failed)?;
+    let Outcome::Exited(output) = outcome else {
+        return Err(crate::SentinelError::Monitor(format!(
+            "`{command}` exceeded {CAPTURE_TIMEOUT:?}"
+        )));
+    };
     if !output.status.success() {
         return Err(crate::SentinelError::Monitor(format!(
-            "`{command}` exited with {}",
-            output.status
+            "`{command}` exited with {}{}",
+            output.status,
+            crate::corrective::stderr_detail(&output.stderr)
         )));
     }
     String::from_utf8(output.stdout)

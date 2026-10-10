@@ -27,11 +27,11 @@ rp-harness = [
     "dep:rmcp",
 ]
 # Enables the `conformu` module: a direct ConformU-CLI runner used by services'
-# conformu_integration tests. No extra deps (it uses tokio::process, already a
-# default dependency). Replaces ascom_alpaca::test::ConformUTestBuilder so the
+# conformu_integration tests, which runs each mode under a deadline through
+# rusty-photon-process. Replaces ascom_alpaca::test::ConformUTestBuilder so the
 # conformu tests no longer pull `ascom-alpaca/test` — whose transitive `dtor`
 # dep crate_universe can't resolve, which kept them out of the Bazel build.
-conformu = []
+conformu = ["dep:rusty-photon-process"]
 # Enables the `tls_auth` module: the shared PKI + credentials fixture and the
 # `tls_auth_smoke_steps!` macro every service's BDD suite uses to prove the
 # shared server config's TLS + Basic Auth gate. Opt-in so consumers that only
@@ -70,5 +70,7 @@ rp-auth = { workspace = true, optional = true }
 rp-ephemeris = { workspace = true, optional = true }
 rp-fits = { workspace = true, optional = true }
 rp-mcp-client = { workspace = true, optional = true }
+# Only pulled in when the conformu feature is enabled.
+rusty-photon-process = { workspace = true, optional = true }
 rusty-photon-tls = { workspace = true, optional = true }
 uuid = { workspace = true, optional = true }

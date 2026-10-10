@@ -251,6 +251,13 @@ implementation:
   status is the failed fact); the shell-out
   binary is the `brew --prefix`-linked `bin/<unit-stem>` when it exists.
 
+Every inspector query runs under a 30 s deadline through
+[`rusty-photon-process`](../crates/rusty-photon-process.md) — above
+`systemctl`'s own 25 s D-Bus timeout, so when systemd itself is the problem
+its error is the one that arrives. A query still running then is stopped
+and degrades exactly like one that failed: the fact goes ungathered, never
+a hung report.
+
 The inspector reports a platform-neutral inventory (unit name, enabled,
 active, failed, the unit's binary, plus platform-specific facts where they
 exist);
@@ -419,8 +426,12 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   `system_profiler` and `powershell.exe`, and an invocation that never
   returns is a third state that no failed-vs-empty distinction helps with —
   a wedged child would hang startup rather than produce a result at all.
-  Both are run under a deadline, the child killed on expiry, and expiry
-  maps to the same unavailable-inventory state as a non-zero exit.
+  Both are run under a 10 s deadline through
+  [`rusty-photon-process`](../crates/rusty-photon-process.md), which drains
+  the child's output while it runs (so a large report cannot wedge a healthy
+  `system_profiler` on a full pipe), stops the child and anything it started
+  on expiry, and reaps it. Expiry maps to the same unavailable-inventory
+  state as a non-zero exit.
 
   **A simulation build stages the inventory instead of scanning.** A camera
   driver built with its `simulation` feature fabricates cameras that no host
@@ -995,7 +1006,8 @@ installed service, and the two paths are naturally exclusive:
   an old binary is not a broken rig.
 
 Both paths are bounded: the HTTP probe by a 15 s whole-request deadline,
-the shell-out by a one-minute one (an SDK bus scan takes seconds). A
+the shell-out by a one-minute one (an SDK bus scan takes seconds), at whose
+end the child and anything it started are stopped and reaped. A
 timeout is reported under the same names — an answer that never comes is
 a diagnosis, not a crash — and the `service.devices` fail detail carries
 the request's full cause chain (a refused connection, a failed TLS
@@ -1437,7 +1449,16 @@ run in order (`sh -c` / `cmd /C`) — the multi-machine distribution hook
 from ADR-002. Every hook runs even if an earlier one fails; any failure
 exits 2, because a silently-failed hook means a remote machine keeps its
 old cert until it expires — exactly the unattended night-time failure
-this command exists to prevent. Exit 0 means "nothing was due" or
+this command exists to prevent. A hook runs with no stdin, no terminal (one
+that would prompt — `ssh` for a passphrase, `sudo` for a password — fails at
+once instead of waiting), and its stdout discarded (doctor's own stdout
+carries the report; a hook's can carry key material), its stderr's tail kept
+for the failure message, and under a
+5-minute deadline: above the ~2 minutes an `scp` to an unreachable host
+takes for TCP to give up. A hook still running then is stopped, with
+anything it started, and counts as failed — and the hooks after it still
+run, because one unreachable machine must not cost the others their
+certificates. Exit 0 means "nothing was due" or
 "everything due was renewed"; the timer unit needs no logic. `--force`
 ignores the windows and renews everything both legs own (self-signed
 pairs re-issue; the ACME order runs) — the manual escape hatch and the

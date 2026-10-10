@@ -411,6 +411,7 @@ dependencies = [
  "rp-ephemeris",
  "rp-fits",
  "rp-mcp-client",
+ "rusty-photon-process",
  "rusty-photon-service-lifecycle",
  "rusty-photon-tls",
  "serde_json",
@@ -1219,6 +1220,7 @@ dependencies = [
  "rustls-pemfile",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
+ "rusty-photon-process",
  "rusty-photon-server-config",
  "rusty-photon-tls",
  "serde",
@@ -3521,6 +3523,7 @@ dependencies = [
  "rp-auth",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
+ "rusty-photon-process",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-tls",
@@ -4723,6 +4726,7 @@ dependencies = [
 name = "rusty-photon-doctor-checks"
 version = "0.1.0"
 dependencies = [
+ "rusty-photon-process",
  "serde",
  "serde_json",
  "tempfile",
@@ -4771,6 +4775,17 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 3.0.6",
+]
+
+[[package]]
+name = "rusty-photon-process"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4993,6 +5008,7 @@ dependencies = [
  "rp-auth",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
+ "rusty-photon-process",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-tls",
