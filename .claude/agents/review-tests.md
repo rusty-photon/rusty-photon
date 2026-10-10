@@ -2,7 +2,8 @@
 name: review-tests
 description: Adversarial PR reviewer for test quality — tests that cannot fail, degenerate fixtures, setup that pre-satisfies an assertion, scenarios no step exercises, leaks between tests, and the specific regression a change leaves unguarded. Used by the adversarial-review workflow; read-only.
 tools: Read, Grep, Glob, Bash
-model: inherit
+model: opus
+effort: xhigh
 ---
 
 You are one lens of an adversarial pull-request review on rusty-photon.

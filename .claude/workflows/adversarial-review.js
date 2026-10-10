@@ -51,6 +51,15 @@ const LENSES = [
 
 const PLUGIN_INSTALL = 'claude plugin install pr-review-toolkit@claude-plugins-official --scope project'
 
+// Pinned, not inherited: a round must review with the same strength
+// whatever model and effort the session that runs it is set to. Every
+// review body states them.
+const MODEL = 'opus'
+const REVIEW_EFFORT = 'xhigh' // lenses and skeptics
+const CHORE_EFFORT = 'low' // scope, dedupe, settle: run given commands, no judgement
+const REVIEW = { model: MODEL, effort: REVIEW_EFFORT }
+const CHORE = { model: MODEL, effort: CHORE_EFFORT }
+
 // The plugin agent is written for any codebase; this narrows it to the
 // failures that matter here and keeps it off the categories the record
 // rates lowest.
@@ -223,7 +232,7 @@ const scope = await agent(
     '',
     'If any step fails, return ok=false with an error naming the step and what it printed. Never return ok=true without head_sha, merge_base, files and last_round.',
   ].join('\n'),
-  { label: 'scope', phase: 'Scope', schema: SCOPE, effort: 'low' },
+  { label: 'scope', phase: 'Scope', schema: SCOPE, ...CHORE },
 )
 
 if (!scope || !scope.ok) {
@@ -308,7 +317,7 @@ if (lenses.length) {
   ].join('\n')
 
   const runLens = async l => {
-    const opts = { label: `review:${l.key}`, phase: 'Review', schema: FINDINGS, agentType: l.agentType }
+    const opts = { label: `review:${l.key}`, phase: 'Review', schema: FINDINGS, agentType: l.agentType, ...REVIEW }
     let r = null
     try { r = await agent(lensPrompt(l), opts) } catch (e) { r = null }
     if (!r) {
@@ -348,7 +357,7 @@ if (lenses.length) {
         '',
         listing,
       ].join('\n'),
-      { label: 'dedupe', phase: 'Dedupe', schema: GROUPS, effort: 'low' },
+      { label: 'dedupe', phase: 'Dedupe', schema: GROUPS, ...CHORE },
     )
     // "Same root cause" is transitive: overlapping groups are one group.
     // Merging them into connected components first means no finding is
@@ -411,6 +420,7 @@ if (lenses.length) {
       phase: 'Verify',
       schema: VERDICT,
       agentType: 'review-verifier',
+      ...REVIEW,
     })))).filter(Boolean)
     const expected = angles.length
     const need = f.severity === 'high' ? 2 : 1
@@ -427,7 +437,7 @@ if (lenses.length) {
     const notes = votes.map(v => v.remedy_note).filter(Boolean)
     const reasons = votes.filter(v => v.verdict === 'refuted').map(v => v.reasoning)
     const overstated = alive.map(v => v.statement_note).filter(Boolean)
-    return { ...f, status, remedy_note: notes.join(' '), statement_note: overstated.join(' '), refuted_because: reasons[0] || '', votes: votes.length }
+    return { ...f, status, remedy_note: notes.join(' '), statement_note: overstated.join(' '), refuted_because: reasons[0] || '', votes: votes.length, expected }
   }
 
   // How well a statement came through its skeptics, best last: confirmed as
@@ -442,13 +452,19 @@ if (lenses.length) {
   // the best-ranked statement is posted. Only a strictly better rank
   // replaces the current best, so the outcome does not depend on the order
   // the members are tried in. A pre-existing verdict on the kept statement
-  // is a judgement on the defect, not the wording, so it stands.
+  // is a judgement on the defect, not the wording, so it stands. Any other
+  // statement of the defect whose skeptics did not all return is carried
+  // on the posted finding: a more severe claim nobody could check must not
+  // vanish behind a milder one that was checked.
   const verifyOne = async f => {
     const v = await verifyStatement(f)
     if (!(f.members && f.members.length) || v.status === 'pre_existing' || rankOf(v) === 4) return v
+    const tried = [v]
     let best = v
+    let bestFrom = v
     for (const m of f.members) {
       const mv = await verifyStatement(m)
+      tried.push(mv)
       if (rankOf(mv) <= rankOf(best)) continue
       const others = [f, ...f.members.filter(x => x !== m)]
       best = {
@@ -457,7 +473,15 @@ if (lenses.length) {
         also_at: [...new Set(others.map(x => `${x.file}:${x.line}`).concat(f.also_at))].filter(x => x !== `${mv.file}:${mv.line}`),
         merged: others.map(x => x.title),
       }
+      bestFrom = mv
       if (rankOf(best) === 4) break
+    }
+    const unchecked = tried
+      .filter(t => t !== bestFrom && t.status === 'unverified')
+      .map(t => ({ severity: t.severity, title: t.title, consequence: t.consequence, votes: t.votes, expected: t.expected }))
+    if (unchecked.length) {
+      log(`${unchecked.length} statement(s) of "${clip(best.title, 80)}" could not be verified; recorded on the posted finding`)
+      best = { ...best, unchecked }
     }
     return best
   }
@@ -499,7 +523,7 @@ const st = await agent(
       ].join('\n')
       : '3. There are no findings to anchor: anchors = [].',
   ].join('\n'),
-  { label: 'settle', phase: 'Settle', schema: SETTLE, effort: 'low' },
+  { label: 'settle', phase: 'Settle', schema: SETTLE, ...CHORE },
 )
 
 const incomplete = lensesFailed.map(key => `${key} returned nothing` + (key === 'silent-failures' ? ` (is the plugin installed? ${tick(PLUGIN_INSTALL)})` : ''))
@@ -523,7 +547,7 @@ const complete = incomplete.length === 0
 const marker = `<!-- adversarial-review round=${round}${complete ? ' head=' + head : ''} -->`
 
 const findingBody = f => [
-  `**${f.id}** · ${f.lenses.join(' + ')} · ${f.severity}` + (f.status === 'unverified' ? ' · **unverified** (no skeptic returned)' : ''),
+  `**${f.id}** · ${f.lenses.join(' + ')} · ${f.severity}` + (f.status === 'unverified' ? ` · **unverified** (${f.votes} of ${f.expected} skeptics returned)` : ''),
   '',
   `**${f.title}**`,
   '',
@@ -534,9 +558,12 @@ const findingBody = f => [
   f.merged && f.merged.length ? `**Also raised as:** ${f.merged.map(t => clip(t, 120)).join('; ')}` : null,
   f.remedy ? `**Suggested remedy:** ${f.remedy}` : null,
   f.statement_note ? `**Skeptic on the statement:** ${f.statement_note}` : null,
+  ...(f.unchecked || []).map(u => `**Unverified statement:** ${u.severity} "${clip(u.title, 160)}" — ${u.votes} of ${u.expected} skeptics returned — ${clip(u.consequence, 240)}`),
   f.remedy_note ? `**Skeptic on the remedy:** ${f.remedy_note}` : null,
 ].filter(x => x !== null).join('\n')
 
+const unverifiedCount = posted.filter(f => f.status === 'unverified').length
+  + posted.reduce((n, f) => n + (f.unchecked ? f.unchecked.length : 0), 0)
 const alsoStated = f => (f.merged && f.merged.length ? ` (also stated as: ${f.merged.map(t => clip(t, 80)).join('; ')})` : '')
 const inline = posted.filter(f => f.inline)
 const outside = posted.filter(f => !f.inline)
@@ -547,10 +574,11 @@ const body = [
   `Head ${tick(short(head))} · ` + (mode === 'full' ? 'full review of the PR' : `delta since ${tick(short(since))}`)
     + ` · lenses: ${lensesRun.join(', ') || 'none applied'}`
     + (lensesRequested.length ? ` · skipped by request: ${lensesRequested.join(', ')}` : ''),
+  `Lenses and skeptics: ${MODEL} at ${REVIEW_EFFORT} effort · scope, dedupe, settle: ${MODEL} at ${CHORE_EFFORT}`,
   incomplete.length ? `\n**Incomplete round** — this head does not count as reviewed: ${incomplete.join('; ')}.` : null,
   lenses.length ? null : '\nNo file in this round is covered by a lens.',
   '',
-  `Raised ${raw.length} → ${posted.length} confirmed` + (posted.some(f => f.status === 'unverified') ? ` (${posted.filter(f => f.status === 'unverified').length} unverified)` : '') + `, ${preExisting.length} pre-existing, ${refuted.length} refuted.`
+  `Raised ${raw.length} → ${posted.length} confirmed` + (unverifiedCount ? ` (${unverifiedCount} unverified statement(s) included)` : '') + `, ${preExisting.length} pre-existing, ${refuted.length} refuted.`
     + (posted.length ? ` ${inline.length} inline, ${outside.length} below.` : ''),
   posted.length ? null : '\n**No confirmed findings.**',
   outside.length ? '\n#### Outside the diff\n\nRecord each outcome in a PR comment that names its ID.' : null,
@@ -578,6 +606,7 @@ return {
   complete,
   quiet: complete && posted.length === 0,
   incomplete,
+  models: { review: REVIEW, chore: CHORE },
   lenses_run: lensesRun,
   lenses_failed: lensesFailed,
   lenses_skipped: lensesRequested,

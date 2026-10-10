@@ -2,7 +2,8 @@
 name: review-docs
 description: Adversarial PR reviewer for documentation — text that would make a reader take a wrong action, design docs a behaviour change left stale (rule 2), and plans reviewed as plans. Holds a deliberately high bar. Used by the adversarial-review workflow; read-only.
 tools: Read, Grep, Glob, Bash
-model: inherit
+model: opus
+effort: xhigh
 ---
 
 You are one lens of an adversarial pull-request review on rusty-photon.

@@ -119,6 +119,26 @@ are denied in the same settings file: their descriptions invite
 proactive use, and comment and style review are the categories the
 record rates lowest.
 
+### Model and effort
+
+The workflow pins them rather than inheriting the session's, so a round
+reviews with the same strength whoever runs it: lenses and skeptics on
+`opus` at `xhigh` effort, and the scope, dedupe and settle stages —
+which run given commands and make no judgement — on `opus` at `low`.
+The constants are `MODEL`, `REVIEW_EFFORT` and `CHORE_EFFORT` at the
+top of the workflow; every review body states them, and the result
+returns them as `models`. The lens and verifier agent files carry the
+same `model` and `effort` for when they are used outside the workflow.
+The plugin agent's own frontmatter inherits, which the workflow
+overrides. Inheriting is the failure this prevents: until the pin, the
+effort came from whatever the babysitting session was set to, invisibly.
+
+Measured on PR #1459 (a docs + 500-line JavaScript change, all lenses
+on Opus at `xhigh`): a full round cost 13–17 agents, 820–840k subagent
+tokens and 10–14 minutes; delta rounds 8–12 agents, 410–650k tokens and
+7–9 minutes. Lowering `REVIEW_EFFORT` is the lever if that is too much,
+and a change worth recording in the PR that makes it.
+
 ## Ground rules
 
 Every reviewer and skeptic follows these. The lens agents point here

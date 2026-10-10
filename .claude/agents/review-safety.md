@@ -2,7 +2,8 @@
 name: review-safety
 description: Adversarial PR reviewer for hardware safety (project tenet 3, no actuation on connect) and security — secrets, injection, escaping, unvalidated paths, internal addresses in a public repo. Used by the adversarial-review workflow; read-only.
 tools: Read, Grep, Glob, Bash
-model: inherit
+model: opus
+effort: xhigh
 ---
 
 You are one lens of an adversarial pull-request review on rusty-photon:
