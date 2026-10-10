@@ -24,7 +24,9 @@ latest push:
    so there is nothing new to review. A fix voids the review: the fix
    push needs its own. Any later push needs one more review — docs
    included, and a merge of `origin/main` too, since what landed on
-   `main` can change what the PR's code does.
+   `main` can change what the PR's code does. A review that errored,
+   was cut short, or returned no findings list reviewed nothing: run it
+   again.
 3. **Every finding has a recorded response** — a reply on every review
    thread (the review's and any human reviewer's), an outcome for each
    finding the review could not post inline, and an answer to every
@@ -47,15 +49,17 @@ checkout is at its head (`git rev-parse HEAD`): the reviewer reads the
 working tree. Then, for each head:
 
 1. **Start the CI watcher** (§Pacing) in the background.
-2. **Review the head** — `/code-review high <n> --comment`
+2. **Review the head** — `/code-review high <n> --comment --max-findings all`
    (code-review.md §Running a review); change nothing in the checkout
-   while it runs. Then record the round in one PR comment: the head SHA,
-   the level, how many findings it raised, and every finding it could
-   not post inline. A review that raises nothing leaves no other trace
-   on the PR, and this comment is what the merge-ready report cites:
+   while it runs. Compare the findings it returns with the inline
+   comments it actually posted, then record the round in one PR comment:
+   the head SHA, the level, how many findings it raised and how many
+   reached the PR inline, and every finding that did not. A review that
+   raises nothing leaves no other trace on the PR, and this comment is
+   what the merge-ready report cites:
 
    ```sh
-   gh pr comment <n> --body "Code review (high) of <sha>: <k> findings, posted inline."
+   gh pr comment <n> --body "Code review (high) of <sha>: <k> findings, <j> posted inline."
    ```
 
 3. **Triage every finding** (code-review.md §Triage), and every new
@@ -81,8 +85,9 @@ working tree. Then, for each head:
    the meantime silently recreates its deleted branch (`remote: Create a
    pull request … pull/new/…` in the push output is the tell).
 7. **Reply on every thread** — what changed plus the commit SHA, or why
-   declined — and give each finding that was not posted inline its
-   outcome in a reply to the round comment:
+   declined — and record the outcome of each finding that was not posted
+   inline in one more PR comment, naming each finding (a conversation
+   comment has no reply thread):
 
    ```sh
    gh api 'repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies' \
@@ -103,9 +108,8 @@ stop and report to the owner instead of starting a fifth. Findings that
 survive four rounds usually mean a design question that fixes cannot
 settle.
 
-A bot-authored PR (dependabot, github-actions) needs a review only if
-you changed code on it; then the review covers your change. A draft PR
-is reviewed like any other.
+A bot-authored PR (dependabot, github-actions) or a draft PR is reviewed
+like any other.
 
 ## Pacing — watch, don't sleep
 

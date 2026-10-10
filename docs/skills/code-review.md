@@ -14,14 +14,23 @@ checkout of the PR's head commit — the reviewer reads the working tree
 for the context around the diff:
 
 ```text
-/code-review high <pr> --comment
+/code-review high <pr> --comment --max-findings all
 ```
 
 An agent runs the same thing with the Skill tool: `skill: "code-review"`,
-`args: "high <pr> --comment"`. `--comment` posts each finding as an
-inline comment on the PR, under the account `gh` is logged in as. A
-finding it cannot anchor to a line of the diff is printed instead; it
-goes in the round comment (babysitting-prs.md, step 2 of the loop).
+`args: "high <pr> --comment --max-findings all"`.
+
+- `--comment` posts each finding as an inline comment on the PR through
+  `gh`, so under the account `gh` is logged in as. The GitHub
+  inline-comment tool its recipe prefers exists only under
+  `claude-code-action`.
+- GitHub refuses a comment anchored outside the diff, so a finding can
+  come back without reaching the PR. Compare the findings the review
+  returns with what it posted, and put each missing one in the round
+  comment (babysitting-prs.md, step 2 of the loop).
+- `--max-findings all` keeps every finding. Without it the review stops
+  at its level's cap (10 at `high`), or at whatever cap someone last
+  typed, which the skill remembers.
 
 Claude Code runs the review in a separate context, so it carries none of
 the calling session's reasoning about the change. That independence from
@@ -43,8 +52,7 @@ before relying on this table: the review's prompt opens with a one-line
 summary of its recipe, visible in the review agent's transcript. The
 `high` review of #1459 on 2026-10-10 opened with
 `high effort → 8 inline angles → dedup (no verify) → ≤10 findings`; it
-took about three minutes and 94k tokens. `--max-findings <n>|all`
-raises the cap. `/code-review ultra`, a cloud
+took about three minutes and 94k tokens. `/code-review ultra`, a cloud
 review, can only be launched by a person. If real defects keep reaching
 merge past `high`, move the default up and record why here.
 
@@ -55,7 +63,9 @@ below, and triage what they find the same way.
 
 AGENTS.md rule 15 carries the short form of this section to every
 reviewer, `/code-review` included, because CLAUDE.md is the one file
-Claude Code loads into every review.
+Claude Code loads into every review. A review gets the CLAUDE.md its
+session loaded when it started, so a change to the rules reaches reviews
+from the next session on.
 
 **Anchor every finding to what the PR is for.** A finding must bear on
 whether the PR achieves its purpose, or breaks something on the way; it
@@ -63,6 +73,10 @@ is not a licence to audit the surrounding system or to ask for work the
 PR defers. **Review a plan as a plan** (`docs/plans/`): contradictions,
 false claims about the code, a step that cannot work — not lock
 ordering, timeouts or exact APIs that prose is not meant to carry.
+**One finding per defect:** raise it on the clearest or authoritative
+instance and name the other locations in it. **Converge:** text or code
+added to answer an earlier finding is not new risk; raise a finding on
+it only if it is wrong, not because it could say more.
 
 The defect classes review has actually caught in this repo (§What the
 record shows), most productive first:
@@ -145,6 +159,8 @@ that led to a real improvement:
 | Doc / comment drift              | 562 |     9% |      3% |
 | Style nits                       |  75 |     3% |      3% |
 | "This won't compile"             |  32 |     0% |     84% |
+
+(Performance and uncategorized comments, 59 threads, are omitted.)
 
 The test-quality row undersells itself: on the PRs where findings hidden
 in Copilot's review bodies were counted (#902, #923, #1246, #1326), the

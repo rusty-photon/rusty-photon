@@ -41,7 +41,7 @@ Arguments: $ARGUMENTS
    then run the loop the first one defines — exit criteria,
    reply-per-thread rule, watcher, CI diagnosis.
 3. Review every new head with the Skill tool: `skill: "code-review"`,
-   `args: "high <n> --comment"`. Then post the round comment
+   `args: "high <n> --comment --max-findings all"`. Then post the round comment
    (babysitting-prs.md, step 2 of the loop).
 4. Triage every finding (code-review.md §Triage), fix or decline each with
    evidence, run the quality gate (AGENTS.md rule 4), commit (rule 6),
