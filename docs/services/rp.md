@@ -3100,7 +3100,8 @@ devices:
   with a `usb_devices` list holds a listed number whose camera it cannot
   serve tonight with a placeholder, whose `Connected = true` fails with
   ASCOM error `0x540` ([device-claims plan](../plans/device-claims-and-phd2-camera.md)
-  D4.5, [svbony-camera.md](svbony-camera.md) U4). Retrying it cannot
+  D4.5, [svbony-camera.md](svbony-camera.md) U4,
+  [zwo-camera.md](zwo-camera.md) U4). Retrying it cannot
   help — a placeholder becomes a device only when its driver reloads —
   so the connect routine takes that refusal as it takes "device not
   found": one attempt, no backoff, logged at `debug!` with the driver's

@@ -581,18 +581,17 @@ graph TD;
   scan failed, starts the background re-scan (U6). Returns a `BoundServer`.
 - **`claims.rs`** — this driver's half of the device claims: its normalizer
   (the SDK models it knows and the product id each enumerates under on the
-  bus, U2), the USB scan source (the host collector, or the staged inventory
-  in a simulation build, U7), and the `doctor --devices` listing (U8). The
-  vendor-neutral half — the join itself, the list validation, port order, the
-  listing's layout, the placeholder's fixed error code, `UniqueID` form and
-  reason text — is `rusty-photon-doctor-checks`' `claims` module, so
-  `zwo-camera` and `qhy-camera` take the same rules from the same code (plan
-  C3/C4).
-- **`placeholder.rs`** — `PlaceholderCamera`, the `Device` + `Camera` that
-  holds a listed number whose camera cannot be served (U4). Service-local
-  while this is its one consumer: `rusty-photon-camera-core` is by its own
-  rule no home for a `Camera` implementation, so the shared home is chosen
-  when `zwo-camera` becomes the second consumer (plan C3).
+  bus, U2), the simulated scan (U7), what `doctor --devices` can say about
+  each camera without opening it (U8), and the placeholder it registers (U4).
+  The vendor-neutral half — the join itself, the list validation, port order,
+  the scan source, the listing and its block, the placeholder's fixed error
+  code, `UniqueID` form and reason text — is `rusty-photon-doctor-checks`'
+  `claims` module, and the placeholder device (`PlaceholderCamera`, the
+  `Device` + `Camera` that holds a listed number whose camera cannot be
+  served) and the failed scan's re-scan (U6) are `rusty-photon-driver`'s
+  `claims` module, so `zwo-camera` and `qhy-camera` take the same rules from
+  the same code (plan C3/C4). `rusty-photon-camera-core` is by its own rule no
+  home for a `Camera` implementation.
 - **`camera.rs`** — `SvbonyCamera` (one instance per discovered camera)
   implementing both `Device` and `Camera` against the `backend::CameraHandle`
   seam — the full exposure state machine, ROI/binning, gain/offset,
@@ -1289,13 +1288,17 @@ Part A, of which this driver is phase C2. Nothing here applies without a
 list: the no-list default registers every camera the SDK enumerates, in SDK
 order, with no USB scan, as it always has.
 
-The vendor-neutral rules live in shared code so that `zwo-camera` (C3) and
-`qhy-camera` (C4) take them unchanged: the join, the list validation, port
-order, the `--devices` layout and the placeholder's error code, `UniqueID`
-form and reason text, all in `rusty-photon-doctor-checks`' `claims` module.
-What is SVBony's own — the normalizer and the USB scan source — is
-`claims.rs`; the placeholder device, `placeholder.rs`, stays here until a
-second driver needs it.
+The vendor-neutral rules live in shared code, which `zwo-camera` (plan C3,
+[zwo-camera.md](zwo-camera.md) U1-U9) takes unchanged and `qhy-camera` (C4)
+will: the join, the list validation, port order, the scan source, the
+`--devices` listing and block, and the placeholder's error code, `UniqueID`
+form and reason text in `rusty-photon-doctor-checks`' `claims` module; the
+placeholder Camera device and the failed scan's re-scan in
+`rusty-photon-driver`'s `claims` module, behind that crate's `claims` feature
+(`rusty-photon-camera-core` is by its own rule no home for a `Camera`
+implementation). What is SVBony's own — the normalizer, the simulated scan,
+and what `doctor --devices` can say about a camera without opening it — is
+`claims.rs`.
 
 - **U1. The list is applied before anything could open a camera.** With a
   list, `build()` takes the host's USB scan (the passive collector of
@@ -2321,7 +2324,8 @@ Layered per [`testing.md`](../skills/testing.md).
   serial route the simulation cannot reach (its camera publishes no USB
   serial), every look-alike shape — and port order are unit-tested in
   `rusty-photon-doctor-checks`' `claims` module, the normalizer in
-  `claims.rs`, and the placeholder's members in `placeholder.rs`.
+  `claims.rs`, and the placeholder's members and the re-scan's schedule in
+  `rusty-photon-driver`'s `claims` module.
 - **ConformU** — `tests/conformu_integration.rs` (Phase F), mirroring
   `zwo-camera`'s: starts the `--features conformu` binary (real SDK link
   required, per "Native dependency & build gating" above — `conformu`
