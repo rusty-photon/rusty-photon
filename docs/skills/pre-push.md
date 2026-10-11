@@ -706,9 +706,10 @@ bazel test //...           # filters out tagged `requires-cargo` and `conformu`;
 rustc for first-party code, so the CI Bazel jobs fail on any warning rather than
 printing it. That is what makes a warning firing on only one target OS a gate:
 the *required* `cargo clippy -D warnings` runs on ubuntu only, and CI builds all
-three platforms. (Clippy's own OS gap is covered by the `bazel clippy` step on
-the Windows and macOS legs, and off-PR by check.yml's `windows / clippy` +
-`macos / clippy` legs — see the check.yml section above.)
+three platforms. (Clippy's own OS gap is covered on PRs by the `bazel clippy`
+step on the Windows leg. macOS-only code is linted only after a merge, by the
+macOS leg on pushes to main and off-PR by check.yml's `macos / clippy`, which
+runs beside `windows / clippy`; see the check.yml section above.)
 A plain local `bazel build //...` does *not* deny — the pre-commit hook already
 runs `cargo clippy -- -D warnings` (a superset of rustc's lints) for your host
 platform, and a Linux host cannot build the macOS/Windows targets where the

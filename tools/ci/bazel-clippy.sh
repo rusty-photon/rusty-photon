@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bazel's clippy, exactly as bazel.yml's `bazel clippy` step runs it — run the
-# same script locally, from the repository root:
+# same script locally, from anywhere in the repository:
 #
 #   tools/ci/bazel-clippy.sh [extra bazel build flags...]
 #
@@ -30,17 +30,31 @@
 # are printed after it, where the log ends.
 set -uo pipefail
 
+# The MSRV check reads Cargo.toml and clippy.toml by relative path.
+cd "$(dirname "${BASH_SOURCE[0]}")/../.." || exit 2
+
 rust_kinds='kind("^rust_(library|binary|test|proc_macro|shared_library|static_library) rule$", //...)'
 build_scripts='attr(generator_function, "^cargo_build_script$", //...)'
 # The tags rules_rust's clippy aspect skips; clippy.bzl lowercases a tag and
 # maps `-` to `_` before comparing.
 skip_tags='attr(tags, "(?i)\b(no[-_]?clippy|no[-_]?lint)\b", //...)'
 
+# The queries take the caller's `--config`s that .bazelrc defines for `common`
+# or `query`, so they resolve modules as the builds around them do (CI's
+# `common:ci --lockfile_mode=error`). `bazel query` rejects the rest: build
+# flags, and a `--config` defined only for `build` (`remote-cache`, `profile`).
+query_flags=()
+for arg in "$@"; do
+  if [[ $arg == --config=* ]] && grep -Eq "^(common|query):${arg#--config=}( |$)" .bazelrc; then
+    query_flags+=("$arg")
+  fi
+done
+
 # Prints the labels a query matches. Every call sits inside `$(...)`, where
 # an `exit` would leave only that subshell, so it returns 2 and each caller
 # exits on it.
 query() {
-  bazel query --output=label "$1" || {
+  bazel query ${query_flags[@]+"${query_flags[@]}"} --output=label "$1" || {
     echo "::error::bazel query failed: $1" >&2
     return 2
   }

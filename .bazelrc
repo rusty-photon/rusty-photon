@@ -140,10 +140,15 @@ build --@rules_rust//rust/toolchain/channel=stable
 # Clippy actions need (dependency metadata) and nothing else — no linking —
 # so it also works on a target that cannot link here, which is why bazel.yml
 # can name the `manual` targets `//...` would skip.
+#
+# --keep_going: one run reports every crate's findings, not just the first
+# failing crate's. CI already has it from `build:remote-cache`; this gives a
+# local run the same.
 build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
 build --@rules_rust//rust/settings:clippy_flag=-Dwarnings
 build:clippy --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
 build:clippy --output_groups=clippy_checks
+build:clippy --keep_going
 
 # Drop debuginfo from Bazel-built artifacts. CI only needs pass/fail, not debug
 # symbols, and debuginfo bloats the rlibs/test binaries the remote cache moves
