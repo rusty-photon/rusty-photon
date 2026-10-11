@@ -43,9 +43,10 @@ use crate::backend::{BackendError, CameraHandle, ImageData, Verdict};
 use crate::config::DeviceOverride;
 use crate::config_actions::QhyCameraDriver;
 
-/// 0x500 — driver-specific catch-all for an asynchronous capture failure
-/// surfaced lazily via `image_array`.
-const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
+/// 0x500 — driver-specific catch-all for an asynchronous operation that
+/// failed, surfaced lazily: a capture's via `image_array`, a wheel move's via
+/// the wheel's `Position` (FW8).
+pub(crate) const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
 
 /// How long an abort/disconnect waits for the capture task to leave the SDK.
 /// Sized for a readout, not an exposure: the task's wait for the exposure to

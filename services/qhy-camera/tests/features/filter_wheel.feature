@@ -7,8 +7,15 @@ Feature: Filter wheel
   while the target slot differs from the actual slot or the wheel reports
   itself moving, as the simulated CFW does in transit (FW7). set_position validates
   that the index is less than the filter count and rejects an out-of-range
-  index with INVALID_VALUE (FW2). FocusOffsets returns zero for every filter
-  in v0 (FW3). The simulated CFW has 7 positions.
+  index with INVALID_VALUE (FW2). While the wheel is still moving to one slot,
+  a write of another is refused with INVALID_OPERATION, since a CFW drops a
+  move sent while it travels; a write of the slot under way is accepted and
+  not sent again (FW2). A move that has not arrived 30 s after it was sent
+  has failed, and Position reports that as an error until a write goes out
+  to the wheel (FW8); the simulated CFW drops no move, so the unit tests pin
+  that.
+  FocusOffsets returns zero for every filter in v0 (FW3). The simulated CFW
+  has 7 positions.
 
   Background:
     Given the qhy-camera service running with the simulation backend
@@ -28,6 +35,27 @@ Feature: Filter wheel
     Then filterwheel device 0 reports Position as moving
     And the filter wheel move on device 0 completes
     And filterwheel device 0 reports Position as 3
+
+  Scenario: A write of another slot while the wheel still travels is refused
+    When I set filterwheel device 0 to position 3
+    And I try to set filterwheel device 0 to position 5
+    Then the set is rejected with ASCOM INVALID_OPERATION
+    And the filter wheel move on device 0 completes
+    And filterwheel device 0 reports Position as 3
+
+  Scenario: A write of the slot the wheel is already moving to is accepted
+    When I set filterwheel device 0 to position 3
+    And I set filterwheel device 0 to position 3
+    Then filterwheel device 0 reports Position as moving
+    And the filter wheel move on device 0 completes
+    And filterwheel device 0 reports Position as 3
+
+  Scenario: Once the wheel has arrived, the next slot goes out
+    When I set filterwheel device 0 to position 3
+    And the filter wheel move on device 0 completes
+    And I set filterwheel device 0 to position 5
+    And the filter wheel move on device 0 completes
+    Then filterwheel device 0 reports Position as 5
 
   Scenario Outline: An out-of-range slot is rejected
     When I try to set filterwheel device 0 to position <slot>
