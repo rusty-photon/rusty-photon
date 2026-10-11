@@ -1169,7 +1169,11 @@ and then `phd2-guider serve` pointed at it via
 remove. The name has no `.fits` extension, because PHD2's (from
 `wxFileName::CreateTempFileName`) has none either. As with that call's
 `mkstemp`, a name that already exists is skipped, never overwritten.
-The frame is fixed,
+The file's life only approximates PHD2's. PHD2 reserves the name with
+`mkstemp`, then saves through cfitsio with the clobber prefix `!`, which
+deletes the reserved file and creates a new one under the same name, so
+for a moment the name does not exist. The mock creates the file once and
+writes into it. The frame is fixed,
 so tests can check what they decode: a primary HDU, `BITPIX = 16`,
 `BZERO = 32768`, 8×6 pixels, where row-major pixel `i` holds
 `i × 1365` (0 to 64155, crossing the signed 16-bit midpoint). A failed

@@ -1184,10 +1184,14 @@ async fn connect_to_mock_saving_into(image_dir: &std::path::Path) -> (ProcessGua
 }
 
 /// Spawn `mock_phd2` with `envs` added, and connect a client to it.
+///
+/// The mock's stderr is inherited: it is the only place the mock says why
+/// a `save_image` failed (its reply is a bare "error saving image"), and
+/// these tests start too few mocks for the verbosity to matter.
 #[cfg(not(miri))]
 async fn connect_to_mock_with_env(envs: &[(&str, &std::ffi::OsStr)]) -> (ProcessGuard, Phd2Client) {
     let (port, child) =
-        spawn_mock_phd2_dynamic_port(mock_phd2_bin(), "normal", Stdio::null(), envs)
+        spawn_mock_phd2_dynamic_port(mock_phd2_bin(), "normal", Stdio::inherit(), envs)
             .expect("Failed to start mock_phd2 server");
     let guard = ProcessGuard::new(child, "mock_phd2");
 
@@ -1327,9 +1331,10 @@ async fn test_mock_phd2_save_image_with_relative_image_dir_is_an_rpc_error() {
 }
 
 /// A directory whose name is not UTF-8 cannot be carried in the JSON
-/// reply, so the mock refuses it and leaves nothing behind in it. Linux
-/// only: macOS filesystems refuse such a name, and Windows paths are
-/// UTF-16.
+/// reply. The mock answers code 3 and the directory is still empty
+/// afterwards: this pins that outcome, not when (or whether) a file was
+/// ever created. Linux only: macOS filesystems refuse such a name, and
+/// Windows paths are UTF-16.
 #[tokio::test]
 #[cfg(all(target_os = "linux", not(miri)))]
 async fn test_mock_phd2_save_image_with_non_utf8_image_dir_writes_nothing() {

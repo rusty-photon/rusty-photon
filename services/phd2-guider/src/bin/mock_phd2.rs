@@ -74,7 +74,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -290,8 +290,8 @@ const SAVED_FRAME_PIXELS: usize = SAVED_FRAME_WIDTH * SAVED_FRAME_HEIGHT;
 /// `BZERO = 32768` encoding of unsigned 16-bit pixels pivots on.
 const SAVED_FRAME_STEP: usize = 1365;
 
-/// Answer `save_image` as PHD2 does: write the current frame to a new
-/// FITS file and return its full path. The frame is a fixed 8×6
+/// Answer `save_image` in PHD2's wire format: write the current frame to
+/// a new FITS file and return its full path. The frame is a fixed 8×6
 /// unsigned 16-bit ramp (primary HDU, `BITPIX = 16`, `BZERO = 32768`).
 /// The mock always has this frame to save: it does not model which
 /// exposure a frame came from, nor PHD2's `no image available` (code 2)
@@ -300,66 +300,66 @@ const SAVED_FRAME_STEP: usize = 1365;
 /// The file goes to `MOCK_PHD2_IMAGE_DIR` and is left there: as with
 /// PHD2, removing it is the client's job. There is no default
 /// directory, so no run can scatter files into a shared one. The call
-/// fails before creating anything when the variable is unset, not UTF-8
+/// fails, leaving nothing behind, when the variable is unset, not UTF-8
 /// (the reply carries the path as a JSON string), or not absolute (an
 /// empty or relative value would land in the mock's working directory).
-/// PHD2 names the file with
+/// The reply is the variable's own text plus an ASCII name, so it is
+/// never converted back from a path. PHD2 names the file with
 /// `wxFileName::CreateTempFileName(<dir>/save_image_)`, so the real name
 /// has no `.fits` extension; this one has none either, so a client cannot
 /// come to rely on one.
 ///
-/// Like PHD2, which creates the file (`mkstemp`) and then writes into
-/// it, the mock creates the file and writes in place. Any failure after
-/// the file exists removes it again, as PHD2 removes the file of a failed
-/// save. Names are the process id plus a per-process counter. Creation
-/// refuses a name that already exists, so one left by an earlier run with
-/// the same process id is skipped for the next, never overwritten, as
-/// `mkstemp` skips a taken name.
+/// The file's life is an approximation of PHD2's. PHD2 reserves the name
+/// with `mkstemp` (inside `CreateTempFileName`), then saves through
+/// cfitsio with the clobber prefix `!`, which deletes that reserved file
+/// and creates a new one under the same name. The mock creates the file
+/// once and writes into it, so it never shows the moment the name is
+/// missing. If the write fails it removes the file, as PHD2 removes the
+/// file of a failed save. Names are the process id plus a per-process
+/// counter. Creation refuses a name that already exists, so one left by
+/// an earlier run with the same process id is skipped for the next, never
+/// overwritten, as `mkstemp` skips a taken name.
 fn save_image() -> Result<String, String> {
     static NEXT_IMAGE: AtomicU64 = AtomicU64::new(0);
 
-    let dir = PathBuf::from(
-        std::env::var("MOCK_PHD2_IMAGE_DIR")
-            .map_err(|e| format!("MOCK_PHD2_IMAGE_DIR: {e}, so there is nowhere to save"))?,
-    );
-    if !dir.is_absolute() {
+    let mut prefix = std::env::var("MOCK_PHD2_IMAGE_DIR")
+        .map_err(|e| format!("MOCK_PHD2_IMAGE_DIR: {e}, so there is nowhere to save"))?;
+    if !Path::new(&prefix).is_absolute() {
         return Err(format!(
-            "MOCK_PHD2_IMAGE_DIR must be an absolute directory, not \"{}\"",
-            dir.display()
+            "MOCK_PHD2_IMAGE_DIR must be an absolute directory, not \"{prefix}\""
         ));
+    }
+    if !prefix.ends_with(std::path::is_separator) {
+        prefix.push(std::path::MAIN_SEPARATOR);
     }
 
     let pixels: Vec<u16> = (0..=u16::MAX)
         .step_by(SAVED_FRAME_STEP)
         .take(SAVED_FRAME_PIXELS)
         .collect();
-    let (path, mut file) = loop {
+    let (filename, mut file) = loop {
         let serial = NEXT_IMAGE.fetch_add(1, Ordering::Relaxed);
-        let path = dir.join(format!("save_image_{}_{serial}", std::process::id()));
-        match std::fs::File::create_new(&path) {
-            Ok(file) => break (path, file),
+        let filename = format!("{prefix}save_image_{}_{serial}", std::process::id());
+        match std::fs::File::create_new(&filename) {
+            Ok(file) => break (filename, file),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(format!("cannot create {}: {e}", path.display())),
+            Err(e) => return Err(format!("cannot create {filename}: {e}")),
         }
     };
-    let saved = write_u16_image(
+    if let Err(write_err) = write_u16_image(
         &mut file,
         &pixels,
         SAVED_FRAME_WIDTH,
         SAVED_FRAME_HEIGHT,
         &[],
-    )
-    .map_err(|e| format!("cannot write {}: {e}", path.display()))
-    .and_then(|()| {
-        path.to_str()
-            .map(str::to_owned)
-            .ok_or_else(|| format!("image path is not UTF-8: {}", path.display()))
-    });
-    if saved.is_err() {
+    ) {
         drop(file);
-        let _ = std::fs::remove_file(&path);
+        if let Err(e) = std::fs::remove_file(&filename) {
+            eprintln!("Mock PHD2: cannot remove {filename}: {e}");
+        }
+        return Err(format!("cannot write {filename}: {write_err}"));
     }
-    saved
+    Ok(filename)
 }
 
 fn handle_client(
