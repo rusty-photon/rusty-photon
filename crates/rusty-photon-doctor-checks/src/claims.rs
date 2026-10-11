@@ -224,6 +224,17 @@ impl Normalizer<'_> {
     fn is_own_record(&self, record: &UsbDevice) -> bool {
         record.vendor == self.vendor && !self.not_cameras.contains(&record.product.as_str())
     }
+
+    /// Whether a fault could be this driver's camera: it carries this
+    /// vendor's id, or no real one — none could be read, or it is the `0000`
+    /// Windows gives a device whose enumeration failed (doctor.md, "USB
+    /// inventory"). Another vendor's fault is that vendor's device.
+    fn could_be_camera(&self, fault: &crate::facts::UsbFault) -> bool {
+        fault
+            .vendor
+            .as_deref()
+            .is_none_or(|vendor| vendor == self.vendor || vendor == "0000")
+    }
 }
 
 /// One camera the SDK enumerated, as the join reads it: what the SDK reports
@@ -290,8 +301,8 @@ fn keyed_match(normalizer: &Normalizer<'_>, camera: &SdkCamera, record: &UsbDevi
 /// of this vendor's records, and that record matches no other camera. After
 /// the keyed matches, a camera whose **model the normalizer does not know** is
 /// paired **by elimination** with the one record left over when nothing else
-/// could explain either: exactly one of each remains, no fault carries this
-/// vendor's id, the record's product id is not one the normalizer gives any
+/// could explain either: exactly one of each remains, no fault could be the
+/// camera (see [`Normalizer`]'s rule for that), the record's product id is not one the normalizer gives any
 /// model, and their serials, when both have one, agree. A known model is never
 /// paired this way — its product id is known, and a record under another one
 /// is some other device. Everything else is refused, never guessed (D4.3).
@@ -336,10 +347,9 @@ pub fn place(normalizer: &Normalizer<'_>, sdk: &[SdkCamera], scan: &UsbScan) -> 
         .collect();
     if let ([camera], [record]) = (unpaired_cameras.as_slice(), unpaired_records.as_slice()) {
         if let (Some(sdk_camera), Some(rec)) = (sdk.get(*camera), records.get(*record)) {
-            let vendor_fault = scan
-                .faults
-                .iter()
-                .any(|f| f.vendor.as_deref() == Some(normalizer.vendor));
+            // A fault that could be the camera — its own record, which
+            // failed — leaves the leftover record unexplained.
+            let suspect_fault = scan.faults.iter().any(|f| normalizer.could_be_camera(f));
             // A known model has a known product id, so a record under another
             // one is evidence against the pair, not the absence of evidence
             // elimination needs: its own record may be missing, and the one
@@ -350,7 +360,7 @@ pub fn place(normalizer: &Normalizer<'_>, sdk: &[SdkCamera], scan: &UsbScan) -> 
                 (&sdk_camera.serial, &rec.serial),
                 (Some(sdk), Some(bus)) if sdk != bus
             );
-            if !vendor_fault && !model_known && !product_known && !serials_disagree {
+            if !suspect_fault && !model_known && !product_known && !serials_disagree {
                 if let Some(slot) = placed.get_mut(*camera) {
                     *slot = Some(*record);
                 }
@@ -484,7 +494,13 @@ impl<'a> Claims<'a> {
                 }
                 self.reason_on(&joined.scan, &joined.placement, port)
             }
-            Err(error) => format!("the USB scan failed: {error}"),
+            Err(error) => {
+                return Resolution::Placeholder(format!(
+                    "the USB scan failed: {error}. {} re-scans on its own and rebuilds \
+                     once a scan succeeds; nothing needs fixing or restarting for it",
+                    self.service
+                ));
+            }
         };
         Resolution::Placeholder(format!(
             "{reason}. Once the camera is fixed, reload or restart {}, which \
@@ -527,27 +543,33 @@ impl<'a> Claims<'a> {
         if let Some(record) = record {
             let product = record.model.as_deref().unwrap_or("a device");
             let id = format!("{}:{}", record.vendor, record.product);
-            // Only a record no known model claims could be the unrecognised
-            // camera's: one under a known model's product id is that model,
-            // which the SDK does not report, and no new entry would pair it.
-            if self.normalizer.is_own_record(record)
-                && !self.normalizer.assigns_product(&record.product)
-            {
-                let unrecognised: Vec<&str> = placement
-                    .cameras
-                    .iter()
-                    .zip(&self.sdk)
-                    .filter(|(place, _)| **place == CameraPlace::Unrecognised)
-                    .map(|(_, camera)| camera.model.as_str())
-                    .collect();
-                if !unrecognised.is_empty() {
-                    let models = unrecognised.join(", ");
+            let unrecognised: Vec<&str> = placement
+                .cameras
+                .iter()
+                .zip(&self.sdk)
+                .filter(|(place, _)| **place == CameraPlace::Unrecognised)
+                .map(|(_, camera)| camera.model.as_str())
+                .collect();
+            if self.normalizer.is_own_record(record) && !unrecognised.is_empty() {
+                let models = unrecognised.join(", ");
+                // A record no known model claims could be an unrecognised
+                // camera's. One under a known model's product id is that
+                // model — which the SDK either does not see, or names in a
+                // way the normalizer does not know yet: both are said.
+                if self.normalizer.assigns_product(&record.product) {
                     return format!(
-                        "{port} holds {product} ({id}), and the {sdk} SDK reports camera(s) \
-                         this driver knows no product id for ({models}), so nothing pairs \
-                         them; the driver's normalizer needs an entry for each of {models}"
+                        "{port} holds {product} ({id}), a model this driver knows, but the \
+                         {sdk} SDK reports none of that model; it reports camera(s) this driver \
+                         knows no product id for ({models}). Either the SDK does not see this \
+                         device, or it names it as one of those, and the driver's normalizer \
+                         needs that name"
                     );
                 }
+                return format!(
+                    "{port} holds {product} ({id}), and the {sdk} SDK reports camera(s) this \
+                     driver knows no product id for ({models}), so nothing pairs them; the \
+                     driver's normalizer needs an entry for each of {models}"
+                );
             }
             return format!(
                 "{port} holds {product} ({id}), which the {sdk} SDK does not report as a camera"
@@ -556,7 +578,7 @@ impl<'a> Claims<'a> {
         let suspects = scan
             .faults
             .iter()
-            .filter(|f| f.location.as_deref() != Some(port) && self.could_be_camera(f))
+            .filter(|f| f.location.as_deref() != Some(port) && self.normalizer.could_be_camera(f))
             .count();
         if suspects == 0 {
             format!("no working camera is enumerated on {port}")
@@ -568,17 +590,6 @@ impl<'a> Claims<'a> {
                  hardware.usb-fault"
             )
         }
-    }
-
-    /// Whether a fault could be this driver's camera: it carries this
-    /// vendor's id, or no real one — none could be read, or it is the `0000`
-    /// Windows gives a device whose enumeration failed (doctor.md, "USB
-    /// inventory"). Another vendor's fault is that vendor's device.
-    fn could_be_camera(&self, fault: &crate::facts::UsbFault) -> bool {
-        fault
-            .vendor
-            .as_deref()
-            .is_none_or(|vendor| vendor == self.normalizer.vendor || vendor == "0000")
     }
 
     /// The SDK cameras the join placed, by enumeration index, with their
@@ -637,7 +648,11 @@ impl<'a> Claims<'a> {
             .filter(|r| self.normalizer.is_own_record(r))
         {
             let port = record.port.as_deref().unwrap_or_default();
-            if placement.camera_on(port).is_none() {
+            // A look-alike's record is already named in its note above.
+            let look_alike = placement.cameras.iter().any(|place| {
+                matches!(place, CameraPlace::LookAlike { ports, .. } if ports.iter().any(|p| p == port))
+            });
+            if placement.camera_on(port).is_none() && !look_alike {
                 notes.push(format!(
                     "{port} holds {} ({}:{}), which no {sdk} SDK camera is placed on",
                     record.model.as_deref().unwrap_or("a device"),
@@ -1202,6 +1217,23 @@ mod tests {
     }
 
     #[test]
+    fn elimination_waits_out_a_fault_with_no_readable_vendor() {
+        let mut bus = scan(vec![record("9a0f", "p1")]);
+        bus.faults.push(fault(None, None));
+        let placement = place(&SVB, &[camera("SV905C")], &bus);
+        assert_eq!(placement.cameras, vec![CameraPlace::Unrecognised]);
+    }
+
+    #[test]
+    fn elimination_waits_out_a_windows_enumeration_failure() {
+        let mut bus = scan(vec![record("9a0f", "p1")]);
+        bus.faults
+            .push(fault(Some("0000"), Some("ACPI(_SB_)#ACPI(HS05)")));
+        let placement = place(&SVB, &[camera("SV905C")], &bus);
+        assert_eq!(placement.cameras, vec![CameraPlace::Unrecognised]);
+    }
+
+    #[test]
     fn elimination_ignores_another_vendors_fault() {
         let mut bus = scan(vec![record("9a0f", "p1")]);
         bus.faults.push(fault(Some("0403"), None));
@@ -1269,6 +1301,10 @@ mod tests {
         assert!(
             reason.starts_with("the USB scan failed: powershell.exe timed out."),
             "{reason}"
+        );
+        assert!(
+            reason.contains("re-scans on its own") && !reason.contains("reload or restart"),
+            "a failed scan heals itself, so its reason sends nobody to restart: {reason}"
         );
         assert_eq!(claims.placement(), None);
         assert_eq!(claims.scan_error(), Some("powershell.exe timed out"));
@@ -1362,18 +1398,20 @@ mod tests {
     }
 
     #[test]
-    fn a_known_models_record_beside_an_unrecognised_camera_is_the_known_model() {
-        // No entry for SV905C could pair it with 9a0a: that record is an
-        // SV605CC the SDK does not report.
+    fn a_known_models_record_beside_an_unrecognised_camera_names_both_causes() {
+        // 9a0a is the SV605CC's: either the SDK does not see it, or the SDK's
+        // SV905C is that camera under a name the normalizer does not know.
         let claims = claims(Ok(scan(vec![record("9a0a", "p1")])), vec![camera("SV905C")]);
         let reason = placeholder_reason(claims.resolve("p1"));
         assert!(
             reason.starts_with(
-                "p1 holds SVBONY 9a0a (f266:9a0a), which the SVBony SDK does not report as a \
-                 camera."
+                "p1 holds SVBONY 9a0a (f266:9a0a), a model this driver knows, but the SVBony \
+                 SDK reports none of that model"
             ),
             "{reason}"
         );
+        assert!(reason.contains("(SV905C)"), "{reason}");
+        assert!(reason.contains("normalizer needs that name"), "{reason}");
     }
 
     #[test]
@@ -1437,13 +1475,24 @@ mod tests {
 
     #[test]
     fn unplaced_notes_name_look_alikes_stray_records_and_faults() {
-        let mut bus = scan(vec![record("9a0a", "p1"), record("9a0a", "p2")]);
+        let mut bus = scan(vec![
+            record("9a0a", "p1"),
+            record("9a0a", "p2"),
+            record("9a0f", "p4"),
+        ]);
         bus.faults.push(fault(Some("f266"), Some("p3")));
         let notes = claims(Ok(bus), vec![camera("SV605CC")]).unplaced_notes();
-        assert_eq!(notes.len(), 4, "{notes:?}");
+        assert_eq!(notes.len(), 3, "{notes:?}");
         assert!(notes[0].contains("cannot be told apart"), "{notes:?}");
-        assert!(notes[1].starts_with("p1 holds"), "{notes:?}");
-        assert!(notes[3].contains("is not a working device"), "{notes:?}");
+        assert!(notes[1].starts_with("p4 holds"), "{notes:?}");
+        assert!(notes[2].contains("is not a working device"), "{notes:?}");
+    }
+
+    #[test]
+    fn a_look_alikes_records_are_not_named_twice() {
+        let bus = scan(vec![record("9a0a", "p1"), record("9a0a", "p2")]);
+        let notes = claims(Ok(bus), vec![camera("SV605CC")]).unplaced_notes();
+        assert_eq!(notes.len(), 1, "{notes:?}");
     }
 
     // --- port order ----------------------------------------------------------

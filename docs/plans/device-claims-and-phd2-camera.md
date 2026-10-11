@@ -658,7 +658,11 @@ date. (`name` is display text, never a key.)
    (records the normalizer or the SDK's passive check identifies as
    non-cameras excluded), no fault carries this driver's vendor id, and
    the record's VID:PID is not one the normalizer assigns to a different
-   model. Both sides are then complete for this SDK, so this is a
+   model. (C2 settled two edges. A fault whose vendor id could not be
+   read — none, or Windows' enumeration-failure `0000` — blocks
+   elimination too, since it may be the camera's own record. And only a
+   model the normalizer does not know is paired this way: a known model's
+   leftover record under another product id is some other device.) Both sides are then complete for this SDK, so this is a
    deduction, not a guess — and it is what keeps a single-camera rig
    whose model nobody has observed yet working after C5. A camera still
    unpaired after elimination is **unrecognised** (D4.3).

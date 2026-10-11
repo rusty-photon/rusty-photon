@@ -12,7 +12,9 @@ use rusty_photon_doctor_checks::claims::{render_listing, Claims};
 use rusty_photon_doctor_checks::service::SdkOutcome;
 
 use crate::claims::{listing, sdk_cameras, UsbSource, NORMALIZER, SDK_NAME, SERVICE, VENDOR};
-use crate::{load_effective_config, read_effective_config, sdk_camera_infos, CliOverrides};
+use crate::{
+    load_effective_config, read_effective_config, sdk_camera_infos, CliOverrides, SvbonyCameraError,
+};
 
 /// `doctor --devices`: the `SVBony` cameras on the bus by USB port, and the
 /// `usb_devices` block to paste (docs/services/svbony-camera.md U8).
@@ -30,17 +32,22 @@ pub fn run_devices(config: Option<PathBuf>, source: &UsbSource) -> ! {
             exit(2);
         }
     };
-    let (output, code) = devices(&config_path, source);
-    print!("{output}");
-    exit(code);
+    match devices(&config_path, source) {
+        Ok((output, code)) => {
+            print!("{output}");
+            exit(code);
+        }
+        Err(error) => {
+            eprintln!("doctor: {error}");
+            exit(1);
+        }
+    }
 }
 
-/// The listing [`run_devices`] prints, and its exit code.
-fn devices(config_path: &Path, source: &UsbSource) -> (String, i32) {
-    let config = match read_effective_config(config_path, &CliOverrides::default()) {
-        Ok(config) => config,
-        Err(error) => return (format!("{error}\n"), 1),
-    };
+/// The listing [`run_devices`] prints, and its exit code; `Err` when the
+/// config cannot be read at all, which goes to stderr as the path error does.
+fn devices(config_path: &Path, source: &UsbSource) -> Result<(String, i32), SvbonyCameraError> {
+    let config = read_effective_config(config_path, &CliOverrides::default())?;
     // Said whatever else fails, so a host fault fixed first does not hide it.
     let list_note = config.check_list().err().map(|error| {
         format!(
@@ -55,33 +62,33 @@ fn devices(config_path: &Path, source: &UsbSource) -> (String, i32) {
     };
     let scan = source.scan();
     if let Err(error) = &scan {
-        return (
+        return Ok((
             with_list_note(format!(
                 "{SDK_NAME} cameras on the bus (vendor {VENDOR}):\n\n  the USB scan failed: \
                  {error}\n"
             )),
             1,
-        );
+        ));
     }
     let infos = match sdk_camera_infos() {
         Ok(infos) => infos,
         Err(error) => {
-            return (
+            return Ok((
                 with_list_note(format!("{SDK_NAME} SDK enumeration failed: {error}\n")),
                 1,
-            )
+            ))
         }
     };
     let claims = Claims::new(NORMALIZER, SERVICE, scan, sdk_cameras(&infos));
     let mut listing = listing(&config, &claims, &infos);
     let Some(note) = list_note else {
-        return (render_listing(&listing), 0);
+        return Ok((render_listing(&listing), 0));
     };
     // A block reproducing a list the service refuses would only be pasted
     // back; the ports listed are what the operator fixes it from.
     listing.block = None;
     listing.notes.insert(0, note);
-    (render_listing(&listing), 1)
+    Ok((render_listing(&listing), 1))
 }
 
 pub fn run(config: Option<PathBuf>, json: bool) -> ! {

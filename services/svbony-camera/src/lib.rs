@@ -497,7 +497,9 @@ impl Rescan {
     /// Nobody asked for this rebuild, so it waits out anything that would make
     /// it end the service instead.
     async fn run(self, ready: tokio::sync::oneshot::Sender<()>) {
-        let mut said_blocked = false;
+        // Each blocker is warned about once, on its own: one cleared and the
+        // other met afterwards is a new reason the operator has not heard.
+        let (mut said_config, mut said_sdk) = (false, false);
         for wait in rusty_photon_doctor_checks::claims::rescan_waits() {
             tokio::time::sleep(wait).await;
             let this = self.clone();
@@ -510,17 +512,17 @@ impl Rescan {
                     return;
                 }
                 Ok(Some(Blocker::Scan(error))) => debug!(%error, "the USB scan still fails"),
-                Ok(Some(Blocker::Config(error))) if !said_blocked => {
+                Ok(Some(Blocker::Config(error))) if !said_config => {
                     warn!(%error, "the config file no longer loads; not rebuilding until it does");
-                    said_blocked = true;
+                    said_config = true;
                 }
-                Ok(Some(Blocker::Sdk(error))) if !said_blocked => {
+                Ok(Some(Blocker::Sdk(error))) if !said_sdk => {
                     warn!(
                         %error,
                         "the USB scan succeeds again, but the SVBony SDK cannot enumerate; not \
                          rebuilding until it can"
                     );
-                    said_blocked = true;
+                    said_sdk = true;
                 }
                 Ok(Some(Blocker::Config(error) | Blocker::Sdk(error))) => {
                     debug!(%error, "the rebuild is still blocked");

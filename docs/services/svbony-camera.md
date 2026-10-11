@@ -1341,8 +1341,10 @@ second driver needs it.
   After the keyed matches, an SDK camera whose model the normalizer does not
   know and the one record left over are **paired by elimination** when nothing
   else could explain either: exactly one SDK camera and exactly one `f266`
-  record remain unpaired, no fault carries `f266`, and the record's product id
-  is not one the normalizer gives any model. That keeps a single camera whose
+  record remain unpaired, no fault could be the camera (an `f266` fault, or
+  one whose vendor id could not be read, Windows' `0000` included — the
+  camera's own failed record leaves the leftover unexplained), and the
+  record's product id is not one the normalizer gives any model. That keeps a single camera whose
   model nobody has observed yet working. A known model is never paired this
   way: its product id is known, so a leftover record under another one is a
   different device, and its own record is missing.
@@ -1388,7 +1390,11 @@ second driver needs it.
      (U3);
   4. a working record no SDK camera is placed on — another vendor's device,
      or a SVBony one the SDK does not report: *"`<port>` holds `<product>`
-     (`<vid>:<pid>`), which the SVBony SDK does not report as a camera"*;
+     (`<vid>:<pid>`), which the SVBony SDK does not report as a camera"*.
+     When the record is a known model's and the SDK reports a model this
+     driver does not know, the reason names both possible causes: the SDK
+     does not see the device, or it names it as that model, and the
+     normalizer needs the name;
   5. otherwise *"no working camera is enumerated on `<port>`"* — never "the
      port is empty", because absence proves nothing (a device whose
      enumeration failed leaves no record on Linux, and only an `ACPI(…)` chain
@@ -1399,7 +1405,9 @@ second driver needs it.
      Another vendor's fault is that vendor's device, and is not offered.
 
   Every reason ends with the way back: once the camera is fixed, reload or
-  restart the service, which re-opens every camera it serves. (The device-
+  restart the service, which re-opens every camera it serves. The failed
+  scan's is the exception: the service re-scans and rebuilds on its own
+  (U6), so it says that, and sends nobody to restart anything. (The device-
   claims plan's D4.8 hint — *a camera is on this port's USB 2.0 twin* — needs
   a port-pairing signal the collectors do not read yet, so a camera that fell
   back to USB 2 speed is reported by the generic reasons above, and shows in

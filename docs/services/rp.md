@@ -2893,9 +2893,11 @@ devices:
   refusal counts as a placeholder's only when the device's `UniqueID` has
   the placeholder form (`placeholder:<service>:<usb_port>`) as well: the
   `0x500`–`0xFFF` range is every Alpaca driver's to use, so another
-  driver's `0x540` is still retried. The classification is the shared
-  connect helper's, so `qhy-camera`'s placeholder filter wheels (plan C4)
-  take the same path.
+  driver's `0x540` is still retried. The classification lives in the
+  shared connect helper (`alpaca::connect_refused`). Only the camera
+  connect calls it today, since only cameras have placeholders yet; the
+  plan's C4 routes the filter-wheel connect through it when `qhy-camera`'s
+  placeholder filter wheels arrive.
 
 The cadence is fixed — no exponential backoff. One `Connected` read per
 device per interval is the steady-state cost, and the interval itself
