@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Bazel's clippy, exactly as bazel.yml's `bazel clippy` step runs it — run the
+# same script locally, from the repository root:
+#
+#   tools/ci/bazel-clippy.sh [extra bazel build flags...]
+#
+# (CI passes `--config=ci`, its remote-cache flags and, on Windows, a profile.)
+#
+# First it asserts the inputs Bazel's clippy takes on trust from the BUILD
+# files and clippy.toml. None of these mistakes is an error to Bazel — each
+# one lints with less than the workspace asks for, and the run stays green:
+#
+#  1. Every first-party Rust target sets `lint_config`. rules_rust lints a
+#     target without one with clippy's defaults and passes it, silently
+#     dropping `[workspace.lints.clippy]`'s deny set. The `cargo_build_script`
+#     binaries are exempt: the macro does not pass the attribute through.
+#  2. No first-party Rust target opts out of clippy with one of the tags
+#     rules_rust's clippy aspect skips (`noclippy`, `no_lint`, ...). An
+#     opt-out drops code from the lint without any trace in the run.
+#  3. clippy.toml's `msrv` equals the root Cargo.toml's `rust-version`.
+#     rules_rust sets no CARGO_PKG_RUST_VERSION, so the key is the only MSRV
+#     Bazel's clippy sees; Cargo's clippy only warns when the two differ, and
+#     a warning about configuration is not a lint `-D warnings` can deny.
+#
+# Then it lints `//...` plus the `manual` Rust targets `//...` skips: some are
+# manual only because they cannot LINK without a vendor SDK (svbony-camera's
+# binary), and `--config=clippy` builds the clippy_checks output group alone,
+# which never links. The checks' verdict is reported after the lint, so one
+# run shows both a check miss and a real clippy finding.
+set -uo pipefail
+
+rust_kinds='kind("^rust_(library|binary|test|proc_macro|shared_library|static_library) rule$", //...)'
+build_scripts='attr(generator_function, "^cargo_build_script$", //...)'
+# The tags rules_rust's clippy aspect skips; clippy.bzl lowercases a tag and
+# maps `-` to `_` before comparing.
+skip_tags='attr(tags, "(?i)\b(no[-_]?clippy|no[-_]?lint)\b", //...)'
+
+query() {
+  bazel query --output=label "$1" || {
+    echo "::error::bazel query failed: $1"
+    exit 2
+  }
+}
+
+status=0
+
+missing=$(query "$rust_kinds except attr(lint_config, \".\", //...) except $build_scripts")
+if [[ -n "$missing" ]]; then
+  printf '%s\n' "$missing"
+  echo "::error::the Rust targets above have no lint_config, so Bazel's clippy lints them without the workspace deny set. Add \`lint_config = \":lints\"\` (and, in a new package, the \`extract_cargo_lints\` target named \`lints\` — copy any existing BUILD.bazel)."
+  status=1
+fi
+
+skipped=$(query "($rust_kinds) intersect $skip_tags")
+if [[ -n "$skipped" ]]; then
+  printf '%s\n' "$skipped"
+  echo "::error::the Rust targets above opt out of Bazel's clippy by tag, so their code goes unlinted. Remove the tag and fix what clippy reports instead."
+  status=1
+fi
+
+cargo_msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+clippy_msrv=$(sed -n 's/^msrv = "\(.*\)"$/\1/p' clippy.toml)
+if [[ -z "$cargo_msrv" || "$cargo_msrv" != "$clippy_msrv" ]]; then
+  echo "::error::clippy.toml msrv (\"$clippy_msrv\") must equal Cargo.toml rust-version (\"$cargo_msrv\"): it is the MSRV Bazel's clippy lints against."
+  status=1
+fi
+
+manual=()
+labels=$(query "attr(tags, \"\\bmanual\\b\", $rust_kinds) except $build_scripts")
+if [[ -n "$labels" ]]; then
+  while IFS= read -r label; do manual+=("$label"); done <<<"$labels"
+fi
+
+bazel build --config=clippy "$@" -- //... "${manual[@]}" || status=1
+
+if [[ "$status" -eq 0 ]]; then
+  echo "Bazel clippy clean: every first-party Rust target linted (${#manual[@]} manual target(s) named explicitly), with the workspace lint set and MSRV $cargo_msrv."
+fi
+exit "$status"

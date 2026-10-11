@@ -112,12 +112,13 @@ build --local_resources=omnisim=35
 # Use the stable Rust toolchain channel for Bazel builds.
 build --@rules_rust//rust/toolchain/channel=stable
 
-# `bazel build --config=clippy //...` runs clippy over every first-party Rust
-# target through rules_rust's aspect: one `Clippy` action per target, keyed on
-# its sources, its deps' metadata, its lint files and clippy.toml, so the
-# remote cache serves every crate a change does not reach. bazel.yml runs it on
-# each OS leg after `bazel build`, which makes it the only clippy that lints
-# `#[cfg(windows)]` code before a merge.
+# `--config=clippy` runs clippy over first-party Rust targets through rules_rust's
+# aspect: one `Clippy` action per target, keyed on its sources, its deps'
+# metadata, its lint files and clippy.toml, so the remote cache serves every
+# crate a change does not reach. Run it through tools/ci/bazel-clippy.sh, as
+# bazel.yml does on each OS leg after `bazel build` (which makes it the only
+# clippy that lints `#[cfg(windows)]` code before a merge): the script also
+# checks the inputs below and lints the `manual` targets `//...` skips.
 #
 # The deny set comes from each target's `lint_config` — an
 # `extract_cargo_lints` reading the crate's Cargo.toml `[lints]`, so Cargo and

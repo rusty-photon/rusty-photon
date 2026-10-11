@@ -219,7 +219,7 @@ The local pre-commit gate is Bazel plus Cargo's linters (Bazel runs no rustfmt, 
 
 ```bash
 bazel build //... && bazel test //...                     # build + fast tests (BDD/conformu auto-excluded)
-bazel build --config=clippy //...                         # the Bazel legs' clippy step
+tools/ci/bazel-clippy.sh                                  # the Bazel legs' clippy step
 cargo fmt
 cargo clippy --all-targets --all-features -- -D warnings
 cargo clippy --workspace --lib --bins -- -D warnings      # default-features pass — lints what --all-features cfgs out (#988)

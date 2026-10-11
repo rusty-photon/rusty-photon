@@ -82,7 +82,7 @@
          .iter()
          // Remove any substrings found in the argument
          .map(|arg| {
-@@ -226,20 +261,306 @@
+@@ -226,20 +261,308 @@
                  .for_each(|substring| stripped_arg = stripped_arg.replace(substring, ""));
              stripped_arg
          })
@@ -310,12 +310,14 @@
 +    # of a `-L` (the dirname of each rust_std file). It sits inside the
 +    # --sysroot= directory and comes from the same single-tree toolchain repo,
 +    # so RFD's directory inference is as unambiguous here as it is there — the
-+    # one `-L` directory where that holds, unlike a dependency's. Left
-+    # tree-relative, rustc can take std's own dependencies (`cfg_if`,
-+    # `rustc_std_workspace_alloc`) from it rather than from the resolved
-+    # sysroot, as rustc 1.99 does, and link.exe then fails `LNK1181: cannot
-+    # open input file` on a path past MAX_PATH.
-+    if ($p -match '^(\.\.|external)[\\/][^\\/]+[\\/]rust_toolchain[\\/]lib[\\/]rustlib[\\/][^\\/]+[\\/]lib$') {
++    # one `-L` directory where that holds, unlike a dependency's. Matched by
++    # rustc's own sysroot layout, `lib/rustlib/<triple>/lib`, rather than by
++    # rules_rust's name for the sysroot directory. Left tree-relative, rustc
++    # can take std's own dependencies (`cfg_if`, `rustc_std_workspace_alloc`)
++    # from it rather than from the resolved sysroot, as rustc 1.99 does, and
++    # link.exe then fails `LNK1181: cannot open input file` on a path past
++    # MAX_PATH.
++    if ($p -match '^(\.\.|external)[\\/][^\\/]+[\\/](.+[\\/])?lib[\\/]rustlib[\\/][^\\/]+[\\/]lib$') {
 +        return RFD $p
 +    }
 +    if ($p -match '^\.\.[\\/]') {
@@ -398,7 +400,7 @@
          "".to_owned(),
      ];
  
-@@ -266,14 +587,29 @@
+@@ -266,14 +589,29 @@
  
  fn write_test_runner(
      path: &Path,
@@ -429,7 +431,7 @@
      }
  
      set_executable(path);
-@@ -287,5 +623,11 @@
+@@ -287,5 +625,11 @@
          .filter(|(key, _)| opt.env_keys.iter().any(|k| k == key))
          .collect();
  

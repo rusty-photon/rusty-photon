@@ -3,8 +3,8 @@
 # CARGO_PKG_RUST_VERSION; rules_rust sets no such variable, so without this key
 # Bazel's clippy would assume no MSRV and fire the MSRV-gated lints Cargo's
 # clippy holds back. Keep it equal to `rust-version`: `cargo clippy` only warns
-# when the two differ, so tools/ci/check-bazel-clippy-config.sh (run by
-# bazel.yml's `bazel clippy` step) fails on it instead.
+# when the two differ, so tools/ci/bazel-clippy.sh (bazel.yml's `bazel
+# clippy` step) fails on it instead.
 msrv = "1.98.1"
 
 # Test code is allowed to panic where the panic is the point: a failed `Given`

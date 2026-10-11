@@ -71,7 +71,7 @@ clippy 1.99 does not lint `suboptimal_flops` inside a `const fn` body, and
 >
 > ```bash
 > bazel build //... && bazel test //...                       # bazel / <os> (build + tests incl. BDD; OmniSim suites need OMNISIM_PATH/OMNISIM_DIR)
-> bazel build --config=clippy //...                           # bazel / <os> `bazel clippy` step
+> tools/ci/bazel-clippy.sh                                    # bazel / <os> `bazel clippy` step
 > bazel coverage --config=coverage //...                      # bazel coverage (needs OmniSim)
 > cargo fmt --check                                           # `stable / fmt`
 > cargo clippy --all-targets --all-features -- -D warnings    # `stable / clippy` pass 1
@@ -679,7 +679,7 @@ clippy passes are the lint shapes Bazel doesn't cover:
 
 ```bash
 bazel build //... && bazel test //...                     # bazel / <os> (build + tests incl. BDD; OmniSim suites need OMNISIM_PATH/OMNISIM_DIR)
-bazel build --config=clippy //...                         # bazel / <os> `bazel clippy` step
+tools/ci/bazel-clippy.sh                                  # bazel / <os> `bazel clippy` step
 bazel coverage --config=coverage //...                    # bazel coverage (heavier; needs OmniSim)
 cargo fmt --check                                         # stable / fmt
 cargo clippy --all-targets --all-features -- -D warnings  # stable / clippy pass 1
@@ -724,28 +724,27 @@ bazel build --@rules_rust//rust/settings:extra_rustc_flags=-Dwarnings \
 
 ### Clippy under Bazel
 
-`bazel build --config=clippy //...` runs clippy over every first-party Rust
-target through rules_rust's `rust_clippy_aspect` — the `bazel clippy` step of
-each `bazel / <os>` leg. Each target is one cached `Clippy` action, so a PR
-re-lints only the crates its change reaches; the rest are remote-cache hits.
-What it needs from you:
+`tools/ci/bazel-clippy.sh` runs clippy over every first-party Rust target
+through rules_rust's `rust_clippy_aspect` (`--config=clippy`) — the same
+script the `bazel clippy` step of each `bazel / <os>` leg runs, so run it
+as-is locally. Each target is one cached `Clippy` action, so a PR re-lints
+only the crates its change reaches; the rest are remote-cache hits. What it
+needs from you:
 
 - **Every Rust target sets `lint_config = ":lints"`**, and its package
   declares the `extract_cargo_lints` target named `lints` that reads the
   crate's Cargo.toml `[lints]` (copy it from any existing BUILD.bazel). A
-  target without one is linted with clippy's defaults and passes, so
-  `tools/ci/check-bazel-clippy-config.sh` — the first thing the `bazel
-  clippy` step runs, and runnable from the repo root — asks `bazel query` for
-  any such target and fails on it. The three `cargo_build_script` targets are
-  the exception — the macro cannot pass the attribute through. A test target
-  that only re-runs another's compilation with different `args` carries
-  `tags = ["noclippy"]` (bdd-infra's shards), since linting it again would
-  only repeat the same action; the script fails on any other opt-out tag — on
-  anything but a `rust_test` whose crate another, linted `rust_test` compiles.
-- **`manual` targets are linted too.** `//...` skips them, but the step names
-  them explicitly: `--config=clippy` builds the `clippy_checks` output group
-  alone, which never links, so a target that is manual only because it cannot
-  link without a vendor SDK (svbony-camera's binary) still lints.
+  target without one is linted with clippy's defaults and passes, so the
+  script asks `bazel query` for any such target and fails on it. The three
+  `cargo_build_script` targets are the exception — the macro cannot pass the
+  attribute through.
+- **No opt-out tags.** The script also fails on a Rust target carrying one of
+  the tags rules_rust's aspect skips (`noclippy`, `no_lint`, …): fix what
+  clippy reports instead.
+- **`manual` targets are linted too.** `//...` skips them, but the script
+  names them explicitly: `--config=clippy` builds the `clippy_checks` output
+  group alone, which never links, so a target that is manual only because it
+  cannot link without a vendor SDK (svbony-camera's binary) still lints.
 - **Bazel lints the feature set each target compiles**, not Cargo's two passes.
   A `rust_test` built with `crate_features = ["mock"]` is linted with `mock`,
   the production `rust_library` beside it without. The Cargo `stable / clippy`
@@ -766,11 +765,11 @@ What it needs from you:
   job builds with the MSRV itself — both on Linux. A newer language feature
   in `#[cfg(windows)]` or macOS-only code reaches main unflagged, so check it
   by hand when you write such code (`cargo +1.98.1 check --target …`, as
-  under *Run it locally when your change adds OS-gated code* above). Bazel's clippy learns
-  the MSRV from `clippy.toml`'s `msrv` key — rules_rust sets no
+  under *Run it locally when your change adds OS-gated code* above). Bazel's
+  clippy learns the MSRV from `clippy.toml`'s `msrv` key — rules_rust sets no
   `CARGO_PKG_RUST_VERSION` — so that key must equal the root Cargo.toml's
-  `rust-version`; `cargo clippy` only warns when they differ, so the same
-  script fails on it.
+  `rust-version`; `cargo clippy` only warns when they differ, so
+  `tools/ci/bazel-clippy.sh` fails on it.
 
 ### Refreshing MODULE.bazel.lock
 

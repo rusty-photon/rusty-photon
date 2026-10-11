@@ -314,25 +314,11 @@ jobs:
         # carries it on top of the build's and the tests'.
         timeout-minutes: 15
         run: |
-          # Every target carries the crate's lint set, no opt-out tag drops
-          # code from the lint, and clippy.toml's msrv matches Cargo.toml's —
-          # the inputs a mistake in which would lint with less than the
-          # workspace asks for and still pass. Its verdict waits until clippy
-          # has run, so one push reports both a guard miss and a real lint.
-          guard=0
-          tools/ci/check-bazel-clippy-config.sh || guard=$?
-
-          # `//...` skips `manual` targets, and some are manual only because
-          # they cannot LINK on a runner without a vendor SDK (svbony-camera's
-          # binary). Clippy never links — `--config=clippy` requests the
-          # clippy_checks output group alone — so name them and lint them
-          # anyway. The build scripts are the macro's own manual binaries.
-          manual=()
-          labels=$(bazel query --output=label 'attr(tags, "\bmanual\b", kind("^rust_(library|binary|test|proc_macro|shared_library|static_library) rule$", //...)) except attr(generator_function, "^cargo_build_script$", //...)')
-          if [[ -n "$labels" ]]; then
-            while IFS= read -r label; do manual+=("$label"); done <<<"$labels"
-          fi
-
+          # The same script a developer runs locally: it checks the inputs
+          # Bazel's clippy takes on trust (lint_config on every target, no
+          # opt-out tags, clippy.toml's msrv = Cargo.toml's), then lints
+          # `//...` plus the `manual` targets `//...` skips, and reports the
+          # checks' verdict after the lint.
           # Remote-cache routing for this job's venue and credentials.
           source tools/ci/bazel-remote-flags.sh
           # Windows: this step's trace, as in the build step.
@@ -340,8 +326,7 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then
             PROFILE_FLAGS=(--config=profile --profile=bazel-profile-clippy.json.gz)
           fi
-          bazel build --config=ci --config=clippy "${REMOTE_FLAGS[@]}" "${PROFILE_FLAGS[@]}" -- //... "${manual[@]}"
-          exit "$guard"
+          tools/ci/bazel-clippy.sh --config=ci "${REMOTE_FLAGS[@]}" "${PROFILE_FLAGS[@]}"
 
       - name: bazel test (fast)
         id: fast
