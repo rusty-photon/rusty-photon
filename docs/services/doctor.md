@@ -354,11 +354,10 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   cleanup removes it: not present (`CM_PROB_PHANTOM`) and still carrying
   its last `LocationPaths`. A device with no USB serial gets an instance
   id built from its port, so it leaves one such record on every port it
-  has used. Read without the filter, each of those records would be a
+  has left. Read without the filter, each of those records would be a
   fault at its old port, which may be empty or may now hold another
-  device.
-  Measured by moving a camera between ports of
-  a Windows 11 VM's USB controller
+  device. Measured by moving a camera between ports of a Windows 11 VM's
+  USB controller
   ([device-claims plan](../plans/device-claims-and-phd2-camera.md), D2
   spike item 7).
 

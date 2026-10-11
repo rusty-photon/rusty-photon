@@ -3141,7 +3141,9 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
         let listing = query.split('|').next().unwrap();
         assert!(listing.contains("Get-PnpDevice "), "{query}");
         assert!(
-            listing.split_whitespace().any(|arg| arg == "-PresentOnly"),
+            listing
+                .split_whitespace()
+                .any(|arg| arg.eq_ignore_ascii_case("-PresentOnly")),
             "{query}"
         );
     }

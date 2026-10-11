@@ -96,7 +96,7 @@ recorded here so the option is not lost.
 | Phase | Description | Status | Branch / PR |
 |-------|-------------|--------|-------------|
 | C0 | This plan | Merged; revised 2026-09-29 and 2026-10-01 | [#1263](https://github.com/rusty-photon/rusty-photon/pull/1263), [#1365](https://github.com/rusty-photon/rusty-photon/pull/1365) |
-| C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Landed: `port`/`serial` extraction, the failed-vs-empty inventory, the staged synthetic inventory, faults (a record that is not a working device is a fault, not a failed scan — D4.4), and the Linux port spelled by controller and USB revision instead of bus number (D2). The spike's last leg, a move to a different port, was made on a Windows VM rather than `rig2` (D2, spike item 7) | `chore/device-claims-c1-spike` ([#1306](https://github.com/rusty-photon/rusty-photon/pull/1306)), `chore/device-claims-c1-synthetic-inventory` ([#1308](https://github.com/rusty-photon/rusty-photon/pull/1308)), `fix/doctor-usb-faults-1322` ([#1365](https://github.com/rusty-photon/rusty-photon/pull/1365)), `feature/device-claims-linux-port-spelling` ([#1450](https://github.com/rusty-photon/rusty-photon/pull/1450)), `fix/device-claims-linux-fault-location` ([#1458](https://github.com/rusty-photon/rusty-photon/pull/1458)), `chore/device-claims-c1-port-move` ([#1462](https://github.com/rusty-photon/rusty-photon/pull/1462)) |
+| C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Landed: `port`/`serial` extraction, the failed-vs-empty inventory, the staged synthetic inventory, faults (a record that is not a working device is a fault, not a failed scan — D4.4), and the Linux port spelled by controller and USB revision instead of bus number (D2). The spike's last leg, a move to a different port, was made on a Windows VM rather than `rig2` (D2, spike item 7), and a camera plugged straight into a real controller's root port was not read (decision 2) | `chore/device-claims-c1-spike` ([#1306](https://github.com/rusty-photon/rusty-photon/pull/1306)), `chore/device-claims-c1-synthetic-inventory` ([#1308](https://github.com/rusty-photon/rusty-photon/pull/1308)), `fix/doctor-usb-faults-1322` ([#1365](https://github.com/rusty-photon/rusty-photon/pull/1365)), `feature/device-claims-linux-port-spelling` ([#1450](https://github.com/rusty-photon/rusty-photon/pull/1450)), `fix/device-claims-linux-fault-location` ([#1458](https://github.com/rusty-photon/rusty-photon/pull/1458)), `chore/device-claims-c1-port-move` ([#1462](https://github.com/rusty-photon/rusty-photon/pull/1462)) |
 | C2 | `usb_devices` schema + `svbony-camera` — port placement (the join), listed numbers, placeholders (their fixed connect error code, which rp treats as permanent for the pass, and their config actions), the failed-scan re-scan, each simulation backend's synthetic inventory, and `svbony-camera doctor --devices` (D5's listing and paste-ready block; the `usb-devices.*` checks stay in C5), so no driver serves the list before its paste source exists. `usb_devices` is part of `config.schema`/`config.apply` from the phase that adds it, under the ordinary `Reload` disposition (D4.1), and D3's validation rejects a bad list in `config.apply` as well as at load. The easy case; proves schema, join and placeholder behaviour | Not started | |
 | C3 | `usb_devices` in `zwo-camera`, with its `doctor --devices` listing; a failed identity open is a per-camera outcome (D7) | Not started | |
 | C4 | `usb_devices` in `qhy-camera`, with its `doctor --devices` listing and each entry's declared filter wheel (D4.7) + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup and reload entirely** (the split alone narrows the tenet-3 problem, it does not discharge it) | Not started | |
@@ -105,20 +105,22 @@ recorded here so the option is not lost.
 | C7 | rp wiring: guide camera as a train-terminal camera, capture-sweep focusing for the guiding train, doc updates. **Blocked on reconciling with [`focus-model.md`](focus-model.md) S7/D17**, which retires rp's capture-based `auto_focus` and keeps the metric sweep under that name | Not started | |
 | C8 | `ui-htmx` editing of `usb_devices` | Deferred | |
 
-Order: C1 first and **blocking** — no schema commits to a port spelling
-that has not been proven stable. The gate is on the spelling that was
-still unchosen, Windows' (D2). Linux was measured on hardware; Windows
-on `rig2`, except the move to a different port, which was measured on a
-VM (D2, spike items 1–3 and 7). macOS's `location_id` is the platform's
-own encoding of the port chain, extracted and unit-tested in C1 but
-**not yet read on a Mac**. The plan carries that risk until the macOS
-item in the waiting list is answered, before C5's no-list flip. C2 → C3 → C4 then
-land per driver, each on its own, adding the list path and leaving the
-no-list path as it is today. C5 lands after all three: it flips the
-no-list default in every driver at once (D4), so it inherits C4's
-tenet-3 blocker and the macOS check in the waiting list. C6 needs
-nothing from Part A but is only *operationally* safe after C4. C7 needs
-C6.
+Order: C1 first and **blocking** — no schema commits to the Windows port
+spelling, the one still unchosen, until it has been read stable on real
+hardware (D2). On `rig2` it was: behind a hub, across a port power cycle
+and a reboot. A camera plugged straight into a root port, and a move to
+another port, were read only on a VM (D2, spike items 1–3 and 7). The
+other two spellings were not gated on a stability measurement. Linux's
+matched udev's own on two hosts and is built from names that do not
+depend on probe order (D2). macOS's `location_id` is the platform's own encoding
+of the port chain, extracted and unit-tested in C1 but **not yet read on
+a Mac**, so a list written on macOS before the waiting list's macOS item
+is answered rests on an unmeasured key. C2 → C3 → C4 then land per
+driver, each on its own, adding the list path and leaving the no-list
+path as it is today. C5 lands after all three: it flips the no-list
+default in every driver at once (D4), so it inherits C4's tenet-3
+blocker and the macOS check in the waiting list. C6 needs nothing from
+Part A but is only *operationally* safe after C4. C7 needs C6.
 
 Each phase follows
 [development-workflow.md](../skills/development-workflow.md): design-doc
@@ -350,10 +352,10 @@ ASI662MC      PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)    Port_#0004.Hub_#0
    device instance id. What this leg does not cover is the cameras
    themselves re-enumerating from cold, since the UPBv2 held them up
    throughout. A genuine move to a *different* port needed physical
-   access to `rig2`; it was made on a Windows VM instead (item 7). Apart
-   from the cold re-enumeration, and within the limits item 7 lists for
-   the move, the key is proven on Windows across every transition C1 set
-   out to test.
+   access to `rig2`; it was made on a Windows VM instead (item 7). What
+   real Windows hardware has not shown: the cameras re-enumerating from
+   cold, a camera plugged straight into a root port, and item 7's limits
+   for the move.
 
 4. **Windows publishes no USB serial for any of the three cameras.** The
    third field of the instance id is a port-derived string
@@ -451,16 +453,15 @@ ASI662MC      PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)    Port_#0004.Hub_#0
    (`CM_PROB_PHANTOM`) and **still carrying its old `LocationPaths`**.
    The guest held nine such records for ZWO cameras from earlier
    sessions before this one began. Any device that leaves keeps such a
-   record until a cleanup removes it; a serial-less one leaves one per
-   port it has used. A collector that read every record would report
-   each one as a fault at its old port: `Get-PnpDevice` showed every
-   stale record as `CM_PROB_PHANTOM`, and the parser takes any problem
-   code but 0, or none, as not working. D4.5's match of a fault to a
-   listed port would then blame a dead device for a listed port the
-   camera has left, whether that port is now empty or holds another
-   camera. This one reads
-   `Get-PnpDevice -PresentOnly`, and no stale record reached its
-   inventory or its faults at any step.
+   record until a cleanup removes it; a serial-less one leaves one on
+   every port it has left. A collector that read every record would
+   report each one as a fault at its old port: `Get-PnpDevice` showed
+   every stale record as `CM_PROB_PHANTOM`, and the parser takes any
+   problem code but 0, or none, as not working. D4.5's match of a fault
+   to a listed port would then blame a dead device for a listed port
+   the camera has left empty. This one reads `Get-PnpDevice
+   -PresentOnly`, and no stale record reached its inventory or its
+   faults at any step.
 
    What it does not cover: a hub between the controller and the camera
    (not tried; the hub hop's spelling and its stability were read on
@@ -469,8 +470,7 @@ ASI662MC      PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)    Port_#0004.Hub_#0
    that moves with the device (unless it is set to ignore that device's
    serial, as the `IgnoreHWSerNum` UsbFlags setting does, and then the
    id is built from the port as above). That last case is untested, but
-   no camera seen so
-   far publishes a serial (item 4).
+   no camera seen so far publishes a serial (item 4).
 
 **The port string is the platform's native spelling, not a normalised
 invention.** udev's `ID_PATH_WITH_USB_REVISION` on Linux (with the one
