@@ -492,10 +492,10 @@ async fn finished_pointing(read: Option<PointingRead>) -> Option<MountPointing> 
     }
 }
 
-/// One auxiliary camera read bounded by [`AUXILIARY_READ_TIMEOUT`], so a
+/// One auxiliary device read bounded by [`AUXILIARY_READ_TIMEOUT`], so a
 /// slow property costs only its own field.
-async fn bounded_read<T>(
-    read: impl std::future::Future<Output = ascom_alpaca::ASCOMResult<T>>,
+async fn bounded_read<T, E: std::fmt::Display>(
+    read: impl std::future::Future<Output = std::result::Result<T, E>>,
 ) -> std::result::Result<T, String> {
     match tokio::time::timeout(AUXILIARY_READ_TIMEOUT, read).await {
         Ok(result) => result.map_err(|e| e.to_string()),
@@ -1350,13 +1350,11 @@ impl McpHandler {
             // waited out rather than timed (rp.md § Core Fields,
             // `filter`). A mount read still out gets its grace alongside.
             let bounded_filter = !self.names_files(req.frame_type);
-            let (pointing, (conditions, filter_read)) =
-                tokio::join!(finished_pointing(pointing_read), async {
-                    tokio::join!(
-                        self.capture_conditions(camera_id, &cam, window, duration),
-                        self.read_frame_filter(camera_id, req.frame_type, bounded_filter),
-                    )
-                });
+            let (pointing, conditions, filter_read) = tokio::join!(
+                finished_pointing(pointing_read),
+                self.capture_conditions(camera_id, &cam, window, duration),
+                self.read_frame_filter(camera_id, req.frame_type, bounded_filter),
+            );
 
             // Decision 11 (rp.md § Capture Tool Details): `frame_type`
             // stamps the document's `target`/`frame_type` fields.
@@ -2041,14 +2039,10 @@ impl McpHandler {
         if matches!(frame_type, Some(FrameType::Dark | FrameType::Bias)) {
             return Ok(None);
         }
-        if !bounded {
-            return self.live_filter(camera_id).await;
-        }
-        match tokio::time::timeout(AUXILIARY_READ_TIMEOUT, self.live_filter(camera_id)).await {
-            Ok(read) => read,
-            Err(_elapsed) => Err(format!(
-                "filter wheel read timed out after {AUXILIARY_READ_TIMEOUT:?}"
-            )),
+        if bounded {
+            bounded_read(self.live_filter(camera_id)).await
+        } else {
+            self.live_filter(camera_id).await
         }
     }
 
@@ -3463,9 +3457,10 @@ mod tests {
     async fn a_camera_read_past_its_bound_costs_only_its_field() {
         let slow = async {
             tokio::time::sleep(Duration::from_secs(10)).await;
-            Ok(1)
+            Ok::<_, ascom_alpaca::ASCOMError>(1)
         };
-        let (slow, quick) = tokio::join!(bounded_read(slow), bounded_read(async { Ok(2) }));
+        let quick = async { Ok::<_, ascom_alpaca::ASCOMError>(2) };
+        let (slow, quick) = tokio::join!(bounded_read(slow), bounded_read(quick));
         assert!(slow.unwrap_err().contains("no answer within 3s"));
         assert_eq!(quick.unwrap(), 2);
     }

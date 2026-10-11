@@ -22,12 +22,13 @@ use crate::error::FitsError;
 pub(crate) const BLOCK_SIZE: usize = 2880;
 /// Size of a FITS header card.
 pub(crate) const CARD_SIZE: usize = 80;
-/// The longest string value one card holds, apostrophes counted twice.
+/// The longest string value one card holds (68), apostrophes counted
+/// twice.
 ///
 /// FITS escapes `'` as `''`; the limit is the card's 80 columns less the
 /// 10-column `KEYWORD = ` prefix and the two quotes. A string
 /// [`Keyword::new`] accepts is at most this long.
-pub const MAX_STRING_CHARS: usize = 68;
+pub const MAX_STRING_CHARS: usize = CARD_SIZE - 10 - 2;
 /// Reserved keywords managed by the writer; users may not supply them.
 const RESERVED: &[&str] = &[
     "SIMPLE", "BITPIX", "NAXIS", "NAXIS1", "NAXIS2", "BSCALE", "BZERO", "END",
@@ -828,7 +829,7 @@ mod tests {
 
     #[test]
     fn max_string_chars_is_exactly_what_one_card_holds() {
-        assert_eq!(MAX_STRING_CHARS + 12, CARD_SIZE);
+        assert_eq!(MAX_STRING_CHARS, 68);
         let mut buf = Vec::new();
         let longest =
             Keyword::new("OBJECT", KeywordValue::Str("x".repeat(MAX_STRING_CHARS))).unwrap();

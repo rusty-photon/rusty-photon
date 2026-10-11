@@ -5,9 +5,9 @@
 //! below is projected from an [`ExposureDocument`] field, or from rig
 //! configuration the document does not repeat ([`HeaderContext`]). The
 //! sidecar stays the authority. A card whose source is absent is left
-//! out, never written as a placeholder. Free text is cut to one card and
-//! its typographic punctuation folded to ASCII; a value with a character
-//! no card can carry (`Hα`), or one `rp-fits` otherwise refuses, drops
+//! out, never written as a placeholder. Free text has its typographic
+//! punctuation folded to ASCII; a value no card can carry exactly (`Hα`,
+//! one longer than a card), or one `rp-fits` otherwise refuses, drops
 //! only that card — no header problem fails a capture. `DOC_ID` is not
 //! built here: [`super::fits`] stamps it on every write.
 
@@ -168,7 +168,7 @@ impl Cards {
         } else {
             debug!(
                 keyword = key,
-                value, "value has characters a FITS card cannot carry; dropping the card"
+                value, "value does not fit one FITS card exactly; dropping the card"
             );
         }
     }
@@ -208,15 +208,17 @@ fn fits_timestamp(rfc3339: &str) -> Option<String> {
 }
 
 /// A free-text value — a target or filter name, a driver's camera name —
-/// as one FITS string card can carry it: typographic dashes, quotes and
-/// spaces fold to their ASCII look-alikes, and the result is cut to
-/// [`MAX_STRING_CHARS`]. `None` for a value with any other character
-/// outside printable ASCII (`Hα`, a control character): no ASCII stand-in
-/// keeps such a value distinct — `Hα` and `Hβ` would both read `H?` and
-/// a stacker would group them as one filter — so the card is left out
-/// and the sidecar, which keeps the original, is the authority.
+/// as one FITS string card carries it: typographic dashes, quotes and
+/// spaces fold to their ASCII look-alikes. `None` for a value no card
+/// can carry exactly: one with any other character outside printable
+/// ASCII (`Hα`, a control character), or one longer than
+/// [`MAX_STRING_CHARS`]. Neither an ASCII stand-in nor a cut keeps such a
+/// value distinct — `Hα` and `Hβ` would both read `H?`, two names
+/// differing past column 68 would read alike, and a stacker would group
+/// each pair as one — so the card is left out and the sidecar, which
+/// keeps the original, is the authority.
 fn fits_text(value: &str) -> Option<String> {
-    let mut out = String::with_capacity(value.len().min(MAX_STRING_CHARS));
+    let mut out = String::with_capacity(value.len());
     let mut width: usize = 0;
     for c in value.chars() {
         let folded = match c {
@@ -227,22 +229,20 @@ fn fits_text(value: &str) -> Option<String> {
             '\u{201C}' | '\u{201D}' | '\u{2033}' => '"',
             _ => return None,
         };
-        let cost = if folded == '\'' { 2 } else { 1 };
-        let next = width.saturating_add(cost);
-        if next <= MAX_STRING_CHARS {
-            width = next;
-            out.push(folded);
-        }
+        width = width.saturating_add(if folded == '\'' { 2 } else { 1 });
+        out.push(folded);
     }
-    Some(out)
+    (width <= MAX_STRING_CHARS).then_some(out)
 }
 
 /// Mount RA in degrees, wrapped into [0, 360) as the card will print it:
-/// a mount on the 0h seam can report 24h or a hair below zero, and a
-/// value just under 360 — `rem_euclid` of a tiny negative among them —
-/// prints as `3.6000000000E+02` at the card's 11 significant digits.
+/// a mount on the 0h seam can report 24h, `-0.0` or a hair below zero,
+/// and a value just under 360 — `rem_euclid` of a tiny negative among
+/// them — prints as `3.6000000000E+02` at the card's 11 significant
+/// digits.
 fn canonical_ra_degrees(ra_hours: f64) -> f64 {
-    let degrees = (ra_hours * 15.0).rem_euclid(360.0);
+    // `+ 0.0` turns the `-0.0` that `rem_euclid` passes through into `0.0`.
+    let degrees = (ra_hours * 15.0).rem_euclid(360.0) + 0.0;
     let printed = format!("{degrees:.10E}").parse::<f64>().unwrap_or(degrees);
     if printed >= 360.0 {
         0.0
@@ -493,6 +493,7 @@ mod tests {
             (-1e-15, 0.0),
             // Below 360 as an f64, but 360 at the card's 11 digits.
             (-1e-12, 0.0),
+            (-0.0, 0.0),
         ] {
             doc.pointing = Some(MountPointing {
                 ra_hours,
@@ -501,6 +502,7 @@ mod tests {
             let cards = cards(&doc, &HeaderContext::default());
             let ra = value_of(&cards, "RA").and_then(|v| v.as_real()).unwrap();
             assert!((ra - want).abs() < 1e-9, "RA {ra} for {ra_hours}h");
+            assert!(ra.is_sign_positive(), "RA {ra} for {ra_hours}h");
         }
     }
 
@@ -563,18 +565,25 @@ mod tests {
     }
 
     #[test]
-    fn free_text_is_folded_or_cut_into_one_card() {
+    fn free_text_folds_typographic_punctuation_to_ascii() {
         let mut doc = full_document();
         doc.target.as_mut().unwrap().display_name = Some("Pleiades \u{2013} M45".to_string());
-        doc.camera_name = Some("x".repeat(80));
         let cards = cards(&doc, &HeaderContext::default());
         assert_eq!(
             value_of(&cards, "OBJECT"),
             Some(KeywordValue::Str("Pleiades - M45".into()))
         );
+    }
+
+    #[test]
+    fn a_value_longer_than_one_card_drops_only_its_card() {
+        let mut doc = full_document();
+        doc.camera_name = Some("x".repeat(69));
+        let cards = cards(&doc, &HeaderContext::default());
+        assert_eq!(value_of(&cards, "INSTRUME"), None);
         assert_eq!(
-            value_of(&cards, "INSTRUME"),
-            Some(KeywordValue::Str("x".repeat(68)))
+            value_of(&cards, "OBJECT"),
+            Some(KeywordValue::Str("M31".into()))
         );
     }
 
@@ -591,12 +600,32 @@ mod tests {
     }
 
     #[test]
-    fn fits_text_folds_typography_and_cuts_to_one_card() {
+    fn fits_text_folds_typography() {
         assert_eq!(fits_text("Bode\u{2019}s Galaxy").unwrap(), "Bode's Galaxy");
         assert_eq!(fits_text("\u{201C}M81\u{201D}").unwrap(), "\"M81\"");
-        // Apostrophes count twice: 34 of them fill the card exactly.
-        assert_eq!(fits_text(&"'".repeat(40)).unwrap(), "'".repeat(34));
-        assert_eq!(fits_text(&"x".repeat(70)).unwrap().len(), 68);
+    }
+
+    #[test]
+    fn fits_text_keeps_a_value_that_fills_the_card_exactly() {
+        assert_eq!(fits_text(&"x".repeat(68)).unwrap(), "x".repeat(68));
+        // Apostrophes count twice: 34 of them fill the card.
+        assert_eq!(fits_text(&"'".repeat(34)).unwrap(), "'".repeat(34));
+        assert_eq!(
+            fits_text(&format!("{}'", "x".repeat(66))).unwrap(),
+            format!("{}'", "x".repeat(66))
+        );
+    }
+
+    #[test]
+    fn fits_text_refuses_a_value_longer_than_the_card() {
+        for value in [
+            "x".repeat(69),
+            "'".repeat(35),
+            // 67 + 2 for the apostrophe, never cut to a value without it.
+            format!("{}'s", "x".repeat(67)),
+        ] {
+            assert_eq!(fits_text(&value), None, "{value:?}");
+        }
     }
 
     #[test]

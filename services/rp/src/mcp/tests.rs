@@ -2182,7 +2182,7 @@ async fn an_untemplated_filter_read_gives_up_on_a_slow_wheel() {
         .read_frame_filter("cam", Some(rp_vocabulary::FrameType::Light), true)
         .await
         .unwrap_err();
-    assert!(err.contains("timed out"), "{err}");
+    assert!(err.contains("no answer within 3s"), "{err}");
 }
 
 #[tokio::test(start_paused = true)]

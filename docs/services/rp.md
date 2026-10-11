@@ -569,7 +569,7 @@ The keyword set below is a contract, pinned field by field in
 | `OBJECT` | string | `target.display_name` | the frame resolved a target-store row (not a reserved `dark`/`flat`/`bias` slug) |
 | `OBJCTRA` | string | `target.ra_hours`, sexagesimal `'HH MM SS.ss'` (J2000) | as `OBJECT` |
 | `OBJCTDEC` | string | `target.dec_degrees`, sexagesimal `'+DD MM SS.s'` (J2000) | as `OBJECT` |
-| `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) as printed (a value that would print as 360 is written as 0) | `pointing` present |
+| `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) as printed (a value that would print as 360, or `-0.0`, is written as 0) | `pointing` present |
 | `DEC` | real | `pointing.dec_degrees`, degrees | `pointing` present and within ±90° |
 | `INSTRUME` | string | `camera_name` | `camera_name` present |
 | `TELESCOP` | string | `telescope` | `telescope` present |
@@ -614,15 +614,16 @@ Rules the table does not show:
 - **Free text is folded where that keeps it distinct, else left
   out.** In a target, filter or camera name, typographic dashes, quotes
   and spaces become their ASCII look-alikes (`Pleiades – M45` →
-  `Pleiades - M45`), and a value longer than one card is cut to the
-  card's 68 characters (an apostrophe counting twice). Any other
-  character outside printable ASCII — a filter named `Hα`, a control
-  character — drops that one card: no ASCII stand-in keeps such a value
-  distinct (`Hα` and `Hβ` would both read `H?`, and a stacker would
-  group them as one filter), and a missing card misleads no one. The
-  sidecar keeps the original either way. `telescope` is validated at
-  config load instead, so it is never folded or dropped. No header
-  problem fails a capture.
+  `Pleiades - M45`). A value no card can carry exactly drops that one
+  card: one with any other character outside printable ASCII — a filter
+  named `Hα`, a control character — or one longer than the card's 68
+  characters (an apostrophe counting twice). Neither a stand-in nor a
+  cut keeps such a value distinct (`Hα` and `Hβ` would both read `H?`;
+  two names differing past column 68 would read alike), and a stacker
+  would group each pair as one; a missing card at least reads as
+  unknown. The sidecar keeps the original either way. `telescope` is
+  validated at config load instead, so it is never folded or dropped.
+  No header problem fails a capture.
 - Reals are written in the FITS exponential form
   (`EXPTIME = 3.0000000000E+02`), which every reader accepts.
 
