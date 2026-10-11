@@ -283,8 +283,15 @@ single_version_override(
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
-    # Stable (the default channel, selected in .bazelrc) matches
-    # workspace.package.rust-version. The pinned nightly is used ONLY by the
+    # Stable (the default channel, selected in .bazelrc) is the oldest release
+    # whose clippy accepts the tree, NOT workspace.package.rust-version: the
+    # clippy aspect (`--config=clippy`) runs this toolchain's clippy-driver,
+    # and the workspace's lint attributes track current stable clippy (an
+    # `#[expect]` only a newer clippy fulfils is an error on an older one; see
+    # docs/skills/pre-push.md). Bump it with each stable release the Cargo
+    # clippy gate picks up. The MSRV stays in Cargo.toml, is verified by
+    # check.yml's nightly `msrv` job, and reaches clippy here through
+    # clippy.toml's `msrv` key. The pinned nightly is used ONLY by the
     # coverage workflow (.github/workflows/bazel-coverage.yml, via
     # `--config=coverage` which selects channel=nightly): the
     # #[cfg_attr(coverage_nightly, coverage(off))] attributes on every
@@ -296,13 +303,13 @@ rust.toolchain(
     # coverage cache. Bump it if this nightly lacks the llvm-tools / rust-std /
     # rustc components for the host triple (`bazel coverage` needs llvm-cov +
     # llvm-profdata from the toolchain). It must also be at least as new as the
-    # stable pin's own nightly cycle: coverage compiles the same sources, so an
+    # MSRV's own nightly cycle: coverage compiles the same sources, so an
     # API the workspace MSRV allows but this nightly still marks unstable fails
     # `bazel coverage` with E0658 while the stable build passes. When raising
     # rust-version, move the nightly to a date inside that release's nightly
     # cycle or later (`rustc +nightly-<date> --version` prints the cycle).
     versions = [
-        "1.98.1",
+        "1.99.0",
         "nightly/2026-07-01",
     ],
 )

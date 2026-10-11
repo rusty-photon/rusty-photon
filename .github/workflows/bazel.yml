@@ -264,6 +264,7 @@ jobs:
         uses: ./.github/actions/install-zwo-sdk
 
       - name: bazel build
+        id: build
         # Step budget: a fully cold build fits well under 30 minutes on every
         # OS, and a wedged build must not eat the whole 40-minute job budget
         # (the tests after this step need ~10). This is also the backstop for
@@ -332,7 +333,57 @@ jobs:
           fi
           bazel build --config=ci "${REMOTE_FLAGS[@]}" "${PROFILE_FLAGS[@]}" //...
 
+      - name: bazel clippy
+        # rules_rust's clippy aspect over every first-party target
+        # (`--config=clippy`; what it lints and with which lint set: .bazelrc).
+        # Its own step, after the build, so its cost reads straight off the
+        # step timing: everything it depends on is already built, which leaves
+        # only the Clippy actions — one per target, served from the remote
+        # cache for every crate the change does not reach. It runs on every
+        # OS leg, so `#[cfg(windows)]` code is linted before a merge, not only
+        # by check.yml's off-PR `windows / clippy`.
+        #
+        # A lint failure here must not hide test results: the test steps
+        # below are gated on the build, not on this step, so a push with a
+        # lint and a failing test reports both in one run.
+        timeout-minutes: 30
+        run: |
+          # Same cache routing as the `bazel build` step; the comments there
+          # explain each branch.
+          REMOTE_FLAGS=(--config=remote-cache)
+          if [[ -n "${RP_LAN_CACHE_GRPC_URL:-}" ]]; then
+            REMOTE_FLAGS+=(--remote_cache="$RP_LAN_CACHE_GRPC_URL")
+            REMOTE_FLAGS+=(--experimental_remote_downloader="$RP_LAN_CACHE_GRPC_URL")
+            REMOTE_FLAGS+=(--experimental_remote_downloader_local_fallback)
+            if [[ -n "$LAN_CACHE_WRITE_AUTH" ]]; then
+              REMOTE_FLAGS+=(--remote_header="Authorization=$LAN_CACHE_WRITE_AUTH")
+              REMOTE_FLAGS+=(--remote_downloader_header="Authorization=$LAN_CACHE_WRITE_AUTH")
+            else
+              REMOTE_FLAGS+=(--remote_upload_local_results=false)
+            fi
+          elif [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
+            REMOTE_FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
+            if [[ -n "$LAN_CACHE_WRITE_AUTH" ]]; then
+              REMOTE_FLAGS+=(--remote_header="Authorization=$LAN_CACHE_WRITE_AUTH")
+            else
+              REMOTE_FLAGS+=(--remote_upload_local_results=false)
+            fi
+          elif [[ -n "$CACHE_WRITE_TOKEN" ]]; then
+            REMOTE_FLAGS+=(--remote_header="Authorization=Bearer $CACHE_WRITE_TOKEN")
+          else
+            REMOTE_FLAGS+=(--remote_upload_local_results=false)
+          fi
+          # Windows: this step's trace, as in the build step.
+          PROFILE_FLAGS=()
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            PROFILE_FLAGS=(--config=profile --profile=bazel-profile-clippy.json.gz)
+          fi
+          bazel build --config=ci --config=clippy "${REMOTE_FLAGS[@]}" "${PROFILE_FLAGS[@]}" //...
+
       - name: bazel test (fast)
+        id: fast
+        # Runs whenever the build succeeded, even if `bazel clippy` failed.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # The .bazelrc default filter includes bdd (for the local loop);
         # exclude it here explicitly to keep the fast unit + integration
         # pass separate from BDD, so log output and failure attribution
@@ -391,6 +442,9 @@ jobs:
 
       - name: bazel test (BDD)
         id: bdd
+        # Only after a passing fast pass. Spelled out because the default
+        # `success()` would also skip it when `bazel clippy` alone failed.
+        if: ${{ !cancelled() && steps.fast.outcome == 'success' }}
         # BDD cucumber tests spawn service binaries and take 30-150s each;
         # run them explicitly in their own step. They need OMNISIM_PATH (the
         # install-omnisim action's pinned binary path, consumed by
