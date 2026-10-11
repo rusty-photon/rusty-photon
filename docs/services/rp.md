@@ -252,7 +252,10 @@ sidecar stays the authority.
   later than that return, and is still believed. A driver that does not
   implement the property, fails the read, or reports a time outside the
   window (a stale start, or one stamped at the end of the exposure or
-  at readout) gets `rp`'s own estimate instead: the earlier of the
+  at readout — caught once the exposure outlasts the readout plus the
+  slack; on a shorter frame such a stamp still lands inside the window,
+  since `ImageReady` includes the readout) gets `rp`'s own estimate
+  instead: the earlier of the
   moment `StartExposure` returned and that latest possible start —
   `rp`'s clock as `StartExposure` returned for the usual asynchronous
   driver, and never the end of the exposure for one whose
@@ -619,7 +622,9 @@ Rules the table does not show:
   typographic dashes, quotes (curly, low-9 and guillemets) and spaces
   become their ASCII look-alikes (`Pleiades – M45` → `Pleiades - M45`,
   `„M31“` → `"M31"`) — deliberately one name, since editors substitute
-  them for the ASCII forms. A value a card still cannot carry exactly
+  them for the ASCII forms — and the invisible characters copy-paste
+  carries (zero-width space and joiners, word joiner, byte order mark,
+  soft hyphen) are dropped. The fold is rp-fits' `fold_to_ascii`. A value a card still cannot carry exactly
   drops that one card: one with any other character outside printable
   ASCII — a filter named `Hα`, a control character — or one longer than
   the card's 68 characters (an apostrophe counting twice). Neither a
@@ -5882,7 +5887,9 @@ On the overall safe → unsafe transition:
    Calls](#in-flight-tool-calls)): each cancelled body issues its
    stop-class counterpart (a slew aborts, an exposure aborts, an opening
    cover halts) and answers its caller with the tool error
-   `cancelled: safety`. Every other ungated body already in flight — a
+   `cancelled: safety` — except a `capture` whose exposure had already
+   finished, which keeps its frame (§ [In-Flight Tool
+   Calls](#in-flight-tool-calls)). Every other ungated body already in flight — a
    `park`, a `close_cover`, a `set_filter` — runs to completion. `rp`
    waits up to `CANCEL_ACK_TIMEOUT` (3 s) for the cancelled bodies to
    acknowledge before the hardware steps below run, so a cancelled
@@ -6041,7 +6048,10 @@ unsafe reading. With no monitors configured `overall` is `safe` and
 answers its caller with the tool error `cancelled: <reason>`, where the
 reason is `safety` (the unsafe transition) or `client disconnected`
 (the caller's connection dropped before the response, or it sent
-`notifications/cancelled`).
+`notifications/cancelled`). The one exception is a `capture` cancelled
+after its exposure finished: a cancel then stops nothing physical, so
+the frame is read out and kept and the call succeeds, unless a read the
+3 s bound does not cover holds it past that bound (the table below).
 The operation's `*_failed` event carries the same text as its `error`.
 A body still waiting for the [mount motion gate](#mount-motion-gate)
 returns without moving anything.
@@ -6049,7 +6059,7 @@ returns without moving anything.
 | Cancelled body | Stop-class counterpart |
 |---|---|
 | `slew`, and the slews inside `center_on_target` | `AbortSlew` |
-| `capture`, and the captures inside `auto_focus` / `center_on_target` | `AbortExposure` while the exposure runs. Once the image is ready, a cancel stops nothing physical: the frame's own reads (gain, offset, temperature, filter, the mount's pointing grace) finish and the frame is kept, unless they are still out 3 s after the image was ready — a wedged wheel a templated capture is waiting out — when the capture answers `cancelled: <reason>` and releases the camera |
+| `capture`, and the captures inside `auto_focus` / `center_on_target` | `AbortExposure` while the exposure runs. Once the image is ready, a cancel stops nothing physical: the frame's own reads (gain, offset, temperature, filter, the mount's pointing grace) finish — a bounded one gives up at its 3 s deadline as usual — and the frame is downloaded and kept. Only a read that deadline does not bound, still out at it (a wedged wheel a templated capture is waiting out), makes the capture answer `cancelled: <reason>` and release the camera at the deadline |
 | `move_focuser`, and the moves inside `auto_focus` / `refocus_train` | focuser `Halt` on the leg in flight. A backlash-compensated move checks the handle before each leg, so a cancellation that lands as the overshoot leg settles commands no return leg and halts nothing |
 | `move_rotator` | rotator `Halt` |
 | `open_cover` | `HaltCover` |

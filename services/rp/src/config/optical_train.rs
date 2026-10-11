@@ -130,7 +130,7 @@ impl TelescopeName {
         // failure — so config and header cannot drift apart.
         rp_fits::writer::Keyword::new(
             "TELESCOP",
-            rp_fits::writer::KeywordValue::Str(crate::persistence::fits_header::fits_text(&value)),
+            rp_fits::writer::KeywordValue::Str(rp_fits::writer::fold_to_ascii(&value)),
         )
         .map_err(|e| {
             // The refusal is about the value, not the keyword: drop the

@@ -12,7 +12,7 @@
 //! it on every write.
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use rp_fits::writer::{real_as_written, Keyword, KeywordValue};
+use rp_fits::writer::{fold_to_ascii, real_as_written, Keyword, KeywordValue};
 use rp_vocabulary::FrameType;
 use tracing::debug;
 
@@ -163,7 +163,7 @@ impl Cards {
 
     fn string(&mut self, key: &'static str, value: Option<&str>, comment: &'static str) {
         if let Some(value) = value {
-            self.push(key, KeywordValue::Str(fits_text(value)), comment);
+            self.push(key, KeywordValue::Str(fold_to_ascii(value)), comment);
         }
     }
 
@@ -199,29 +199,6 @@ fn fits_timestamp(rfc3339: &str) -> Option<String> {
             None
         }
     }
-}
-
-/// A free-text value — a target, filter or telescope name, a driver's
-/// camera name — with its typographic dashes, quotes (curly, low-9 and
-/// guillemets) and spaces folded to their ASCII look-alikes
-/// (`Pleiades – M45` → `Pleiades - M45`, `„M31“` → `"M31"`). Every other
-/// character passes through: a value one card still cannot carry
-/// exactly — another non-ASCII character (`Hα`), or one longer than a
-/// card — is refused by [`Keyword::new`] and drops its card, since
-/// neither a stand-in nor a cut keeps it distinct (`Hα` and `Hβ` would
-/// both read `H?`; two names differing past column 68 would read alike).
-/// The sidecar, which keeps the original, is the authority.
-pub(crate) fn fits_text(value: &str) -> String {
-    value
-        .chars()
-        .map(|c| match c {
-            '\u{00A0}' | '\u{2000}'..='\u{200A}' | '\u{202F}' => ' ',
-            '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
-            '\u{2018}'..='\u{201B}' | '\u{2032}' | '\u{2039}' | '\u{203A}' => '\'',
-            '\u{201C}'..='\u{201F}' | '\u{2033}' | '\u{00AB}' | '\u{00BB}' => '"',
-            other => other,
-        })
-        .collect()
 }
 
 /// Mount RA in degrees, wrapped into [0, 360) as the card will print it:
@@ -602,20 +579,14 @@ mod tests {
     }
 
     #[test]
-    fn fits_text_folds_typography() {
-        assert_eq!(fits_text("Bode\u{2019}s Galaxy"), "Bode's Galaxy");
-        assert_eq!(fits_text("\u{201C}M81\u{201D}"), "\"M81\"");
-        assert_eq!(fits_text("NGC\u{00A0}7000"), "NGC 7000");
-        assert_eq!(fits_text("\u{201E}Pferdekopf\u{201C}"), "\"Pferdekopf\"");
-        assert_eq!(fits_text("\u{201A}x\u{2018}"), "'x'");
-        assert_eq!(fits_text("\u{00AB}M42\u{00BB}"), "\"M42\"");
-        assert_eq!(fits_text("\u{2039}M42\u{203A}"), "'M42'");
-    }
-
-    #[test]
-    fn fits_text_passes_other_characters_through_for_the_writer_to_judge() {
-        assert_eq!(fits_text("H\u{3b1}"), "H\u{3b1}");
-        assert_eq!(fits_text(&"x".repeat(80)), "x".repeat(80));
+    fn a_pasted_invisible_character_does_not_cost_the_card() {
+        let mut doc = full_document();
+        doc.target.as_mut().unwrap().display_name = Some("M31\u{200B}".to_string());
+        let cards = cards(&doc, &HeaderContext::default());
+        assert_eq!(
+            value_of(&cards, "OBJECT"),
+            Some(KeywordValue::Str("M31".into()))
+        );
     }
 
     #[test]

@@ -397,8 +397,9 @@ impl ExposureWindow {
 /// `LastExposureStartTime` when it lies between `requested` and
 /// [`ExposureWindow::latest_start`], widened by
 /// [`EXPOSURE_START_SLACK_SECS`] each side but never past `ready` — a
-/// value outside is stale, stamped at the end of the exposure or at
-/// readout, or from a skewed clock. Else
+/// value outside is stale, from a skewed clock, or (once the exposure
+/// outlasts the readout plus the slack) stamped at the end of the
+/// exposure or at readout. Else
 /// [`ExposureWindow::fallback_start`].
 fn exposure_start(
     driver: Option<DateTime<Utc>>,
@@ -493,27 +494,37 @@ async fn finished_pointing(read: Option<PointingRead>) -> Option<MountPointing> 
     }
 }
 
-/// Resolves once `cancel` fires *and* a finished frame's reads, begun at
-/// `reads_started`, have run past [`AUXILIARY_READ_TIMEOUT`]. A cancel
-/// that lands while healthy reads finish keeps the finished frame — the
-/// exposure is over, so the cancel stops nothing physical — while one
-/// stuck behind a wedged read (a templated capture waits a slow wheel
-/// out) releases the camera within the bound (rp.md § In-Flight Tool
-/// Calls).
-async fn cancelled_past_read_bound(cancel: &Cancel, reads_started: tokio::time::Instant) {
-    cancel.cancelled().await;
-    let bound = reads_started
-        .checked_add(AUXILIARY_READ_TIMEOUT)
-        .unwrap_or(reads_started);
-    tokio::time::sleep_until(bound).await;
+/// The deadline a finished frame's bounded reads share:
+/// [`AUXILIARY_READ_TIMEOUT`] from now. One instant for every read and
+/// for [`cancelled_past_read_bound`], so a read that gives up at its
+/// bound and a cancel waiting on that bound are never ordered by timer
+/// jitter.
+pub(super) fn auxiliary_read_deadline() -> tokio::time::Instant {
+    let now = tokio::time::Instant::now();
+    now.checked_add(AUXILIARY_READ_TIMEOUT).unwrap_or(now)
 }
 
-/// One auxiliary device read bounded by [`AUXILIARY_READ_TIMEOUT`], so a
-/// slow property costs only its own field.
+/// Resolves once `cancel` fires *and* a finished frame's reads have run
+/// to their shared `deadline` ([`auxiliary_read_deadline`]). A cancel
+/// that lands while healthy reads finish keeps the finished frame — the
+/// exposure is over, so the cancel stops nothing physical — and so does
+/// one behind a bounded read that gives up at the deadline (the capture
+/// `select!`s the reads first). Only a read the deadline does not bound
+/// — a templated capture waiting a slow wheel out — loses the frame,
+/// releasing the camera at the deadline (rp.md § In-Flight Tool Calls).
+async fn cancelled_past_read_bound(cancel: &Cancel, deadline: tokio::time::Instant) {
+    cancel.cancelled().await;
+    tokio::time::sleep_until(deadline).await;
+}
+
+/// One auxiliary device read bounded by `deadline` (see
+/// [`auxiliary_read_deadline`]), so a slow property costs only its own
+/// field.
 async fn bounded_read<T, E: std::fmt::Display>(
+    deadline: tokio::time::Instant,
     read: impl std::future::Future<Output = std::result::Result<T, E>>,
 ) -> std::result::Result<T, String> {
-    match tokio::time::timeout(AUXILIARY_READ_TIMEOUT, read).await {
+    match tokio::time::timeout_at(deadline, read).await {
         Ok(result) => result.map_err(|e| e.to_string()),
         Err(_elapsed) => Err(format!("no answer within {AUXILIARY_READ_TIMEOUT:?}")),
     }
@@ -1360,12 +1371,14 @@ impl McpHandler {
             };
 
             // The exposure is done: a cancel no longer stops anything
-            // physical, so healthy reads finish and the frame is kept. One
-            // stuck behind a wedged read still releases the camera.
-            let reads_started = tokio::time::Instant::now();
+            // physical, so the reads finish and the frame is kept. One
+            // stuck behind an unbounded read still releases the camera at
+            // the reads' deadline; on a tie the reads win (`biased`).
+            let deadline = auxiliary_read_deadline();
             let (pointing, conditions, filter_read) = tokio::select! {
-                () = cancelled_past_read_bound(cancel, reads_started) => return Err(cancel.error()),
-                reads = self.ready_frame_reads(&req, &cam, window, pointing_read) => reads,
+                biased;
+                reads = self.ready_frame_reads(&req, &cam, window, pointing_read, deadline) => reads,
+                () = cancelled_past_read_bound(cancel, deadline) => return Err(cancel.error()),
             };
 
             // Decision 11 (rp.md § Capture Tool Details): `frame_type`
@@ -1661,14 +1674,15 @@ impl McpHandler {
     /// `ready` instant — once, reused both for `{night_date}` and the
     /// document's `captured_at` field — rather than read twice a few
     /// hundred milliseconds apart. The gain, offset and start-time reads
-    /// are each bounded by [`AUXILIARY_READ_TIMEOUT`]; the temperature
-    /// read, which a `{sensor_temp}` filename can depend on, is not.
+    /// are each bounded by `deadline`; the temperature read, which a
+    /// `{sensor_temp}` filename can depend on, is not.
     async fn capture_conditions(
         &self,
         camera_id: &str,
         cam: &Arc<dyn Camera>,
         window: ExposureWindow,
         exposure: Duration,
+        deadline: tokio::time::Instant,
     ) -> CaptureConditions {
         let cooler_setpoint_c = self
             .cooling
@@ -1676,9 +1690,9 @@ impl McpHandler {
             .and_then(|cooling| cooling.rung_for(camera_id));
         let (temperature, gain, offset, driver_start) = tokio::join!(
             cam.ccd_temperature(),
-            bounded_read(cam.gain()),
-            bounded_read(cam.offset()),
-            bounded_read(cam.last_exposure_start_time()),
+            bounded_read(deadline, cam.gain()),
+            bounded_read(deadline, cam.offset()),
+            bounded_read(deadline, cam.last_exposure_start_time()),
         );
         let gain = optional_read(gain, camera_id, "gain unavailable; the frame omits it");
         let offset = optional_read(offset, camera_id, "offset unavailable; the frame omits it");
@@ -1712,11 +1726,12 @@ impl McpHandler {
         cam: &Arc<dyn Camera>,
         window: ExposureWindow,
         pointing_read: Option<PointingRead>,
+        deadline: tokio::time::Instant,
     ) -> (Option<MountPointing>, CaptureConditions, FilterRead) {
         tokio::join!(
             finished_pointing(pointing_read),
-            self.capture_conditions(req.camera_id, cam, window, req.duration),
-            self.capture_filter(req.camera_id, req.frame_type),
+            self.capture_conditions(req.camera_id, cam, window, req.duration, deadline),
+            self.capture_filter(req.camera_id, req.frame_type, deadline),
         )
     }
 
@@ -2076,8 +2091,8 @@ impl McpHandler {
     }
 
     /// [`Self::read_frame_filter`] as a capture runs it: bounded by
-    /// [`AUXILIARY_READ_TIMEOUT`] where the filename does not depend on
-    /// it, since a slow wheel must not fail such a capture; waited out
+    /// `deadline` where the filename does not depend on it, since a slow
+    /// wheel must not fail such a capture; waited out
     /// where it does ([`Self::names_files`]), as it always has been,
     /// rather than lose a finished exposure to a slow read (rp.md § Core
     /// Fields, `filter`).
@@ -2085,12 +2100,13 @@ impl McpHandler {
         &self,
         camera_id: &str,
         frame_type: Option<FrameType>,
+        deadline: tokio::time::Instant,
     ) -> FilterRead {
         let read = self.read_frame_filter(camera_id, frame_type);
         if self.names_files(frame_type) {
             read.await
         } else {
-            bounded_read(read).await
+            bounded_read(deadline, read).await
         }
     }
 
@@ -3508,16 +3524,20 @@ mod tests {
             Ok::<_, ascom_alpaca::ASCOMError>(1)
         };
         let quick = async { Ok::<_, ascom_alpaca::ASCOMError>(2) };
-        let (slow, quick) = tokio::join!(bounded_read(slow), bounded_read(quick));
+        let deadline = auxiliary_read_deadline();
+        let (slow, quick) =
+            tokio::join!(bounded_read(deadline, slow), bounded_read(deadline, quick));
         assert!(slow.unwrap_err().contains("no answer within 3s"));
         assert_eq!(quick.unwrap(), 2);
     }
 
     #[tokio::test]
     async fn a_failed_camera_read_carries_the_driver_error() {
-        let err = bounded_read(async { Err::<i32, _>(ascom_alpaca::ASCOMError::NOT_IMPLEMENTED) })
-            .await
-            .unwrap_err();
+        let err = bounded_read(auxiliary_read_deadline(), async {
+            Err::<i32, _>(ascom_alpaca::ASCOMError::NOT_IMPLEMENTED)
+        })
+        .await
+        .unwrap_err();
         assert!(err.to_lowercase().contains("not implemented"), "{err}");
     }
 

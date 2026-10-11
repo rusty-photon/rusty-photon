@@ -2185,7 +2185,11 @@ fn slow_wheel_handler(templated: bool) -> McpHandler {
 #[tokio::test(start_paused = true)]
 async fn an_untemplated_capture_gives_up_on_a_slow_wheel() {
     let err = slow_wheel_handler(false)
-        .capture_filter("cam", Some(rp_vocabulary::FrameType::Light))
+        .capture_filter(
+            "cam",
+            Some(rp_vocabulary::FrameType::Light),
+            super::internals::auxiliary_read_deadline(),
+        )
         .await
         .unwrap_err();
     assert!(err.contains("no answer within 3s"), "{err}");
@@ -2194,7 +2198,11 @@ async fn an_untemplated_capture_gives_up_on_a_slow_wheel() {
 #[tokio::test(start_paused = true)]
 async fn a_templated_capture_waits_a_slow_wheel_out() {
     let read = slow_wheel_handler(true)
-        .capture_filter("cam", Some(rp_vocabulary::FrameType::Light))
+        .capture_filter(
+            "cam",
+            Some(rp_vocabulary::FrameType::Light),
+            super::internals::auxiliary_read_deadline(),
+        )
         .await
         .unwrap();
     assert_eq!(read, Some(("Lum".to_string(), 0)));
@@ -2203,7 +2211,7 @@ async fn a_templated_capture_waits_a_slow_wheel_out() {
 #[tokio::test(start_paused = true)]
 async fn an_untyped_capture_names_no_file_so_bounds_the_wheel() {
     let err = slow_wheel_handler(true)
-        .capture_filter("cam", None)
+        .capture_filter("cam", None, super::internals::auxiliary_read_deadline())
         .await
         .unwrap_err();
     assert!(err.contains("no answer within 3s"), "{err}");
@@ -2213,7 +2221,11 @@ async fn an_untyped_capture_names_no_file_so_bounds_the_wheel() {
 async fn a_dark_reads_no_filter_however_slow_the_wheel() {
     for templated in [false, true] {
         let read = slow_wheel_handler(templated)
-            .capture_filter("cam", Some(rp_vocabulary::FrameType::Dark))
+            .capture_filter(
+                "cam",
+                Some(rp_vocabulary::FrameType::Dark),
+                super::internals::auxiliary_read_deadline(),
+            )
             .await
             .unwrap();
         assert_eq!(read, None, "templated: {templated}");
@@ -10643,6 +10655,25 @@ async fn capture_cancelled_behind_a_wedged_wheel_leaves_within_the_read_bound() 
         elapsed <= Duration::from_secs(4),
         "the capture must leave at the read bound, not when the wheel answers: {elapsed:?}"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancel_behind_a_bounded_read_keeps_the_frame_once_the_read_gives_up() {
+    // Untemplated, so the wheel read is bounded: it gives up at the
+    // reads' deadline, the very instant the cancel's wait ends, and the
+    // reads win the tie — the frame is kept, without its filter.
+    let (handler, _tmp) = wheel_capture_handler(Duration::from_mins(1), false);
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::Safety);
+
+    let (image_path, _document_id) = handler
+        .do_capture(capture_request("cam", 1), None, &cancel)
+        .await
+        .unwrap();
+
+    let sidecar = persistence::ExposureDocument::sidecar_path_for(&image_path).unwrap();
+    let doc = persistence::ExposureDocument::read_sidecar_sync(&sidecar).unwrap();
+    assert_eq!(doc.filter, None);
 }
 
 #[tokio::test(start_paused = true)]
