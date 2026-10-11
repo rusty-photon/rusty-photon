@@ -1161,17 +1161,21 @@ and then `phd2-guider serve` pointed at it via
 | `MOCK_PHD2_SETTLE_MODE` | What follows a `guide`/`dither` RPC: `settle_ok` (default — emit `Settling`, two fixed `GuideStep` events, then `SettleDone{status: 0}`), `settle_fail` (`SettleDone{status: 1, Error: "Mock star lost"}`), `never_settle` (no `SettleDone` — drives the `settle_timeout` backstop) |
 | `MOCK_PHD2_STOP_MODE` | `stops` (default — `stop_capture` moves the app state to `Stopped`) or `never_stops` (state stays `Guiding` — drives `stop_timeout`) |
 | `MOCK_PHD2_RPC_LOG` | Path to a JSON-lines file the mock appends each received `{method, params}` to — used for request-forwarding assertions (the `MOCK_ASTAP_ARGV_OUT` equivalent) |
-| `MOCK_PHD2_IMAGE_DIR` | Directory `save_image` writes its FITS files to (default: the system temp directory). Tests point it at a temporary directory so no file outlives the test |
+| `MOCK_PHD2_IMAGE_DIR` | Directory `save_image` writes its FITS files to. There is no default: unset, `save_image` answers PHD2's `error saving image` and writes nothing, so no run leaves frames in a shared directory. Tests point it at a temporary directory |
 
-`save_image` behaves as PHD2's does: each call writes a **new** FITS
-file and replies `{"filename": "<full path>"}`, leaving the file for
-the client to remove. The name has no `.fits` extension, because
-PHD2's (from `wxFileName::CreateTempFileName`) has none either. The
-frame is fixed, so tests can check what they decode: a primary HDU,
-`BITPIX = 16`, `BZERO = 32768`, 8×6 pixels, where row-major pixel `i`
-holds `i × 1365` (0 to 64155, crossing the signed 16-bit midpoint). A
-failed write answers PHD2's own `{"code": 3, "message": "error saving
-image"}`.
+`save_image` answers in PHD2's wire format: each call creates a
+**new** FITS file, never overwriting an existing one, and replies
+`{"filename": "<full path>"}`, leaving the file for the client to
+remove. The name has no `.fits` extension, because PHD2's (from
+`wxFileName::CreateTempFileName`) has none either. The frame is fixed,
+so tests can check what they decode: a primary HDU, `BITPIX = 16`,
+`BZERO = 32768`, 8×6 pixels, where row-major pixel `i` holds
+`i × 1365` (0 to 64155, crossing the signed 16-bit midpoint). A failed
+write answers PHD2's own `{"code": 3, "message": "error saving image"}`.
+The mock always has that frame to save. It does not model which
+exposure a frame came from, nor PHD2's `no image available` (code 2)
+before the first exposure. Both belong to the capture model the
+Alpaca Camera facade needs (device-claims plan, C6).
 
 The mock tracks a per-connection application state
 (`Stopped` → `Guiding` on `guide`, → `Stopped` on `stop_capture`) so

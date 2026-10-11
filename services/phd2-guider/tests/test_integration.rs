@@ -761,8 +761,11 @@ fn spawn_mock_phd2_dynamic_port(
     envs: &[(&str, &std::ffi::OsStr)],
 ) -> Option<(u16, Child)> {
     let mut cmd = Command::new(binary.as_ref());
+    // An image directory comes only from `envs`, never from the test
+    // runner's own environment, so a test without one really has none.
     cmd.env("MOCK_PHD2_PORT", "0")
         .env("MOCK_PHD2_MODE", mode)
+        .env_remove("MOCK_PHD2_IMAGE_DIR")
         .envs(envs.iter().copied())
         .stdout(Stdio::piped())
         .stderr(stderr);
@@ -1177,13 +1180,15 @@ async fn test_mock_phd2_star_image() {
 /// connect a client to it.
 #[cfg(not(miri))]
 async fn connect_to_mock_saving_into(image_dir: &std::path::Path) -> (ProcessGuard, Phd2Client) {
-    let (port, child) = spawn_mock_phd2_dynamic_port(
-        mock_phd2_bin(),
-        "normal",
-        Stdio::null(),
-        &[("MOCK_PHD2_IMAGE_DIR", image_dir.as_os_str())],
-    )
-    .expect("Failed to start mock_phd2 server");
+    connect_to_mock_with_env(&[("MOCK_PHD2_IMAGE_DIR", image_dir.as_os_str())]).await
+}
+
+/// Spawn `mock_phd2` with `envs` added, and connect a client to it.
+#[cfg(not(miri))]
+async fn connect_to_mock_with_env(envs: &[(&str, &std::ffi::OsStr)]) -> (ProcessGuard, Phd2Client) {
+    let (port, child) =
+        spawn_mock_phd2_dynamic_port(mock_phd2_bin(), "normal", Stdio::null(), envs)
+            .expect("Failed to start mock_phd2 server");
     let guard = ProcessGuard::new(child, "mock_phd2");
 
     let client = Phd2Client::new(Phd2Config {
@@ -1256,6 +1261,24 @@ async fn test_mock_phd2_save_image_writes_a_new_file_per_call() {
     assert_ne!(first, second);
     assert!(PathBuf::from(&first).is_file(), "{first} is gone");
     assert!(PathBuf::from(&second).is_file(), "{second} is gone");
+    client.disconnect().await.ok();
+}
+
+/// Without `MOCK_PHD2_IMAGE_DIR` the mock has nowhere to save and answers
+/// PHD2's own "error saving image", so no run can leave its frames in a
+/// shared directory.
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_mock_phd2_save_image_without_image_dir_is_an_rpc_error() {
+    let (_mock, client) = connect_to_mock_with_env(&[]).await;
+
+    match client.save_image().await {
+        Err(phd2_guider::Phd2Error::RpcError { code, message }) => {
+            assert_eq!(code, 3);
+            assert_eq!(message, "error saving image");
+        }
+        other => panic!("expected RpcError 3, got {other:?}"),
+    }
     client.disconnect().await.ok();
 }
 

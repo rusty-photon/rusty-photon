@@ -32,10 +32,10 @@
 //!   `MOCK_PHD2_ROTATOR` - "connected" populates `get_current_equipment`'s
 //!     rotator slot ({"name": "Mock Rotator", "connected": true});
 //!     unset/anything else reports null (no rotator in the profile)
-//!   `MOCK_PHD2_IMAGE_DIR` - Directory `save_image` writes its FITS file to
-//!     (default: the system temp directory). Each call writes a new file and
-//!     replies {"filename": "<full path>"}, as PHD2 does; the file is left
-//!     for the client to remove
+//!   `MOCK_PHD2_IMAGE_DIR` - Directory `save_image` writes its FITS file to.
+//!     Each call writes a new file and replies {"filename": "<full path>"},
+//!     as PHD2 does; the file is left for the client to remove. There is no
+//!     default: unset, `save_image` answers PHD2's "error saving image"
 //!
 //! Command line argument takes precedence over environment variable for port.
 //! Default port is 4400 (same as PHD2).
@@ -77,7 +77,6 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use rp_fits::atomic::write_atomic_with;
 use rp_fits::writer::write_u16_image;
 
 /// Application state shared across connections, mirroring the single
@@ -292,32 +291,50 @@ const SAVED_FRAME_STEP: usize = 1365;
 /// Answer `save_image` as PHD2 does: write the current frame to a new
 /// FITS file and return its full path. The frame is a fixed 8×6
 /// unsigned 16-bit ramp (primary HDU, `BITPIX = 16`, `BZERO = 32768`).
+/// The mock always has this frame to save: it does not model which
+/// exposure a frame came from, nor PHD2's `no image available` (code 2)
+/// before the first one.
 ///
-/// The file goes to `MOCK_PHD2_IMAGE_DIR`, or the system temp directory
-/// when that is unset, and is left there: as with PHD2, removing it is
-/// the client's job. PHD2 names the file with
+/// The file goes to `MOCK_PHD2_IMAGE_DIR` and is left there: as with
+/// PHD2, removing it is the client's job. There is no default
+/// directory, so no run can scatter files into a shared one; unset, the
+/// call fails. PHD2 names the file with
 /// `wxFileName::CreateTempFileName(<dir>/save_image_)`, so the real name
 /// has no `.fits` extension; this one has none either, so a client cannot
-/// come to rely on one. The process id and a per-process counter keep
-/// every name unique.
+/// come to rely on one. The process id and a per-process counter make
+/// each name new.
+///
+/// Like PHD2, which creates the file (`mkstemp`) and then writes into
+/// it, the mock creates the file, refusing one that already exists
+/// rather than overwriting it, and writes in place. A failed write
+/// removes the file, as PHD2's does.
 fn save_image() -> Result<String, String> {
     static NEXT_IMAGE: AtomicU64 = AtomicU64::new(0);
 
-    let dir =
-        std::env::var_os("MOCK_PHD2_IMAGE_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
+    let dir = std::env::var_os("MOCK_PHD2_IMAGE_DIR")
+        .ok_or("MOCK_PHD2_IMAGE_DIR is unset, so there is nowhere to save")?;
     let serial = NEXT_IMAGE.fetch_add(1, Ordering::Relaxed);
     let name = format!("save_image_{}_{serial}", std::process::id());
-    let path = std::path::absolute(dir.join(name))
+    let path = std::path::absolute(PathBuf::from(dir).join(name))
         .map_err(|e| format!("cannot make the image path absolute: {e}"))?;
 
     let pixels: Vec<u16> = (0..=u16::MAX)
         .step_by(SAVED_FRAME_STEP)
         .take(SAVED_FRAME_PIXELS)
         .collect();
-    write_atomic_with(&path, |w| {
-        write_u16_image(w, &pixels, SAVED_FRAME_WIDTH, SAVED_FRAME_HEIGHT, &[])
-    })
-    .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    let mut file = std::fs::File::create_new(&path)
+        .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+    if let Err(e) = write_u16_image(
+        &mut file,
+        &pixels,
+        SAVED_FRAME_WIDTH,
+        SAVED_FRAME_HEIGHT,
+        &[],
+    ) {
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        return Err(format!("cannot write {}: {e}", path.display()));
+    }
 
     path.into_os_string()
         .into_string()

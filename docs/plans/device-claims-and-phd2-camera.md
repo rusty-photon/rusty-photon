@@ -1464,7 +1464,7 @@ phase against a live PHD2:
 This is the single largest unknown in Part B, and C6's design-doc phase
 does not end until one of these is demonstrated against a real PHD2.
 
-**Prerequisite defect (fixed, C6's first commit):** `Phd2Client::save_image`
+**Prerequisite defect (fixed in C6's first PR, [#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)):** `Phd2Client::save_image`
 ([`services/phd2-guider/src/client.rs`](../../services/phd2-guider/src/client.rs))
 parsed the result as a bare string, but PHD2 returns the object above, so
 it failed against real PHD2 every time; it passed CI only because
