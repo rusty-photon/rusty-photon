@@ -4,7 +4,10 @@
 //! not a shared binary. That is the no-SDK hardware facts and predicates
 //! behind the `hardware.*` check family, and, since D5, the canonical
 //! report schema, the text renderer, and the per-service runner every
-//! service binary's `doctor` subcommand calls.
+//! service binary's `doctor` subcommand calls. Since device claims
+//! (docs/plans/device-claims-and-phd2-camera.md), the camera drivers read
+//! the USB scan here too: [`claims`] places each SDK camera on a port before
+//! a driver registers anything.
 //!
 //! Everything here is read-only: `stat`, directory listings, and inventory
 //! queries. Nothing ever opens a device — a running service holds its
@@ -37,6 +40,7 @@
 )]
 
 pub mod access;
+pub mod claims;
 pub mod facts;
 pub mod render;
 pub mod report;
@@ -45,5 +49,6 @@ pub mod udev;
 
 pub use access::Identity;
 pub use facts::{
-    gather, HardwareFacts, PathFacts, PathKind, ProbeRequest, UsbDevice, UsbFault, UserFacts,
+    gather, scan_usb, HardwareFacts, PathFacts, PathKind, ProbeRequest, UsbDevice, UsbFault,
+    UsbScan, UserFacts,
 };

@@ -13,6 +13,11 @@ pub enum SvbonyCameraError {
     #[error("config error: {0}")]
     Config(String),
 
+    /// A staged USB inventory (the simulation build's `--usb-inventory`)
+    /// could not be read, or describes a state no collector could produce.
+    #[error("{0}")]
+    UsbInventory(String),
+
     /// Binding the Alpaca listener failed.
     #[error("failed to bind {addr}: {source}")]
     Bind {

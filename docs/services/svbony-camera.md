@@ -35,6 +35,20 @@
 > CI provisioning ([#720](https://github.com/rusty-photon/rusty-photon/issues/720)
 > Part 2) remains open.
 >
+> **Device claims ([device-claims plan](../plans/device-claims-and-phd2-camera.md)
+> C2): an optional `usb_devices` list pins each USB port to an Alpaca device
+> number.** A camera on a listed port is served at that entry's number every
+> time, whatever order the SDK enumerates in; a camera on an unlisted port is
+> never registered, so nothing opens it; and a listed number whose camera
+> cannot be served is held by a **placeholder** that refuses to connect with
+> one fixed error code and says why. Placement is a passive join of the host
+> USB scan with the SDK's enumeration — nothing is opened to decide it — and
+> a failed scan is retried in the background until it succeeds, when the
+> service reloads itself. `svbony-camera doctor --devices` lists every SVBony
+> camera on the bus by port and prints the list to paste. With no list —
+> the permanent default — the service behaves exactly as before. See
+> "Configuration" and "Device claims (`usb_devices`)" (U1-U9).
+>
 > **Follow-up landed (issue #1412): a camera that has left the bus reads
 > disconnected.** `Connected` was the driver's own flag, so a camera whose
 > power or cable was cut went on answering `Connected = true` and every
@@ -562,7 +576,23 @@ graph TD;
   serial-derived UniqueID. Because `CameraSN` arrives at enumeration time
   (`SVBGetCameraInfo`, no open required — see "Device identity"),
   enumeration never opens a camera just to mint identity, unlike
-  `zwo-camera`. Returns a `BoundServer`.
+  `zwo-camera`. With a `usb_devices` list it registers the list instead —
+  each entry's camera or placeholder at its number (U4) — and, when the USB
+  scan failed, starts the background re-scan (U6). Returns a `BoundServer`.
+- **`claims.rs`** — this driver's half of the device claims: its normalizer
+  (the SDK models it knows and the product id each enumerates under on the
+  bus, U2), the USB scan source (the host collector, or the staged inventory
+  in a simulation build, U7), and the `doctor --devices` listing (U8). The
+  vendor-neutral half — the join itself, the list validation, port order, the
+  listing's layout, the placeholder's fixed error code, `UniqueID` form and
+  reason text — is `rusty-photon-doctor-checks`' `claims` module, so
+  `zwo-camera` and `qhy-camera` take the same rules from the same code (plan
+  C3/C4).
+- **`placeholder.rs`** — `PlaceholderCamera`, the `Device` + `Camera` that
+  holds a listed number whose camera cannot be served (U4). Service-local
+  while this is its one consumer: `rusty-photon-camera-core` is by its own
+  rule no home for a `Camera` implementation, so the shared home is chosen
+  when `zwo-camera` becomes the second consumer (plan C3).
 - **`camera.rs`** — `SvbonyCamera` (one instance per discovered camera)
   implementing both `Device` and `Camera` against the `backend::CameraHandle`
   seam — the full exposure state machine, ROI/binning, gain/offset,
@@ -590,7 +620,7 @@ graph TD;
   C/D) + the `dispatch` the device delegates to.
 - **`doctor.rs`** — the `doctor` subcommand (real as of Phase C/D): config
   parse + `svbony_rs::Sdk::cameras()` enumeration, gated the same way as
-  `zwo-camera`'s doctor.
+  `zwo-camera`'s doctor; `--devices` prints the port listing (U8).
 
 **Concurrency.** The SVBony SDK's thread-safety is undocumented — treated
 as unsafe for concurrent calls on one handle, the same posture
@@ -705,7 +735,8 @@ either: both members answer from the cache and both setters only store
 - ASCOM Camera `ICameraV3` for every enumerated SVBony camera, 8/16-bit RAW
   and mono/OSC (Bayer) sensors, derived at runtime from
   `SVB_CAMERA_PROPERTY` — never hardcoded to the SV605CC's own pattern.
-- Startup enumeration registers all discovered cameras; per-device
+- Startup enumeration registers all discovered cameras — or, with a
+  `usb_devices` list, exactly the list (U1-U9); per-device
   connect/disconnect (real since Phase C/D); on connect, select
   `SVB_MODE_TRIG_SOFT` when `IsTriggerCam` and start video capture once.
 - Sensor geometry from cached `SVB_CAMERA_PROPERTY` (`MaxWidth`/`MaxHeight`,
@@ -791,21 +822,16 @@ either: both members answer from the cache and both setters only store
 
 ## Configuration
 
-The service enumerates every connected SVBony camera at startup and
-registers each as an ASCOM device (camera index 0, 1, 2, …) on the one
-port. The hardware is the source of truth — there is no per-camera
-*binding* in config.
-
 ```jsonc
 {
-  // Optional per-device overrides, keyed by SDK serial. A device with no
-  // entry uses SDK-derived defaults (name from the friendly name).
-  "devices": {
-    "SVB0123456789AB": {
+  // Optional: pin each USB port to an Alpaca device number (see below and
+  // U1-U9). Absent = every camera the SDK enumerates, in SDK order.
+  "usb_devices": [
+    { "device_number": 0,
+      "usb_port": "platform-xhci-hcd.1-usbv3-0:1",
       "name": "Main Imaging",
-      "description": "SV605CC @ 1000mm"
-    }
-  },
+      "description": "SV605CC @ 1000mm" }
+  ],
   "server": {
     "port": 11125,
     "bind_address": "0.0.0.0",
@@ -819,10 +845,72 @@ The `server` block is the shared `AlpacaServerConfig` from
 `crates/rusty-photon-server-config` (see ADR-016). Absent `tls`/`auth`
 means plain, unauthenticated HTTP.
 
+- **usb_devices** — Optional. Each entry pins the camera on one USB port to
+  one Alpaca device number, so a camera plugged into that socket is the same
+  ASCOM device every time, and a camera on any other port is never served
+  (U1-U5). That is how a camera another application owns — PHD2's guide
+  camera — is kept out of this driver: it is left off the list. The `usb_port`
+  is the platform's native spelling (udev's `ID_PATH_WITH_USB_REVISION` on
+  Linux, the `PCIROOT(…)` location path on Windows, the location id on macOS —
+  [doctor.md](doctor.md), "USB inventory"), pasted from `svbony-camera doctor
+  --devices` (U8), never typed from memory.
+  - **device_number** — the Alpaca device number this port's camera is served
+    under. Explicit rather than positional: reordering entries renumbers
+    nothing.
+  - **usb_port** — the port path, compared verbatim with the USB scan.
+  - **name** — optional display name for the camera, and for the
+    placeholder that holds its number when it cannot be served (U4).
+  - **description** — optional description for the camera. A placeholder's
+    `Description` is always its reason (U4), so it does not use this one.
+
+  Validated at load, before any USB or SDK work, and again by `config.apply`
+  (U9); a list that fails either is named entry by entry and nothing starts
+  from it:
+
+  - `usb_port` is non-blank, carries no leading or trailing whitespace, and is
+    unique across entries. A padded port is rejected, not trimmed: the scan
+    never carries padding, so it could only ever become a placeholder for a
+    port that holds a camera.
+  - `device_number` is unique, and the numbers are exactly `0..N-1`. A gap is
+    rejected rather than filled, so every number the driver serves is one the
+    operator wrote and a typo (`0, 2`) cannot become a phantom camera 1.
+    Retiring any camera but the highest-numbered one therefore means
+    renumbering the entries above it — and rp's `cameras[].device_number`
+    with them. A retired camera's entry is never kept just to hold its
+    number: a listed port is a positive claim, so whatever SVBony camera is
+    plugged into that socket later would be served there.
+  - Unknown keys are rejected (`deny_unknown_fields`).
+  - **A non-empty `devices` map beside a list is rejected**, naming each key:
+    a listed camera's `name`/`description` live in its entry, and an override
+    that would be silently ignored is the no-op config the fail-loud posture
+    exists to prevent. Move its fields into the matching entry, or delete it
+    if that camera is unlisted.
+
+  **`"usb_devices": []` registers nothing** — legal in the file, logged at
+  `warn!` at every start, and it needs no USB scan or SDK enumeration. It is
+  how an operator hands every SVBony camera to another application for a
+  night. A server with no device has nowhere for the config actions to live,
+  so `[]` is left by editing the file and reloading; `config.apply` refuses
+  it (U9).
+
+  **No list is the default, permanently.** With no `usb_devices` key the
+  service registers every camera the SDK enumerates, in SDK order, exactly as
+  before this field existed, and makes no USB scan. (The device-claims plan's
+  C5 will change what the no-list default does for all three camera drivers at
+  once — numbering by port order and refusing cameras it cannot place — and
+  will be documented here when it lands.)
 - **devices** — Optional per-device override map keyed by **SDK serial**
-  (`SVB_CAMERA_INFO.CameraSN`). Any device without an entry uses
-  SDK-derived defaults. No per-camera connect-time tuning (gain/offset/
-  target temperature) in v0 — deferred (see *Future Work*).
+  (`SVB_CAMERA_INFO.CameraSN`, or `noserial-{index}` for a camera reporting
+  none). Any device without an entry uses SDK-derived defaults. It serves the
+  no-list default only: beside a list it is rejected (above). No per-camera
+  connect-time tuning (gain/offset/target temperature) in v0 — deferred (see
+  *Future Work*).
+
+  ```jsonc
+  "devices": {
+    "SVB0123456789AB": { "name": "Main Imaging", "description": "SV605CC @ 1000mm" }
+  }
+  ```
 - **server.port** — Listening port (**11125**; 11111–11124 are already
   allocated, see `docs/workspace.md`'s Services table). Hard read-only
   (self-lockout: a port change would make the BFF lose the devices).
@@ -838,10 +926,11 @@ adapter in [`rusty-photon-driver`](../../crates/rusty-photon-driver).
 - **Secrets redacted/carried forward:** `server.auth.password_hash`.
 - **Locked (identity) fields:** none — UniqueIDs are hardware-derived.
 - **Hard read-only fields:** `/server/port`.
-- **Editable fields:** the `devices` map (per-serial `name` /
-  `description`).
+- **Editable fields:** `usb_devices` and the `devices` map (per-serial
+  `name` / `description`).
 - **Validation** at load (parse-don't-validate): unknown keys are rejected
-  at deserialize (`deny_unknown_fields`).
+  at deserialize (`deny_unknown_fields`); the `usb_devices` rules above run
+  at load and in `config.apply` alike (U9).
 
 ### Device identity (UniqueID)
 
@@ -866,13 +955,18 @@ SVBONY:{friendly_name}:noserial-{index}
 logged at `warn!`. Consequences (same as `zwo-camera`/`qhy-camera`): **no
 `unique_id` field in config**, an **empty identity-pointer list** passed to
 `resolve_and_init` in `main.rs`, and **no locked identity field** in the
-config-actions tiers.
+config-actions tiers. A listed camera keeps exactly this identity — the list
+pins its number, not its identity (U5). A placeholder's `UniqueID` has its
+own fixed form, `placeholder:svbony-camera:{usb_port}`, which no camera's can
+take (U4). (The device-claims plan's C5 replaces the `noserial-{index}`
+fallback with one built from the camera's port.)
 
 ### Device registration (boundary removed at real-hardware validation)
 
-`enumerate_cameras()` always registers whatever `svbony_rs::Sdk::cameras()`
-reports — the Phase E "production build registers zero devices" boundary
-was removed when the physical SV605CC arrived (2026-07-26):
+With no `usb_devices` list, `enumerate_cameras()` registers whatever
+`svbony_rs::Sdk::cameras()` reports — the Phase E "production build
+registers zero devices" boundary was removed when the physical SV605CC
+arrived (2026-07-26):
 
 - **With `simulation`:** enumerates `svbony-rs`'s one fabricated
   `SV605CC-Simulated` camera and registers it, so BDD scenarios have
@@ -880,6 +974,9 @@ was removed when the physical SV605CC arrived (2026-07-26):
 - **Without `simulation`** (the production real-SDK build): registers the
   physically connected cameras — verified against the real SV605CC
   (enumeration, identity from the hardware `CameraSN`, ConformU).
+
+With a list, the list decides what is registered (U4): its entries, in
+device-number order, each the camera placed on its port or a placeholder.
 
 Under `cargo test` with no features, the dev-dependency's
 `svbony-rs/simulation` feature unifies into the service's `svbony-rs`
@@ -889,7 +986,9 @@ the simulated camera (`production_default_tests`).
 `ServerBuilder::with_empty(bool)` additionally forces zero cameras
 regardless of the feature (mirrors `zwo-camera`'s `--simulation-empty`
 test-only path, contract C0), used by the BDD suite's empty-backend
-scenario.
+scenario. With a list it empties only the SDK's side of the join — the USB
+scan is untouched — so a listed port's record is one no SDK camera is placed
+on.
 
 ---
 
@@ -898,7 +997,7 @@ scenario.
 Named, testable behaviours. ASCOM error names per
 [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md). Every
 contract below is real as of Phase E; the BDD feature files under
-`tests/features/` (86 scenarios, 421 steps) and the unit tests in
+`tests/features/` (111 scenarios, 564 steps) and the unit tests in
 `src/camera.rs`/`src/backend.rs` exercise them — see "Testing" below for
 which layer covers which contract (E9's two branches, the
 generation-counter abort race and E10 are unit-test-only, per the design's
@@ -1181,6 +1280,262 @@ one core at load average 65, see "Real-hardware validation").
   Pinned by
   `a_reconnect_waits_for_a_handshake_the_departure_interrupted` and
   `a_transition_that_finds_a_fresh_session_leaves_it_alone`.
+
+### Device claims (`usb_devices`)
+
+The rules for an operator's `usb_devices` list (see "Configuration"),
+following the [device-claims plan](../plans/device-claims-and-phd2-camera.md)
+Part A, of which this driver is phase C2. Nothing here applies without a
+list: the no-list default registers every camera the SDK enumerates, in SDK
+order, with no USB scan, as it always has.
+
+The vendor-neutral rules live in shared code so that `zwo-camera` (C3) and
+`qhy-camera` (C4) take them unchanged: the join, the list validation, port
+order, the `--devices` layout and the placeholder's error code, `UniqueID`
+form and reason text, all in `rusty-photon-doctor-checks`' `claims` module.
+What is SVBony's own — the normalizer and the USB scan source — is
+`claims.rs`; the placeholder device, `placeholder.rs`, stays here until a
+second driver needs it.
+
+- **U1. The list is applied before anything could open a camera.** With a
+  list, `build()` takes the host's USB scan (the passive collector of
+  [doctor.md](doctor.md), "USB inventory" — sysfs, PnP properties or
+  `system_profiler`, nothing opened, claimed or reset), enumerates the SDK
+  (`SVBGetCameraInfo`, pre-open), places each SDK camera on a port (U2), and
+  registers the list (U4). A camera on an unlisted port is never registered,
+  so no client can connect it and nothing in this service opens it. An empty
+  list makes neither the scan nor the enumeration, and a failed scan stops
+  before the enumeration (U6). None of these steps is an open, let alone an
+  actuation, and a reload — `config.apply`'s, `SIGHUP`'s, or U6's own — runs
+  the same path (tenet 3, C5).
+- **U2. Placing a camera on a port is a join.** No SVBony SDK call reports a
+  USB location: `SVB_CAMERA_INFO` carries a name, `CameraSN`, a port *type*
+  (`USB3`) and a device id, never a port. The scan knows each record's port,
+  vendor and product ids, product string and, when the device publishes one,
+  USB serial. The **candidates** are the scan's working records — a fault is
+  never one — with SVBony's vendor id, `f266`, whose product id the
+  normalizer knows as a camera model. Each SDK camera is matched on the
+  strongest signal both sides carry. The shared join takes a serial when both
+  sides offer one, but this driver offers none: no SVBony camera has been seen
+  publishing a USB serial, so how the bus would spell one beside `CameraSN` is
+  unknown, and a serial both sides carry in different spellings would refuse
+  the right camera. So SVBony cameras match on **the product id** the
+  normalizer gives the camera's SDK model. The product string is not compared
+  either: the product id already tells SVBony's models apart.
+
+  A match places a camera only when it is **one-to-one**: the camera matches
+  exactly one candidate, and that candidate matches exactly one SDK camera.
+  After the keyed matches, an SDK camera whose model the normalizer does not
+  know and the one record left over are **paired by elimination** when nothing
+  else could explain either: exactly one SDK camera and exactly one `f266`
+  record remain unpaired, no fault carries `f266`, and the record's product id
+  is not one the normalizer gives any model. That keeps a single camera whose
+  model nobody has observed yet working. A known model is never paired this
+  way: its product id is known, so a leftover record under another one is a
+  different device, and its own record is missing.
+
+  The **normalizer** knows only observed pairs:
+
+  | SDK model | Bus record | Observed |
+  |---|---|---|
+  | `SVBONY SV605CC` (its `UniqueID` is `SVBONY:SVBONY-SV605CC:…` in every validation record) | `f266:9a0a`, product string `SVBONY SV605CC`, no USB serial | `pier1` (Raspberry Pi 5, Linux), 2026-10-10 |
+
+  A simulation build also knows its fabricated `SV605CC-Simulated` under
+  `9a0a` (U7). `SVB_CAMERA_INFO`'s `DeviceID` may be the bus product id,
+  which would make the table unnecessary; that is unverified, so nothing
+  reads it. Joining on the product id alone means **two cameras of one model
+  on one host are look-alikes** (U3).
+- **U3. A join that cannot be resolved is refused, never guessed.** A
+  **look-alike** is an SDK camera the join cannot pair one-to-one — two
+  SV605CCs with no USB serial on one host, or two SDK cameras of one model
+  beside a single working record. An **unrecognised** camera is one whose
+  model the normalizer does not know and that elimination could not pair.
+  Neither is served, whatever the list says: a listed port holding such a
+  record gets a placeholder (U4) naming the collision, or the SDK model and
+  the product id the bus shows — everything a normalizer entry needs.
+  Registering the wrong camera would be worse than registering none: the
+  first symptom would be a frame from the wrong sensor at 2am. Look-alikes
+  are resolved by cameras of different models, or one per host; an
+  unrecognised model by a normalizer entry. Re-running `doctor --devices`
+  with one camera unplugged tells the operator which port is which, but it
+  cannot make two look-alikes servable while both are connected (U8).
+- **U4. The list is what is registered, in number order; a number whose
+  camera cannot be served is a placeholder.** The entries are registered in
+  `device_number` order, so the server's position for each is its number —
+  the position rp binds by. An entry whose port holds the camera U2 placed
+  there is that camera (U5). Every other entry is a **placeholder**, so a
+  powered-down hub costs its own cameras and moves no other number. Its
+  reason is the first that applies, as of the last start or reload — a
+  placeholder never re-scans:
+  1. the scan failed (U6) — the collector's error;
+  2. a fault located at the port — the fault's reason and record (a Windows
+     record reported not working keeps its `PCIROOT(` path, and a Linux record
+     whose port could still be spelled carries it, doctor.md "USB inventory");
+  3. a look-alike or an unrecognised camera whose record is on the port
+     (U3);
+  4. a working record no SDK camera is placed on — another vendor's device,
+     or a SVBony one the SDK does not report: *"`<port>` holds `<product>`
+     (`<vid>:<pid>`), which the SVBony SDK does not report as a camera"*;
+  5. otherwise *"no working camera is enumerated on `<port>`"* — never "the
+     port is empty", because absence proves nothing (a device whose
+     enumeration failed leaves no record on Linux, and only an `ACPI(…)` chain
+     on Windows). When the scan reported faults elsewhere that could be the
+     camera — `f266` records, or ones with no vendor id that could be read
+     (none at all, or the `0000` of a Windows enumeration failure) — the
+     message adds how many and points at doctor's `hardware.usb-fault`.
+     Another vendor's fault is that vendor's device, and is not offered.
+
+  Every reason ends with the way back: once the camera is fixed, reload or
+  restart the service, which re-opens every camera it serves. (The device-
+  claims plan's D4.8 hint — *a camera is on this port's USB 2.0 twin* — needs
+  a port-pairing signal the collectors do not read yet, so a camera that fell
+  back to USB 2 speed is reported by the generic reasons above, and shows in
+  `doctor --devices` on its other spelling.)
+
+  A placeholder is a registered Camera that cannot connect tonight:
+
+  - `Connected` reads `false`. `Connected = true` fails with **ASCOM error
+    `0x540`** — driver code `0x40` of the `0x500`–`0xFFF` driver range, the
+    same value in every camera driver with device claims — and a message
+    naming the port and the reason. `Connected = false` succeeds; there is
+    nothing to close.
+  - `Name` is the entry's `name`, else *"SVBony camera on `<port>`
+    (placeholder)"*. `Description` says it is a placeholder and carries the
+    reason, so a client, the Chooser or an operator reads it without
+    connecting — the pinned `ascom-alpaca-rs` fork runs a Platform 7
+    `Connect()` in a task of its own and logs its failure instead of
+    returning it, so `Description` is where a Platform 7 client finds why.
+  - `UniqueID` is `placeholder:svbony-camera:<usb_port>`, a form no camera's
+    can take, so a client that remembers devices by `UniqueID` never mistakes
+    the stand-in for the camera, and central doctor can recognise it in
+    `configureddevices` (plan C5).
+  - `SupportedActions` lists the config actions and `Action` serves them,
+    connected or not — an rp camera entry bound to this number is how
+    `ui-htmx` reaches the service, and a missing camera is exactly when the
+    operator needs that page to fix the list.
+  - `DriverInfo`, `DriverVersion` and `InterfaceVersion` answer as for a
+    camera; every other member answers `NOT_CONNECTED`.
+  - The service logs `warn!` at start naming the number, the port and the
+    reason. A placeholder is never a startup failure.
+
+  rp treats `0x540` from `Connected = true` as permanent for its pass: one
+  attempt, logged at `debug!`, and the camera is picked up on the first pass
+  after a reload serves it ([rp.md](rp.md#device-session-recovery)).
+  ConformU pointed at a placeholder fails its connect test — acceptable,
+  since conformance runs use the simulation build with no list.
+- **U5. A listed camera is the camera, with its entry's display names.** It
+  is the same `SvbonyCamera` the no-list default registers — every contract
+  in this document applies — with the `UniqueID` it always had (*Device
+  identity*); the list pins its number, not its identity. Its `name` and
+  `description` come from its entry. An SDK camera placed on a port no entry
+  lists is not registered, and is logged at `debug!`.
+- **U6. A failed scan serves placeholders, and is retried until it
+  succeeds.** A scan that could not run — sysfs unreadable, `powershell.exe`
+  or `system_profiler` erroring or outrunning its 10 s deadline, output the
+  query cannot have produced — has no opinion about what is on the bus, so
+  nothing is placed: every listed number is a placeholder naming the
+  collector's error, the SDK is not enumerated, and the error is logged at
+  `error!`. It is never a startup failure — the service starts and serves its
+  placeholders — so the service manager's restart-on-failure would never retry
+  it, and one slow `powershell.exe` at boot would otherwise cost the night.
+  (Like the SDK enumeration, the scan runs before the listener binds, so a
+  start or reload with a list is unreachable for as long as the scan takes:
+  milliseconds on Linux, where it reads sysfs, and at most the collector's
+  10 s deadline on macOS and Windows.) The
+  service therefore re-scans in the background, after waits of 10 s, 20 s and
+  40 s and then every 60 s, logging each repeat failure at `debug!`.
+  The first scan that succeeds is logged at `info!` and fires the service's
+  own reload — the one `config.apply` and `SIGHUP` fire — which runs the start
+  path again, placement and all. That is safe because the failed-scan outcome
+  opened nothing, so there is no session to interrupt. Nobody asked for that
+  reload, though, and a reload whose config file no longer loads ends the
+  service, so it waits for the file: a scan that succeeds beside a hand-edited
+  file that no longer loads is logged at `warn!` once, and the re-scan carries
+  on, reloading at the first success after the file loads again. The re-scan
+  stops when it reloads, and with the server it belongs to; it is not hot-plug: a
+  successful scan whose listed port is merely empty serves a placeholder until
+  the next reload, as at any start.
+- **U7. A simulation build stages its scan.** The `svbony-rs` simulation
+  fabricates a camera no host scan can see, so a `simulation` build never
+  scans the host: its scan is a staged inventory (`rusty-photon-doctor-
+  checks`' `mock` feature, doctor.md "USB inventory"). By default that is one
+  working record per fabricated camera — `f266:9a0a`, product string `SVBONY
+  SV605CC-Simulated`, on port `simulated-usbv3-0:<n>` for the camera at SDK
+  index `n - 1` — so a list naming that port places the simulated camera
+  through the real join. The hidden `--usb-inventory <file>` flag, on the
+  service and on `doctor --devices` alike, replaces it with the staged
+  document in that file, for the topologies a scenario needs: a listed port
+  empty, a fault, a look-alike, a failed scan. A file that cannot be read, or
+  describes a state no collector could produce, refuses the start, naming the
+  file; every scan reads it again, U6's re-scans included, so a scenario can
+  stage a failed scan and then repair it. Neither the default nor the flag
+  exists in a release build.
+- **U8. `svbony-camera doctor --devices` lists the cameras by port, and
+  prints the list to paste.** Read-only and enumeration-only, like every
+  per-service check — safe to run by hand while the service holds its
+  cameras:
+
+  ```
+  $ svbony-camera doctor --devices
+
+  SVBony cameras on the bus (vendor f266), in port order:
+
+    Port                           Model           SDK id                        USB serial  Device
+    platform-xhci-hcd.1-usbv3-0:1  SVBONY SV605CC  0123481353808C03EE2512150035  —           0
+
+  To pin the cameras this driver serves, paste this into svbony-camera.json.
+  Leave out any camera another application owns (PHD2's guide camera), and
+  keep the numbers running 0..N-1:
+
+      "usb_devices": [
+        { "device_number": 0, "usb_port": "platform-xhci-hcd.1-usbv3-0:1" }
+      ]
+  ```
+
+  Rows are the SDK cameras U2 placed on a port, in port order (the plan's
+  D4.7: hop by hop from the root, each hop compared as the number the
+  platform writes, so `…-0:4.2` precedes `…-0:4.10`). The SDK id is the
+  enumeration's `CameraSN`, free to read before any open; the USB serial is
+  what the bus publishes, usually nothing (`—`), which says nothing about the
+  camera's identity. **Device** is the number the running configuration
+  serves the camera at — its entry's number, `not listed`, or, with no list,
+  its SDK-order number.
+
+  **The block.** With no list, it holds every placed camera numbered in port
+  order, each carrying the `name`/`description` its `devices` override gives
+  it today, matched by `CameraSN` (or `noserial-<index>`) without opening
+  anything, so pasting it and deleting the `devices` map keeps every name. A
+  `devices` key that matches no placed camera is named, with a note to move
+  its fields by hand. Until the plan's C5 the no-list default serves SDK
+  order, so when port order differs the listing says pasting renumbers the
+  cameras, and to check rp's `cameras[].device_number`. With a list, the
+  block reproduces it — every entry and number, placeholders included — and
+  an unlisted camera appears in the table only: serving it is an ownership
+  decision, made by copying its port into an entry.
+
+  Below the table come what the join could not place — look-alikes,
+  unrecognised models with their SDK model and the product id the bus shows,
+  `f266` records no SDK camera is placed on, and `f266` faults — and, when
+  more than one camera is listed, the unplug procedure: unplug one, re-run,
+  and the port that disappears is the one just unplugged. Look-alikes are
+  said plainly to stay unservable while both are connected.
+
+  Exit codes follow the shared doctor contract: `0`, or `1` when the config
+  cannot be loaded, the scan failed, or the SDK could not enumerate. Text
+  only: `--devices` does not combine with `--json`. The `usb-devices.*`
+  checks of the plan's D5 come with C5.
+- **U9. The list over `config.apply`.** `usb_devices` is an editable field.
+  `config.apply` runs the load-time validation and answers a bad list with
+  field errors naming the entry (`usb_devices.1.usb_port`,
+  `usb_devices.0.device_number`) or the `devices` key beside it
+  (`devices.<serial>`), persisting nothing. It refuses `"usb_devices": []`
+  with an error saying why: an empty list registers nothing, which would
+  remove the path the apply arrived on. A changed list applies through the
+  ordinary in-process reload, which closes and re-opens every camera on the
+  service — an operator editing the list is re-cabling or re-assigning
+  cameras, not mid-exposure. Placeholders carry the actions (U4), so a list
+  whose camera went missing can be fixed from `ui-htmx` through the
+  placeholder at that camera's number.
 
 ### Exposure (the soft-trigger video-capture state machine)
 
@@ -1806,13 +2161,18 @@ fn main() -> ServiceResult {
 `info!("Service started successfully …")` only after the bind succeeds;
 everything else is `debug!` (CLAUDE.md Rule 9).
 
+The background re-scan after a failed USB scan (U6) belongs to the bound
+server: it runs while that server serves and stops when it does, and its
+success fires the same `ReloadSignal` the loop above already waits on, so
+recovery needs nothing from `main.rs` beyond the loop it has.
+
 ---
 
 ## Testing
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 147 no-features / 170 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 174 no-features / 207 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
@@ -1859,8 +2219,8 @@ Layered per [`testing.md`](../skills/testing.md).
   `Camera::video_capture_starts`, a read-only count that tells the test the
   capture's own capture restart has run, so "the cancel landed in the poll
   loop" is a fact rather than a nap.
-- **BDD** (`bdd-infra::ServiceHandle`, ten feature files, 86 scenarios /
-  421 steps) — all genuinely green, including `enumeration_connection`'s
+- **BDD** (`bdd-infra::ServiceHandle`, eleven feature files, 111 scenarios /
+  564 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
   behavioural feature (`exposure`, `binning_and_roi`, `cooling`,
   `gain_offset_readout`, `sensor_properties`) — see each file's header
@@ -1912,6 +2272,21 @@ Layered per [`testing.md`](../skills/testing.md).
   and a release landing between the two state reads
   (`MockCameraHandle::close_after_next_state_read`) reading neither as
   connected.
+- **Device claims (U1-U9)** — `usb_devices.feature` starts the `simulation`
+  binary with a list and, where the topology needs it, the hidden
+  `--usb-inventory <file>` flag (U7): a listed camera served at its number
+  through the real join, an unlisted camera left unregistered, a placeholder
+  for each reason U4 gives (an empty port, a fault, another device on the
+  port, a look-alike, a failed scan) with its connect error code, its
+  `Description`, its `UniqueID` form and its config actions, a failed scan
+  re-scanned until it succeeds and the service reloads itself, the empty
+  list, and the list's validation at start and over `config.apply`.
+  `doctor --devices` is covered from the same feature against staged
+  inventories. The join's own rules — the one-to-one test, elimination, the
+  serial route the simulation cannot reach (its camera publishes no USB
+  serial), every look-alike shape — and port order are unit-tested in
+  `rusty-photon-doctor-checks`' `claims` module, the normalizer in
+  `claims.rs`, and the placeholder's members in `placeholder.rs`.
 - **ConformU** — `tests/conformu_integration.rs` (Phase F), mirroring
   `zwo-camera`'s: starts the `--features conformu` binary (real SDK link
   required, per "Native dependency & build gating" above — `conformu`
@@ -2046,6 +2421,10 @@ phases A–G:
   — see "Delivery phasing" Phase G for why it didn't land that phase.
   (`scripts/build-packages.sh` SDK-staging/RUNPATH support landed
   separately as issue #679.)
+- The USB 2.0 twin hint for a placeholder (U4, the device-claims plan's
+  D4.8), once a collector reads the port-pairing signal.
+- Whether `SVB_CAMERA_INFO.DeviceID` is the bus product id (U2). If it is,
+  the join can read it and the normalizer table can go.
 - Recovering from a departure between two failures (C6). The camera comes
   back to the same session with its capture disarmed, so a trigger camera's
   exposures time out until a reconnect. Re-arming after a capture times out,

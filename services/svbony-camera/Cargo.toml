@@ -14,8 +14,10 @@ default = []
 # camera for development and tests. As in zwo-camera/qhy-camera this removes
 # the *camera*, NOT the SDK *link* — the native SVBony SDK is still linked.
 # See the README and docs/services/svbony-camera.md "Native dependency &
-# build gating".
-simulation = ["svbony-rs/simulation"]
+# build gating". It also stages the USB scan a `usb_devices` list is placed
+# from (docs/services/svbony-camera.md U7): the fabricated camera is on no bus
+# a host scan could read.
+simulation = ["svbony-rs/simulation", "rusty-photon-doctor-checks/mock"]
 # Cross-driver alias for `simulation` (the workspace-wide test-backend name).
 mock = ["simulation"]
 # `conformu` enables `mock`, matching the sibling camera services' shape.
@@ -43,6 +45,9 @@ rusty-photon-camera-core = { workspace = true }
 rusty-photon-driver = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 tokio = { workspace = true }
+# `rt` for `task::AbortOnDropHandle`, which ends the failed-USB-scan re-scan
+# with the server it belongs to (docs/services/svbony-camera.md U6).
+tokio-util = { workspace = true, features = ["rt"] }
 axum = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

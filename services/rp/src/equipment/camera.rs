@@ -4,7 +4,8 @@ use ascom_alpaca::api::{Camera, TypedDevice};
 use tracing::{debug, error};
 
 use super::alpaca::{
-    build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
+    build_alpaca_client, connect_refused, retry_connect_attempt, AttemptOutcome,
+    GET_DEVICES_TIMEOUT,
 };
 use super::session::DeviceSession;
 use crate::config;
@@ -202,7 +203,7 @@ pub(super) async fn establish_camera(
 
         match cam.set_connected(true).await {
             Ok(()) => AttemptOutcome::Ok(cam),
-            Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
+            Err(e) => connect_refused(&label, cam.unique_id(), &e),
         }
     })
     .await?;
@@ -619,5 +620,69 @@ mod tests {
         let inv = entry.invariants();
         assert_eq!(inv.max_adu, None);
         assert_eq!(inv.sensor_height_px, None);
+    }
+
+    /// A stub camera whose `Connected = true` answers `error_number`,
+    /// counting the attempts.
+    fn refusing_camera(
+        error_number: u16,
+        attempts: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    ) -> Router {
+        Router::new()
+            .route(
+                "/management/v1/configureddevices",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "Value": [{
+                            "DeviceName": "SVBony camera on p9 (placeholder)",
+                            "DeviceType": "Camera",
+                            "DeviceNumber": 0,
+                            "UniqueID": "placeholder:svbony-camera:p9"
+                        }],
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/camera/0/connected",
+                put(move || {
+                    let attempts = attempts.clone();
+                    async move {
+                        attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Json(serde_json::json!({
+                            "ErrorNumber": error_number,
+                            "ErrorMessage": "no working camera is enumerated on p9"
+                        }))
+                    }
+                }),
+            )
+    }
+
+    /// A placeholder's refusal is permanent for the pass: one attempt, no
+    /// backoff, and the driver's reason in the error. Real time, not paused:
+    /// a paused clock auto-advances while the stub's HTTP is in flight and
+    /// times `get_devices` out before the stub answers.
+    #[tokio::test]
+    async fn a_placeholder_is_tried_once_per_pass() {
+        let attempts = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let stub = spawn_stub(refusing_camera(
+            rusty_photon_doctor_checks::claims::PLACEHOLDER_ERROR_CODE,
+            attempts.clone(),
+        ))
+        .await;
+        let Err(error) = establish_camera(&camera_config_for(&stub.url()), None).await else {
+            panic!("a placeholder connected");
+        };
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "{error}"
+        );
+        assert!(error.contains("placeholder"), "{error}");
+        assert!(
+            error.contains("no working camera is enumerated on p9"),
+            "{error}"
+        );
     }
 }

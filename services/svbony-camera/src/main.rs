@@ -79,6 +79,14 @@ struct Args {
     #[cfg(feature = "simulation")]
     #[arg(long, hide = true, value_name = "PATH")]
     simulation_departure_file: Option<PathBuf>,
+
+    /// Test-only: stage the USB scan a `usb_devices` list is placed from with
+    /// the document in this file (docs/services/doctor.md "USB inventory"),
+    /// read again at every scan; without it a simulation build stages one
+    /// record per simulated camera (U7).
+    #[cfg(feature = "simulation")]
+    #[arg(long, hide = true, value_name = "PATH")]
+    usb_inventory: Option<PathBuf>,
 }
 
 /// Subcommands; running with none starts the ASCOM Alpaca driver.
@@ -87,15 +95,28 @@ enum Command {
     /// Diagnose this service's configuration and what the `SVBony` SDK can
     /// see, without starting it (docs/services/doctor.md). Read-only; exits
     /// 1 on failing checks.
-    Doctor {
-        /// Path to the JSON config file
-        #[arg(short, long)]
-        config: Option<PathBuf>,
+    Doctor(DoctorArgs),
+}
 
-        /// Print the report as JSON instead of text
-        #[arg(long)]
-        json: bool,
-    },
+#[derive(clap::Args)]
+struct DoctorArgs {
+    /// Path to the JSON config file
+    #[arg(short, long)]
+    config: Option<PathBuf>,
+
+    /// Print the report as JSON instead of text
+    #[arg(long)]
+    json: bool,
+
+    /// List this driver's cameras on the bus by USB port, and print the
+    /// `usb_devices` block to paste, instead of the report. Read-only.
+    #[arg(long, conflicts_with = "json")]
+    devices: bool,
+
+    /// Test-only: the staged USB inventory, as for the service.
+    #[cfg(feature = "simulation")]
+    #[arg(long, hide = true, value_name = "PATH")]
+    usb_inventory: Option<PathBuf>,
 }
 
 fn parse_log_level(s: &str) -> Result<Level, String> {
@@ -106,8 +127,21 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
 fn main() -> ServiceResult {
     let args = Args::parse();
 
-    if let Some(Command::Doctor { config, json }) = args.command {
-        svbony_camera::doctor::run(config, json);
+    if let Some(Command::Doctor(doctor)) = args.command {
+        if doctor.devices {
+            #[cfg(feature = "simulation")]
+            let source = match svbony_camera::UsbSource::from_flag(doctor.usb_inventory) {
+                Ok(source) => source,
+                Err(error) => {
+                    eprintln!("doctor: {error}");
+                    std::process::exit(2);
+                }
+            };
+            #[cfg(not(feature = "simulation"))]
+            let source = svbony_camera::UsbSource::Host;
+            svbony_camera::doctor::run_devices(doctor.config, &source);
+        }
+        svbony_camera::doctor::run(doctor.config, doctor.json);
     }
 
     // In Windows SCM service mode logs go to the rolling file under
@@ -136,6 +170,9 @@ fn main() -> ServiceResult {
     let simulation_empty = args.simulation_empty;
     #[cfg(feature = "simulation")]
     let simulation_departure_file = args.simulation_departure_file;
+    #[cfg(feature = "simulation")]
+    let usb_source = svbony_camera::UsbSource::from_flag(args.usb_inventory)
+        .map_err(svbony_camera::SvbonyCameraError::UsbInventory)?;
     debug!(config = ?config_path, "starting svbony-camera");
 
     // `config.apply` triggers an in-process reload: each loop iteration re-reads
@@ -155,7 +192,8 @@ fn main() -> ServiceResult {
                 #[cfg(feature = "simulation")]
                 let builder = builder
                     .with_empty(simulation_empty)
-                    .with_departure_file(simulation_departure_file.clone());
+                    .with_departure_file(simulation_departure_file.clone())
+                    .with_usb_source(usb_source.clone());
 
                 let bound = builder.build().await?;
 
