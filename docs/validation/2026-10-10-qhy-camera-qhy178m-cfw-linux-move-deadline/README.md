@@ -27,6 +27,7 @@ light path, so all of it is what the CFW reports and how long each status read t
 | Commit | [`6fd3a513`](https://github.com/rusty-photon/rusty-photon/commit/6fd3a513) (branch `fix/qhy-camera-wheel-move-deadline`), on `main` at `1c367361` |
 | Service | `qhy-camera`, **real-SDK** build (default features), `cargo run -p qhy-camera -- --config <config> -l debug` (dev profile), config `{"server": {"port": 11121}}`; rustc 1.99.0 (b940084d7 2026-09-28) |
 | Earlier heads | [`a5dc7daa`](https://github.com/rusty-photon/rusty-photon/commit/a5dc7daa) and [`944be766`](https://github.com/rusty-photon/rusty-photon/commit/944be766), run the same way; what they showed is under *Earlier heads* |
+| Review-round head | [`7798a3fb`](https://github.com/rusty-photon/rusty-photon/commit/7798a3fb), run the same way on 2026-10-11 with the wheel's ConformU suites; under *The review round's head* |
 | Probe | `qhyccd-rs`'s [`cfw_probe`](../../../crates/qhyccd-rs/examples/cfw_probe.rs), modes `travel` and `powercut` as at `6fd3a513`. `travel` ran from the tree committed as `a5dc7daa`, unchanged since. `powercut`'s first run predates its optional command, the mode otherwise the same. `cargo build -p qhyccd-rs --example cfw_probe`, run with the service stopped |
 | SDK | QHYCCD SDK **26.06.04**: `libqhyccd.so.26.6.4.16`, sha256 `f51b92f9189fae7707e98ad334cf52d3c1493a6485f33394b39a18a3f4d5c738` (byte-identical to every earlier QHY record) |
 | Platform | Fedora Linux 44 (Workstation Edition) x86_64, kernel 7.2.8-200.fc44 |
@@ -163,7 +164,40 @@ slot 0 at rest. That head had cleared the failure on the refused write, so
 move, as where the wheel rested. A later write of slot 2 would not have been sent. So
 from `6fd3a513` on, only a write that goes out to the wheel ends a failed move's report.
 
+## The review round's head, `7798a3fb` (2026-10-11)
+
+After review, a write while a move is under way reads the status first and is refused
+only while that read says the wheel is still on its way. The wheel's state also moved
+under one lock, and a connect now waits for a write in flight. This head ran on
+2026-10-11, 13:47–13:50, with the same service command, SDK, camera and wheel. The
+12 V went on at 13:46:39, about 35 s before the service started. The camera's code did
+not change, so only the wheel's suites ran.
+
+**A write while a move is under way.** The client wrote slot 4 and at once slot 2, then
+slot 6 and at once slot 0. Each second write read the status, at the travel pace, and
+was refused 0.10 s after it was sent: *"the filter wheel is still moving to slot 4"*
+(and *"... slot 6"*). The wheel named the first slot 5.8 s and 5.1 s into each run. The
+other slot, written then, went out 0.27 s later, after FW5's rest, and arrived (2 of 2).
+Written twice in a row, slots 3 and 5 were each accepted the second time, in 0.10 s, and
+arrived in their usual time (2 of 2).
+
+**A write after an arrival no read saw.** The client wrote a slot, read nothing for 8 s,
+and then wrote another: 2 then 6, 1 then 4, and 0 then 3. Each second write read the
+status at rest, found the first move arrived, and went out after FW5's rest, returning
+in 0.53 s. The wheel named the new slot 6.1 s, 4.6 s and 4.6 s after each second write
+began (3 of 3). On `a16f41e2` that write would have been refused for 30 s after the
+first move, since only a `Position` read ended a move.
+
+**ConformU.** The FilterWheel `alpacaprotocol` suite found no errors, issues or
+information alerts ([log](alpacaprotocol-filterwheel-7798a3fb.log)). `conformance`
+reported *"no errors, warnings or issues found"*, every member within its target
+response time ([log](conformance-filterwheel-7798a3fb.log),
+[results](conformance-filterwheel-7798a3fb-results.json)): all four counts are 0.
+Its first move, primed, was written in 0.774 s, and its other 19 in 0.001–0.022 s, as
+on `6fd3a513`.
+
 ## After the run
 
 The service was stopped and the 12 V switched off at 17:17. The wheel was left on
-slot 0, where ConformU's last move had put it.
+slot 0, where ConformU's last move had put it. After the 2026-10-11 run the 12 V went
+off at 13:50:27, with the wheel again on slot 0.
