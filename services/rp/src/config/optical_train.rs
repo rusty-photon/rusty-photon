@@ -127,7 +127,15 @@ impl TelescopeName {
             "TELESCOP",
             rp_fits::writer::KeywordValue::Str(value.clone()),
         )
-        .map_err(|e| format!("telescope must fit one FITS header card: {e}; got {value:?}"))?;
+        .map_err(|e| {
+            // The refusal is about the value, not the keyword: drop the
+            // writer's "invalid keyword" framing.
+            let reason = match e {
+                rp_fits::FitsError::InvalidKeyword(reason) => reason,
+                other => other.to_string(),
+            };
+            format!("telescope must fit one FITS header card: {reason}; got {value:?}")
+        })?;
         Ok(Self(value))
     }
 
@@ -601,6 +609,7 @@ mod tests {
         ] {
             let err = TelescopeName::try_new(value.clone()).unwrap_err();
             assert!(err.contains(needle), "{value:?}: {err}");
+            assert!(!err.contains("invalid keyword"), "{value:?}: {err}");
         }
     }
 

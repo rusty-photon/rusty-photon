@@ -1344,17 +1344,12 @@ impl McpHandler {
                 ready: chrono::Utc::now(),
             };
 
-            // The filter wheel is read once the exposure is done, beside
-            // the camera's own reads: a camera-integrated wheel answers
-            // through the camera's driver, which is not queried
-            // mid-exposure. When the filename depends on it the read is
-            // waited out rather than timed (rp.md § Core Fields,
-            // `filter`). A mount read still out gets its grace alongside.
-            let (pointing, conditions, filter_read) = tokio::join!(
-                finished_pointing(pointing_read),
-                self.capture_conditions(camera_id, &cam, window, duration),
-                self.capture_filter(camera_id, req.frame_type),
-            );
+            // A cancel — a safety transition among them — still lands at
+            // once: nothing read here is worth holding the camera for.
+            let (pointing, conditions, filter_read) = tokio::select! {
+                () = cancel.cancelled() => return Err(cancel.error()),
+                reads = self.ready_frame_reads(&req, &cam, window, pointing_read) => reads,
+            };
 
             // Decision 11 (rp.md § Capture Tool Details): `frame_type`
             // stamps the document's `target`/`frame_type` fields.
@@ -1684,6 +1679,28 @@ impl McpHandler {
             gain,
             offset,
         }
+    }
+
+    /// The reads a frame takes once it is ready, while the capture still
+    /// holds the camera: the mount read's grace ([`finished_pointing`]),
+    /// the camera's conditions and the filter wheel, all at once. The
+    /// wheel is read only now, beside the camera's own reads: a
+    /// camera-integrated wheel answers through the camera's driver,
+    /// which is not queried mid-exposure. When the filename depends on
+    /// it the read is waited out rather than timed (rp.md § Core
+    /// Fields, `filter`).
+    async fn ready_frame_reads(
+        &self,
+        req: &CaptureRequest<'_>,
+        cam: &Arc<dyn Camera>,
+        window: ExposureWindow,
+        pointing_read: Option<PointingRead>,
+    ) -> (Option<MountPointing>, CaptureConditions, FilterRead) {
+        tokio::join!(
+            finished_pointing(pointing_read),
+            self.capture_conditions(req.camera_id, cam, window, req.duration),
+            self.capture_filter(req.camera_id, req.frame_type),
+        )
     }
 
     /// Whether a capture of `frame_type` renders its filename from the

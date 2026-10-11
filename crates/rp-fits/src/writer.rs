@@ -28,7 +28,7 @@ pub(crate) const CARD_SIZE: usize = 80;
 /// FITS escapes `'` as `''`; the limit is the card's 80 columns less the
 /// 10-column `KEYWORD = ` prefix and the two quotes. A string
 /// [`Keyword::new`] accepts is at most this long.
-pub const MAX_STRING_CHARS: usize = CARD_SIZE - 10 - 2;
+pub(crate) const MAX_STRING_CHARS: usize = CARD_SIZE - 10 - 2;
 /// Reserved keywords managed by the writer; users may not supply them.
 const RESERVED: &[&str] = &[
     "SIMPLE", "BITPIX", "NAXIS", "NAXIS1", "NAXIS2", "BSCALE", "BZERO", "END",

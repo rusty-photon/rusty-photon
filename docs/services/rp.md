@@ -278,7 +278,9 @@ sidecar stays the authority.
   wheel is disconnected, moving, fails the read, or — when the frame's
   filename does not depend on it — does not answer within 3 s (a
   templated capture waits the wheel out, as it always has, rather than
-  lose a finished exposure to a slow read). When a naming template is
+  lose a finished exposure to a slow read; a cancel, the unsafe
+  transition's among them, still ends the capture the moment it
+  arrives). When a naming template is
   configured
   (`session.file_naming_pattern`), the one read feeds both the filename
   and this field, so they cannot disagree — and there a failed read
@@ -611,17 +613,18 @@ Rules the table does not show:
   ([Site Configuration](#site-configuration)).
 - **Absent means unknown, never a placeholder.** A keyword whose source
   is missing is omitted rather than written as `0`, `''` or `'NA'`.
-- **Free text is folded where that keeps it distinct, else left
-  out.** In a target, filter or camera name, typographic dashes, quotes
-  and spaces become their ASCII look-alikes (`Pleiades – M45` →
-  `Pleiades - M45`). A value no card can carry exactly drops that one
-  card: one with any other character outside printable ASCII — a filter
-  named `Hα`, a control character — or one longer than the card's 68
-  characters (an apostrophe counting twice). Neither a stand-in nor a
-  cut keeps such a value distinct (`Hα` and `Hβ` would both read `H?`;
-  two names differing past column 68 would read alike), and a stacker
-  would group each pair as one; a missing card at least reads as
-  unknown. The sidecar keeps the original either way. `telescope` is
+- **Typographic variants are folded; anything else a card cannot
+  carry is left out.** In a target, filter or camera name, typographic
+  dashes, quotes and spaces become their ASCII look-alikes
+  (`Pleiades – M45` → `Pleiades - M45`) — deliberately one name, since
+  editors substitute them for the ASCII forms. A value a card still
+  cannot carry exactly drops that one card: one with any other
+  character outside printable ASCII — a filter named `Hα`, a control
+  character — or one longer than the card's 68 characters (an
+  apostrophe counting twice). Neither a stand-in nor a cut keeps such a
+  value distinct (`Hα` and `Hβ` would both read `H?`; two names
+  differing past column 68 would read alike), and a stacker would group
+  each pair as one; a missing card at least reads as unknown. The sidecar keeps the original either way. `telescope` is
   validated at config load instead, so it is never folded or dropped.
   No header problem fails a capture.
 - Reals are written in the FITS exponential form

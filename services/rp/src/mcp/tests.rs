@@ -10588,6 +10588,45 @@ async fn capture_cancelled_while_queued_leaves_without_touching_the_camera() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn capture_cancelled_while_waiting_out_a_slow_wheel_leaves_at_once() {
+    // A templated Flat waits the wheel out rather than time it; the
+    // cancel must still land the moment it arrives.
+    let fw = MockFilterWheel {
+        position_delay: Duration::from_mins(1),
+        ..Default::default()
+    };
+    let mut registry = camera_registry(Arc::new(MockCamera::default()));
+    registry.filter_wheels = filter_wheel_registry(Arc::new(fw)).filter_wheels;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut handler = test_handler(registry);
+    handler.session_config = SessionConfig {
+        data_directory: tmp.path().to_string_lossy().to_string(),
+    };
+    let handler = handler
+        .with_trains(wheel_trains())
+        .with_naming_templates(Some(Arc::new(test_naming_templates())));
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::Safety);
+    let started = tokio::time::Instant::now();
+
+    let request = CaptureRequest {
+        frame_type: Some(rp_vocabulary::FrameType::Flat),
+        ..capture_request("cam", 1)
+    };
+    let err = handler
+        .do_capture(request, None, &cancel)
+        .await
+        .expect_err("a cancelled capture must fail");
+
+    assert_eq!(err, "cancelled: safety");
+    assert_eq!(
+        started.elapsed(),
+        CANCEL_AT,
+        "the capture must leave as the cancel lands, not when the wheel answers"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn capture_queued_behind_a_busy_camera_holds_no_motion_gate_permit() {
     let (handler, _tmp) = capture_handler(Arc::new(MockCamera::default()));
     let handler = handler.with_trains(cam_trains(1000.0));
