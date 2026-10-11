@@ -1671,19 +1671,23 @@ slot, or the moving sentinel (−1), keeps the wait going. It writes the
 slot even when the wheel already names it: a driver's `Position` can be
 stale, and the write is the command. An error ends the wait, and so
 does a cancellation, after which the wheel finishes its move on its own
-(§ [In-Flight Tool Calls](#in-flight-tool-calls)). So does the **60 s
-ceiling**: a wheel that has not named the slot 60 s after the write
-fails the call with *"the filter wheel did not reach Red (slot 1) within
-60s"*. That is three times a full turn of a sixteen-slot wheel at
-~1.2 s a slot (~19 s), and the calibrator tools' ceiling. The wheel has
-lost the move, or another client's write has sent it elsewhere.
+(§ [In-Flight Tool Calls](#in-flight-tool-calls)). A cancellation ends
+the call at once: each read, like each pause between reads, is raced
+against it, since a read can take a serial round trip or an HTTP
+request's whole timeout. So does the **60 s ceiling**: a wheel that has
+not named the slot 60 s after the write fails the call with *"the
+filter wheel did not reach Red (slot 1) within 60s"*. That is three
+times a full turn of a sixteen-slot wheel at ~1.2 s a slot (~19 s). The
+wheel has lost the move, or another client's write has sent it
+elsewhere.
 
 **A move already under way is waited out before the write.**
 `set_filter` reads `Position` first, and while that reads the moving
 sentinel it polls every 100 ms, writing only once the wheel has come to
 rest. A wheel written while it travels does not take the new slot:
 - ASCOM's reference simulator (OmniSim, `PreemptMoves` off by default)
-  answers `INVALID_OPERATION`, *"The FilterWheel is already moving"*;
+  answers `INVALID_OPERATION` (`0x40B`), *"The FilterWheel is already
+  moving"*, though it then goes to the slot it refused all the same;
 - `qhy-camera` refuses it the same way (its FW2), since a QHY CFW drops
   a slot sent while it travels.
 
@@ -1698,8 +1702,17 @@ after a cancelled sweep. The wait ends one of four ways:
   not finishing a move, so the slot is written all the same, and its
   driver says what it is doing.
 - **The call is cancelled.** A cancelled call writes nothing, including
-  a cancellation that lands during the read that found the wheel at
-  rest.
+  a cancellation that lands during the read that would have found the
+  wheel at rest.
+
+A move can also begin between the read that found the wheel at rest and
+the write, or hide behind a read that errored. The write is then refused
+like any write mid-move. If the wheel reads moving after that refusal,
+`set_filter` waits again and writes again, within the same 60 s. At the
+ceiling the refusal is the call's answer. The wait before the write and
+the wait for the move each have their own 60 s, so that a long wait for
+another client's move does not leave this call's own move no time. A
+call therefore answers within about two minutes.
 
 #### CoverCalibrator Tool Details
 

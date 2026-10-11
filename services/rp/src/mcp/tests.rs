@@ -546,13 +546,19 @@ struct MockFilterWheel {
     /// test registry's names).
     position: usize,
     /// A move already under way: `position()` reads moving for this
-    /// many more reads, then names `position`.
+    /// many more reads, then names `position`. A write while it runs is
+    /// refused, as `OmniSim` and qhy-camera refuse one.
     moving_reads: std::sync::atomic::AtomicU32,
+    /// One shot: another client's move begins just as the next write
+    /// arrives, running this many reads.
+    foreign_move_reads: std::sync::atomic::AtomicU32,
+    /// The next this many reads fail.
+    failed_reads: std::sync::atomic::AtomicU32,
     /// Every write of a slot, each with the reads its move under way
-    /// still had to run when it came.
+    /// still had to run when it came; one with any left was refused.
     writes: std::sync::Mutex<Vec<(usize, u32)>>,
-    /// A write lands at once: once there is one, `position()` names the
-    /// last slot written, whatever it read before.
+    /// A write lands at once: once one has been taken, `position()`
+    /// names the last slot taken, whatever it read before.
     follows_writes: bool,
     /// How long each `position()` read takes, so a test can land a
     /// cancellation inside one.
@@ -564,10 +570,22 @@ impl_mock_device!(MockFilterWheel);
 #[async_trait::async_trait]
 impl ascom_alpaca::api::FilterWheel for MockFilterWheel {
     async fn set_position(&self, position: usize) -> ascom_alpaca::ASCOMResult<()> {
+        let foreign = self
+            .foreign_move_reads
+            .swap(0, std::sync::atomic::Ordering::SeqCst);
+        if foreign > 0 {
+            self.moving_reads
+                .store(foreign, std::sync::atomic::Ordering::SeqCst);
+        }
         let under_way = self.moving_reads.load(std::sync::atomic::Ordering::SeqCst);
         self.writes.lock().unwrap().push((position, under_way));
         if self.fail_set_position {
             return Err(ASCOMError::invalid_operation("wheel stuck"));
+        }
+        if under_way > 0 {
+            return Err(ASCOMError::invalid_operation(
+                "The FilterWheel is already moving",
+            ));
         }
         Ok(())
     }
@@ -576,11 +594,27 @@ impl ascom_alpaca::api::FilterWheel for MockFilterWheel {
         if !self.read_delay.is_zero() {
             tokio::time::sleep(self.read_delay).await;
         }
-        if self.fail_position_poll {
+        let failing = self
+            .failed_reads
+            .try_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |left| left.checked_sub(1),
+            )
+            .is_ok();
+        if failing || self.fail_position_poll {
             return Err(ASCOMError::invalid_operation("encoder error"));
         }
         if self.follows_writes {
-            if let Some(&(slot, _)) = self.writes.lock().unwrap().last() {
+            let taken = self
+                .writes
+                .lock()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|(_, under_way)| *under_way == 0)
+                .map(|&(slot, _)| slot);
+            if let Some(slot) = taken {
                 return Ok(Some(slot));
             }
         }
@@ -1869,7 +1903,7 @@ async fn set_filter_writes_the_slot_the_wheel_already_names() {
 }
 
 /// A cancellation while a move under way is waited out ends the call
-/// at the next poll, and nothing is written.
+/// then, inside the pause between two reads, and nothing is written.
 #[tokio::test(start_paused = true)]
 async fn set_filter_cancelled_while_a_move_is_under_way_writes_nothing() {
     let fw = Arc::new(MockFilterWheel {
@@ -1890,23 +1924,27 @@ async fn set_filter_cancelled_while_a_move_is_under_way_writes_nothing() {
 
     assert_tool_error(result, "cancelled");
     assert!(fw.writes.lock().unwrap().is_empty());
-    assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "the call ran on {:?} after its cancellation",
-        started.elapsed()
+    // Paused time is exact: the cancellation lands at 350 ms, inside the
+    // pause from 300 to 400 ms, and that pause answers it there.
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_millis(350),
+        "the call ran on past its cancellation"
     );
 }
 
-/// A cancellation that lands while the wheel is being read writes
-/// nothing, even when the read finds the wheel at rest.
+/// A cancellation that lands while the wheel is being read ends the call
+/// then, not when the read returns, and writes nothing, though the read
+/// would have found the wheel at rest.
 #[tokio::test(start_paused = true)]
-async fn set_filter_cancelled_during_its_read_leaves_a_resting_wheel_alone() {
+async fn set_filter_cancelled_during_its_read_answers_at_once_and_writes_nothing() {
     let fw = Arc::new(MockFilterWheel {
-        read_delay: Duration::from_millis(250),
+        read_delay: Duration::from_secs(10),
         ..Default::default()
     });
     let handler = handler_with_wheel(&fw);
     let cancel = Cancel::never();
+    let started = tokio::time::Instant::now();
 
     let (result, ()) = tokio::join!(
         handler.set_filter_inner(set_filter_to("Red"), &cancel),
@@ -1918,6 +1956,116 @@ async fn set_filter_cancelled_during_its_read_leaves_a_resting_wheel_alone() {
 
     assert_tool_error(result, "cancelled");
     assert!(fw.writes.lock().unwrap().is_empty());
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the call waited {:?} for a read its cancellation had overtaken",
+        started.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn set_filter_cancelled_before_it_begins_writes_nothing() {
+    let fw = Arc::new(MockFilterWheel::default());
+    let handler = handler_with_wheel(&fw);
+    let cancel = Cancel::never();
+    cancel.cancel(super::inflight::CancelReason::ClientDisconnected);
+
+    let result = handler
+        .set_filter_inner(set_filter_to("Red"), &cancel)
+        .await;
+
+    assert_tool_error(result, "cancelled");
+    assert!(fw.writes.lock().unwrap().is_empty());
+}
+
+/// A move that begins between the read that found the wheel at rest and
+/// the write gets the write refused; the move is waited out, and the
+/// slot written again.
+#[tokio::test(start_paused = true)]
+async fn set_filter_waits_out_a_move_that_begins_between_its_read_and_its_write() {
+    let fw = Arc::new(MockFilterWheel {
+        position: 1,
+        foreign_move_reads: 3.into(),
+        follows_writes: true,
+        ..Default::default()
+    });
+    let handler = handler_with_wheel(&fw);
+
+    let result = handler
+        .set_filter_inner(set_filter_to("Lum"), &Cancel::never())
+        .await;
+
+    assert_eq!(ok_json(result)["position"], 0);
+    assert_eq!(
+        *fw.writes.lock().unwrap(),
+        vec![(0, 3), (0, 0)],
+        "refused while the other move ran, taken once it had ended"
+    );
+}
+
+/// A read that fails while a move is under way does not let the write
+/// through mid-move: the refused write sends `set_filter` back to wait.
+#[tokio::test(start_paused = true)]
+async fn set_filter_waits_out_a_move_one_failed_read_hid() {
+    let fw = Arc::new(MockFilterWheel {
+        position: 1,
+        moving_reads: 3.into(),
+        failed_reads: 1.into(),
+        follows_writes: true,
+        ..Default::default()
+    });
+    let handler = handler_with_wheel(&fw);
+
+    let result = handler
+        .set_filter_inner(set_filter_to("Lum"), &Cancel::never())
+        .await;
+
+    assert_eq!(ok_json(result)["position"], 0);
+    assert_eq!(*fw.writes.lock().unwrap(), vec![(0, 3), (0, 0)]);
+}
+
+/// The retry is bounded by the ceiling too: a wheel that still moves,
+/// and still refuses the write, fails the call with its own answer.
+#[tokio::test(start_paused = true)]
+async fn set_filter_gives_up_on_a_wheel_still_moving_and_refusing_at_the_ceiling() {
+    let fw = Arc::new(MockFilterWheel {
+        moving_reads: u32::MAX.into(),
+        ..Default::default()
+    });
+    let handler = handler_with_wheel(&fw);
+    let started = tokio::time::Instant::now();
+
+    let result = handler
+        .set_filter_inner(set_filter_to("Red"), &Cancel::never())
+        .await;
+
+    assert_tool_error(
+        result,
+        "failed to set filter position: ASCOM error INVALID_OPERATION: The FilterWheel is already moving",
+    );
+    assert!(started.elapsed() >= MOVE_CEILING);
+    assert_eq!(fw.writes.lock().unwrap().len(), 1);
+}
+
+/// A wheel that still reads moving after the write fails the call at
+/// the ceiling too.
+#[tokio::test(start_paused = true)]
+async fn set_filter_fails_a_wheel_that_reads_moving_past_the_ceiling_after_its_write() {
+    let fw = Arc::new(MockFilterWheel {
+        report_moving: true,
+        ..Default::default()
+    });
+    let handler = handler_with_wheel(&fw);
+
+    let result = handler
+        .set_filter_inner(set_filter_to("Red"), &Cancel::never())
+        .await;
+
+    assert_tool_error(
+        result,
+        "the filter wheel did not reach Red (slot 1) within 60s",
+    );
+    assert_eq!(*fw.writes.lock().unwrap(), vec![(1, 0)]);
 }
 
 // -----------------------------------------------------------------------
