@@ -218,23 +218,38 @@ impl Default for EquipmentConfig {
 }
 
 impl EquipmentConfig {
-    /// Entries of one kind pinned to the same `UniqueID` on the same
-    /// server, as a field-level error on each of them. A server lists a
-    /// device at one number, so at most one could ever bind; the others
-    /// would be refused every night with an error pointing at a twin's
-    /// number (rp.md § Device Identity Pin). The check is per server: a
-    /// `UniqueID` can repeat across servers (two hosts, each with one
+    /// Entries of one kind that pin the same `UniqueID` on the same server
+    /// at two or more different `device_number`s, as a field-level error
+    /// on every entry of that group. A server lists a device at one
+    /// number, so the entries at all but one of those numbers could never
+    /// bind; they would be refused every night with an error pointing at a
+    /// twin's number (rp.md § Device Identity Pin).
+    ///
+    /// Entries that share the server, the `device_number` *and* the pin
+    /// all address the one device and are consistent, so they are not
+    /// flagged: rp accepts two entries for one device unpinned, and a pin
+    /// they agree on changes nothing about that. The check is per server:
+    /// a `UniqueID` can repeat across servers (two hosts, each with one
     /// serial-less camera of the same model, list the same index-based
     /// `UniqueID`), and there every entry binds.
     #[must_use]
     pub fn duplicate_pin_errors(&self) -> Vec<FieldError> {
-        /// `(id, alpaca_url, pin)` of each entry of one kind.
-        type Pinned<'a> = Vec<(&'a str, &'a str, Option<&'a UniqueIdPin>)>;
+        /// `(id, alpaca_url, device_number, pin)` of each entry of one kind.
+        type Pinned<'a> = Vec<(&'a str, &'a str, u32, Option<&'a UniqueIdPin>)>;
+        /// Pinned entries by `(server, pin)`, each as `(index, id, device_number)`.
+        type Groups<'a> = std::collections::BTreeMap<(String, &'a str), Vec<(usize, &'a str, u32)>>;
         macro_rules! pinned {
             ($entries:expr) => {
                 $entries
                     .iter()
-                    .map(|e| (e.id.as_str(), e.alpaca_url.as_str(), e.unique_id.as_ref()))
+                    .map(|e| {
+                        (
+                            e.id.as_str(),
+                            e.alpaca_url.as_str(),
+                            e.device_number,
+                            e.unique_id.as_ref(),
+                        )
+                    })
                     .collect::<Pinned<'_>>()
             };
         }
@@ -252,31 +267,44 @@ impl EquipmentConfig {
         let mut errors = Vec::new();
         for (key, entries) in kinds {
             // Entries grouped by (server, pin), in roster order.
-            let mut groups: std::collections::BTreeMap<(String, &str), Vec<(usize, &str)>> =
-                std::collections::BTreeMap::new();
-            for (index, (id, url, pin)) in entries.into_iter().enumerate() {
+            let mut groups = Groups::new();
+            for (index, (id, url, number, pin)) in entries.into_iter().enumerate() {
                 if let Some(pin) = pin {
                     groups
                         .entry((server_key(url), pin.as_str()))
                         .or_default()
-                        .push((index, id));
+                        .push((index, id, number));
                 }
             }
-            for ((_, pin), members) in groups.into_iter().filter(|(_, m)| m.len() > 1) {
+            for ((_, pin), members) in groups {
+                let numbers: std::collections::BTreeSet<u32> =
+                    members.iter().map(|&(_, _, number)| number).collect();
+                if numbers.len() < 2 {
+                    // One number: every entry addresses the same device.
+                    continue;
+                }
+                let numbers: Vec<String> = numbers.iter().map(u32::to_string).collect();
                 // Every member carries the error, so whichever entry an
                 // editor has open shows it next to its own field.
-                for &(index, id) in &members {
+                for &(index, id, number) in &members {
                     let others: Vec<String> = members
                         .iter()
-                        .filter(|&&(other, _)| other != index)
-                        .map(|(other, other_id)| format!("equipment.{key}.{other} ('{other_id}')"))
+                        .filter(|&&(other, _, _)| other != index)
+                        .map(|(other, other_id, other_number)| {
+                            format!(
+                                "equipment.{key}.{other} ('{other_id}') at device_number \
+                                 {other_number}"
+                            )
+                        })
                         .collect();
                     errors.push(FieldError {
                         path: format!("equipment.{key}.{index}.unique_id"),
                         msg: format!(
-                            "pins the same UniqueID {pin:?} on the same server as {}; a server \
-                             lists a device at one number, so at most one of these entries \
-                             could ever bind (entry '{id}')",
+                            "UniqueID {pin:?} is pinned on the same server at device_number \
+                             {} (this entry '{id}' at {number}; also {}); a server lists a \
+                             device at one number, so the entries at all but one of those \
+                             numbers could never bind",
+                            numbers.join(" and "),
                             others.join(", ")
                         ),
                     });
@@ -551,13 +579,13 @@ mod tests {
         }
     }
 
-    /// Entries of one kind pinned to one `UniqueID` on one server all fail
-    /// validation, each naming the others, so an editor sees the error on
-    /// whichever entry it has open; spelling the URL differently (a
-    /// trailing slash) does not hide the duplicate. The same pin on two
-    /// kinds (a camera and the filter wheel sharing its handle) is legal,
-    /// and so is the same pin on two servers (index-based serial-less
-    /// `UniqueID`s repeat across hosts).
+    /// Entries of one kind pinning one `UniqueID` at different numbers on
+    /// one server all fail validation, each naming the numbers and the
+    /// others, so an editor sees the error on whichever entry it has open;
+    /// spelling the URL differently (a trailing slash) does not hide the
+    /// duplicate. The same pin on two kinds (a camera and the filter
+    /// wheel sharing its handle) is legal, and so is the same pin on two
+    /// servers (index-based serial-less `UniqueID`s repeat across hosts).
     #[test]
     fn duplicate_pins_within_a_kind_are_rejected_on_every_entry() {
         let (_dir, path) = config_with_equipment(
@@ -592,17 +620,96 @@ mod tests {
         assert!(
             errors[0]
                 .msg
-                .contains("equipment.cameras.2 ('imaging-copy')"),
+                .contains("device_number 0 and 2 (this entry 'imaging' at 0; also equipment.cameras.2 ('imaging-copy') at device_number 2)"),
             "{}",
             errors[0].msg
         );
         assert!(
-            errors[1].msg.contains("equipment.cameras.0 ('imaging')"),
+            errors[1]
+                .msg
+                .contains("(this entry 'imaging-copy' at 2; also equipment.cameras.0 ('imaging') at device_number 0)"),
             "{}",
             errors[1].msg
         );
         let err = load_config(&path).unwrap_err().to_string();
         assert!(err.contains("equipment.cameras.0.unique_id"), "{err}");
+    }
+
+    /// Entries that share the server, the `device_number` and the pin all
+    /// address one device, so they load: rp accepts two entries for one
+    /// device unpinned, and a pin they agree on is consistent with that.
+    #[test]
+    fn entries_for_one_device_load_pinned_alike_or_unpinned() {
+        let (_dir, path) = config_with_equipment(
+            r#"{
+                "cameras": [
+                    {"id": "a", "alpaca_url": "http://127.0.0.1:11121", "device_number": 0},
+                    {"id": "b", "alpaca_url": "http://127.0.0.1:11121", "device_number": 0},
+                    {"id": "c", "alpaca_url": "http://127.0.0.1:11121", "device_number": 1,
+                     "unique_id": "QHY600M-a1b2"},
+                    {"id": "d", "alpaca_url": "http://127.0.0.1:11121/", "device_number": 1,
+                     "unique_id": "QHY600M-a1b2"}
+                ]
+            }"#,
+        );
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.equipment.duplicate_pin_errors(), Vec::new());
+    }
+
+    /// A group mixing entries at one number with one at another is a
+    /// conflict for all of them: each is flagged, and the message names
+    /// both numbers without claiming the same-number entries conflict
+    /// with each other.
+    #[test]
+    fn a_pin_at_two_numbers_flags_every_entry_including_those_sharing_one() {
+        let (_dir, path) = config_with_equipment(
+            r#"{
+                "focusers": [
+                    {"id": "f0", "alpaca_url": "http://127.0.0.1:11113", "device_number": 0,
+                     "unique_id": "EAF-1234"},
+                    {"id": "f0-alias", "alpaca_url": "http://127.0.0.1:11113",
+                     "device_number": 0, "unique_id": "EAF-1234"},
+                    {"id": "f1", "alpaca_url": "http://127.0.0.1:11113", "device_number": 1,
+                     "unique_id": "EAF-1234"}
+                ]
+            }"#,
+        );
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let config: crate::config::Config = serde_json::from_str(&contents).unwrap();
+
+        let errors = config.equipment.duplicate_pin_errors();
+
+        let paths: Vec<&str> = errors.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "equipment.focusers.0.unique_id",
+                "equipment.focusers.1.unique_id",
+                "equipment.focusers.2.unique_id",
+            ]
+        );
+        for error in &errors {
+            assert!(
+                error.msg.contains("at device_number 0 and 1"),
+                "the message must name both numbers: {}",
+                error.msg
+            );
+            assert!(
+                error
+                    .msg
+                    .contains("the entries at all but one of those numbers"),
+                "{}",
+                error.msg
+            );
+        }
+        assert!(
+            errors[1].msg.contains(
+                "(this entry 'f0-alias' at 0; also equipment.focusers.0 ('f0') at device_number 0, \
+                 equipment.focusers.2 ('f1') at device_number 1)"
+            ),
+            "{}",
+            errors[1].msg
+        );
     }
 
     /// A pin serializes back as the plain string it was loaded from, so

@@ -2822,8 +2822,14 @@ A roster entry addresses its device by position. `alpaca_url` names the
 server, and `device_number` is the device's position among that
 server's devices of the entry's kind in
 `GET /management/v1/configureddevices`. On a server that numbers each
-kind densely from 0, which every driver in this repo and OmniSim do,
-that position is the Alpaca `DeviceNumber`. Nothing in the address says
+kind densely from 0 *and lists it in that order*, which every driver in
+this repo and OmniSim do, that position is the Alpaca `DeviceNumber`.
+On a server that does not, rp's position and the handle's
+`DeviceNumber` differ, and the per-pass re-check below can refuse a
+correct session or miss a swap; keying on the listed `DeviceNumber`
+instead is tracked in
+[#1471](https://github.com/rusty-photon/rusty-photon/issues/1471).
+Nothing in the address says
 *which* device it is. A driver that numbers its devices in USB
 enumeration order can put a different device behind the same number
 after a power cycle. On Starfront `rig2` one `qhy-camera` service serves
@@ -2925,12 +2931,17 @@ tracked in issue #1468; the pin does not change the enforcer. Reading
 the worse failure. The logging follows the usual shape: a refusal at
 startup is an `error!`, a live session lost to one is a `warn!` once
 (with `equipment_changed` `connected: false`), and later passes log at
-`debug!`. Entries of one kind pinned to the same `UniqueID` on the same
-server are rejected at load, each naming the others, because at most
-one of them could ever bind. Two spellings of one URL (a trailing slash,
-the host's case) count as one server; `localhost` and `127.0.0.1` count
-as two. The same `UniqueID` on two servers is accepted: an index-based
-serial-less `UniqueID` repeats across hosts.
+`debug!`. Entries of one kind that pin the same `UniqueID` on the same
+server at two or more different `device_number`s are rejected at load.
+Every entry of that group is flagged with the numbers and the other
+entries named, because a server lists a device at one number, so the
+entries at all but one of those numbers could never bind. Entries that
+share the server, the `device_number` *and* the pin all address one
+device and are accepted, just as two unpinned entries for one device
+are. Two spellings of one URL (a trailing slash, the host's case) count
+as one server; `localhost` and `127.0.0.1` count as two. The same
+`UniqueID` on two servers is accepted: an index-based serial-less
+`UniqueID` repeats across hosts.
 
 **What was bound is logged.** Every successful establish, pinned or
 not, logs one `info!` line with the kind, the roster `id`, `alpaca_url`,
@@ -6486,8 +6497,9 @@ device at `device_number` must report, or the connect is refused (see
 whatever device its server lists there, as before. An empty value, or
 one with leading or trailing whitespace, is rejected at load: the
 listed side is compared with any padding stripped, so a padded pin
-could never match. Entries of one kind pinned to the same `UniqueID`
-on the same server are rejected at load too, each naming the others.
+could never match. Entries of one kind that pin the same `UniqueID` at
+different `device_number`s on the same server are rejected at load too
+(§ [Device Identity Pin](#device-identity-pin)).
 
 The top-level `ca_cert` names a PEM CA certificate `rp` trusts for
 every outbound HTTPS connection it makes as a client — Alpaca devices
