@@ -8,9 +8,11 @@
 //!   identity"), not minted into config, so there is no identity field to
 //!   lock.
 //! - **Hard read-only:** `server.port` (a BFF could not follow the rebind).
-//! - **Editable:** the per-serial `devices` map (`name` / `description`).
+//! - **Editable:** the `usb_devices` list and the per-serial `devices` map
+//!   (`name` / `description`).
 
 use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
+use rusty_photon_doctor_checks::claims;
 
 use crate::config::{CliOverrides, Config};
 
@@ -25,10 +27,22 @@ impl ConfigurableDriver for SvbonyCameraDriver {
 
     fn normalize(_config: &mut Config) {}
 
-    /// Nothing to validate in v0: the per-serial overrides are free-form
+    /// The `usb_devices` rules the load applies (U9), plus the one only an
+    /// apply has: an empty list is refused, because it would remove the device
+    /// the apply arrived through. The per-serial overrides are free-form
     /// name/description strings.
-    fn validate(_config: &Config) -> Vec<FieldError> {
-        Vec::new()
+    fn validate(config: &Config) -> Vec<FieldError> {
+        let mut errors = config.list_errors();
+        if config.usb_devices.as_ref().is_some_and(Vec::is_empty) {
+            errors.push(claims::empty_list_over_apply());
+        }
+        errors
+            .into_iter()
+            .map(|error| FieldError {
+                path: error.path,
+                msg: error.message,
+            })
+            .collect()
     }
 
     /// The one secret: the server-auth password hash. `TlsConfig` stores file
@@ -73,6 +87,73 @@ mod tests {
             SvbonyCameraDriver::validate(&config),
             Vec::<rusty_photon_config::actions::FieldError>::new()
         );
+    }
+
+    fn entry(device_number: u32, usb_port: &str) -> crate::config::UsbDeviceEntry {
+        crate::config::UsbDeviceEntry {
+            device_number,
+            usb_port: usb_port.to_string(),
+            name: None,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn a_valid_list_has_no_errors() {
+        let config = Config {
+            usb_devices: Some(vec![entry(0, "a")]),
+            ..Config::default()
+        };
+        assert_eq!(
+            SvbonyCameraDriver::validate(&config),
+            Vec::<FieldError>::new()
+        );
+    }
+
+    #[test]
+    fn an_empty_list_is_refused_at_the_list() {
+        let config = Config {
+            usb_devices: Some(Vec::new()),
+            ..Config::default()
+        };
+        let errors = SvbonyCameraDriver::validate(&config);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].path, "usb_devices");
+        assert!(
+            errors[0]
+                .msg
+                .starts_with("an empty list registers no camera"),
+            "{}",
+            errors[0].msg
+        );
+    }
+
+    #[test]
+    fn a_broken_entry_is_named_by_its_field_path() {
+        let config = Config {
+            usb_devices: Some(vec![entry(0, "a"), entry(0, "b")]),
+            ..Config::default()
+        };
+        let errors = SvbonyCameraDriver::validate(&config);
+        let repeat = errors
+            .iter()
+            .find(|e| e.path == "usb_devices.1.device_number")
+            .unwrap();
+        assert_eq!(repeat.msg, "device_number 0 is also usb_devices[0]'s");
+    }
+
+    #[test]
+    fn a_devices_override_beside_a_list_is_named_by_its_key() {
+        let mut config = Config {
+            usb_devices: Some(vec![entry(0, "a")]),
+            ..Config::default()
+        };
+        config
+            .devices
+            .insert("SVB-1".to_string(), DeviceOverride::default());
+        let errors = SvbonyCameraDriver::validate(&config);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].path, "devices.SVB-1");
     }
 
     #[test]

@@ -995,7 +995,7 @@ on.
 Named, testable behaviours. ASCOM error names per
 [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md). Every
 contract below is real as of Phase E; the BDD feature files under
-`tests/features/` (86 scenarios, 421 steps) and the unit tests in
+`tests/features/` (111 scenarios, 563 steps) and the unit tests in
 `src/camera.rs`/`src/backend.rs` exercise them — see "Testing" below for
 which layer covers which contract (E9's two branches, the
 generation-counter abort race and E10 are unit-test-only, per the design's
@@ -1313,21 +1313,22 @@ second driver needs it.
   USB serial. The **candidates** are the scan's working records — a fault is
   never one — with SVBony's vendor id, `f266`, whose product id the
   normalizer knows as a camera model. Each SDK camera is matched on the
-  strongest signal both sides carry:
-  - **serial**, when the SDK camera has a `CameraSN` and the record publishes
-    a USB serial: the two must be equal;
-  - otherwise **the product id** the normalizer gives the camera's SDK model.
-    The product string is not compared: the product id already tells
-    SVBony's models apart.
+  strongest signal both sides carry. The shared join takes a serial when both
+  sides offer one, but this driver offers none: no SVBony camera has been seen
+  publishing a USB serial, so how the bus would spell one beside `CameraSN` is
+  unknown, and a serial both sides carry in different spellings would refuse
+  the right camera. So SVBony cameras match on **the product id** the
+  normalizer gives the camera's SDK model. The product string is not compared
+  either: the product id already tells SVBony's models apart.
 
   A match places a camera only when it is **one-to-one**: the camera matches
   exactly one candidate, and that candidate matches exactly one SDK camera.
   After the keyed matches, the one SDK camera and the one record left over
   are **paired by elimination** when nothing else could explain either:
   exactly one SDK camera and exactly one `f266` record remain unpaired, no
-  fault carries `f266`, the record's product id is not one the normalizer
-  gives a different model, and their serials, when both have one, agree. That
-  keeps a single camera whose model nobody has observed yet working.
+  fault carries `f266`, and the record's product id is not one the normalizer
+  gives a different model. That keeps a single camera whose model nobody has
+  observed yet working.
 
   The **normalizer** knows only observed pairs:
 
@@ -1338,9 +1339,8 @@ second driver needs it.
   A simulation build also knows its fabricated `SV605CC-Simulated` under
   `9a0a` (U7). `SVB_CAMERA_INFO`'s `DeviceID` may be the bus product id,
   which would make the table unnecessary; that is unverified, so nothing
-  reads it. Since the SV605CC publishes no USB serial, the serial route is
-  closed in practice: SVBony cameras join on the product id, and **two
-  cameras of one model on one host are look-alikes** (U3).
+  reads it. Joining on the product id alone means **two cameras of one model
+  on one host are look-alikes** (U3).
 - **U3. A join that cannot be resolved is refused, never guessed.** A
   **look-alike** is an SDK camera the join cannot pair one-to-one — two
   SV605CCs with no USB serial on one host, or two SDK cameras of one model
@@ -1431,8 +1431,8 @@ second driver needs it.
   `error!`. It is never a startup failure — the service starts and answers at
   once — so the service manager's restart-on-failure would never retry it,
   and one slow `powershell.exe` at boot would otherwise cost the night. The
-  service therefore re-scans in the background, 10 s, 20 s and 40 s after the
-  start and every 60 s after that, logging each repeat failure at `debug!`.
+  service therefore re-scans in the background, after waits of 10 s, 20 s and
+  40 s and then every 60 s, logging each repeat failure at `debug!`.
   The first scan that succeeds is logged at `info!` and fires the service's
   own reload — the one `config.apply` and `SIGHUP` fire — which runs the start
   path again, placement and all. That is safe because the failed-scan outcome
@@ -2157,7 +2157,7 @@ recovery needs nothing from `main.rs` beyond the loop it has.
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 147 no-features / 170 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 174 no-features / 205 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
@@ -2204,8 +2204,8 @@ Layered per [`testing.md`](../skills/testing.md).
   `Camera::video_capture_starts`, a read-only count that tells the test the
   capture's own capture restart has run, so "the cancel landed in the poll
   loop" is a fact rather than a nap.
-- **BDD** (`bdd-infra::ServiceHandle`, ten feature files, 86 scenarios /
-  421 steps) — all genuinely green, including `enumeration_connection`'s
+- **BDD** (`bdd-infra::ServiceHandle`, eleven feature files, 111 scenarios /
+  563 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
   behavioural feature (`exposure`, `binning_and_roi`, `cooling`,
   `gain_offset_readout`, `sensor_properties`) — see each file's header

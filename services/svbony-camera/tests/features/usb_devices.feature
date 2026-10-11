@@ -1,4 +1,4 @@
-@serial @wip
+@serial
 Feature: Device claims -- the usb_devices list
   An optional `usb_devices` list pins each USB port to an Alpaca device
   number. With a list, svbony-camera takes the host's USB scan -- passive,
@@ -17,7 +17,7 @@ Feature: Device claims -- the usb_devices list
   that is not a working device; a camera the join cannot tell apart from
   another (U3); a working record no SDK camera is placed on; otherwise no
   working camera on the port. A failed scan is never a startup failure: the
-  service re-scans in the background 10 s, 20 s and 40 s after the start and
+  service re-scans in the background after waits of 10 s, 20 s and 40 s and
   every 60 s after that, and reloads itself on the first scan that succeeds
   (U6). An empty list registers nothing. A list that breaks a rule -- numbers
   not running 0..N-1, a port listed twice, a blank or padded port, a devices
@@ -269,6 +269,12 @@ Feature: Device claims -- the usb_devices list
     Then the doctor exits with code 0
     And the devices listing shows no camera
     And the doctor output says "cannot be told apart"
+
+  Scenario: doctor --devices fails on a configuration the service would refuse
+    Given the configuration JSON {"usb_devices": [{"device_number": 1, "usb_port": "simulated-usbv3-0:1"}]}
+    When doctor --devices runs
+    Then the doctor exits with code 1
+    And the doctor output says "device numbers must run 0..N-1, and 0 is missing"
 
   Scenario: doctor --devices fails when the USB scan failed
     Given the staged USB inventory:

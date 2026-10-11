@@ -29,11 +29,14 @@
 //!
 //! ## Device registration
 //!
-//! `build()` enumerates whatever `svbony_rs::Sdk::cameras()` reports and
-//! registers each camera as an ASCOM device. With the `simulation` feature
-//! that is `svbony-rs`'s one fabricated `SV605CC-Simulated` camera (so BDD
-//! scenarios have "camera device 0" to address); the production real-SDK
-//! build registers the physically connected cameras.
+//! With no `usb_devices` list, `build()` enumerates whatever
+//! `svbony_rs::Sdk::cameras()` reports and registers each camera as an ASCOM
+//! device. With the `simulation` feature that is `svbony-rs`'s one fabricated
+//! `SV605CC-Simulated` camera (so BDD scenarios have "camera device 0" to
+//! address); the production real-SDK build registers the physically connected
+//! cameras. With a list it registers the list, in number order: the camera the
+//! USB join placed on each entry's port, or a placeholder that says why there
+//! is none (`docs/services/svbony-camera.md` U1-U9).
 
 // Curated test-scope allow list — documented in the root Cargo.toml [workspace.lints] block.
 #![cfg_attr(
@@ -62,17 +65,22 @@
 
 pub mod backend;
 mod camera;
+pub mod claims;
 mod config;
 mod config_actions;
 pub mod doctor;
 mod error;
+mod placeholder;
 
 pub use camera::SvbonyCamera;
+pub use claims::UsbSource;
 pub use config::{
-    load_effective_config, AlpacaServerConfig, CliOverrides, Config, DeviceOverride, DEFAULT_PORT,
+    load_effective_config, AlpacaServerConfig, CliOverrides, Config, DeviceOverride,
+    UsbDeviceEntry, DEFAULT_PORT,
 };
 pub use config_actions::SvbonyCameraDriver;
 pub use error::SvbonyCameraError;
+pub use placeholder::PlaceholderCamera;
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -81,11 +89,13 @@ use std::sync::Arc;
 
 use ascom_alpaca::api::{CargoServerInfo, Device};
 use ascom_alpaca::Server;
+use rusty_photon_doctor_checks::claims::{Claims, Resolution};
+use rusty_photon_driver::ConfigActionCtx;
 use rusty_photon_service_lifecycle::ReloadSignal;
 use rusty_photon_tls::config::TlsConfig;
 use svbony_rs::CameraInfo;
 use tokio::net::TcpListener;
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::backend::{CameraHandle, SvbonyCameraHandle};
 
@@ -108,8 +118,11 @@ pub struct ServerBuilder {
     reload: Option<ReloadSignal>,
     /// Register no cameras regardless of what enumeration would otherwise
     /// report — the test-only zero-camera startup path, mirroring
-    /// `zwo-camera`'s `--simulation-empty` (contract C0).
+    /// `zwo-camera`'s `--simulation-empty` (contract C0). With a
+    /// `usb_devices` list it empties only the SDK's side of the join.
     force_empty: bool,
+    /// Where a `usb_devices` list's USB scan comes from (U7).
+    usb_source: UsbSource,
     /// The file whose existence takes the simulated cameras off the bus — the
     /// test-only path exercising a camera that loses its power while connected
     /// (contract C6). `None` builds cameras that never leave.
@@ -155,6 +168,16 @@ impl ServerBuilder {
         self
     }
 
+    /// Take a `usb_devices` list's USB scan from `source` (U7) — a staged
+    /// document, in a simulation build. The default is the host in a release
+    /// build and the simulated cameras' records in a simulation build.
+    #[cfg(feature = "simulation")]
+    #[must_use]
+    pub fn with_usb_source(mut self, source: UsbSource) -> Self {
+        self.usb_source = source;
+        self
+    }
+
     /// Build the simulated cameras so they leave the bus whenever `path`
     /// exists, and come back when it is removed (`svbony-rs`'s
     /// `Sdk::with_departure_file`) — the test-only path exercising a camera
@@ -176,52 +199,24 @@ impl ServerBuilder {
         sdk
     }
 
-    /// Enumerate the connected `SVBony` cameras, register each as an ASCOM
-    /// device, and bind the Alpaca listener.
+    /// Register the cameras this configuration serves and bind the Alpaca
+    /// listener.
     ///
-    /// Zero discovered cameras is **not** a hard failure: the server starts
-    /// with no Camera devices and logs a warning (a later reload
-    /// re-enumerates). See [`enumerate_cameras`] for this phase's
-    /// simulation-only registration boundary.
+    /// With no `usb_devices` list, every camera the SDK enumerates, in SDK
+    /// order; zero discovered cameras is **not** a hard failure: the server
+    /// starts with no Camera devices and logs a warning (a later reload
+    /// re-enumerates). With a list, the list (see [`Self::register_list`]).
     ///
     /// # Errors
     /// Returns [`SvbonyCameraError`] when SDK enumeration fails or the
-    /// listener cannot bind the configured port.
+    /// listener cannot bind the configured port. A failed USB scan is not an
+    /// error: it is served as placeholders and retried (U6).
     pub async fn build(self) -> Result<BoundServer, SvbonyCameraError> {
-        let cameras = if self.force_empty {
-            Vec::new()
-        } else {
-            enumerate_cameras().await?
-        };
-        if cameras.is_empty() {
-            warn!("no SVBony cameras registered; starting with no Camera devices");
-        }
-
         let mut server = Server::new(CargoServerInfo!());
-        for cam in &cameras {
-            let sdk = svbony_rs::Sdk::new()?;
-            #[cfg(feature = "simulation")]
-            let sdk = self.departing(sdk);
-            let handle: Arc<dyn CameraHandle> = Arc::new(SvbonyCameraHandle::new(
-                sdk,
-                cam.info.clone(),
-                cam.unique_id.clone(),
-            ));
-            // `devices` overrides are keyed by the bare SDK serial (matching
-            // the config-actions `devices.{serial}` paths), NOT the prefixed
-            // `SVBONY:{name}:{serial}` UniqueID.
-            let mut device = SvbonyCamera::new(handle, self.config.devices.get(&cam.serial));
-            if let (Some(path), Some(reload)) = (self.config_path.clone(), self.reload.clone()) {
-                device = device.with_config_actions(rusty_photon_driver::ConfigActionCtx {
-                    effective: self.config.clone(),
-                    path,
-                    overrides: self.overrides.clone(),
-                    reload,
-                });
-            }
-            debug!(device = cam.index, name = %device.static_name(), "registering SVBony camera");
-            server.devices.register(device);
-        }
+        let (registered, rescan) = match &self.config.usb_devices {
+            None => (self.register_enumerated(&mut server).await?, None),
+            Some(list) => self.register_list(&mut server, list).await?,
+        };
 
         // Use the shared dual-stack helper (IPv6 + IPv4) with SO_REUSEADDR, like
         // every other Alpaca service. SO_REUSEADDR matters here because the
@@ -274,14 +269,204 @@ impl ServerBuilder {
         if !rusty_photon_service_lifecycle::is_scm_service() {
             println!("Bound Alpaca server bound_addr={local_addr}");
         }
-        info!(cameras = cameras.len(), address = %local_addr, "Service started successfully");
+        info!(cameras = registered, address = %local_addr, "Service started successfully");
         Ok(BoundServer {
             listener,
             app,
             local_addr,
             tls,
             discovery,
+            rescan,
         })
+    }
+
+    /// The no-list default: every camera the SDK enumerates, in SDK order.
+    /// Returns how many were registered.
+    async fn register_enumerated(&self, server: &mut Server) -> Result<usize, SvbonyCameraError> {
+        let cameras = if self.force_empty {
+            Vec::new()
+        } else {
+            enumerate_cameras().await?
+        };
+        if cameras.is_empty() {
+            warn!("no SVBony cameras registered; starting with no Camera devices");
+        }
+        for cam in &cameras {
+            // `devices` overrides are keyed by the bare SDK serial (matching
+            // the config-actions `devices.{serial}` paths), NOT the prefixed
+            // `SVBONY:{name}:{serial}` UniqueID.
+            self.register_camera(server, cam, self.config.devices.get(&cam.serial))?;
+        }
+        Ok(cameras.len())
+    }
+
+    /// A `usb_devices` list: take the USB scan, enumerate the SDK, place each
+    /// SDK camera on a port, and register each entry in number order — the
+    /// camera placed on its port (U5), or a placeholder that says why there
+    /// is none (U4). Nothing is opened. Returns how many devices were
+    /// registered, and the re-scan to run when the scan failed (U6).
+    async fn register_list(
+        &self,
+        server: &mut Server,
+        list: &[UsbDeviceEntry],
+    ) -> Result<(usize, Option<Rescan>), SvbonyCameraError> {
+        if list.is_empty() {
+            warn!(
+                "usb_devices is an empty list: no SVBony camera is registered, every one is \
+                 left to other applications"
+            );
+            return Ok((0, None));
+        }
+        let source = self.usb_source.clone();
+        let scan = tokio::task::spawn_blocking(move || source.scan()).await?;
+        let cameras = match &scan {
+            Err(error) => {
+                error!(
+                    %error,
+                    "the USB scan failed; every listed number is a placeholder until a re-scan \
+                     succeeds"
+                );
+                Vec::new()
+            }
+            Ok(_) if self.force_empty => Vec::new(),
+            Ok(_) => enumerate_cameras().await?,
+        };
+        let scan_failed = scan.is_err();
+        let infos: Vec<CameraInfo> = cameras.iter().map(|c| c.info.clone()).collect();
+        let claims = Claims::new(
+            claims::NORMALIZER,
+            claims::SERVICE,
+            scan,
+            claims::sdk_cameras(&infos),
+        );
+
+        let mut entries: Vec<&UsbDeviceEntry> = list.iter().collect();
+        entries.sort_by_key(|e| e.device_number);
+        for entry in entries {
+            let placed = match claims.resolve(&entry.usb_port) {
+                Resolution::Camera(index) => cameras.get(index).ok_or_else(|| {
+                    format!("the join placed SDK camera {index}, which is not enumerated")
+                }),
+                Resolution::Placeholder(reason) => Err(reason),
+            };
+            match placed {
+                Ok(cam) => {
+                    debug!(
+                        device = entry.device_number,
+                        port = %entry.usb_port,
+                        "a listed port holds an SVBony camera"
+                    );
+                    self.register_camera(server, cam, Some(&entry.display_override()))?;
+                }
+                Err(reason) => {
+                    warn!(
+                        device = entry.device_number,
+                        port = %entry.usb_port,
+                        %reason,
+                        "a listed number is held by a placeholder"
+                    );
+                    let mut placeholder = PlaceholderCamera::new(entry, reason);
+                    if let Some(ctx) = self.config_actions() {
+                        placeholder = placeholder.with_config_actions(ctx);
+                    }
+                    server.devices.register(placeholder);
+                }
+            }
+        }
+        for (index, port) in claims.placed() {
+            if !list.iter().any(|e| e.usb_port == port) {
+                debug!(
+                    camera = index,
+                    port, "an SVBony camera on an unlisted port is not served"
+                );
+            }
+        }
+
+        let rescan = scan_failed
+            .then(|| {
+                let rescan = self.reload.clone().map(|reload| Rescan {
+                    source: self.usb_source.clone(),
+                    reload,
+                });
+                if rescan.is_none() {
+                    debug!("no reload path: a failed USB scan is not retried");
+                }
+                rescan
+            })
+            .flatten();
+        Ok((list.len(), rescan))
+    }
+
+    /// Register one enumerated camera with its display overrides.
+    fn register_camera(
+        &self,
+        server: &mut Server,
+        cam: &EnumeratedCamera,
+        overrides: Option<&DeviceOverride>,
+    ) -> Result<(), SvbonyCameraError> {
+        let sdk = svbony_rs::Sdk::new()?;
+        #[cfg(feature = "simulation")]
+        let sdk = self.departing(sdk);
+        let handle: Arc<dyn CameraHandle> = Arc::new(SvbonyCameraHandle::new(
+            sdk,
+            cam.info.clone(),
+            cam.unique_id.clone(),
+        ));
+        let mut device = SvbonyCamera::new(handle, overrides);
+        if let Some(ctx) = self.config_actions() {
+            device = device.with_config_actions(ctx);
+        }
+        debug!(sdk_index = cam.index, name = %device.static_name(), "registering SVBony camera");
+        server.devices.register(device);
+        Ok(())
+    }
+
+    /// The config-action context every registered device carries, when the
+    /// builder has a config source and a reload path.
+    fn config_actions(&self) -> Option<ConfigActionCtx<SvbonyCameraDriver>> {
+        let (path, reload) = (self.config_path.clone()?, self.reload.clone()?);
+        Some(ConfigActionCtx {
+            effective: self.config.clone(),
+            path,
+            overrides: self.overrides.clone(),
+            reload,
+        })
+    }
+}
+
+/// The background re-scan after a failed USB scan (U6): it waits 10 s, 20 s,
+/// 40 s and then 60 s between scans, and on the first that succeeds fires the
+/// service's own reload, which places the listed cameras afresh.
+struct Rescan {
+    source: UsbSource,
+    reload: ReloadSignal,
+}
+
+impl Rescan {
+    async fn run(self) {
+        for wait in rusty_photon_doctor_checks::claims::rescan_waits() {
+            tokio::time::sleep(wait).await;
+            let source = self.source.clone();
+            match tokio::task::spawn_blocking(move || source.scan()).await {
+                Ok(Ok(_)) => {
+                    info!("the USB scan succeeds again; reloading to place the listed cameras");
+                    self.reload.notify();
+                    return;
+                }
+                Ok(Err(error)) => debug!(%error, "the USB scan still fails"),
+                Err(error) => debug!(%error, "the USB re-scan task failed"),
+            }
+        }
+    }
+}
+
+/// Aborts the task it holds when dropped, so a re-scan ends with the server
+/// it belongs to.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -295,6 +480,8 @@ pub struct BoundServer {
     /// Alpaca UDP discovery responder, when the config opts in. Runs inside
     /// `start()`'s select so its socket closes when serving ends (reload).
     discovery: Option<ascom_alpaca::discovery::BoundDiscoveryServer>,
+    /// The re-scan of a failed USB scan (U6), run while this server serves.
+    rescan: Option<Rescan>,
 }
 
 impl BoundServer {
@@ -318,7 +505,12 @@ impl BoundServer {
             local_addr: _,
             tls,
             discovery,
+            rescan,
         } = self;
+        // Spawned rather than raced against serving: the re-scan's success
+        // fires the reload that ends this server, and the guard stops it when
+        // serving ends for any other reason.
+        let _rescan = rescan.map(|rescan| AbortOnDrop(tokio::spawn(rescan.run())));
         let serve = async {
             let result = if let Some(ref tls_config) = tls {
                 debug!("serving over TLS");
@@ -374,15 +566,13 @@ fn enumerate_cameras_blocking() -> Result<Vec<EnumeratedCamera>, svbony_rs::Erro
 /// falls back to a stable position-based identity (`noserial-{index}`),
 /// mirroring `zwo-camera`'s `mint_identity` fallback.
 fn mint_identity(info: &CameraInfo, index: usize) -> (String, String) {
-    let serial = if info.serial.is_empty() {
+    if info.serial.is_empty() {
         warn!(
             camera = %info.friendly_name,
             "camera reports an empty serial; using a position-based identity"
         );
-        format!("noserial-{index}")
-    } else {
-        info.serial.clone()
-    };
+    }
+    let serial = claims::override_key(info, index);
     let unique_id = format!("SVBONY:{}:{}", info.friendly_name.replace(' ', "-"), serial);
     (serial, unique_id)
 }
@@ -462,6 +652,145 @@ mod simulation_tests {
         );
         assert!(config.devices.contains_key(&cam.serial));
         assert!(!config.devices.contains_key(&cam.unique_id));
+    }
+
+    fn list(entries: &[(u32, &str)]) -> Vec<UsbDeviceEntry> {
+        entries
+            .iter()
+            .map(|&(device_number, usb_port)| UsbDeviceEntry {
+                device_number,
+                usb_port: usb_port.to_string(),
+                name: None,
+                description: None,
+            })
+            .collect()
+    }
+
+    /// Register `entries` and read back each Camera's `UniqueID`, in device
+    /// number order, with the re-scan the build asked for.
+    async fn register(
+        builder: &ServerBuilder,
+        entries: &[(u32, &str)],
+    ) -> Result<(Vec<String>, Option<Rescan>), SvbonyCameraError> {
+        let mut server = Server::new(CargoServerInfo!());
+        let (count, rescan) = builder.register_list(&mut server, &list(entries)).await?;
+        let ids: Vec<String> = server
+            .devices
+            .iter::<dyn ascom_alpaca::api::Camera>()
+            .map(|camera| camera.unique_id().to_string())
+            .collect();
+        assert_eq!(ids.len(), count);
+        Ok((ids, rescan))
+    }
+
+    /// A staged inventory file holding `document`, kept alive by the guard.
+    fn staged(document: &str) -> std::io::Result<(tempfile::TempDir, UsbSource)> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("usb-inventory.json");
+        std::fs::write(&path, document)?;
+        Ok((dir, UsbSource::Staged(path)))
+    }
+
+    const FAILED_SCAN: &str = r#"{"usb_unavailable": "powershell.exe timed out"}"#;
+
+    #[tokio::test]
+    async fn a_list_registers_its_entries_in_number_order() {
+        let (ids, rescan) = register(
+            &ServerBuilder::new(),
+            &[(1, "simulated-usbv3-0:1"), (0, "simulated-usbv3-0:9")],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            ids,
+            vec![
+                "placeholder:svbony-camera:simulated-usbv3-0:9",
+                "SVBONY:SV605CC-Simulated:SVB0123456789AB",
+            ]
+        );
+        assert!(rescan.is_none(), "a scan that ran needs no re-scan");
+    }
+
+    #[tokio::test]
+    async fn an_empty_list_registers_nothing_and_scans_nothing() {
+        // A scan of this source would fail; an empty list never takes one.
+        let builder = ServerBuilder::new()
+            .with_usb_source(UsbSource::Staged(PathBuf::from(
+                "/nonexistent/inventory.json",
+            )))
+            .with_reload_signal(ReloadSignal::new());
+        let (ids, rescan) = register(&builder, &[]).await.unwrap();
+        assert_eq!(ids, Vec::<String>::new());
+        assert!(rescan.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_failed_scan_holds_every_number_and_is_retried() {
+        let (_dir, source) = staged(FAILED_SCAN).unwrap();
+        let builder = ServerBuilder::new()
+            .with_usb_source(source)
+            .with_reload_signal(ReloadSignal::new());
+        let (ids, rescan) = register(&builder, &[(0, "simulated-usbv3-0:1")])
+            .await
+            .unwrap();
+        assert_eq!(ids, vec!["placeholder:svbony-camera:simulated-usbv3-0:1"]);
+        assert!(rescan.is_some());
+    }
+
+    #[tokio::test]
+    async fn without_a_reload_path_a_failed_scan_is_not_retried() {
+        let (_dir, source) = staged(FAILED_SCAN).unwrap();
+        let builder = ServerBuilder::new().with_usb_source(source);
+        let (_, rescan) = register(&builder, &[(0, "simulated-usbv3-0:1")])
+            .await
+            .unwrap();
+        assert!(rescan.is_none());
+    }
+
+    #[tokio::test]
+    async fn an_empty_backend_leaves_a_listed_record_unplaced() {
+        let builder = ServerBuilder::new().with_empty(true);
+        let (ids, _) = register(&builder, &[(0, "simulated-usbv3-0:1")])
+            .await
+            .unwrap();
+        assert_eq!(ids, vec!["placeholder:svbony-camera:simulated-usbv3-0:1"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_rescan_that_succeeds_fires_the_reload() {
+        let reload = ReloadSignal::new();
+        Rescan {
+            source: UsbSource::Simulated,
+            reload: reload.clone(),
+        }
+        .run()
+        .await;
+        tokio::time::timeout(std::time::Duration::ZERO, reload.recv())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_rescan_never_reloads_while_the_scan_fails() {
+        let (_dir, source) = staged(FAILED_SCAN).unwrap();
+        let reload = ReloadSignal::new();
+        let run = Rescan {
+            source,
+            reload: reload.clone(),
+        }
+        .run();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(300), run)
+                .await
+                .is_err(),
+            "the re-scan stopped while the scan still fails"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::ZERO, reload.recv())
+                .await
+                .is_err(),
+            "a failing scan fired the reload"
+        );
     }
 
     /// The empty-backend path starts healthy with no Camera devices (C0).
