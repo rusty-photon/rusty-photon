@@ -97,9 +97,13 @@ pub struct EquipmentStatus {
 pub struct DeviceStatus {
     pub id: String,
     pub connected: bool,
-    /// The bound device's listed `DeviceName`; `None` while disconnected.
+    /// The bound device's `DeviceName` as listed when the session was
+    /// established; `None` while disconnected. A pinned entry's is
+    /// re-checked every reconnect pass, an unpinned one's is not.
     pub device_name: Option<String>,
-    /// The bound device's listed `UniqueID`; `None` while disconnected.
+    /// The bound device's `UniqueID` as listed when the session was
+    /// established; `None` while disconnected. Same freshness as
+    /// `device_name`.
     pub unique_id: Option<String>,
 }
 

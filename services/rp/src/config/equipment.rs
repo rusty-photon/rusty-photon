@@ -218,14 +218,14 @@ impl Default for EquipmentConfig {
 }
 
 impl EquipmentConfig {
-    /// Two entries of one kind pinned to the same `UniqueID` on the same
-    /// `alpaca_url`, as field-level errors on the later entry. A server
-    /// lists a device at one number, so at most one of the two could ever
-    /// bind; the other would be refused every night with an error
-    /// pointing at its twin's number (rp.md § Device Identity Pin). The
-    /// check is per server: a `UniqueID` can repeat across servers (two
-    /// hosts, each with one serial-less camera of the same model, list
-    /// the same index-based `UniqueID`), and there both entries bind.
+    /// Entries of one kind pinned to the same `UniqueID` on the same
+    /// server, as a field-level error on each of them. A server lists a
+    /// device at one number, so at most one could ever bind; the others
+    /// would be refused every night with an error pointing at a twin's
+    /// number (rp.md § Device Identity Pin). The check is per server: a
+    /// `UniqueID` can repeat across servers (two hosts, each with one
+    /// serial-less camera of the same model, list the same index-based
+    /// `UniqueID`), and there every entry binds.
     #[must_use]
     pub fn duplicate_pin_errors(&self) -> Vec<FieldError> {
         /// `(id, alpaca_url, pin)` of each entry of one kind.
@@ -251,32 +251,50 @@ impl EquipmentConfig {
         ];
         let mut errors = Vec::new();
         for (key, entries) in kinds {
-            let mut first: std::collections::HashMap<(&str, &str), (usize, &str)> =
-                std::collections::HashMap::new();
+            // Entries grouped by (server, pin), in roster order.
+            let mut groups: std::collections::BTreeMap<(String, &str), Vec<(usize, &str)>> =
+                std::collections::BTreeMap::new();
             for (index, (id, url, pin)) in entries.into_iter().enumerate() {
-                let Some(pin) = pin else { continue };
-                match first.entry((url, pin.as_str())) {
-                    std::collections::hash_map::Entry::Occupied(earlier) => {
-                        let (first_index, first_id) = *earlier.get();
-                        errors.push(FieldError {
-                            path: format!("equipment.{key}.{index}.unique_id"),
-                            msg: format!(
-                                "pins the same UniqueID {:?} on the same server ({url}) as \
-                                 equipment.{key}.{first_index} ('{first_id}'); a server lists \
-                                 a device at one number, so at most one of the two entries \
-                                 could ever bind (entry '{id}')",
-                                pin.as_str()
-                            ),
-                        });
-                    }
-                    std::collections::hash_map::Entry::Vacant(slot) => {
-                        slot.insert((index, id));
-                    }
+                if let Some(pin) = pin {
+                    groups
+                        .entry((server_key(url), pin.as_str()))
+                        .or_default()
+                        .push((index, id));
+                }
+            }
+            for ((_, pin), members) in groups.into_iter().filter(|(_, m)| m.len() > 1) {
+                // Every member carries the error, so whichever entry an
+                // editor has open shows it next to its own field.
+                for &(index, id) in &members {
+                    let others: Vec<String> = members
+                        .iter()
+                        .filter(|&&(other, _)| other != index)
+                        .map(|(other, other_id)| format!("equipment.{key}.{other} ('{other_id}')"))
+                        .collect();
+                    errors.push(FieldError {
+                        path: format!("equipment.{key}.{index}.unique_id"),
+                        msg: format!(
+                            "pins the same UniqueID {pin:?} on the same server as {}; a server \
+                             lists a device at one number, so at most one of these entries \
+                             could ever bind (entry '{id}')",
+                            others.join(", ")
+                        ),
+                    });
                 }
             }
         }
+        errors.sort_by(|a, b| a.path.cmp(&b.path));
         errors
     }
+}
+
+/// The server an `alpaca_url` names, spelled one way: parsed and
+/// re-serialized, so a trailing slash, the host's case or an explicit
+/// default port do not hide a duplicate. Two names for one host
+/// (`localhost` and `127.0.0.1`) still read as two servers. A URL that
+/// does not parse is compared as written.
+fn server_key(url: &str) -> String {
+    reqwest::Url::parse(url).map_or_else(|_| url.to_string(), |parsed| parsed.to_string())
 }
 
 const fn default_reconnect_interval() -> Duration {
@@ -533,11 +551,13 @@ mod tests {
         }
     }
 
-    /// Two entries of one kind pinned to one `UniqueID` on one server fail
-    /// validation on the later entry. The same pin on two kinds (a camera
-    /// and the filter wheel sharing its handle) is legal, and so is the
-    /// same pin on two servers (index-based serial-less `UniqueID`s repeat
-    /// across hosts).
+    /// Entries of one kind pinned to one `UniqueID` on one server all fail
+    /// validation, each naming the others, so an editor sees the error on
+    /// whichever entry it has open; spelling the URL differently (a
+    /// trailing slash) does not hide the duplicate. The same pin on two
+    /// kinds (a camera and the filter wheel sharing its handle) is legal,
+    /// and so is the same pin on two servers (index-based serial-less
+    /// `UniqueID`s repeat across hosts).
     #[test]
     fn duplicate_pins_within_a_kind_are_rejected_on_the_later_entry() {
         let (_dir, path) = config_with_equipment(
@@ -547,7 +567,7 @@ mod tests {
                      "device_number": 0, "unique_id": "QHY600M-a1b2"},
                     {"id": "guide", "alpaca_url": "http://127.0.0.1:11121",
                      "device_number": 1},
-                    {"id": "imaging-copy", "alpaca_url": "http://127.0.0.1:11121",
+                    {"id": "imaging-copy", "alpaca_url": "http://127.0.0.1:11121/",
                      "device_number": 2, "unique_id": "QHY600M-a1b2"},
                     {"id": "other-host", "alpaca_url": "http://pier2.example:11121",
                      "device_number": 0, "unique_id": "QHY600M-a1b2"}
@@ -561,15 +581,28 @@ mod tests {
 
         let errors = config.equipment.duplicate_pin_errors();
 
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert_eq!(errors[0].path, "equipment.cameras.2.unique_id");
+        let paths: Vec<&str> = errors.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "equipment.cameras.0.unique_id",
+                "equipment.cameras.2.unique_id"
+            ]
+        );
         assert!(
-            errors[0].msg.contains("equipment.cameras.0 ('imaging')"),
+            errors[0]
+                .msg
+                .contains("equipment.cameras.2 ('imaging-copy')"),
             "{}",
             errors[0].msg
         );
+        assert!(
+            errors[1].msg.contains("equipment.cameras.0 ('imaging')"),
+            "{}",
+            errors[1].msg
+        );
         let err = load_config(&path).unwrap_err().to_string();
-        assert!(err.contains("equipment.cameras.2.unique_id"), "{err}");
+        assert!(err.contains("equipment.cameras.0.unique_id"), "{err}");
     }
 
     /// A pin serializes back as the plain string it was loaded from, so

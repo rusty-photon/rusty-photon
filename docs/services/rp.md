@@ -2879,13 +2879,17 @@ the entry's number: a driver that restarted with its devices reordered,
 followed by another client (Sentinel polling its safety monitors, say)
 connecting the number it is configured for. So on every pass, a pinned
 entry whose session reads healthy also has its listing re-read and its
-pin re-checked. When another device is listed at the entry's number
-(or one listing no `UniqueID`), the session is dropped at once, with a
-`warn!` and `equipment_changed` `connected: false`. A listing that
-cannot be read, or that lists no device at the entry's number, keeps the
-session: it was checked at establish, and neither is evidence of
-another device (a re-enumerating driver can answer a short listing for
-a moment). The
+pin re-checked. When another device, with another `UniqueID`, is
+listed at the entry's number, the session is dropped at once, with a
+`warn!` and `equipment_changed` `connected: false`. Some listings keep
+the session:
+- one that cannot be read;
+- one that lists no device at the entry's number;
+- one that lists that device with a blank `UniqueID`.
+
+The session was checked at establish, and none of these is evidence of
+another device: a re-enumerating driver can answer a short or
+half-filled listing for a moment. The
 re-check costs one listing read per pinned entry per pass; an unpinned
 entry costs nothing extra.
 
@@ -2903,13 +2907,21 @@ like "device not found": no 1 s / 2 s in-routine retries. The
 supervisor re-checks it once per pass, re-reading the list each time, so
 the entry binds on the first pass that finds the pinned device back at
 `device_number` (say, the driver restarted in its old order), and never
-binds anything else. The logging follows the usual shape: a refusal at
+binds anything else. A refused safety monitor reads unsafe, like any
+monitor without a live session (§ Safety: a monitor read is
+fail-unsafe), and the enforcer answers that unsafe transition the way it
+answers any other. Tenet 3 allows that response: stop, abort and park on
+a safety transition are permitted. The alternative would be reading
+`IsSafe` from a monitor the pin says is not the one configured, which is
+the worse failure. The logging follows the usual shape: a refusal at
 startup is an `error!`, a live session lost to one is a `warn!` once
 (with `equipment_changed` `connected: false`), and later passes log at
-`debug!`. Two entries of one kind pinned to the same `UniqueID` on the
-same `alpaca_url` are rejected at load, because at most one of them
-could ever bind. The same `UniqueID` on two servers is accepted: an
-index-based serial-less `UniqueID` repeats across hosts.
+`debug!`. Entries of one kind pinned to the same `UniqueID` on the same
+server are rejected at load, each naming the others, because at most
+one of them could ever bind. Two spellings of one URL (a trailing slash,
+the host's case) count as one server; `localhost` and `127.0.0.1` count
+as two. The same `UniqueID` on two servers is accepted: an index-based
+serial-less `UniqueID` repeats across hosts.
 
 **What was bound is logged.** Every successful establish, pinned or
 not, logs one `info!` line with the kind, the roster `id`, `alpaca_url`,
@@ -6241,9 +6253,15 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
   — and `mount`, a `{ "connected", "device_name", "unique_id" }` object
   or `null`). The `id` is the operator-supplied config id; the mount is
   singular and has none. `device_name` and `unique_id` identify the
-  device the live session is bound to, as its Alpaca server lists it in
-  `configureddevices`. Both are `null` while the entry is disconnected
-  (§ [Device Identity Pin](#device-identity-pin)). Device *addresses
+  device the live session was bound to, as its Alpaca server listed it
+  in `configureddevices` when the session was established. Both are
+  `null` while the entry is disconnected. A pinned entry is re-checked
+  against the listing every reconnect pass, so its identity stays true.
+  An unpinned entry is not re-checked. After its server reorders its
+  devices, the entry can name a device that is no longer the one behind
+  its number, until its session is next re-established. That is the
+  case a pin exists to catch (§ [Device Identity
+  Pin](#device-identity-pin)). Device *addresses
   and settings* are not repeated here — they live in the config,
   readable via `GET /api/config`, and a UI joins the two by `id`.
 - Runtime device connect/disconnect is **not** a REST route: the registry is
@@ -6459,9 +6477,8 @@ device at `device_number` must report, or the connect is refused (see
 whatever device its server lists there, as before. An empty value, or
 one with leading or trailing whitespace, is rejected at load: the
 listed side is compared with any padding stripped, so a padded pin
-could never match. Two entries of one kind pinned to the same
-`UniqueID` on the same `alpaca_url` are rejected at load too, naming
-both.
+could never match. Entries of one kind pinned to the same `UniqueID`
+on the same server are rejected at load too, each naming the others.
 
 The top-level `ca_cert` names a PEM CA certificate `rp` trusts for
 every outbound HTTPS connection it makes as a client — Alpaca devices

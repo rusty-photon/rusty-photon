@@ -398,14 +398,15 @@ pub enum PinCheck {
     /// The entry has no pin, or the device at its number still reports
     /// it.
     Holds,
-    /// Another device is listed at the entry's number, or one with no
-    /// `UniqueID`: the live session's handle addresses a device the pin
-    /// does not name.
+    /// Another device, with another `UniqueID`, is listed at the entry's
+    /// number: the live session's handle addresses a device the pin does
+    /// not name.
     Refused(String),
-    /// The listing could not be read, or lists no device at the entry's
-    /// number. The session was checked when it was established, and
-    /// neither is evidence of another device: a driver that is
-    /// re-enumerating can answer a short listing for a moment.
+    /// The listing could not be read, lists no device at the entry's
+    /// number, or lists one with a blank `UniqueID`. The session was
+    /// checked when it was established, and none of these is evidence of
+    /// another device: a driver that is re-enumerating can answer a
+    /// short or half-filled listing for a moment.
     Unchecked(String),
 }
 
@@ -433,10 +434,10 @@ pub(super) async fn check_pin<C: RosterEntry>(config: &C, ca_cert_path: Option<&
     };
     match select(&listed, address.device_number, Some(pin)) {
         Ok(_) => PinCheck::Holds,
-        Err(Refusal::NotListed) => {
-            PinCheck::Unchecked(address.refusal(&Refusal::NotListed).to_string())
+        Err(refusal @ Refusal::Mismatch { .. }) => {
+            PinCheck::Refused(address.refusal(&refusal).to_string())
         }
-        Err(refusal) => PinCheck::Refused(address.refusal(&refusal).to_string()),
+        Err(refusal) => PinCheck::Unchecked(address.refusal(&refusal).to_string()),
     }
 }
 
@@ -900,6 +901,38 @@ mod tests {
         assert!(
             matches!(check_pin(&config, None).await, PinCheck::Unchecked(_)),
             "a short listing must not refuse the pin"
+        );
+    }
+
+    /// A listed device with a blank `UniqueID` cannot be checked against
+    /// the pin, but it is no evidence of another device either, so a
+    /// session verified at establish is kept (establish itself refuses
+    /// it: a pin that cannot be checked never binds).
+    #[tokio::test]
+    async fn check_pin_leaves_a_blank_listed_unique_id_unchecked() {
+        let app = Router::new().route(
+            "/management/v1/configureddevices",
+            get(|| async {
+                Json(serde_json::json!({
+                    "Value": [{"DeviceName": "QHY600M", "DeviceType": "Camera",
+                               "DeviceNumber": 0, "UniqueID": ""}],
+                    "ErrorNumber": 0,
+                    "ErrorMessage": ""
+                }))
+            }),
+        );
+        let stub = spawn_stub(app).await;
+        let config = camera_config("qhy600m", &stub.url(), 0, Some("QHY600M-imaging"));
+        assert!(
+            matches!(check_pin(&config, None).await, PinCheck::Unchecked(_)),
+            "a blank UniqueID must leave a live session's pin unchecked"
+        );
+        assert!(
+            establish_listed(&config, None)
+                .await
+                .unwrap_err()
+                .is_identity_refusal(),
+            "but a fresh establish must refuse it"
         );
     }
 
