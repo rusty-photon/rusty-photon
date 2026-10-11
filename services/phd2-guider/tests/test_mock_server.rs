@@ -1070,7 +1070,7 @@ async fn test_save_image() {
     server.run_with_handler(|request| {
         let req: serde_json::Value = serde_json::from_str(request).unwrap();
         let id = req["id"].as_u64().unwrap();
-        format!(r#"{{"jsonrpc":"2.0","result":"/path/to/image.fits","id":{id}}}"#)
+        format!(r#"{{"jsonrpc":"2.0","result":{{"filename":"/path/to/image.fits"}},"id":{id}}}"#)
     });
 
     let config = create_test_config(port);

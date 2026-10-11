@@ -753,14 +753,20 @@ fn start_mock_phd2(port: u16) -> Option<Child> {
 /// failure logs in test output, or `Stdio::null()` to discard them (necessary
 /// when many of these run in parallel — `mock_phd2` is verbose enough that an
 /// undrained piped stderr can fill the pipe buffer and deadlock the mock).
+/// `envs` adds scenario variables (e.g. `MOCK_PHD2_IMAGE_DIR`) on top.
 fn spawn_mock_phd2_dynamic_port(
     binary: impl AsRef<std::path::Path>,
     mode: &str,
     stderr: Stdio,
+    envs: &[(&str, &std::ffi::OsStr)],
 ) -> Option<(u16, Child)> {
     let mut cmd = Command::new(binary.as_ref());
+    // An image directory comes only from `envs`, never from the test
+    // runner's own environment, so a test without one really has none.
     cmd.env("MOCK_PHD2_PORT", "0")
         .env("MOCK_PHD2_MODE", mode)
+        .env_remove("MOCK_PHD2_IMAGE_DIR")
+        .envs(envs.iter().copied())
         .stdout(Stdio::piped())
         .stderr(stderr);
     apply_child_coverage_profile(&mut cmd);
@@ -792,7 +798,7 @@ fn spawn_mock_phd2_dynamic_port(
 #[cfg(not(miri))]
 fn start_mock_phd2_auto_port(mode: &str) -> Option<(u16, Child)> {
     let binary = find_mock_phd2_binary()?;
-    spawn_mock_phd2_dynamic_port(binary, mode, Stdio::inherit())
+    spawn_mock_phd2_dynamic_port(binary, mode, Stdio::inherit(), &[])
 }
 
 #[tokio::test]
@@ -1168,6 +1174,181 @@ async fn test_mock_phd2_star_image() {
     client.disconnect().await.ok();
     child.kill().ok();
     child.wait().ok();
+}
+
+/// Spawn `mock_phd2` writing its `save_image` files into `image_dir`, and
+/// connect a client to it.
+#[cfg(not(miri))]
+async fn connect_to_mock_saving_into(image_dir: &std::path::Path) -> (ProcessGuard, Phd2Client) {
+    connect_to_mock_with_env(&[("MOCK_PHD2_IMAGE_DIR", image_dir.as_os_str())]).await
+}
+
+/// Spawn `mock_phd2` with `envs` added, and connect a client to it.
+#[cfg(not(miri))]
+async fn connect_to_mock_with_env(envs: &[(&str, &std::ffi::OsStr)]) -> (ProcessGuard, Phd2Client) {
+    let (port, child) =
+        spawn_mock_phd2_dynamic_port(mock_phd2_bin(), "normal", Stdio::null(), envs)
+            .expect("Failed to start mock_phd2 server");
+    let guard = ProcessGuard::new(child, "mock_phd2");
+
+    let client = Phd2Client::new(Phd2Config {
+        host: "127.0.0.1".to_string(),
+        port,
+        connection_timeout: Duration::from_secs(5),
+        command_timeout: Duration::from_secs(5),
+        ..Default::default()
+    });
+    client.connect().await.unwrap();
+    wait_connected(&client).await;
+    (guard, client)
+}
+
+/// The mock's `save_image` reply names a real FITS file: one 2880-byte
+/// header block plus the big-endian data padded to 2880, a 2-D primary
+/// image with `BITPIX = 16` and `BZERO = 32768`, holding the fixed 8×6
+/// ramp the mock documents. The file is read with `fitsrs` (through
+/// `rp_fits::reader`), a different implementation from the writer the
+/// mock used, so the check cannot share a misreading of the format.
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_mock_phd2_save_image_writes_a_valid_fits_frame() {
+    let image_dir = tempfile::tempdir().unwrap();
+    let (_mock, client) = connect_to_mock_saving_into(image_dir.path()).await;
+
+    let filename = client.save_image().await.unwrap();
+    let path = PathBuf::from(&filename);
+    assert!(path.is_absolute(), "not a full path: {filename}");
+    assert_eq!(path.parent(), Some(image_dir.path()));
+
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(bytes.len(), 2 * 2880, "one header block + one data block");
+    assert_eq!(
+        &bytes[..80],
+        format!("{:<80}", "SIMPLE  =                    T").as_bytes()
+    );
+
+    let image = rp_fits::reader::read_primary(std::io::Cursor::new(&bytes)).unwrap();
+    assert_eq!((image.width, image.height), (8, 6));
+    assert_eq!(image.bscale, 1.0);
+    assert_eq!(image.bzero, 32768.0);
+    let rp_fits::reader::Pixels::I16(raw) = image.data else {
+        panic!("expected BITPIX = 16 pixels, got {:?}", image.data);
+    };
+    // Physical value = BZERO + BSCALE × raw.
+    let pixels: Vec<u16> = raw
+        .iter()
+        .map(|&r| u16::try_from(i32::from(r) + 32768).unwrap())
+        .collect();
+    let ramp: Vec<u16> = (0..48).map(|i| i * 1365).collect();
+    assert_eq!(pixels, ramp);
+
+    // The caller owns the file (PHD2's contract): remove it as one would.
+    std::fs::remove_file(&path).unwrap();
+    client.disconnect().await.ok();
+}
+
+/// Every `save_image` writes a new file, so a later frame can never be
+/// mistaken for an earlier one by name.
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_mock_phd2_save_image_writes_a_new_file_per_call() {
+    let image_dir = tempfile::tempdir().unwrap();
+    let (_mock, client) = connect_to_mock_saving_into(image_dir.path()).await;
+
+    let first = client.save_image().await.unwrap();
+    let second = client.save_image().await.unwrap();
+
+    assert_ne!(first, second);
+    assert!(PathBuf::from(&first).is_file(), "{first} is gone");
+    assert!(PathBuf::from(&second).is_file(), "{second} is gone");
+    client.disconnect().await.ok();
+}
+
+/// A name that already exists, such as one an earlier run with the same
+/// process id left behind, is skipped for the next one, never overwritten.
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_mock_phd2_save_image_never_overwrites_an_existing_file() {
+    let image_dir = tempfile::tempdir().unwrap();
+    let (mock, client) = connect_to_mock_saving_into(image_dir.path()).await;
+    let taken = image_dir
+        .path()
+        .join(format!("save_image_{}_0", mock.child.id()));
+    std::fs::write(&taken, b"left by an earlier run").unwrap();
+
+    let saved = PathBuf::from(client.save_image().await.unwrap());
+
+    assert_ne!(saved, taken);
+    assert_eq!(std::fs::read(&taken).unwrap(), b"left by an earlier run");
+    assert!(saved.is_file(), "{} is gone", saved.display());
+    client.disconnect().await.ok();
+}
+
+/// Ask the mock to `save_image` and expect PHD2's own "error saving image".
+#[cfg(not(miri))]
+async fn assert_save_image_refused(client: &Phd2Client) {
+    match client.save_image().await {
+        Err(phd2_guider::Phd2Error::RpcError { code, message }) => {
+            assert_eq!(code, 3);
+            assert_eq!(message, "error saving image");
+        }
+        other => panic!("expected RpcError 3, got {other:?}"),
+    }
+}
+
+/// Without `MOCK_PHD2_IMAGE_DIR` the mock has nowhere to save and answers
+/// PHD2's own "error saving image", so no run can leave its frames in a
+/// shared directory.
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_mock_phd2_save_image_without_image_dir_is_an_rpc_error() {
+    let (_mock, client) = connect_to_mock_with_env(&[]).await;
+
+    assert_save_image_refused(&client).await;
+    client.disconnect().await.ok();
+}
+
+/// An empty or relative `MOCK_PHD2_IMAGE_DIR` would resolve against the
+/// mock's working directory, so the mock refuses it and writes nothing.
+/// Both values name a directory that exists (the working directory the
+/// mock shares with this test), so only that refusal can fail the call.
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_mock_phd2_save_image_with_relative_image_dir_is_an_rpc_error() {
+    for dir in ["", "."] {
+        let (mock, client) =
+            connect_to_mock_with_env(&[("MOCK_PHD2_IMAGE_DIR", std::ffi::OsStr::new(dir))]).await;
+        let would_be = PathBuf::from(format!("save_image_{}_0", mock.child.id()));
+
+        assert_save_image_refused(&client).await;
+        assert!(!would_be.exists(), "the mock wrote {}", would_be.display());
+        client.disconnect().await.ok();
+    }
+}
+
+/// A directory whose name is not UTF-8 cannot be carried in the JSON
+/// reply, so the mock refuses it and leaves nothing behind in it. Linux
+/// only: macOS filesystems refuse such a name, and Windows paths are
+/// UTF-16.
+#[tokio::test]
+#[cfg(all(target_os = "linux", not(miri)))]
+async fn test_mock_phd2_save_image_with_non_utf8_image_dir_writes_nothing() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let parent = tempfile::tempdir().unwrap();
+    let dir = parent
+        .path()
+        .join(std::ffi::OsStr::from_bytes(b"not_utf8_\xff"));
+    std::fs::create_dir(&dir).unwrap();
+    let (_mock, client) = connect_to_mock_saving_into(&dir).await;
+
+    assert_save_image_refused(&client).await;
+    assert_eq!(
+        std::fs::read_dir(&dir).unwrap().count(),
+        0,
+        "the mock wrote into it"
+    );
+    client.disconnect().await.ok();
 }
 
 #[tokio::test]
@@ -1861,7 +2042,7 @@ fn phd2_guider_command() -> Command {
 /// stderr would deadlock the mock), and wraps the child in a [`ProcessGuard`]
 /// for cleanup.
 fn spawn_mock_server_with_mode(mode: &str) -> (ProcessGuard, u16) {
-    let (port, child) = spawn_mock_phd2_dynamic_port(mock_phd2_bin(), mode, Stdio::null())
+    let (port, child) = spawn_mock_phd2_dynamic_port(mock_phd2_bin(), mode, Stdio::null(), &[])
         .expect("Failed to start mock_phd2 server");
 
     // The mock prints its port line only after `bind` returns, so the port is

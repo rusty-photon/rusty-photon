@@ -101,7 +101,7 @@ recorded here so the option is not lost.
 | C3 | `usb_devices` in `zwo-camera`, with its `doctor --devices` listing; a failed identity open is a per-camera outcome (D7) | Not started | |
 | C4 | `usb_devices` in `qhy-camera`, with its `doctor --devices` listing and each entry's declared filter wheel (D4.7) + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup and reload entirely** (the split alone narrows the tenet-3 problem, it does not discharge it) | Not started | |
 | C5 | `usb-devices.resolve` / `usb-devices.unlisted` / `usb-devices.implicit` checks on top of the per-driver `--devices` listings, and central doctor's `service.devices` recognising placeholders (D5); **the breaking no-list changes for all three drivers at once** — numbering by port order, unplaceable cameras refused, and the port-based `UniqueID` fallback for serial-less cameras (ZWO/SVBony; QHY's case decided here, D4.6) | Not started | |
-| C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | Not started | |
+| C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | Not started, except the `save_image` wire-format fix (D9) | `fix/phd2-save-image-wire-format` ([#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)) |
 | C7 | rp wiring: guide camera as a train-terminal camera, capture-sweep focusing for the guiding train, doc updates. **Blocked on reconciling with [`focus-model.md`](focus-model.md) S7/D17**, which retires rp's capture-based `auto_focus` and keeps the metric sweep under that name | Not started | |
 | C8 | `ui-htmx` editing of `usb_devices` | Deferred | |
 
@@ -1464,13 +1464,17 @@ phase against a live PHD2:
 This is the single largest unknown in Part B, and C6's design-doc phase
 does not end until one of these is demonstrated against a real PHD2.
 
-**Prerequisite defect:** `Phd2Client::save_image`
+**Prerequisite defect (fixed in C6's first PR, [#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)):** `Phd2Client::save_image`
 ([`services/phd2-guider/src/client.rs`](../../services/phd2-guider/src/client.rs))
-parses the result as a bare string, but PHD2 returns the object above. It
-fails against real PHD2 every time and passes CI only because
-`mock_phd2.rs` returns the same wrong shape. Fix the client, the mock
-(which must also serve a real small FITS for the facade's tests) and the
-`save_image` row in `phd2-guider.md` as the first commit of C6.
+parsed the result as a bare string, but PHD2 returns the object above, so
+it failed against real PHD2 every time; it passed CI only because
+`mock_phd2.rs` returned the same wrong shape. The client now accepts only
+the object and rejects any other shape with an error carrying the reply.
+The mock replies with the object and writes a real FITS file for each
+call: a fixed 8×6 16-bit frame, into `MOCK_PHD2_IMAGE_DIR`, with no
+`.fits` extension, as PHD2's own names have none. The facade's tests can
+decode that frame. The file is left for the caller to remove, so
+cleanup is the facade's job (D10). `phd2-guider.md` documents both.
 
 ### D10. Shape of the facade
 
