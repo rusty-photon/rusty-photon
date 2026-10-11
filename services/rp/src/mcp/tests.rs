@@ -545,6 +545,8 @@ struct MockFilterWheel {
     /// The slot `position()` reports (`Lum` at 0, `Red` at 1 in the
     /// test registry's names).
     position: usize,
+    /// How long `position()` takes to answer — a slow or wedged wheel.
+    position_delay: Duration,
 }
 
 impl_mock_device!(MockFilterWheel);
@@ -559,6 +561,9 @@ impl ascom_alpaca::api::FilterWheel for MockFilterWheel {
     }
 
     async fn position(&self) -> ascom_alpaca::ASCOMResult<Option<usize>> {
+        if !self.position_delay.is_zero() {
+            tokio::time::sleep(self.position_delay).await;
+        }
         if self.fail_position_poll {
             return Err(ASCOMError::invalid_operation("encoder error"));
         }
@@ -863,6 +868,8 @@ struct MockTelescope {
     set_tracking_calls: std::sync::atomic::AtomicU32,
     /// `slewing()` returns `true` forever — drives the timeout path.
     stuck_slewing: bool,
+    /// `slewing()` answers `NOT_IMPLEMENTED` — a mount that cannot slew.
+    slewing_not_implemented: bool,
     /// First N `slewing()` calls return a transient error before
     /// behaving normally — drives `poll_slewing_until_idle`'s
     /// transient-tolerance path (issue #319). Counter is `slewing_calls`.
@@ -910,6 +917,7 @@ impl Default for MockTelescope {
             unpark_calls: std::sync::atomic::AtomicU32::new(0),
             set_tracking_calls: std::sync::atomic::AtomicU32::new(0),
             stuck_slewing: false,
+            slewing_not_implemented: false,
             slewing_transient_errors: 0,
             slewing_true_count: 0,
             slewing_calls: std::sync::atomic::AtomicU32::new(0),
@@ -1053,6 +1061,9 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
         let n = self
             .slewing_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.slewing_not_implemented {
+            return Err(ASCOMError::NOT_IMPLEMENTED);
+        }
         if self.fail_slewing_poll || n < self.slewing_transient_errors {
             return Err(ASCOMError::invalid_operation("slewing poll failed"));
         }
@@ -2153,6 +2164,104 @@ fn wheel_trains() -> crate::equipment::trains::TrainModel {
     }))
     .unwrap();
     crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+/// A wheel that takes ten seconds to report its position, in train
+/// `main` with camera `cam`.
+fn slow_wheel_handler() -> McpHandler {
+    let fw = MockFilterWheel {
+        position_delay: Duration::from_secs(10),
+        ..Default::default()
+    };
+    test_handler(filter_wheel_registry(Arc::new(fw))).with_trains(wheel_trains())
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_untemplated_filter_read_gives_up_on_a_slow_wheel() {
+    let err = slow_wheel_handler()
+        .read_frame_filter("cam", Some(rp_vocabulary::FrameType::Light), true)
+        .await
+        .unwrap_err();
+    assert!(err.contains("timed out"), "{err}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_templated_filter_read_waits_a_slow_wheel_out() {
+    let read = slow_wheel_handler()
+        .read_frame_filter("cam", Some(rp_vocabulary::FrameType::Light), false)
+        .await
+        .unwrap();
+    assert_eq!(read, Some(("Lum".to_string(), 0)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dark_reads_no_filter_however_slow_the_wheel() {
+    let read = slow_wheel_handler()
+        .read_frame_filter("cam", Some(rp_vocabulary::FrameType::Dark), true)
+        .await
+        .unwrap();
+    assert_eq!(read, None);
+}
+
+fn pointing_of(
+    mount: MockTelescope,
+) -> impl std::future::Future<Output = Option<persistence::MountPointing>> {
+    super::internals::read_pointing(Arc::new(mount))
+}
+
+#[tokio::test]
+async fn a_still_mount_reports_its_pointing() {
+    let pointing = pointing_of(MockTelescope {
+        ra_value: 5.5,
+        dec_value: -12.25,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    assert_eq!(pointing.ra_hours, 5.5);
+    assert_eq!(pointing.dec_degrees, -12.25);
+}
+
+#[tokio::test]
+async fn a_mount_that_cannot_slew_counts_as_still() {
+    let pointing = pointing_of(MockTelescope {
+        slewing_not_implemented: true,
+        ra_value: 5.5,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    assert_eq!(pointing.ra_hours, 5.5);
+}
+
+#[tokio::test]
+async fn a_slewing_mount_reports_no_pointing() {
+    let pointing = pointing_of(MockTelescope {
+        stuck_slewing: true,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(pointing, None);
+}
+
+#[tokio::test]
+async fn a_mount_that_cannot_say_whether_it_slews_reports_no_pointing() {
+    let pointing = pointing_of(MockTelescope {
+        fail_slewing_poll: true,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(pointing, None);
+}
+
+#[tokio::test]
+async fn a_failed_coordinate_read_reports_no_pointing() {
+    let pointing = pointing_of(MockTelescope {
+        fail_declination: true,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(pointing, None);
 }
 
 #[tokio::test]

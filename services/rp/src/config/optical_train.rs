@@ -592,8 +592,12 @@ mod tests {
                 "printable ASCII",
             ),
             ("x".repeat(69), "too long"),
-            // 68 characters, but the apostrophe doubles to 69 on the card.
-            (format!("{}'", "x".repeat(67)), "too long"),
+            // 68 characters, but the apostrophe doubles to 69 on the card,
+            // and the message says why.
+            (
+                format!("{}'", "x".repeat(67)),
+                "69 characters with apostrophes doubled",
+            ),
         ] {
             let err = TelescopeName::try_new(value.clone()).unwrap_err();
             assert!(err.contains(needle), "{value:?}: {err}");

@@ -22,6 +22,12 @@ use crate::error::FitsError;
 pub(crate) const BLOCK_SIZE: usize = 2880;
 /// Size of a FITS header card.
 pub(crate) const CARD_SIZE: usize = 80;
+/// The longest string value one card holds, apostrophes counted twice.
+///
+/// FITS escapes `'` as `''`; the limit is the card's 80 columns less the
+/// 10-column `KEYWORD = ` prefix and the two quotes. A string
+/// [`Keyword::new`] accepts is at most this long.
+pub const MAX_STRING_CHARS: usize = 68;
 /// Reserved keywords managed by the writer; users may not supply them.
 const RESERVED: &[&str] = &[
     "SIMPLE", "BITPIX", "NAXIS", "NAXIS1", "NAXIS2", "BSCALE", "BZERO", "END",
@@ -133,10 +139,10 @@ impl Keyword {
                 // 10 cols prefix ("KEYWORD  = ") + 2 quotes + body, plus
                 // space for an optional " / comment". Reject anything
                 // that can't possibly fit on a single card.
-                if padded_len.saturating_add(12) > CARD_SIZE {
+                if padded_len > MAX_STRING_CHARS {
                     return Err(FitsError::InvalidKeyword(format!(
-                        "string value too long for a single FITS card: {} bytes",
-                        s.len()
+                        "string value too long for a single FITS card: {escaped_len} characters \
+                         with apostrophes doubled, max {MAX_STRING_CHARS}"
                     )));
                 }
             }
@@ -818,6 +824,33 @@ mod tests {
         assert_eq!(KeywordValue::Float(2.5).as_real(), Some(2.5));
         assert_eq!(KeywordValue::Bool(true).as_real(), None);
         assert_eq!(KeywordValue::Str("thirty".into()).as_real(), None);
+    }
+
+    #[test]
+    fn max_string_chars_is_exactly_what_one_card_holds() {
+        assert_eq!(MAX_STRING_CHARS + 12, CARD_SIZE);
+        let mut buf = Vec::new();
+        let longest =
+            Keyword::new("OBJECT", KeywordValue::Str("x".repeat(MAX_STRING_CHARS))).unwrap();
+        write_u8_image(&mut buf, &[0], 1, 1, &[longest]).unwrap();
+        let err = Keyword::new(
+            "OBJECT",
+            KeywordValue::Str("x".repeat(MAX_STRING_CHARS + 1)),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("69 characters"), "{err}");
+        // An apostrophe doubles on the card, and the message says so.
+        let err = Keyword::new(
+            "OBJECT",
+            KeywordValue::Str(format!("{}'", "x".repeat(MAX_STRING_CHARS - 1))),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("69 characters with apostrophes doubled"),
+            "{err}"
+        );
     }
 
     #[test]

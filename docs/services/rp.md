@@ -244,17 +244,20 @@ sidecar stays the authority.
   capture's `StartExposure` cannot have overwritten it). `rp` accepts
   the driver's value only when it falls inside the window `rp` itself
   observed — no earlier than just before `StartExposure` was sent, and
-  no later than the earlier of the moment `StartExposure` returned and
-  `ImageReady` less the exposure time (the bound that holds for a driver
-  whose `StartExposure` blocks through the exposure) — widened by 2 s on
+  no later than the latest the exposure can have begun, `ImageReady`
+  less the exposure time (never before the request) — widened by 2 s on
   each side for clock differences between the camera's host and
-  `rp`'s. A driver that does not implement the property, fails the
-  read, or reports a time outside that window (a stale start, or one
-  stamped at the end of the exposure or at readout) gets that latest
-  bound instead: `rp`'s clock as `StartExposure` returned for the usual
-  asynchronous driver, and never the end of the exposure for a
-  blocking one. Present on every frame this version
-  captures. `captured_at` is unchanged: it marks capture *completion*
+  `rp`'s, but never past `ImageReady` itself. A driver that flushes its
+  sensor or locks its mirror up after `StartExposure` returns begins
+  later than that return, and is still believed. A driver that does not
+  implement the property, fails the read, or reports a time outside the
+  window (a stale start, or one stamped at the end of the exposure or
+  at readout) gets `rp`'s own estimate instead: the earlier of the
+  moment `StartExposure` returned and that latest possible start —
+  `rp`'s clock as `StartExposure` returned for the usual asynchronous
+  driver, and never the end of the exposure for one whose
+  `StartExposure` blocks through it. Present on every frame this
+  version captures. `captured_at` is unchanged: it marks capture *completion*
   (after readout), which is what `{night_date}` is keyed on.
 - `camera_name` — the driver's ASCOM `Name` (e.g. `"QHY600M"`), read
   once per connection with the other invariants and cached on
@@ -285,8 +288,9 @@ sidecar stays the authority.
   capture while it holds the camera. Never cached: both are
   operator-mutable, the same reason `get_camera_info` reads them live.
   Omitted when the driver does not implement them (common on CCDs), or
-  the read fails or does not answer within 3 s (the bound
-  `LastExposureStartTime` shares). Recorded as the driver reports them:
+  the read fails or does not answer within 3 s. Each of these reads,
+  `LastExposureStartTime`'s included, has its own 3 s bound, so a slow
+  property costs only its own field. Recorded as the driver reports them:
   for a driver in ASCOM's gain-index mode that is the index into its
   `Gains` list, which still keeps frames at different gains apart.
 - `pointing` — where the mount was pointing: `ra_hours`/`dec_degrees`
@@ -298,11 +302,13 @@ sidecar stays the authority.
   camera outside the imaging train is not held by the gate, so a mount
   that reports `Slewing` at the read — or fails to say — leaves the
   field out rather than record a point mid-move (a driver without
-  `Slewing` counts as still). The read runs on its own task and the
-  frame waits for it at most half a second once the image is ready, so
-  the mount never delays a frame; a read still out then is dropped.
-  Also omitted when no mount is configured or connected, or the read
-  fails.
+  `Slewing` counts as still). The read runs on its own task, untimed
+  while the camera exposes; once the image is ready it gets up to one
+  second more, alongside the camera's own reads, so a healthy mount
+  costs the frame nothing and a wedged one at most that second. A read
+  still out then is dropped and aborted, as it is when the exposure
+  fails or the capture is cancelled. Also omitted when no mount is
+  configured or connected, or the read fails.
   Distinct from `target.ra_hours`/`target.dec_degrees`, which are the
   catalog (J2000) coordinates of what the frame is *of*.
 
@@ -563,7 +569,7 @@ The keyword set below is a contract, pinned field by field in
 | `OBJECT` | string | `target.display_name` | the frame resolved a target-store row (not a reserved `dark`/`flat`/`bias` slug) |
 | `OBJCTRA` | string | `target.ra_hours`, sexagesimal `'HH MM SS.ss'` (J2000) | as `OBJECT` |
 | `OBJCTDEC` | string | `target.dec_degrees`, sexagesimal `'+DD MM SS.s'` (J2000) | as `OBJECT` |
-| `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) | `pointing` present |
+| `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) as printed (a value that would print as 360 is written as 0) | `pointing` present |
 | `DEC` | real | `pointing.dec_degrees`, degrees | `pointing` present and within ±90° |
 | `INSTRUME` | string | `camera_name` | `camera_name` present |
 | `TELESCOP` | string | `telescope` | `telescope` present |
@@ -605,16 +611,18 @@ Rules the table does not show:
   ([Site Configuration](#site-configuration)).
 - **Absent means unknown, never a placeholder.** A keyword whose source
   is missing is omitted rather than written as `0`, `''` or `'NA'`.
-- **Free text is folded, not dropped.** A string a FITS card cannot
-  carry as it is — a target named `Pleiades – M45`, a filter named
-  `Hα`, a name longer than one card — is folded: typographic dashes,
-  quotes and spaces become their ASCII look-alikes, any other character
-  outside printable ASCII becomes `?`, and the value is cut to the
-  card's 68 characters (an apostrophe counting twice). A folded value
-  still groups consistently in a stacker, where a missing card would
-  not; the sidecar keeps the original. `telescope` is validated at
-  config load instead, so it is never folded. No header problem fails
-  a capture.
+- **Free text is folded where that keeps it distinct, else left
+  out.** In a target, filter or camera name, typographic dashes, quotes
+  and spaces become their ASCII look-alikes (`Pleiades – M45` →
+  `Pleiades - M45`), and a value longer than one card is cut to the
+  card's 68 characters (an apostrophe counting twice). Any other
+  character outside printable ASCII — a filter named `Hα`, a control
+  character — drops that one card: no ASCII stand-in keeps such a value
+  distinct (`Hα` and `Hβ` would both read `H?`, and a stacker would
+  group them as one filter), and a missing card misleads no one. The
+  sidecar keeps the original either way. `telescope` is validated at
+  config load instead, so it is never folded or dropped. No header
+  problem fails a capture.
 - Reals are written in the FITS exponential form
   (`EXPTIME = 3.0000000000E+02`), which every reader accepts.
 
