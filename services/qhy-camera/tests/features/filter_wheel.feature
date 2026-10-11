@@ -9,8 +9,9 @@ Feature: Filter wheel
   that the index is less than the filter count and rejects an out-of-range
   index with INVALID_VALUE (FW2). While the wheel is still moving to one slot,
   a write of another is refused with INVALID_OPERATION, since a CFW drops a
-  move sent while it travels; a write of the slot under way is accepted and
-  not sent again (FW2). A move that has not arrived 30 s after it was sent
+  move sent while it travels; the write reads the wheel first, so it is
+  refused only while the wheel has not arrived. A write of the slot under way
+  is accepted and not sent again (FW2). A move that has not arrived 30 s after it was sent
   has failed, and Position reports that as an error until a write goes out
   to the wheel (FW8); the simulated CFW drops no move, so the unit tests pin
   that.

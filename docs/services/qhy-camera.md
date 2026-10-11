@@ -525,7 +525,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   mid-move and restored 8 s later, the status read at the pace of a wheel in
   transit for 17.4–19.5 s after the power came back, at rest once, in transit
   2.1 s more, and at rest on slot 0 from 19.9–21.9 s on (3 of 3). A command
-  sent 5 s into the homing was dropped (1 of 1) ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-move-deadline/README.md)). A readout-mode change runs `InitQHYCCD`
+  sent during the homing is dropped. The service sent two, primes 7 s and
+  19.5 s into a homing, each 250 ms after its last status read (FW5, FW8):
+  the wheel came to rest on slot 0 both times, not on the slot sent (2 of 2).
+  The probe's one, 5 s into a homing, was dropped too, but it followed a
+  status read within FW5's drop window (1 of 1) ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-move-deadline/README.md)). A readout-mode change runs `InitQHYCCD`
   too (RM1), so what holds for a connect holds there.
 - **C6.** A connect **clears every cache its handshake republishes** — the CCD
   info and effective area, the size reported from it, the valid binning modes,
@@ -1715,7 +1719,10 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   getter; nothing moves the wheel except `set_position`, so there is nothing to
   re-read until one is in flight. INDI's `indi-qhy` is built the same way — its
   `QueryFilter()` returns a cached member and `GetQHYCCDCFWStatus` runs only
-  while the move is `IPS_BUSY`.
+  while the move is `IPS_BUSY`. A status read is judged against the move it
+  was taken under: one that returns after a later move went out, or after the
+  wheel was connected anew, reads as the moving sentinel, since under Linux it
+  may name that move's slot while the wheel still travels there (FW7).
 - **FW2.** `set_position` validates `index < filter_count` and commands the SDK;
   out-of-range returns `INVALID_VALUE`. The check runs on the slot as ASCOM
   sends it (a `usize`), *before* it is narrowed to the SDK's `u32`, so a value
@@ -1725,10 +1732,17 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   connection's move is under way is refused** with `INVALID_OPERATION` (`the
   filter wheel is still moving to slot 3`): a CFW drops a move sent while it
   travels (FW5), so sending it would strand the wheel. Under way means sent
-  and neither seen to arrive nor failed (FW8). The range check comes first. A
-  wheel that moves with no move of this connection's under way is sent the
-  write; under Linux a connect fails while the wheel travels, so a connection
-  there does not begin on a moving wheel (FW8).
+  and neither seen to arrive nor failed (FW8). A write while a move is under
+  way reads the status first, so a move that arrived, or failed, with no
+  `Position` read to see it does not hold the write back: it is refused only
+  while the status says the wheel is still on its way. The range check comes
+  first. A wheel that moves with no move of this connection's under way is
+  sent the write; under Linux a connect fails while the wheel travels, so a
+  connection there does not begin on a moving wheel (FW8). Writes go out one
+  at a time, and a connect's handshake waits for a write on its way to the
+  wheel, so a connect cannot clear the move sent beside it. A write that
+  fails on its way, as a prime its status does not confirm does (FW7),
+  answers `INVALID_OPERATION` with the reason.
 - **FW2a.** A status that names no slot of the wheel's is not a slot. `'N'` is
   the wheel moving (FW7). Any other nonstandard `CONTROL_CFWPORT` status byte
   `qhyccd-rs` degrades to `byte - 0x30` rather than failing, so anything past
@@ -1883,12 +1897,16 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   failure left it, and under Linux a read then may name the slot sent before
   the move, which `Position` would take as the slot the wheel rests on. A write
   of the failed slot meets that while a CFW whose power has come back still
-  homes, since the homing reads as a wheel in transit and drops any command
-  sent meanwhile (C5); a write after the homing goes through
+  homes: the homing reads as a wheel in transit, so the fresh read names the
+  slot sent before the move and the prime goes to a slot the wheel is not on.
+  The homing drops it, as it drops any command sent meanwhile (C5), so the
+  status does not confirm it and the write is refused. A write after the
+  homing goes through
   ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-move-deadline/README.md)). A write that comes after the deadline, before any read
-  has seen it pass, reads the status first and settles the move the same way
-  (arrived, if the status names its slot), so it is not refused on behalf of a
-  move that has failed.
+  has seen it pass, reads the status first (FW2) and settles the move the same
+  way (arrived, if the status names its slot), so it is not refused on behalf
+  of a move that has failed. A write of the failed slot that way goes through
+  the slot that read names.
 
   An error, rather than the slot the wheel stands on, which is what ASCOM's
   `Position` describes for a wheel at rest: rp's `set_filter` waits until

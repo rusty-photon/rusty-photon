@@ -49,6 +49,37 @@ fn named_slot(status: CfwStatus, count: usize) -> Option<usize> {
     }
 }
 
+/// Where the driver holds the wheel to be and what it last asked of it (FW1,
+/// FW2, FW8). One lock over all of it: a reading, a write and a connect each
+/// change it whole, so none sees it half changed.
+#[derive(Debug, Default)]
+struct Wheel {
+    /// The slot last commanded, or the slot read at connect; none when neither
+    /// names one, as after a failed move.
+    target: Option<usize>,
+    /// The slot last read at rest. Seeded at connect and refreshed only while
+    /// a move is in flight, so a settled `Position` costs no SDK call — see
+    /// [`QhyFilterWheelDevice::position`].
+    settled: Option<usize>,
+    /// When the move under way was sent: from the send of its slot until a
+    /// status read names that slot or the move fails (FW2, FW8).
+    sent_at: Option<Instant>,
+    /// What `Position` answers once a move has failed, until a write goes out
+    /// or the wheel is connected anew (FW8).
+    failed: Option<String>,
+    /// Counts the moves sent and the connects made. A status read is judged
+    /// against the move it was taken under, and one that predates the move
+    /// under way says nothing of it (FW1).
+    epoch: u64,
+}
+
+impl Wheel {
+    /// Whether the move under way has had `deadline` to arrive (FW8).
+    fn overdue(&self, deadline: Duration) -> bool {
+        self.sent_at.is_some_and(|at| at.elapsed() >= deadline)
+    }
+}
+
 /// Slots are `usize` throughout because that is what every consumer is: the
 /// ASCOM `Position`, and the `Names` / `FocusOffsets` lengths that must match
 /// it. The SDK speaks `u32`, so the conversion sits at that seam — the
@@ -56,11 +87,9 @@ fn named_slot(status: CfwStatus, count: usize) -> Option<usize> {
 #[derive(Debug)]
 struct FilterWheelState {
     number_of_filters: Mutex<Option<usize>>,
-    target_position: Mutex<Option<usize>>,
-    /// Last slot read back from the SDK. Seeded at connect and refreshed only
-    /// while a move is in flight, so a settled `Position` costs no SDK call —
-    /// see [`QhyFilterWheelDevice::position`].
-    settled_position: Mutex<Option<usize>>,
+    /// Never held across an SDK call, so `Position` on a settled wheel waits
+    /// for no read or move.
+    wheel: Mutex<Wheel>,
     /// When the wheel's last status read returned. Every status read and every
     /// move holds this lock across its SDK call, so a move can neither go out
     /// beside a read still in flight nor follow a finished one by less than
@@ -72,16 +101,11 @@ struct FilterWheelState {
     /// one, so a move sent to it again — only ever a failed move's slot (FW2,
     /// FW8) — could read as arrived at once too. Cleared at every connect, and
     /// whenever what the SDK was last sent is not known: before a prime, and by
-    /// a send that fails. Every write holds this lock for its whole sequence,
-    /// so writes go out one at a time and a prime goes out with the move it
-    /// serves.
+    /// a send that fails. Every write and every connect's handshake holds this
+    /// lock for its whole sequence, so writes go out one at a time, a prime
+    /// goes out with the move it serves, and a connect cannot clear a move
+    /// sent beside it.
     last_sent: Mutex<Option<u32>>,
-    /// When the move under way was sent: from the send of its slot until a
-    /// status read names that slot or the move fails (FW2, FW8).
-    move_sent_at: Mutex<Option<Instant>>,
-    /// What `Position` answers once a move has failed, until the next write or
-    /// connect (FW8).
-    failed_move: Mutex<Option<String>>,
     /// The wheel has reported itself moving (`'N'`, FW7), so its status never
     /// names a slot in transit and no move needs a prime. That is the SDK
     /// build's doing, so it holds for as long as the service runs.
@@ -102,40 +126,42 @@ impl FilterWheelState {
         status
     }
 
-    /// What a status read says of the wheel (FW1, FW8): the slot it rests on,
-    /// `None` while it is still on its way, or the failure of a move that has
-    /// had `deadline` to arrive and has not.
+    /// What a status read taken under `epoch` says of the wheel (FW1, FW8):
+    /// the slot it rests on, `None` while it is still on its way, or the
+    /// failure of a move that has had `deadline` to arrive and has not.
     fn take_reading(
         &self,
         status: CfwStatus,
         count: usize,
         deadline: Duration,
+        epoch: u64,
     ) -> Result<Option<usize>, String> {
-        // One reading at a time, each against the target as the last left it,
-        // so a failure one reading records is reported by the next rather than
+        let mut wheel = self.wheel.lock();
+        // A failure one reading records is reported by the next rather than
         // undone by it.
-        let mut target = self.target_position.lock();
-        let failed = self.failed_move.lock().clone();
-        if let Some(failure) = failed {
-            return Err(failure);
+        if let Some(failure) = &wheel.failed {
+            return Err(failure.clone());
+        }
+        // Taken before the move under way went out, or before the wheel was
+        // connected anew: under Linux it may name the slot that move was sent
+        // to while the wheel still travels there.
+        if wheel.epoch != epoch {
+            return Ok(None);
         }
         let actual = named_slot(status, count);
-        let out_of_time = self
-            .move_sent_at
-            .lock()
-            .is_some_and(|at| at.elapsed() >= deadline);
-        let reading = match (actual, *target) {
+        let out_of_time = wheel.overdue(deadline);
+        let reading = match (actual, wheel.target) {
             // Reached the commanded slot.
             (Some(actual), Some(commanded)) if actual == commanded => {
-                *self.settled_position.lock() = Some(actual);
-                *self.move_sent_at.lock() = None;
+                wheel.settled = Some(actual);
+                wheel.sent_at = None;
                 Ok(Some(actual))
             }
             // Connect could not read a slot, so there is nothing commanded to
             // reach — adopt the first real one the wheel reports.
             (Some(actual), None) => {
-                *target = Some(actual);
-                *self.settled_position.lock() = Some(actual);
+                wheel.target = Some(actual);
+                wheel.settled = Some(actual);
                 Ok(Some(actual))
             }
             // Not there, and out of time.
@@ -149,23 +175,23 @@ impl FilterWheelState {
                 // Where the wheel stopped is not known: under Linux the status
                 // of a wheel that has not stopped names the slot sent before
                 // the move, not the one it is on.
-                *target = None;
-                *self.move_sent_at.lock() = None;
-                *self.settled_position.lock() = None;
-                *self.failed_move.lock() = Some(failure.clone());
+                wheel.target = None;
+                wheel.settled = None;
+                wheel.sent_at = None;
+                wheel.failed = Some(failure.clone());
                 Err(failure)
             }
             // Still travelling, or still not naming a slot.
             _ => Ok(None),
         };
-        drop(target);
+        drop(wheel);
         reading
     }
 
     /// A client's write of `slot` (`target` to the SDK) to a wheel of `count`
-    /// slots (FW2, FW5, FW7, FW8). A move under way whose deadline has passed
-    /// is settled first, by a status read, so the write is not refused on
-    /// behalf of a move that has already failed.
+    /// slots (FW2, FW5, FW7, FW8). A move under way is settled first, by a
+    /// status read, so the write is not refused on behalf of a move that has
+    /// arrived, or failed, with no `Position` read to see it.
     fn write(
         &self,
         h: &dyn FilterWheelHandle,
@@ -175,24 +201,31 @@ impl FilterWheelState {
         deadline: Duration,
     ) -> Result<Write, BackendError> {
         let mut last_sent = self.last_sent.lock();
-        if self
-            .move_sent_at
-            .lock()
-            .is_some_and(|at| at.elapsed() >= deadline)
-        {
+        // Steady while this lock is held: only a write or a connect changes it.
+        let (under_way, epoch) = {
+            let wheel = self.wheel.lock();
+            (wheel.sent_at.is_some(), wheel.epoch)
+        };
+        let status_read = if under_way {
             let status = self.read_status(h)?;
-            if self.take_reading(status, count, deadline).is_err() {
+            if self.take_reading(status, count, deadline, epoch).is_err() {
                 debug!(
                     slot,
                     "the move before this write failed; the write goes out all the same"
                 );
             }
-        }
-        let commanded = *self.target_position.lock();
+            Some(status)
+        } else {
+            None
+        };
+        let (commanded, under_way, held) = {
+            let wheel = self.wheel.lock();
+            (wheel.target, wheel.sent_at.is_some(), wheel.settled)
+        };
         if commanded == Some(slot) {
             return Ok(Write::AlreadyCommanded);
         }
-        if let Some(under_way) = commanded.filter(|_| self.move_sent_at.lock().is_some()) {
+        if let Some(under_way) = commanded.filter(|_| under_way) {
             return Ok(Write::Refused { under_way });
         }
         if !self.reports_moving.load(Ordering::SeqCst)
@@ -200,12 +233,18 @@ impl FilterWheelState {
         {
             // No move of this connection's is under way, so the wheel stands on
             // the slot last read. Where none is held, as after a failed move,
-            // the status is read afresh; a wheel it names no slot for has no
-            // slot to go back to.
-            let held = *self.settled_position.lock();
+            // the status is read afresh, or taken from the read that just
+            // found the move failed; a wheel it names no slot for has no slot
+            // to go back to.
             let stands_at = match held {
                 Some(slot) => Some(slot),
-                None => named_slot(self.read_status(h)?, count),
+                None => named_slot(
+                    match status_read {
+                        Some(status) => status,
+                        None => self.read_status(h)?,
+                    },
+                    count,
+                ),
             }
             .and_then(|slot| u32::try_from(slot).ok());
             if let Some(stands_at) = stands_at {
@@ -215,13 +254,16 @@ impl FilterWheelState {
         }
         let sent = self.command_slot(h, target);
         if sent.is_ok() {
-            *self.target_position.lock() = Some(slot);
-            *self.move_sent_at.lock() = Some(Instant::now());
+            let mut wheel = self.wheel.lock();
+            wheel.target = Some(slot);
+            wheel.sent_at = Some(Instant::now());
             // Only a move that went out ends a failed move's report: a write
             // refused on the way leaves the wheel where the failure left it,
             // and under Linux a read then may name the slot sent before the
             // move, which `Position` would take as where the wheel rests (FW8).
-            *self.failed_move.lock() = None;
+            wheel.failed = None;
+            wheel.epoch = wheel.epoch.wrapping_add(1);
+            drop(wheel);
         }
         *last_sent = sent.is_ok().then_some(target);
         drop(last_sent);
@@ -313,12 +355,9 @@ impl QhyFilterWheelDevice {
             filter_names,
             state: Arc::new(FilterWheelState {
                 number_of_filters: Mutex::new(None),
-                target_position: Mutex::new(None),
-                settled_position: Mutex::new(None),
+                wheel: Mutex::new(Wheel::default()),
                 last_status_read: Mutex::new(None),
                 last_sent: Mutex::new(None),
-                move_sent_at: Mutex::new(None),
-                failed_move: Mutex::new(None),
                 reports_moving: AtomicBool::new(false),
             }),
             move_deadline: MOVE_DEADLINE,
@@ -441,6 +480,11 @@ impl QhyFilterWheelDevice {
     }
 
     fn open_handshake(&self) -> ASCOMResult<()> {
+        // Held across the handshake as a write holds it across its sequence:
+        // a write already on its way to the wheel finishes first, so the move
+        // it sends is not cleared beside it, and none starts until this
+        // connection's view of the wheel is in place (FW2, FW8).
+        let mut last_sent = self.state.last_sent.lock();
         let count = self
             .handle
             .get_number_of_filters()
@@ -473,14 +517,22 @@ impl QhyFilterWheelDevice {
             );
         }
         *self.state.number_of_filters.lock() = Some(count);
-        *self.state.target_position.lock() = settled;
-        *self.state.settled_position.lock() = settled;
+        {
+            // A move the last connection sent, or saw fail, is not this one's
+            // (FW8), and a reading taken before this one is not either.
+            let mut wheel = self.state.wheel.lock();
+            let epoch = wheel.epoch.wrapping_add(1);
+            *wheel = Wheel {
+                target: settled,
+                settled,
+                epoch,
+                ..Wheel::default()
+            };
+        }
         // The SDK keeps the slot it was last sent across a close and re-open,
-        // and this connection does not know which that is (FW7). A move the
-        // last connection sent, or saw fail, is not this one's (FW8).
-        *self.state.last_sent.lock() = None;
-        *self.state.move_sent_at.lock() = None;
-        *self.state.failed_move.lock() = None;
+        // and this connection does not know which that is (FW7).
+        *last_sent = None;
+        drop(last_sent);
         debug!(filter_wheel = %self.unique_id, slots = count, "filter wheel connected");
         Ok(())
     }
@@ -610,35 +662,37 @@ impl FilterWheel for QhyFilterWheelDevice {
     async fn position(&self) -> ASCOMResult<Option<usize>> {
         self.ensure_connected()?;
         let count = self.filter_count()?;
-        // A failed move is reported until the next write (FW8).
-        let failed = self.state.failed_move.lock().clone();
-        if let Some(failure) = failed {
-            return Err(ASCOMError::new(UNSPECIFIED_ERROR, failure));
-        }
-        let target = *self.state.target_position.lock();
-
-        // A settled wheel answers from cache. The SDK's CFW status query is a
-        // serial round-trip through the camera (~260 ms on a QHY178M + CFW3),
-        // which alone puts `Position` outside ASCOM's 100 ms target for a state
-        // getter — and nothing moves the wheel except `set_position` below, so
-        // there is nothing to re-read until a move is outstanding. INDI's
-        // `indi-qhy` takes the same approach: `QueryFilter()` returns a cached
-        // member and `GetQHYCCDCFWStatus` runs only while a move is in flight.
-        if target.is_some() && *self.state.settled_position.lock() == target {
-            return Ok(target);
-        }
+        let epoch = {
+            let wheel = self.state.wheel.lock();
+            // A failed move is reported until the next write (FW8).
+            if let Some(failure) = &wheel.failed {
+                return Err(ASCOMError::new(UNSPECIFIED_ERROR, failure.clone()));
+            }
+            // A settled wheel answers from cache. The SDK's CFW status query
+            // is a serial round-trip through the camera (~260 ms on a QHY178M
+            // + CFW3), which alone puts `Position` outside ASCOM's 100 ms
+            // target for a state getter — and nothing moves the wheel except
+            // `set_position` below, so there is nothing to re-read until a
+            // move is outstanding. INDI's `indi-qhy` takes the same approach:
+            // `QueryFilter()` returns a cached member and `GetQHYCCDCFWStatus`
+            // runs only while a move is in flight.
+            if wheel.target.is_some() && wheel.settled == wheel.target {
+                return Ok(wheel.target);
+            }
+            wheel.epoch
+        };
 
         let state = Arc::clone(&self.state);
         let status = self
             .on_handle(move |h| {
                 state
                     .read_status(h)
-                    .map_err(|_| ASCOMError::INVALID_OPERATION)
+                    .map_err(|e| ASCOMError::invalid_operation(e.to_string()))
             })
             .await?;
         // `None` is the ASCOM "moving" sentinel (`Position` = -1).
         self.state
-            .take_reading(status, count, self.move_deadline)
+            .take_reading(status, count, self.move_deadline, epoch)
             .map_err(|failure| ASCOMError::new(UNSPECIFIED_ERROR, failure))
     }
 
@@ -660,7 +714,7 @@ impl FilterWheel for QhyFilterWheelDevice {
             .on_handle(move |h| {
                 state
                     .write(h, position, target, count, deadline)
-                    .map_err(|_| ASCOMError::INVALID_OPERATION)
+                    .map_err(|e| ASCOMError::invalid_operation(e.to_string()))
             })
             .await?;
         match write {
@@ -876,14 +930,18 @@ mod tests {
     /// FW5: a move does not go out beside a status read still in flight — a
     /// second client's `Position` poll — but waits for it, then rests. A
     /// wheel that named no slot at connect is polled with no move under way,
-    /// so a write then is not refused (FW2).
+    /// so a write then is not refused (FW2); one that has reported itself
+    /// moving is sent its move with no read of its own first (FW7), so the
+    /// wait is the move's.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_move_waits_for_a_status_read_in_flight_and_then_rests() {
         let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
         handle.set_reported_position(30);
         let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
         device.connect().await.unwrap();
+        device.state.reports_moving.store(true, Ordering::SeqCst);
         let sent_before = handle.moves_sent().len();
+        let reads_before = handle.get_position_calls.load(Ordering::SeqCst);
 
         let hold = handle.hold_read_until_dropped();
         let poller = device.clone();
@@ -909,6 +967,11 @@ mod tests {
         drop(hold);
         assert_eq!(poll.await.unwrap().unwrap(), None);
         next.await.unwrap().unwrap();
+        assert_eq!(
+            handle.get_position_calls.load(Ordering::SeqCst),
+            reads_before + 1,
+            "the poll's was the only read"
+        );
         let read = *handle.reads_returned().last().unwrap();
         let next_move = *handle.moves_sent().last().unwrap();
         assert!(next_move.duration_since(read) >= REST_AFTER_STATUS_READ);
@@ -1191,6 +1254,10 @@ mod tests {
         let err = device.set_position(3).await.unwrap_err();
 
         assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
+        assert_eq!(
+            err.message,
+            "the wheel's status did not name slot 0, the one it stands on"
+        );
         assert_eq!(handle.commands(), vec![0], "the move itself was not sent");
         assert_eq!(device.position().await.unwrap(), Some(0));
 
@@ -1255,6 +1322,24 @@ mod tests {
         assert_eq!(handle.commands(), vec![0, 3]);
     }
 
+    /// A write while a move is under way reads the wheel first: a client that
+    /// does not poll `Position` is not refused on behalf of a move that has
+    /// arrived.
+    #[tokio::test]
+    async fn a_write_after_the_wheel_arrived_unseen_goes_out() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.defer_move.store(true, Ordering::SeqCst);
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().await.unwrap();
+        device.set_position(3).await.unwrap();
+        handle.complete_move();
+
+        device.set_position(5).await.unwrap();
+
+        assert_eq!(handle.commands(), vec![0, 3, 5]);
+        assert_eq!(device.state.wheel.lock().settled, Some(3));
+    }
+
     /// The range check comes first, so an out-of-range slot is the client's
     /// error whatever the wheel is doing.
     #[tokio::test]
@@ -1270,8 +1355,8 @@ mod tests {
         assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE);
     }
 
-    /// Long enough for a test's first read to land inside it, short enough
-    /// to wait out.
+    /// Short enough to wait out. A read a test means to land inside a move's
+    /// deadline goes through [`patient`] instead.
     const TEST_DEADLINE: Duration = Duration::from_millis(100);
 
     async fn connected_with_test_deadline(
@@ -1284,6 +1369,13 @@ mod tests {
         device
     }
 
+    /// The same wheel, its reads judged against the shipped deadline, so a
+    /// read meant to land before a move's deadline cannot miss it on a slow
+    /// runner.
+    fn patient(device: &QhyFilterWheelDevice) -> QhyFilterWheelDevice {
+        device.clone().with_move_deadline(MOVE_DEADLINE)
+    }
+
     /// A dropped move leaves the wheel at rest where it was. It reads as
     /// moving until its deadline, and then as a failure naming the slot asked
     /// for and the slot the status names.
@@ -1293,7 +1385,7 @@ mod tests {
         handle.drop_next_move.store(true, Ordering::SeqCst);
         let device = connected_with_test_deadline(&handle).await;
         device.set_position(3).await.unwrap();
-        assert_eq!(device.position().await.unwrap(), None);
+        assert_eq!(patient(&device).position().await.unwrap(), None);
 
         tokio::time::sleep(TEST_DEADLINE).await;
         let err = device.position().await.unwrap_err();
@@ -1342,12 +1434,33 @@ mod tests {
 
         assert_eq!(handle.commands(), vec![0, 3, 0, 3]);
         assert_eq!(
-            device.position().await.unwrap(),
+            patient(&device).position().await.unwrap(),
             None,
             "the wheel is on its way to slot 3"
         );
         handle.complete_move();
         assert_eq!(device.position().await.unwrap(), Some(3));
+    }
+
+    /// A write of the failed slot that finds the failure itself goes through
+    /// the slot that same read names, rather than reading the wheel again.
+    #[tokio::test]
+    async fn a_write_that_finds_its_slot_failed_primes_through_the_read_that_found_it() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.drop_next_move.store(true, Ordering::SeqCst);
+        let device = connected_with_test_deadline(&handle).await;
+        device.set_position(3).await.unwrap();
+        tokio::time::sleep(TEST_DEADLINE).await;
+        let reads = handle.get_position_calls.load(Ordering::SeqCst);
+
+        device.set_position(3).await.unwrap();
+
+        assert_eq!(handle.commands(), vec![0, 3, 0, 3]);
+        assert_eq!(
+            handle.get_position_calls.load(Ordering::SeqCst),
+            reads + 2,
+            "one read found the move failed, one confirmed the prime"
+        );
     }
 
     /// A wheel that reports itself moving names no slot in transit, so the
@@ -1359,7 +1472,7 @@ mod tests {
         handle.defer_move.store(true, Ordering::SeqCst);
         let device = connected_with_test_deadline(&handle).await;
         device.set_position(2).await.unwrap();
-        assert_eq!(device.position().await.unwrap(), None);
+        assert_eq!(patient(&device).position().await.unwrap(), None);
         handle.complete_move();
         assert_eq!(device.position().await.unwrap(), Some(2));
         handle.drop_next_move.store(true, Ordering::SeqCst);
@@ -1452,7 +1565,7 @@ mod tests {
 
         device.set_position(5).await.unwrap();
 
-        assert_eq!(*device.state.settled_position.lock(), Some(3));
+        assert_eq!(device.state.wheel.lock().settled, Some(3));
         assert_eq!(handle.commands(), vec![0, 3, 5]);
         handle.complete_move();
         assert_eq!(device.position().await.unwrap(), Some(5));
@@ -1483,13 +1596,104 @@ mod tests {
         device.set_position(3).await.unwrap();
         tokio::time::sleep(TEST_DEADLINE).await;
         device.position().await.unwrap_err();
+        let epoch = device.state.wheel.lock().epoch;
 
         let reading = device
             .state
-            .take_reading(CfwStatus::Slot(0), 7, TEST_DEADLINE);
+            .take_reading(CfwStatus::Slot(0), 7, TEST_DEADLINE, epoch);
 
         assert!(reading.unwrap_err().contains("did not reach slot 3"));
-        assert_eq!(*device.state.target_position.lock(), None);
+        assert_eq!(device.state.wheel.lock().target, None);
+    }
+
+    /// A reading is judged against the move it was taken under. One that
+    /// returns after the next move went out may, under Linux, name that move's
+    /// slot while the wheel still travels there, so it reads as moving.
+    #[tokio::test]
+    async fn a_reading_taken_before_a_move_went_out_is_not_judged_against_it() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.defer_move.store(true, Ordering::SeqCst);
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().await.unwrap();
+        let before = device.state.wheel.lock().epoch;
+        device.set_position(3).await.unwrap();
+
+        let reading = device
+            .state
+            .take_reading(CfwStatus::Slot(3), 7, MOVE_DEADLINE, before);
+
+        assert_eq!(reading.unwrap(), None);
+        let wheel = device.state.wheel.lock();
+        assert_eq!(
+            wheel.settled,
+            Some(0),
+            "the stale reading settled the wheel"
+        );
+        assert!(wheel.sent_at.is_some(), "the stale reading ended the move");
+    }
+
+    /// Nor is one taken before the wheel was connected anew judged against
+    /// what the connect read.
+    #[tokio::test]
+    async fn a_reading_taken_before_a_reconnect_is_not_judged_against_it() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.set_reported_position(30);
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().await.unwrap();
+        let before = device.state.wheel.lock().epoch;
+        device.connect().await.unwrap();
+
+        let reading = device
+            .state
+            .take_reading(CfwStatus::Slot(4), 7, MOVE_DEADLINE, before);
+
+        assert_eq!(reading.unwrap(), None);
+        assert_eq!(device.state.wheel.lock().target, None);
+    }
+
+    /// A connect's handshake waits for a write already on its way to the
+    /// wheel, as writes wait for each other. Beside it, the handshake could
+    /// clear the move the write then sent, and a move lost after that would
+    /// never meet its deadline (FW8).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_connect_waits_for_a_write_on_its_way_to_the_wheel() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.defer_move.store(true, Ordering::SeqCst);
+        let device = QhyFilterWheelDevice::new(handle.clone(), None, None);
+        device.connect().await.unwrap();
+        let handshakes = handle.handshake_calls.load(Ordering::SeqCst);
+
+        // The write's prime reads the status, and the read is held there.
+        let hold = handle.hold_read_until_dropped();
+        let mover = device.clone();
+        let write = tokio::spawn(async move { mover.set_position(5).await });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !handle.is_in_read() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the write never read the wheel"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        let connector = device.clone();
+        let connect = tokio::spawn(async move { connector.connect().await });
+        tokio::time::sleep(REST_AFTER_STATUS_READ).await;
+        assert_eq!(
+            handle.handshake_calls.load(Ordering::SeqCst),
+            handshakes,
+            "the handshake began beside a write on its way to the wheel"
+        );
+
+        drop(hold);
+        write.await.unwrap().unwrap();
+        connect.await.unwrap().unwrap();
+        assert_eq!(handle.commands(), vec![0, 5]);
+        let wheel = device.state.wheel.lock();
+        assert_eq!(
+            (wheel.target, wheel.settled, wheel.sent_at),
+            (Some(0), Some(0), None),
+            "the connect read the wheel after the move went out"
+        );
     }
 
     /// The move under way is the connection's: after a reconnect, which reads

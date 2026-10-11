@@ -33,7 +33,8 @@
 //                                a rested wheel's move to <slot>, then <s> s of
 //                                status reads, while the CFW's 12 V is cut and
 //                                restored from outside the probe ([<then> <at>]:
-//                                a command to <then> <at> s after the move)
+//                                a command to <then> <at> s after the move, the
+//                                status unread for the 2 s before it)
 //
 // It opens the last camera the SDK lists, or, with CFW_PROBE_CAMERA set, the
 // one whose SDK id starts with it (a host with several QHY cameras).
@@ -364,10 +365,13 @@ fn powercut(cam: &Camera, args: &[String]) {
     if args.len() > 4 {
         let then: u32 = arg(args, 4, "a slot");
         let at: f64 = arg(args, 5, "seconds after the move");
-        let until = moved + Duration::from_secs_f64(at);
+        // Rested from the last read, so a drop says what the wheel does then,
+        // not that the command followed a read too closely (FW5).
+        let until = moved + Duration::from_secs_f64(at).saturating_sub(RESTED);
         while Instant::now() < until {
             read(cam, "powercut");
         }
+        thread::sleep(RESTED);
         send(cam, then, "then");
     }
     watch(cam, secs, "powercut");

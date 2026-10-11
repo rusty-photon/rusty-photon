@@ -115,7 +115,9 @@ coming back.
 Written again about 7 s after the 12 V came back, while the CFW still homed (C5), the failed
 slot was refused after 1.18 s (`INVALID_OPERATION`). Its prime went through slot 2, the
 slot a fresh read named in transit, and the status did not confirm it. `Position` went on
-answering the failure (1 of 1). Written again about 37 s and 30 s after the 12 V came back,
+answering the failure (1 of 1). The homing dropped that prime, sent 250 ms after the
+service's last status read: 30 s later, with no power change between, a fresh read named
+slot 0 at rest. Written again about 37 s and 30 s after the 12 V came back,
 each went through slot 0, which a fresh read named at rest. The write returned in 1.28 s
 and the wheel arrived at the failed slot 3.0 s and 4.2 s after the write began (2 of 2).
 That includes the fresh read and FW5's rests.
@@ -135,7 +137,11 @@ throughout.
 While unpowered and while homing, every read took ≈100 ms and named the slot sent before
 the latest command. In run 3 that was slot 0, and slot 3 once the command to slot 5 had
 gone. The command to slot 5, sent 5 s into the homing, was dropped: the homing kept its
-shape and the wheel came to rest on slot 0, where it read for the next 29 s.
+shape and the wheel came to rest on slot 0, where it read for the next 29 s. The probe
+sent it straight after a status read, inside FW5's drop window, so this run alone does not
+show that the homing dropped it. The primes the service sent during two homings, each
+250 ms after its last read, do (2 of 2: one above, one under *Earlier heads*). The probe
+now rests 2 s from its last read before that command.
 
 ## Earlier heads
 
@@ -150,7 +156,9 @@ and the prime reads the status afresh.
 
 The run on `944be766` (16:58–17:01) made the same writes. Its first re-send, 20 s after
 the power came back, read slot 0 afresh and arrived. Its second, 19.5 s after, met the
-homing and was refused. That head had cleared the failure on the refused write, so
+homing and was refused. Its prime to slot 6, sent 250 ms after the service's last read,
+was dropped: the probe's first read a minute later, with no power change between, named
+slot 0 at rest. That head had cleared the failure on the refused write, so
 `Position` then took slot 2 from a read at the travel pace, the slot sent before the
 move, as where the wheel rested. A later write of slot 2 would not have been sent. So
 from `6fd3a513` on, only a write that goes out to the wheel ends a failed move's report.
