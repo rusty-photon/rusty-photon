@@ -31,7 +31,8 @@ Feature: MCP tool execution against equipment
     And an MCP client connected to rp
     When the MCP client calls "set_filter" with filter wheel "main-fw" and filter "Luminance"
     And another client starts the filter wheel on the simulator moving to slot 3
-    And the MCP client calls "set_filter" with filter wheel "main-fw" and filter "Green"
+    Then the filter wheel on the simulator is still moving
+    When the MCP client calls "set_filter" with filter wheel "main-fw" and filter "Green"
     Then the tool call should succeed
     When the MCP client calls "get_filter" with filter wheel "main-fw"
     Then the current filter should be "Green"

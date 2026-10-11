@@ -551,6 +551,9 @@ struct MockFilterWheel {
     /// Every write of a slot, each with the reads its move under way
     /// still had to run when it came.
     writes: std::sync::Mutex<Vec<(usize, u32)>>,
+    /// A write lands at once: once there is one, `position()` names the
+    /// last slot written, whatever it read before.
+    follows_writes: bool,
 }
 
 impl_mock_device!(MockFilterWheel);
@@ -569,6 +572,11 @@ impl ascom_alpaca::api::FilterWheel for MockFilterWheel {
     async fn position(&self) -> ascom_alpaca::ASCOMResult<Option<usize>> {
         if self.fail_position_poll {
             return Err(ASCOMError::invalid_operation("encoder error"));
+        }
+        if self.follows_writes {
+            if let Some(&(slot, _)) = self.writes.lock().unwrap().last() {
+                return Ok(Some(slot));
+            }
         }
         if self.report_moving {
             return Ok(None);
@@ -1744,47 +1752,87 @@ async fn test_set_filter_set_position_fails() {
     };
     let handler = test_handler(filter_wheel_registry(Arc::new(fw)));
     let result = handler
-        .set_filter_inner(
-            SetFilterParams {
-                filter_wheel_id: Some("fw".into()),
-                train_id: None,
-                filter_name: "Lum".into(),
-            },
-            &Cancel::never(),
-        )
+        .set_filter_inner(set_filter_to("Red"), &Cancel::never())
         .await;
     assert_tool_error(result, "failed to set filter position");
 }
 
-fn set_lum() -> SetFilterParams {
+fn set_filter_to(filter_name: &str) -> SetFilterParams {
     SetFilterParams {
         filter_wheel_id: Some("fw".into()),
         train_id: None,
-        filter_name: "Lum".into(),
+        filter_name: filter_name.into(),
     }
+}
+
+fn handler_with_wheel(fw: &Arc<MockFilterWheel>) -> McpHandler {
+    test_handler(filter_wheel_registry(
+        Arc::clone(fw) as Arc<dyn ascom_alpaca::api::FilterWheel>
+    ))
 }
 
 /// rp.md § Filter Wheel Tool Details: a wheel written while it travels
 /// does not take the new slot, so a move already under way is waited
 /// out before the write.
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn set_filter_waits_out_a_move_under_way_before_it_writes() {
     let fw = Arc::new(MockFilterWheel {
+        position: 1,
         moving_reads: 3.into(),
+        follows_writes: true,
         ..Default::default()
     });
-    let handler = test_handler(filter_wheel_registry(
-        Arc::clone(&fw) as Arc<dyn ascom_alpaca::api::FilterWheel>
-    ));
+    let handler = handler_with_wheel(&fw);
 
-    let result = handler.set_filter_inner(set_lum(), &Cancel::never()).await;
+    let result = handler
+        .set_filter_inner(set_filter_to("Lum"), &Cancel::never())
+        .await;
 
-    assert!(!result.unwrap().is_error.unwrap_or(false));
+    assert_eq!(ok_json(result)["position"], 0);
     assert_eq!(
         *fw.writes.lock().unwrap(),
         vec![(0, 0)],
         "one write, once the move under way had ended"
     );
+}
+
+/// The wait is bounded: a wheel still reading moving past the longest
+/// move a wheel makes is written all the same, and its driver answers.
+#[tokio::test(start_paused = true)]
+async fn set_filter_writes_a_wheel_that_reads_moving_past_the_ceiling() {
+    let fw = Arc::new(MockFilterWheel {
+        report_moving: true,
+        follows_writes: true,
+        ..Default::default()
+    });
+    let handler = handler_with_wheel(&fw);
+    let started = tokio::time::Instant::now();
+
+    let result = handler
+        .set_filter_inner(set_filter_to("Red"), &Cancel::never())
+        .await;
+
+    assert_eq!(ok_json(result)["position"], 1);
+    assert_eq!(*fw.writes.lock().unwrap(), vec![(1, 0)]);
+    assert!(
+        started.elapsed() >= MOVE_UNDER_WAY_CEILING,
+        "written after {:?}",
+        started.elapsed()
+    );
+}
+
+/// A wheel already resting on the slot asked for is not written.
+#[tokio::test(start_paused = true)]
+async fn set_filter_to_the_slot_the_wheel_rests_on_writes_nothing() {
+    let fw = Arc::new(MockFilterWheel::default());
+    let handler = handler_with_wheel(&fw);
+
+    let result = handler
+        .set_filter_inner(set_filter_to("Lum"), &Cancel::never())
+        .await;
+
+    assert_eq!(ok_json(result)["position"], 0);
+    assert!(fw.writes.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -1793,34 +1841,33 @@ async fn set_filter_cancelled_while_a_move_is_under_way_writes_nothing() {
         report_moving: true,
         ..Default::default()
     });
-    let handler = test_handler(filter_wheel_registry(
-        Arc::clone(&fw) as Arc<dyn ascom_alpaca::api::FilterWheel>
-    ));
+    let handler = handler_with_wheel(&fw);
     let cancel = Cancel::never();
     cancel.cancel(super::inflight::CancelReason::ClientDisconnected);
 
-    let result = handler.set_filter_inner(set_lum(), &cancel).await;
+    let result = handler
+        .set_filter_inner(set_filter_to("Red"), &cancel)
+        .await;
 
     assert_tool_error(result, "cancelled");
     assert!(fw.writes.lock().unwrap().is_empty());
 }
 
-/// A wheel that cannot be read is written all the same: the write says
-/// what is wrong with it.
+/// A cancellation that lands while the wheel is read, here one already
+/// made when the call begins, writes nothing even to a wheel at rest.
 #[tokio::test]
-async fn set_filter_writes_a_wheel_it_could_not_read_first() {
-    let fw = Arc::new(MockFilterWheel {
-        fail_position_poll: true,
-        ..Default::default()
-    });
-    let handler = test_handler(filter_wheel_registry(
-        Arc::clone(&fw) as Arc<dyn ascom_alpaca::api::FilterWheel>
-    ));
+async fn set_filter_cancelled_before_its_write_leaves_a_resting_wheel_alone() {
+    let fw = Arc::new(MockFilterWheel::default());
+    let handler = handler_with_wheel(&fw);
+    let cancel = Cancel::never();
+    cancel.cancel(super::inflight::CancelReason::ClientDisconnected);
 
-    let result = handler.set_filter_inner(set_lum(), &Cancel::never()).await;
+    let result = handler
+        .set_filter_inner(set_filter_to("Red"), &cancel)
+        .await;
 
-    assert_tool_error(result, "error waiting for filter wheel");
-    assert_eq!(*fw.writes.lock().unwrap(), vec![(0, 0)]);
+    assert_tool_error(result, "cancelled");
+    assert!(fw.writes.lock().unwrap().is_empty());
 }
 
 // -----------------------------------------------------------------------
@@ -3530,24 +3577,20 @@ async fn test_get_camera_info_exposure_range_fallback() {
 // set_filter — polling error
 // -----------------------------------------------------------------------
 
-#[tokio::test]
+/// A wheel that cannot be read before the write is written all the
+/// same, and the read that fails after it is the answer.
+#[tokio::test(start_paused = true)]
 async fn test_set_filter_polling_error() {
-    let fw = MockFilterWheel {
+    let fw = Arc::new(MockFilterWheel {
         fail_position_poll: true,
         ..Default::default()
-    };
-    let handler = test_handler(filter_wheel_registry(Arc::new(fw)));
+    });
+    let handler = handler_with_wheel(&fw);
     let result = handler
-        .set_filter_inner(
-            SetFilterParams {
-                filter_wheel_id: Some("fw".into()),
-                train_id: None,
-                filter_name: "Lum".into(),
-            },
-            &Cancel::never(),
-        )
+        .set_filter_inner(set_filter_to("Lum"), &Cancel::never())
         .await;
     assert_tool_error(result, "error waiting for filter wheel");
+    assert_eq!(*fw.writes.lock().unwrap(), vec![(0, 0)]);
 }
 
 // -----------------------------------------------------------------------

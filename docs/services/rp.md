@@ -1222,7 +1222,7 @@ tool across the line with `safety.gate` (§ Configuration).
 | `unpark` | Gated | — | — | Clear the mount's `AtPark` flag. Returns immediately. Does NOT auto-enable `Tracking`; call `set_tracking` before slewing |
 | `get_park_state` | Ungated | — | at_park, can_park, can_unpark | Read park state and capabilities; fails loud on `AtPark` read error |
 | `abort_slew` | Ungated | — | — | Abort an in-progress mount slew or park. Per ASCOM, only valid while `Slewing == true`; the natural Alpaca error propagates otherwise |
-| `set_filter` | Ungated | filter_wheel_id *or* train_id (exactly one), filter_name | filter_wheel_id, filter_name, position | Change filter wheel position: waits out a move already under way, writes the slot, and blocks until the wheel names it (see [Filter Wheel Tool Details](#filter-wheel-tool-details)). `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id` |
+| `set_filter` | Ungated | filter_wheel_id *or* train_id (exactly one), filter_name | filter_wheel_id, filter_name, position | Change filter wheel position: waits out a move already under way (at most 30 s), writes the slot unless the wheel already rests on it, and blocks until the wheel names it (see [Filter Wheel Tool Details](#filter-wheel-tool-details)). `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id` |
 | `get_filter` | Ungated | filter_wheel_id | filter_name, position | Read current filter |
 | `get_cover_state` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, cover_state | Read the cover state (`NotPresent` \| `Closed` \| `Moving` \| `Open` \| `Unknown` \| `Error`) without actuating anything — e.g. so an orchestrator can restore the state it found. `train_id` resolves the train's cover calibrator; `trains` lists every train containing it. See [CoverCalibrator Tool Details](#covercalibrator-tool-details) |
 | `close_cover` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Close the dust cover (blocks until closed) |
@@ -1682,11 +1682,19 @@ rest. A wheel written while it travels does not take the new slot:
 
 The move may be another client's, or one that a cancelled `set_filter`
 left going: focus-model puts the wheel back with a `set_filter` straight
-after a cancelled sweep. A read that errors ends the wait, and the slot
-is written all the same. The write then reports what is wrong with the
-wheel, and a `qhy-camera` wheel whose move failed answers an error
-until a write goes out (its FW8). A cancellation during that wait
-writes nothing.
+after a cancelled sweep. The wait ends one of four ways:
+- **The wheel comes to rest** on a slot. If that is the slot asked for,
+  there is nothing to write, and `set_filter` answers at once.
+- **A read errors.** The slot is written all the same. The write then
+  reports what is wrong with the wheel, and a `qhy-camera` wheel whose
+  move failed answers an error until a write goes out (its FW8).
+- **The wheel still reads moving after 30 s,** longer than a full turn
+  of a sixteen-slot wheel at ~1.2 s a slot (~19 s). Such a wheel is not
+  finishing a move, so the slot is written all the same, and its driver
+  says what it is doing.
+- **The call is cancelled.** A cancelled call writes nothing, including
+  a cancellation that lands during the read that found the wheel at
+  rest.
 
 #### CoverCalibrator Tool Details
 

@@ -446,6 +446,28 @@ impl OmniSimHandle {
             .ok_or_else(|| format!("GET {url}: no integer Value in {body}"))
     }
 
+    /// The filter-wheel simulator's Alpaca `Position`: its slot, or -1
+    /// while it moves.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the GET fails in transport, its body is not
+    /// JSON, or the body has no integer `Value`.
+    pub async fn filter_wheel_position() -> Result<i64, String> {
+        let base_url = Self::singleton_base_url().await;
+        let url =
+            format!("{base_url}/api/v1/filterwheel/0/position?ClientID=77&ClientTransactionID=1");
+        let body: serde_json::Value = reqwest::get(&url)
+            .await
+            .map_err(|e| format!("GET {url} failed: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("GET {url}: unparseable body: {e}"))?;
+        body.get("Value")
+            .and_then(serde_json::Value::as_i64)
+            .ok_or_else(|| format!("GET {url}: no integer Value in {body}"))
+    }
+
     /// The cover-calibrator simulator's Alpaca `CalibratorState` (1 =
     /// Off, 2 = `NotReady`, 3 = Ready): whether the flat panel is lit.
     ///
