@@ -1312,22 +1312,26 @@ async fn test_mock_phd2_save_image_without_image_dir_is_an_rpc_error() {
     client.disconnect().await.ok();
 }
 
-/// An empty or relative `MOCK_PHD2_IMAGE_DIR` would resolve against the
-/// mock's working directory, so the mock refuses it and writes nothing.
-/// Both values name a directory that exists (the working directory the
-/// mock shares with this test), so only that refusal can fail the call.
+/// A relative `MOCK_PHD2_IMAGE_DIR` would land in the mock's working
+/// directory, so the mock refuses it and writes nothing. `.` names a
+/// directory that exists (the working directory the mock shares with this
+/// test), so only the absolute-path check can fail the call.
+///
+/// An empty value goes through the same check, but cannot be tested this
+/// way: without the check it would become the filesystem root once the
+/// mock appends a separator. An unprivileged mock is then refused by the
+/// OS and answers code 3 regardless, and a privileged one would write into
+/// `/`. So `.` is the case that pins the check.
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_mock_phd2_save_image_with_relative_image_dir_is_an_rpc_error() {
-    for dir in ["", "."] {
-        let (mock, client) =
-            connect_to_mock_with_env(&[("MOCK_PHD2_IMAGE_DIR", std::ffi::OsStr::new(dir))]).await;
-        let would_be = PathBuf::from(format!("save_image_{}_0", mock.child.id()));
+    let (mock, client) =
+        connect_to_mock_with_env(&[("MOCK_PHD2_IMAGE_DIR", std::ffi::OsStr::new("."))]).await;
+    let would_be = PathBuf::from(format!("save_image_{}_0", mock.child.id()));
 
-        assert_save_image_refused(&client).await;
-        assert!(!would_be.exists(), "the mock wrote {}", would_be.display());
-        client.disconnect().await.ok();
-    }
+    assert_save_image_refused(&client).await;
+    assert!(!would_be.exists(), "the mock wrote {}", would_be.display());
+    client.disconnect().await.ok();
 }
 
 /// A directory whose name is not UTF-8 cannot be carried in the JSON

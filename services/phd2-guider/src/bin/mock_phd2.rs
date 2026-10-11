@@ -301,8 +301,11 @@ const SAVED_FRAME_STEP: usize = 1365;
 /// PHD2, removing it is the client's job. There is no default
 /// directory, so no run can scatter files into a shared one. The call
 /// fails, leaving nothing behind, when the variable is unset, not UTF-8
-/// (the reply carries the path as a JSON string), or not absolute (an
-/// empty or relative value would land in the mock's working directory).
+/// (the reply carries the path as a JSON string), or not absolute. The
+/// absolute-path check refuses both an empty and a relative value; without
+/// it, an empty value would become the filesystem root once the separator
+/// is appended, and a relative one would land in the mock's working
+/// directory.
 /// The reply is the variable's own text plus an ASCII name, so it is
 /// never converted back from a path. PHD2 names the file with
 /// `wxFileName::CreateTempFileName(<dir>/save_image_)`, so the real name
