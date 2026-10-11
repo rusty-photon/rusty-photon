@@ -1310,21 +1310,45 @@ async fn test_mock_phd2_save_image_without_image_dir_is_an_rpc_error() {
 
 /// An empty or relative `MOCK_PHD2_IMAGE_DIR` would resolve against the
 /// mock's working directory, so the mock refuses it and writes nothing.
+/// Both values name a directory that exists (the working directory the
+/// mock shares with this test), so only that refusal can fail the call.
 #[tokio::test]
 #[cfg(not(miri))]
 async fn test_mock_phd2_save_image_with_relative_image_dir_is_an_rpc_error() {
-    let relative = format!("mock_phd2_relative_image_dir_{}", std::process::id());
-    for dir in ["", relative.as_str()] {
-        let (_mock, client) =
+    for dir in ["", "."] {
+        let (mock, client) =
             connect_to_mock_with_env(&[("MOCK_PHD2_IMAGE_DIR", std::ffi::OsStr::new(dir))]).await;
+        let would_be = PathBuf::from(format!("save_image_{}_0", mock.child.id()));
 
         assert_save_image_refused(&client).await;
+        assert!(!would_be.exists(), "the mock wrote {}", would_be.display());
         client.disconnect().await.ok();
     }
-    assert!(
-        !std::path::Path::new(&relative).exists(),
-        "the mock created {relative}"
+}
+
+/// A directory whose name is not UTF-8 cannot be carried in the JSON
+/// reply, so the mock refuses it and leaves nothing behind in it. Linux
+/// only: macOS filesystems refuse such a name, and Windows paths are
+/// UTF-16.
+#[tokio::test]
+#[cfg(all(target_os = "linux", not(miri)))]
+async fn test_mock_phd2_save_image_with_non_utf8_image_dir_writes_nothing() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let parent = tempfile::tempdir().unwrap();
+    let dir = parent
+        .path()
+        .join(std::ffi::OsStr::from_bytes(b"not_utf8_\xff"));
+    std::fs::create_dir(&dir).unwrap();
+    let (_mock, client) = connect_to_mock_saving_into(&dir).await;
+
+    assert_save_image_refused(&client).await;
+    assert_eq!(
+        std::fs::read_dir(&dir).unwrap().count(),
+        0,
+        "the mock wrote into it"
     );
+    client.disconnect().await.ok();
 }
 
 #[tokio::test]

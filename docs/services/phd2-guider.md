@@ -1161,7 +1161,7 @@ and then `phd2-guider serve` pointed at it via
 | `MOCK_PHD2_SETTLE_MODE` | What follows a `guide`/`dither` RPC: `settle_ok` (default — emit `Settling`, two fixed `GuideStep` events, then `SettleDone{status: 0}`), `settle_fail` (`SettleDone{status: 1, Error: "Mock star lost"}`), `never_settle` (no `SettleDone` — drives the `settle_timeout` backstop) |
 | `MOCK_PHD2_STOP_MODE` | `stops` (default — `stop_capture` moves the app state to `Stopped`) or `never_stops` (state stays `Guiding` — drives `stop_timeout`) |
 | `MOCK_PHD2_RPC_LOG` | Path to a JSON-lines file the mock appends each received `{method, params}` to — used for request-forwarding assertions (the `MOCK_ASTAP_ARGV_OUT` equivalent) |
-| `MOCK_PHD2_IMAGE_DIR` | Absolute directory `save_image` writes its FITS files to. There is no default: unset, empty or relative (which would resolve against the mock's working directory), `save_image` answers PHD2's `error saving image` and writes nothing, so no run leaves frames in a shared directory. Tests point it at a temporary directory |
+| `MOCK_PHD2_IMAGE_DIR` | Absolute directory `save_image` writes its FITS files to. There is no default: unset, not UTF-8 (the reply is JSON), or empty or relative (which would resolve against the mock's working directory), `save_image` answers PHD2's `error saving image` and writes nothing, so no run leaves frames in a shared directory. Tests point it at a temporary directory |
 
 `save_image` answers in PHD2's wire format: each call creates a
 **new** FITS file and replies
