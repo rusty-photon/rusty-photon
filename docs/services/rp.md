@@ -1672,9 +1672,11 @@ slot even when the wheel already names it: a driver's `Position` can be
 stale, and the write is the command. An error ends the wait, and so
 does a cancellation, after which the wheel finishes its move on its own
 (§ [In-Flight Tool Calls](#in-flight-tool-calls)). A cancellation ends
-the call at once: each read, like each pause between reads, is raced
-against it, since a read can take a serial round trip or an HTTP
-request's whole timeout. So does the **60 s ceiling**: a wheel that has
+the call at once: each read, the write and each pause between reads are
+raced against it, since a read or a write can take a serial round trip
+or an HTTP request's whole timeout. A write cut short that way may
+still reach the wheel, which then finishes its move on its own, as
+`unpark`'s request does. So does the **60 s ceiling**: a wheel that has
 not named the slot 60 s after the write fails the call with *"the
 filter wheel did not reach Red (slot 1) within 60s"*. That is three
 times a full turn of a sixteen-slot wheel at ~1.2 s a slot (~19 s). The

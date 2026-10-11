@@ -557,12 +557,20 @@ struct MockFilterWheel {
     /// Every write of a slot, each with the reads its move under way
     /// still had to run when it came; one with any left was refused.
     writes: std::sync::Mutex<Vec<(usize, u32)>>,
+    /// The last slot a write was taken for.
+    taken: std::sync::Mutex<Option<usize>>,
     /// A write lands at once: once one has been taken, `position()`
     /// names the last slot taken, whatever it read before.
     follows_writes: bool,
+    /// Every write is refused, as a move begins with it that the next
+    /// read sees and the one after sees end: a driver whose answers
+    /// flip between moving and at rest.
+    flaps: bool,
     /// How long each `position()` read takes, so a test can land a
     /// cancellation inside one.
     read_delay: Duration,
+    /// How long each `set_position()` write takes, likewise.
+    write_delay: Duration,
 }
 
 impl_mock_device!(MockFilterWheel);
@@ -577,8 +585,15 @@ impl ascom_alpaca::api::FilterWheel for MockFilterWheel {
             self.moving_reads
                 .store(foreign, std::sync::atomic::Ordering::SeqCst);
         }
+        if self.flaps {
+            self.moving_reads
+                .store(1, std::sync::atomic::Ordering::SeqCst);
+        }
         let under_way = self.moving_reads.load(std::sync::atomic::Ordering::SeqCst);
         self.writes.lock().unwrap().push((position, under_way));
+        if !self.write_delay.is_zero() {
+            tokio::time::sleep(self.write_delay).await;
+        }
         if self.fail_set_position {
             return Err(ASCOMError::invalid_operation("wheel stuck"));
         }
@@ -587,6 +602,7 @@ impl ascom_alpaca::api::FilterWheel for MockFilterWheel {
                 "The FilterWheel is already moving",
             ));
         }
+        *self.taken.lock().unwrap() = Some(position);
         Ok(())
     }
 
@@ -606,14 +622,7 @@ impl ascom_alpaca::api::FilterWheel for MockFilterWheel {
             return Err(ASCOMError::invalid_operation("encoder error"));
         }
         if self.follows_writes {
-            let taken = self
-                .writes
-                .lock()
-                .unwrap()
-                .iter()
-                .rev()
-                .find(|(_, under_way)| *under_way == 0)
-                .map(|&(slot, _)| slot);
+            let taken = *self.taken.lock().unwrap();
             if let Some(slot) = taken {
                 return Ok(Some(slot));
             }
@@ -1923,7 +1932,11 @@ async fn set_filter_cancelled_while_a_move_is_under_way_writes_nothing() {
     );
 
     assert_tool_error(result, "cancelled");
-    assert!(fw.writes.lock().unwrap().is_empty());
+    assert_eq!(
+        *fw.writes.lock().unwrap(),
+        Vec::<(usize, u32)>::new(),
+        "a cancelled call wrote the wheel"
+    );
     // Paused time is exact: the cancellation lands at 350 ms, inside the
     // pause from 300 to 400 ms, and that pause answers it there.
     assert_eq!(
@@ -1955,7 +1968,11 @@ async fn set_filter_cancelled_during_its_read_answers_at_once_and_writes_nothing
     );
 
     assert_tool_error(result, "cancelled");
-    assert!(fw.writes.lock().unwrap().is_empty());
+    assert_eq!(
+        *fw.writes.lock().unwrap(),
+        Vec::<(usize, u32)>::new(),
+        "a cancelled call wrote the wheel"
+    );
     assert!(
         started.elapsed() < Duration::from_secs(1),
         "the call waited {:?} for a read its cancellation had overtaken",
@@ -1975,7 +1992,11 @@ async fn set_filter_cancelled_before_it_begins_writes_nothing() {
         .await;
 
     assert_tool_error(result, "cancelled");
-    assert!(fw.writes.lock().unwrap().is_empty());
+    assert_eq!(
+        *fw.writes.lock().unwrap(),
+        Vec::<(usize, u32)>::new(),
+        "a cancelled call wrote the wheel"
+    );
 }
 
 /// A move that begins between the read that found the wheel at rest and
@@ -2043,8 +2064,13 @@ async fn set_filter_gives_up_on_a_wheel_still_moving_and_refusing_at_the_ceiling
         result,
         "failed to set filter position: ASCOM error INVALID_OPERATION: The FilterWheel is already moving",
     );
-    assert!(started.elapsed() >= MOVE_CEILING);
-    assert_eq!(fw.writes.lock().unwrap().len(), 1);
+    assert!(
+        started.elapsed() >= MOVE_CEILING,
+        "gave up after {:?}",
+        started.elapsed()
+    );
+    let writes = fw.writes.lock().unwrap().clone();
+    assert_eq!(writes.len(), 1, "writes: {writes:?}");
 }
 
 /// A wheel that still reads moving after the write fails the call at
@@ -2066,6 +2092,59 @@ async fn set_filter_fails_a_wheel_that_reads_moving_past_the_ceiling_after_its_w
         "the filter wheel did not reach Red (slot 1) within 60s",
     );
     assert_eq!(*fw.writes.lock().unwrap(), vec![(1, 0)]);
+}
+
+/// Each retry of a refused write waits a poll interval first, so a
+/// driver whose answers flip between moving and at rest is not hammered
+/// with writes until the ceiling; without the pause, the cycle of read,
+/// refused write and read never yields and the call never answers.
+#[tokio::test(start_paused = true)]
+async fn set_filter_pauses_before_it_writes_a_flapping_wheel_again() {
+    let fw = Arc::new(MockFilterWheel {
+        flaps: true,
+        ..Default::default()
+    });
+    let handler = handler_with_wheel(&fw);
+
+    let result = handler
+        .set_filter_inner(set_filter_to("Red"), &Cancel::never())
+        .await;
+
+    assert_tool_error(result, "The FilterWheel is already moving");
+    let writes = fw.writes.lock().unwrap().len();
+    let most = MOVE_CEILING.as_millis() / 100 + 1;
+    assert!(
+        writes as u128 <= most,
+        "{writes} writes in {MOVE_CEILING:?}, more than one a poll interval"
+    );
+}
+
+/// A cancellation that lands while the write is on its way ends the
+/// call then, not when the write returns.
+#[tokio::test(start_paused = true)]
+async fn set_filter_cancelled_during_its_write_answers_at_once() {
+    let fw = Arc::new(MockFilterWheel {
+        write_delay: Duration::from_secs(10),
+        ..Default::default()
+    });
+    let handler = handler_with_wheel(&fw);
+    let cancel = Cancel::never();
+    let started = tokio::time::Instant::now();
+
+    let (result, ()) = tokio::join!(
+        handler.set_filter_inner(set_filter_to("Red"), &cancel),
+        async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel.cancel(super::inflight::CancelReason::ClientDisconnected);
+        }
+    );
+
+    assert_tool_error(result, "cancelled");
+    assert_eq!(
+        started.elapsed(),
+        Duration::from_millis(100),
+        "the call waited for a write its cancellation had overtaken"
+    );
 }
 
 // -----------------------------------------------------------------------

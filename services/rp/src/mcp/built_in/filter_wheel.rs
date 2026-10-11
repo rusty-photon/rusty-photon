@@ -48,6 +48,54 @@ async fn read(fw: &dyn FilterWheel, cancel: &Cancel) -> Option<ASCOMResult<Optio
     }
 }
 
+/// Wait, before a write, for a move under way to end: until the wheel
+/// reads a slot, a read errors, or the move has had [`MOVE_CEILING`]
+/// since `started`. `Some` is the tool's answer to a cancellation.
+async fn wait_for_rest(
+    fw: &dyn FilterWheel,
+    cancel: &Cancel,
+    started: tokio::time::Instant,
+    filter_wheel_id: &str,
+) -> Option<CallToolResult> {
+    let mut waiting = false;
+    loop {
+        let Some(reading) = read(fw, cancel).await else {
+            return Some(tool_error!("{}", cancel.error()));
+        };
+        match reading {
+            Ok(None) if started.elapsed() < MOVE_CEILING => {
+                if !waiting {
+                    debug!(
+                        filter_wheel_id,
+                        "the filter wheel is moving; waiting for its move to end before the write"
+                    );
+                    waiting = true;
+                }
+            }
+            Ok(None) => {
+                debug!(filter_wheel_id, ceiling = ?MOVE_CEILING, "the filter wheel still reads moving; writing all the same");
+                return None;
+            }
+            Ok(Some(slot)) => {
+                if waiting {
+                    debug!(filter_wheel_id, slot, "the move under way has ended");
+                }
+                return None;
+            }
+            // The write says what is wrong with the wheel, and a driver
+            // may answer a failed move with an error until a write goes
+            // out.
+            Err(e) => {
+                debug!(filter_wheel_id, error = %e, "the filter wheel could not be read before the write; writing all the same");
+                return None;
+            }
+        }
+        if let Some(cancelled) = pause(cancel).await {
+            return Some(cancelled);
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(extend("oneOf" = [{"required": ["filter_wheel_id"]}, {"required": ["train_id"]}]))]
 pub struct SetFilterParams {
@@ -107,45 +155,23 @@ impl McpHandler {
         // and the write gets the write refused, and is waited out too.
         let started = tokio::time::Instant::now();
         loop {
-            let mut waiting = false;
-            loop {
-                let Some(reading) = read(fw.as_ref(), cancel).await else {
-                    return Ok(tool_error!("{}", cancel.error()));
-                };
-                match reading {
-                    Ok(None) if started.elapsed() < MOVE_CEILING => {
-                        if !waiting {
-                            debug!(%filter_wheel_id, "the filter wheel is moving; waiting for its move to end before the write");
-                            waiting = true;
-                        }
-                    }
-                    Ok(None) => {
-                        debug!(%filter_wheel_id, ceiling = ?MOVE_CEILING, "the filter wheel still reads moving; writing all the same");
-                        break;
-                    }
-                    Ok(Some(slot)) => {
-                        if waiting {
-                            debug!(%filter_wheel_id, slot, "the move under way has ended");
-                        }
-                        break;
-                    }
-                    // The write says what is wrong with the wheel, and a
-                    // driver may answer a failed move with an error until
-                    // a write goes out.
-                    Err(e) => {
-                        debug!(%filter_wheel_id, error = %e, "the filter wheel could not be read before the write; writing all the same");
-                        break;
-                    }
-                }
-                if let Some(cancelled) = pause(cancel).await {
-                    return Ok(cancelled);
-                }
+            if let Some(cancelled) =
+                wait_for_rest(fw.as_ref(), cancel, started, &filter_wheel_id).await
+            {
+                return Ok(cancelled);
             }
 
             // Written even when the wheel already names the slot: a
             // driver's `Position` can be stale, and the write is the
-            // command.
-            let Err(e) = fw.set_position(position).await else {
+            // command. Raced against the cancellation like the reads; a
+            // write cut short may still reach the wheel, which then
+            // finishes its move on its own.
+            let written = tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Ok(tool_error!("{}", cancel.error())),
+                written = fw.set_position(position) => written,
+            };
+            let Err(e) = written else {
                 break;
             };
             // Refused by a wheel that is moving, as by one whose move
@@ -156,6 +182,9 @@ impl McpHandler {
                 };
                 if matches!(reading, Ok(None)) {
                     debug!(%filter_wheel_id, error = %e, "the write was refused by a filter wheel that is moving; waiting for it to rest");
+                    if let Some(cancelled) = pause(cancel).await {
+                        return Ok(cancelled);
+                    }
                     continue;
                 }
             }
