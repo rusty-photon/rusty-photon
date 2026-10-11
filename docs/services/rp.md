@@ -244,14 +244,23 @@ sidecar stays the authority.
   capture's `StartExposure` cannot have overwritten it). `rp` accepts
   the driver's value only when it falls inside the window `rp` itself
   observed — no earlier than just before `StartExposure` was sent, and
-  no later than `ImageReady` less the exposure time, since an exposure
-  begun after that could not have finished — widened by 2 s on each
-  side for clock differences between the camera's host and `rp`'s. A
-  driver that does not implement the property, fails the read, or
-  reports a time outside that window (a stale start, or one stamped at
-  readout) gets `rp`'s own clock reading instead, taken the moment
-  `StartExposure` returned. Present on every frame this version
-  captures. `captured_at` is unchanged: it marks capture *completion*
+  no later than the latest the exposure can have begun, `ImageReady`
+  less the exposure time (never before the request) — widened by 2 s on
+  each side for clock differences between the camera's host and
+  `rp`'s, but never past `ImageReady` itself. A driver that flushes its
+  sensor or locks its mirror up after `StartExposure` returns begins
+  later than that return, and is still believed. A driver that does not
+  implement the property, fails the read, or reports a time outside the
+  window (a stale start, or one stamped at the end of the exposure or
+  at readout — caught once the exposure outlasts the readout plus the
+  slack; on a shorter frame such a stamp still lands inside the window,
+  since `ImageReady` includes the readout) gets `rp`'s own estimate
+  instead: the earlier of the
+  moment `StartExposure` returned and that latest possible start —
+  `rp`'s clock as `StartExposure` returned for the usual asynchronous
+  driver, and never the end of the exposure for one whose
+  `StartExposure` blocks through it. Present on every frame this
+  version captures. `captured_at` is unchanged: it marks capture *completion*
   (after readout), which is what `{night_date}` is keyed on.
 - `camera_name` — the driver's ASCOM `Name` (e.g. `"QHY600M"`), read
   once per connection with the other invariants and cached on
@@ -269,8 +278,14 @@ sidecar stays the authority.
   answers through the camera's own driver. Omitted for `Dark`/`Bias`
   (dark current is not filter-dependent, and an incidental wheel
   position on a dark is noise) and when the train has no wheel, or the
-  wheel is disconnected, moving, fails the read, or does not answer
-  within 3 s. When a naming template is configured
+  wheel is disconnected, moving, fails the read, or — when the frame's
+  filename does not depend on it — does not answer within 3 s (a
+  templated capture waits the wheel out, as it always has, rather than
+  lose a finished exposure to a slow read; a cancel, the unsafe
+  transition's among them, still ends the capture once the frame's
+  reads have run 3 s — [In-Flight Tool Calls](#in-flight-tool-calls)).
+  When a naming template is
+  configured
   (`session.file_naming_pattern`), the one read feeds both the filename
   and this field, so they cannot disagree — and there a failed read
   fails a typed capture, whether or not the pattern names `{filter}`
@@ -278,8 +293,12 @@ sidecar stays the authority.
 - `gain`, `offset` — the camera's ASCOM `Gain`/`Offset`, read on every
   capture while it holds the camera. Never cached: both are
   operator-mutable, the same reason `get_camera_info` reads them live.
-  Omitted when the driver does not implement them (common on CCDs) or
-  the read fails.
+  Omitted when the driver does not implement them (common on CCDs), or
+  the read fails or does not answer within 3 s. Each of these reads,
+  `LastExposureStartTime`'s included, has its own 3 s bound, so a slow
+  property costs only its own field. Recorded as the driver reports them:
+  for a driver in ASCOM's gain-index mode that is the index into its
+  `Gains` list, which still keeps frames at different gains apart.
 - `pointing` — where the mount was pointing: `ra_hours`/`dec_degrees`
   exactly as the mount reports them, in the mount's own equatorial
   system (often JNow; `rp` does not convert). Read once, right after
@@ -287,9 +306,15 @@ sidecar stays the authority.
   [mount motion gate](#mount-motion-gate) keeps the mount from slewing
   under an imaging-train exposure, so one read describes the frame. A
   camera outside the imaging train is not held by the gate, so a mount
-  that reports `Slewing` at the read leaves the field out rather than
-  record a point mid-move. Also omitted when no mount is configured or
-  connected, or the read fails or does not answer within 3 s.
+  that reports `Slewing` at the read — or fails to say — leaves the
+  field out rather than record a point mid-move (a driver without
+  `Slewing` counts as still). The read runs on its own task, untimed
+  while the camera exposes; once the image is ready it gets up to one
+  second more, alongside the camera's own reads, so a healthy mount
+  costs the frame nothing and a wedged one at most that second. A read
+  still out then is dropped and aborted, as it is when the exposure
+  fails or the capture is cancelled. Also omitted when no mount is
+  configured or connected, or the read fails.
   Distinct from `target.ra_hours`/`target.dec_degrees`, which are the
   catalog (J2000) coordinates of what the frame is *of*.
 
@@ -550,7 +575,7 @@ The keyword set below is a contract, pinned field by field in
 | `OBJECT` | string | `target.display_name` | the frame resolved a target-store row (not a reserved `dark`/`flat`/`bias` slug) |
 | `OBJCTRA` | string | `target.ra_hours`, sexagesimal `'HH MM SS.ss'` (J2000) | as `OBJECT` |
 | `OBJCTDEC` | string | `target.dec_degrees`, sexagesimal `'+DD MM SS.s'` (J2000) | as `OBJECT` |
-| `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) | `pointing` present |
+| `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) as printed (a value that would print as 360 is written as 0) | `pointing` present |
 | `DEC` | real | `pointing.dec_degrees`, degrees | `pointing` present and within ±90° |
 | `INSTRUME` | string | `camera_name` | `camera_name` present |
 | `TELESCOP` | string | `telescope` | `telescope` present |
@@ -591,13 +616,27 @@ Rules the table does not show:
 - **No `SITEELEV`**: the site carries no elevation
   ([Site Configuration](#site-configuration)).
 - **Absent means unknown, never a placeholder.** A keyword whose source
-  is missing is omitted rather than written as `0`, `''` or `'NA'`. A
-  value that cannot be written as a FITS card — a string with
-  non-ASCII characters, or too long for one 80-byte card — drops that
-  card (logged at `debug!`); the sidecar still carries the value. No
-  header problem fails a capture.
+  is missing is omitted rather than written as `0`, `''` or `'NA'`.
+- **Typographic variants are folded; anything else a card cannot
+  carry is left out.** In a target, filter, telescope or camera name,
+  typographic dashes, quotes (curly, low-9 and guillemets) and spaces
+  become their ASCII look-alikes (`Pleiades – M45` → `Pleiades - M45`,
+  `„M31“` → `"M31"`) — deliberately one name, since editors substitute
+  them for the ASCII forms — and the invisible characters copy-paste
+  carries (zero-width space and joiners, word joiner, byte order mark,
+  soft hyphen) are dropped. The fold is rp-fits' `fold_to_ascii`. A value a card still cannot carry exactly
+  drops that one card: one with any other character outside printable
+  ASCII — a filter named `Hα`, a control character — or one longer than
+  the card's 68 characters (an apostrophe counting twice). Neither a
+  stand-in nor a cut keeps such a value distinct (`Hα` and `Hβ` would
+  both read `H?`; two names differing past column 68 would read alike),
+  and a stacker would group each pair as one; a missing card at least
+  reads as unknown. The sidecar keeps the original either way.
+  `telescope` is validated at config load on its folded form, so its
+  card is never dropped. No header problem fails a capture.
 - Reals are written in the FITS exponential form
-  (`EXPTIME = 3.0000000000E+02`), which every reader accepts.
+  (`EXPTIME = 3.0000000000E+02`), which every reader accepts; a
+  negative zero is written as zero.
 
 Both the FITS file and the sidecar JSON are written atomically:
 staged to a sibling temp file, fsynced, renamed into place, parent
@@ -1615,10 +1654,11 @@ incidental filter position on a dark/bias would be noise, not signal.
 The read happens once per capture, once the exposure completes, and the
 same value becomes the document's `filter` field and the header's
 `FILTER` card — those leave the field out where the filename renders
-`"NA"`. A failed read (the wheel errors, reports itself moving, or does
-not answer within 3 s) fails a templated capture rather than mis-filing
-the frame; for a capture that renders no filename it only drops the
-`filter` field.
+`"NA"`. A failed read (the wheel errors or reports itself moving) fails
+a templated capture rather than mis-filing the frame — and a templated
+capture waits a slow wheel out rather than time it; for a capture that
+renders no filename the read is bounded at 3 s and a failure only drops
+the `filter` field.
 
 *Directory/file rendering.* Once `target`/`frame_type` are resolved,
 `capture` renders `session.directory_pattern` then
@@ -3189,10 +3229,13 @@ Semantics:
   `"Takahashi FSQ-106EDX4"`). Optional. Frames through the train's
   camera carry it as the FITS `TELESCOP` card and the sidecar's
   `telescope`; omitted, they carry neither — the train id is not
-  substituted, since it names a light path, not an instrument. It must
-  fit one FITS string card: 1 to 68 printable ASCII characters, an
-  apostrophe counting twice. Anything else is rejected at load, so the
-  card can never be dropped at capture time.
+  substituted, since it names a light path, not an instrument. Once its
+  typographic dashes, quotes and spaces fold to ASCII (as every
+  free-text card's do — [FITS header](#fits-header)), it must fit one
+  FITS string card: 1 to 68 printable ASCII characters, an apostrophe
+  counting twice. Anything else is rejected at load, so the card can
+  never be dropped at capture time; the sidecar keeps the name as
+  written.
 - `focal_length_mm` is the effective focal length of that light path
   in millimetres — a positive finite number, rejected at load
   otherwise. Optional: omitted, captures through that train's camera
@@ -6042,7 +6085,9 @@ On the overall safe → unsafe transition:
    Calls](#in-flight-tool-calls)): each cancelled body issues its
    stop-class counterpart (a slew aborts, an exposure aborts, an opening
    cover halts) and answers its caller with the tool error
-   `cancelled: safety`. Every other ungated body already in flight — a
+   `cancelled: safety` — except a `capture` whose exposure had already
+   finished, which keeps its frame (§ [In-Flight Tool
+   Calls](#in-flight-tool-calls)). Every other ungated body already in flight — a
    `park`, a `close_cover`, a `set_filter` — runs to completion. `rp`
    waits up to `CANCEL_ACK_TIMEOUT` (3 s) for the cancelled bodies to
    acknowledge before the hardware steps below run, so a cancelled
@@ -6201,7 +6246,10 @@ unsafe reading. With no monitors configured `overall` is `safe` and
 answers its caller with the tool error `cancelled: <reason>`, where the
 reason is `safety` (the unsafe transition) or `client disconnected`
 (the caller's connection dropped before the response, or it sent
-`notifications/cancelled`).
+`notifications/cancelled`). The one exception is a `capture` cancelled
+after its exposure finished: a cancel then stops nothing physical, so
+the frame is read out and kept and the call succeeds, unless a read the
+3 s bound does not cover holds it past that bound (the table below).
 The operation's `*_failed` event carries the same text as its `error`.
 A body still waiting for the [mount motion gate](#mount-motion-gate)
 returns without moving anything.
@@ -6209,7 +6257,7 @@ returns without moving anything.
 | Cancelled body | Stop-class counterpart |
 |---|---|
 | `slew`, and the slews inside `center_on_target` | `AbortSlew` |
-| `capture`, and the captures inside `auto_focus` / `center_on_target` | `AbortExposure` |
+| `capture`, and the captures inside `auto_focus` / `center_on_target` | `AbortExposure` while the exposure runs. Once the image is ready, a cancel stops nothing physical: the frame's own reads (gain, offset, temperature, filter, the mount's pointing grace) finish — a bounded one gives up at its 3 s deadline as usual — and the frame is downloaded and kept. Only a read that deadline does not bound, still out at it (a wedged wheel a templated capture is waiting out), makes the capture answer `cancelled: <reason>` and release the camera at the deadline |
 | `move_focuser`, and the moves inside `auto_focus` / `refocus_train` | focuser `Halt` on the leg in flight. A backlash-compensated move checks the handle before each leg, so a cancellation that lands as the overshoot leg settles commands no return leg and halts nothing |
 | `move_rotator` | rotator `Halt` |
 | `open_cover` | `HaltCover` |
