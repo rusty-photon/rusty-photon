@@ -355,11 +355,11 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   its last `LocationPaths`. A device with no USB serial gets an instance
   id built from its port, so it leaves one such record on every port it
   has left. Read without the filter, each of those records would be a
-  fault at its old port, which may be empty or may now hold another
-  device: the query reads problem code 45 for every one. Both measured
-  on a Windows 11 VM, by moving a camera between ports of its USB
-  controller and then reading its stale records through the query
-  without the filter
+  fault at its old port, whether that port is now empty or holds
+  another device. Measured for ports left empty, on a Windows 11 VM:
+  after a camera was moved between ports of its USB controller, the
+  query without the filter read problem code 45 for every one of the
+  host's 15 stale USB records, the camera's and other devices' alike
   ([device-claims plan](../plans/device-claims-and-phd2-camera.md), D2
   spike item 7).
 
