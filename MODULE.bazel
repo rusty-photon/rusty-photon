@@ -283,15 +283,64 @@ single_version_override(
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
     edition = "2021",
-    # Stable (the default channel, selected in .bazelrc) is the oldest release
-    # whose clippy accepts the tree, NOT workspace.package.rust-version: the
-    # clippy aspect (`--config=clippy`) runs this toolchain's clippy-driver,
-    # and the workspace's lint attributes track current stable clippy (an
-    # `#[expect]` only a newer clippy fulfils is an error on an older one; see
-    # docs/skills/pre-push.md). Bump it with each stable release the Cargo
-    # clippy gate picks up. The MSRV stays in Cargo.toml, is verified by
-    # check.yml's nightly `msrv` job, and reaches clippy here through
-    # clippy.toml's `msrv` key. The pinned nightly is used ONLY by the
+    # Hashes of the 1.99.0 archives, from its GPG-signed channel manifest
+    # (scripts/rust-toolchain-sha256s.sh): rules_rust's own table ends at
+    # 1.98.0, so without these the toolchain downloads unverified.
+    sha256s = {
+        "cargo-1.99.0-aarch64-apple-darwin.tar.xz": "76abff0ad79a10a3152dff640ea0d8b3c37637d9300bf55da41b95c3ddc069c1",
+        "cargo-1.99.0-aarch64-unknown-linux-gnu.tar.xz": "113229fcc16cc1ba004923a4cc275fbf3281dafaaf8b97269f9c00189d497fd4",
+        "cargo-1.99.0-x86_64-apple-darwin.tar.xz": "939b71952afd63ae73bc00f3517c19f0dd7ac54884b5fac16a813ee50985d14d",
+        "cargo-1.99.0-x86_64-pc-windows-msvc.tar.xz": "6201b8dcea8cc55ccfa12e842adf1b2c2aa96490a6cb4f129bf03f2df08c80c9",
+        "cargo-1.99.0-x86_64-unknown-linux-gnu.tar.xz": "d7674918d28093097614cd9728b6ca60db9ea3038f640f0bd1e9a4188c7568ce",
+        "clippy-1.99.0-aarch64-apple-darwin.tar.xz": "c31a0765ed31d98515a09a13b44486048873d90ac75bb1e6690a17fb36a5d4e2",
+        "clippy-1.99.0-aarch64-unknown-linux-gnu.tar.xz": "42e49dc02d29949395c0c072585961f6c9b5408110236087828d4e2f94ca96ef",
+        "clippy-1.99.0-x86_64-apple-darwin.tar.xz": "cd93518193f16b21cfa7147a42cb03cd2d9ca9b3d0c2daf46dcae44c88a696df",
+        "clippy-1.99.0-x86_64-pc-windows-msvc.tar.xz": "b1b94d7d7717f42727eec41e70952100d865d25ebb7b1dd08041f6971237cfa9",
+        "clippy-1.99.0-x86_64-unknown-linux-gnu.tar.xz": "982442e32ad8dd3f0bb3a30db74038da5f71fd9bf1a865cc71da8ea5d4ec71ec",
+        "llvm-tools-1.99.0-aarch64-apple-darwin.tar.xz": "9cbaa83827e53c9bbae05fa3a36aff0832448de6d2204829b710cbc85567ad2d",
+        "llvm-tools-1.99.0-aarch64-unknown-linux-gnu.tar.xz": "6e921c7c1225ec43dcdd0bda2ce541ac79d45eaa2da64c686f7d78e8cb3dff04",
+        "llvm-tools-1.99.0-x86_64-apple-darwin.tar.xz": "708b998c88ccbf2ce847cc8aeeb9fa55b969319848971a9e2085c8e426b907cf",
+        "llvm-tools-1.99.0-x86_64-pc-windows-msvc.tar.xz": "6b02bf162f4c29007655f989092949458b0433e61da411ee246b60d602367c39",
+        "llvm-tools-1.99.0-x86_64-unknown-linux-gnu.tar.xz": "91a6db5668c08ee68e330e5b0fda27c11b79b90592627e89f7c5db12af2ff0ba",
+        "rust-analyzer-1.99.0-aarch64-apple-darwin.tar.xz": "8004bdc89c8ec77ccb100a8480126af5cf9f65ded9a197e33eed47fa3f8623aa",
+        "rust-analyzer-1.99.0-aarch64-unknown-linux-gnu.tar.xz": "5de24052ef1e3c324815d6b81281025e26b9640be247387feb689fa7db2d5eb4",
+        "rust-analyzer-1.99.0-x86_64-apple-darwin.tar.xz": "abc0d38c2771a968e09a7ae23a1e149cdedfdd72f0d47659755f4fef4ca57615",
+        "rust-analyzer-1.99.0-x86_64-pc-windows-msvc.tar.xz": "308e3e6370f7f27c83e25410290b4d1bdf16963f567a3a57c7516898b508a2e5",
+        "rust-analyzer-1.99.0-x86_64-unknown-linux-gnu.tar.xz": "52dfae764797c3c7f32ba2ba82d49659741a867e7a3f45bc3291b822c955d6a8",
+        "rust-std-1.99.0-aarch64-apple-darwin.tar.xz": "a7c6de8aa21e7c31163a7656295b321bb85f5dce55ed8ea95ac9ac561202bb5b",
+        "rust-std-1.99.0-aarch64-unknown-linux-gnu.tar.xz": "1cf7e2ef58ed1cfa6f1adea18e155cbf254c1951f39e5f5e3376879f55fd64a4",
+        "rust-std-1.99.0-x86_64-apple-darwin.tar.xz": "18ee81961a73c3ae966ecb1e8f6096438c90aeefece8856201a6ecc17f5bc850",
+        "rust-std-1.99.0-x86_64-pc-windows-msvc.tar.xz": "adadeafff137a7610884696912b853d4de259c4299ab035b66661e2e0f923ff0",
+        "rust-std-1.99.0-x86_64-unknown-linux-gnu.tar.xz": "3e58dff2d0b72196b5ea4e90536e174d400de88564a52694686b81e091169933",
+        "rustc-1.99.0-aarch64-apple-darwin.tar.xz": "334a66714ca316d71bbe5efe44f71762d0b276cea73be2987374693a837f7450",
+        "rustc-1.99.0-aarch64-unknown-linux-gnu.tar.xz": "89c0f1a3a44df63c95e5d5f2ba093d0a12c5f5f57f8635f8a7a0ce50cf86600e",
+        "rustc-1.99.0-x86_64-apple-darwin.tar.xz": "7460910254f059b49b99ee3ddbcf7197d16b9505b59c166e14a1465ee323a81d",
+        "rustc-1.99.0-x86_64-pc-windows-msvc.tar.xz": "20fed82e629c1ed145f9e9bdee9aad65e790d4237a49bcfc61221eda69e35b14",
+        "rustc-1.99.0-x86_64-unknown-linux-gnu.tar.xz": "77171ba2a0345fdf2abc4fedda55d6de078dae7a68527c28be8c77dcc9604bd5",
+        "rustfmt-1.99.0-aarch64-apple-darwin.tar.xz": "8b1436085c081e5efa88febadf667171a7a107073d168cd32b249a8eb70800da",
+        "rustfmt-1.99.0-aarch64-unknown-linux-gnu.tar.xz": "4b9162fef99fd5246d2f83a2430c144e9bb9095aac6d1de0aaebde45ec01e09a",
+        "rustfmt-1.99.0-x86_64-apple-darwin.tar.xz": "e5e59e6910aa6e716fbb8a53950e109fb675ead428688f3ba2d1702b50928f92",
+        "rustfmt-1.99.0-x86_64-pc-windows-msvc.tar.xz": "6aa039ed3de3bb9cc46ea7412d16463c700f4a31c3a1849ce818e84cd350ec81",
+        "rustfmt-1.99.0-x86_64-unknown-linux-gnu.tar.xz": "b22c09ab9e258ec5571da170d88bd1624a4ea602e6d70d95720c5b47494cadce",
+    },
+    # Stable (the default channel, selected in .bazelrc) is current stable —
+    # the release check.yml's `stable / clippy` installs — NOT
+    # workspace.package.rust-version: the clippy aspect (`--config=clippy`)
+    # runs this toolchain's clippy-driver, and the workspace's lint attributes
+    # track current stable clippy (an `#[expect]` only a newer clippy fulfils
+    # is an error on an older one; see docs/skills/pre-push.md). Bump it in the
+    # first PR after each stable release, with `sha256s` from
+    # scripts/rust-toolchain-sha256s.sh: until then the two clippies differ,
+    # and a change written against the new stable fails `bazel clippy` here.
+    #
+    # The MSRV stays in Cargo.toml and is still held on every PR, just not by
+    # compiling with it. Both clippies know it — Cargo's from `rust-version`,
+    # this one from clippy.toml's `msrv` — and deny `incompatible_msrv`, a std
+    # API newer than the MSRV; the coverage nightly below sits in the MSRV's
+    # nightly cycle, so a newer language feature fails `bazel coverage` with
+    # E0658. check.yml's nightly `msrv` job compiles with the MSRV itself.
+    #
+    # The pinned nightly is used ONLY by the
     # coverage workflow (.github/workflows/bazel-coverage.yml, via
     # `--config=coverage` which selects channel=nightly): the
     # #[cfg_attr(coverage_nightly, coverage(off))] attributes on every

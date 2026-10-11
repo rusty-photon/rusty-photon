@@ -215,10 +215,11 @@ cargo test -p filemonitor --features conformu --test conformu_integration -- --n
 
 ### Local CI / pre-push
 
-The local pre-commit gate is Bazel plus Cargo's linters (Bazel runs neither rustfmt nor clippy) — see [docs/skills/pre-push.md](docs/skills/pre-push.md):
+The local pre-commit gate is Bazel plus Cargo's linters (Bazel runs no rustfmt, and its clippy lints each target's own feature set rather than Cargo's two passes) — see [docs/skills/pre-push.md](docs/skills/pre-push.md):
 
 ```bash
 bazel build //... && bazel test //...                     # build + fast tests (BDD/conformu auto-excluded)
+bazel build --config=clippy //...                         # the Bazel legs' clippy step
 cargo fmt
 cargo clippy --all-targets --all-features -- -D warnings
 cargo clippy --workspace --lib --bins -- -D warnings      # default-features pass — lints what --all-features cfgs out (#988)

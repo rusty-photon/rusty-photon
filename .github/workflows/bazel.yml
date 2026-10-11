@@ -93,8 +93,9 @@ jobs:
     # rp:bdd is sharded on every OS (private OmniSim per test process since
     # #467 — --multi-instance + OMNISIM_SETTINGS_DIR), so the BDD step is
     # bounded by the slowest shard; 40 leaves generous headroom for a
-    # cold-cache first run.
-    timeout-minutes: 40
+    # cold-cache first run. Plus 15 for the `bazel clippy` step's own cap, so
+    # a stalled clippy runs out its step budget instead of the tests'.
+    timeout-minutes: 55
     defaults:
       run:
         shell: bash
@@ -334,6 +335,7 @@ jobs:
           bazel build --config=ci "${REMOTE_FLAGS[@]}" "${PROFILE_FLAGS[@]}" //...
 
       - name: bazel clippy
+        id: clippy
         # rules_rust's clippy aspect over every first-party target
         # (`--config=clippy`; what it lints and with which lint set: .bazelrc).
         # Its own step, after the build, so its cost reads straight off the
@@ -346,8 +348,17 @@ jobs:
         # A lint failure here must not hide test results: the test steps
         # below are gated on the build, not on this step, so a push with a
         # lint and a failing test reports both in one run.
-        timeout-minutes: 30
+        #
+        # 15 minutes: a cold run of every target is about half a minute on
+        # the Linux pool. The cap is for a hang, and the job budget above
+        # carries it on top of the build's and the tests'.
+        timeout-minutes: 15
         run: |
+          # Every target carries the crate's lint set, and clippy.toml's msrv
+          # matches Cargo.toml's — the two inputs a mistake in which would
+          # lint with less than the workspace asks for and still pass.
+          tools/ci/check-bazel-clippy-config.sh
+
           # Same cache routing as the `bazel build` step; the comments there
           # explain each branch.
           REMOTE_FLAGS=(--config=remote-cache)
@@ -542,7 +553,7 @@ jobs:
       # The Windows build step on a PR made entirely of cache hits has taken
       # anything from one minute to five, with nothing in the log to say why,
       # and on the pool the clone that ran it is destroyed with the job. Keep
-      # the three steps' traces, on success as well as failure: a slow green
+      # every Bazel step's trace, on success as well as failure: a slow green
       # run is the case worth reading, set against a fast one. `always()`
       # keeps a failed run's traces too; a step killed outright (a timeout)
       # can leave its trace unwritten, and the warning below says so.
@@ -602,8 +613,14 @@ jobs:
       # messages -- so dump the state directly: the `_main\external` link the
       # generated runner creates, and for every .rlib the manifest names, both
       # spellings of it. Cheap and silent unless something is actually wrong.
+      # Only after a build or test failure: a run red on `bazel clippy` alone
+      # has no doc-test problem to dump, and a post-mortem there misleads.
       - name: Dump doc-test runfiles state (Windows diagnostic)
-        if: failure() && runner.os == 'Windows'
+        if: >-
+          ${{ !cancelled() && runner.os == 'Windows'
+          && (steps.build.outcome == 'failure'
+              || steps.fast.outcome == 'failure'
+              || steps.bdd.outcome == 'failure') }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'

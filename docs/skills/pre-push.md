@@ -247,10 +247,7 @@ only, since only the scheduled run acts on its census. Stable `clippy` also
 asserts — before linting — that every BDD entry point still calls
 `.fail_on_skipped()` and an `_and_exit` runner (`python3
 tools/ci/check_bdd_runners.py`; testing.md §2.7 and §2.9) — the two
-cucumber defaults under which a suite can exit 0 having proved nothing — and
-that every first-party Rust target sets `lint_config` (`python3
-tools/ci/check_lint_config.py`), without which Bazel's clippy lints that target
-with clippy's defaults and passes it.
+cucumber defaults under which a suite can exit 0 having proved nothing.
 
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|
@@ -737,9 +734,13 @@ What it needs from you:
   declares the `extract_cargo_lints` target named `lints` that reads the
   crate's Cargo.toml `[lints]` (copy it from any existing BUILD.bazel). A
   target without one is linted with clippy's defaults and passes, so
-  `tools/ci/check_lint_config.py` (run by `stable / clippy`) fails on it. The
-  three `cargo_build_script` targets are the exception — the macro cannot pass
-  the attribute through.
+  `tools/ci/check-bazel-clippy-config.sh` — the first thing the `bazel
+  clippy` step runs, and runnable from the repo root — asks `bazel query` for
+  any such target and fails on it. The three `cargo_build_script` targets are
+  the exception — the macro cannot pass the attribute through. A test target
+  that only re-runs another's compilation with different `args` carries
+  `tags = ["noclippy"]` (bdd-infra's shards), since linting it again would
+  only repeat the same action.
 - **Bazel lints the feature set each target compiles**, not Cargo's two passes.
   A `rust_test` built with `crate_features = ["mock"]` is linted with `mock`,
   the production `rust_library` beside it without. The Cargo `stable / clippy`
@@ -747,10 +748,19 @@ What it needs from you:
 - **Bazel's Rust pin tracks current stable**, not the MSRV (`MODULE.bazel`,
   `rust.toolchain`): this step runs that toolchain's clippy, and the tree's
   lint attributes track stable clippy (see *Keep stable current* above). Bump
-  it with each stable release. The MSRV reaches Bazel's clippy through
-  `clippy.toml`'s `msrv` key — rules_rust sets no `CARGO_PKG_RUST_VERSION` —
-  so keep that key equal to the root Cargo.toml's `rust-version`; `cargo
-  clippy` warns when they differ.
+  it in the first PR after each stable release, together with its `sha256s`
+  (`scripts/rust-toolchain-sha256s.sh <version>` prints them from the
+  release's GPG-signed channel manifest). Until then the two clippies are on
+  different releases, and code written against the new one — an `#[expect]`
+  only it fulfils — fails `bazel clippy`.
+- **The MSRV still holds on every PR, though Bazel no longer compiles with
+  it.** Both clippies deny `incompatible_msrv` (a std API newer than the
+  MSRV), and the coverage nightly sits in the MSRV's nightly cycle, so a newer
+  language feature fails `bazel coverage` with E0658. Bazel's clippy learns
+  the MSRV from `clippy.toml`'s `msrv` key — rules_rust sets no
+  `CARGO_PKG_RUST_VERSION` — so that key must equal the root Cargo.toml's
+  `rust-version`; `cargo clippy` only warns when they differ, so the same
+  script fails on it.
 
 ### Refreshing MODULE.bazel.lock
 

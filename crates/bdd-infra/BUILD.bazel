@@ -299,6 +299,10 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
+    # Not linted on its own: the same compilation as :bdd-infra_unit_test
+    # (same crate, deps and features; only `args` differ), which the
+    # clippy aspect already lints.
+    tags = ["noclippy"],
     deps = all_crate_deps(
         normal = True,
         normal_dev = True,
@@ -327,6 +331,8 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
+    # Not linted on its own: see :bdd-infra_signals_unit_test.
+    tags = ["noclippy"],
     deps = all_crate_deps(
         normal = True,
         normal_dev = True,
@@ -354,6 +360,8 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
+    # Not linted on its own: see :bdd-infra_signals_unit_test.
+    tags = ["noclippy"],
     deps = all_crate_deps(
         normal = True,
         normal_dev = True,

@@ -15,9 +15,11 @@
 //! file at `<path>`, one arg per line, with a trailing blank line as record
 //! separator. Used for end-to-end argv-flow assertions.
 //!
-//! `MOCK_ASTAP_SPAWN_DIR=<dir>` (any mode) writes this invocation's spawn
-//! time — nanoseconds since the Unix epoch — to its own uniquely-named file
-//! in `<dir>`. Each child writes its own file so concurrent invocations never
+//! `MOCK_ASTAP_SPAWN_DIR=<dir>` (any mode) records this invocation's spawn
+//! time — nanoseconds since the Unix epoch — as its own file `<nanos>-<pid>`
+//! in `<dir>`. Read the time from the name: the file is created before its
+//! contents are written, so a child killed in between leaves it empty. Each
+//! child writes its own file so concurrent invocations never
 //! share a handle (cross-process appends to one file proved lossy on
 //! Windows). The single-flight BDD scenario reads the directory to observe
 //! server-side spawn ordering directly, which is immune to the client-side

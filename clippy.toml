@@ -1,3 +1,12 @@
+# The workspace MSRV, for the clippy Bazel runs (`--config=clippy`). Cargo
+# hands clippy the root Cargo.toml's `rust-version` through
+# CARGO_PKG_RUST_VERSION; rules_rust sets no such variable, so without this key
+# Bazel's clippy would assume no MSRV and fire the MSRV-gated lints Cargo's
+# clippy holds back. Keep it equal to `rust-version`: `cargo clippy` only warns
+# when the two differ, so tools/ci/check-bazel-clippy-config.sh (run by
+# bazel.yml's `bazel clippy` step) fails on it instead.
+msrv = "1.98.1"
+
 # Test code is allowed to panic where the panic is the point: a failed `Given`
 # means the fixture is broken, and failing fast with a clear message beats
 # threading a `Result` through the assertion (docs/skills/testing.md, rule 7).
@@ -10,15 +19,6 @@
 # recognise cucumber step definitions (`#[given]`/`#[when]`/`#[then]`), which
 # are plain functions in a test crate -- those files still carry a file-level
 # `#![allow(...)]`. There is no knob for `unreachable`.
-# The workspace MSRV, for the clippy Bazel runs (`--config=clippy`). Cargo
-# hands clippy the root Cargo.toml's `rust-version` through
-# CARGO_PKG_RUST_VERSION; rules_rust sets no such variable, so without this key
-# Bazel's clippy would assume no MSRV and fire the MSRV-gated lints Cargo's
-# clippy holds back. Keep it equal to `rust-version`: when the two differ,
-# `cargo clippy` warns "the MSRV in `clippy.toml` and `Cargo.toml` differ" and
-# lints with this value.
-msrv = "1.98.1"
-
 allow-unwrap-in-tests = true
 allow-expect-in-tests = true
 allow-panic-in-tests = true
