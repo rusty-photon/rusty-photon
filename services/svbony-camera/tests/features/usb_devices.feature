@@ -284,6 +284,17 @@ Feature: Device claims -- the usb_devices list
       | simulated-usbv3-0:1 | SV605CC-Simulated | SVB0123456789AB | —          | 1      |
     And the doctor output prints no usb_devices block
 
+  Scenario: doctor --devices names a broken list even when the USB scan also failed
+    Given the staged USB inventory:
+      """
+      { "usb_unavailable": "powershell.exe did not answer within 10 s" }
+      """
+    And the configuration JSON {"usb_devices": [{"device_number": 1, "usb_port": "simulated-usbv3-0:1"}]}
+    When doctor --devices runs
+    Then the doctor exits with code 1
+    And the doctor output says "device numbers must run 0..N-1, and 0 is missing"
+    And the doctor output says "the USB scan failed: powershell.exe did not answer within 10 s"
+
   Scenario: doctor --devices fails when the USB scan failed
     Given the staged USB inventory:
       """

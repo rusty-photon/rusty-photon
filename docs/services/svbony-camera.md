@@ -997,7 +997,7 @@ on.
 Named, testable behaviours. ASCOM error names per
 [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md). Every
 contract below is real as of Phase E; the BDD feature files under
-`tests/features/` (111 scenarios, 566 steps) and the unit tests in
+`tests/features/` (112 scenarios, 572 steps) and the unit tests in
 `src/camera.rs`/`src/backend.rs` exercise them — see "Testing" below for
 which layer covers which contract (E9's two branches, the
 generation-counter abort race and E10 are unit-test-only, per the design's
@@ -1305,7 +1305,17 @@ second driver needs it.
   registers the list (U4). A camera on an unlisted port is never registered,
   so no client can connect it and nothing in this service opens it. An empty
   list makes neither the scan nor the enumeration, and a failed scan stops
-  before the enumeration (U6). An SDK enumeration that fails after a scan
+  before the enumeration (U6).
+
+  **Placement holds from one start or reload to the next; it is not watched.**
+  A registered camera's connect finds its camera by `CameraSN` (C6), not by
+  port. So a listed camera that is re-cabled onto an unlisted port while the
+  service runs is still opened at its listed number until the next reload,
+  which places it afresh: its number becomes a placeholder, and the camera is
+  left unregistered on its new port. Re-cabling is a reload's job. The device-
+  claims plan's D8 records watching placement as out of scope, and a passive
+  scan on every connect to re-confirm the port is the cost that would close
+  this. An SDK enumeration that fails after a scan
   that ran fails the start or reload, with or without a list, as it always
   has (C0). Only the scan, which the list adds, is made non-fatal and
   retried. None of these steps is an open, let alone an actuation, and a
@@ -1447,15 +1457,20 @@ second driver needs it.
   10 s deadline on macOS and Windows.) The
   service therefore re-scans in the background, after waits of 10 s, 20 s and
   40 s and then every 60 s, logging each repeat failure at `debug!`.
-  The first scan that succeeds is logged at `info!` and fires the service's
-  own reload — the one `config.apply` and `SIGHUP` fire — which runs the start
-  path again, placement and all. That is safe because the failed-scan outcome
-  opened nothing, so there is no session to interrupt. Nobody asked for that
-  reload, though, and a reload whose config file no longer loads ends the
-  service, so it waits for the file: a scan that succeeds beside a hand-edited
-  file that no longer loads is logged at `warn!` once, and the re-scan carries
-  on, reloading at the first success after the file loads again. The re-scan
-  stops when it reloads, and with the server it belongs to; it is not hot-plug: a
+  When a scan succeeds, it is logged at `info!` and the server it belongs to
+  stops and is rebuilt, as for a reload, which runs the start path again,
+  placement and all. That is safe because the failed-scan outcome opened
+  nothing, so there is no session to interrupt. The success ends that server
+  only: it is not the service-wide reload signal, so one landing after another
+  reload has already stopped the server reaches nothing, and cannot stop the
+  next server. Nobody asked for this rebuild, though, and a rebuild that cannot
+  load its config file, or whose SDK enumeration fails — with the first scan
+  failed, the rebuild is the first enumeration since the start — ends the
+  service. So each try checks the config file first, then takes the scan, then
+  checks that the SDK enumerates, and rebuilds only when all three pass. A
+  config file or SDK that blocks it is logged at `warn!` once, and the re-scan
+  carries on, without scanning while the file does not load. The re-scan stops
+  when it rebuilds, and with the server it belongs to. It is not hot-plug: a
   successful scan whose listed port is merely empty serves a placeholder until
   the next reload, as at any start.
 - **U7. A simulation build stages its scan.** The `svbony-rs` simulation
@@ -1536,8 +1551,10 @@ second driver needs it.
   field errors naming the entry (`usb_devices.1.usb_port`,
   `usb_devices.0.device_number`) or the `devices` key beside it
   (`devices.<serial>`), persisting nothing. It refuses `"usb_devices": []`
-  with an error saying why: an empty list registers nothing, which would
-  remove the path the apply arrived on. A changed list applies through the
+  with an error saying why: an empty list registers no device, so none would
+  be left to serve the config actions, and no apply could undo it. A shorter
+  list is accepted: it can retire the number the apply arrived through, but
+  its remaining devices still carry the actions. A changed list applies through the
   ordinary in-process reload, which closes and re-opens every camera on the
   service — an operator editing the list is re-cabling or re-assigning
   cameras, not mid-exposure. Placeholders carry the actions (U4), so a list
@@ -2169,9 +2186,11 @@ fn main() -> ServiceResult {
 everything else is `debug!` (CLAUDE.md Rule 9).
 
 The background re-scan after a failed USB scan (U6) belongs to the bound
-server: it runs while that server serves and stops when it does, and its
-success fires the same `ReloadSignal` the loop above already waits on, so
-recovery needs nothing from `main.rs` beyond the loop it has.
+server: it runs while that server serves and stops when it does. Its success
+ends that server, and `BoundServer::start` says so by returning
+`Ended::Rescanned` instead of `Ended::Stopped`. The loop rebuilds on it
+exactly as it does after a reload, so the success never travels on the
+service-wide `ReloadSignal`, where a late one could stop the next server.
 
 ---
 
@@ -2226,8 +2245,8 @@ Layered per [`testing.md`](../skills/testing.md).
   `Camera::video_capture_starts`, a read-only count that tells the test the
   capture's own capture restart has run, so "the cancel landed in the poll
   loop" is a fact rather than a nap.
-- **BDD** (`bdd-infra::ServiceHandle`, eleven feature files, 111 scenarios /
-  566 steps) — all genuinely green, including `enumeration_connection`'s
+- **BDD** (`bdd-infra::ServiceHandle`, eleven feature files, 112 scenarios /
+  572 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
   behavioural feature (`exposure`, `binning_and_roi`, `cooling`,
   `gain_offset_readout`, `sensor_properties`) — see each file's header

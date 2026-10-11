@@ -28,9 +28,9 @@ impl ConfigurableDriver for SvbonyCameraDriver {
     fn normalize(_config: &mut Config) {}
 
     /// The `usb_devices` rules the load applies (U9), plus the one only an
-    /// apply has: an empty list is refused, because it would remove the device
-    /// the apply arrived through. The per-serial overrides are free-form
-    /// name/description strings.
+    /// apply has: an empty list is refused, because it registers no device, so
+    /// none would be left to serve the config actions. The per-serial overrides
+    /// are free-form name/description strings.
     fn validate(config: &Config) -> Vec<FieldError> {
         let mut errors = config.list_errors();
         if config.usb_devices.as_ref().is_some_and(Vec::is_empty) {

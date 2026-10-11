@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 use clap::Parser;
 use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
-use svbony_camera::{load_effective_config, CliOverrides, ServerBuilder};
+use svbony_camera::{load_effective_config, CliOverrides, Ended, ServerBuilder};
 use tracing::{debug, Level};
 
 #[derive(Parser)]
@@ -210,10 +210,14 @@ fn main() -> ServiceResult {
                         }
                     }
                 };
-                bound.start(stop).await?;
+                let ended = bound.start(stop).await?;
 
                 if reloaded.load(Ordering::SeqCst) {
                     debug!("reload signalled; rebuilding svbony-camera from the new configuration");
+                    continue;
+                }
+                if ended == Ended::Rescanned {
+                    debug!("a failed USB scan succeeds again; rebuilding svbony-camera");
                     continue;
                 }
                 return Ok(());

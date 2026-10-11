@@ -41,37 +41,46 @@ fn devices(config_path: &Path, source: &UsbSource) -> (String, i32) {
         Ok(config) => config,
         Err(error) => return (format!("{error}\n"), 1),
     };
-    let list_error = config.check_list().err();
+    // Said whatever else fails, so a host fault fixed first does not hide it.
+    let list_note = config.check_list().err().map(|error| {
+        format!(
+            "The usb_devices list in {} breaks a rule, so the service refuses to start: \
+             {error}. Fix it from the ports this listing shows.",
+            config_path.display()
+        )
+    });
+    let with_list_note = |text: String| match &list_note {
+        Some(note) => format!("{note}\n\n{text}"),
+        None => text,
+    };
     let scan = source.scan();
     if let Err(error) = &scan {
         return (
-            format!(
+            with_list_note(format!(
                 "{SDK_NAME} cameras on the bus (vendor {VENDOR}):\n\n  the USB scan failed: \
                  {error}\n"
-            ),
+            )),
             1,
         );
     }
     let infos = match sdk_camera_infos() {
         Ok(infos) => infos,
-        Err(error) => return (format!("{SDK_NAME} SDK enumeration failed: {error}\n"), 1),
+        Err(error) => {
+            return (
+                with_list_note(format!("{SDK_NAME} SDK enumeration failed: {error}\n")),
+                1,
+            )
+        }
     };
     let claims = Claims::new(NORMALIZER, SERVICE, scan, sdk_cameras(&infos));
     let mut listing = listing(&config, &claims, &infos);
-    let Some(error) = list_error else {
+    let Some(note) = list_note else {
         return (render_listing(&listing), 0);
     };
     // A block reproducing a list the service refuses would only be pasted
-    // back; the ports above are what the operator fixes it from.
+    // back; the ports listed are what the operator fixes it from.
     listing.block = None;
-    listing.notes.insert(
-        0,
-        format!(
-            "The usb_devices list in {} breaks a rule, so the service refuses to start: \
-             {error}. Fix it from the ports above.",
-            config_path.display()
-        ),
-    );
+    listing.notes.insert(0, note);
     (render_listing(&listing), 1)
 }
 

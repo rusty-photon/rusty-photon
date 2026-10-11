@@ -401,17 +401,13 @@ impl ServerBuilder {
         }
 
         if claims.scan_error().is_some() {
-            registered.rescan = self.reload.clone().map(|reload| Rescan {
+            registered.rescan = Some(Rescan {
                 source: self.usb_source.clone(),
-                reload,
                 config: self
                     .config_path
                     .clone()
                     .map(|path| (path, self.overrides.clone())),
             });
-            if registered.rescan.is_none() {
-                debug!("no reload path: a failed USB scan is not retried");
-            }
         }
         Ok(registered)
     }
@@ -472,58 +468,94 @@ struct Registered {
 }
 
 /// The background re-scan after a failed USB scan (U6): it waits 10 s, 20 s,
-/// 40 s and then 60 s between scans, and on the first that succeeds fires the
-/// service's own reload, which places the listed cameras afresh.
+/// 40 s and then 60 s between tries, and on the first after which a rebuild
+/// would serve the list it ends its own server, which the caller rebuilds
+/// ([`Ended::Rescanned`]) — placing the listed cameras afresh.
+#[derive(Clone)]
 struct Rescan {
     source: UsbSource,
-    reload: ReloadSignal,
-    /// The config file the reload will read, and the CLI overrides layered on
-    /// it. `None` when the builder has no config source.
+    /// The config file the rebuild will read, and the CLI overrides layered
+    /// on it. `None` when the builder has no config source.
     config: Option<(PathBuf, CliOverrides)>,
 }
 
+/// What still stands between a re-scan and the rebuild it would ask for.
+enum Blocker {
+    /// The USB scan still fails.
+    Scan(String),
+    /// The config file no longer loads, and a rebuild that cannot load its
+    /// config ends the service.
+    Config(String),
+    /// The SDK cannot enumerate, and a rebuild that cannot enumerate ends the
+    /// service: with the first scan failed, the rebuild is the first
+    /// enumeration since the start.
+    Sdk(String),
+}
+
 impl Rescan {
-    async fn run(self) {
-        let mut said_config_fails = false;
+    /// Re-scan until a rebuild would serve the list, then say so on `ready`.
+    /// Nobody asked for this rebuild, so it waits out anything that would make
+    /// it end the service instead.
+    async fn run(self, ready: tokio::sync::oneshot::Sender<()>) {
+        let mut said_blocked = false;
         for wait in rusty_photon_doctor_checks::claims::rescan_waits() {
             tokio::time::sleep(wait).await;
-            let source = self.source.clone();
-            match tokio::task::spawn_blocking(move || source.scan()).await {
-                Ok(Ok(_)) => {
-                    // Nobody asked for this reload, so it must not be the one
-                    // that finds a hand edit the file no longer loads with:
-                    // a reload that cannot load its config ends the service.
-                    // It waits for the file to load again, re-scanning on
-                    // the same schedule meanwhile.
-                    if let Some(error) = self.config_error() {
-                        if said_config_fails {
-                            debug!(%error, "the config file still does not load");
-                        } else {
-                            warn!(
-                                %error,
-                                "the USB scan succeeds again, but the config file no longer loads; not \
-                                 reloading until it does"
-                            );
-                            said_config_fails = true;
-                        }
-                        continue;
-                    }
-                    info!("the USB scan succeeds again; reloading to place the listed cameras");
-                    self.reload.notify();
+            let this = self.clone();
+            match tokio::task::spawn_blocking(move || this.blocker()).await {
+                Ok(None) => {
+                    info!("the USB scan succeeds again; rebuilding to place the listed cameras");
+                    // A send to a server that has already stopped goes
+                    // nowhere: the success belongs to this server alone.
+                    let _ = ready.send(());
                     return;
                 }
-                Ok(Err(error)) => debug!(%error, "the USB scan still fails"),
+                Ok(Some(Blocker::Scan(error))) => debug!(%error, "the USB scan still fails"),
+                Ok(Some(Blocker::Config(error))) if !said_blocked => {
+                    warn!(%error, "the config file no longer loads; not rebuilding until it does");
+                    said_blocked = true;
+                }
+                Ok(Some(Blocker::Sdk(error))) if !said_blocked => {
+                    warn!(
+                        %error,
+                        "the USB scan succeeds again, but the SVBony SDK cannot enumerate; not \
+                         rebuilding until it can"
+                    );
+                    said_blocked = true;
+                }
+                Ok(Some(Blocker::Config(error) | Blocker::Sdk(error))) => {
+                    debug!(%error, "the rebuild is still blocked");
+                }
                 Err(error) => debug!(%error, "the USB re-scan task failed"),
             }
         }
     }
 
-    /// Why the config file the reload would read does not load, if it does
-    /// not.
-    fn config_error(&self) -> Option<SvbonyCameraError> {
-        let (path, overrides) = self.config.as_ref()?;
-        load_effective_config(path, overrides).err()
+    /// What would keep a rebuild now from serving the list, checked cheapest
+    /// first — the config file, then the scan, then the SDK's enumeration —
+    /// or `None` when nothing would. Blocking.
+    fn blocker(&self) -> Option<Blocker> {
+        if let Some((path, overrides)) = &self.config {
+            if let Err(error) = load_effective_config(path, overrides) {
+                return Some(Blocker::Config(error.to_string()));
+            }
+        }
+        if let Err(error) = self.source.scan() {
+            return Some(Blocker::Scan(error));
+        }
+        sdk_camera_infos()
+            .err()
+            .map(|error| Blocker::Sdk(error.to_string()))
     }
+}
+
+/// Why [`BoundServer::start`] returned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ended {
+    /// The caller's stop future resolved.
+    Stopped,
+    /// A failed USB scan succeeds again (U6): rebuild the server, as for a
+    /// reload, to place the listed cameras.
+    Rescanned,
 }
 
 /// A svbony-camera server bound to a local port, ready to [`start`](Self::start).
@@ -547,14 +579,19 @@ impl BoundServer {
         self.local_addr
     }
 
-    /// Serve until `shutdown` resolves, then drain gracefully.
+    /// Serve until `shutdown` resolves — or, after a failed USB scan, until
+    /// the re-scan finds a rebuild would serve the list (U6) — then drain
+    /// gracefully.
+    ///
+    /// Returns which of the two ended it: on [`Ended::Rescanned`] the caller
+    /// rebuilds the server, as for a reload.
     ///
     /// # Errors
     /// Returns [`SvbonyCameraError::Server`] if the HTTP server stops with an error.
     pub async fn start(
         self,
         shutdown: impl Future<Output = ()> + Send + 'static,
-    ) -> Result<(), SvbonyCameraError> {
+    ) -> Result<Ended, SvbonyCameraError> {
         let Self {
             listener,
             app,
@@ -563,17 +600,31 @@ impl BoundServer {
             discovery,
             rescan,
         } = self;
-        // Spawned rather than raced against serving: the re-scan's success
-        // fires the reload that ends this server. Its guard lives in the
-        // shutdown future, so the re-scan stops the moment this server starts
-        // to stop — whatever stopped it — not once it has drained: a re-scan
-        // succeeding during another reload's drain would leave a stored
-        // reload that ends the next server as it starts.
-        let rescan = rescan
-            .map(|rescan| tokio_util::task::AbortOnDropHandle::new(tokio::spawn(rescan.run())));
-        let shutdown = async move {
-            shutdown.await;
-            drop(rescan);
+        // The re-scan's success ends this server and no other: it arrives on
+        // this server's own channel rather than on the service-wide reload
+        // signal, so a success landing after another reload has already
+        // stopped this server reaches nobody and cannot stop the next one.
+        // Dropping the stop future, wherever serving ends, aborts it.
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let rescan = rescan.map(|rescan| {
+            tokio_util::task::AbortOnDropHandle::new(tokio::spawn(rescan.run(ready_tx)))
+        });
+        let rescanned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shutdown = {
+            let rescanned = Arc::clone(&rescanned);
+            async move {
+                let ready = async {
+                    if rescan.is_some() && ready_rx.await.is_ok() {
+                        return;
+                    }
+                    std::future::pending::<()>().await;
+                };
+                tokio::select! {
+                    () = shutdown => {}
+                    () = ready => rescanned.store(true, std::sync::atomic::Ordering::SeqCst),
+                }
+                drop(rescan);
+            }
         };
         let serve = async {
             let result = if let Some(ref tls_config) = tls {
@@ -586,7 +637,10 @@ impl BoundServer {
             result.map_err(|e| SvbonyCameraError::Server(e.to_string()))
         };
         rusty_photon_driver::discovery::serve_with(discovery, serve).await?;
-        Ok(())
+        if rescanned.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(Ended::Rescanned);
+        }
+        Ok(Ended::Stopped)
     }
 }
 
@@ -793,25 +847,13 @@ mod simulation_tests {
     #[tokio::test]
     async fn a_failed_scan_holds_every_number_and_is_retried() {
         let (_dir, source) = staged(FAILED_SCAN).unwrap();
-        let builder = ServerBuilder::new()
-            .with_usb_source(source)
-            .with_reload_signal(ReloadSignal::new());
+        let builder = ServerBuilder::new().with_usb_source(source);
         let (ids, registered) = register(&builder, &[(0, "simulated-usbv3-0:1")])
             .await
             .unwrap();
         assert_eq!(ids, vec!["placeholder:svbony-camera:simulated-usbv3-0:1"]);
         assert_eq!((registered.cameras, registered.placeholders), (0, 1));
         assert!(registered.rescan.is_some());
-    }
-
-    #[tokio::test]
-    async fn without_a_reload_path_a_failed_scan_is_not_retried() {
-        let (_dir, source) = staged(FAILED_SCAN).unwrap();
-        let builder = ServerBuilder::new().with_usb_source(source);
-        let (_, registered) = register(&builder, &[(0, "simulated-usbv3-0:1")])
-            .await
-            .unwrap();
-        assert!(registered.rescan.is_none());
     }
 
     #[tokio::test]
@@ -823,47 +865,38 @@ mod simulation_tests {
         assert_eq!(ids, vec!["placeholder:svbony-camera:simulated-usbv3-0:1"]);
     }
 
+    /// Run `rescan` for up to `budget` of paused time, and say whether it
+    /// reported a rebuild would serve the list.
+    async fn rescan_ready_within(rescan: Rescan, budget: std::time::Duration) -> bool {
+        let (ready_tx, mut ready_rx) = tokio::sync::oneshot::channel();
+        let _ = tokio::time::timeout(budget, rescan.run(ready_tx)).await;
+        ready_rx.try_recv().is_ok()
+    }
+
     #[tokio::test(start_paused = true)]
-    async fn a_rescan_that_succeeds_fires_the_reload() {
-        let reload = ReloadSignal::new();
-        Rescan {
+    async fn a_rescan_that_succeeds_says_the_server_can_rebuild() {
+        let rescan = Rescan {
             source: UsbSource::Simulated,
-            reload: reload.clone(),
             config: None,
-        }
-        .run()
-        .await;
-        tokio::time::timeout(std::time::Duration::ZERO, reload.recv())
-            .await
-            .unwrap();
+        };
+        assert!(rescan_ready_within(rescan, std::time::Duration::from_secs(300)).await);
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_rescan_never_reloads_while_the_scan_fails() {
+    async fn a_rescan_never_asks_for_a_rebuild_while_the_scan_fails() {
         let (_dir, source) = staged(FAILED_SCAN).unwrap();
-        let reload = ReloadSignal::new();
-        let run = Rescan {
+        let rescan = Rescan {
             source,
-            reload: reload.clone(),
             config: None,
-        }
-        .run();
+        };
         assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(300), run)
-                .await
-                .is_err(),
-            "the re-scan stopped while the scan still fails"
-        );
-        assert!(
-            tokio::time::timeout(std::time::Duration::ZERO, reload.recv())
-                .await
-                .is_err(),
-            "a failing scan fired the reload"
+            !rescan_ready_within(rescan, std::time::Duration::from_secs(300)).await,
+            "a failing scan asked for a rebuild"
         );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_rescan_never_reloads_into_a_config_file_that_no_longer_loads() {
+    async fn a_rescan_never_asks_for_a_rebuild_into_a_config_file_that_no_longer_loads() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("svbony-camera.json");
         std::fs::write(
@@ -871,25 +904,32 @@ mod simulation_tests {
             r#"{"usb_devices": [{"device_number": 1, "usb_port": "a"}]}"#,
         )
         .unwrap();
-        let reload = ReloadSignal::new();
-        let run = Rescan {
+        let rescan = Rescan {
             source: UsbSource::Simulated,
-            reload: reload.clone(),
             config: Some((path, CliOverrides::default())),
-        }
-        .run();
+        };
         assert!(
-            tokio::time::timeout(std::time::Duration::from_secs(300), run)
-                .await
-                .is_err(),
-            "the re-scan stopped while the config file does not load"
+            !rescan_ready_within(rescan, std::time::Duration::from_secs(300)).await,
+            "the re-scan asked for a rebuild into a config file that does not load"
         );
-        assert!(
-            tokio::time::timeout(std::time::Duration::ZERO, reload.recv())
-                .await
-                .is_err(),
-            "the re-scan reloaded into a config file that does not load"
-        );
+    }
+
+    #[test]
+    fn a_rescan_checks_the_config_file_before_it_scans() {
+        // A scan of this source would fail; a config that does not load is
+        // what the blocker names, so no scan was taken.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("svbony-camera.json");
+        std::fs::write(
+            &path,
+            r#"{"usb_devices": [{"device_number": 1, "usb_port": "a"}]}"#,
+        )
+        .unwrap();
+        let rescan = Rescan {
+            source: UsbSource::Staged(PathBuf::from("/nonexistent/inventory.json")),
+            config: Some((path, CliOverrides::default())),
+        };
+        assert!(matches!(rescan.blocker(), Some(Blocker::Config(_))));
     }
 
     #[tokio::test]

@@ -178,13 +178,14 @@ pub fn override_beside_list(key: &str) -> ListError {
 }
 
 /// `config.apply`'s refusal of `"usb_devices": []`: an empty list registers
-/// no device, so the apply would remove the device it arrived through.
+/// no device, so none would be left to serve the config actions.
 #[must_use]
 pub fn empty_list_over_apply() -> ListError {
     ListError::list(
-        "an empty list registers no camera, so this apply would remove the device \
-         it arrived through; to hand every camera to another application, write \
-         \"usb_devices\": [] into the file and reload the service"
+        "an empty list registers no camera, so no device would be left to serve the \
+         config actions — none to apply a list through again; to hand every camera to \
+         another application, write \"usb_devices\": [] into the file and reload the \
+         service"
             .to_string(),
     )
 }

@@ -1427,7 +1427,11 @@ and the declared filter wheels (D4.7).
   when a second consumer appears. (The CFW `qhy-camera` registers
   through a camera *is* covered, D4.7.)
 - Hot-plug. Placement resolves at enumeration (start / reload) and is
-  not watched. A camera plugged in later — including one a placeholder
+  not watched — nor is it re-checked at connect, so a listed camera
+  re-cabled onto an unlisted port while the service runs is still opened
+  at its listed number until the next reload places it afresh (C2
+  documents this in `svbony-camera.md` U1; a connect-time scan would close
+  it, at a scan per connect). A camera plugged in later — including one a placeholder
   stands in for — appears only after a reload or restart, which
   rebuilds the server and re-opens **every** camera the service serves,
   so the operator picks the moment; the placeholder keeps the number,
