@@ -107,11 +107,14 @@ pub struct UsbFault {
 }
 
 /// What a collector read off the bus: the working devices, and the records
-/// it could not count among them.
-#[derive(Debug, Default)]
-struct UsbScan {
-    devices: Vec<UsbDevice>,
-    faults: Vec<UsbFault>,
+/// it could not count among them. A scan that could not run is not one of
+/// these — it is the `Err` beside it ([`scan_usb`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UsbScan {
+    /// The inventory: devices that are alive and working, each with a port.
+    pub devices: Vec<UsbDevice>,
+    /// Records the scan found but could not count as working devices.
+    pub faults: Vec<UsbFault>,
 }
 
 /// The service user's identity from the host's user database.
@@ -519,8 +522,13 @@ impl StagedUsbInventory {
         Self::try_from(document).map_err(|e| format!("staged USB inventory {} {e}", path.display()))
     }
 
-    /// The collector-shaped result this document stands in for.
-    fn into_scan(self) -> Result<UsbScan, String> {
+    /// The collector-shaped result this document stands in for: what
+    /// [`scan_usb`] would have returned on a host whose bus looked like this.
+    ///
+    /// # Errors
+    ///
+    /// The staged failure's reason, when the document stages one.
+    pub fn into_scan(self) -> Result<UsbScan, String> {
         match self {
             Self::Scan { devices, faults } => Ok(UsbScan { devices, faults }),
             Self::Unavailable(reason) => Err(reason),
@@ -609,6 +617,40 @@ pub fn gather(req: &ProbeRequest) -> HardwareFacts {
     facts
 }
 
+/// The host's USB scan alone, without the rest of a [`gather`].
+///
+/// The passive collector a camera driver places its SDK cameras with
+/// (docs/services/doctor.md, "USB inventory"). Read-only — nothing is opened,
+/// claimed or reset — and bounded: the macOS and Windows shell-outs run under
+/// the collector's deadline.
+///
+/// # Errors
+///
+/// The collector's reason when the scan could not run. A record that is not
+/// a working device is never an error; it is a fault in the `Ok` scan.
+pub fn scan_usb() -> Result<UsbScan, String> {
+    let scan = host_usb_scan();
+    log_usb_scan(&scan);
+    scan
+}
+
+/// The `debug!` trail of a scan: each fault, or why the scan could not run.
+fn log_usb_scan(scan: &Result<UsbScan, String>) {
+    match scan {
+        Ok(scan) => {
+            for fault in &scan.faults {
+                debug!(
+                    record = %fault.record,
+                    location = fault.location.as_deref().unwrap_or("unknown"),
+                    reason = %fault.reason,
+                    "USB record is not a working device; left out of the inventory"
+                );
+            }
+        }
+        Err(reason) => debug!(%reason, "USB inventory unavailable"),
+    }
+}
+
 /// The host's own USB inventory, from whichever collector this platform has.
 fn host_usb_scan() -> Result<UsbScan, String> {
     #[cfg(target_os = "linux")]
@@ -634,21 +676,13 @@ fn host_usb_scan() -> Result<UsbScan, String> {
 /// list are left empty *and* marked unavailable, so a consumer that ignores
 /// the marker gets no devices rather than a plausible-looking partial list.
 fn record_usb(facts: &mut HardwareFacts, scan: Result<UsbScan, String>) {
+    log_usb_scan(&scan);
     match scan {
         Ok(scan) => {
-            for fault in &scan.faults {
-                debug!(
-                    record = %fault.record,
-                    location = fault.location.as_deref().unwrap_or("unknown"),
-                    reason = %fault.reason,
-                    "USB record is not a working device; left out of the inventory"
-                );
-            }
             facts.usb = scan.devices;
             facts.usb_faults = scan.faults;
         }
         Err(reason) => {
-            debug!(%reason, "USB inventory unavailable");
             facts.usb.clear();
             facts.usb_faults.clear();
             facts.usb_unavailable = Some(reason);
