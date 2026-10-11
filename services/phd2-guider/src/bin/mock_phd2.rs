@@ -32,10 +32,11 @@
 //!   `MOCK_PHD2_ROTATOR` - "connected" populates `get_current_equipment`'s
 //!     rotator slot ({"name": "Mock Rotator", "connected": true});
 //!     unset/anything else reports null (no rotator in the profile)
-//!   `MOCK_PHD2_IMAGE_DIR` - Directory `save_image` writes its FITS file to.
-//!     Each call writes a new file and replies {"filename": "<full path>"},
-//!     as PHD2 does; the file is left for the client to remove. There is no
-//!     default: unset, `save_image` answers PHD2's "error saving image"
+//!   `MOCK_PHD2_IMAGE_DIR` - Absolute directory `save_image` writes its FITS
+//!     file to. Each call writes a new file and replies
+//!     {"filename": "<full path>"}, as PHD2 does; the file is left for the
+//!     client to remove. There is no default: unset or not absolute,
+//!     `save_image` answers PHD2's "error saving image"
 //!
 //! Command line argument takes precedence over environment variable for port.
 //! Default port is 4400 (same as PHD2).
@@ -297,33 +298,46 @@ const SAVED_FRAME_STEP: usize = 1365;
 ///
 /// The file goes to `MOCK_PHD2_IMAGE_DIR` and is left there: as with
 /// PHD2, removing it is the client's job. There is no default
-/// directory, so no run can scatter files into a shared one; unset, the
-/// call fails. PHD2 names the file with
+/// directory, so no run can scatter files into a shared one: unset, or
+/// not absolute (an empty or relative value would land in the mock's
+/// working directory), the call fails. PHD2 names the file with
 /// `wxFileName::CreateTempFileName(<dir>/save_image_)`, so the real name
 /// has no `.fits` extension; this one has none either, so a client cannot
-/// come to rely on one. The process id and a per-process counter make
-/// each name new.
+/// come to rely on one.
 ///
 /// Like PHD2, which creates the file (`mkstemp`) and then writes into
-/// it, the mock creates the file, refusing one that already exists
-/// rather than overwriting it, and writes in place. A failed write
-/// removes the file, as PHD2's does.
+/// it, the mock creates the file and writes in place, and a failed write
+/// removes the file, as PHD2's does. Names are the process id plus a
+/// per-process counter. Creation refuses a name that already exists, so
+/// one left by an earlier run with the same process id is skipped for the
+/// next, never overwritten, as `mkstemp` skips a taken name.
 fn save_image() -> Result<String, String> {
     static NEXT_IMAGE: AtomicU64 = AtomicU64::new(0);
 
-    let dir = std::env::var_os("MOCK_PHD2_IMAGE_DIR")
-        .ok_or("MOCK_PHD2_IMAGE_DIR is unset, so there is nowhere to save")?;
-    let serial = NEXT_IMAGE.fetch_add(1, Ordering::Relaxed);
-    let name = format!("save_image_{}_{serial}", std::process::id());
-    let path = std::path::absolute(PathBuf::from(dir).join(name))
-        .map_err(|e| format!("cannot make the image path absolute: {e}"))?;
+    let dir = PathBuf::from(
+        std::env::var_os("MOCK_PHD2_IMAGE_DIR")
+            .ok_or("MOCK_PHD2_IMAGE_DIR is unset, so there is nowhere to save")?,
+    );
+    if !dir.is_absolute() {
+        return Err(format!(
+            "MOCK_PHD2_IMAGE_DIR must be an absolute directory, not \"{}\"",
+            dir.display()
+        ));
+    }
 
     let pixels: Vec<u16> = (0..=u16::MAX)
         .step_by(SAVED_FRAME_STEP)
         .take(SAVED_FRAME_PIXELS)
         .collect();
-    let mut file = std::fs::File::create_new(&path)
-        .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+    let (path, mut file) = loop {
+        let serial = NEXT_IMAGE.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!("save_image_{}_{serial}", std::process::id()));
+        match std::fs::File::create_new(&path) {
+            Ok(file) => break (path, file),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(format!("cannot create {}: {e}", path.display())),
+        }
+    };
     if let Err(e) = write_u16_image(
         &mut file,
         &pixels,

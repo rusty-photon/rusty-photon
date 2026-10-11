@@ -1264,6 +1264,38 @@ async fn test_mock_phd2_save_image_writes_a_new_file_per_call() {
     client.disconnect().await.ok();
 }
 
+/// A name that already exists, such as one an earlier run with the same
+/// process id left behind, is skipped for the next one, never overwritten.
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_mock_phd2_save_image_never_overwrites_an_existing_file() {
+    let image_dir = tempfile::tempdir().unwrap();
+    let (mock, client) = connect_to_mock_saving_into(image_dir.path()).await;
+    let taken = image_dir
+        .path()
+        .join(format!("save_image_{}_0", mock.child.id()));
+    std::fs::write(&taken, b"left by an earlier run").unwrap();
+
+    let saved = PathBuf::from(client.save_image().await.unwrap());
+
+    assert_ne!(saved, taken);
+    assert_eq!(std::fs::read(&taken).unwrap(), b"left by an earlier run");
+    assert!(saved.is_file(), "{} is gone", saved.display());
+    client.disconnect().await.ok();
+}
+
+/// Ask the mock to `save_image` and expect PHD2's own "error saving image".
+#[cfg(not(miri))]
+async fn assert_save_image_refused(client: &Phd2Client) {
+    match client.save_image().await {
+        Err(phd2_guider::Phd2Error::RpcError { code, message }) => {
+            assert_eq!(code, 3);
+            assert_eq!(message, "error saving image");
+        }
+        other => panic!("expected RpcError 3, got {other:?}"),
+    }
+}
+
 /// Without `MOCK_PHD2_IMAGE_DIR` the mock has nowhere to save and answers
 /// PHD2's own "error saving image", so no run can leave its frames in a
 /// shared directory.
@@ -1272,14 +1304,27 @@ async fn test_mock_phd2_save_image_writes_a_new_file_per_call() {
 async fn test_mock_phd2_save_image_without_image_dir_is_an_rpc_error() {
     let (_mock, client) = connect_to_mock_with_env(&[]).await;
 
-    match client.save_image().await {
-        Err(phd2_guider::Phd2Error::RpcError { code, message }) => {
-            assert_eq!(code, 3);
-            assert_eq!(message, "error saving image");
-        }
-        other => panic!("expected RpcError 3, got {other:?}"),
-    }
+    assert_save_image_refused(&client).await;
     client.disconnect().await.ok();
+}
+
+/// An empty or relative `MOCK_PHD2_IMAGE_DIR` would resolve against the
+/// mock's working directory, so the mock refuses it and writes nothing.
+#[tokio::test]
+#[cfg(not(miri))]
+async fn test_mock_phd2_save_image_with_relative_image_dir_is_an_rpc_error() {
+    let relative = format!("mock_phd2_relative_image_dir_{}", std::process::id());
+    for dir in ["", relative.as_str()] {
+        let (_mock, client) =
+            connect_to_mock_with_env(&[("MOCK_PHD2_IMAGE_DIR", std::ffi::OsStr::new(dir))]).await;
+
+        assert_save_image_refused(&client).await;
+        client.disconnect().await.ok();
+    }
+    assert!(
+        !std::path::Path::new(&relative).exists(),
+        "the mock created {relative}"
+    );
 }
 
 #[tokio::test]
