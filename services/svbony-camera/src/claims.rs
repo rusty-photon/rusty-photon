@@ -29,19 +29,23 @@ pub const VENDOR: &str = "f266";
 #[cfg(feature = "simulation")]
 pub const SIMULATED_MODEL: &str = "SV605CC-Simulated";
 
-/// Each SDK model this driver has seen on the bus, with the product id it
-/// enumerates under — observed pairs only, since a guess here serves the
-/// wrong camera at the wrong number.
-///
-/// - `SV605CC` — `f266:9a0a`, product string `SVBONY SV605CC`, no USB serial;
-///   pier1 (Raspberry Pi 5, Linux), 2026-10-10.
+/// The SV605CC as each side names it, both observed on the same unit: the
+/// SDK's `friendly_name` is `SVBONY SV605CC` (its `UniqueID`,
+/// `SVBONY:SVBONY-SV605CC:…`, in every validation record since 2026-07-26),
+/// and the bus shows `f266:9a0a`, product string `SVBONY SV605CC`, no USB
+/// serial (pier1, Raspberry Pi 5, Linux, 2026-10-10).
+const SV605CC: (&str, &str) = ("SVBONY SV605CC", "9a0a");
+
+/// Each SDK model this driver has seen on the bus, by the name the SDK gives
+/// it, with the product id it enumerates under — observed pairs only, since a
+/// guess here serves the wrong camera at the wrong number.
 #[cfg(not(feature = "simulation"))]
-const MODELS: &[(&str, &str)] = &[("SV605CC", "9a0a")];
+const MODELS: &[(&str, &str)] = &[SV605CC];
 
 /// The observed models, plus the simulation's fabricated mirror of the
 /// SV605CC under the same product id (U7).
 #[cfg(feature = "simulation")]
-const MODELS: &[(&str, &str)] = &[("SV605CC", "9a0a"), (SIMULATED_MODEL, "9a0a")];
+const MODELS: &[(&str, &str)] = &[SV605CC, (SIMULATED_MODEL, "9a0a")];
 
 /// What this driver knows about `SVBony` cameras on the bus.
 pub const NORMALIZER: Normalizer<'static> = Normalizer {
@@ -319,10 +323,17 @@ mod tests {
         )
     }
 
+    /// The names as the hardware gives them, copied from the records rather
+    /// than from the table: the SDK's `friendly_name` from the 2026-07-26
+    /// validation's `UniqueID` (`SVBONY:SVBONY-SV605CC:0123481353808C03EE2512150035`),
+    /// the bus record from pier1's sysfs.
     #[test]
-    fn the_sv605cc_is_known_under_its_observed_product_id() {
-        let claims = claims_for(vec![sv605cc("p1")], &[info("SV605CC", "SN")]);
-        assert_eq!(claims.placed(), vec![(0, "p1")]);
+    fn the_sv605cc_is_placed_by_the_name_the_sdk_gives_it() {
+        let claims = claims_for(
+            vec![sv605cc("platform-xhci-hcd.1-usbv3-0:1")],
+            &[info("SVBONY SV605CC", "0123481353808C03EE2512150035")],
+        );
+        assert_eq!(claims.placed(), vec![(0, "platform-xhci-hcd.1-usbv3-0:1")]);
     }
 
     #[test]
@@ -420,7 +431,7 @@ mod tests {
             ]),
             ..Config::default()
         };
-        let infos = [info("SV605CC", "SN")];
+        let infos = [info("SVBONY SV605CC", "SN")];
         let claims = claims_for(vec![sv605cc("p1")], &infos);
         let listing = listing(&config, &claims, &infos);
         assert_eq!(listing.rows[0].device, "not listed");

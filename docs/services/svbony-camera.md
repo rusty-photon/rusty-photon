@@ -1338,7 +1338,7 @@ second driver needs it.
 
   | SDK model | Bus record | Observed |
   |---|---|---|
-  | `SV605CC` | `f266:9a0a`, product string `SVBONY SV605CC`, no USB serial | `pier1` (Raspberry Pi 5, Linux), 2026-10-10 |
+  | `SVBONY SV605CC` (its `UniqueID` is `SVBONY:SVBONY-SV605CC:…` in every validation record) | `f266:9a0a`, product string `SVBONY SV605CC`, no USB serial | `pier1` (Raspberry Pi 5, Linux), 2026-10-10 |
 
   A simulation build also knows its fabricated `SV605CC-Simulated` under
   `9a0a` (U7). `SVB_CAMERA_INFO`'s `DeviceID` may be the bus product id,
@@ -1379,8 +1379,11 @@ second driver needs it.
   5. otherwise *"no working camera is enumerated on `<port>`"* — never "the
      port is empty", because absence proves nothing (a device whose
      enumeration failed leaves no record on Linux, and only an `ACPI(…)` chain
-     on Windows). When the scan reported faults it could not place on any
-     port, the message adds that and points at doctor's `hardware.usb-fault`.
+     on Windows). When the scan reported faults elsewhere that could be the
+     camera — `f266` records, or ones with no vendor id that could be read
+     (none at all, or the `0000` of a Windows enumeration failure) — the
+     message adds how many and points at doctor's `hardware.usb-fault`.
+     Another vendor's fault is that vendor's device, and is not offered.
 
   Every reason ends with the way back: once the camera is fixed, reload or
   restart the service, which re-opens every camera it serves. (The device-
@@ -1444,8 +1447,12 @@ second driver needs it.
   The first scan that succeeds is logged at `info!` and fires the service's
   own reload — the one `config.apply` and `SIGHUP` fire — which runs the start
   path again, placement and all. That is safe because the failed-scan outcome
-  opened nothing, so there is no session to interrupt. The re-scan stops at
-  its first success, and with the server it belongs to; it is not hot-plug: a
+  opened nothing, so there is no session to interrupt. Nobody asked for that
+  reload, though, and a reload whose config file no longer loads ends the
+  service, so it waits for the file: a scan that succeeds beside a hand-edited
+  file that no longer loads is logged at `warn!` once, and the re-scan carries
+  on, reloading at the first success after the file loads again. The re-scan
+  stops when it reloads, and with the server it belongs to; it is not hot-plug: a
   successful scan whose listed port is merely empty serves a placeholder until
   the next reload, as at any start.
 - **U7. A simulation build stages its scan.** The `svbony-rs` simulation
@@ -1473,8 +1480,8 @@ second driver needs it.
 
   SVBony cameras on the bus (vendor f266), in port order:
 
-    Port                            Model    SDK id                        USB serial  Device
-    platform-xhci-hcd.1-usbv3-0:1   SV605CC  0123481353808C03EE2512150035  —           0
+    Port                           Model           SDK id                        USB serial  Device
+    platform-xhci-hcd.1-usbv3-0:1  SVBONY SV605CC  0123481353808C03EE2512150035  —           0
 
   To pin the cameras this driver serves, paste this into svbony-camera.json.
   Leave out any camera another application owns (PHD2's guide camera), and
@@ -2165,7 +2172,7 @@ recovery needs nothing from `main.rs` beyond the loop it has.
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 174 no-features / 205 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 174 no-features / 207 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,

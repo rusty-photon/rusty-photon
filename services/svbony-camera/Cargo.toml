@@ -45,6 +45,9 @@ rusty-photon-camera-core = { workspace = true }
 rusty-photon-driver = { workspace = true }
 rusty-photon-service-lifecycle = { workspace = true }
 tokio = { workspace = true }
+# `rt` for `task::AbortOnDropHandle`, which ends the failed-USB-scan re-scan
+# with the server it belongs to (docs/services/svbony-camera.md U6).
+tokio-util = { workspace = true, features = ["rt"] }
 axum = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

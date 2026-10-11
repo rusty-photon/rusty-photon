@@ -25,17 +25,30 @@ use crate::facts::{UsbDevice, UsbScan};
 /// camera driver with device claims, so a client — rp's reconnect supervisor
 /// — can tell "no camera here until the driver reloads" from a transient
 /// failure without parsing the message.
-pub const PLACEHOLDER_ERROR_CODE: u16 = 0x540;
+pub const PLACEHOLDER_ERROR_CODE: u16 = 0x500 + PLACEHOLDER_DRIVER_CODE;
 
 /// [`PLACEHOLDER_ERROR_CODE`] as an offset into the driver range, the form
 /// `ascom-alpaca`'s `ASCOMErrorCode::new_for_driver` takes.
 pub const PLACEHOLDER_DRIVER_CODE: u16 = 0x40;
 
+/// The prefix of every placeholder's `UniqueID`; no camera's can start with it.
+const PLACEHOLDER_ID_PREFIX: &str = "placeholder:";
+
 /// A placeholder's `UniqueID`: `placeholder:<service>:<usb_port>`, a form no
 /// camera's can take.
 #[must_use]
 pub fn placeholder_unique_id(service: &str, usb_port: &str) -> String {
-    format!("placeholder:{service}:{usb_port}")
+    format!("{PLACEHOLDER_ID_PREFIX}{service}:{usb_port}")
+}
+
+/// Whether a device is a device-claims placeholder, by its `UniqueID`.
+///
+/// The driver range is shared by every Alpaca driver, so a client tells a
+/// placeholder's [`PLACEHOLDER_ERROR_CODE`] from another driver's use of the
+/// same number by this, not by the code alone.
+#[must_use]
+pub fn is_placeholder_unique_id(unique_id: &str) -> bool {
+    unique_id.starts_with(PLACEHOLDER_ID_PREFIX)
 }
 
 // --- the list -------------------------------------------------------------------
@@ -519,16 +532,19 @@ impl<'a> Claims<'a> {
             if self.normalizer.is_own_record(record)
                 && !self.normalizer.assigns_product(&record.product)
             {
-                if let Some(index) = placement
+                let unrecognised: Vec<&str> = placement
                     .cameras
                     .iter()
-                    .position(|p| *p == CameraPlace::Unrecognised)
-                {
-                    let model = self.sdk.get(index).map_or("", |c| c.model.as_str());
+                    .zip(&self.sdk)
+                    .filter(|(place, _)| **place == CameraPlace::Unrecognised)
+                    .map(|(_, camera)| camera.model.as_str())
+                    .collect();
+                if !unrecognised.is_empty() {
+                    let models = unrecognised.join(", ");
                     return format!(
-                        "{port} holds {product} ({id}), and the {sdk} SDK reports a {model} \
-                         this driver knows no product id for, so nothing pairs the two; the \
-                         driver's normalizer needs an entry for {model}"
+                        "{port} holds {product} ({id}), and the {sdk} SDK reports camera(s) \
+                         this driver knows no product id for ({models}), so nothing pairs \
+                         them; the driver's normalizer needs an entry for each of {models}"
                     );
                 }
             }
@@ -536,20 +552,32 @@ impl<'a> Claims<'a> {
                 "{port} holds {product} ({id}), which the {sdk} SDK does not report as a camera"
             );
         }
-        let others = scan
+        let suspects = scan
             .faults
             .iter()
-            .filter(|f| f.location.as_deref() != Some(port))
+            .filter(|f| f.location.as_deref() != Some(port) && self.could_be_camera(f))
             .count();
-        if others == 0 {
+        if suspects == 0 {
             format!("no working camera is enumerated on {port}")
         } else {
             format!(
-                "no working camera is enumerated on {port}; the scan also found {others} \
-                 record(s) on this host that are not working devices, and the camera may be \
-                 one of them — see doctor's hardware.usb-fault"
+                "no working camera is enumerated on {port}; the scan also found {suspects} \
+                 record(s) that are not working devices and could be the camera — {sdk} \
+                 records, or ones whose vendor id could not be read — see doctor's \
+                 hardware.usb-fault"
             )
         }
+    }
+
+    /// Whether a fault could be this driver's camera: it carries this
+    /// vendor's id, or no real one — none could be read, or it is the `0000`
+    /// Windows gives a device whose enumeration failed (doctor.md, "USB
+    /// inventory"). Another vendor's fault is that vendor's device.
+    fn could_be_camera(&self, fault: &crate::facts::UsbFault) -> bool {
+        fault
+            .vendor
+            .as_deref()
+            .is_none_or(|vendor| vendor == self.normalizer.vendor || vendor == "0000")
     }
 
     /// The SDK cameras the join placed, by enumeration index, with their
@@ -910,6 +938,14 @@ mod tests {
     fn a_placeholder_unique_id_names_the_service_and_the_port() {
         let id = placeholder_unique_id("svbony-camera", "pci-0000:00:14.0-usbv3-0:4.2");
         assert_eq!(id, "placeholder:svbony-camera:pci-0000:00:14.0-usbv3-0:4.2");
+        assert!(is_placeholder_unique_id(&id));
+    }
+
+    #[test]
+    fn a_camera_unique_id_is_not_a_placeholder_one() {
+        assert!(!is_placeholder_unique_id(
+            "SVBONY:SVBONY-SV605CC:SVB0123456789AB"
+        ));
     }
 
     // --- the list ------------------------------------------------------------
@@ -1304,9 +1340,24 @@ mod tests {
         );
         let reason = placeholder_reason(claims.resolve("p1"));
         assert!(
-            reason.contains("the SVBony SDK reports a SV905C this driver knows no product id for"),
+            reason.contains("this driver knows no product id for (SV905C)"),
             "{reason}"
         );
+    }
+
+    #[test]
+    fn every_unrecognised_model_is_named() {
+        let claims = claims(
+            Ok(scan(vec![record("9a0f", "p1"), record("9a0e", "p2")])),
+            vec![camera("SV705X"), camera("SV905C")],
+        );
+        for listed in ["p1", "p2"] {
+            let reason = placeholder_reason(claims.resolve(listed));
+            assert!(
+                reason.contains("needs an entry for each of SV705X, SV905C"),
+                "{reason}"
+            );
+        }
     }
 
     #[test]
@@ -1345,6 +1396,30 @@ mod tests {
             "{reason}"
         );
         assert!(reason.contains("hardware.usb-fault"), "{reason}");
+    }
+
+    #[test]
+    fn a_failed_enumeration_or_this_vendors_fault_could_be_the_camera() {
+        let mut bus = scan(Vec::new());
+        bus.faults
+            .push(fault(Some("0000"), Some("ACPI(_SB_)#ACPI(HS05)")));
+        bus.faults.push(fault(Some("f266"), Some("p3")));
+        let reason = placeholder_reason(claims(Ok(bus), Vec::new()).resolve("p9"));
+        assert!(
+            reason.contains("the scan also found 2 record(s)"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn another_vendors_fault_is_not_offered_as_the_camera() {
+        let mut bus = scan(Vec::new());
+        bus.faults.push(fault(Some("046d"), Some("1-3")));
+        let reason = placeholder_reason(claims(Ok(bus), Vec::new()).resolve("p9"));
+        assert!(
+            reason.starts_with("no working camera is enumerated on p9."),
+            "{reason}"
+        );
     }
 
     #[test]

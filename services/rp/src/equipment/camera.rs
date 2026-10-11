@@ -4,7 +4,8 @@ use ascom_alpaca::api::{Camera, TypedDevice};
 use tracing::{debug, error};
 
 use super::alpaca::{
-    build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
+    build_alpaca_client, connect_refused, retry_connect_attempt, AttemptOutcome,
+    GET_DEVICES_TIMEOUT,
 };
 use super::session::DeviceSession;
 use crate::config;
@@ -202,7 +203,7 @@ pub(super) async fn establish_camera(
 
         match cam.set_connected(true).await {
             Ok(()) => AttemptOutcome::Ok(cam),
-            Err(e) => connect_refused(&config.id, &e),
+            Err(e) => connect_refused(&label, cam.unique_id(), &e),
         }
     })
     .await?;
@@ -228,28 +229,6 @@ pub(super) async fn establish_camera(
         can_asymmetric_bin: optional_read(cam.can_asymmetric_bin().await, &config.id, "can_asymmetric_bin unavailable at session-establish time; an asymmetric binning will not be rejected before it reaches the driver"),
     };
     Ok((cam, invariants))
-}
-
-/// What a camera's refused `Connected = true` means for this connect routine.
-///
-/// A placeholder's refusal — the device-claims error code, from a driver
-/// holding this number for a camera it cannot serve until it reloads — is
-/// permanent for the pass, as "camera not found" is: retrying with backoff
-/// cannot help, and the next pass picks the camera up once the driver serves
-/// it (rp.md § Device Session Recovery). Any other refusal may pass.
-fn connect_refused<T>(camera_id: &str, error: &ascom_alpaca::ASCOMError) -> AttemptOutcome<T> {
-    if error.code.raw() == rusty_photon_doctor_checks::claims::PLACEHOLDER_ERROR_CODE {
-        debug!(
-            camera_id,
-            reason = %error.message,
-            "the driver holds this camera's number with a placeholder; not retrying this pass"
-        );
-        return AttemptOutcome::Permanent(format!(
-            "set_connected: the driver serves a placeholder at this number until it reloads: \
-             {error}"
-        ));
-    }
-    AttemptOutcome::Transient(format!("set_connected: {error}"))
 }
 
 pub(super) async fn connect_camera(
@@ -705,18 +684,5 @@ mod tests {
             error.contains("no working camera is enumerated on p9"),
             "{error}"
         );
-    }
-
-    /// Any other refusal may pass, so it is retried.
-    #[test]
-    fn another_refusal_is_transient() {
-        let refusal = ascom_alpaca::ASCOMError::new(
-            ascom_alpaca::ASCOMErrorCode::new_for_driver(0x41),
-            "the camera is busy",
-        );
-        assert!(matches!(
-            connect_refused::<()>("main-camera", &refusal),
-            AttemptOutcome::Transient(_)
-        ));
     }
 }

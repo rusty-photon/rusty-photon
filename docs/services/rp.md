@@ -2886,10 +2886,16 @@ devices:
   ASCOM error `0x540` ([device-claims plan](../plans/device-claims-and-phd2-camera.md)
   D4.5, [svbony-camera.md](svbony-camera.md) U4). Retrying it cannot
   help — a placeholder becomes a camera only when its driver reloads —
-  so the connect routine takes that code as it takes "device not found":
-  one attempt, no backoff, logged at `debug!` with the driver's reason,
-  and the entry stays disconnected. The next pass tries again, so the
-  camera is picked up on the first pass after a reload serves it.
+  so the connect routine takes that refusal as it takes "device not
+  found": one attempt, no backoff, logged at `debug!` with the driver's
+  reason, and the entry stays disconnected. The next pass tries again, so
+  the camera is picked up on the first pass after a reload serves it. A
+  refusal counts as a placeholder's only when the device's `UniqueID` has
+  the placeholder form (`placeholder:<service>:<usb_port>`) as well: the
+  `0x500`–`0xFFF` range is every Alpaca driver's to use, so another
+  driver's `0x540` is still retried. The classification is the shared
+  connect helper's, so `qhy-camera`'s placeholder filter wheels (plan C4)
+  take the same path.
 
 The cadence is fixed — no exponential backoff. One `Connected` read per
 device per interval is the steady-state cost, and the interval itself

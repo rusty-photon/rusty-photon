@@ -212,6 +212,15 @@ impl ServerBuilder {
     /// listener cannot bind the configured port. A failed USB scan is not an
     /// error: it is served as placeholders and retried (U6).
     pub async fn build(self) -> Result<BoundServer, SvbonyCameraError> {
+        // The load refuses a list that breaks a rule; checked again here
+        // because registration depends on it — numbers 0..N-1 are what make
+        // each entry's position its number — and a config built in code
+        // never passed through a load.
+        let errors = self.config.list_errors();
+        if !errors.is_empty() {
+            let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
+            return Err(SvbonyCameraError::Config(errors.join("; ")));
+        }
         let mut server = Server::new(CargoServerInfo!());
         let registered = match &self.config.usb_devices {
             None => Registered {
@@ -393,20 +402,19 @@ impl ServerBuilder {
             }
         }
 
-        registered.rescan = claims
-            .scan_error()
-            .is_some()
-            .then(|| {
-                let rescan = self.reload.clone().map(|reload| Rescan {
-                    source: self.usb_source.clone(),
-                    reload,
-                });
-                if rescan.is_none() {
-                    debug!("no reload path: a failed USB scan is not retried");
-                }
-                rescan
-            })
-            .flatten();
+        if claims.scan_error().is_some() {
+            registered.rescan = self.reload.clone().map(|reload| Rescan {
+                source: self.usb_source.clone(),
+                reload,
+                config: self
+                    .config_path
+                    .clone()
+                    .map(|path| (path, self.overrides.clone())),
+            });
+            if registered.rescan.is_none() {
+                debug!("no reload path: a failed USB scan is not retried");
+            }
+        }
         Ok(registered)
     }
 
@@ -462,15 +470,36 @@ struct Registered {
 struct Rescan {
     source: UsbSource,
     reload: ReloadSignal,
+    /// The config file the reload will read, and the CLI overrides layered on
+    /// it. `None` when the builder has no config source.
+    config: Option<(PathBuf, CliOverrides)>,
 }
 
 impl Rescan {
     async fn run(self) {
+        let mut said_config_fails = false;
         for wait in rusty_photon_doctor_checks::claims::rescan_waits() {
             tokio::time::sleep(wait).await;
             let source = self.source.clone();
             match tokio::task::spawn_blocking(move || source.scan()).await {
                 Ok(Ok(_)) => {
+                    // Nobody asked for this reload, so it must not be the one
+                    // that finds a hand edit the file no longer loads with:
+                    // a reload that cannot load its config ends the service.
+                    // It waits for the file to load again, re-scanning on
+                    // the same schedule meanwhile.
+                    if let Some(error) = self.config_error() {
+                        if said_config_fails {
+                            debug!(%error, "the config file still does not load");
+                        } else {
+                            warn!(
+                                %error,
+                                "the USB scan succeeds again, but the config file no longer                                  loads; not reloading until it does"
+                            );
+                            said_config_fails = true;
+                        }
+                        continue;
+                    }
                     info!("the USB scan succeeds again; reloading to place the listed cameras");
                     self.reload.notify();
                     return;
@@ -480,15 +509,12 @@ impl Rescan {
             }
         }
     }
-}
 
-/// Aborts the task it holds when dropped, so a re-scan ends with the server
-/// it belongs to.
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
+    /// Why the config file the reload would read does not load, if it does
+    /// not.
+    fn config_error(&self) -> Option<SvbonyCameraError> {
+        let (path, overrides) = self.config.as_ref()?;
+        load_effective_config(path, overrides).err()
     }
 }
 
@@ -532,7 +558,8 @@ impl BoundServer {
         // Spawned rather than raced against serving: the re-scan's success
         // fires the reload that ends this server, and the guard stops it when
         // serving ends for any other reason.
-        let _rescan = rescan.map(|rescan| AbortOnDrop(tokio::spawn(rescan.run())));
+        let _rescan = rescan
+            .map(|rescan| tokio_util::task::AbortOnDropHandle::new(tokio::spawn(rescan.run())));
         let serve = async {
             let result = if let Some(ref tls_config) = tls {
                 debug!("serving over TLS");
@@ -789,6 +816,7 @@ mod simulation_tests {
         Rescan {
             source: UsbSource::Simulated,
             reload: reload.clone(),
+            config: None,
         }
         .run()
         .await;
@@ -804,6 +832,7 @@ mod simulation_tests {
         let run = Rescan {
             source,
             reload: reload.clone(),
+            config: None,
         }
         .run();
         assert!(
@@ -818,6 +847,52 @@ mod simulation_tests {
                 .is_err(),
             "a failing scan fired the reload"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_rescan_never_reloads_into_a_config_file_that_no_longer_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("svbony-camera.json");
+        std::fs::write(
+            &path,
+            r#"{"usb_devices": [{"device_number": 1, "usb_port": "a"}]}"#,
+        )
+        .unwrap();
+        let reload = ReloadSignal::new();
+        let run = Rescan {
+            source: UsbSource::Simulated,
+            reload: reload.clone(),
+            config: Some((path, CliOverrides::default())),
+        }
+        .run();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(300), run)
+                .await
+                .is_err(),
+            "the re-scan stopped while the config file does not load"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::ZERO, reload.recv())
+                .await
+                .is_err(),
+            "the re-scan reloaded into a config file that does not load"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_build_refuses_a_list_that_breaks_a_rule() {
+        let config = Config {
+            usb_devices: Some(list(&[(1, "simulated-usbv3-0:1")])),
+            ..Config::default()
+        };
+        let error = ServerBuilder::new()
+            .with_config(config)
+            .build()
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("0 is missing"), "{error}");
     }
 
     /// The empty-backend path starts healthy with no Camera devices (C0).

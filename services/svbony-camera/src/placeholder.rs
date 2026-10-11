@@ -101,7 +101,7 @@ impl Device for PlaceholderCamera {
     }
 
     async fn driver_info(&self) -> ASCOMResult<String> {
-        Ok("rusty-photon svbony-camera".to_string())
+        Ok(crate::camera::DRIVER_INFO.to_string())
     }
 
     async fn driver_version(&self) -> ASCOMResult<String> {

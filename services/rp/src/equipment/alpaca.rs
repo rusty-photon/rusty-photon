@@ -43,6 +43,36 @@ pub(super) enum AttemptOutcome<T> {
     Transient(String),
 }
 
+/// What a device's refused `Connected = true` means for its connect routine.
+///
+/// A device-claims placeholder's refusal — its error code, from a device whose
+/// `UniqueID` has the placeholder form, standing in for a device its driver
+/// cannot serve until it reloads — is permanent for the pass, as "device not
+/// found" is: retrying with backoff cannot help, and the next pass picks the
+/// device up once the driver serves it (rp.md § Device Session Recovery). The
+/// code alone is not enough: the driver range is every Alpaca driver's to use.
+/// Any other refusal may pass.
+pub(super) fn connect_refused<T>(
+    label: &str,
+    unique_id: &str,
+    error: &ascom_alpaca::ASCOMError,
+) -> AttemptOutcome<T> {
+    if error.code.raw() == rusty_photon_doctor_checks::claims::PLACEHOLDER_ERROR_CODE
+        && rusty_photon_doctor_checks::claims::is_placeholder_unique_id(unique_id)
+    {
+        debug!(
+            label,
+            reason = %error.message,
+            "the driver holds this number with a placeholder; not retrying this pass"
+        );
+        return AttemptOutcome::Permanent(format!(
+            "set_connected: the driver serves a placeholder at this number until it reloads: \
+             {error}"
+        ));
+    }
+    AttemptOutcome::Transient(format!("set_connected: {error}"))
+}
+
 /// Drive `operation` up to [`CONNECT_ATTEMPTS`] times with exponential
 /// backoff between attempts: 1 s, then 2 s. Returns the first `Ok`
 /// result, or the last transient error wrapped with attempt count if
@@ -221,6 +251,46 @@ where
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    fn refusal(code: ascom_alpaca::ASCOMErrorCode) -> ascom_alpaca::ASCOMError {
+        ascom_alpaca::ASCOMError::new(code, "no working camera is enumerated on p9")
+    }
+
+    const PLACEHOLDER: ascom_alpaca::ASCOMErrorCode = ascom_alpaca::ASCOMErrorCode::new_for_driver(
+        rusty_photon_doctor_checks::claims::PLACEHOLDER_DRIVER_CODE,
+    );
+
+    #[test]
+    fn a_placeholders_refusal_is_permanent() {
+        assert!(matches!(
+            connect_refused::<()>(
+                "camera main",
+                "placeholder:svbony-camera:p9",
+                &refusal(PLACEHOLDER)
+            ),
+            AttemptOutcome::Permanent(_)
+        ));
+    }
+
+    #[test]
+    fn the_placeholder_code_from_another_driver_is_transient() {
+        assert!(matches!(
+            connect_refused::<()>("camera main", "ASCOM.Other.Camera", &refusal(PLACEHOLDER)),
+            AttemptOutcome::Transient(_)
+        ));
+    }
+
+    #[test]
+    fn another_code_from_a_placeholder_is_transient() {
+        assert!(matches!(
+            connect_refused::<()>(
+                "camera main",
+                "placeholder:svbony-camera:p9",
+                &refusal(ascom_alpaca::ASCOMErrorCode::new_for_driver(0x41))
+            ),
+            AttemptOutcome::Transient(_)
+        ));
+    }
 
     #[test]
     fn build_alpaca_client_without_auth() {
