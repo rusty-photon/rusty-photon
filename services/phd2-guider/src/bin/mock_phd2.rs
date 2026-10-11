@@ -32,6 +32,10 @@
 //!   `MOCK_PHD2_ROTATOR` - "connected" populates `get_current_equipment`'s
 //!     rotator slot ({"name": "Mock Rotator", "connected": true});
 //!     unset/anything else reports null (no rotator in the profile)
+//!   `MOCK_PHD2_IMAGE_DIR` - Directory `save_image` writes its FITS file to
+//!     (default: the system temp directory). Each call writes a new file and
+//!     replies {"filename": "<full path>"}, as PHD2 does; the file is left
+//!     for the client to remove
 //!
 //! Command line argument takes precedence over environment variable for port.
 //! Default port is 4400 (same as PHD2).
@@ -68,9 +72,13 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use rp_fits::atomic::write_atomic_with;
+use rp_fits::writer::write_u16_image;
 
 /// Application state shared across connections, mirroring the single
 /// state machine inside a real PHD2 instance.
@@ -272,6 +280,50 @@ fn emit_settle_sequence(writer: Arc<Mutex<TcpStream>>) {
     });
 }
 
+/// Geometry of the frame `save_image` writes.
+const SAVED_FRAME_WIDTH: usize = 8;
+const SAVED_FRAME_HEIGHT: usize = 6;
+const SAVED_FRAME_PIXELS: usize = SAVED_FRAME_WIDTH * SAVED_FRAME_HEIGHT;
+/// Step of the saved frame's row-major ramp: pixel `i` is `i × 1365`, so
+/// the 48 values span 0..=64155 and cross the signed midpoint that the
+/// `BZERO = 32768` encoding of unsigned 16-bit pixels pivots on.
+const SAVED_FRAME_STEP: usize = 1365;
+
+/// Answer `save_image` as PHD2 does: write the current frame to a new
+/// FITS file and return its full path. The frame is a fixed 8×6
+/// unsigned 16-bit ramp (primary HDU, `BITPIX = 16`, `BZERO = 32768`).
+///
+/// The file goes to `MOCK_PHD2_IMAGE_DIR`, or the system temp directory
+/// when that is unset, and is left there: as with PHD2, removing it is
+/// the client's job. PHD2 names the file with
+/// `wxFileName::CreateTempFileName(<dir>/save_image_)`, so the real name
+/// has no `.fits` extension; this one has none either, so a client cannot
+/// come to rely on one. The process id and a per-process counter keep
+/// every name unique.
+fn save_image() -> Result<String, String> {
+    static NEXT_IMAGE: AtomicU64 = AtomicU64::new(0);
+
+    let dir =
+        std::env::var_os("MOCK_PHD2_IMAGE_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
+    let serial = NEXT_IMAGE.fetch_add(1, Ordering::Relaxed);
+    let name = format!("save_image_{}_{serial}", std::process::id());
+    let path = std::path::absolute(dir.join(name))
+        .map_err(|e| format!("cannot make the image path absolute: {e}"))?;
+
+    let pixels: Vec<u16> = (0..=u16::MAX)
+        .step_by(SAVED_FRAME_STEP)
+        .take(SAVED_FRAME_PIXELS)
+        .collect();
+    write_atomic_with(&path, |w| {
+        write_u16_image(w, &pixels, SAVED_FRAME_WIDTH, SAVED_FRAME_HEIGHT, &[])
+    })
+    .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+
+    path.into_os_string()
+        .into_string()
+        .map_err(|p| format!("image path is not UTF-8: {}", p.to_string_lossy()))
+}
+
 fn handle_client(
     stream: TcpStream,
     shutdown: &Arc<AtomicBool>,
@@ -405,6 +457,16 @@ fn handle_request(
             emit_settle_sequence(writer.clone());
             serde_json::json!(0)
         }
+        "save_image" => match save_image() {
+            Ok(filename) => serde_json::json!({ "filename": filename }),
+            Err(e) => {
+                // PHD2's own reply when it cannot write the file.
+                eprintln!("Mock PHD2: save_image failed: {e}");
+                return format!(
+                    r#"{{"jsonrpc":"2.0","error":{{"code":3,"message":"error saving image"}},"id":{id}}}"#
+                );
+            }
+        },
         "shutdown" => {
             if ignore_shutdown {
                 // Report success but don't actually shut down.
@@ -484,7 +546,6 @@ fn canned_response(method: &str) -> Option<serde_json::Value> {
             "star_pos": [16.0, 16.0],
             "pixels": "AAAA"
         }),
-        "save_image" => serde_json::json!("/tmp/mock_image.fits"),
         _ => return None,
     };
     Some(value)
