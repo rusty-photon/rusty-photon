@@ -33,10 +33,12 @@ use super::pixel::Pixel;
 /// A component under it carries its flux in the one pixel under its
 /// centroid: a hot pixel that suppression kept because the sky around it
 /// is brighter than the frame's mean, or a cosmic-ray hit. A star
-/// measures under it only when it is undersampled (FWHM under about
-/// 1.1 px) and centred near a pixel's centre. On rig2's QHY600M frames,
-/// binned 1× and 2×, 96–100% of the detections it removes are bright at
-/// the same sensor pixel in a frame taken hours or days later.
+/// measures under it when it is centred near a pixel's centre and
+/// undersampled: FWHM under about 1.1 px, or about 1.3 px for a faint
+/// star whose component is only its core and four neighbours. On rig2's
+/// QHY600M frames, binned 1× and 2×, 96–100% of the detections it
+/// removes are bright at the same sensor pixel in a frame taken hours
+/// or days later.
 pub const MIN_STAR_HFR: f64 = 0.25;
 
 /// How far above the background mean, in background standard deviations,
@@ -97,10 +99,6 @@ pub struct DetectionParams {
 /// Run the detection pipeline over `view` against `background`. Returns the
 /// list of admitted stars in row-major scan order.
 #[must_use]
-#[expect(
-    clippy::suboptimal_flops,
-    reason = "mean + k·stddev is the detection threshold in its textbook shape; fusing hides it for no observable gain"
-)]
 pub fn detect_stars<T: Pixel>(
     view: &ArrayView2<T>,
     background: &BackgroundStats,
@@ -111,8 +109,7 @@ pub fn detect_stars<T: Pixel>(
         return Vec::new();
     }
 
-    let threshold = background.mean + params.threshold_sigma * background.stddev;
-    let body_level = (background.mean + BODY_SIGMA * background.stddev).min(threshold);
+    let (threshold, body_level) = detection_levels(background, params.threshold_sigma);
 
     // Clear hot pixels from a f64 copy of the input, then smooth it.
     let mut f64_data: Array2<f64> = view.mapv(super::pixel::Pixel::to_f64);
@@ -131,6 +128,18 @@ pub fn detect_stars<T: Pixel>(
         .into_iter()
         .filter_map(|pixels| build_star(view, pixels, background.mean, params, rows, cols))
         .collect()
+}
+
+/// The detection threshold for `threshold_sigma`, and the body level
+/// hot-pixel suppression tests windows against.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "mean + k·stddev is the detection threshold in its textbook shape; fusing hides it for no observable gain"
+)]
+fn detection_levels(background: &BackgroundStats, threshold_sigma: f64) -> (f64, f64) {
+    let threshold = background.mean + threshold_sigma * background.stddev;
+    let body_level = (background.mean + BODY_SIGMA * background.stddev).min(threshold);
+    (threshold, body_level)
 }
 
 /// Replace, in `data`, every hot pixel of `view` with the median of the
@@ -876,11 +885,26 @@ mod tests {
         assert_eq!(stars.len(), 1, "got {} stars", stars.len());
     }
 
+    /// The `(row, column)` of each of the nine hot pixels a detector that
+    /// smooths first counts as stars on the real crop at `threshold_sigma`
+    /// 5, `min_area` 4 and `max_area` 400; each is a single pixel.
+    const CROP_HOT_PIXELS: [(usize, usize); 9] = [
+        (54, 274),
+        (71, 59),
+        (81, 287),
+        (113, 155),
+        (212, 354),
+        (274, 260),
+        (378, 199),
+        (380, 249),
+        (448, 214),
+    ];
+
     /// A 512×512 crop of a real QHY600M frame at best focus, provenance
     /// in the fixture directory's README. `measure_basic.feature` pins
-    /// what `measure_basic` reports on it; this pins that the crop
-    /// exercises suppression at those settings: a detector that smooths
-    /// first counts nine of its hot pixels as stars.
+    /// what `measure_basic` reports on it; this pins that suppression,
+    /// not the HFR floor, is what removes its hot pixels at those
+    /// settings.
     #[test]
     fn real_frame_hot_pixels_are_replaced_before_smoothing() {
         let bytes: &[u8] =
@@ -889,12 +913,14 @@ mod tests {
             rp_fits::reader::read_primary_as_i32(std::io::Cursor::new(bytes)).unwrap();
         let arr = Array2::from_shape_vec((height, width), pixels).unwrap();
         let bg = super::super::background::estimate_background(&arr.view()).unwrap();
-        let threshold = bg.mean + 5.0 * bg.stddev;
-        let body_level = bg.mean + BODY_SIGMA * bg.stddev;
+        let (threshold, body_level) = detection_levels(&bg, 5.0);
         let raw = arr.mapv(Pixel::to_f64);
         let mut data = raw.clone();
         suppress_hot_pixels(&arr.view(), &mut data, threshold, body_level);
-        let replaced = raw.iter().zip(&data).filter(|(a, b)| a != b).count();
-        assert!(replaced >= 9, "replaced {replaced} pixels");
+        let kept: Vec<_> = CROP_HOT_PIXELS
+            .iter()
+            .filter(|&&cell| data[cell] == raw[cell])
+            .collect();
+        assert!(kept.is_empty(), "hot pixels left in place: {kept:?}");
     }
 }

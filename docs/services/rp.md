@@ -1996,18 +1996,21 @@ bin 4 (2026-09-09 frames), at `threshold_sigma` 5 and 8.
 
 **Caveats**:
 - A hot pixel inside a star's footprint, or touching it, is not removed.
-  It adds to that star's flux and pulls its HFR down a little. Removing
-  it needs a defect map built from dark frames, which `rp` does not have.
+  A faint one adds to that star's flux and pulls its HFR down. One that
+  outshines the star pulls the centroid onto itself, so the star
+  measures under the HFR floor and is dropped. Removing it needs a
+  defect map built from dark frames, which `rp` does not have.
 - A faint star whose only pixels more than 2σ above the background are
   its brightest one to four looks like a hot structure and is removed.
 - A cluster of five or more hot pixels within a 3×3 window holds a body
   and survives suppression. If its flux is concentrated in one pixel,
   the HFR floor rejects it; otherwise it is counted as a star.
-- A star measures under the HFR floor only when it is undersampled (FWHM
-  under about 1.1 px) and centred near a pixel's centre. On rig2's bin-2
-  frames, with stars at a FWHM of about 1.5 px, the floor removed only hot
-  pixels; a setup that samples its stars more coarsely at best focus
-  loses some of them there.
+- A star measures under the HFR floor when it is centred near a pixel's
+  centre and undersampled: FWHM under about 1.1 px, or about 1.3 px for
+  a faint star whose component is only its core and four neighbours. On
+  rig2's bin-2 frames, with stars at a FWHM of about 1.5 px, 96–100% of
+  what the floor removed were hot pixels; a setup that samples its stars
+  more coarsely at best focus loses some of them there.
 - Neither step needs a large `min_area`. A value chosen to exclude hot
   pixels now only excludes faint and compact stars. A `min_area` in the
   single digits admits every star the threshold finds.

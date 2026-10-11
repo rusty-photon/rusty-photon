@@ -118,7 +118,7 @@ paper over a measurement bug, and the hyperbola's wings are fitted to
 exactly the samples #1179 would make honest. Its frame corpus is the
 one hardware dependency left in this plan.
 
-G3a, the hot-pixel part of G3, landed ahead of G2 at the owner's
+G3a, the hot-pixel part of G3, lands ahead of G2 at the owner's
 direction (2026-10-11). It changes no result at the settings the rig
 ran (`threshold_sigma 10`, `min_area 40`). It is what lets a sweep run
 at a `min_area` that admits compact stars: at `threshold_sigma 8` and
