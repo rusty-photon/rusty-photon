@@ -113,7 +113,7 @@ pub fn detect_stars<T: Pixel>(
 
     // Clear hot pixels from a f64 copy of the input, then smooth it.
     let mut f64_data: Array2<f64> = view.mapv(super::pixel::Pixel::to_f64);
-    suppress_hot_pixels(view, &mut f64_data, threshold, body_level);
+    let hot = suppress_hot_pixels(view, &mut f64_data, threshold, body_level);
     let smoothed = if params.smoothing_sigma > 0.0 && rows > 4 && cols > 4 {
         gaussian_filter(&f64_data, params.smoothing_sigma, 0, BorderMode::Reflect, 4)
     } else {
@@ -124,8 +124,16 @@ pub fn detect_stars<T: Pixel>(
 
     let components = connected_components_4(&mask.view());
 
+    // A hot pixel inside a star's smoothed footprint is not part of the
+    // star: the measurements read raw pixels, so it leaves the component.
     components
         .into_iter()
+        .map(|pixels| {
+            pixels
+                .into_iter()
+                .filter(|cell| hot.binary_search(cell).is_err())
+                .collect()
+        })
         .filter_map(|pixels| build_star(view, pixels, background.mean, params, rows, cols))
         .collect()
 }
@@ -143,10 +151,10 @@ fn detection_levels(background: &BackgroundStats, threshold_sigma: f64) -> (f64,
 }
 
 /// Replace, in `data`, every hot pixel of `view` with the median of the
-/// 3×3 window centred on it. A pixel is hot when it is above `threshold`
-/// and none of the nine 3×3 windows that contain it has a median above
-/// `body_level`, that is, none holds a star's body: at least five of its
-/// nine pixels above that level.
+/// 3×3 window centred on it, and return the hot pixels in row-major
+/// order. A pixel is hot when it is above `threshold` and none of the
+/// 3×3 windows that contain it holds a star's body: at least five of its
+/// pixels above `body_level`, which in a full window is its median.
 ///
 /// Smoothing first would spread a hot pixel into a blob several pixels
 /// wide that passes the area filter. A structure of up to four bright
@@ -155,66 +163,61 @@ fn detection_levels(background: &BackgroundStats, threshold_sigma: f64) -> (f64,
 /// body, and so does a window around the core side of every pixel of
 /// its profile. The same holds for the edge of any extended shape.
 /// Windows are read from `view`, so a replacement never feeds the next
-/// pixel's test, and the border is replicated.
+/// pixel's test, and they are clipped at the frame's edge.
 fn suppress_hot_pixels<T: Pixel>(
     view: &ArrayView2<T>,
     data: &mut Array2<f64>,
     threshold: f64,
     body_level: f64,
-) {
+) -> Vec<(usize, usize)> {
     let dim = view.dim();
     let holds_body = |(r, c): (usize, usize)| {
-        neighbourhood(dim, r, c)
+        window(dim, r, c)
             .filter(|&cell| view.get(cell).is_some_and(|v| v.to_f64() > body_level))
             .count()
             >= 5
     };
-    let mut replaced = 0usize;
+    let mut hot = Vec::new();
     for ((r, c), raw) in view.indexed_iter() {
-        if raw.to_f64() <= threshold || neighbourhood(dim, r, c).any(holds_body) {
+        if raw.to_f64() <= threshold || window(dim, r, c).any(holds_body) {
             continue;
         }
         if let Some(slot) = data.get_mut((r, c)) {
-            *slot = neighbourhood_median(view, r, c);
-            replaced = replaced.saturating_add(1);
+            *slot = window_median(view, r, c);
+            hot.push((r, c));
         }
     }
-    debug!(replaced, "hot pixels replaced before star detection");
+    debug!(
+        replaced = hot.len(),
+        "hot pixels replaced before star detection"
+    );
+    hot
 }
 
-/// The nine cells of the 3×3 neighbourhood centred on `(r, c)` in a
-/// frame of `(rows, cols)`, the border replicated.
-fn neighbourhood(
+/// The cells of the 3×3 window centred on `(r, c)` that lie in a frame
+/// of `(rows, cols)`: nine inside it, six on an edge, four in a corner.
+fn window(
     (rows, cols): (usize, usize),
     r: usize,
     c: usize,
 ) -> impl Iterator<Item = (usize, usize)> {
-    let row_ids = [
-        r.saturating_sub(1),
-        r,
-        r.saturating_add(1).min(rows.saturating_sub(1)),
-    ];
-    let col_ids = [
-        c.saturating_sub(1),
-        c,
-        c.saturating_add(1).min(cols.saturating_sub(1)),
-    ];
-    row_ids
-        .into_iter()
-        .flat_map(move |rr| col_ids.into_iter().map(move |cc| (rr, cc)))
+    let col_range = c.saturating_sub(1)..=c.saturating_add(1).min(cols.saturating_sub(1));
+    (r.saturating_sub(1)..=r.saturating_add(1).min(rows.saturating_sub(1)))
+        .flat_map(move |rr| col_range.clone().map(move |cc| (rr, cc)))
 }
 
-/// Median of the 3×3 neighbourhood centred on `(r, c)`, the border
-/// replicated.
-fn neighbourhood_median<T: Pixel>(view: &ArrayView2<T>, r: usize, c: usize) -> f64 {
-    let mut window = [0.0_f64; 9];
-    let values = neighbourhood(view.dim(), r, c).filter_map(|cell| view.get(cell));
-    for (slot, value) in window.iter_mut().zip(values) {
-        *slot = value.to_f64();
-    }
-    window.sort_unstable_by(f64::total_cmp);
-    let [_, _, _, _, median, ..] = window;
-    median
+/// Median of the 3×3 window centred on `(r, c)`, clipped at the frame's
+/// edge; with an even count, the lower of the two middle values, so a
+/// hot pair in a four-cell corner window is replaced by background.
+fn window_median<T: Pixel>(view: &ArrayView2<T>, r: usize, c: usize) -> f64 {
+    let mut values: Vec<f64> = window(view.dim(), r, c)
+        .filter_map(|cell| view.get(cell).copied())
+        .map(Pixel::to_f64)
+        .collect();
+    // Never empty: `(r, c)` itself is in the frame.
+    let middle = values.len().saturating_sub(1) / 2;
+    let (_, median, _) = values.select_nth_unstable_by(middle, f64::total_cmp);
+    *median
 }
 
 fn build_star<T: Pixel>(
@@ -777,6 +780,14 @@ mod tests {
         assert_eq!(data[[0, 0]], 1000.0);
     }
 
+    /// The corner's windows are clipped, not padded with copies of the
+    /// pair, so the pair holds no body there either.
+    #[test]
+    fn suppression_replaces_a_hot_pair_in_the_corner() {
+        let data = suppressed(&flat_with(&[(0, 0), (0, 1)], 30_000));
+        assert_eq!((data[[0, 0]], data[[0, 1]]), (1000.0, 1000.0));
+    }
+
     /// Stars with a 2 px FWHM, from near the detection limit to bright:
     /// none loses a pixel, so a star's footprint, and the verdict any
     /// `min_area` gives on it, is what it was without suppression.
@@ -873,6 +884,23 @@ mod tests {
         );
     }
 
+    /// A bright compact star's smoothed footprint reaches a hot pixel
+    /// 4 px from its core that suppression replaced; the star is measured
+    /// exactly as it is without the hot pixel.
+    #[test]
+    fn hot_pixel_in_a_stars_smoothed_footprint_is_not_measured() {
+        let star = make_gaussian(64, 64, 32.0, 32.0, 0.6, 60_000.0, 1000.0);
+        let mut with_hot = star.clone();
+        with_hot[[32, 36]] = 30_000;
+        let alone = detect_any(&star);
+        let beside = detect_any(&with_hot);
+        assert_eq!((alone.len(), beside.len()), (1, 1));
+        assert_eq!(
+            (beside[0].centroid_x, beside[0].total_flux),
+            (alone[0].centroid_x, alone[0].total_flux)
+        );
+    }
+
     #[test]
     fn component_whose_flux_sits_in_one_pixel_is_rejected() {
         let stars = detect_any(&plateau(Some(60_000)));
@@ -914,12 +942,11 @@ mod tests {
         let arr = Array2::from_shape_vec((height, width), pixels).unwrap();
         let bg = super::super::background::estimate_background(&arr.view()).unwrap();
         let (threshold, body_level) = detection_levels(&bg, 5.0);
-        let raw = arr.mapv(Pixel::to_f64);
-        let mut data = raw.clone();
-        suppress_hot_pixels(&arr.view(), &mut data, threshold, body_level);
+        let mut data = arr.mapv(Pixel::to_f64);
+        let hot = suppress_hot_pixels(&arr.view(), &mut data, threshold, body_level);
         let kept: Vec<_> = CROP_HOT_PIXELS
             .iter()
-            .filter(|&&cell| data[cell] == raw[cell])
+            .filter(|cell| hot.binary_search(cell).is_err())
             .collect();
         assert!(kept.is_empty(), "hot pixels left in place: {kept:?}");
     }

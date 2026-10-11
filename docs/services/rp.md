@@ -1918,12 +1918,14 @@ The first analysis tool to implement. Behavioral contract:
 3. Suppress hot pixels in the copy that steps 4–5 smooth and threshold.
    A pixel is hot when it is above the detection threshold
    (`background_mean + threshold_sigma × background_stddev`) and none of
-   the nine 3×3 windows that contain it holds a star's body: at least
-   five of the window's nine pixels (its median) above
-   `background_mean + 2 × background_stddev`, capped at the threshold. A
-   hot pixel is replaced by the median of the window centred on it; the
-   border is replicated. Every measurement in steps 7–8 still reads the
-   raw pixels.
+   the 3×3 windows that contain it holds a star's body: at least five of
+   its pixels (in a full window, its median) above
+   `background_mean + 2 × background_stddev`, capped at the threshold.
+   Windows are clipped at the frame's edge. A hot pixel is replaced by
+   the median of the window centred on it (at an edge, the lower of the
+   two middle values). Every measurement in steps 7–8 still reads the
+   raw pixels, and a hot pixel that falls inside a component's smoothed
+   footprint is dropped from the component, so none reads it.
 4. Apply Gaussian smoothing (small kernel, σ ≈ 1.0 px) to suppress noise.
 5. Threshold at `background_mean + threshold_sigma × background_stddev`.
 6. Connected-components labelling on the thresholded mask.
@@ -1995,11 +1997,19 @@ and 2026-09-26 frames), 97–99% at bin 2, 92–98% at bin 3 and 85–95% at
 bin 4 (2026-09-09 frames), at `threshold_sigma` 5 and 8.
 
 **Caveats**:
-- A hot pixel inside a star's footprint, or touching it, is not removed.
-  A faint one adds to that star's flux and pulls its HFR down. One that
-  outshines the star pulls the centroid onto itself, so the star
-  measures under the HFR floor and is dropped. Removing it needs a
-  defect map built from dark frames, which `rp` does not have.
+- A hot pixel next to a star's body, where a window around it holds
+  the body, is not removed. A faint one adds to that star's flux and
+  pulls its HFR down. One that outshines the star pulls the centroid
+  onto itself, so the star measures under the HFR floor and is dropped.
+  Removing it needs a defect map built from dark frames, which `rp` does
+  not have.
+- Where the sky is more than 2σ above the frame's mean (a gradient, amp
+  glow), a hot pixel's windows can hold a body and it survives
+  suppression. The HFR floor removes it when it carries half its
+  component's flux; otherwise it counts as a star. On rig2's frames, the
+  stars sitting on a pixel that is also bright in a frame taken hours or
+  days later exceed the chance rate by 1–2% at bin 2 and
+  `threshold_sigma` 5 (at most 1% at 8), and not at all at bin 1.
 - A faint star whose only pixels more than 2σ above the background are
   its brightest one to four looks like a hot structure and is removed.
 - A cluster of five or more hot pixels within a 3×3 window holds a body
