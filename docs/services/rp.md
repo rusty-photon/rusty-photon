@@ -1917,12 +1917,13 @@ The first analysis tool to implement. Behavioral contract:
 2. Estimate background via sigma-clipped mean/stddev.
 3. Suppress hot pixels in the copy that steps 4–5 smooth and threshold.
    A pixel is hot when it is above the detection threshold
-   (`background_mean + threshold_sigma × background_stddev`) while
-   neither the median of its 3×3 neighbourhood nor that of any of its
-   eight neighbours is: it belongs to a bright structure too small to
-   have a body. A hot pixel is replaced by its neighbourhood median; the
-   border is replicated.
-   Every measurement in steps 7–8 still reads the raw pixels.
+   (`background_mean + threshold_sigma × background_stddev`) and none of
+   the nine 3×3 windows that contain it holds a star's body: at least
+   five of the window's nine pixels (its median) above
+   `background_mean + 2 × background_stddev`, capped at the threshold. A
+   hot pixel is replaced by the median of the window centred on it; the
+   border is replicated. Every measurement in steps 7–8 still reads the
+   raw pixels.
 4. Apply Gaussian smoothing (small kernel, σ ≈ 1.0 px) to suppress noise.
 5. Threshold at `background_mean + threshold_sigma × background_stddev`.
 6. Connected-components labelling on the thresholded mask.
@@ -1953,41 +1954,60 @@ enough to exclude them, which also excluded the compact stars at best
 focus. PixInsight's star detector and Hocus Focus also remove hot pixels
 before they blur, for the same reason.
 
-The 3×3 median is background around any structure of up to four bright
-pixels, so single hot pixels, pairs and 2×2 clusters are removed. A star
-is left untouched: each pixel of its profile above the threshold has, in
-itself or in its neighbour on the core's side, a neighbourhood median
-above the threshold. The same holds for the edge of any extended shape,
-such as a defocused star's annulus. So a star's footprint, and with it
-the result at any `min_area`, is the same as without the step.
+A structure of up to four bright pixels holds no body, so single hot
+pixels, pairs and 2×2 clusters are removed. A star keeps every pixel: a
+window around its core holds its body, and so does a window around the
+core side of every pixel of its profile; the same holds for the edge of
+any extended shape, such as a defocused star's annulus. So a star's
+footprint, and with it the result at any `min_area`, is the same as
+without the step. The body level sits at 2σ above the background mean,
+not at the detection threshold, because a faint star at the detection
+limit, centred on a pixel corner or undersampled, has only one to four
+pixels above the threshold, while the median of nine background pixels
+scatters by only about 0.4σ. A body level at the threshold erased up to
+18% of the stars on rig2's bin-2 frames and up to 42% at bin 4.
 
-The HFR floor is the backstop for a hot pixel sitting on faint signal,
-such as a defocused star's annulus, whose neighbourhood median is above
-the threshold, and for cosmic-ray hits. On real QHY600M frames those
-measure under 0.1 px, and the smallest detections at best focus about
-0.4 px.
+**Why the HFR floor.** The body level is measured from the frame's
+global background, so where the sky is brighter than the frame's mean,
+in a gradient, a hot pixel's windows can reach the body level and the
+pixel survives suppression. It survives as a single bright pixel whose
+HFR is close to 0, and the floor removes it. A window built on the local
+background instead does not let it through, but on rig2's frames that
+kept only 23–57% of the stars on a frame of defocused donuts, whose
+annulus raises the local background. On rig2's frames the floor removes 14–103 such
+detections per frame. In a frame taken hours or days later, 96–100% of
+them are bright at the same sensor pixel, as a hot pixel is; for the
+stars that rate is 0–5%. The floor also catches a cosmic-ray hit.
 
-Measured on rig2's QHY600M (uncooled, 530 mm, 2026-09-26). The nine sweep
-frames of one `auto_focus` run plus its confirmation frame were measured
-at `threshold_sigma 8`, `min_area 6`, `max_area 2000`. Without step 3 and
+**Measured on rig2's QHY600M** (uncooled, 530 mm). The nine sweep frames of one
+2026-09-26 `auto_focus` run plus its confirmation frame were measured at
+`threshold_sigma 8`, `min_area 6`, `max_area 2000`. Without step 3 and
 the HFR floor, every frame reported 566–747 detections with a median HFR
 of 0.002–0.003 px. With them, the frames report 36–202 stars, and the
 HFRs trace the V-curve (3.77, 2.44, 1.75, 1.14, 0.95, 1.00, 1.35, 2.16
-and 2.49 px). The confirmation frame reports 145 stars at 0.87 px,
+and 2.49 px). The confirmation frame reports 146 stars at 0.87 px,
 against 2 at the settings that run had to use (`threshold_sigma 10`,
 `min_area 40`). At those settings, all ten frames report the same
-result with and without the two steps.
+result with and without the two steps. Of the detections the detector
+without these steps measures at an HFR of 0.6 px or more (its stars,
+and any hot cluster that large), it keeps 86–99% at bin 1 (2026-09-08
+and 2026-09-26 frames), 97–99% at bin 2, 92–98% at bin 3 and 85–95% at
+bin 4 (2026-09-09 frames), at `threshold_sigma` 5 and 8.
 
 **Caveats**:
 - A hot pixel inside a star's footprint, or touching it, is not removed.
   It adds to that star's flux and pulls its HFR down a little. Removing
   it needs a defect map built from dark frames, which `rp` does not have.
-- A cluster of five or more hot pixels within a 3×3 window survives
-  suppression. If its flux is concentrated in one pixel, the HFR floor
-  rejects it; otherwise it is counted as a star.
-- A setup that undersamples its stars badly enough to put half of a
-  star's light in one pixel loses those stars to the HFR floor. Such a
-  setup cannot measure focus by HFR anyway.
+- A faint star whose only pixels more than 2σ above the background are
+  its brightest one to four looks like a hot structure and is removed.
+- A cluster of five or more hot pixels within a 3×3 window holds a body
+  and survives suppression. If its flux is concentrated in one pixel,
+  the HFR floor rejects it; otherwise it is counted as a star.
+- A star measures under the HFR floor only when it is undersampled (FWHM
+  under about 1.1 px) and centred near a pixel's centre. On rig2's bin-2
+  frames, with stars at a FWHM of about 1.5 px, the floor removed only hot
+  pixels; a setup that samples its stars more coarsely at best focus
+  loses some of them there.
 - Neither step needs a large `min_area`. A value chosen to exclude hot
   pixels now only excludes faint and compact stars. A `min_area` in the
   single digits admits every star the threshold finds.

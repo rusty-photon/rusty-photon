@@ -11,7 +11,7 @@
 //! Saturated components are *not* rejected — they're flagged via
 //! [`Star::saturated_pixel_count`] so downstream consumers (`auto_focus`,
 //! quality-screen tools) apply their own policy. See `docs/services/rp.md`
-//! (MVP `measure_basic` Contract, algorithm step 6) for the rationale.
+//! (MVP `measure_basic` Contract, algorithm step 7) for the rationale.
 //!
 //! Connected-components is a hand-rolled 4-connectivity BFS over `Array2<bool>`
 //! because `ndarray-ndimage` 0.6's `label` is 3D-only with a hard `assert!`
@@ -31,13 +31,22 @@ use super::pixel::Pixel;
 /// admitted as a star.
 ///
 /// A component under it carries its flux in the one pixel under its
-/// centroid: a hot pixel on top of faint signal, which hot-pixel
-/// suppression leaves alone, or a cosmic-ray hit. On real QHY600M
-/// frames those measure under 0.1 px, and the smallest detections at best
-/// focus about 0.4 px, so the floor sits between them with margin on
-/// both sides; a setup that undersamples its stars that badly cannot
-/// measure focus by HFR anyway.
+/// centroid: a hot pixel that suppression kept because the sky around it
+/// is brighter than the frame's mean, or a cosmic-ray hit. A star
+/// measures under it only when it is undersampled (FWHM under about
+/// 1.1 px) and centred near a pixel's centre. On rig2's QHY600M frames,
+/// binned 1× and 2×, 96–100% of the detections it removes are bright at
+/// the same sensor pixel in a frame taken hours or days later.
 pub const MIN_STAR_HFR: f64 = 0.25;
+
+/// How far above the background mean, in background standard deviations,
+/// a 3×3 window's median must be for the window to hold a star's body
+/// (capped at the detection threshold). The median of nine background
+/// pixels scatters by about 0.4 σ, so a median 2 σ up is signal, while
+/// a hot structure of up to four pixels leaves it in the background's
+/// noise. A level at the threshold would also erase the faint stars
+/// that have only one to four pixels above it.
+const BODY_SIGMA: f64 = 2.0;
 
 /// A detected star.
 #[derive(Debug, Clone)]
@@ -103,10 +112,11 @@ pub fn detect_stars<T: Pixel>(
     }
 
     let threshold = background.mean + params.threshold_sigma * background.stddev;
+    let body_level = (background.mean + BODY_SIGMA * background.stddev).min(threshold);
 
     // Clear hot pixels from a f64 copy of the input, then smooth it.
     let mut f64_data: Array2<f64> = view.mapv(super::pixel::Pixel::to_f64);
-    suppress_hot_pixels(view, &mut f64_data, threshold);
+    suppress_hot_pixels(view, &mut f64_data, threshold, body_level);
     let smoothed = if params.smoothing_sigma > 0.0 && rows > 4 && cols > 4 {
         gaussian_filter(&f64_data, params.smoothing_sigma, 0, BorderMode::Reflect, 4)
     } else {
@@ -123,41 +133,40 @@ pub fn detect_stars<T: Pixel>(
         .collect()
 }
 
-/// Replace, in `data`, every hot pixel of `view` with the median of its
-/// 3×3 neighbourhood. A pixel is hot when it is above `threshold` while
-/// neither its neighbourhood median nor that of any of its eight
-/// neighbours is: it belongs to a bright structure too small to have a
-/// body.
+/// Replace, in `data`, every hot pixel of `view` with the median of the
+/// 3×3 window centred on it. A pixel is hot when it is above `threshold`
+/// and none of the nine 3×3 windows that contain it has a median above
+/// `body_level`, that is, none holds a star's body: at least five of its
+/// nine pixels above that level.
 ///
 /// Smoothing first would spread a hot pixel into a blob several pixels
-/// wide that passes the area filter. A 3×3 median is background around
-/// any structure of up to four bright pixels, so single hot pixels,
-/// pairs and 2×2 clusters go. A star is left untouched: a pixel of its
-/// profile above the threshold has, in itself or in the neighbour on
-/// the core's side, a neighbourhood median above the threshold. The same
-/// holds for the edge of any extended shape. Neighbourhoods are read
-/// from `view`, so a replacement never feeds the next pixel's median,
-/// and the border is replicated.
-fn suppress_hot_pixels<T: Pixel>(view: &ArrayView2<T>, data: &mut Array2<f64>, threshold: f64) {
-    let has_body = |cell: (usize, usize)| {
-        neighbourhood_median(view, cell.0, cell.1).is_some_and(|median| median > threshold)
+/// wide that passes the area filter. A structure of up to four bright
+/// pixels holds no body, so single hot pixels, pairs and 2×2 clusters
+/// go. A star keeps every pixel: a window around its core holds its
+/// body, and so does a window around the core side of every pixel of
+/// its profile. The same holds for the edge of any extended shape.
+/// Windows are read from `view`, so a replacement never feeds the next
+/// pixel's test, and the border is replicated.
+fn suppress_hot_pixels<T: Pixel>(
+    view: &ArrayView2<T>,
+    data: &mut Array2<f64>,
+    threshold: f64,
+    body_level: f64,
+) {
+    let dim = view.dim();
+    let holds_body = |(r, c): (usize, usize)| {
+        neighbourhood(dim, r, c)
+            .filter(|&cell| view.get(cell).is_some_and(|v| v.to_f64() > body_level))
+            .count()
+            >= 5
     };
     let mut replaced = 0usize;
     for ((r, c), raw) in view.indexed_iter() {
-        if raw.to_f64() <= threshold {
-            continue;
-        }
-        let Some(median) = neighbourhood_median(view, r, c) else {
-            continue;
-        };
-        if median > threshold {
-            continue;
-        }
-        if neighbourhood(view.dim(), r, c).any(|cell| cell != (r, c) && has_body(cell)) {
+        if raw.to_f64() <= threshold || neighbourhood(dim, r, c).any(holds_body) {
             continue;
         }
         if let Some(slot) = data.get_mut((r, c)) {
-            *slot = median;
+            *slot = neighbourhood_median(view, r, c);
             replaced = replaced.saturating_add(1);
         }
     }
@@ -188,13 +197,15 @@ fn neighbourhood(
 
 /// Median of the 3×3 neighbourhood centred on `(r, c)`, the border
 /// replicated.
-fn neighbourhood_median<T: Pixel>(view: &ArrayView2<T>, r: usize, c: usize) -> Option<f64> {
+fn neighbourhood_median<T: Pixel>(view: &ArrayView2<T>, r: usize, c: usize) -> f64 {
     let mut window = [0.0_f64; 9];
-    for (slot, cell) in window.iter_mut().zip(neighbourhood(view.dim(), r, c)) {
-        *slot = view.get(cell)?.to_f64();
+    let values = neighbourhood(view.dim(), r, c).filter_map(|cell| view.get(cell));
+    for (slot, value) in window.iter_mut().zip(values) {
+        *slot = value.to_f64();
     }
     window.sort_unstable_by(f64::total_cmp);
-    window.get(4).copied()
+    let [_, _, _, _, median, ..] = window;
+    median
 }
 
 fn build_star<T: Pixel>(
@@ -689,7 +700,8 @@ mod tests {
     // ---- hot pixels ----
 
     /// The background every hot-pixel test pins: 1000 ± 5 ADU, so the
-    /// detection threshold at 5σ is 1025 ADU.
+    /// detection threshold at 5σ is 1025 ADU and the body level at 2σ
+    /// 1010 ADU.
     fn flat_background() -> BackgroundStats {
         BackgroundStats {
             mean: 1000.0,
@@ -712,7 +724,7 @@ mod tests {
     /// `suppress_hot_pixels` over `arr` against the pinned background.
     fn suppressed(arr: &Array2<u16>) -> Array2<f64> {
         let mut data = arr.mapv(Pixel::to_f64);
-        suppress_hot_pixels(&arr.view(), &mut data, 1025.0);
+        suppress_hot_pixels(&arr.view(), &mut data, 1025.0, 1010.0);
         data
     }
 
@@ -774,6 +786,24 @@ mod tests {
     #[test]
     fn suppression_leaves_an_undersampled_star_untouched() {
         let arr = make_gaussian(64, 64, 32.0, 32.0, 0.5, 1_000.0, 1000.0);
+        assert_eq!(suppressed(&arr), arr.mapv(Pixel::to_f64));
+    }
+
+    /// A star at the detection limit whose core alone is above the
+    /// threshold: its arms, at 1020 ADU, put the core's window above the
+    /// body level.
+    #[test]
+    fn suppression_leaves_a_faint_undersampled_star_untouched() {
+        let arr = make_gaussian(64, 64, 32.0, 32.0, 0.5, 150.0, 1000.0);
+        assert_eq!(suppressed(&arr), arr.mapv(Pixel::to_f64));
+    }
+
+    /// A faint star centred on a pixel corner: four pixels above the
+    /// threshold, the shape a 2×2 hot cluster takes, but its wings, at
+    /// 1013 ADU, put the windows around them above the body level.
+    #[test]
+    fn suppression_leaves_a_faint_star_on_a_pixel_corner_untouched() {
+        let arr = make_gaussian(64, 64, 32.5, 32.5, 0.85, 75.0, 1000.0);
         assert_eq!(suppressed(&arr), arr.mapv(Pixel::to_f64));
     }
 
@@ -844,5 +874,27 @@ mod tests {
     fn plateau_without_a_hot_pixel_is_a_star() {
         let stars = detect_any(&plateau(None));
         assert_eq!(stars.len(), 1, "got {} stars", stars.len());
+    }
+
+    /// A 512×512 crop of a real QHY600M frame at best focus, provenance
+    /// in the fixture directory's README. `measure_basic.feature` pins
+    /// what `measure_basic` reports on it; this pins that the crop
+    /// exercises suppression at those settings: a detector that smooths
+    /// first counts nine of its hot pixels as stars.
+    #[test]
+    fn real_frame_hot_pixels_are_replaced_before_smoothing() {
+        let bytes: &[u8] =
+            include_bytes!("../../../tests/fixtures/star_detection/qhy600m_best_focus_crop.fits");
+        let (pixels, width, height) =
+            rp_fits::reader::read_primary_as_i32(std::io::Cursor::new(bytes)).unwrap();
+        let arr = Array2::from_shape_vec((height, width), pixels).unwrap();
+        let bg = super::super::background::estimate_background(&arr.view()).unwrap();
+        let threshold = bg.mean + 5.0 * bg.stddev;
+        let body_level = bg.mean + BODY_SIGMA * bg.stddev;
+        let raw = arr.mapv(Pixel::to_f64);
+        let mut data = raw.clone();
+        suppress_hot_pixels(&arr.view(), &mut data, threshold, body_level);
+        let replaced = raw.iter().zip(&data).filter(|(a, b)| a != b).count();
+        assert!(replaced >= 9, "replaced {replaced} pixels");
     }
 }

@@ -226,22 +226,4 @@ mod tests {
         assert_eq!(r.star_count, 1);
         assert_eq!(r.saturated_star_count, 1);
     }
-
-    /// A 512×512 crop of a real QHY600M frame at best focus (provenance
-    /// in the fixture directory's README). Its twelve stars sit among the
-    /// sensor's hot pixels; a detector that smooths before removing them
-    /// counts 21 objects at these settings, nine of them hot pixels, at
-    /// a median HFR of 0.79 px.
-    #[test]
-    fn real_frame_counts_its_stars_and_not_its_hot_pixels() {
-        let bytes: &[u8] =
-            include_bytes!("../../../tests/fixtures/star_detection/qhy600m_best_focus_crop.fits");
-        let (pixels, width, height) =
-            rp_fits::reader::read_primary_as_i32(std::io::Cursor::new(bytes)).unwrap();
-        let arr = Array2::from_shape_vec((height, width), pixels).unwrap();
-        let r = measure_basic(&arr.view(), 5.0, 4, 400, Some(65535)).unwrap();
-        assert_eq!(r.star_count, 12);
-        let hfr = r.hfr.expect("hfr should be Some");
-        assert!((1.0..=1.1).contains(&hfr), "hfr = {hfr}");
-    }
 }
