@@ -2167,40 +2167,57 @@ fn wheel_trains() -> crate::equipment::trains::TrainModel {
 }
 
 /// A wheel that takes ten seconds to report its position, in train
-/// `main` with camera `cam`.
-fn slow_wheel_handler() -> McpHandler {
+/// `main` with camera `cam`; `templated` configures the documented
+/// naming pattern, so typed frames name their files from the filter.
+fn slow_wheel_handler(templated: bool) -> McpHandler {
     let fw = MockFilterWheel {
         position_delay: Duration::from_secs(10),
         ..Default::default()
     };
-    test_handler(filter_wheel_registry(Arc::new(fw))).with_trains(wheel_trains())
+    let handler = test_handler(filter_wheel_registry(Arc::new(fw))).with_trains(wheel_trains());
+    if templated {
+        handler.with_naming_templates(Some(Arc::new(test_naming_templates())))
+    } else {
+        handler
+    }
 }
 
 #[tokio::test(start_paused = true)]
-async fn an_untemplated_filter_read_gives_up_on_a_slow_wheel() {
-    let err = slow_wheel_handler()
-        .read_frame_filter("cam", Some(rp_vocabulary::FrameType::Light), true)
+async fn an_untemplated_capture_gives_up_on_a_slow_wheel() {
+    let err = slow_wheel_handler(false)
+        .capture_filter("cam", Some(rp_vocabulary::FrameType::Light))
         .await
         .unwrap_err();
     assert!(err.contains("no answer within 3s"), "{err}");
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_templated_filter_read_waits_a_slow_wheel_out() {
-    let read = slow_wheel_handler()
-        .read_frame_filter("cam", Some(rp_vocabulary::FrameType::Light), false)
+async fn a_templated_capture_waits_a_slow_wheel_out() {
+    let read = slow_wheel_handler(true)
+        .capture_filter("cam", Some(rp_vocabulary::FrameType::Light))
         .await
         .unwrap();
     assert_eq!(read, Some(("Lum".to_string(), 0)));
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_dark_reads_no_filter_however_slow_the_wheel() {
-    let read = slow_wheel_handler()
-        .read_frame_filter("cam", Some(rp_vocabulary::FrameType::Dark), true)
+async fn an_untyped_capture_names_no_file_so_bounds_the_wheel() {
+    let err = slow_wheel_handler(true)
+        .capture_filter("cam", None)
         .await
-        .unwrap();
-    assert_eq!(read, None);
+        .unwrap_err();
+    assert!(err.contains("no answer within 3s"), "{err}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dark_reads_no_filter_however_slow_the_wheel() {
+    for templated in [false, true] {
+        let read = slow_wheel_handler(templated)
+            .capture_filter("cam", Some(rp_vocabulary::FrameType::Dark))
+            .await
+            .unwrap();
+        assert_eq!(read, None, "templated: {templated}");
+    }
 }
 
 fn pointing_of(

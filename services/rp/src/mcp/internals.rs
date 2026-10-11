@@ -339,10 +339,11 @@ fn new_document_ids() -> (String, String) {
 type FilterRead = std::result::Result<Option<(String, u32)>, String>;
 
 /// How long a capture waits on one of its auxiliary device reads — the
-/// mount's pointing, the filter wheel, the camera's gain, offset and
-/// start time — before counting it as failed (rp.md § Core Fields). A
-/// healthy read answers in milliseconds; the bound keeps a wedged device
-/// from adding its whole Alpaca timeout to every frame.
+/// camera's gain, offset and start time, and the filter wheel where the
+/// filename does not depend on it — before counting it as failed (rp.md
+/// § Core Fields). A healthy read answers in milliseconds; the bound
+/// keeps a wedged device from adding its whole Alpaca timeout to every
+/// frame. The mount's read is bounded by [`POINTING_GRACE`] instead.
 const AUXILIARY_READ_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// How long a frame that is ready waits for a mount read still out — in
@@ -1349,11 +1350,10 @@ impl McpHandler {
             // mid-exposure. When the filename depends on it the read is
             // waited out rather than timed (rp.md § Core Fields,
             // `filter`). A mount read still out gets its grace alongside.
-            let bounded_filter = !self.names_files(req.frame_type);
             let (pointing, conditions, filter_read) = tokio::join!(
                 finished_pointing(pointing_read),
                 self.capture_conditions(camera_id, &cam, window, duration),
-                self.read_frame_filter(camera_id, req.frame_type, bounded_filter),
+                self.capture_filter(camera_id, req.frame_type),
             );
 
             // Decision 11 (rp.md § Capture Tool Details): `frame_type`
@@ -1373,17 +1373,19 @@ impl McpHandler {
                 exposure_target = Some(target_field);
                 resolved_frame_type = Some(frame_type);
 
-                let ctx = TemplateRenderCtx {
-                    frame_type,
-                    duration,
-                    binning,
-                    captured_at: conditions.captured_at,
-                    sensor_temperature_c: conditions.sensor_temperature_c,
-                    filter: &filter_read,
-                    uuid8: &uuid8,
-                };
-                if let Some(rendered) = self.render_templated_path(target_slug, ctx).await? {
-                    image_path = rendered;
+                if self.names_files(req.frame_type) {
+                    let ctx = TemplateRenderCtx {
+                        frame_type,
+                        duration,
+                        binning,
+                        captured_at: conditions.captured_at,
+                        sensor_temperature_c: conditions.sensor_temperature_c,
+                        filter: &filter_read,
+                        uuid8: &uuid8,
+                    };
+                    if let Some(rendered) = self.render_templated_path(target_slug, ctx).await? {
+                        image_path = rendered;
+                    }
                 }
             }
 
@@ -1685,9 +1687,10 @@ impl McpHandler {
     }
 
     /// Whether a capture of `frame_type` renders its filename from the
-    /// naming template — the case in which `render_templated_path` runs
-    /// (rp.md § Persistence) — and so must not lose a finished exposure
-    /// to a timed-out filter read.
+    /// naming template (rp.md § Persistence): a typed frame on a rig with
+    /// `session.file_naming_pattern` set. The one predicate that both
+    /// gates `render_templated_path` and keeps [`Self::capture_filter`]
+    /// from timing out a read the filename depends on.
     const fn names_files(&self, frame_type: Option<FrameType>) -> bool {
         frame_type.is_some() && self.naming_templates.is_some()
     }
@@ -2027,22 +2030,33 @@ impl McpHandler {
     /// `Light`, `Flat` or untyped frame; never a read for `Dark`/`Bias`,
     /// since dark current isn't filter-dependent and an incidental wheel
     /// position on a dark is noise (rp.md § Capture Tool Details).
-    /// `bounded` caps it at [`AUXILIARY_READ_TIMEOUT`] — for a capture
-    /// whose filename does not depend on it, which a slow wheel must not
-    /// fail; a templated capture waits the wheel out, as it always has.
-    pub(super) async fn read_frame_filter(
+    async fn read_frame_filter(
         &self,
         camera_id: &str,
         frame_type: Option<FrameType>,
-        bounded: bool,
     ) -> FilterRead {
         if matches!(frame_type, Some(FrameType::Dark | FrameType::Bias)) {
             return Ok(None);
         }
-        if bounded {
-            bounded_read(self.live_filter(camera_id)).await
+        self.live_filter(camera_id).await
+    }
+
+    /// [`Self::read_frame_filter`] as a capture runs it: bounded by
+    /// [`AUXILIARY_READ_TIMEOUT`] where the filename does not depend on
+    /// it, since a slow wheel must not fail such a capture; waited out
+    /// where it does ([`Self::names_files`]), as it always has been,
+    /// rather than lose a finished exposure to a slow read (rp.md § Core
+    /// Fields, `filter`).
+    pub(super) async fn capture_filter(
+        &self,
+        camera_id: &str,
+        frame_type: Option<FrameType>,
+    ) -> FilterRead {
+        let read = self.read_frame_filter(camera_id, frame_type);
+        if self.names_files(frame_type) {
+            read.await
         } else {
-            self.live_filter(camera_id).await
+            bounded_read(read).await
         }
     }
 

@@ -483,6 +483,14 @@ fn push_padded_left(out: &mut Vec<u8>, value: &[u8], width: usize) {
     out.extend_from_slice(value);
 }
 
+/// `value` as a real card holds it — rounded to the card's 11
+/// significant digits, the value a reader parses back — so a caller can
+/// check what will actually be written.
+#[must_use]
+pub fn real_as_written(value: f64) -> f64 {
+    format_float(value).parse().unwrap_or(value)
+}
+
 fn format_float(f: f64) -> String {
     // %20.10E form. `{:.10E}` gives `1.0000000000E0`; expand to
     // `1.0000000000E+00` to match the FITS canonical form.
@@ -852,6 +860,14 @@ mod tests {
             err.contains("69 characters with apostrophes doubled"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn real_as_written_is_the_value_rounded_to_the_card() {
+        assert_eq!(real_as_written(1.5), 1.5);
+        // 11 significant digits: just under 360 is written as 360.
+        assert_eq!(real_as_written(360.0 - 1.5e-11), 360.0);
+        assert_eq!(real_as_written(-2.5e-3), -2.5e-3);
     }
 
     #[test]
