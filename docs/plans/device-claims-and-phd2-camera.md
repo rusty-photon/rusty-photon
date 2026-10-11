@@ -455,11 +455,14 @@ ASI662MC      PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)    Port_#0004.Hub_#0
    sessions before this one began. Any device that leaves keeps such a
    record until a cleanup removes it; a serial-less one leaves one on
    every port it has left. A collector that read every record would
-   report each one as a fault at its old port: `Get-PnpDevice` showed
-   every stale record as `CM_PROB_PHANTOM`, and the parser takes any
-   problem code but 0, or none, as not working. D4.5's match of a fault
-   to a listed port would then blame a dead device for a listed port
-   the camera has left empty. This one reads `Get-PnpDevice
+   report each one as a fault at its old port. That was measured
+   afterwards on the same guest: read without the filter, through the
+   collector's own `ConfigManagerErrorCode` expression, all 15 stale USB
+   records gave problem code 45 (`CM_PROB_PHANTOM`), which the parser
+   takes as not working. They included two FTDI bridges that do publish
+   a serial, each still carrying its last `LocationPaths`. D4.5's match
+   of a fault to a listed port would then blame a dead device for a
+   listed port the camera has left empty. This one reads `Get-PnpDevice
    -PresentOnly`, and no stale record reached its inventory or its
    faults at any step.
 

@@ -356,8 +356,10 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   id built from its port, so it leaves one such record on every port it
   has left. Read without the filter, each of those records would be a
   fault at its old port, which may be empty or may now hold another
-  device. Measured by moving a camera between ports of a Windows 11 VM's
-  USB controller
+  device: the query reads problem code 45 for every one. Both measured
+  on a Windows 11 VM, by moving a camera between ports of its USB
+  controller and then reading its stale records through the query
+  without the filter
   ([device-claims plan](../plans/device-claims-and-phd2-camera.md), D2
   spike item 7).
 
