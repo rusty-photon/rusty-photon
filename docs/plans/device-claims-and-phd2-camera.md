@@ -97,7 +97,7 @@ recorded here so the option is not lost.
 |-------|-------------|--------|-------------|
 | C0 | This plan | Merged; revised 2026-09-29 and 2026-10-01 | [#1263](https://github.com/rusty-photon/rusty-photon/pull/1263), [#1365](https://github.com/rusty-photon/rusty-photon/pull/1365) |
 | C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Landed: `port`/`serial` extraction, the failed-vs-empty inventory, the staged synthetic inventory, faults (a record that is not a working device is a fault, not a failed scan — D4.4), and the Linux port spelled by controller and USB revision instead of bus number (D2). The spike's last leg, a move to a different port, was made on a Windows VM rather than `rig2` (D2, spike item 7) | `chore/device-claims-c1-spike` ([#1306](https://github.com/rusty-photon/rusty-photon/pull/1306)), `chore/device-claims-c1-synthetic-inventory` ([#1308](https://github.com/rusty-photon/rusty-photon/pull/1308)), `fix/doctor-usb-faults-1322` ([#1365](https://github.com/rusty-photon/rusty-photon/pull/1365)), `feature/device-claims-linux-port-spelling` ([#1450](https://github.com/rusty-photon/rusty-photon/pull/1450)), `fix/device-claims-linux-fault-location` ([#1458](https://github.com/rusty-photon/rusty-photon/pull/1458)), `chore/device-claims-c1-port-move` ([#1462](https://github.com/rusty-photon/rusty-photon/pull/1462)) |
-| C2 | `usb_devices` schema + `svbony-camera` — port placement (the join), listed numbers, placeholders (their fixed connect error code, which rp treats as permanent for the pass, and their config actions), the failed-scan re-scan, each simulation backend's synthetic inventory, and `svbony-camera doctor --devices` (D5's listing and paste-ready block; the `usb-devices.*` checks stay in C5), so no driver serves the list before its paste source exists. `usb_devices` is part of `config.schema`/`config.apply` from the phase that adds it, under the ordinary `Reload` disposition (D4.1), and D3's validation rejects a bad list in `config.apply` as well as at load. The easy case; proves schema, join and placeholder behaviour | Not started | |
+| C2 | `usb_devices` schema + `svbony-camera` — port placement (the join), listed numbers, placeholders (their fixed connect error code, which rp treats as permanent for the pass, and their config actions), the failed-scan re-scan, each simulation backend's synthetic inventory, and `svbony-camera doctor --devices` (D5's listing and paste-ready block; the `usb-devices.*` checks stay in C5), so no driver serves the list before its paste source exists. `usb_devices` is part of `config.schema`/`config.apply` from the phase that adds it, under the ordinary `Reload` disposition (D4.1), and D3's validation rejects a bad list in `config.apply` as well as at load. The easy case; proves schema, join and placeholder behaviour | In progress — design ([svbony-camera.md](../services/svbony-camera.md) U1-U9); the D4.8 twin hint is deferred to a collector change (D4.8) | `feature/device-claims-c2-svbony` |
 | C3 | `usb_devices` in `zwo-camera`, with its `doctor --devices` listing; a failed identity open is a per-camera outcome (D7) | Not started | |
 | C4 | `usb_devices` in `qhy-camera`, with its `doctor --devices` listing and each entry's declared filter wheel (D4.7) + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup and reload entirely** (the split alone narrows the tenet-3 problem, it does not discharge it) | Not started | |
 | C5 | `usb-devices.resolve` / `usb-devices.unlisted` / `usb-devices.implicit` checks on top of the per-driver `--devices` listings, and central doctor's `service.devices` recognising placeholders (D5); **the breaking no-list changes for all three drivers at once** — numbering by port order, unplaceable cameras refused, and the port-based `UniqueID` fallback for serial-less cameras (ZWO/SVBony; QHY's case decided here, D4.6) | Not started | |
@@ -879,7 +879,10 @@ date. (`name` is display text, never a key.)
 
    - `Connected` reads `false`, and `PUT connected=true` fails with one
      fixed driver-specific ASCOM error code — the same value in all three
-     drivers, from the `0x500`–`0xFFF` driver range — and a message
+     drivers, from the `0x500`–`0xFFF` driver range; C2 fixed it at
+     **`0x540`** (driver code `0x40`), held once in
+     `rusty-photon-doctor-checks`' `claims` module, which rp already
+     links — and a message
      naming the port and the reason **as of the last start or reload**
      (a placeholder never re-scans). The reason is one of:
      - the reason of a fault whose `location` is the listed port in its
@@ -1077,6 +1080,14 @@ date. (`name` is display text, never a key.)
    spelling. No-list cameras get no twin hint: a USB 2-only camera in a
    USB 3 connector also lands on the companion, and nothing passive
    tells the two apart.
+
+   **Not built in C2.** No collector reads a pairing signal yet — the
+   Linux walk does not follow `peer`, and the Windows collector keeps
+   only the `PCIROOT(` element of `LocationPaths` — so C2's placeholders
+   give the generic reasons for a camera on a twin, which are true, only
+   less helpful. The hint lands with the collector change that reads the
+   pairing; it needs nothing from any driver beyond the shared reason
+   text.
 
 Note the deliberate asymmetry: **the list is port-keyed, while the
 `devices` override map and the ASCOM `UniqueID` stay serial-derived —
@@ -1370,6 +1381,22 @@ joins on VID:PID and product string like the others, and two identical
 SVBony cameras are look-alikes (D4.3). It is still the easiest driver to
 prove the schema, the join and the placeholder behaviour against,
 because nothing has to be opened to place a camera.
+
+**Settled in C2.** The bus side is answered: `pier1`'s SV605CC reads
+`f266:9a0a`, product string `SVBONY SV605CC`, and publishes **no** USB
+serial (sysfs, 2026-10-10), so SVBony joins on the product id and two
+cameras of one model are look-alikes. C2 also put the vendor-neutral
+half of Part A in shared code from the start, because it is the same
+rule in three drivers and rp must read the error code: the join, the
+`usb_devices` validation, port order, the `--devices` layout, and the
+placeholder's error code, `UniqueID` form and reason text, in
+`rusty-photon-doctor-checks`' `claims` module (the USB inventory's own
+crate, which rp and central doctor already link). C3 and C4 supply a
+normalizer, a scan source and their entry type, and take the rest. The
+placeholder Camera device itself stays in `svbony-camera` for C2:
+`rusty-photon-camera-core` is by its own rule no home for a `Camera`
+implementation, so its shared home is C3's choice, when `zwo-camera`
+becomes the second consumer.
 
 **`zwo-camera` (C3)** — with port-keyed placement the passive
 `open_uninitialised()` is no longer part of deciding which camera to

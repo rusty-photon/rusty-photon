@@ -2880,6 +2880,16 @@ devices:
   There is no give-up state: an outcome that is permanent within one
   connect routine ("device not found") is still retried on the next
   pass, which is exactly what case 3 needs.
+- **A placeholder camera is permanent for the pass.** A camera driver
+  with a `usb_devices` list holds a listed number whose camera it cannot
+  serve tonight with a placeholder, whose `Connected = true` fails with
+  ASCOM error `0x540` ([device-claims plan](../plans/device-claims-and-phd2-camera.md)
+  D4.5, [svbony-camera.md](svbony-camera.md) U4). Retrying it cannot
+  help — a placeholder becomes a camera only when its driver reloads —
+  so the connect routine takes that code as it takes "device not found":
+  one attempt, no backoff, logged at `debug!` with the driver's reason,
+  and the entry stays disconnected. The next pass tries again, so the
+  camera is picked up on the first pass after a reload serves it.
 
 The cadence is fixed — no exponential backoff. One `Connected` read per
 device per interval is the steady-state cost, and the interval itself
