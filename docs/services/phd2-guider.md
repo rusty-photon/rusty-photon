@@ -236,8 +236,8 @@ PHD2 provides two network interfaces:
 
 | Method | Parameters | Description | Status |
 |--------|------------|-------------|--------|
-| `get_star_image` | `size: int` | Get current guide star image data as base64-encoded FITS | ✅ |
-| `save_image` | none | Save current frame to FITS file in PHD2's default location | ✅ |
+| `get_star_image` | `size: int` | Get a cutout around the guide star: `{frame, width, height, star_pos, pixels}`, `pixels` base64-encoded 16-bit row-major | ✅ |
+| `save_image` | none | Save the current frame to a new FITS file in PHD2's default image directory. Result: `{"filename": "<full path>"}`, a path on PHD2's host. Per PHD2, "the client should remove the file when done with it" | ✅ |
 
 ### Timing Configuration
 
@@ -469,10 +469,20 @@ async fn set_algo_param(&self, axis: GuideAxis, name: &str, value: f64) -> Resul
 /// size: Size of the image in pixels (width and height will be 2*size+1)
 async fn get_star_image(&self, size: u32) -> Result<StarImage>;
 
-/// Save the current camera frame to a file
-/// Returns the path to the saved file
+/// Save the current camera frame to a new FITS file
+/// Returns the full path PHD2 replies with ({"filename": ...}), a path
+/// on PHD2's host. The caller owns the file and must remove it.
 async fn save_image(&self) -> Result<String>;
 ```
+
+`save_image` accepts only PHD2's documented reply, an object with a
+non-empty string `filename`. A bare string, a missing `filename`, or a
+non-string or empty one is a `Phd2Error::InvalidState` whose message
+carries the reply as received; the client never substitutes a default
+path, since the caller goes on to read, and then delete, the file it
+names. PHD2's own failures (`no image available`, `error saving
+image`) arrive as `Phd2Error::RpcError`. The client does not remove the
+file: whoever consumes the frame does.
 
 ### FITS Utilities
 
@@ -1151,6 +1161,52 @@ and then `phd2-guider serve` pointed at it via
 | `MOCK_PHD2_SETTLE_MODE` | What follows a `guide`/`dither` RPC: `settle_ok` (default — emit `Settling`, two fixed `GuideStep` events, then `SettleDone{status: 0}`), `settle_fail` (`SettleDone{status: 1, Error: "Mock star lost"}`), `never_settle` (no `SettleDone` — drives the `settle_timeout` backstop) |
 | `MOCK_PHD2_STOP_MODE` | `stops` (default — `stop_capture` moves the app state to `Stopped`) or `never_stops` (state stays `Guiding` — drives `stop_timeout`) |
 | `MOCK_PHD2_RPC_LOG` | Path to a JSON-lines file the mock appends each received `{method, params}` to — used for request-forwarding assertions (the `MOCK_ASTAP_ARGV_OUT` equivalent) |
+| `MOCK_PHD2_IMAGE_DIR` | Absolute directory `save_image` writes its FITS files to. There is no default: unset, not UTF-8 (the reply is JSON), or not absolute, `save_image` answers PHD2's `error saving image` and writes nothing, so no run leaves frames in a shared directory. The absolute-path check refuses both an empty and a relative value; without it, an empty value would become the filesystem root once a separator is appended, and a relative one would land in the mock's working directory. Tests point it at a temporary directory |
+
+`save_image` answers in PHD2's wire format: each call creates a
+**new** FITS file and replies
+`{"filename": "<full path>"}`, leaving the file for the client to
+remove. A name that already exists is skipped, never overwritten.
+
+PHD2's file name depends on its platform. It comes from
+`wxFileName::CreateTempFileName(<dir>/save_image_)`, whose
+implementation (`wxCreateTempImpl` in wxWidgets'
+[`src/common/filename.cpp`](https://github.com/wxWidgets/wxWidgets/blob/master/src/common/filename.cpp))
+branches on the OS:
+
+- **Unix:** it appends six `mkstemp` characters, giving
+  `<dir>/save_image_XXXXXX` with no extension.
+- **Windows:** it calls `GetTempFileName`, which
+  [Microsoft documents](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-gettempfilenamew)
+  as using only the first three characters of the prefix and producing
+  `<path>\<pre><uuuu>.TMP`. The name is therefore `<dir>\sav<hex>.TMP`.
+
+The mock copies the Unix form only: `save_image_<pid>_<n>`, with no
+extension. A client takes the name from the reply. Anything that finds
+PHD2's files by name, such as a cleanup sweep of the image directory,
+must key on neither the `save_image_` prefix nor a missing extension.
+
+The file's life also only approximates PHD2's. PHD2 reserves the name
+(`mkstemp`, or `GetTempFileName` on Windows). It then saves through
+cfitsio with the clobber prefix `!`, which deletes the reserved file and
+creates a new one under the same name, so for a moment the name does not
+exist. The mock creates the file once and writes into it.
+
+The frame is fixed, so tests can check what they decode: a primary HDU,
+`BITPIX = 16`, `BZERO = 32768`, 8×6 pixels, where row-major pixel `i`
+holds `i × 1365` (0 to 64155, crossing the signed 16-bit midpoint). A
+failed write answers PHD2's own
+`{"code": 3, "message": "error saving image"}`.
+
+The mock always has that frame to save. It does not model which
+exposure a frame came from, nor PHD2's `no image available` (code 2)
+before the first exposure. For the same reason its header carries none
+of the time cards real PHD2's `usImage::Save` writes (`EXPOSURE`, `DATE`,
+`DATE-OBS`), because their values depend on when an exposure ran. All of
+this belongs to the capture model the Alpaca Camera facade needs
+(device-claims plan, C6). If C6's completion watermark is D9's option 3,
+which compares `DATE-OBS` with the request, C6 has to add those cards to
+the mock along with that exposure model.
 
 The mock tracks a per-connection application state
 (`Stopped` → `Guiding` on `guide`, → `Stopped` on `stop_capture`) so
