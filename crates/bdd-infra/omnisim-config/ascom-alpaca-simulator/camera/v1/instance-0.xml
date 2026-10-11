@@ -27,6 +27,11 @@
     CoolerResetToAmbient    true so every cooler-on starts from ambient
                             regardless of what a prior scenario left
                             behind.
+
+  rp's device-identity scenarios
+  (services/rp/tests/features/device_identity.feature) quote the
+  UniqueID below as the identity rp reports for the camera it bound,
+  so changing it means changing that feature too.
 -->
 <ArrayOfSettingsPair xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
   <SettingsPair>

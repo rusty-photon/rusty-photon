@@ -284,6 +284,14 @@ pub struct RpWorld {
     /// [`RpConfigBuilder::build`]'s output the same way
     /// `target_store_config` is. `None` ⇒ field omitted.
     pub advertised_url: Option<String>,
+    /// Identity pins (rp.md § Device Identity Pin) as
+    /// `(equipment key, roster id, UniqueID)`, spliced into the emitted
+    /// config's matching entry the same way `target_store_config` is;
+    /// the key `"mount"` names the singular mount, whose id is ignored.
+    pub unique_id_pins: Vec<(String, String, String)>,
+    /// The `UniqueID` the device-identity outline pinned, for its `Then`
+    /// step to compare the bound identity against.
+    pub pinned_unique_id: Option<String>,
 
     // --- REST API state ---
     /// Last REST API response status code
@@ -537,6 +545,25 @@ impl RpWorld {
         }
         if let Some(url) = &self.advertised_url {
             config["server"]["advertised_url"] = Value::String(url.clone());
+        }
+        for (key, id, unique_id) in &self.unique_id_pins {
+            let entry = if key == "mount" {
+                config["equipment"]
+                    .get_mut("mount")
+                    .filter(|m| !m.is_null())
+            } else {
+                config["equipment"][key.as_str()]
+                    .as_array_mut()
+                    .and_then(|entries| {
+                        entries
+                            .iter_mut()
+                            .find(|e| e.get("id").and_then(Value::as_str) == Some(id.as_str()))
+                    })
+            };
+            let entry = entry.unwrap_or_else(|| {
+                panic!("no equipment.{key} entry {id:?} to pin — configure the device first")
+            });
+            entry["unique_id"] = Value::String(unique_id.clone());
         }
         config
     }

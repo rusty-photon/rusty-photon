@@ -115,6 +115,13 @@ pub struct FilterWheelConfig {
     pub alpaca_url: String,
     #[serde(default)]
     pub device_number: u32,
+    /// Optional identity pin: the Alpaca `UniqueID` the device at
+    /// `device_number` must report in its server's `configureddevices`
+    /// list, or the connect is refused (rp.md § Device Identity Pin).
+    /// Omitted, the entry binds whatever device its server lists there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub unique_id: Option<super::UniqueIdPin>,
     /// The slot names in position order, each optionally with its
     /// wavelength ([`FilterEntry`]).
     #[serde(default)]

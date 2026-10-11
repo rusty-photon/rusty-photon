@@ -39,7 +39,7 @@ pub use centering::CenteringConfig;
 pub use cooling::CoolingConfig;
 pub use cover_calibrator::CoverCalibratorConfig;
 pub use dome::DomeConfig;
-pub use equipment::EquipmentConfig;
+pub use equipment::{EquipmentConfig, UniqueIdPin};
 pub use filter_wheel::FilterWheelConfig;
 pub use focuser::FocuserConfig;
 pub use guiding::{FocusWatchConfig, GuiderDefaults, GuidingConfig};

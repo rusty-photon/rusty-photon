@@ -3,9 +3,7 @@ use std::sync::Arc;
 use ascom_alpaca::api::{Focuser, TypedDevice};
 use tracing::{debug, error};
 
-use super::alpaca::{
-    build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
-};
+use super::binding::{establish_listed, RosterAddress};
 use super::session::DeviceSession;
 use crate::config;
 
@@ -82,44 +80,17 @@ pub(super) async fn establish_focuser(
     config: &config::FocuserConfig,
     ca_cert_path: Option<&std::path::Path>,
 ) -> Result<(Arc<dyn Focuser>, FocuserInvariants), String> {
-    let client = build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path)
-        .map_err(|e| format!("failed to create Alpaca client: {e}"))?;
-
-    let label = format!("focuser {}", config.id);
-    let foc = retry_connect_attempt(&label, |_attempt| async {
-        let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
-            Ok(Ok(devices)) => devices,
-            Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
-            Err(_) => {
-                return AttemptOutcome::Transient(format!(
-                    "get_devices: timeout after {GET_DEVICES_TIMEOUT:?}"
-                ));
-            }
-        };
-
-        let mut focuser_index = 0u32;
-        let mut found_focuser: Option<Arc<dyn Focuser>> = None;
-        for device in devices {
-            if let TypedDevice::Focuser(foc) = device {
-                if focuser_index == config.device_number {
-                    found_focuser = Some(foc);
-                    break;
-                }
-                focuser_index = focuser_index.saturating_add(1);
-            }
-        }
-
-        let Some(foc) = found_focuser else {
-            return AttemptOutcome::Permanent(format!(
-                "focuser at index {} not found on Alpaca server",
-                config.device_number
-            ));
-        };
-
-        match foc.set_connected(true).await {
-            Ok(()) => AttemptOutcome::Ok(foc),
-            Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
-        }
+    let address = RosterAddress {
+        kind: "focuser",
+        id: Some(&config.id),
+        alpaca_url: &config.alpaca_url,
+        device_number: config.device_number,
+        unique_id: config.unique_id.as_ref(),
+        auth: config.auth.as_ref(),
+    };
+    let foc = establish_listed(&address, ca_cert_path, |device| match device {
+        TypedDevice::Focuser(device) => Some(device),
+        _ => None,
     })
     .await?;
 
@@ -183,6 +154,7 @@ mod tests {
             id: "main-focuser".to_string(),
             alpaca_url: url.to_string(),
             device_number: 0,
+            unique_id: None,
             min_position: None,
             max_position: None,
             steps_per_sec: config::focuser::FocuserStepsPerSec::default(),
@@ -204,6 +176,7 @@ mod tests {
             id: "main-focuser".to_string(),
             alpaca_url: "not-a-url".to_string(),
             device_number: 0,
+            unique_id: None,
             min_position: None,
             max_position: None,
             steps_per_sec: config::focuser::FocuserStepsPerSec::default(),
@@ -226,6 +199,7 @@ mod tests {
             id: "main-focuser".to_string(),
             alpaca_url: "http://127.0.0.1:1".to_string(),
             device_number: 0,
+            unique_id: None,
             min_position: None,
             max_position: None,
             steps_per_sec: config::focuser::FocuserStepsPerSec::default(),

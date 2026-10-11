@@ -71,6 +71,65 @@ impl TryFrom<f64> for TemperatureEventDeltaC {
     }
 }
 
+/// An equipment entry's identity pin (rp.md § Device Identity Pin).
+///
+/// The Alpaca `UniqueID` the device at the entry's `device_number` must
+/// report in its server's `configureddevices` list, or the connect is
+/// refused.
+///
+/// Validated at load (parse-don't-validate): an empty value, or one with
+/// leading or trailing whitespace, is rejected during deserialization.
+/// The pin is compared verbatim with what the server lists, so a padded
+/// value could never match, and rejecting it beats trimming a value the
+/// operator did not write. Serializes transparently as the inner string;
+/// each field carrying one declares its JSON Schema as a plain optional
+/// string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct UniqueIdPin(String);
+
+impl UniqueIdPin {
+    /// The single validating constructor.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field if `value` is empty or has
+    /// leading or trailing whitespace.
+    pub fn try_new(value: String) -> Result<Self, String> {
+        if value.is_empty() {
+            return Err(
+                "unique_id must not be empty; omit the key to leave the entry unpinned".into(),
+            );
+        }
+        if value.trim() != value {
+            return Err(format!(
+                "unique_id must not have leading or trailing whitespace, got {value:?}"
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// The pinned `UniqueID`.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for UniqueIdPin {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<UniqueIdPin> for String {
+    fn from(pin: UniqueIdPin) -> Self {
+        pin.0
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EquipmentConfig {
@@ -346,6 +405,96 @@ mod tests {
         }
         assert!(super::TemperatureEventDeltaC::try_new(f64::NAN).is_err());
         assert!(super::TemperatureEventDeltaC::try_new(f64::INFINITY).is_err());
+    }
+
+    fn config_with_equipment(equipment: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{
+                    "session": {{"data_directory": "/tmp/rp-test"}},
+                    "equipment": {equipment},
+                    "server": {{ "port": 0 }}
+                }}"#
+            ),
+        )
+        .unwrap();
+        (dir, path)
+    }
+
+    /// The pin is accepted on an array kind and on the singular mount,
+    /// and is held verbatim.
+    #[test]
+    fn unique_id_pin_loads_on_array_entries_and_the_mount() {
+        let (_dir, path) = config_with_equipment(
+            r#"{
+                "cameras": [{"id": "qhy600m", "alpaca_url": "http://127.0.0.1:11121",
+                             "device_number": 1, "unique_id": "QHY600M-a1b2 c3"}],
+                "mount": {"alpaca_url": "http://127.0.0.1:11117",
+                          "unique_id": "GTi-mount-1"}
+            }"#,
+        );
+        let config = load_config(&path).unwrap();
+        let camera_pin = config.equipment.cameras[0].unique_id.as_ref().unwrap();
+        assert_eq!(camera_pin.as_str(), "QHY600M-a1b2 c3");
+        let mount_pin = config.equipment.mount.unwrap().unique_id.unwrap();
+        assert_eq!(mount_pin.as_str(), "GTi-mount-1");
+    }
+
+    #[test]
+    fn an_absent_unique_id_leaves_the_entry_unpinned() {
+        let (_dir, path) = config_with_equipment(
+            r#"{"switches": [{"id": "ppba", "alpaca_url": "http://127.0.0.1:11112"}]}"#,
+        );
+        let config = load_config(&path).unwrap();
+        assert!(config.equipment.switches[0].unique_id.is_none());
+    }
+
+    /// An empty or padded pin could never match a listed `UniqueID`, so
+    /// it fails the load instead of refusing the device every night.
+    #[test]
+    fn unique_id_pin_rejects_empty_and_padded_values() {
+        for (bad, needle) in [
+            (r#""""#, "unique_id must not be empty"),
+            (r#"" QHY600M-a1b2""#, "leading or trailing whitespace"),
+            (r#""QHY600M-a1b2\n""#, "leading or trailing whitespace"),
+        ] {
+            let (_dir, path) = config_with_equipment(&format!(
+                r#"{{"focusers": [{{"id": "f", "alpaca_url": "http://127.0.0.1:11113",
+                                    "unique_id": {bad}}}]}}"#
+            ));
+            let err = load_config(&path).unwrap_err().to_string();
+            assert!(err.contains(needle), "pin {bad}: {err}");
+        }
+    }
+
+    /// A pin serializes back as the plain string it was loaded from, so
+    /// `PUT /api/config` persists what the operator wrote.
+    #[test]
+    fn unique_id_pin_round_trips_as_a_plain_string() {
+        let pin = super::UniqueIdPin::try_new("ZWO:ASI1600MM:noserial-0".to_string()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&pin).unwrap(),
+            serde_json::json!("ZWO:ASI1600MM:noserial-0")
+        );
+    }
+
+    /// The schema advertises the pin as an optional plain string, the
+    /// shape the web UI's schema walker renders as a text input
+    /// (docs/services/ui-htmx.md § Schema-driven rendering).
+    #[test]
+    fn unique_id_schema_is_an_optional_string() {
+        let schema = schemars::schema_for!(crate::config::DomeConfig);
+        let value = serde_json::to_value(&schema).unwrap();
+        let field = value
+            .pointer("/properties/unique_id")
+            .expect("schema must carry the unique_id property");
+        assert_eq!(
+            field.pointer("/type").unwrap(),
+            &serde_json::json!(["string", "null"])
+        );
     }
 
     #[test]

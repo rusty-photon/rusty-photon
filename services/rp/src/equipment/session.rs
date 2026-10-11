@@ -2,6 +2,10 @@
 
 use std::sync::{Arc, RwLock};
 
+use ascom_alpaca::api::Device;
+
+use super::binding::ListedIdentity;
+
 /// The per-entry device-session slot.
 ///
 /// Device handle, the `connected` flag the status API reports, and the
@@ -169,6 +173,24 @@ impl<T: ?Sized, M: Default> DeviceSession<T, M> {
                 metadata: M::default(),
             }),
         }
+    }
+}
+
+impl<T: ?Sized + Device, M> DeviceSession<T, M> {
+    /// The identity of the device the live session is bound to, as its
+    /// server listed it when the session was established; `None` while
+    /// the session is dead, because a dead session's stale handle names
+    /// a device rp is not bound to (rp.md § Device Identity Pin).
+    ///
+    /// A live session always holds the handle it was established with,
+    /// so `Some` is exactly "connected", read under one guard.
+    #[must_use]
+    pub fn bound_identity(&self) -> Option<ListedIdentity> {
+        let state = self.read();
+        if !state.connected {
+            return None;
+        }
+        state.device.as_deref().map(ListedIdentity::of)
     }
 }
 

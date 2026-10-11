@@ -17,6 +17,14 @@
 //! fault — and every reading it serves is counted, so a scenario can
 //! wait on "the watch has polled again" instead of sleeping.
 //!
+//! The hosted device's `UniqueID` is part of the incarnation too: a
+//! restart can bring a *different* device back behind number 0
+//! ([`AlpacaDeviceStub::restart_as`]), which is what a driver that
+//! numbers its devices in USB enumeration order does after a power
+//! cycle. rp's identity-pin scenarios (rp.md § Device Identity Pin) use
+//! it, and wait on the count of `configureddevices` reads the current
+//! incarnation has served instead of sleeping.
+//!
 //! The listening socket is bound once and held for the stub's whole
 //! life, through every stop and restart: a stopped stub keeps
 //! accepting connections and drops each one unanswered, which a client
@@ -54,6 +62,10 @@ pub const STUB_CAMERA_PIXEL_SIZE_UM: f64 = 3.76;
 pub const STUB_CAMERA_WIDTH_PX: u32 = 1920;
 /// Sensor height in pixels.
 pub const STUB_CAMERA_HEIGHT_PX: u32 = 1080;
+
+/// The `UniqueID` a stub lists for its device unless a scenario names
+/// another.
+pub const STUB_DEFAULT_UNIQUE_ID: &str = "bdd-alpaca-recovery-stub-0";
 
 /// Which single device the stub hosts at device number 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,6 +120,10 @@ struct StubState {
     step_size_um: RwLock<Option<f64>>,
     /// `Temperature` reads served while connected by this incarnation.
     temperature_reads: AtomicU32,
+    /// The `UniqueID` this incarnation lists for its device.
+    unique_id: String,
+    /// `configureddevices` reads served by this incarnation.
+    device_list_reads: AtomicU32,
 }
 
 /// In-process Alpaca device service that can be stopped and brought
@@ -163,6 +179,16 @@ impl AlpacaDeviceStub {
     /// Panics if no loopback port can be bound.
     #[must_use]
     pub fn start(device: StubDevice) -> Self {
+        Self::start_as(device, STUB_DEFAULT_UNIQUE_ID)
+    }
+
+    /// [`Self::start`], listing the device under `unique_id`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no loopback port can be bound.
+    #[must_use]
+    pub fn start_as(device: StubDevice, unique_id: &str) -> Self {
         let listener = bind_loopback().expect("failed to bind Alpaca stub");
         let port = listener
             .local_addr()
@@ -171,7 +197,7 @@ impl AlpacaDeviceStub {
         let mut stub = Self {
             port,
             device,
-            state: fresh_state(true, FocuserProbe::NotImplemented),
+            state: fresh_state(true, FocuserProbe::NotImplemented, unique_id),
             listener: Arc::new(listener),
             shutdown_tx: None,
             task: None,
@@ -215,12 +241,30 @@ impl AlpacaDeviceStub {
     /// focuser probe carry over (they model the weather and the
     /// sensor, not the process); the read counter starts from zero.
     pub async fn restart(&mut self) {
+        let unique_id = self.state.unique_id.clone();
+        self.restart_as(&unique_id).await;
+    }
+
+    /// [`Self::restart`] with a different device behind number 0: the
+    /// fresh incarnation lists its device under `unique_id`. What a
+    /// driver that numbers devices in USB enumeration order does when a
+    /// power cycle reorders them.
+    pub async fn restart_as(&mut self, unique_id: &str) {
         self.halt().await;
         self.state = fresh_state(
             self.state.is_safe.load(Ordering::SeqCst),
             self.focuser_probe(),
+            unique_id,
         );
         self.serve();
+    }
+
+    /// How many `configureddevices` reads the current incarnation has
+    /// served. Resets to zero on a restart. A scenario waits on this to
+    /// know rp has looked the device up again.
+    #[must_use]
+    pub fn device_list_reads(&self) -> u32 {
+        self.state.device_list_reads.load(Ordering::SeqCst)
     }
 
     /// Set the reading the safety-monitor variant reports while
@@ -343,13 +387,15 @@ impl Drop for AlpacaDeviceStub {
     }
 }
 
-fn fresh_state(is_safe: bool, probe: FocuserProbe) -> Arc<StubState> {
+fn fresh_state(is_safe: bool, probe: FocuserProbe, unique_id: &str) -> Arc<StubState> {
     Arc::new(StubState {
         connected: AtomicBool::new(false),
         is_safe: AtomicBool::new(is_safe),
         probe: RwLock::new(probe),
         step_size_um: RwLock::new(None),
         temperature_reads: AtomicU32::new(0),
+        unique_id: unique_id.to_string(),
+        device_list_reads: AtomicU32::new(0),
     })
 }
 
@@ -369,12 +415,13 @@ fn router(device: StubDevice, state: Arc<StubState>) -> Router {
             "DeviceName": "Recovery Stub",
             "DeviceType": device.type_name(),
             "DeviceNumber": 0,
-            "UniqueID": "bdd-alpaca-recovery-stub-0"
+            "UniqueID": state.unique_id
         }],
         "ErrorNumber": 0,
         "ErrorMessage": ""
     });
 
+    let devices_state = state.clone();
     let get_connected_state = state.clone();
     let put_connected_state = state.clone();
     let app = Router::new()
@@ -382,7 +429,11 @@ fn router(device: StubDevice, state: Arc<StubState>) -> Router {
             "/management/v1/configureddevices",
             get(move || {
                 let body = devices_body.clone();
-                async move { Json(body) }
+                let state = devices_state.clone();
+                async move {
+                    state.device_list_reads.fetch_add(1, Ordering::SeqCst);
+                    Json(body)
+                }
             }),
         )
         .route(
@@ -666,6 +717,30 @@ mod tests {
         put_connected(&base, "/api/v1/camera/0/connected", true).await;
         let after = get_json(&format!("{base}/api/v1/camera/0/maxadu")).await;
         assert_eq!(after["Value"], STUB_CAMERA_MAX_ADU);
+    }
+
+    /// A restart can bring a different device back behind number 0;
+    /// the device-list read count belongs to the incarnation.
+    #[tokio::test]
+    async fn restart_as_lists_another_device_and_resets_the_read_count() {
+        let mut stub = AlpacaDeviceStub::start_as(StubDevice::Camera, "QHY600M-imaging");
+        let base = stub.url();
+        let devices = get_json(&format!("{base}/management/v1/configureddevices")).await;
+        assert_eq!(devices["Value"][0]["UniqueID"], "QHY600M-imaging");
+        assert_eq!(stub.device_list_reads(), 1);
+
+        stub.restart_as("QHY5III678M-guiding").await;
+        assert_eq!(stub.device_list_reads(), 0);
+        let devices = get_json(&format!("{base}/management/v1/configureddevices")).await;
+        assert_eq!(devices["Value"][0]["UniqueID"], "QHY5III678M-guiding");
+        assert_eq!(stub.device_list_reads(), 1);
+
+        stub.restart().await;
+        let devices = get_json(&format!("{base}/management/v1/configureddevices")).await;
+        assert_eq!(
+            devices["Value"][0]["UniqueID"], "QHY5III678M-guiding",
+            "a plain restart keeps the device the last incarnation hosted"
+        );
     }
 
     /// A disconnected focuser answers `NOT_CONNECTED` without counting

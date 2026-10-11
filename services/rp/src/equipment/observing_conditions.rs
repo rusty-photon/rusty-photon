@@ -3,9 +3,7 @@ use std::sync::Arc;
 use ascom_alpaca::api::{ObservingConditions, TypedDevice};
 use tracing::{debug, error};
 
-use super::alpaca::{
-    build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
-};
+use super::binding::{establish_listed, RosterAddress};
 use super::session::DeviceSession;
 use crate::config;
 
@@ -35,44 +33,17 @@ pub(super) async fn establish_observing_conditions(
     config: &config::ObservingConditionsConfig,
     ca_cert_path: Option<&std::path::Path>,
 ) -> Result<Arc<dyn ObservingConditions>, String> {
-    let client = build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path)
-        .map_err(|e| format!("failed to create Alpaca client: {e}"))?;
-
-    let label = format!("observing conditions {}", config.id);
-    retry_connect_attempt(&label, |_attempt| async {
-        let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
-            Ok(Ok(devices)) => devices,
-            Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
-            Err(_) => {
-                return AttemptOutcome::Transient(format!(
-                    "get_devices: timeout after {GET_DEVICES_TIMEOUT:?}"
-                ));
-            }
-        };
-
-        let mut oc_index = 0u32;
-        let mut found_oc: Option<Arc<dyn ObservingConditions>> = None;
-        for device in devices {
-            if let TypedDevice::ObservingConditions(oc) = device {
-                if oc_index == config.device_number {
-                    found_oc = Some(oc);
-                    break;
-                }
-                oc_index = oc_index.saturating_add(1);
-            }
-        }
-
-        let Some(oc) = found_oc else {
-            return AttemptOutcome::Permanent(format!(
-                "observing conditions at index {} not found on Alpaca server",
-                config.device_number
-            ));
-        };
-
-        match oc.set_connected(true).await {
-            Ok(()) => AttemptOutcome::Ok(oc),
-            Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
-        }
+    let address = RosterAddress {
+        kind: "observing conditions",
+        id: Some(&config.id),
+        alpaca_url: &config.alpaca_url,
+        device_number: config.device_number,
+        unique_id: config.unique_id.as_ref(),
+        auth: config.auth.as_ref(),
+    };
+    establish_listed(&address, ca_cert_path, |device| match device {
+        TypedDevice::ObservingConditions(device) => Some(device),
+        _ => None,
     })
     .await
 }
@@ -121,6 +92,7 @@ mod tests {
             name: None,
             alpaca_url: url.to_string(),
             device_number,
+            unique_id: None,
             auth: None,
         }
     }
