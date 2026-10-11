@@ -55,15 +55,28 @@ exports_files(
 # `feature = "simulation"`, so every sim target must list `simulation`
 # explicitly (listing `mock` too keeps parity with `cargo --features mock`).
 
-_INTRA_WORKSPACE_DEPS = [
+_COMMON_INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
     "//crates/rusty-photon-tls:rusty-photon-tls",
     "//crates/rusty-photon-camera-core:rusty-photon-camera-core",
     "//crates/rusty-photon-config:rusty-photon-config",
-    "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
     "//crates/rusty-photon-driver:rusty-photon-driver",
     "//crates/rusty-photon-server-config:rusty-photon-server-config",
     "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+]
+
+_INTRA_WORKSPACE_DEPS = _COMMON_INTRA_WORKSPACE_DEPS + [
+    "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
+]
+
+# The simulation targets stage the USB scan a `usb_devices` list is placed
+# from (docs/services/svbony-camera.md U7), which exists only under
+# rusty-photon-doctor-checks' `mock` feature — Cargo's `simulation` feature
+# turns it on, and here that is the crate's `_mock` twin. It replaces the plain
+# crate rather than joining it: both are `rusty_photon_doctor_checks`, and one
+# graph holding two crates of one name cannot name either.
+_SIM_INTRA_WORKSPACE_DEPS = _COMMON_INTRA_WORKSPACE_DEPS + [
+    "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks_mock",
 ]
 
 rust_library(
@@ -130,7 +143,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = _SIM_INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -157,7 +170,7 @@ rust_library(
     proc_macro_deps = all_crate_deps(proc_macro = True),
     # The simulation lib links the SIM SDK variant; the binary, BDD, and
     # ConformU targets that build on it inherit it transitively.
-    deps = _INTRA_WORKSPACE_DEPS + ["//crates/svbony-rs:svbony-rs_sim"] + all_crate_deps(normal = True),
+    deps = _SIM_INTRA_WORKSPACE_DEPS + ["//crates/svbony-rs:svbony-rs_sim"] + all_crate_deps(normal = True),
 )
 
 rust_binary(
@@ -174,7 +187,7 @@ rust_binary(
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_env = {"CARGO_PKG_NAME": "svbony-camera"},
-    deps = [":svbony-camera_lib_sim"] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [":svbony-camera_lib_sim"] + _SIM_INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 # `tags = ["conformu"]` is excluded from the default `bazel test //...` gate
@@ -210,7 +223,7 @@ rust_test(
     deps = [
         ":svbony-camera_lib_sim",
         "//crates/bdd-infra:bdd-infra_conformu",
-    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    ] + _SIM_INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -252,7 +265,7 @@ rust_test(
     deps = [
         ":svbony-camera_lib_sim",
         "//crates/bdd-infra:bdd-infra_tls_auth",
-    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    ] + _SIM_INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

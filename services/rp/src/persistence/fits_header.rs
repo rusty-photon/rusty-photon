@@ -5,13 +5,14 @@
 //! below is projected from an [`ExposureDocument`] field, or from rig
 //! configuration the document does not repeat ([`HeaderContext`]). The
 //! sidecar stays the authority. A card whose source is absent is left
-//! out, never written as a placeholder, and a value `rp-fits` refuses
-//! (a non-ASCII string, one too long for a single card) drops only that
-//! card — no header problem fails a capture. `DOC_ID` is not built
-//! here: [`super::fits`] stamps it on every write.
+//! out, never written as a placeholder. Free text has its typographic
+//! punctuation folded to ASCII; a value `rp-fits` still refuses (`Hα`,
+//! one longer than a card) drops only that card — no header problem
+//! fails a capture. `DOC_ID` is not built here: [`super::fits`] stamps
+//! it on every write.
 
 use chrono::{DateTime, SecondsFormat, Utc};
-use rp_fits::writer::{Keyword, KeywordValue};
+use rp_fits::writer::{fold_to_ascii, real_as_written, Keyword, KeywordValue};
 use rp_vocabulary::FrameType;
 use tracing::debug;
 
@@ -86,7 +87,7 @@ pub fn header_keywords(doc: &ExposureDocument, ctx: &HeaderContext<'_>) -> Vec<K
         // below zero, and readers expect the canonical range.
         cards.real(
             "RA",
-            Some((pointing.ra_hours * 15.0).rem_euclid(360.0)),
+            Some(canonical_ra_degrees(pointing.ra_hours)),
             "[deg] mount right ascension",
         );
         cards.real(
@@ -162,7 +163,7 @@ impl Cards {
 
     fn string(&mut self, key: &'static str, value: Option<&str>, comment: &'static str) {
         if let Some(value) = value {
-            self.push(key, KeywordValue::Str(value.to_string()), comment);
+            self.push(key, KeywordValue::Str(fold_to_ascii(value)), comment);
         }
     }
 
@@ -197,6 +198,20 @@ fn fits_timestamp(rfc3339: &str) -> Option<String> {
             debug!(value = rfc3339, error = %e, "exposure_started_at is not RFC 3339; omitting DATE-OBS");
             None
         }
+    }
+}
+
+/// Mount RA in degrees, wrapped into [0, 360) as the card will print it:
+/// a mount on the 0h seam can report 24h or a hair below zero, and a
+/// value just under 360 — `rem_euclid` of a tiny negative among them —
+/// prints as `3.6000000000E+02` at the card's 11 significant digits. (A
+/// `-0.0` the writer prints as zero, as it does for every real card.)
+fn canonical_ra_degrees(ra_hours: f64) -> f64 {
+    let degrees = (ra_hours * 15.0).rem_euclid(360.0);
+    if real_as_written(degrees) >= 360.0 {
+        0.0
+    } else {
+        degrees
     }
 }
 
@@ -436,7 +451,13 @@ mod tests {
     #[test]
     fn ra_wraps_into_the_canonical_range() {
         let mut doc = full_document();
-        for (ra_hours, want) in [(24.0, 0.0), (-0.0001, 359.9985)] {
+        for (ra_hours, want) in [
+            (24.0, 0.0),
+            (-0.0001, 359.9985),
+            (-1e-15, 0.0),
+            // Below 360 as an f64, but 360 at the card's 11 digits.
+            (-1e-12, 0.0),
+        ] {
             doc.pointing = Some(MountPointing {
                 ra_hours,
                 dec_degrees: 0.0,
@@ -506,16 +527,65 @@ mod tests {
     }
 
     #[test]
-    fn a_value_rp_fits_refuses_drops_only_its_card() {
+    fn free_text_folds_typographic_punctuation_to_ascii() {
         let mut doc = full_document();
         doc.target.as_mut().unwrap().display_name = Some("Pleiades \u{2013} M45".to_string());
-        doc.camera_name = Some("x".repeat(80));
         let cards = cards(&doc, &HeaderContext::default());
-        assert_eq!(value_of(&cards, "OBJECT"), None);
-        assert_eq!(value_of(&cards, "INSTRUME"), None);
         assert_eq!(
-            value_of(&cards, "OBJCTRA"),
-            Some(KeywordValue::Str("00 42 44.28".into()))
+            value_of(&cards, "OBJECT"),
+            Some(KeywordValue::Str("Pleiades - M45".into()))
+        );
+    }
+
+    #[test]
+    fn a_value_longer_than_one_card_drops_only_its_card() {
+        // 67 characters plus an apostrophe that doubles on the card is 69.
+        for name in ["x".repeat(69), format!("{}'s", "x".repeat(67))] {
+            let mut doc = full_document();
+            doc.camera_name = Some(name.clone());
+            let cards = cards(&doc, &HeaderContext::default());
+            assert_eq!(value_of(&cards, "INSTRUME"), None, "{name:?}");
+            assert_eq!(
+                value_of(&cards, "OBJECT"),
+                Some(KeywordValue::Str("M31".into()))
+            );
+        }
+    }
+
+    #[test]
+    fn a_value_that_fills_the_card_exactly_is_kept() {
+        for name in ["x".repeat(68), format!("{}'", "x".repeat(66))] {
+            let mut doc = full_document();
+            doc.camera_name = Some(name.clone());
+            let cards = cards(&doc, &HeaderContext::default());
+            assert_eq!(
+                value_of(&cards, "INSTRUME"),
+                Some(KeywordValue::Str(name.clone())),
+                "{name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_value_no_ascii_stand_in_keeps_distinct_drops_only_its_card() {
+        let mut doc = full_document();
+        doc.filter = Some("H\u{3b1}".to_string());
+        let cards = cards(&doc, &HeaderContext::default());
+        assert_eq!(value_of(&cards, "FILTER"), None);
+        assert_eq!(
+            value_of(&cards, "OBJECT"),
+            Some(KeywordValue::Str("M31".into()))
+        );
+    }
+
+    #[test]
+    fn a_pasted_invisible_character_does_not_cost_the_card() {
+        let mut doc = full_document();
+        doc.target.as_mut().unwrap().display_name = Some("M31\u{200B}".to_string());
+        let cards = cards(&doc, &HeaderContext::default());
+        assert_eq!(
+            value_of(&cards, "OBJECT"),
+            Some(KeywordValue::Str("M31".into()))
         );
     }
 

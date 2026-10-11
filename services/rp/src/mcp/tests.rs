@@ -566,9 +566,9 @@ struct MockFilterWheel {
     /// read sees and the one after sees end: a driver whose answers
     /// flip between moving and at rest.
     flaps: bool,
-    /// How long each `position()` read takes, so a test can land a
-    /// cancellation inside one.
-    read_delay: Duration,
+    /// How long `position()` takes to answer — a slow or wedged wheel,
+    /// or a read a test lands a cancellation inside.
+    position_delay: Duration,
     /// How long each `set_position()` write takes, likewise.
     write_delay: Duration,
 }
@@ -607,8 +607,8 @@ impl ascom_alpaca::api::FilterWheel for MockFilterWheel {
     }
 
     async fn position(&self) -> ascom_alpaca::ASCOMResult<Option<usize>> {
-        if !self.read_delay.is_zero() {
-            tokio::time::sleep(self.read_delay).await;
+        if !self.position_delay.is_zero() {
+            tokio::time::sleep(self.position_delay).await;
         }
         let failing = self
             .failed_reads
@@ -939,6 +939,8 @@ struct MockTelescope {
     set_tracking_calls: std::sync::atomic::AtomicU32,
     /// `slewing()` returns `true` forever — drives the timeout path.
     stuck_slewing: bool,
+    /// `slewing()` answers `NOT_IMPLEMENTED` — a mount that cannot slew.
+    slewing_not_implemented: bool,
     /// First N `slewing()` calls return a transient error before
     /// behaving normally — drives `poll_slewing_until_idle`'s
     /// transient-tolerance path (issue #319). Counter is `slewing_calls`.
@@ -986,6 +988,7 @@ impl Default for MockTelescope {
             unpark_calls: std::sync::atomic::AtomicU32::new(0),
             set_tracking_calls: std::sync::atomic::AtomicU32::new(0),
             stuck_slewing: false,
+            slewing_not_implemented: false,
             slewing_transient_errors: 0,
             slewing_true_count: 0,
             slewing_calls: std::sync::atomic::AtomicU32::new(0),
@@ -1129,6 +1132,9 @@ impl ascom_alpaca::api::Telescope for MockTelescope {
         let n = self
             .slewing_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.slewing_not_implemented {
+            return Err(ASCOMError::NOT_IMPLEMENTED);
+        }
         if self.fail_slewing_poll || n < self.slewing_transient_errors {
             return Err(ASCOMError::invalid_operation("slewing poll failed"));
         }
@@ -1291,6 +1297,7 @@ fn camera_registry_with_meta(
                 alpaca_url: "http://localhost:1".to_string(),
                 device_type: String::new(),
                 device_number: 0,
+                unique_id: None,
                 cooler_targets_c: Vec::new(),
                 gain: None,
                 offset: None,
@@ -1332,6 +1339,7 @@ fn filter_wheel_registry(
                 id: "fw".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
+                unique_id: None,
                 filters: vec!["Lum".into(), "Red".into()],
                 auth: None,
             },
@@ -1357,6 +1365,7 @@ fn calibrator_registry(
                 id: "cc".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
+                unique_id: None,
                 poll_interval: Duration::from_secs(1),
                 auth: None,
             },
@@ -1405,6 +1414,7 @@ fn focuser_registry_with_backlash(
                 id: "foc".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
+                unique_id: None,
                 min_position,
                 max_position,
                 steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
@@ -1435,6 +1445,7 @@ fn mount_registry(
             config: crate::config::MountConfig {
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
+                unique_id: None,
                 settle_after_slew,
                 slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::default(),
                 guiding: None,
@@ -1481,6 +1492,7 @@ fn disconnected_mount_registry() -> crate::equipment::EquipmentRegistry {
             config: crate::config::MountConfig {
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
+                unique_id: None,
                 settle_after_slew: None,
                 slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::default(),
                 guiding: None,
@@ -1952,7 +1964,7 @@ async fn set_filter_cancelled_while_a_move_is_under_way_writes_nothing() {
 #[tokio::test(start_paused = true)]
 async fn set_filter_cancelled_during_its_read_answers_at_once_and_writes_nothing() {
     let fw = Arc::new(MockFilterWheel {
-        read_delay: Duration::from_secs(10),
+        position_delay: Duration::from_secs(10),
         ..Default::default()
     });
     let handler = handler_with_wheel(&fw);
@@ -2563,6 +2575,133 @@ fn wheel_trains() -> crate::equipment::trains::TrainModel {
     }))
     .unwrap();
     crate::equipment::trains::TrainModel::try_from_equipment(&equipment).unwrap()
+}
+
+/// A wheel that takes ten seconds to report its position, in train
+/// `main` with camera `cam`; `templated` configures the documented
+/// naming pattern, so typed frames name their files from the filter.
+fn slow_wheel_handler(templated: bool) -> McpHandler {
+    let fw = MockFilterWheel {
+        position_delay: Duration::from_secs(10),
+        ..Default::default()
+    };
+    let handler = test_handler(filter_wheel_registry(Arc::new(fw))).with_trains(wheel_trains());
+    if templated {
+        handler.with_naming_templates(Some(Arc::new(test_naming_templates())))
+    } else {
+        handler
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_untemplated_capture_gives_up_on_a_slow_wheel() {
+    let err = slow_wheel_handler(false)
+        .capture_filter(
+            "cam",
+            Some(rp_vocabulary::FrameType::Light),
+            super::internals::auxiliary_read_deadline(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("no answer within 3s"), "{err}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_templated_capture_waits_a_slow_wheel_out() {
+    let read = slow_wheel_handler(true)
+        .capture_filter(
+            "cam",
+            Some(rp_vocabulary::FrameType::Light),
+            super::internals::auxiliary_read_deadline(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read, Some(("Lum".to_string(), 0)));
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_untyped_capture_names_no_file_so_bounds_the_wheel() {
+    let err = slow_wheel_handler(true)
+        .capture_filter("cam", None, super::internals::auxiliary_read_deadline())
+        .await
+        .unwrap_err();
+    assert!(err.contains("no answer within 3s"), "{err}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dark_reads_no_filter_however_slow_the_wheel() {
+    for templated in [false, true] {
+        let read = slow_wheel_handler(templated)
+            .capture_filter(
+                "cam",
+                Some(rp_vocabulary::FrameType::Dark),
+                super::internals::auxiliary_read_deadline(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(read, None, "templated: {templated}");
+    }
+}
+
+fn pointing_of(
+    mount: MockTelescope,
+) -> impl std::future::Future<Output = Option<persistence::MountPointing>> {
+    super::internals::read_pointing(Arc::new(mount))
+}
+
+#[tokio::test]
+async fn a_still_mount_reports_its_pointing() {
+    let pointing = pointing_of(MockTelescope {
+        ra_value: 5.5,
+        dec_value: -12.25,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    assert_eq!(pointing.ra_hours, 5.5);
+    assert_eq!(pointing.dec_degrees, -12.25);
+}
+
+#[tokio::test]
+async fn a_mount_that_cannot_slew_counts_as_still() {
+    let pointing = pointing_of(MockTelescope {
+        slewing_not_implemented: true,
+        ra_value: 5.5,
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+    assert_eq!(pointing.ra_hours, 5.5);
+}
+
+#[tokio::test]
+async fn a_slewing_mount_reports_no_pointing() {
+    let pointing = pointing_of(MockTelescope {
+        stuck_slewing: true,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(pointing, None);
+}
+
+#[tokio::test]
+async fn a_mount_that_cannot_say_whether_it_slews_reports_no_pointing() {
+    let pointing = pointing_of(MockTelescope {
+        fail_slewing_poll: true,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(pointing, None);
+}
+
+#[tokio::test]
+async fn a_failed_coordinate_read_reports_no_pointing() {
+    let pointing = pointing_of(MockTelescope {
+        fail_declination: true,
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(pointing, None);
 }
 
 #[tokio::test]
@@ -3528,6 +3667,7 @@ fn optics_registry(
             id: "foc".to_string(),
             alpaca_url: "http://localhost:1".to_string(),
             device_number: 0,
+            unique_id: None,
             min_position: None,
             max_position: None,
             steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
@@ -3549,6 +3689,7 @@ fn optics_registry(
                 id: "fw".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
+                unique_id: None,
                 filters: vec![
                     "Lum".into(),
                     crate::config::filter_wheel::FilterEntry::Detailed(
@@ -4516,6 +4657,7 @@ async fn test_move_focuser_not_connected() {
                 id: "foc".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
+                unique_id: None,
                 min_position: None,
                 max_position: None,
                 steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
@@ -4623,6 +4765,7 @@ async fn test_get_focuser_position_not_connected() {
                 id: "foc".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
+                unique_id: None,
                 min_position: None,
                 max_position: None,
                 steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
@@ -6076,6 +6219,7 @@ fn handler_with_site_and_mount() -> McpHandler {
     let mount_cfg = crate::config::MountConfig {
         alpaca_url: "http://unused".into(),
         device_number: 0,
+        unique_id: None,
         settle_after_slew: None,
         slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::default(),
         guiding: None,
@@ -7058,6 +7202,7 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
                 alpaca_url: "http://localhost:1".to_string(),
                 device_type: String::new(),
                 device_number: 0,
+                unique_id: None,
                 cooler_targets_c: Vec::new(),
                 gain: None,
                 offset: None,
@@ -7092,6 +7237,7 @@ fn auto_focus_registry(starting_position: i32) -> crate::equipment::EquipmentReg
                 id: "foc".to_string(),
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
+                unique_id: None,
                 min_position: None,
                 max_position: None,
                 steps_per_sec: crate::config::focuser::FocuserStepsPerSec::default(),
@@ -7482,6 +7628,7 @@ fn rotator_registry(
                 name: None,
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
+                unique_id: None,
                 auth: None,
             },
             session: crate::equipment::DeviceSession::connected(rot),
@@ -9258,6 +9405,7 @@ async fn slew_deadline_overflow_falls_back_without_panic() {
             config: crate::config::MountConfig {
                 alpaca_url: "http://localhost:1".to_string(),
                 device_number: 0,
+                unique_id: None,
                 settle_after_slew: None,
                 slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::try_new(
                     1e-20,
@@ -10867,6 +11015,102 @@ async fn capture_cancelled_while_queued_leaves_without_touching_the_camera() {
     );
 }
 
+/// A capture handler over camera `cam` and a wheel `fw` (train `main`)
+/// whose position read takes `wheel_delay`; `templated` configures the
+/// documented naming pattern, so a typed frame waits the wheel out.
+fn wheel_capture_handler(
+    wheel_delay: Duration,
+    templated: bool,
+) -> (McpHandler, tempfile::TempDir) {
+    let fw = MockFilterWheel {
+        position_delay: wheel_delay,
+        ..Default::default()
+    };
+    let mut registry = camera_registry(Arc::new(MockCamera::default()));
+    registry.filter_wheels = filter_wheel_registry(Arc::new(fw)).filter_wheels;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut handler = test_handler(registry);
+    handler.session_config = SessionConfig {
+        data_directory: tmp.path().to_string_lossy().to_string(),
+    };
+    let handler = handler.with_trains(wheel_trains());
+    let handler = if templated {
+        handler.with_naming_templates(Some(Arc::new(test_naming_templates())))
+    } else {
+        handler
+    };
+    (handler, tmp)
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_cancelled_behind_a_wedged_wheel_leaves_within_the_read_bound() {
+    // A templated Flat waits the wheel out rather than time it; a cancel
+    // still releases the camera once the reads pass their 3 s bound,
+    // not when the wheel answers a minute later.
+    let (handler, _tmp) = wheel_capture_handler(Duration::from_mins(1), true);
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::Safety);
+    let started = tokio::time::Instant::now();
+
+    let request = CaptureRequest {
+        frame_type: Some(rp_vocabulary::FrameType::Flat),
+        ..capture_request("cam", 1)
+    };
+    let err = handler
+        .do_capture(request, None, &cancel)
+        .await
+        .expect_err("a cancelled capture must fail");
+
+    assert_eq!(err, "cancelled: safety");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed > CANCEL_AT,
+        "the finished frame's reads get their bound before a cancel cuts them: {elapsed:?}"
+    );
+    assert!(
+        elapsed <= Duration::from_secs(4),
+        "the capture must leave at the read bound, not when the wheel answers: {elapsed:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancel_behind_a_bounded_read_keeps_the_frame_once_the_read_gives_up() {
+    // Untemplated, so the wheel read is bounded: it gives up at the
+    // reads' deadline, the very instant the cancel's wait ends, and the
+    // reads win the tie — the frame is kept, without its filter.
+    let (handler, _tmp) = wheel_capture_handler(Duration::from_mins(1), false);
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::Safety);
+
+    let (image_path, _document_id) = handler
+        .do_capture(capture_request("cam", 1), None, &cancel)
+        .await
+        .unwrap();
+
+    let sidecar = persistence::ExposureDocument::sidecar_path_for(&image_path).unwrap();
+    let doc = persistence::ExposureDocument::read_sidecar_sync(&sidecar).unwrap();
+    assert_eq!(doc.filter, None);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancel_while_healthy_reads_finish_keeps_the_finished_frame() {
+    // The exposure is done and the wheel answers in 2 s, inside the
+    // bound: the cancel at 1 s stops nothing physical, so the frame is
+    // read out and kept.
+    let (handler, _tmp) = wheel_capture_handler(Duration::from_secs(2), false);
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::ClientDisconnected);
+
+    let (image_path, _document_id) = handler
+        .do_capture(capture_request("cam", 1), None, &cancel)
+        .await
+        .unwrap();
+
+    let sidecar = persistence::ExposureDocument::sidecar_path_for(&image_path).unwrap();
+    let doc = persistence::ExposureDocument::read_sidecar_sync(&sidecar).unwrap();
+    assert_eq!(doc.filter.as_deref(), Some("Lum"));
+}
+
 #[tokio::test(start_paused = true)]
 async fn capture_queued_behind_a_busy_camera_holds_no_motion_gate_permit() {
     let (handler, _tmp) = capture_handler(Arc::new(MockCamera::default()));
@@ -11329,6 +11573,7 @@ fn dither_dual_camera_registry() -> crate::equipment::EquipmentRegistry {
                 alpaca_url: "http://localhost:1".to_string(),
                 device_type: String::new(),
                 device_number: 0,
+                unique_id: None,
                 cooler_targets_c: Vec::new(),
                 gain: None,
                 offset: None,

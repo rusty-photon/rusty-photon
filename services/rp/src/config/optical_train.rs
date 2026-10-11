@@ -102,45 +102,45 @@ impl TryFrom<f64> for ApertureMm {
 /// rp.md § Optical Trains), e.g. `Takahashi FSQ-106EDX4` — the FITS
 /// header's `TELESCOP`.
 ///
-/// Validated at load to what one FITS string card can carry: 1 to 68
-/// printable ASCII characters, an apostrophe counting twice because
-/// FITS doubles it. A name the card could not hold is a load error
-/// rather than a header card silently dropped at capture time.
+/// Validated at load to what one FITS string card can carry once its
+/// typographic dashes, quotes and spaces fold to ASCII, as every
+/// free-text card's do: 1 to 68 printable ASCII characters, an
+/// apostrophe counting twice because FITS doubles it. A name the card
+/// could not hold is a load error rather than a header card silently
+/// dropped at capture time. The name itself is kept as written; the
+/// sidecar's `telescope` carries it unfolded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "String", into = "String")]
 pub struct TelescopeName(String);
 
 impl TelescopeName {
-    /// The longest value one FITS string card holds, once embedded
-    /// apostrophes are doubled.
-    const MAX_CARD_CHARS: usize = 68;
-
     /// The single validating constructor.
     ///
     /// # Errors
     ///
     /// Returns a message naming the field if `value` is empty, carries
-    /// a character outside printable ASCII, or is too long for one FITS
-    /// string card.
+    /// a character outside printable ASCII that does not fold, or is
+    /// too long for one FITS string card.
     pub fn try_new(value: String) -> Result<Self, String> {
         if value.trim().is_empty() {
             return Err("telescope must not be empty; omit it to leave TELESCOP out".into());
         }
-        if value.bytes().any(|b| !(0x20..=0x7E).contains(&b)) {
-            return Err(format!(
-                "telescope must be printable ASCII (a FITS header card), got {value:?}"
-            ));
-        }
-        let card_chars = value
-            .len()
-            .saturating_add(value.bytes().filter(|b| *b == b'\'').count());
-        if card_chars > Self::MAX_CARD_CHARS {
-            return Err(format!(
-                "telescope must fit one FITS card ({} characters, an apostrophe counting \
-                 twice), got {card_chars}: {value:?}",
-                Self::MAX_CARD_CHARS
-            ));
-        }
+        // The writer's own rule on the value the card will carry — folded
+        // like any free text, so an editor's en dash is not a startup
+        // failure — so config and header cannot drift apart.
+        rp_fits::writer::Keyword::new(
+            "TELESCOP",
+            rp_fits::writer::KeywordValue::Str(rp_fits::writer::fold_to_ascii(&value)),
+        )
+        .map_err(|e| {
+            // The refusal is about the value, not the keyword: drop the
+            // writer's "invalid keyword" framing.
+            let reason = match e {
+                rp_fits::FitsError::InvalidKeyword(reason) => reason,
+                other => other.to_string(),
+            };
+            format!("telescope must fit one FITS header card: {reason}; got {value:?}")
+        })?;
         Ok(Self(value))
     }
 
@@ -590,9 +590,12 @@ mod tests {
     fn telescope_name_accepts_a_fits_card_value() {
         let name = TelescopeName::try_new("Takahashi FSQ-106EDX4".to_string()).unwrap();
         assert_eq!(name.as_str(), "Takahashi FSQ-106EDX4");
-        assert!(TelescopeName::try_new("x".repeat(68)).is_ok());
+        // An editor's en dash folds on the card; the name keeps it.
+        let name = TelescopeName::try_new("Celestron C11 \u{2013} EdgeHD".to_string()).unwrap();
+        assert_eq!(name.as_str(), "Celestron C11 \u{2013} EdgeHD");
+        TelescopeName::try_new("x".repeat(68)).unwrap();
         // 66 characters plus an apostrophe is exactly 68 on the card.
-        assert!(TelescopeName::try_new(format!("{}'", "x".repeat(66))).is_ok());
+        TelescopeName::try_new(format!("{}'", "x".repeat(66))).unwrap();
     }
 
     #[test]
@@ -600,16 +603,18 @@ mod tests {
         for (value, needle) in [
             (String::new(), "empty"),
             ("   ".to_string(), "empty"),
+            ("Celestron C11 \u{2605}".to_string(), "printable ASCII"),
+            ("x".repeat(69), "too long"),
+            // 68 characters, but the apostrophe doubles to 69 on the card,
+            // and the message says why.
             (
-                "Celestron C11 \u{2013} EdgeHD".to_string(),
-                "printable ASCII",
+                format!("{}'", "x".repeat(67)),
+                "69 characters with apostrophes doubled",
             ),
-            ("x".repeat(69), "one FITS card"),
-            // 68 characters, but the apostrophe doubles to 69 on the card.
-            (format!("{}'", "x".repeat(67)), "one FITS card"),
         ] {
             let err = TelescopeName::try_new(value.clone()).unwrap_err();
             assert!(err.contains(needle), "{value:?}: {err}");
+            assert!(!err.contains("invalid keyword"), "{value:?}: {err}");
         }
     }
 

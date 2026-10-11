@@ -22,6 +22,13 @@ use crate::error::FitsError;
 pub(crate) const BLOCK_SIZE: usize = 2880;
 /// Size of a FITS header card.
 pub(crate) const CARD_SIZE: usize = 80;
+/// The longest string value one card holds (68), apostrophes counted
+/// twice.
+///
+/// FITS escapes `'` as `''`; the limit is the card's 80 columns less the
+/// 10-column `KEYWORD = ` prefix and the two quotes. A string
+/// [`Keyword::new`] accepts is at most this long.
+pub(crate) const MAX_STRING_CHARS: usize = CARD_SIZE - 10 - 2;
 /// Reserved keywords managed by the writer; users may not supply them.
 const RESERVED: &[&str] = &[
     "SIMPLE", "BITPIX", "NAXIS", "NAXIS1", "NAXIS2", "BSCALE", "BZERO", "END",
@@ -133,10 +140,10 @@ impl Keyword {
                 // 10 cols prefix ("KEYWORD  = ") + 2 quotes + body, plus
                 // space for an optional " / comment". Reject anything
                 // that can't possibly fit on a single card.
-                if padded_len.saturating_add(12) > CARD_SIZE {
+                if padded_len > MAX_STRING_CHARS {
                     return Err(FitsError::InvalidKeyword(format!(
-                        "string value too long for a single FITS card: {} bytes",
-                        s.len()
+                        "string value too long for a single FITS card: {escaped_len} characters \
+                         with apostrophes doubled, max {MAX_STRING_CHARS}"
                     )));
                 }
             }
@@ -476,10 +483,44 @@ fn push_padded_left(out: &mut Vec<u8>, value: &[u8], width: usize) {
     out.extend_from_slice(value);
 }
 
+/// Free text with its typographic look-alikes folded to ASCII.
+///
+/// The form a string card can carry: dashes, quotes (curly, low-9,
+/// guillemets) and spaces become `-`, `'`, `"` and ` ` (`Pleiades – M45` →
+/// `Pleiades - M45`, `„M31“` → `"M31"`), and the invisible characters
+/// copy-paste carries (zero-width space and joiners, word joiner, byte
+/// order mark, soft hyphen) are dropped. Every other character passes
+/// through for [`Keyword::new`] to judge: a value with no ASCII
+/// stand-in (`Hα`), or one longer than a card, is still refused, since
+/// neither a substitute nor a cut would keep it distinct.
+#[must_use]
+pub fn fold_to_ascii(value: &str) -> String {
+    value
+        .chars()
+        .filter_map(|c| match c {
+            '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}' | '\u{00AD}' => None,
+            '\u{00A0}' | '\u{2000}'..='\u{200A}' | '\u{202F}' => Some(' '),
+            '\u{2010}'..='\u{2015}' | '\u{2212}' => Some('-'),
+            '\u{2018}'..='\u{201B}' | '\u{2032}' | '\u{2039}' | '\u{203A}' => Some('\''),
+            '\u{201C}'..='\u{201F}' | '\u{2033}' | '\u{00AB}' | '\u{00BB}' => Some('"'),
+            other => Some(other),
+        })
+        .collect()
+}
+
+/// `value` as a real card holds it — rounded to the card's 11
+/// significant digits, the value a reader parses back — so a caller can
+/// check what will actually be written.
+#[must_use]
+pub fn real_as_written(value: f64) -> f64 {
+    format_float(value).parse().unwrap_or(value)
+}
+
 fn format_float(f: f64) -> String {
     // %20.10E form. `{:.10E}` gives `1.0000000000E0`; expand to
-    // `1.0000000000E+00` to match the FITS canonical form.
-    let raw = format!("{f:.10E}");
+    // `1.0000000000E+00` to match the FITS canonical form. `+ 0.0`
+    // writes a negative zero as plain zero.
+    let raw = format!("{:.10E}", f + 0.0);
     // Insert sign on exponent if missing.
     let Some((mantissa, exp)) = raw.split_once('E') else {
         return raw;
@@ -818,6 +859,82 @@ mod tests {
         assert_eq!(KeywordValue::Float(2.5).as_real(), Some(2.5));
         assert_eq!(KeywordValue::Bool(true).as_real(), None);
         assert_eq!(KeywordValue::Str("thirty".into()).as_real(), None);
+    }
+
+    #[test]
+    fn max_string_chars_is_exactly_what_one_card_holds() {
+        assert_eq!(MAX_STRING_CHARS, 68);
+        let mut buf = Vec::new();
+        let longest =
+            Keyword::new("OBJECT", KeywordValue::Str("x".repeat(MAX_STRING_CHARS))).unwrap();
+        write_u8_image(&mut buf, &[0], 1, 1, &[longest]).unwrap();
+        let err = Keyword::new(
+            "OBJECT",
+            KeywordValue::Str("x".repeat(MAX_STRING_CHARS + 1)),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("69 characters"), "{err}");
+        // An apostrophe doubles on the card, and the message says so.
+        let err = Keyword::new(
+            "OBJECT",
+            KeywordValue::Str(format!("{}'", "x".repeat(MAX_STRING_CHARS - 1))),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("69 characters with apostrophes doubled"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn fold_to_ascii_folds_typographic_look_alikes() {
+        assert_eq!(fold_to_ascii("Bode\u{2019}s Galaxy"), "Bode's Galaxy");
+        assert_eq!(fold_to_ascii("Pleiades \u{2013} M45"), "Pleiades - M45");
+        assert_eq!(fold_to_ascii("\u{201C}M81\u{201D}"), "\"M81\"");
+        assert_eq!(fold_to_ascii("NGC\u{00A0}7000"), "NGC 7000");
+        assert_eq!(
+            fold_to_ascii("\u{201E}Pferdekopf\u{201C}"),
+            "\"Pferdekopf\""
+        );
+        assert_eq!(fold_to_ascii("\u{201A}x\u{2018}"), "'x'");
+        assert_eq!(fold_to_ascii("\u{00AB}M42\u{00BB}"), "\"M42\"");
+        assert_eq!(fold_to_ascii("\u{2039}M42\u{203A}"), "'M42'");
+    }
+
+    #[test]
+    fn fold_to_ascii_drops_invisible_characters() {
+        for pasted in [
+            "M31\u{200B}",
+            "\u{FEFF}M31",
+            "M\u{00AD}31",
+            "M3\u{2060}1",
+            "M\u{200D}31",
+        ] {
+            assert_eq!(fold_to_ascii(pasted), "M31", "{pasted:?}");
+        }
+    }
+
+    #[test]
+    fn fold_to_ascii_leaves_the_rest_for_keyword_new_to_judge() {
+        let folded = fold_to_ascii("H\u{3b1}");
+        assert_eq!(folded, "H\u{3b1}");
+        Keyword::new("FILTER", KeywordValue::Str(folded)).unwrap_err();
+    }
+
+    #[test]
+    fn negative_zero_is_written_as_zero() {
+        assert_eq!(format_float(-0.0), format_float(0.0));
+        assert!(real_as_written(-0.0).is_sign_positive());
+    }
+
+    #[test]
+    fn real_as_written_is_the_value_rounded_to_the_card() {
+        assert_eq!(real_as_written(1.5), 1.5);
+        // 11 significant digits: just under 360 is written as 360.
+        assert_eq!(real_as_written(360.0 - 1.5e-11), 360.0);
+        assert_eq!(real_as_written(-2.5e-3), -2.5e-3);
     }
 
     #[test]

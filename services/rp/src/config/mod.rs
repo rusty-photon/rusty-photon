@@ -39,7 +39,7 @@ pub use centering::CenteringConfig;
 pub use cooling::CoolingConfig;
 pub use cover_calibrator::CoverCalibratorConfig;
 pub use dome::DomeConfig;
-pub use equipment::EquipmentConfig;
+pub use equipment::{EquipmentConfig, UniqueIdPin};
 pub use filter_wheel::FilterWheelConfig;
 pub use focuser::FocuserConfig;
 pub use guiding::{FocusWatchConfig, GuiderDefaults, GuidingConfig};
@@ -299,6 +299,7 @@ pub fn validate_config(config: &Config) -> Vec<FieldError> {
     for (index, cam) in config.equipment.cameras.iter().enumerate() {
         errors.extend(cam.field_errors(index));
     }
+    errors.extend(config.equipment.duplicate_pin_errors());
     // The optical-train graph rules (roster existence, terminal camera,
     // order consistency, the one-guiding-train rule) live with the
     // derived model so validation and derivation cannot drift apart.

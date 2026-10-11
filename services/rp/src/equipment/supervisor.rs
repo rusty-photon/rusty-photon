@@ -8,7 +8,10 @@
 //! through the `Connected` property, and re-establishes dead sessions
 //! with the full per-type connect routine — roster re-enumeration,
 //! `Connected = true`, and a fresh read of the connect-time property
-//! cache. Nothing is carried over from a dead session.
+//! cache. Nothing is carried over from a dead session. A pinned entry's
+//! healthy session is also re-checked against its server's listing, and
+//! a session or handle its pin refuses is dropped (rp.md § Device
+//! Identity Pin).
 //!
 //! Tenet 3 holds on this path exactly as on first connect: everything
 //! here re-*reads* state; `Connected = true` is non-actuating by driver
@@ -20,7 +23,7 @@
 //! `provider_changed` where a device emits `equipment_changed`.
 
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,6 +31,7 @@ use ascom_alpaca::api::Device;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+use super::binding::{check_pin, EstablishError, PinCheck, RosterEntry};
 use super::session::DeviceSession;
 use super::{
     camera, cover_calibrator, dome, filter_wheel, focuser, mount, observing_conditions, rotator,
@@ -113,7 +117,8 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.cameras {
             supervise_with_metadata(
                 "camera",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
                 || camera::establish_camera(&entry.config, ca),
@@ -123,7 +128,8 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.filter_wheels {
             supervise(
                 "filter_wheel",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
                 || filter_wheel::establish_filter_wheel(&entry.config, ca),
@@ -133,7 +139,8 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.cover_calibrators {
             supervise(
                 "cover_calibrator",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
                 || cover_calibrator::establish_cover_calibrator(&entry.config, ca),
@@ -143,7 +150,8 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.focusers {
             supervise_with_metadata(
                 "focuser",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
                 || focuser::establish_focuser(&entry.config, ca),
@@ -153,7 +161,8 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.safety_monitors {
             supervise(
                 "safety_monitor",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
                 || safety_monitor::establish_safety_monitor(&entry.config, ca),
@@ -168,7 +177,8 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.switches {
             supervise(
                 "switch",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
                 || switch::establish_switch(&entry.config, ca),
@@ -178,7 +188,8 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.rotators {
             supervise(
                 "rotator",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
                 || rotator::establish_rotator(&entry.config, ca),
@@ -188,7 +199,8 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.observing_conditions {
             supervise(
                 "observing_conditions",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
                 || observing_conditions::establish_observing_conditions(&entry.config, ca),
@@ -198,7 +210,8 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.domes {
             supervise(
                 "dome",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
                 || dome::establish_dome(&entry.config, ca),
@@ -206,9 +219,14 @@ impl ReconnectSupervisor {
             .await;
         }
         if let Some(entry) = self.equipment.mount.as_ref() {
-            supervise("mount", None, &entry.session, &self.event_bus, || {
-                mount::establish_mount(&entry.config, ca)
-            })
+            supervise(
+                "mount",
+                &entry.config,
+                ca,
+                &entry.session,
+                &self.event_bus,
+                || mount::establish_mount(&entry.config, ca),
+            )
             .await;
         }
     }
@@ -219,18 +237,19 @@ impl ReconnectSupervisor {
 ///
 /// The metadata-free half of [`supervise_with_metadata`], which
 /// carries the documentation for both.
-async fn supervise<T, F, Fut>(
+async fn supervise<C, F, Fut>(
     kind: &str,
-    id: Option<&str>,
-    session: &DeviceSession<T>,
+    config: &C,
+    ca: Option<&Path>,
+    session: &DeviceSession<C::Device>,
     event_bus: &EventBus,
     reestablish: F,
 ) where
-    T: Device + ?Sized,
+    C: RosterEntry,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<Arc<T>, String>>,
+    Fut: Future<Output = Result<Arc<C::Device>, EstablishError>>,
 {
-    supervise_with_metadata(kind, id, session, event_bus, || async {
+    supervise_with_metadata(kind, config, ca, session, event_bus, || async {
         reestablish().await.map(|device| (device, ()))
     })
     .await;
@@ -269,22 +288,47 @@ async fn supervise<T, F, Fut>(
 /// see it. On failure the entry stays disconnected, with the
 /// `connected: false` event emitted once per transition — not once per
 /// attempt.
-async fn supervise_with_metadata<T, M, F, Fut>(
+///
+/// A session that reads healthy is then held to the entry's identity
+/// pin by [`check_pin`] (rp.md § Device Identity Pin), which this runs
+/// itself from the entry's `config`, so no kind can skip it: a healthy
+/// `Connected` through rp's handle says nothing about *which* device
+/// now answers at the entry's number. When the pin no longer holds, the
+/// session and its handle are dropped at once, as they are whenever the
+/// re-establish routine itself refuses the device on identity: the
+/// handle is known to address another device, so no tool call may
+/// reach it.
+async fn supervise_with_metadata<C, M, F, Fut>(
     kind: &str,
-    id: Option<&str>,
-    session: &DeviceSession<T, M>,
+    config: &C,
+    ca: Option<&Path>,
+    session: &DeviceSession<C::Device, M>,
     event_bus: &EventBus,
     reestablish: F,
 ) where
-    T: Device + ?Sized,
-    M: Send + Sync,
+    C: RosterEntry,
+    M: Default + Send + Sync,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<(Arc<T>, M), String>>,
+    Fut: Future<Output = Result<(Arc<C::Device>, M), EstablishError>>,
 {
+    let address = config.address();
+    let id = address.id;
     if session.is_connected() {
         if let Some(device) = session.device() {
             match device.connected().await {
-                Ok(true) => return,
+                Ok(true) => match check_pin(config, ca).await {
+                    PinCheck::Holds => return,
+                    PinCheck::Unchecked(e) => {
+                        debug!(kind, id, error = %e, "could not re-check the pinned UniqueID; keeping the session it was checked against at establish");
+                        return;
+                    }
+                    PinCheck::Refused(e) => {
+                        session.retire();
+                        warn!(kind, id, error = %e, "the device at this entry's number no longer reports its pinned UniqueID; dropped the session and its handle");
+                        emit(event_bus, kind, id, false);
+                        return;
+                    }
+                },
                 Ok(false) => {
                     debug!(
                         kind,
@@ -308,10 +352,15 @@ async fn supervise_with_metadata<T, M, F, Fut>(
     match reestablish().await {
         Ok((device, metadata)) => {
             session.install(device, metadata);
-            info!(kind, id, "device session re-established");
+            // The establish routine has just logged the bound device at
+            // info; this line only marks the install.
+            debug!(kind, id, "device session re-established");
             emit(event_bus, kind, id, true);
         }
         Err(e) => {
+            if e.is_identity_refusal() {
+                session.retire();
+            }
             if was_connected {
                 warn!(kind, id, error = %e, "device session lost and re-establish failed; retrying every pass");
                 emit(event_bus, kind, id, false);
@@ -362,6 +411,15 @@ mod tests {
         hung_probes: AtomicU32,
         set_connected_calls: AtomicU32,
         max_adu: AtomicU32,
+        /// When set, the listing names another device at number 0 — a
+        /// driver that came back with its devices reordered — while
+        /// `Connected` keeps its own state.
+        swapped: AtomicBool,
+        /// When set, the listing answers an Alpaca error while
+        /// `Connected` keeps answering: the pin cannot be re-checked.
+        listing_unreadable: AtomicBool,
+        /// `configureddevices` reads served.
+        listing_reads: AtomicU32,
     }
 
     fn alpaca_ok(value: serde_json::Value) -> Json<serde_json::Value> {
@@ -380,6 +438,18 @@ mod tests {
                 get(move || {
                     let state = devices_state.clone();
                     async move {
+                        state.listing_reads.fetch_add(1, Ordering::SeqCst);
+                        if state.listing_unreadable.load(Ordering::SeqCst) {
+                            return Json(serde_json::json!({
+                                "ErrorNumber": 1280, "ErrorMessage": "simulated listing failure"
+                            }));
+                        }
+                        if state.swapped.load(Ordering::SeqCst) {
+                            return alpaca_ok(serde_json::json!([{
+                                "DeviceName": "SM", "DeviceType": "SafetyMonitor",
+                                "DeviceNumber": 0, "UniqueID": "sm-other"
+                            }]));
+                        }
                         if state.broken.load(Ordering::SeqCst) {
                             // An empty roster maps to the Permanent
                             // ("device not found") outcome, so the
@@ -428,6 +498,7 @@ mod tests {
             id: "sm-under-test".to_string(),
             alpaca_url: url.to_string(),
             device_number: 0,
+            unique_id: None,
             auth: None,
         }
     }
@@ -446,6 +517,116 @@ mod tests {
 
     async fn connected_entry(url: &str) -> SafetyMonitorEntry {
         crate::equipment::safety_monitor::connect_safety_monitor(&monitor_config(url), None).await
+    }
+
+    /// A monitor entry pinned to the `UniqueID` the stub lists while
+    /// unswapped, connected at startup.
+    async fn pinned_entry(url: &str) -> SafetyMonitorEntry {
+        let config = config::SafetyMonitorConfig {
+            unique_id: Some(config::UniqueIdPin::try_new("sm-0".to_string()).unwrap()),
+            ..monitor_config(url)
+        };
+        crate::equipment::safety_monitor::connect_safety_monitor(&config, None).await
+    }
+
+    /// The driver came back with another device at the pinned entry's
+    /// number, and some other client has switched it on: `Connected`
+    /// reads true through rp's handle, so only the pin re-check sees
+    /// the swap. The session and its handle go at once, with one event,
+    /// and nothing is switched on.
+    #[tokio::test]
+    async fn pass_drops_a_healthy_pinned_session_whose_number_lists_another_device() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let entry = pinned_entry(&stub.url()).await;
+        assert!(entry.is_connected(), "fixture: the pin matches at startup");
+        state.swapped.store(true, Ordering::SeqCst);
+
+        let supervisor = supervisor_over(registry_with_monitor(entry));
+        let mut events = supervisor.event_bus.subscribe();
+        supervisor.pass().await;
+
+        let entry = &supervisor.equipment.safety_monitors[0];
+        assert!(!entry.is_connected(), "a refused pin must end the session");
+        assert!(
+            entry.device().is_none(),
+            "the handle addresses another device now, so it must be dropped"
+        );
+        let event = events.try_recv().expect("the loss must emit");
+        assert_eq!(event.payload["connected"], false);
+        assert_eq!(
+            state.set_connected_calls.load(Ordering::SeqCst),
+            1,
+            "only the startup connect may have switched a device on"
+        );
+    }
+
+    /// A pinned session that reads healthy is kept when its listing
+    /// cannot be read: it was checked at establish, and a failed read is
+    /// no evidence of a swap.
+    #[tokio::test]
+    async fn pass_keeps_a_healthy_pinned_session_whose_listing_cannot_be_read() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let entry = pinned_entry(&stub.url()).await;
+        let reads_at_startup = state.listing_reads.load(Ordering::SeqCst);
+        state.listing_unreadable.store(true, Ordering::SeqCst);
+
+        let supervisor = supervisor_over(registry_with_monitor(entry));
+        let mut events = supervisor.event_bus.subscribe();
+        supervisor.pass().await;
+
+        assert!(
+            state.listing_reads.load(Ordering::SeqCst) > reads_at_startup,
+            "the pass must have tried to re-check the pin"
+        );
+        let entry = &supervisor.equipment.safety_monitors[0];
+        assert!(entry.is_connected());
+        assert!(entry.device().is_some());
+        assert!(
+            events.try_recv().is_err(),
+            "nothing changed, so nothing is emitted"
+        );
+    }
+
+    /// An unpinned healthy session costs no listing read: its behaviour
+    /// is exactly what it was before pins existed.
+    #[tokio::test]
+    async fn pass_does_not_read_the_listing_for_a_healthy_unpinned_session() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let entry = connected_entry(&stub.url()).await;
+        let reads_at_startup = state.listing_reads.load(Ordering::SeqCst);
+
+        let supervisor = supervisor_over(registry_with_monitor(entry));
+        supervisor.pass().await;
+
+        assert_eq!(state.listing_reads.load(Ordering::SeqCst), reads_at_startup);
+    }
+
+    /// A re-establish the pin refuses drops the dead session's stale
+    /// handle too: it addresses the device now at the entry's number.
+    #[tokio::test]
+    async fn pass_drops_the_stale_handle_when_the_re_establish_is_refused_on_identity() {
+        let state = Arc::new(StubState::default());
+        let stub = spawn_stub(monitor_router(state.clone())).await;
+        let entry = pinned_entry(&stub.url()).await;
+        // The service restarted (Connected back to false) with another
+        // device listed at the entry's number.
+        state.connected.store(false, Ordering::SeqCst);
+        state.swapped.store(true, Ordering::SeqCst);
+
+        let supervisor = supervisor_over(registry_with_monitor(entry));
+        supervisor.pass().await;
+
+        let entry = &supervisor.equipment.safety_monitors[0];
+        assert!(!entry.is_connected());
+        assert!(entry.device().is_none(), "the stale handle must be dropped");
+        assert_eq!(
+            state.set_connected_calls.load(Ordering::SeqCst),
+            1,
+            "the refused device must not be switched on"
+        );
     }
 
     /// A healthy session — Connected reads true — is left completely
@@ -518,7 +699,8 @@ mod tests {
         let connected_during_establish = AtomicBool::new(true);
         supervise(
             "safety_monitor",
-            Some(&entry.id),
+            &entry.config,
+            None,
             &entry.session,
             &event_bus,
             || async {
@@ -702,6 +884,7 @@ mod tests {
             alpaca_url: stub.url(),
             device_type: String::new(),
             device_number: 0,
+            unique_id: None,
             cooler_targets_c: Vec::new(),
             gain: None,
             offset: None,
@@ -896,6 +1079,7 @@ mod tests {
                     alpaca_url: url.clone(),
                     device_type: String::new(),
                     device_number: 0,
+                    unique_id: None,
                     cooler_targets_c: Vec::new(),
                     gain: None,
                     offset: None,
@@ -910,6 +1094,7 @@ mod tests {
                     id: id("filter-wheel"),
                     alpaca_url: url.clone(),
                     device_number: 0,
+                    unique_id: None,
                     filters: Vec::new(),
                     auth: None,
                 },
@@ -921,6 +1106,7 @@ mod tests {
                     id: id("cover-calibrator"),
                     alpaca_url: url.clone(),
                     device_number: 0,
+                    unique_id: None,
                     poll_interval: Duration::from_secs(1),
                     auth: None,
                 },
@@ -933,6 +1119,7 @@ mod tests {
                     id: id("focuser"),
                     alpaca_url: url.clone(),
                     device_number: 0,
+                    unique_id: None,
                     min_position: None,
                     max_position: None,
                     steps_per_sec: config::focuser::FocuserStepsPerSec::default(),
@@ -947,6 +1134,7 @@ mod tests {
                     id: id("safety-monitor"),
                     alpaca_url: url.clone(),
                     device_number: 0,
+                    unique_id: None,
                     auth: None,
                 },
                 session: DeviceSession::disconnected(),
@@ -958,6 +1146,7 @@ mod tests {
                     name: None,
                     alpaca_url: url.clone(),
                     device_number: 0,
+                    unique_id: None,
                     auth: None,
                 },
                 session: DeviceSession::disconnected(),
@@ -969,6 +1158,7 @@ mod tests {
                     name: None,
                     alpaca_url: url.clone(),
                     device_number: 0,
+                    unique_id: None,
                     auth: None,
                 },
                 session: DeviceSession::disconnected(),
@@ -980,6 +1170,7 @@ mod tests {
                     name: None,
                     alpaca_url: url.clone(),
                     device_number: 0,
+                    unique_id: None,
                     auth: None,
                 },
                 session: DeviceSession::disconnected(),
@@ -991,6 +1182,7 @@ mod tests {
                     name: None,
                     alpaca_url: url.clone(),
                     device_number: 0,
+                    unique_id: None,
                     auth: None,
                 },
                 session: DeviceSession::disconnected(),
@@ -999,6 +1191,7 @@ mod tests {
                 config: config::MountConfig {
                     alpaca_url: url,
                     device_number: 0,
+                    unique_id: None,
                     settle_after_slew: None,
                     slew_rate_arcsec_per_sec: config::mount::SlewRateArcsecPerSec::default(),
                     guiding: None,

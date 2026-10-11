@@ -23,23 +23,23 @@ async fn service_running_empty(world: &mut CameraWorld) {
 // --- connection lifecycle ---------------------------------------------------
 
 #[given(regex = r"^camera device (\d+) is connected$")]
-async fn camera_is_connected(world: &mut CameraWorld, _device: u32) {
-    world.camera().set_connected(true).await.unwrap();
+async fn camera_is_connected(world: &mut CameraWorld, device: u32) {
+    world.device(device).set_connected(true).await.unwrap();
 }
 
 #[given(regex = r"^camera device (\d+) is not connected$")]
-async fn camera_is_not_connected(world: &mut CameraWorld, _device: u32) {
-    world.camera().set_connected(false).await.unwrap();
+async fn camera_is_not_connected(world: &mut CameraWorld, device: u32) {
+    world.device(device).set_connected(false).await.unwrap();
 }
 
 #[when(regex = r"^I connect camera device (\d+)$")]
-async fn connect_camera(world: &mut CameraWorld, _device: u32) {
-    world.camera().set_connected(true).await.unwrap();
+async fn connect_camera(world: &mut CameraWorld, device: u32) {
+    world.device(device).set_connected(true).await.unwrap();
 }
 
 #[when(regex = r"^I disconnect camera device (\d+)$")]
-async fn disconnect_camera(world: &mut CameraWorld, _device: u32) {
-    world.camera().set_connected(false).await.unwrap();
+async fn disconnect_camera(world: &mut CameraWorld, device: u32) {
+    world.device(device).set_connected(false).await.unwrap();
 }
 
 #[given(regex = r"^an exposure is in flight on camera device (\d+)$")]
@@ -58,11 +58,11 @@ async fn exposure_in_flight(world: &mut CameraWorld, _device: u32) {
 #[then(regex = r"^camera device (\d+) reports (\w+) as (true|false)$")]
 async fn camera_reports_bool(
     world: &mut CameraWorld,
-    _device: u32,
+    device: u32,
     property: String,
     expected: bool,
 ) {
-    let camera = world.camera();
+    let camera = world.device(device);
     let actual = match property.as_str() {
         "Connected" => camera.connected().await.unwrap(),
         "ImageReady" => camera.image_ready().await.unwrap(),
@@ -90,8 +90,8 @@ async fn camera_reports_bool(
 /// that pushed `sky-survey-camera`'s suite past its 60s Bazel budget on
 /// Windows. The members stay named in the feature file, per testing.md §2.5.
 #[then(regex = r"^reading these members from camera device (\d+) is rejected with ASCOM (\w+):$")]
-async fn member_reads_rejected(world: &mut CameraWorld, step: &Step, _device: u32, code: String) {
-    let camera = world.camera();
+async fn member_reads_rejected(world: &mut CameraWorld, step: &Step, device: u32, code: String) {
+    let camera = world.device(device);
     let table = step
         .table()
         .expect("refusal step needs a data table of member names");

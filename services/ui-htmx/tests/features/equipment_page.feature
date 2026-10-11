@@ -53,6 +53,20 @@ Feature: Equipment page
     Then the page reports the changes take effect when rp is restarted
     And rp's config file JSON at "/equipment/cameras/0/cooler_targets_c" equals "[-10,5]"
 
+  Scenario: A camera's identity pin is offered on the form and stored in rp's config
+    Given a running rp orchestrator with an empty roster
+    And a BFF pointed at rp
+    When I open the add-equipment form for "cameras"
+    Then the page shows an input named "unique_id" with value ""
+    When I submit the equipment form with:
+      | field         | value              |
+      | id            | pinned-cam         |
+      | alpaca_url    | http://127.0.0.1:1 |
+      | device_number | 0                  |
+      | unique_id     | QHY600M-a1b2c3d4   |
+    Then the page reports the changes take effect when rp is restarted
+    And rp's config file on disk contains the string "QHY600M-a1b2c3d4" exactly once
+
   Scenario: An added entry with a duplicate id is rejected on the form
     Given a running dsd-fp2 driver registered in rp's roster as cover calibrator "flat-panel"
     And a BFF pointed at rp

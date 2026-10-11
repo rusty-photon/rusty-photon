@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
-use ascom_alpaca::api::{SafetyMonitor, TypedDevice};
+use ascom_alpaca::api::SafetyMonitor;
 use tracing::{debug, error};
 
-use super::alpaca::{
-    build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
-};
+use super::binding::{establish_listed, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
 
@@ -33,47 +31,8 @@ impl SafetyMonitorEntry {
 pub(super) async fn establish_safety_monitor(
     config: &config::SafetyMonitorConfig,
     ca_cert_path: Option<&std::path::Path>,
-) -> Result<Arc<dyn SafetyMonitor>, String> {
-    let client = build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path)
-        .map_err(|e| format!("failed to create Alpaca client: {e}"))?;
-
-    let label = format!("safety monitor {}", config.id);
-    retry_connect_attempt(&label, |_attempt| async {
-        let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
-            Ok(Ok(devices)) => devices,
-            Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
-            Err(_) => {
-                return AttemptOutcome::Transient(format!(
-                    "get_devices: timeout after {GET_DEVICES_TIMEOUT:?}"
-                ));
-            }
-        };
-
-        let mut sm_index = 0u32;
-        let mut found_sm: Option<Arc<dyn SafetyMonitor>> = None;
-        for device in devices {
-            if let TypedDevice::SafetyMonitor(sm) = device {
-                if sm_index == config.device_number {
-                    found_sm = Some(sm);
-                    break;
-                }
-                sm_index = sm_index.saturating_add(1);
-            }
-        }
-
-        let Some(sm) = found_sm else {
-            return AttemptOutcome::Permanent(format!(
-                "safety monitor at index {} not found on Alpaca server",
-                config.device_number
-            ));
-        };
-
-        match sm.set_connected(true).await {
-            Ok(()) => AttemptOutcome::Ok(sm),
-            Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
-        }
-    })
-    .await
+) -> Result<Arc<dyn SafetyMonitor>, EstablishError> {
+    establish_listed(config, ca_cert_path).await
 }
 
 pub(super) async fn connect_safety_monitor(
@@ -123,6 +82,7 @@ mod tests {
             id: "weather-watcher".to_string(),
             alpaca_url: url.to_string(),
             device_number,
+            unique_id: None,
             auth: None,
         }
     }

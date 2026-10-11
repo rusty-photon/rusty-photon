@@ -29,32 +29,71 @@ pub(super) const GET_DEVICES_TIMEOUT: Duration = Duration::from_secs(5);
 /// `Permanent` / `Transient` split is what makes this a retry helper
 /// rather than a sleep-and-hope wrapper: the connect closures map each
 /// failure mode to its own variant. Today only "device-not-found at
-/// the requested index in the Alpaca server's reply" is `Permanent`
-/// inside the closure — every other failure inside the retry loop
-/// (HTTP transport errors including connection-refused on an
-/// unreachable host, `get_devices` timeouts, `set_connected` errors,
-/// `OmniSim` under GC pressure) is `Transient` and goes through the
+/// the requested index in the Alpaca server's reply", an identity pin
+/// the listed `UniqueID` contradicts (`binding::establish_listed`) and a
+/// placeholder's refused `set_connected` ([`connect_refused`]) are
+/// `Permanent` inside the closure — every other failure inside the
+/// retry loop (HTTP transport errors including connection-refused on an
+/// unreachable host, `get_devices` timeouts, other `set_connected`
+/// errors, `OmniSim` under GC pressure, a blank listed `UniqueID` a pin cannot
+/// be checked against yet) is `Transient` and goes through the
 /// retry/backoff path. Note: `Client::new` failures are filtered
 /// out *before* the retry loop, so that case never produces an
 /// `AttemptOutcome` at all.
-pub(super) enum AttemptOutcome<T> {
+///
+/// `P` is what a permanent failure carries back to the caller, so a
+/// caller that must tell its permanent outcomes apart (an identity
+/// refusal from a device that is not listed) can type them.
+#[derive(Debug)]
+pub(super) enum AttemptOutcome<T, P = String> {
     Ok(T),
-    Permanent(String),
+    Permanent(P),
     Transient(String),
+}
+
+/// What a device's refused `Connected = true` means for its connect routine.
+///
+/// A device-claims placeholder's refusal — its error code, from a device whose
+/// `UniqueID` has the placeholder form, standing in for a device its driver
+/// cannot serve until it reloads — is permanent for the pass, as "device not
+/// found" is: retrying with backoff cannot help, and the next pass picks the
+/// device up once the driver serves it (rp.md § Device Session Recovery). The
+/// code alone is not enough: the driver range is every Alpaca driver's to use.
+/// Any other refusal may pass.
+pub(super) fn connect_refused<T, P: From<String>>(
+    label: &str,
+    unique_id: &str,
+    error: &ascom_alpaca::ASCOMError,
+) -> AttemptOutcome<T, P> {
+    if error.code.raw() == rusty_photon_doctor_checks::claims::PLACEHOLDER_ERROR_CODE
+        && rusty_photon_doctor_checks::claims::is_placeholder_unique_id(unique_id)
+    {
+        debug!(
+            label,
+            reason = %error.message,
+            "the driver holds this number with a placeholder; not retrying this pass"
+        );
+        return AttemptOutcome::Permanent(P::from(format!(
+            "set_connected: the driver serves a placeholder at this number until it reloads: \
+             {error}"
+        )));
+    }
+    AttemptOutcome::Transient(format!("set_connected: {error}"))
 }
 
 /// Drive `operation` up to [`CONNECT_ATTEMPTS`] times with exponential
 /// backoff between attempts: 1 s, then 2 s. Returns the first `Ok`
-/// result, or the last transient error wrapped with attempt count if
-/// every attempt returned `Transient`. Returns immediately on
-/// `Permanent`.
+/// result, or the last transient error wrapped with attempt count (as a
+/// `P`) if every attempt returned `Transient`. Returns `Permanent`'s
+/// payload immediately.
 ///
 /// `label` is used purely for log lines so the operator can see which
 /// device is retrying — e.g. `"camera main-cam"`.
-pub(super) async fn retry_connect_attempt<T, F, Fut>(label: &str, operation: F) -> Result<T, String>
+pub(super) async fn retry_connect_attempt<T, P, F, Fut>(label: &str, operation: F) -> Result<T, P>
 where
     F: Fn(u32) -> Fut,
-    Fut: Future<Output = AttemptOutcome<T>>,
+    Fut: Future<Output = AttemptOutcome<T, P>>,
+    P: From<String>,
 {
     let mut last_transient = String::from("no attempts made");
     for attempt in 1..=CONNECT_ATTEMPTS {
@@ -67,7 +106,7 @@ where
                 }
                 return Ok(value);
             }
-            AttemptOutcome::Permanent(msg) => return Err(msg),
+            AttemptOutcome::Permanent(failure) => return Err(failure),
             AttemptOutcome::Transient(msg) => {
                 last_transient = msg;
                 if attempt < CONNECT_ATTEMPTS {
@@ -93,9 +132,9 @@ where
             }
         }
     }
-    Err(format!(
+    Err(P::from(format!(
         "gave up after {CONNECT_ATTEMPTS} attempts (last error: {last_transient})"
-    ))
+    )))
 }
 
 /// Connect-phase timeout for every Alpaca HTTP request rp issues. A
@@ -221,6 +260,53 @@ where
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    fn refusal(code: ascom_alpaca::ASCOMErrorCode) -> ascom_alpaca::ASCOMError {
+        ascom_alpaca::ASCOMError::new(code, "no working camera is enumerated on p9")
+    }
+
+    const PLACEHOLDER: ascom_alpaca::ASCOMErrorCode = ascom_alpaca::ASCOMErrorCode::new_for_driver(
+        rusty_photon_doctor_checks::claims::PLACEHOLDER_DRIVER_CODE,
+    );
+
+    #[test]
+    fn a_placeholders_refusal_is_permanent() {
+        let outcome = connect_refused::<(), String>(
+            "camera main",
+            "placeholder:svbony-camera:p9",
+            &refusal(PLACEHOLDER),
+        );
+        assert!(
+            matches!(outcome, AttemptOutcome::Permanent(_)),
+            "{outcome:?}"
+        );
+    }
+
+    #[test]
+    fn the_placeholder_code_from_another_driver_is_transient() {
+        let outcome = connect_refused::<(), String>(
+            "camera main",
+            "ASCOM.Other.Camera",
+            &refusal(PLACEHOLDER),
+        );
+        assert!(
+            matches!(outcome, AttemptOutcome::Transient(_)),
+            "{outcome:?}"
+        );
+    }
+
+    #[test]
+    fn another_code_from_a_placeholder_is_transient() {
+        let outcome = connect_refused::<(), String>(
+            "camera main",
+            "placeholder:svbony-camera:p9",
+            &refusal(ascom_alpaca::ASCOMErrorCode::new_for_driver(0x41)),
+        );
+        assert!(
+            matches!(outcome, AttemptOutcome::Transient(_)),
+            "{outcome:?}"
+        );
+    }
 
     #[test]
     fn build_alpaca_client_without_auth() {
