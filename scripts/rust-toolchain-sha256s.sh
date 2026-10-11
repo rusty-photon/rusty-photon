@@ -33,9 +33,12 @@ if [[ "$imported" != "$fingerprint" ]]; then
   exit 1
 fi
 # --status-fd makes the verdict machine-readable: VALIDSIG names the key that
-# signed, so a signature by any other key in the keyring cannot pass.
-if ! gpg --homedir "$work/gnupg" --status-fd 1 --verify "$work/manifest.toml.asc" "$work/manifest.toml" 2>/dev/null \
-  | grep -q "^\[GNUPG:\] VALIDSIG $fingerprint "; then
+# signed, so a signature by any other key in the keyring cannot pass. The
+# status lines are captured before matching, not piped: `grep -q` exits at
+# its first match, and gpg's next status write would then die of SIGPIPE,
+# which pipefail reports as a failed verification.
+if ! verdict=$(gpg --homedir "$work/gnupg" --status-fd 1 --verify "$work/manifest.toml.asc" "$work/manifest.toml" 2>/dev/null) \
+  || ! grep -q "^\[GNUPG:\] VALIDSIG $fingerprint " <<<"$verdict"; then
   echo "channel-rust-$version.toml is not signed by the Rust release key" >&2
   exit 1
 fi

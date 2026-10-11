@@ -67,11 +67,12 @@ async fn then_solves_serialized(world: &mut PlateSolverWorld) {
     // Each child writes its own uniquely-named file; a shared append file
     // dropped writes across processes on Windows.
     //
-    // The spawn time is read from the file's NAME (`<nanos>-<pid>`), not its
-    // contents. Creating the file publishes the name in one step, but the
-    // contents arrive in a second `write`, and a child the wrapper kills
-    // between the two — its deadline expiring while a loaded runner has it
-    // descheduled — leaves an empty file behind.
+    // The spawn time is the file's NAME (`<nanos>-<pid>`); the file itself is
+    // empty, because a second `write` after the create is a step a child the
+    // wrapper kills could miss. That leaves one assumption, and it is a timing
+    // one: each child reaches `record_spawn` before its 100ms deadline. A
+    // child a loaded runner holds past that is killed with no file, and the
+    // count assertion below fails.
     let dir = world
         .spawn_dir_path
         .as_ref()

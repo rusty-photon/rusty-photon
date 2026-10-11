@@ -740,7 +740,12 @@ What it needs from you:
   the exception — the macro cannot pass the attribute through. A test target
   that only re-runs another's compilation with different `args` carries
   `tags = ["noclippy"]` (bdd-infra's shards), since linting it again would
-  only repeat the same action.
+  only repeat the same action; the script fails on any other opt-out tag — on
+  anything but a `rust_test` whose crate another, linted `rust_test` compiles.
+- **`manual` targets are linted too.** `//...` skips them, but the step names
+  them explicitly: `--config=clippy` builds the `clippy_checks` output group
+  alone, which never links, so a target that is manual only because it cannot
+  link without a vendor SDK (svbony-camera's binary) still lints.
 - **Bazel lints the feature set each target compiles**, not Cargo's two passes.
   A `rust_test` built with `crate_features = ["mock"]` is linted with `mock`,
   the production `rust_library` beside it without. The Cargo `stable / clippy`
@@ -753,10 +758,15 @@ What it needs from you:
   release's GPG-signed channel manifest). Until then the two clippies are on
   different releases, and code written against the new one — an `#[expect]`
   only it fulfils — fails `bazel clippy`.
-- **The MSRV still holds on every PR, though Bazel no longer compiles with
-  it.** Both clippies deny `incompatible_msrv` (a std API newer than the
-  MSRV), and the coverage nightly sits in the MSRV's nightly cycle, so a newer
-  language feature fails `bazel coverage` with E0658. Bazel's clippy learns
+- **The MSRV is held more narrowly than when Bazel compiled with it.** Both
+  clippies deny `incompatible_msrv` (a std API newer than the MSRV) on every
+  leg they run, Windows included. A newer *language* feature is caught only
+  in Linux-compiled code: the coverage nightly sits in the MSRV's nightly
+  cycle and fails `bazel coverage` with E0658, and check.yml's nightly `msrv`
+  job builds with the MSRV itself — both on Linux. A newer language feature
+  in `#[cfg(windows)]` or macOS-only code reaches main unflagged, so check it
+  by hand when you write such code (`cargo +1.98.1 check --target …`, as
+  under *Run it locally when your change adds OS-gated code* above). Bazel's clippy learns
   the MSRV from `clippy.toml`'s `msrv` key — rules_rust sets no
   `CARGO_PKG_RUST_VERSION` — so that key must equal the root Cargo.toml's
   `rust-version`; `cargo clippy` only warns when they differ, so the same

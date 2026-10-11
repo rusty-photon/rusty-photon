@@ -134,10 +134,15 @@ build --@rules_rust//rust/toolchain/channel=stable
 # enters any action but clippy's. `-Dwarnings` is explicit because the aspect
 # adds it on its own only for a target with no `lint_config`; without it a
 # clippy warning would pass, and be cached as passing.
+#
+# The clippy_checks output group ALONE (no `+`): a clippy run builds what the
+# Clippy actions need (dependency metadata) and nothing else — no linking —
+# so it also works on a target that cannot link here, which is why bazel.yml
+# can name the `manual` targets `//...` would skip.
 build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
 build --@rules_rust//rust/settings:clippy_flag=-Dwarnings
 build:clippy --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
-build:clippy --output_groups=+clippy_checks
+build:clippy --output_groups=clippy_checks
 
 # Drop debuginfo from Bazel-built artifacts. CI only needs pass/fail, not debug
 # symbols, and debuginfo bloats the rlibs/test binaries the remote cache moves

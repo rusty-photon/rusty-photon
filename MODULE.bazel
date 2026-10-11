@@ -333,12 +333,15 @@ rust.toolchain(
     # scripts/rust-toolchain-sha256s.sh: until then the two clippies differ,
     # and a change written against the new stable fails `bazel clippy` here.
     #
-    # The MSRV stays in Cargo.toml and is still held on every PR, just not by
-    # compiling with it. Both clippies know it — Cargo's from `rust-version`,
-    # this one from clippy.toml's `msrv` — and deny `incompatible_msrv`, a std
-    # API newer than the MSRV; the coverage nightly below sits in the MSRV's
-    # nightly cycle, so a newer language feature fails `bazel coverage` with
-    # E0658. check.yml's nightly `msrv` job compiles with the MSRV itself.
+    # The MSRV stays in Cargo.toml, but nothing compiles with it on a PR any
+    # more; what still holds it there is narrower. Both clippies know it —
+    # Cargo's from `rust-version`, this one from clippy.toml's `msrv` — and
+    # deny `incompatible_msrv`, a std API newer than the MSRV, on every leg
+    # this one runs (Windows included). A newer LANGUAGE feature is caught
+    # only where code is compiled by the coverage nightly below, which sits in
+    # the MSRV's nightly cycle and fails `bazel coverage` with E0658 — Linux,
+    # so `#[cfg(windows)]` / macOS-only code is not covered — and by check.yml's
+    # nightly `msrv` job, which compiles with the MSRV itself, also on Linux.
     #
     # The pinned nightly is used ONLY by the
     # coverage workflow (.github/workflows/bazel-coverage.yml, via
