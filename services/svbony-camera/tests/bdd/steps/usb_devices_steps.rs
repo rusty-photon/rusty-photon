@@ -79,7 +79,8 @@ async fn service_is_started(world: &mut CameraWorld) {
 /// scenario names. The harness forwards a child's stderr rather than keeping
 /// it, so once the start is known to exit, the same command line runs again
 /// to completion to read what it said — safe only after that: a start the
-/// service accepted would never complete.
+/// service accepted would never complete. A start that timed out, still
+/// running when the harness killed it, was not refused.
 #[then(regex = r"^the service refuses to start saying (.+)$")]
 async fn service_refuses_to_start(world: &mut CameraWorld, expected: String) {
     match world
@@ -87,7 +88,8 @@ async fn service_refuses_to_start(world: &mut CameraWorld, expected: String) {
         .as_ref()
         .expect("no start was attempted")
     {
-        Err(_) => {}
+        Err(why) if why.contains("exited without binding") => {}
+        Err(why) => panic!("the start did not exit, so it was not refused: {why}"),
         Ok(()) => panic!("the service started from a configuration it should refuse"),
     }
     let args = world.start_args();

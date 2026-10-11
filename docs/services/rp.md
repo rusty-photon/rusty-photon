@@ -2871,7 +2871,16 @@ Recovery](#device-session-recovery)):
    gives drivers stable numbers (D4.7). Re-keying by `UniqueID` in `rp`
    would be a second keying mechanism beside it, and a silent re-bind
    is exactly the failure this guard exists to stop.
-5. **The pin cannot be verified**, because the listed entry's
+5. **The device is a placeholder**: its `UniqueID` has the device-claims
+   form `placeholder:<service>:<usb_port>` (§ [Device Session
+   Recovery](#device-session-recovery)). It is refused before its
+   `UniqueID` is compared with the pin, and before `Connected = true`,
+   whatever the pin says. A placeholder is no device rather than another
+   one, so this is a plain connect failure, as it is for an unpinned
+   entry, not an identity refusal: the error names the placeholder,
+   points at its `Description` for the reason, and the next pass checks
+   the pin again.
+6. **The pin cannot be verified**, because the listed entry's
    `UniqueID` is empty. A driver still filling in its listing can
    answer that for a moment, so the routine's 1 s / 2 s retries ride it
    out like a transport error. If every attempt still lists it blank,
@@ -2895,7 +2904,8 @@ listed at the entry's number, the session is dropped at once, with a
 the session:
 - one that cannot be read;
 - one that lists no device at the entry's number;
-- one that lists that device with a blank `UniqueID`.
+- one that lists that device with a blank `UniqueID`;
+- one that lists a driver's placeholder there.
 
 The session was checked at establish, and none of these is evidence of
 another device: a re-enumerating driver can answer a short or
@@ -2914,7 +2924,7 @@ through a fresh establish that finds the pinned device.
 
 **Retry class.** A mismatch is permanent within one connect routine,
 like "device not found": no 1 s / 2 s in-routine retries. A blank
-`UniqueID` is the one exception (item 5). The
+`UniqueID` is the one exception (item 6). The
 supervisor re-checks it once per pass, re-reading the list each time, so
 the entry binds on the first pass that finds the pinned device back at
 `device_number` (say, the driver restarted in its old order), and never
@@ -3061,11 +3071,11 @@ devices:
   `0x500`–`0xFFF` range is every Alpaca driver's to use, so another
   driver's `0x540` is still retried. The connect routine every kind
   shares classifies it (`alpaca::connect_refused`), so the plan's C4
-  placeholder filter wheels need no rp change. A pinned entry never
-  reaches that refusal: no pin matches a placeholder's `UniqueID`, so the
-  pin refuses it first (§ [Device Identity Pin](#device-identity-pin)),
-  naming the placeholder's `UniqueID`, and the next pass binds the
-  device once the driver serves it again.
+  placeholder filter wheels need no rp change. A pinned entry refuses a
+  placeholder by its `UniqueID` alone, before switching it on and with
+  the same plain failure (§ [Device Identity Pin](#device-identity-pin),
+  item 5), so the driver's reason reaches it through the placeholder's
+  `Description` rather than the connect error.
 
 The cadence is fixed — no exponential backoff. One `Connected` read per
 device per interval is the steady-state cost, and the interval itself

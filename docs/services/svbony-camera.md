@@ -1476,8 +1476,9 @@ second driver needs it.
   failed, the rebuild is the first enumeration since the start — ends the
   service. So each try checks the config file first, then takes the scan, then
   checks that the SDK enumerates, and rebuilds only when all three pass. A
-  config file or SDK that blocks it is logged at `warn!` once, and the re-scan
-  carries on, without scanning while the file does not load. The re-scan stops
+  config file or SDK that blocks it is logged at `warn!` each time it starts
+  to, and at `debug!` while it persists, and the re-scan carries on, without
+  scanning while the file does not load. The re-scan stops
   when it rebuilds, and with the server it belongs to. It is not hot-plug: a
   successful scan whose listed port is merely empty serves a placeholder until
   the next reload, as at any start.

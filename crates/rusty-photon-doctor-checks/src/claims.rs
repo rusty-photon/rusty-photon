@@ -543,13 +543,16 @@ impl<'a> Claims<'a> {
         if let Some(record) = record {
             let product = record.model.as_deref().unwrap_or("a device");
             let id = format!("{}:{}", record.vendor, record.product);
-            let unrecognised: Vec<&str> = placement
+            // Each model once: two cameras of one model need one entry.
+            let mut unrecognised: Vec<&str> = placement
                 .cameras
                 .iter()
                 .zip(&self.sdk)
                 .filter(|(place, _)| **place == CameraPlace::Unrecognised)
                 .map(|(_, camera)| camera.model.as_str())
                 .collect();
+            unrecognised.sort_unstable();
+            unrecognised.dedup();
             if self.normalizer.is_own_record(record) && !unrecognised.is_empty() {
                 let models = unrecognised.join(", ");
                 // A record no known model claims could be an unrecognised
@@ -682,13 +685,13 @@ impl<'a> Claims<'a> {
 /// Compare two ports hop by hop from the root (the plan's D4.7).
 ///
 /// The port is cut into the runs of letters and digits between its
-/// separators, and runs compare by width, then as text — a decimal run's width
-/// counted without its leading zeros. For decimal runs that is numeric order,
-/// so `…-0:4.2` precedes `…-0:4.10` and `USB(2)` precedes `USB(14)`; for the
-/// fixed-width hex the platforms write (`PCI(1400)`, a macOS `0x14200000`) it
-/// is hex order. Every run has one key, so the order is total — whatever runs
-/// meet at a hop, `sort_by` gets a consistent comparison — and equal runs
-/// fall back to the whole string.
+/// separators, and runs compare by width without their leading zeros, then as
+/// text. For decimal runs that is numeric order, so `…-0:4.2` precedes
+/// `…-0:4.10` and `USB(2)` precedes `USB(14)`; for the hex the platforms write
+/// (`PCI(1400)`, a macOS `0x14200000`) it is hex order, padded with zeros or
+/// not — a field that happens to be all digits included. Every run has one
+/// key, so the order is total — whatever runs meet at a hop, `sort_by` gets a
+/// consistent comparison — and equal runs fall back to the whole string.
 #[must_use]
 pub fn compare_ports(a: &str, b: &str) -> Ordering {
     let keys = |s: &'_ str| -> Vec<(usize, String)> {
@@ -700,14 +703,10 @@ pub fn compare_ports(a: &str, b: &str) -> Ordering {
     keys(a).cmp(&keys(b)).then_with(|| a.cmp(b))
 }
 
-/// A run's sort key: its width, then its text, with a decimal run's leading
-/// zeros dropped so it compares as the number it spells.
+/// A run's sort key: its width, then its text, with its leading zeros dropped
+/// so it compares as the number it spells, decimal or hex.
 fn run_key(run: &str) -> (usize, String) {
-    let run = if run.bytes().all(|b| b.is_ascii_digit()) {
-        run.trim_start_matches('0')
-    } else {
-        run
-    };
+    let run = run.trim_start_matches('0');
     (run.len(), run.to_string())
 }
 
@@ -1134,10 +1133,14 @@ mod tests {
             &[camera("SV605CC"), camera("SV605CC")],
             &scan(vec![record("9a0a", "p1"), record("9a0a", "p2")]),
         );
-        assert!(placement
-            .cameras
-            .iter()
-            .all(|p| matches!(p, CameraPlace::LookAlike { .. })));
+        assert!(
+            placement
+                .cameras
+                .iter()
+                .all(|p| matches!(p, CameraPlace::LookAlike { .. })),
+            "{:?}",
+            placement.cameras
+        );
     }
 
     #[test]
@@ -1390,6 +1393,19 @@ mod tests {
     }
 
     #[test]
+    fn an_unrecognised_model_is_named_once_however_many_cameras_it_has() {
+        let claims = claims(
+            Ok(scan(vec![record("9a0f", "p1"), record("9a0e", "p2")])),
+            vec![camera("SV905C"), camera("SV905C")],
+        );
+        let reason = placeholder_reason(claims.resolve("p1"));
+        assert!(
+            reason.contains("needs an entry for each of SV905C."),
+            "{reason}"
+        );
+    }
+
+    #[test]
     fn a_known_models_record_beside_an_unrecognised_camera_names_both_causes() {
         // 9a0a is the SV605CC's: either the SDK does not see it, or the SDK's
         // SV905C is that camera under a name the normalizer does not know.
@@ -1533,6 +1549,12 @@ mod tests {
             Ordering::Less
         );
         assert_eq!(compare_ports("0x14200000", "0x14a00000"), Ordering::Less);
+    }
+
+    #[test]
+    fn a_hex_field_that_is_all_digits_still_compares_in_hex_order() {
+        assert_eq!(compare_ports("X(00a0)", "X(0100)"), Ordering::Less);
+        assert_eq!(compare_ports("PCI(00A0)", "PCI(0100)"), Ordering::Less);
     }
 
     #[test]

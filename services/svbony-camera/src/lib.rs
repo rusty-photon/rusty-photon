@@ -334,7 +334,11 @@ impl ServerBuilder {
             return Ok(Registered::default());
         }
         let source = self.usb_source.clone();
-        let scan = tokio::task::spawn_blocking(move || source.scan()).await?;
+        // A collector that panics has failed to scan, like one that errors:
+        // placeholders and a re-scan, never a failed start (U6).
+        let scan = tokio::task::spawn_blocking(move || source.scan())
+            .await
+            .unwrap_or_else(|error| Err(format!("the USB scan did not finish: {error}")));
         let cameras = match &scan {
             Err(error) => {
                 error!(
@@ -479,6 +483,7 @@ struct Rescan {
 }
 
 /// What still stands between a re-scan and the rebuild it would ask for.
+#[derive(Debug)]
 enum Blocker {
     /// The USB scan still fails.
     Scan(String),
@@ -491,18 +496,27 @@ enum Blocker {
     Sdk(String),
 }
 
+impl Blocker {
+    /// Whether this blocker is news to the operator after `previous`, the
+    /// one the try before met: a config file or SDK that blocks the rebuild is
+    /// warned about each time it starts to, so one that clears and comes back
+    /// — or gives way to the other — is said again, while one that persists
+    /// from the try before is not.
+    fn is_new(&self, previous: Option<&Self>) -> bool {
+        previous.is_none_or(|p| std::mem::discriminant(p) != std::mem::discriminant(self))
+    }
+}
+
 impl Rescan {
     /// Re-scan until a rebuild would serve the list, then say so on `ready`.
     /// Nobody asked for this rebuild, so it waits out anything that would make
     /// it end the service instead.
     async fn run(self, ready: tokio::sync::oneshot::Sender<()>) {
-        // Each blocker is warned about once, on its own: one cleared and the
-        // other met afterwards is a new reason the operator has not heard.
-        let (mut said_config, mut said_sdk) = (false, false);
+        let mut previous = None;
         for wait in rusty_photon_doctor_checks::claims::rescan_waits() {
             tokio::time::sleep(wait).await;
             let this = self.clone();
-            match tokio::task::spawn_blocking(move || this.blocker()).await {
+            let blocker = match tokio::task::spawn_blocking(move || this.blocker()).await {
                 Ok(None) => {
                     info!("the USB scan succeeds again; rebuilding to place the listed cameras");
                     // A send to a server that has already stopped goes
@@ -510,24 +524,30 @@ impl Rescan {
                     let _ = ready.send(());
                     return;
                 }
-                Ok(Some(Blocker::Scan(error))) => debug!(%error, "the USB scan still fails"),
-                Ok(Some(Blocker::Config(error))) if !said_config => {
-                    warn!(%error, "the config file no longer loads; not rebuilding until it does");
-                    said_config = true;
+                Ok(Some(blocker)) => blocker,
+                Err(error) => {
+                    debug!(%error, "the USB re-scan task failed");
+                    continue;
                 }
-                Ok(Some(Blocker::Sdk(error))) if !said_sdk => {
+            };
+            let new = blocker.is_new(previous.as_ref());
+            match &blocker {
+                Blocker::Scan(error) => debug!(%error, "the USB scan still fails"),
+                Blocker::Config(error) if new => {
+                    warn!(%error, "the config file no longer loads; not rebuilding until it does");
+                }
+                Blocker::Sdk(error) if new => {
                     warn!(
                         %error,
                         "the USB scan succeeds again, but the SVBony SDK cannot enumerate; not \
                          rebuilding until it can"
                     );
-                    said_sdk = true;
                 }
-                Ok(Some(Blocker::Config(error) | Blocker::Sdk(error))) => {
+                Blocker::Config(error) | Blocker::Sdk(error) => {
                     debug!(%error, "the rebuild is still blocked");
                 }
-                Err(error) => debug!(%error, "the USB re-scan task failed"),
             }
+            previous = Some(blocker);
         }
     }
 
@@ -842,7 +862,7 @@ mod simulation_tests {
             .with_reload_signal(ReloadSignal::new());
         let (ids, registered) = register(&builder, &[]).await.unwrap();
         assert_eq!(ids, Vec::<String>::new());
-        assert!(registered.rescan.is_none());
+        assert!(registered.rescan.is_none(), "an empty list scans nothing");
     }
 
     #[tokio::test]
@@ -854,7 +874,9 @@ mod simulation_tests {
             .unwrap();
         assert_eq!(ids, vec!["placeholder:svbony-camera:simulated-usbv3-0:1"]);
         assert_eq!((registered.cameras, registered.placeholders), (0, 1));
-        assert!(registered.rescan.is_some());
+        registered
+            .rescan
+            .expect("a failed scan schedules a re-scan");
     }
 
     #[tokio::test]
@@ -930,7 +952,26 @@ mod simulation_tests {
             source: UsbSource::Staged(PathBuf::from("/nonexistent/inventory.json")),
             config: Some((path, CliOverrides::default())),
         };
-        assert!(matches!(rescan.blocker(), Some(Blocker::Config(_))));
+        let blocker = rescan.blocker();
+        assert!(matches!(blocker, Some(Blocker::Config(_))), "{blocker:?}");
+    }
+
+    #[test]
+    fn a_blocker_is_news_each_time_it_starts() {
+        let config = || Blocker::Config("broken".to_string());
+        let scan = || Blocker::Scan("no sysfs".to_string());
+        let sdk = || Blocker::Sdk("no SDK".to_string());
+        assert!(config().is_new(None), "the first try's");
+        assert!(!config().is_new(Some(&config())), "one that persists");
+        assert!(
+            config().is_new(Some(&scan())),
+            "one that clears and comes back"
+        );
+        assert!(
+            sdk().is_new(Some(&config())),
+            "one that gives way to the other"
+        );
+        assert!(config().is_new(Some(&sdk())), "and back again");
     }
 
     #[tokio::test]

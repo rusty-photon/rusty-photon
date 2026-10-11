@@ -44,6 +44,7 @@ pub(super) const GET_DEVICES_TIMEOUT: Duration = Duration::from_secs(5);
 /// `P` is what a permanent failure carries back to the caller, so a
 /// caller that must tell its permanent outcomes apart (an identity
 /// refusal from a device that is not listed) can type them.
+#[derive(Debug)]
 pub(super) enum AttemptOutcome<T, P = String> {
     Ok(T),
     Permanent(P),
@@ -270,38 +271,41 @@ mod tests {
 
     #[test]
     fn a_placeholders_refusal_is_permanent() {
-        assert!(matches!(
-            connect_refused::<(), String>(
-                "camera main",
-                "placeholder:svbony-camera:p9",
-                &refusal(PLACEHOLDER)
-            ),
-            AttemptOutcome::Permanent(_)
-        ));
+        let outcome = connect_refused::<(), String>(
+            "camera main",
+            "placeholder:svbony-camera:p9",
+            &refusal(PLACEHOLDER),
+        );
+        assert!(
+            matches!(outcome, AttemptOutcome::Permanent(_)),
+            "{outcome:?}"
+        );
     }
 
     #[test]
     fn the_placeholder_code_from_another_driver_is_transient() {
-        assert!(matches!(
-            connect_refused::<(), String>(
-                "camera main",
-                "ASCOM.Other.Camera",
-                &refusal(PLACEHOLDER)
-            ),
-            AttemptOutcome::Transient(_)
-        ));
+        let outcome = connect_refused::<(), String>(
+            "camera main",
+            "ASCOM.Other.Camera",
+            &refusal(PLACEHOLDER),
+        );
+        assert!(
+            matches!(outcome, AttemptOutcome::Transient(_)),
+            "{outcome:?}"
+        );
     }
 
     #[test]
     fn another_code_from_a_placeholder_is_transient() {
-        assert!(matches!(
-            connect_refused::<(), String>(
-                "camera main",
-                "placeholder:svbony-camera:p9",
-                &refusal(ascom_alpaca::ASCOMErrorCode::new_for_driver(0x41))
-            ),
-            AttemptOutcome::Transient(_)
-        ));
+        let outcome = connect_refused::<(), String>(
+            "camera main",
+            "placeholder:svbony-camera:p9",
+            &refusal(ascom_alpaca::ASCOMErrorCode::new_for_driver(0x41)),
+        );
+        assert!(
+            matches!(outcome, AttemptOutcome::Transient(_)),
+            "{outcome:?}"
+        );
     }
 
     #[test]

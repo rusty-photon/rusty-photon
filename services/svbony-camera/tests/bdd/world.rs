@@ -63,6 +63,9 @@ pub struct CameraWorld {
     /// How the last start that was expected to fail went: `Err` with the
     /// harness's account of the refusal, or `Ok` when the service came up.
     pub start_refusal: Option<Result<(), String>>,
+    /// The port a list configuration is written with, reserved once per
+    /// scenario so every rewrite of the file names the same one.
+    pub config_port: Option<u16>,
     /// The last `doctor` run's output (`doctor --json` or `doctor --devices`).
     pub doctor_output: Option<std::process::Output>,
 
@@ -111,14 +114,18 @@ impl CameraWorld {
     /// `usb_devices` list takes a reserved port instead, because a list is the
     /// one configuration whose service reloads itself (U6): a reload rebinds
     /// the configured port, and port 0 would move the service to a port the
-    /// harness never learns.
+    /// harness never learns. The port is reserved once per scenario, so a
+    /// later rewrite (a doctor run, say) cannot move a running service that
+    /// reloads from the file.
     pub fn write_config(&mut self) -> String {
         let mut config = self
             .config_json
             .clone()
             .unwrap_or_else(|| serde_json::json!({ "devices": {} }));
         let port = if config.get("usb_devices").is_some() {
-            bdd_infra::reserved_test_port()
+            *self
+                .config_port
+                .get_or_insert_with(bdd_infra::reserved_test_port)
         } else {
             0
         };
