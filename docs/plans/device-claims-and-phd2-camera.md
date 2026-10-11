@@ -1471,10 +1471,26 @@ it failed against real PHD2 every time; it passed CI only because
 `mock_phd2.rs` returned the same wrong shape. The client now accepts only
 the object and rejects any other shape with an error carrying the reply.
 The mock replies with the object and writes a real FITS file for each
-call: a fixed 8×6 16-bit frame, into `MOCK_PHD2_IMAGE_DIR`, with no
-`.fits` extension, as PHD2's own names have none. The facade's tests can
-decode that frame. The file is left for the caller to remove, so
-cleanup is the facade's job (D10). `phd2-guider.md` documents both.
+call: a fixed 8×6 16-bit frame, into `MOCK_PHD2_IMAGE_DIR`. The facade's
+tests can decode that frame. The file is left for the caller to remove,
+so cleanup is the facade's job (D10). `phd2-guider.md` documents both.
+
+The mock's frame carries none of PHD2's time cards (`EXPOSURE`, `DATE`,
+`DATE-OBS`), because it models no exposures. If option 3 above wins, C6
+adds them to the mock along with its exposure model.
+
+The mock names its files in PHD2's **Unix** form,
+`save_image_<pid>_<n>` with no extension. PHD2's own names come from
+wxWidgets' `CreateTempFileName`:
+
+- **Unix:** `mkstemp` gives `<dir>/save_image_XXXXXX`, with no
+  extension.
+- **Windows:** `GetTempFileName` gives `<dir>\sav<hex>.TMP`, keeping only
+  three characters of the prefix (wxWidgets'
+  `src/common/filename.cpp`; Microsoft's `GetTempFileName` reference).
+
+So D10's cleanup sweep must key on neither the `save_image_` prefix nor a
+missing extension.
 
 ### D10. Shape of the facade
 

@@ -295,7 +295,12 @@ const SAVED_FRAME_STEP: usize = 1365;
 /// unsigned 16-bit ramp (primary HDU, `BITPIX = 16`, `BZERO = 32768`).
 /// The mock always has this frame to save: it does not model which
 /// exposure a frame came from, nor PHD2's `no image available` (code 2)
-/// before the first one.
+/// before the first one. For the same reason the header carries none of
+/// the time cards real PHD2's `usImage::Save` writes (`EXPOSURE`, `DATE`,
+/// `DATE-OBS`): their values depend on when an exposure ran. A completion
+/// watermark that compares `DATE-OBS` (option 3 of D9 in
+/// `docs/plans/device-claims-and-phd2-camera.md`) has to add them here,
+/// together with an exposure model.
 ///
 /// The file goes to `MOCK_PHD2_IMAGE_DIR` and is left there: as with
 /// PHD2, removing it is the client's job. There is no default
@@ -307,13 +312,22 @@ const SAVED_FRAME_STEP: usize = 1365;
 /// is appended, and a relative one would land in the mock's working
 /// directory.
 /// The reply is the variable's own text plus an ASCII name, so it is
-/// never converted back from a path. PHD2 names the file with
-/// `wxFileName::CreateTempFileName(<dir>/save_image_)`, so the real name
-/// has no `.fits` extension; this one has none either, so a client cannot
-/// come to rely on one.
+/// never converted back from a path.
+///
+/// PHD2's file name depends on its platform. It comes from
+/// `wxFileName::CreateTempFileName(<dir>/save_image_)`, whose
+/// implementation (`wxCreateTempImpl` in wxWidgets'
+/// `src/common/filename.cpp`) branches on the OS. On Unix it appends six
+/// `mkstemp` characters: `<dir>/save_image_XXXXXX`, no extension. On
+/// Windows it calls `GetTempFileName`, which Microsoft documents as
+/// keeping only the first three characters of the prefix and producing
+/// `<path>\<pre><uuuu>.TMP`: `<dir>\sav<hex>.TMP`. The mock copies the
+/// Unix form only (`save_image_<pid>_<n>`, no extension). A client must
+/// take the name from the reply and key on neither the `save_image_`
+/// prefix nor a missing extension.
 ///
 /// The file's life is an approximation of PHD2's. PHD2 reserves the name
-/// with `mkstemp` (inside `CreateTempFileName`), then saves through
+/// (`mkstemp`, or `GetTempFileName` on Windows), then saves through
 /// cfitsio with the clobber prefix `!`, which deletes that reserved file
 /// and creates a new one under the same name. The mock creates the file
 /// once and writes into it, so it never shows the moment the name is
