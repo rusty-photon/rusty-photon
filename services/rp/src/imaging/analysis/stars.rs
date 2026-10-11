@@ -1,5 +1,6 @@
-//! Star detection: smoothing → thresholding → connected-components labelling
-//! → component filtering → centroiding.
+//! Star detection: hot-pixel suppression → smoothing → thresholding →
+//! connected-components labelling → component filtering → centroiding →
+//! half-flux-radius floor.
 //!
 //! Coordinate convention follows the rest of the imaging pipeline: the
 //! frame is row-major, exactly as `capture` shapes the cache — ndarray's
@@ -20,9 +21,23 @@ use std::collections::VecDeque;
 
 use ndarray::{Array2, ArrayView2};
 use ndarray_ndimage::{gaussian_filter, BorderMode};
+use tracing::debug;
 
 use super::background::BackgroundStats;
+use super::hfr::star_hfr;
 use super::pixel::Pixel;
+
+/// Smallest half-flux radius (px) a component may measure and still be
+/// admitted as a star.
+///
+/// A component under it carries its flux in the one pixel under its
+/// centroid: a hot pixel on top of faint signal, which hot-pixel
+/// suppression leaves alone, or a cosmic-ray hit. On real QHY600M
+/// frames those measure under 0.1 px, and the smallest detections at best
+/// focus about 0.4 px, so the floor sits between them with margin on
+/// both sides; a setup that undersamples its stars that badly cannot
+/// measure focus by HFR anyway.
+pub const MIN_STAR_HFR: f64 = 0.25;
 
 /// A detected star.
 #[derive(Debug, Clone)]
@@ -87,15 +102,17 @@ pub fn detect_stars<T: Pixel>(
         return Vec::new();
     }
 
-    // Smooth a f64 copy of the input.
-    let f64_data: Array2<f64> = view.mapv(super::pixel::Pixel::to_f64);
+    let threshold = background.mean + params.threshold_sigma * background.stddev;
+
+    // Clear hot pixels from a f64 copy of the input, then smooth it.
+    let mut f64_data: Array2<f64> = view.mapv(super::pixel::Pixel::to_f64);
+    suppress_hot_pixels(view, &mut f64_data, threshold);
     let smoothed = if params.smoothing_sigma > 0.0 && rows > 4 && cols > 4 {
         gaussian_filter(&f64_data, params.smoothing_sigma, 0, BorderMode::Reflect, 4)
     } else {
         f64_data
     };
 
-    let threshold = background.mean + params.threshold_sigma * background.stddev;
     let mask = smoothed.mapv(|v| v > threshold);
 
     let components = connected_components_4(&mask.view());
@@ -104,6 +121,80 @@ pub fn detect_stars<T: Pixel>(
         .into_iter()
         .filter_map(|pixels| build_star(view, pixels, background.mean, params, rows, cols))
         .collect()
+}
+
+/// Replace, in `data`, every hot pixel of `view` with the median of its
+/// 3×3 neighbourhood. A pixel is hot when it is above `threshold` while
+/// neither its neighbourhood median nor that of any of its eight
+/// neighbours is: it belongs to a bright structure too small to have a
+/// body.
+///
+/// Smoothing first would spread a hot pixel into a blob several pixels
+/// wide that passes the area filter. A 3×3 median is background around
+/// any structure of up to four bright pixels, so single hot pixels,
+/// pairs and 2×2 clusters go. A star is left untouched: a pixel of its
+/// profile above the threshold has, in itself or in the neighbour on
+/// the core's side, a neighbourhood median above the threshold. The same
+/// holds for the edge of any extended shape. Neighbourhoods are read
+/// from `view`, so a replacement never feeds the next pixel's median,
+/// and the border is replicated.
+fn suppress_hot_pixels<T: Pixel>(view: &ArrayView2<T>, data: &mut Array2<f64>, threshold: f64) {
+    let has_body = |cell: (usize, usize)| {
+        neighbourhood_median(view, cell.0, cell.1).is_some_and(|median| median > threshold)
+    };
+    let mut replaced = 0usize;
+    for ((r, c), raw) in view.indexed_iter() {
+        if raw.to_f64() <= threshold {
+            continue;
+        }
+        let Some(median) = neighbourhood_median(view, r, c) else {
+            continue;
+        };
+        if median > threshold {
+            continue;
+        }
+        if neighbourhood(view.dim(), r, c).any(|cell| cell != (r, c) && has_body(cell)) {
+            continue;
+        }
+        if let Some(slot) = data.get_mut((r, c)) {
+            *slot = median;
+            replaced = replaced.saturating_add(1);
+        }
+    }
+    debug!(replaced, "hot pixels replaced before star detection");
+}
+
+/// The nine cells of the 3×3 neighbourhood centred on `(r, c)` in a
+/// frame of `(rows, cols)`, the border replicated.
+fn neighbourhood(
+    (rows, cols): (usize, usize),
+    r: usize,
+    c: usize,
+) -> impl Iterator<Item = (usize, usize)> {
+    let row_ids = [
+        r.saturating_sub(1),
+        r,
+        r.saturating_add(1).min(rows.saturating_sub(1)),
+    ];
+    let col_ids = [
+        c.saturating_sub(1),
+        c,
+        c.saturating_add(1).min(cols.saturating_sub(1)),
+    ];
+    row_ids
+        .into_iter()
+        .flat_map(move |rr| col_ids.into_iter().map(move |cc| (rr, cc)))
+}
+
+/// Median of the 3×3 neighbourhood centred on `(r, c)`, the border
+/// replicated.
+fn neighbourhood_median<T: Pixel>(view: &ArrayView2<T>, r: usize, c: usize) -> Option<f64> {
+    let mut window = [0.0_f64; 9];
+    for (slot, cell) in window.iter_mut().zip(neighbourhood(view.dim(), r, c)) {
+        *slot = view.get(cell)?.to_f64();
+    }
+    window.sort_unstable_by(f64::total_cmp);
+    window.get(4).copied()
 }
 
 fn build_star<T: Pixel>(
@@ -184,7 +275,7 @@ fn build_star<T: Pixel>(
         (sum_x / n, sum_y / n)
     };
 
-    Some(Star {
+    let star = Star {
         centroid_x: cx,
         centroid_y: cy,
         total_flux,
@@ -192,7 +283,11 @@ fn build_star<T: Pixel>(
         pixels,
         bounding_box: (min_x, min_y, max_x, max_y),
         saturated_pixel_count: saturated,
-    })
+    };
+    if star_hfr(view, &star, background_mean).is_some_and(|hfr| hfr < MIN_STAR_HFR) {
+        return None;
+    }
+    Some(star)
 }
 
 /// 4-connectivity connected-components labelling. Returns one
@@ -589,5 +684,165 @@ mod tests {
         .unwrap();
         let comps = connected_components_4(&mask.view());
         assert_eq!(comps.len(), 2);
+    }
+
+    // ---- hot pixels ----
+
+    /// The background every hot-pixel test pins: 1000 ± 5 ADU, so the
+    /// detection threshold at 5σ is 1025 ADU.
+    fn flat_background() -> BackgroundStats {
+        BackgroundStats {
+            mean: 1000.0,
+            stddev: 5.0,
+            median: 1000.0,
+            n_pixels: 4096,
+        }
+    }
+
+    /// A flat 64×64 frame at the pinned background with `pixels` set to
+    /// `value`.
+    fn flat_with(pixels: &[(usize, usize)], value: u16) -> Array2<u16> {
+        let mut arr = Array2::<u16>::from_elem((64, 64), 1000);
+        for &(r, c) in pixels {
+            arr[(r, c)] = value;
+        }
+        arr
+    }
+
+    /// `suppress_hot_pixels` over `arr` against the pinned background.
+    fn suppressed(arr: &Array2<u16>) -> Array2<f64> {
+        let mut data = arr.mapv(Pixel::to_f64);
+        suppress_hot_pixels(&arr.view(), &mut data, 1025.0);
+        data
+    }
+
+    /// Detection with a `min_area` of 1, so only suppression and the HFR
+    /// floor stand between a hot pixel and a star.
+    fn detect_any(arr: &Array2<u16>) -> Vec<Star> {
+        detect_stars(&arr.view(), &flat_background(), &default_params(1, 2000))
+    }
+
+    /// A 7×7 plateau 100 ADU above the background, the shape a fragment
+    /// of a defocused star's annulus takes, with an optional hot pixel at
+    /// its centre.
+    fn plateau(spike: Option<u16>) -> Array2<u16> {
+        let mut arr = flat_with(&[], 1000);
+        for r in 29..36 {
+            for c in 29..36 {
+                arr[[r, c]] = 1100;
+            }
+        }
+        if let Some(value) = spike {
+            arr[[32, 32]] = value;
+        }
+        arr
+    }
+
+    #[test]
+    fn suppression_replaces_an_isolated_pixel_with_its_neighbourhood_median() {
+        let data = suppressed(&flat_with(&[(32, 32)], 30_000));
+        assert_eq!(data[[32, 32]], 1000.0);
+    }
+
+    #[test]
+    fn suppression_replaces_both_pixels_of_a_hot_pair() {
+        let data = suppressed(&flat_with(&[(32, 32), (32, 33)], 30_000));
+        assert_eq!((data[[32, 32]], data[[32, 33]]), (1000.0, 1000.0));
+    }
+
+    #[test]
+    fn suppression_replaces_a_hot_pixel_in_the_corner() {
+        let data = suppressed(&flat_with(&[(0, 0)], 30_000));
+        assert_eq!(data[[0, 0]], 1000.0);
+    }
+
+    /// Stars with a 2 px FWHM, from near the detection limit to bright:
+    /// none loses a pixel, so a star's footprint, and the verdict any
+    /// `min_area` gives on it, is what it was without suppression.
+    #[test]
+    fn suppression_leaves_a_compact_star_untouched() {
+        for peak in [80.0, 3_000.0, 20_000.0] {
+            let arr = make_gaussian(64, 64, 32.0, 32.0, 0.85, peak, 1000.0);
+            let data = suppressed(&arr);
+            assert_eq!(data, arr.mapv(Pixel::to_f64), "peak {peak}");
+        }
+    }
+
+    /// A 1.2 px FWHM star whose four arms are above the threshold but
+    /// whose arms' own neighbourhood medians are not: its core is kept
+    /// by its own neighbourhood median, the arms by the core's.
+    #[test]
+    fn suppression_leaves_an_undersampled_star_untouched() {
+        let arr = make_gaussian(64, 64, 32.0, 32.0, 0.5, 1_000.0, 1000.0);
+        assert_eq!(suppressed(&arr), arr.mapv(Pixel::to_f64));
+    }
+
+    /// Only a pixel above the threshold can be hot; one at it, alone on
+    /// the background, is kept.
+    #[test]
+    fn suppression_leaves_a_pixel_at_the_threshold_alone() {
+        let data = suppressed(&flat_with(&[(32, 32)], 1025));
+        assert_eq!(data[[32, 32]], 1025.0);
+    }
+
+    /// The plateau's corners have a background neighbourhood median, but
+    /// each sits beside the plateau's body, so the shape keeps them.
+    #[test]
+    fn suppression_leaves_an_extended_shape_untouched() {
+        let arr = plateau(None);
+        assert_eq!(suppressed(&arr), arr.mapv(Pixel::to_f64));
+    }
+
+    /// A bright pixel on a plateau that is itself above the threshold
+    /// has a neighbourhood median above it too, so suppression keeps it;
+    /// the HFR floor is what rejects the component it dominates.
+    #[test]
+    fn suppression_leaves_a_hot_pixel_on_bright_signal() {
+        let data = suppressed(&plateau(Some(60_000)));
+        assert_eq!(data[[32, 32]], 60_000.0);
+    }
+
+    #[test]
+    fn isolated_hot_pixel_is_not_a_star() {
+        let stars = detect_any(&flat_with(&[(32, 32)], 30_000));
+        assert!(stars.is_empty(), "got {} stars", stars.len());
+    }
+
+    #[test]
+    fn hot_pixel_pair_is_not_a_star() {
+        let stars = detect_any(&flat_with(&[(32, 32), (32, 33)], 30_000));
+        assert!(stars.is_empty(), "got {} stars", stars.len());
+    }
+
+    #[test]
+    fn two_by_two_hot_cluster_is_not_a_star() {
+        let cluster = [(32, 32), (32, 33), (33, 32), (33, 33)];
+        let stars = detect_any(&flat_with(&cluster, 30_000));
+        assert!(stars.is_empty(), "got {} stars", stars.len());
+    }
+
+    #[test]
+    fn star_beside_a_hot_pixel_is_the_only_detection() {
+        let mut arr = make_gaussian(64, 64, 32.0, 32.0, 1.5, 20_000.0, 1000.0);
+        arr[[32, 46]] = 30_000;
+        let stars = detect_any(&arr);
+        assert_eq!(stars.len(), 1, "got {} stars", stars.len());
+        assert!(
+            (stars[0].centroid_x - 32.0).abs() < 0.5,
+            "centroid_x = {}",
+            stars[0].centroid_x
+        );
+    }
+
+    #[test]
+    fn component_whose_flux_sits_in_one_pixel_is_rejected() {
+        let stars = detect_any(&plateau(Some(60_000)));
+        assert!(stars.is_empty(), "got {} stars", stars.len());
+    }
+
+    #[test]
+    fn plateau_without_a_hot_pixel_is_a_star() {
+        let stars = detect_any(&plateau(None));
+        assert_eq!(stars.len(), 1, "got {} stars", stars.len());
     }
 }

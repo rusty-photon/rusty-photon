@@ -8,6 +8,13 @@ Feature: Basic image measurement tool
   no stars detected the tool succeeds with hfr null, star_count zero, and
   populated background fields -- the caller decides whether that is a failure.
 
+  Hot pixels are not stars. Before smoothing, a pixel above the detection
+  threshold is replaced by the median of its 3x3 neighbourhood, unless that
+  median or the neighbourhood median of one of its eight neighbours is above
+  the threshold, as it is in and around a star. After measuring, a component
+  whose half-flux radius is under 0.25 px is rejected. The real-frame scenario runs on a 512x512 crop of a QHY600M
+  best-focus frame, whose twelve stars sit among the sensor's hot pixels.
+
   Scenario: Tool catalog includes measure_basic
     Given a running Alpaca simulator
     And rp is running with a camera on the simulator
@@ -83,3 +90,11 @@ Feature: Basic image measurement tool
     And an MCP client connected to rp
     When the MCP client calls "measure_basic" with document_id "unknown-doc-id"
     Then the tool call should return an error
+
+  Scenario: Hot pixels in a real frame are not counted as stars
+    Given a running Alpaca simulator
+    And rp is running with a camera on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "measure_basic" on the fixture "star_detection/qhy600m_best_focus_crop.fits" with threshold_sigma 5.0, min_area 4 and max_area 400
+    Then the measure_basic result should contain "star_count" with value 12
+    And the measure_basic result should contain "hfr" between 1.0 and 1.1

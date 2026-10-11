@@ -46,7 +46,8 @@ tell a clean V from a guess.
 |-------|-------------|--------|-------------|
 | G1 | Sample gating on star count, weighted R² in the result, confirmation frame with fallback to the lowest accepted sample, starting-position restore on fit failure, `final_hfr` for consumers | Merged | [#1193](https://github.com/rusty-photon/rusty-photon/pull/1193) |
 | G2 | Hyperbolic V-curve model (`a·√(1 + ((x − x₀)/b)²)`, the centre written `x₀` so it does not collide with the obstruction-derived blur constant `c` of the focus-model plan's D9); the capture sweep's lands in the `focus-model` provider ([plan](focus-model.md), D13 and S9), the guide-metric variant's in `rp`; R² gets a threshold knob in the provider, unset by default | Next — see the decision below | |
-| G3 | Measurement-side: aperture HFR around the centroid, two-star minimum per point, hot-pixel and edge rejection — tracked under #1179, needs a real-frame corpus from the rig | After G2 | |
+| G3a | Hot-pixel rejection in the detector: a 3×3-median suppression before smoothing and a 0.25 px HFR floor ([rp.md](../services/rp.md), `measure_basic` algorithm steps 3 and 8), validated on rig2's 2026-09-08 and 2026-09-26 frames. Edge rejection is dropped: in those frames, the hot-pixel detections in each 30 px edge strip are in proportion to its area, so there is no edge band to reject | In review | |
+| G3 | Measurement-side: aperture HFR around the centroid, two-star minimum per point, aggregation over the N brightest stars — tracked under #1179 | After G2 | |
 
 G1 first; G2 after G1 because an R² threshold against a parabola rejects
 clean fine sweeps (a parabola scores 0.70 on the rig's clean fine sweep,
@@ -116,6 +117,15 @@ G3 follows G2: sample gating and the confirmation frame currently
 paper over a measurement bug, and the hyperbola's wings are fitted to
 exactly the samples #1179 would make honest. Its frame corpus is the
 one hardware dependency left in this plan.
+
+G3a, the hot-pixel part of G3, landed ahead of G2 at the owner's
+direction (2026-10-11). It changes no result at the settings the rig
+ran (`threshold_sigma 10`, `min_area 40`). It is what lets a sweep run
+at a `min_area` that admits compact stars: at `threshold_sigma 8` and
+`min_area 6`, the 2026-09-26 sweep's samples measure 36–202 stars and
+trace the V-curve, where every sample measured a median HFR of
+0.002–0.003 px before. Its regression fixture is a 512×512 crop of that
+sweep's best-focus frame (`services/rp/tests/fixtures/star_detection/`).
 
 Each phase follows
 [development-workflow.md](../skills/development-workflow.md): design-doc

@@ -168,7 +168,11 @@ rust_test(
         ":rp",
         "//services/calibrator-flats",
         "//services/sky-survey-camera",
-    ] + glob(["tests/features/**"]),
+    ] + glob([
+        "tests/features/**",
+        # Real-frame FITS a scenario hands rp by path.
+        "tests/fixtures/**",
+    ]),
     edition = "2021",
     env = {
         "BDD_PACKAGE_DIR": "services/rp",

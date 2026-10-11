@@ -82,7 +82,8 @@ ordered by what they unblock: S8 is `rp` reads plus a sizing change;
 S9 lands the fit model, and the measurement work behind
 [#1179](https://github.com/rusty-photon/rusty-photon/issues/1179)
 (gating plan G3) follows it, because the hyperbola's wings are fitted
-to exactly the samples that work makes honest; S10 reaches furthest,
+to exactly the samples that work makes honest (its hot-pixel part,
+G3a, landed first); S10 reaches furthest,
 since it is device-claims-and-phd2-camera.md's C7 and rides on that
 plan's facade (C6); S11 is provider-only. Each
 slice follows [development-workflow.md](../skills/development-workflow.md):
