@@ -12,14 +12,16 @@ use rusty_photon_doctor_checks::claims::{render_listing, Claims};
 use rusty_photon_doctor_checks::service::SdkOutcome;
 
 use crate::claims::{listing, sdk_cameras, UsbSource, NORMALIZER, SDK_NAME, SERVICE, VENDOR};
-use crate::{load_effective_config, CliOverrides};
+use crate::{load_effective_config, read_effective_config, sdk_camera_infos, CliOverrides};
 
 /// `doctor --devices`: the `SVBony` cameras on the bus by USB port, and the
 /// `usb_devices` block to paste (docs/services/svbony-camera.md U8).
 ///
 /// Read-only and enumeration-only — nothing is opened — so it is safe to run
-/// while the service holds its cameras. Exits 0, or 1 when the config cannot
-/// be loaded, the scan failed, or the SDK could not enumerate.
+/// while the service holds its cameras. Exits 0; 1 when the config cannot be
+/// read, its list breaks a rule (the ports are listed all the same — they are
+/// how the list gets fixed), the scan failed, or the SDK could not enumerate;
+/// 2 when the config path cannot be resolved.
 pub fn run_devices(config: Option<PathBuf>, source: &UsbSource) -> ! {
     let config_path = match rusty_photon_config::resolve_config_path(SERVICE, config) {
         Ok(path) => path,
@@ -35,10 +37,11 @@ pub fn run_devices(config: Option<PathBuf>, source: &UsbSource) -> ! {
 
 /// The listing [`run_devices`] prints, and its exit code.
 fn devices(config_path: &Path, source: &UsbSource) -> (String, i32) {
-    let config = match load_effective_config(config_path, &CliOverrides::default()) {
+    let config = match read_effective_config(config_path, &CliOverrides::default()) {
         Ok(config) => config,
         Err(error) => return (format!("{error}\n"), 1),
     };
+    let list_error = config.check_list().err();
     let scan = source.scan();
     if let Err(error) = &scan {
         return (
@@ -49,12 +52,27 @@ fn devices(config_path: &Path, source: &UsbSource) -> (String, i32) {
             1,
         );
     }
-    let infos = match svbony_rs::Sdk::new().and_then(|sdk| sdk.cameras()) {
+    let infos = match sdk_camera_infos() {
         Ok(infos) => infos,
         Err(error) => return (format!("{SDK_NAME} SDK enumeration failed: {error}\n"), 1),
     };
     let claims = Claims::new(NORMALIZER, SERVICE, scan, sdk_cameras(&infos));
-    (render_listing(&listing(&config, &claims, &infos)), 0)
+    let mut listing = listing(&config, &claims, &infos);
+    let Some(error) = list_error else {
+        return (render_listing(&listing), 0);
+    };
+    // A block reproducing a list the service refuses would only be pasted
+    // back; the ports above are what the operator fixes it from.
+    listing.block = None;
+    listing.notes.insert(
+        0,
+        format!(
+            "The usb_devices list in {} breaks a rule, so the service refuses to start: \
+             {error}. Fix it from the ports above.",
+            config_path.display()
+        ),
+    );
+    (render_listing(&listing), 1)
 }
 
 pub fn run(config: Option<PathBuf>, json: bool) -> ! {
@@ -88,16 +106,7 @@ pub fn run(config: Option<PathBuf>, json: bool) -> ! {
 fn enumerate() -> SdkOutcome {
     let suggestion =
         || Some("check the USB connection and the installed SVBony udev rule".to_string());
-    let sdk = match svbony_rs::Sdk::new() {
-        Ok(sdk) => sdk,
-        Err(error) => {
-            return SdkOutcome::Error {
-                detail: error.to_string(),
-                suggestion: suggestion(),
-            }
-        }
-    };
-    match sdk.cameras() {
+    match sdk_camera_infos() {
         Ok(infos) => {
             SdkOutcome::Devices(infos.into_iter().map(|info| info.friendly_name).collect())
         }

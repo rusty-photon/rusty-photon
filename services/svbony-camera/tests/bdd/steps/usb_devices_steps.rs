@@ -358,6 +358,15 @@ async fn listing_shows_no_camera(world: &mut CameraWorld) {
     assert!(rows.len() <= 1, "the listing shows cameras:\n{stdout}");
 }
 
+#[then("the doctor output prints no usb_devices block")]
+async fn no_paste_block(world: &mut CameraWorld) {
+    let stdout = doctor_stdout(world);
+    assert!(
+        !stdout.contains("\"usb_devices\": ["),
+        "a usb_devices block was printed:\n{stdout}"
+    );
+}
+
 #[then("the paste-ready usb_devices block is:")]
 async fn paste_block_is(world: &mut CameraWorld, step: &Step) {
     let stdout = doctor_stdout(world);

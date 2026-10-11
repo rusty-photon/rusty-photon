@@ -75,8 +75,8 @@ mod placeholder;
 pub use camera::SvbonyCamera;
 pub use claims::UsbSource;
 pub use config::{
-    load_effective_config, AlpacaServerConfig, CliOverrides, Config, DeviceOverride,
-    UsbDeviceEntry, DEFAULT_PORT,
+    load_effective_config, read_effective_config, AlpacaServerConfig, CliOverrides, Config,
+    DeviceOverride, UsbDeviceEntry, DEFAULT_PORT,
 };
 pub use config_actions::SvbonyCameraDriver;
 pub use error::SvbonyCameraError;
@@ -216,11 +216,9 @@ impl ServerBuilder {
         // because registration depends on it — numbers 0..N-1 are what make
         // each entry's position its number — and a config built in code
         // never passed through a load.
-        let errors = self.config.list_errors();
-        if !errors.is_empty() {
-            let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
-            return Err(SvbonyCameraError::Config(errors.join("; ")));
-        }
+        self.config
+            .check_list()
+            .map_err(SvbonyCameraError::Config)?;
         let mut server = Server::new(CargoServerInfo!());
         let registered = match &self.config.usb_devices {
             None => Registered {
@@ -425,6 +423,15 @@ impl ServerBuilder {
         cam: &EnumeratedCamera,
         overrides: Option<&DeviceOverride>,
     ) -> Result<(), SvbonyCameraError> {
+        // Said here rather than where the identity is minted: with a list,
+        // the SDK's cameras on unlisted ports are enumerated too, and one
+        // another application owns is no concern of this service's log.
+        if cam.info.serial.is_empty() {
+            warn!(
+                camera = %cam.info.friendly_name,
+                "camera reports an empty serial; using a position-based identity"
+            );
+        }
         let sdk = svbony_rs::Sdk::new()?;
         #[cfg(feature = "simulation")]
         let sdk = self.departing(sdk);
@@ -494,7 +501,8 @@ impl Rescan {
                         } else {
                             warn!(
                                 %error,
-                                "the USB scan succeeds again, but the config file no longer                                  loads; not reloading until it does"
+                                "the USB scan succeeds again, but the config file no longer loads; not \
+                                 reloading until it does"
                             );
                             said_config_fails = true;
                         }
@@ -556,10 +564,17 @@ impl BoundServer {
             rescan,
         } = self;
         // Spawned rather than raced against serving: the re-scan's success
-        // fires the reload that ends this server, and the guard stops it when
-        // serving ends for any other reason.
-        let _rescan = rescan
+        // fires the reload that ends this server. Its guard lives in the
+        // shutdown future, so the re-scan stops the moment this server starts
+        // to stop — whatever stopped it — not once it has drained: a re-scan
+        // succeeding during another reload's drain would leave a stored
+        // reload that ends the next server as it starts.
+        let rescan = rescan
             .map(|rescan| tokio_util::task::AbortOnDropHandle::new(tokio::spawn(rescan.run())));
+        let shutdown = async move {
+            shutdown.await;
+            drop(rescan);
+        };
         let serve = async {
             let result = if let Some(ref tls_config) = tls {
                 debug!("serving over TLS");
@@ -590,9 +605,7 @@ async fn enumerate_cameras() -> Result<Vec<EnumeratedCamera>, SvbonyCameraError>
 }
 
 fn enumerate_cameras_blocking() -> Result<Vec<EnumeratedCamera>, svbony_rs::Error> {
-    let sdk = svbony_rs::Sdk::new()?;
-    let infos = sdk.cameras()?;
-    Ok(infos
+    Ok(sdk_camera_infos()?
         .into_iter()
         .enumerate()
         .map(|(index, info)| {
@@ -607,6 +620,12 @@ fn enumerate_cameras_blocking() -> Result<Vec<EnumeratedCamera>, svbony_rs::Erro
         .collect())
 }
 
+/// What the SDK enumerates, before any open: the one enumeration the service,
+/// `doctor` and `doctor --devices` all read.
+pub(crate) fn sdk_camera_infos() -> Result<Vec<CameraInfo>, svbony_rs::Error> {
+    svbony_rs::Sdk::new()?.cameras()
+}
+
 /// Mint the `(serial, UniqueID)` pair for an enumerated camera.
 ///
 /// The serial is the camera's hardware `CameraSN`, read pre-open at
@@ -615,12 +634,6 @@ fn enumerate_cameras_blocking() -> Result<Vec<EnumeratedCamera>, svbony_rs::Erro
 /// falls back to a stable position-based identity (`noserial-{index}`),
 /// mirroring `zwo-camera`'s `mint_identity` fallback.
 fn mint_identity(info: &CameraInfo, index: usize) -> (String, String) {
-    if info.serial.is_empty() {
-        warn!(
-            camera = %info.friendly_name,
-            "camera reports an empty serial; using a position-based identity"
-        );
-    }
     let serial = claims::override_key(info, index);
     let unique_id = format!("SVBONY:{}:{}", info.friendly_name.replace(' ', "-"), serial);
     (serial, unique_id)

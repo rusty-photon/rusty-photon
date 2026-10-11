@@ -274,11 +274,15 @@ Feature: Device claims -- the usb_devices list
     And the devices listing shows no camera
     And the doctor output says "cannot be told apart"
 
-  Scenario: doctor --devices fails on a configuration the service would refuse
+  Scenario: doctor --devices still lists the ports when the configured list breaks a rule
     Given the configuration JSON {"usb_devices": [{"device_number": 1, "usb_port": "simulated-usbv3-0:1"}]}
     When doctor --devices runs
     Then the doctor exits with code 1
     And the doctor output says "device numbers must run 0..N-1, and 0 is missing"
+    And the devices listing shows these cameras:
+      | Port                | Model             | SDK id          | USB serial | Device |
+      | simulated-usbv3-0:1 | SV605CC-Simulated | SVB0123456789AB | —          | 1      |
+    And the doctor output prints no usb_devices block
 
   Scenario: doctor --devices fails when the USB scan failed
     Given the staged USB inventory:

@@ -76,6 +76,19 @@ impl Config {
         );
         errors
     }
+
+    /// [`Self::list_errors`] as one message, every rule broken named.
+    ///
+    /// # Errors
+    /// The joined message, when the list breaks any rule.
+    pub fn check_list(&self) -> Result<(), String> {
+        let errors = self.list_errors();
+        if errors.is_empty() {
+            return Ok(());
+        }
+        let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
+        Err(errors.join("; "))
+    }
 }
 
 /// One `usb_devices` entry: the camera on `usb_port` is served at
@@ -156,6 +169,26 @@ pub fn load_effective_config(
     path: &Path,
     overrides: &CliOverrides,
 ) -> Result<Config, SvbonyCameraError> {
+    let config = read_effective_config(path, overrides)?;
+    config
+        .check_list()
+        .map_err(|errors| SvbonyCameraError::Config(format!("{}: {errors}", path.display())))?;
+    Ok(config)
+}
+
+/// [`load_effective_config`] without the `usb_devices` rules.
+///
+/// What the file says, for a reader that must see a list the service would
+/// refuse — `doctor --devices`, whose port listing is how such a list gets
+/// fixed.
+///
+/// # Errors
+/// Returns [`SvbonyCameraError::Config`] when the file exists but cannot be
+/// read or parsed.
+pub fn read_effective_config(
+    path: &Path,
+    overrides: &CliOverrides,
+) -> Result<Config, SvbonyCameraError> {
     let mut config: Config = match std::fs::read_to_string(path) {
         Ok(contents) => serde_json::from_str(&contents)
             .map_err(|e| SvbonyCameraError::Config(format!("parse {}: {e}", path.display())))?,
@@ -167,15 +200,6 @@ pub fn load_effective_config(
             )))
         }
     };
-    let errors = config.list_errors();
-    if !errors.is_empty() {
-        let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
-        return Err(SvbonyCameraError::Config(format!(
-            "{}: {}",
-            path.display(),
-            errors.join("; ")
-        )));
-    }
     overrides.apply(&mut config);
     Ok(config)
 }

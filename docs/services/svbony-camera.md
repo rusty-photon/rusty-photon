@@ -997,7 +997,7 @@ on.
 Named, testable behaviours. ASCOM error names per
 [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md). Every
 contract below is real as of Phase E; the BDD feature files under
-`tests/features/` (111 scenarios, 564 steps) and the unit tests in
+`tests/features/` (111 scenarios, 566 steps) and the unit tests in
 `src/camera.rs`/`src/backend.rs` exercise them — see "Testing" below for
 which layer covers which contract (E9's two branches, the
 generation-counter abort race and E10 are unit-test-only, per the design's
@@ -1305,9 +1305,12 @@ second driver needs it.
   registers the list (U4). A camera on an unlisted port is never registered,
   so no client can connect it and nothing in this service opens it. An empty
   list makes neither the scan nor the enumeration, and a failed scan stops
-  before the enumeration (U6). None of these steps is an open, let alone an
-  actuation, and a reload — `config.apply`'s, `SIGHUP`'s, or U6's own — runs
-  the same path (tenet 3, C5).
+  before the enumeration (U6). An SDK enumeration that fails after a scan
+  that ran fails the start or reload, with or without a list, as it always
+  has (C0). Only the scan, which the list adds, is made non-fatal and
+  retried. None of these steps is an open, let alone an actuation, and a
+  reload — `config.apply`'s, `SIGHUP`'s, or U6's own — runs the same path
+  (tenet 3, C5).
 - **U2. Placing a camera on a port is a join.** No SVBony SDK call reports a
   USB location: `SVB_CAMERA_INFO` carries a name, `CameraSN`, a port *type*
   (`USB3`) and a device id, never a port. The scan knows each record's port,
@@ -1520,10 +1523,14 @@ second driver needs it.
   and the port that disappears is the one just unplugged. Look-alikes are
   said plainly to stay unservable while both are connected.
 
-  Exit codes follow the shared doctor contract: `0`, or `1` when the config
-  cannot be loaded, the scan failed, or the SDK could not enumerate. Text
-  only: `--devices` does not combine with `--json`. The `usb-devices.*`
-  checks of the plan's D5 come with C5.
+  Exit codes follow the shared doctor contract: `0`; `1` when the config
+  cannot be read, the scan failed, or the SDK could not enumerate; `2` when
+  the config path cannot be resolved. A list that breaks a rule also exits
+  `1`, but the cameras are listed all the same — the ports are how the list
+  gets fixed — with the list's errors first and no block, since a block
+  reproducing a refused list would only be pasted back. Text only:
+  `--devices` does not combine with `--json`. The `usb-devices.*` checks of
+  the plan's D5 come with C5.
 - **U9. The list over `config.apply`.** `usb_devices` is an editable field.
   `config.apply` runs the load-time validation and answers a bad list with
   field errors naming the entry (`usb_devices.1.usb_port`,
@@ -2220,7 +2227,7 @@ Layered per [`testing.md`](../skills/testing.md).
   capture's own capture restart has run, so "the cancel landed in the poll
   loop" is a fact rather than a nap.
 - **BDD** (`bdd-infra::ServiceHandle`, eleven feature files, 111 scenarios /
-  564 steps) — all genuinely green, including `enumeration_connection`'s
+  566 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
   behavioural feature (`exposure`, `binning_and_roi`, `cooling`,
   `gain_offset_readout`, `sensor_properties`) — see each file's header

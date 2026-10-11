@@ -113,9 +113,10 @@ struct DoctorArgs {
     #[arg(long, conflicts_with = "json")]
     devices: bool,
 
-    /// Test-only: the staged USB inventory, as for the service.
+    /// Test-only: the staged USB inventory, as for the service. Only
+    /// `--devices` reads the bus, so it is refused without it.
     #[cfg(feature = "simulation")]
-    #[arg(long, hide = true, value_name = "PATH")]
+    #[arg(long, hide = true, value_name = "PATH", requires = "devices")]
     usb_inventory: Option<PathBuf>,
 }
 
