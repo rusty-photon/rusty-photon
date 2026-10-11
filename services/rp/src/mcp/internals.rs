@@ -493,6 +493,21 @@ async fn finished_pointing(read: Option<PointingRead>) -> Option<MountPointing> 
     }
 }
 
+/// Resolves once `cancel` fires *and* a finished frame's reads, begun at
+/// `reads_started`, have run past [`AUXILIARY_READ_TIMEOUT`]. A cancel
+/// that lands while healthy reads finish keeps the finished frame — the
+/// exposure is over, so the cancel stops nothing physical — while one
+/// stuck behind a wedged read (a templated capture waits a slow wheel
+/// out) releases the camera within the bound (rp.md § In-Flight Tool
+/// Calls).
+async fn cancelled_past_read_bound(cancel: &Cancel, reads_started: tokio::time::Instant) {
+    cancel.cancelled().await;
+    let bound = reads_started
+        .checked_add(AUXILIARY_READ_TIMEOUT)
+        .unwrap_or(reads_started);
+    tokio::time::sleep_until(bound).await;
+}
+
 /// One auxiliary device read bounded by [`AUXILIARY_READ_TIMEOUT`], so a
 /// slow property costs only its own field.
 async fn bounded_read<T, E: std::fmt::Display>(
@@ -1344,10 +1359,12 @@ impl McpHandler {
                 ready: chrono::Utc::now(),
             };
 
-            // A cancel — a safety transition among them — still lands at
-            // once: nothing read here is worth holding the camera for.
+            // The exposure is done: a cancel no longer stops anything
+            // physical, so healthy reads finish and the frame is kept. One
+            // stuck behind a wedged read still releases the camera.
+            let reads_started = tokio::time::Instant::now();
             let (pointing, conditions, filter_read) = tokio::select! {
-                () = cancel.cancelled() => return Err(cancel.error()),
+                () = cancelled_past_read_bound(cancel, reads_started) => return Err(cancel.error()),
                 reads = self.ready_frame_reads(&req, &cam, window, pointing_read) => reads,
             };
 

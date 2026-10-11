@@ -102,10 +102,13 @@ impl TryFrom<f64> for ApertureMm {
 /// rp.md § Optical Trains), e.g. `Takahashi FSQ-106EDX4` — the FITS
 /// header's `TELESCOP`.
 ///
-/// Validated at load to what one FITS string card can carry: 1 to 68
-/// printable ASCII characters, an apostrophe counting twice because
-/// FITS doubles it. A name the card could not hold is a load error
-/// rather than a header card silently dropped at capture time.
+/// Validated at load to what one FITS string card can carry once its
+/// typographic dashes, quotes and spaces fold to ASCII, as every
+/// free-text card's do: 1 to 68 printable ASCII characters, an
+/// apostrophe counting twice because FITS doubles it. A name the card
+/// could not hold is a load error rather than a header card silently
+/// dropped at capture time. The name itself is kept as written; the
+/// sidecar's `telescope` carries it unfolded.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "String", into = "String")]
 pub struct TelescopeName(String);
@@ -116,16 +119,18 @@ impl TelescopeName {
     /// # Errors
     ///
     /// Returns a message naming the field if `value` is empty, carries
-    /// a character outside printable ASCII, or is too long for one FITS
-    /// string card.
+    /// a character outside printable ASCII that does not fold, or is
+    /// too long for one FITS string card.
     pub fn try_new(value: String) -> Result<Self, String> {
         if value.trim().is_empty() {
             return Err("telescope must not be empty; omit it to leave TELESCOP out".into());
         }
-        // The writer's own rule, so config and header cannot drift apart.
+        // The writer's own rule on the value the card will carry — folded
+        // like any free text, so an editor's en dash is not a startup
+        // failure — so config and header cannot drift apart.
         rp_fits::writer::Keyword::new(
             "TELESCOP",
-            rp_fits::writer::KeywordValue::Str(value.clone()),
+            rp_fits::writer::KeywordValue::Str(crate::persistence::fits_header::fits_text(&value)),
         )
         .map_err(|e| {
             // The refusal is about the value, not the keyword: drop the
@@ -585,6 +590,9 @@ mod tests {
     fn telescope_name_accepts_a_fits_card_value() {
         let name = TelescopeName::try_new("Takahashi FSQ-106EDX4".to_string()).unwrap();
         assert_eq!(name.as_str(), "Takahashi FSQ-106EDX4");
+        // An editor's en dash folds on the card; the name keeps it.
+        let name = TelescopeName::try_new("Celestron C11 \u{2013} EdgeHD".to_string()).unwrap();
+        assert_eq!(name.as_str(), "Celestron C11 \u{2013} EdgeHD");
         TelescopeName::try_new("x".repeat(68)).unwrap();
         // 66 characters plus an apostrophe is exactly 68 on the card.
         TelescopeName::try_new(format!("{}'", "x".repeat(66))).unwrap();
@@ -595,10 +603,7 @@ mod tests {
         for (value, needle) in [
             (String::new(), "empty"),
             ("   ".to_string(), "empty"),
-            (
-                "Celestron C11 \u{2013} EdgeHD".to_string(),
-                "printable ASCII",
-            ),
+            ("Celestron C11 \u{2605}".to_string(), "printable ASCII"),
             ("x".repeat(69), "too long"),
             // 68 characters, but the apostrophe doubles to 69 on the card,
             // and the message says why.

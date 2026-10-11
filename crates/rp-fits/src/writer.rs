@@ -493,8 +493,9 @@ pub fn real_as_written(value: f64) -> f64 {
 
 fn format_float(f: f64) -> String {
     // %20.10E form. `{:.10E}` gives `1.0000000000E0`; expand to
-    // `1.0000000000E+00` to match the FITS canonical form.
-    let raw = format!("{f:.10E}");
+    // `1.0000000000E+00` to match the FITS canonical form. `+ 0.0`
+    // writes a negative zero as plain zero.
+    let raw = format!("{:.10E}", f + 0.0);
     // Insert sign on exponent if missing.
     let Some((mantissa, exp)) = raw.split_once('E') else {
         return raw;
@@ -860,6 +861,12 @@ mod tests {
             err.contains("69 characters with apostrophes doubled"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn negative_zero_is_written_as_zero() {
+        assert_eq!(format_float(-0.0), format_float(0.0));
+        assert!(real_as_written(-0.0).is_sign_positive());
     }
 
     #[test]

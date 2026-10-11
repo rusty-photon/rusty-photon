@@ -10587,12 +10587,15 @@ async fn capture_cancelled_while_queued_leaves_without_touching_the_camera() {
     );
 }
 
-#[tokio::test(start_paused = true)]
-async fn capture_cancelled_while_waiting_out_a_slow_wheel_leaves_at_once() {
-    // A templated Flat waits the wheel out rather than time it; the
-    // cancel must still land the moment it arrives.
+/// A capture handler over camera `cam` and a wheel `fw` (train `main`)
+/// whose position read takes `wheel_delay`; `templated` configures the
+/// documented naming pattern, so a typed frame waits the wheel out.
+fn wheel_capture_handler(
+    wheel_delay: Duration,
+    templated: bool,
+) -> (McpHandler, tempfile::TempDir) {
     let fw = MockFilterWheel {
-        position_delay: Duration::from_mins(1),
+        position_delay: wheel_delay,
         ..Default::default()
     };
     let mut registry = camera_registry(Arc::new(MockCamera::default()));
@@ -10602,9 +10605,21 @@ async fn capture_cancelled_while_waiting_out_a_slow_wheel_leaves_at_once() {
     handler.session_config = SessionConfig {
         data_directory: tmp.path().to_string_lossy().to_string(),
     };
-    let handler = handler
-        .with_trains(wheel_trains())
-        .with_naming_templates(Some(Arc::new(test_naming_templates())));
+    let handler = handler.with_trains(wheel_trains());
+    let handler = if templated {
+        handler.with_naming_templates(Some(Arc::new(test_naming_templates())))
+    } else {
+        handler
+    };
+    (handler, tmp)
+}
+
+#[tokio::test(start_paused = true)]
+async fn capture_cancelled_behind_a_wedged_wheel_leaves_within_the_read_bound() {
+    // A templated Flat waits the wheel out rather than time it; a cancel
+    // still releases the camera once the reads pass their 3 s bound,
+    // not when the wheel answers a minute later.
+    let (handler, _tmp) = wheel_capture_handler(Duration::from_mins(1), true);
     let cancel = Cancel::never();
     cancel_later(&cancel, super::inflight::CancelReason::Safety);
     let started = tokio::time::Instant::now();
@@ -10619,11 +10634,34 @@ async fn capture_cancelled_while_waiting_out_a_slow_wheel_leaves_at_once() {
         .expect_err("a cancelled capture must fail");
 
     assert_eq!(err, "cancelled: safety");
-    assert_eq!(
-        started.elapsed(),
-        CANCEL_AT,
-        "the capture must leave as the cancel lands, not when the wheel answers"
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed > CANCEL_AT,
+        "the finished frame's reads get their bound before a cancel cuts them: {elapsed:?}"
     );
+    assert!(
+        elapsed <= Duration::from_secs(4),
+        "the capture must leave at the read bound, not when the wheel answers: {elapsed:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_cancel_while_healthy_reads_finish_keeps_the_finished_frame() {
+    // The exposure is done and the wheel answers in 2 s, inside the
+    // bound: the cancel at 1 s stops nothing physical, so the frame is
+    // read out and kept.
+    let (handler, _tmp) = wheel_capture_handler(Duration::from_secs(2), false);
+    let cancel = Cancel::never();
+    cancel_later(&cancel, super::inflight::CancelReason::ClientDisconnected);
+
+    let (image_path, _document_id) = handler
+        .do_capture(capture_request("cam", 1), None, &cancel)
+        .await
+        .unwrap();
+
+    let sidecar = persistence::ExposureDocument::sidecar_path_for(&image_path).unwrap();
+    let doc = persistence::ExposureDocument::read_sidecar_sync(&sidecar).unwrap();
+    assert_eq!(doc.filter.as_deref(), Some("Lum"));
 }
 
 #[tokio::test(start_paused = true)]

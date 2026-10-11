@@ -279,8 +279,9 @@ sidecar stays the authority.
   filename does not depend on it — does not answer within 3 s (a
   templated capture waits the wheel out, as it always has, rather than
   lose a finished exposure to a slow read; a cancel, the unsafe
-  transition's among them, still ends the capture the moment it
-  arrives). When a naming template is
+  transition's among them, still ends the capture once the frame's
+  reads have run 3 s — [In-Flight Tool Calls](#in-flight-tool-calls)).
+  When a naming template is
   configured
   (`session.file_naming_pattern`), the one read feeds both the filename
   and this field, so they cannot disagree — and there a failed read
@@ -571,7 +572,7 @@ The keyword set below is a contract, pinned field by field in
 | `OBJECT` | string | `target.display_name` | the frame resolved a target-store row (not a reserved `dark`/`flat`/`bias` slug) |
 | `OBJCTRA` | string | `target.ra_hours`, sexagesimal `'HH MM SS.ss'` (J2000) | as `OBJECT` |
 | `OBJCTDEC` | string | `target.dec_degrees`, sexagesimal `'+DD MM SS.s'` (J2000) | as `OBJECT` |
-| `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) as printed (a value that would print as 360, or `-0.0`, is written as 0) | `pointing` present |
+| `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) as printed (a value that would print as 360 is written as 0) | `pointing` present |
 | `DEC` | real | `pointing.dec_degrees`, degrees | `pointing` present and within ±90° |
 | `INSTRUME` | string | `camera_name` | `camera_name` present |
 | `TELESCOP` | string | `telescope` | `telescope` present |
@@ -614,21 +615,23 @@ Rules the table does not show:
 - **Absent means unknown, never a placeholder.** A keyword whose source
   is missing is omitted rather than written as `0`, `''` or `'NA'`.
 - **Typographic variants are folded; anything else a card cannot
-  carry is left out.** In a target, filter or camera name, typographic
-  dashes, quotes and spaces become their ASCII look-alikes
-  (`Pleiades – M45` → `Pleiades - M45`) — deliberately one name, since
-  editors substitute them for the ASCII forms. A value a card still
-  cannot carry exactly drops that one card: one with any other
-  character outside printable ASCII — a filter named `Hα`, a control
-  character — or one longer than the card's 68 characters (an
-  apostrophe counting twice). Neither a stand-in nor a cut keeps such a
-  value distinct (`Hα` and `Hβ` would both read `H?`; two names
-  differing past column 68 would read alike), and a stacker would group
-  each pair as one; a missing card at least reads as unknown. The sidecar keeps the original either way. `telescope` is
-  validated at config load instead, so it is never folded or dropped.
-  No header problem fails a capture.
+  carry is left out.** In a target, filter, telescope or camera name,
+  typographic dashes, quotes (curly, low-9 and guillemets) and spaces
+  become their ASCII look-alikes (`Pleiades – M45` → `Pleiades - M45`,
+  `„M31“` → `"M31"`) — deliberately one name, since editors substitute
+  them for the ASCII forms. A value a card still cannot carry exactly
+  drops that one card: one with any other character outside printable
+  ASCII — a filter named `Hα`, a control character — or one longer than
+  the card's 68 characters (an apostrophe counting twice). Neither a
+  stand-in nor a cut keeps such a value distinct (`Hα` and `Hβ` would
+  both read `H?`; two names differing past column 68 would read alike),
+  and a stacker would group each pair as one; a missing card at least
+  reads as unknown. The sidecar keeps the original either way.
+  `telescope` is validated at config load on its folded form, so its
+  card is never dropped. No header problem fails a capture.
 - Reals are written in the FITS exponential form
-  (`EXPTIME = 3.0000000000E+02`), which every reader accepts.
+  (`EXPTIME = 3.0000000000E+02`), which every reader accepts; a
+  negative zero is written as zero.
 
 Both the FITS file and the sidecar JSON are written atomically:
 staged to a sibling temp file, fsynced, renamed into place, parent
@@ -3023,10 +3026,13 @@ Semantics:
   `"Takahashi FSQ-106EDX4"`). Optional. Frames through the train's
   camera carry it as the FITS `TELESCOP` card and the sidecar's
   `telescope`; omitted, they carry neither — the train id is not
-  substituted, since it names a light path, not an instrument. It must
-  fit one FITS string card: 1 to 68 printable ASCII characters, an
-  apostrophe counting twice. Anything else is rejected at load, so the
-  card can never be dropped at capture time.
+  substituted, since it names a light path, not an instrument. Once its
+  typographic dashes, quotes and spaces fold to ASCII (as every
+  free-text card's do — [FITS header](#fits-header)), it must fit one
+  FITS string card: 1 to 68 printable ASCII characters, an apostrophe
+  counting twice. Anything else is rejected at load, so the card can
+  never be dropped at capture time; the sidecar keeps the name as
+  written.
 - `focal_length_mm` is the effective focal length of that light path
   in millimetres — a positive finite number, rejected at load
   otherwise. Optional: omitted, captures through that train's camera
@@ -6043,7 +6049,7 @@ returns without moving anything.
 | Cancelled body | Stop-class counterpart |
 |---|---|
 | `slew`, and the slews inside `center_on_target` | `AbortSlew` |
-| `capture`, and the captures inside `auto_focus` / `center_on_target` | `AbortExposure` |
+| `capture`, and the captures inside `auto_focus` / `center_on_target` | `AbortExposure` while the exposure runs. Once the image is ready, a cancel stops nothing physical: the frame's own reads (gain, offset, temperature, filter, the mount's pointing grace) finish and the frame is kept, unless they are still out 3 s after the image was ready — a wedged wheel a templated capture is waiting out — when the capture answers `cancelled: <reason>` and releases the camera |
 | `move_focuser`, and the moves inside `auto_focus` / `refocus_train` | focuser `Halt` on the leg in flight. A backlash-compensated move checks the handle before each leg, so a cancellation that lands as the overshoot leg settles commands no return leg and halts nothing |
 | `move_rotator` | rotator `Halt` |
 | `open_cover` | `HaltCover` |

@@ -201,36 +201,36 @@ fn fits_timestamp(rfc3339: &str) -> Option<String> {
     }
 }
 
-/// A free-text value — a target or filter name, a driver's camera name —
-/// with its typographic dashes, quotes and spaces folded to their ASCII
-/// look-alikes (`Pleiades – M45` → `Pleiades - M45`). Every other
+/// A free-text value — a target, filter or telescope name, a driver's
+/// camera name — with its typographic dashes, quotes (curly, low-9 and
+/// guillemets) and spaces folded to their ASCII look-alikes
+/// (`Pleiades – M45` → `Pleiades - M45`, `„M31“` → `"M31"`). Every other
 /// character passes through: a value one card still cannot carry
 /// exactly — another non-ASCII character (`Hα`), or one longer than a
 /// card — is refused by [`Keyword::new`] and drops its card, since
 /// neither a stand-in nor a cut keeps it distinct (`Hα` and `Hβ` would
 /// both read `H?`; two names differing past column 68 would read alike).
 /// The sidecar, which keeps the original, is the authority.
-fn fits_text(value: &str) -> String {
+pub(crate) fn fits_text(value: &str) -> String {
     value
         .chars()
         .map(|c| match c {
             '\u{00A0}' | '\u{2000}'..='\u{200A}' | '\u{202F}' => ' ',
             '\u{2010}'..='\u{2015}' | '\u{2212}' => '-',
-            '\u{2018}' | '\u{2019}' | '\u{201B}' | '\u{2032}' => '\'',
-            '\u{201C}' | '\u{201D}' | '\u{2033}' => '"',
+            '\u{2018}'..='\u{201B}' | '\u{2032}' | '\u{2039}' | '\u{203A}' => '\'',
+            '\u{201C}'..='\u{201F}' | '\u{2033}' | '\u{00AB}' | '\u{00BB}' => '"',
             other => other,
         })
         .collect()
 }
 
 /// Mount RA in degrees, wrapped into [0, 360) as the card will print it:
-/// a mount on the 0h seam can report 24h, `-0.0` or a hair below zero,
-/// and a value just under 360 — `rem_euclid` of a tiny negative among
-/// them — prints as `3.6000000000E+02` at the card's 11 significant
-/// digits.
+/// a mount on the 0h seam can report 24h or a hair below zero, and a
+/// value just under 360 — `rem_euclid` of a tiny negative among them —
+/// prints as `3.6000000000E+02` at the card's 11 significant digits. (A
+/// `-0.0` the writer prints as zero, as it does for every real card.)
 fn canonical_ra_degrees(ra_hours: f64) -> f64 {
-    // `+ 0.0` turns the `-0.0` that `rem_euclid` passes through into `0.0`.
-    let degrees = (ra_hours * 15.0).rem_euclid(360.0) + 0.0;
+    let degrees = (ra_hours * 15.0).rem_euclid(360.0);
     if real_as_written(degrees) >= 360.0 {
         0.0
     } else {
@@ -480,7 +480,6 @@ mod tests {
             (-1e-15, 0.0),
             // Below 360 as an f64, but 360 at the card's 11 digits.
             (-1e-12, 0.0),
-            (-0.0, 0.0),
         ] {
             doc.pointing = Some(MountPointing {
                 ra_hours,
@@ -489,7 +488,6 @@ mod tests {
             let cards = cards(&doc, &HeaderContext::default());
             let ra = value_of(&cards, "RA").and_then(|v| v.as_real()).unwrap();
             assert!((ra - want).abs() < 1e-9, "RA {ra} for {ra_hours}h");
-            assert!(ra.is_sign_positive(), "RA {ra} for {ra_hours}h");
         }
     }
 
@@ -608,6 +606,10 @@ mod tests {
         assert_eq!(fits_text("Bode\u{2019}s Galaxy"), "Bode's Galaxy");
         assert_eq!(fits_text("\u{201C}M81\u{201D}"), "\"M81\"");
         assert_eq!(fits_text("NGC\u{00A0}7000"), "NGC 7000");
+        assert_eq!(fits_text("\u{201E}Pferdekopf\u{201C}"), "\"Pferdekopf\"");
+        assert_eq!(fits_text("\u{201A}x\u{2018}"), "'x'");
+        assert_eq!(fits_text("\u{00AB}M42\u{00BB}"), "\"M42\"");
+        assert_eq!(fits_text("\u{2039}M42\u{203A}"), "'M42'");
     }
 
     #[test]
