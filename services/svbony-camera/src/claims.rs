@@ -62,9 +62,9 @@ pub const NORMALIZER: Normalizer<'static> = Normalizer {
 /// unknown — and a serial both sides carry in different spellings would refuse
 /// the right camera (U2).
 #[must_use]
-pub fn sdk_cameras(infos: &[CameraInfo]) -> Vec<SdkCamera> {
+pub fn sdk_cameras<'a>(infos: impl IntoIterator<Item = &'a CameraInfo>) -> Vec<SdkCamera> {
     infos
-        .iter()
+        .into_iter()
         .map(|info| SdkCamera {
             model: info.friendly_name.clone(),
             serial: None,

@@ -217,6 +217,12 @@ fn main() -> ServiceResult {
                     continue;
                 }
                 if ended == Ended::Rescanned {
+                    // A stop that landed while the rescanned server drained
+                    // had no stop future left to see it; honour it now rather
+                    // than after a whole rebuild.
+                    if shutdown.is_cancelled() {
+                        return Ok(());
+                    }
                     debug!("a failed USB scan succeeds again; rebuilding svbony-camera");
                     continue;
                 }

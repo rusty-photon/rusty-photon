@@ -664,7 +664,7 @@ impl<'a> Claims<'a> {
         for fault in scan
             .faults
             .iter()
-            .filter(|f| f.vendor.as_deref() == Some(self.normalizer.vendor))
+            .filter(|f| self.normalizer.could_be_camera(f))
         {
             notes.push(format!(
                 "{} ({}) is not a working device: {}",
@@ -681,42 +681,34 @@ impl<'a> Claims<'a> {
 
 /// Compare two ports hop by hop from the root (the plan's D4.7).
 ///
-/// The port is cut into the runs of letters and digits between its separators, and two
-/// runs that are both decimal compare as numbers, so `…-0:4.2` precedes
-/// `…-0:4.10` and `USB(2)` precedes `USB(14)`. Any other run compares as
-/// text, which is hex order for the fixed-width hex the platforms write
-/// (`PCI(1400)`, a macOS `0x14200000`). Equal runs fall back to the whole
-/// string, so the order is total.
+/// The port is cut into the runs of letters and digits between its
+/// separators, and runs compare by width, then as text — a decimal run's width
+/// counted without its leading zeros. For decimal runs that is numeric order,
+/// so `…-0:4.2` precedes `…-0:4.10` and `USB(2)` precedes `USB(14)`; for the
+/// fixed-width hex the platforms write (`PCI(1400)`, a macOS `0x14200000`) it
+/// is hex order. Every run has one key, so the order is total — whatever runs
+/// meet at a hop, `sort_by` gets a consistent comparison — and equal runs
+/// fall back to the whole string.
 #[must_use]
 pub fn compare_ports(a: &str, b: &str) -> Ordering {
-    let runs = |s: &str| -> Vec<String> {
+    let keys = |s: &'_ str| -> Vec<(usize, String)> {
         s.split(|c: char| !c.is_ascii_alphanumeric())
             .filter(|run| !run.is_empty())
-            .map(str::to_string)
+            .map(run_key)
             .collect()
     };
-    let (left, right) = (runs(a), runs(b));
-    for (x, y) in left.iter().zip(&right) {
-        let order = if is_decimal(x) && is_decimal(y) {
-            compare_decimal(x, y)
-        } else {
-            x.cmp(y)
-        };
-        if order != Ordering::Equal {
-            return order;
-        }
-    }
-    left.len().cmp(&right.len()).then_with(|| a.cmp(b))
+    keys(a).cmp(&keys(b)).then_with(|| a.cmp(b))
 }
 
-fn is_decimal(run: &str) -> bool {
-    run.bytes().all(|b| b.is_ascii_digit())
-}
-
-/// Two decimal runs compared as numbers of any length.
-fn compare_decimal(x: &str, y: &str) -> Ordering {
-    let (x, y) = (x.trim_start_matches('0'), y.trim_start_matches('0'));
-    x.len().cmp(&y.len()).then_with(|| x.cmp(y))
+/// A run's sort key: its width, then its text, with a decimal run's leading
+/// zeros dropped so it compares as the number it spells.
+fn run_key(run: &str) -> (usize, String) {
+    let run = if run.bytes().all(|b| b.is_ascii_digit()) {
+        run.trim_start_matches('0')
+    } else {
+        run
+    };
+    (run.len(), run.to_string())
 }
 
 // --- the re-scan ----------------------------------------------------------------
@@ -1489,6 +1481,21 @@ mod tests {
     }
 
     #[test]
+    fn unplaced_notes_list_a_fault_that_could_be_the_camera() {
+        let mut bus = scan(Vec::new());
+        bus.faults
+            .push(fault(Some("0000"), Some("ACPI(_SB_)#ACPI(HS05)")));
+        bus.faults.push(fault(Some("046d"), Some("1-3")));
+        let notes = claims(Ok(bus), vec![camera("SV605CC")]).unplaced_notes();
+        assert_eq!(notes.len(), 2, "{notes:?}");
+        assert!(
+            notes[0].contains("may be one of the faults below"),
+            "{notes:?}"
+        );
+        assert!(notes[1].contains("ACPI(_SB_)#ACPI(HS05)"), "{notes:?}");
+    }
+
+    #[test]
     fn a_look_alikes_records_are_not_named_twice() {
         let bus = scan(vec![record("9a0a", "p1"), record("9a0a", "p2")]);
         let notes = claims(Ok(bus), vec![camera("SV605CC")]).unplaced_notes();
@@ -1531,6 +1538,20 @@ mod tests {
     #[test]
     fn a_port_precedes_the_ports_behind_it() {
         assert_eq!(compare_ports("1-4", "1-4.1"), Ordering::Less);
+    }
+
+    #[test]
+    fn port_order_stays_consistent_when_decimal_and_mixed_runs_meet() {
+        // Once a cycle: 9 < 10 (numbers), 10 < 1a and 1a < 9 (text).
+        assert_eq!(compare_ports("p-9", "p-10"), Ordering::Less);
+        assert_eq!(compare_ports("p-10", "p-1a"), Ordering::Less);
+        assert_eq!(compare_ports("p-9", "p-1a"), Ordering::Less);
+        let mut ports = vec!["p-1a", "p-10", "p-9", "p-a", "p-09", "p-0d00", "p-1400"];
+        ports.sort_by(|a, b| compare_ports(a, b));
+        assert_eq!(
+            ports,
+            vec!["p-09", "p-9", "p-a", "p-10", "p-1a", "p-0d00", "p-1400"]
+        );
     }
 
     #[test]

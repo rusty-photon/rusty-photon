@@ -52,7 +52,7 @@ fn devices(config_path: &Path, source: &UsbSource) -> Result<(String, i32), Svbo
     let list_note = config.check_list().err().map(|error| {
         format!(
             "The usb_devices list in {} breaks a rule, so the service refuses to start: \
-             {error}. Fix it from the ports this listing shows.",
+             {error}.",
             config_path.display()
         )
     });
@@ -87,7 +87,9 @@ fn devices(config_path: &Path, source: &UsbSource) -> Result<(String, i32), Svbo
     // A block reproducing a list the service refuses would only be pasted
     // back; the ports listed are what the operator fixes it from.
     listing.block = None;
-    listing.notes.insert(0, note);
+    listing
+        .notes
+        .insert(0, format!("{note} Fix it from the ports above."));
     Ok((render_listing(&listing), 1))
 }
 

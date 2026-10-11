@@ -347,12 +347,11 @@ impl ServerBuilder {
             Ok(_) if self.force_empty => Vec::new(),
             Ok(_) => enumerate_cameras().await?,
         };
-        let infos: Vec<CameraInfo> = cameras.iter().map(|c| c.info.clone()).collect();
         let claims = Claims::new(
             claims::NORMALIZER,
             claims::SERVICE,
             scan,
-            claims::sdk_cameras(&infos),
+            claims::sdk_cameras(cameras.iter().map(|c| &c.info)),
         );
 
         let mut registered = Registered::default();
