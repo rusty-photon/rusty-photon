@@ -1132,6 +1132,20 @@ disruption, one upgrade step: re-run `doctor --devices`, paste the
 upgrade note lives in the C5 PR body and in each driver's design doc,
 since there is no CHANGELOG to carry it.
 
+**Migration note for C5: rp's roster pins.** rp gained an optional
+`unique_id` on every roster entry, which refuses a connect when the
+device at the entry's number reports a different `UniqueID`
+([rp.md § Device Identity Pin](../services/rp.md#device-identity-pin)).
+It is an interim guard for #1184, outside this plan, and it is only as
+strong as each driver's `UniqueID`. QHY's is serial-derived and tells
+two cameras apart. The `noserial-{index}` fallback in `zwo-camera` and
+`svbony-camera` follows the enumeration index, so today a pin on a
+serial-less camera cannot tell two of the same model apart. D4.6's
+`noserial-{port}` changes those `UniqueID`s, so after C5 every rp pin
+on a serial-less camera is stale and rp refuses it loudly. C5's upgrade
+note must tell the operator to re-copy those pins from rp's bound-device
+log line or from `GET /api/equipment`.
+
 ### D5. Doctor as the setup tool
 
 The operator never types a port path from memory. Every catalog camera

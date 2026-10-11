@@ -540,6 +540,7 @@ mod tests {
             id: "watched".to_string(),
             alpaca_url: url.to_string(),
             device_number: 0,
+            unique_id: None,
             min_position: None,
             max_position: None,
             steps_per_sec: config::focuser::FocuserStepsPerSec::default(),

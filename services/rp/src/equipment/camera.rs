@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
-use ascom_alpaca::api::{Camera, TypedDevice};
+use ascom_alpaca::api::Camera;
 use tracing::{debug, error};
 
-use super::alpaca::{
-    build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
-};
+use super::binding::{establish_listed, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
 
@@ -165,47 +163,8 @@ pub(crate) fn optional_read<T, E: std::fmt::Display>(
 pub(super) async fn establish_camera(
     config: &config::CameraConfig,
     ca_cert_path: Option<&std::path::Path>,
-) -> Result<(Arc<dyn Camera>, CameraInvariants), String> {
-    let client = build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path)
-        .map_err(|e| format!("failed to create Alpaca client: {e}"))?;
-
-    let label = format!("camera {}", config.id);
-    let cam = retry_connect_attempt(&label, |_attempt| async {
-        let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
-            Ok(Ok(devices)) => devices,
-            Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
-            Err(_) => {
-                return AttemptOutcome::Transient(format!(
-                    "get_devices: timeout after {GET_DEVICES_TIMEOUT:?}"
-                ));
-            }
-        };
-
-        let mut camera_index = 0u32;
-        let mut found_camera: Option<Arc<dyn Camera>> = None;
-        for device in devices {
-            if let TypedDevice::Camera(cam) = device {
-                if camera_index == config.device_number {
-                    found_camera = Some(cam);
-                    break;
-                }
-                camera_index = camera_index.saturating_add(1);
-            }
-        }
-
-        let Some(cam) = found_camera else {
-            return AttemptOutcome::Permanent(format!(
-                "camera at index {} not found on Alpaca server",
-                config.device_number
-            ));
-        };
-
-        match cam.set_connected(true).await {
-            Ok(()) => AttemptOutcome::Ok(cam),
-            Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
-        }
-    })
-    .await?;
+) -> Result<(Arc<dyn Camera>, CameraInvariants), EstablishError> {
+    let cam = establish_listed(config, ca_cert_path).await?;
 
     // The Alpaca device is now Connected — the driver name and the
     // eight physical-sensor properties below are invariant for the life
@@ -283,6 +242,7 @@ mod tests {
             alpaca_url: url.to_string(),
             device_type: String::new(),
             device_number: 0,
+            unique_id: None,
             cooler_targets_c: Vec::new(),
             gain: None,
             offset: None,
