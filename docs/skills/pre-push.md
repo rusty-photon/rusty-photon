@@ -19,8 +19,10 @@
 | act | `curl -s https://raw.githubusercontent.com/nektos/act/master/install.sh \| sudo bash` | Local CI runner |
 
 **Keep stable current: the clippy gate requires clippy ≥ 1.99.** CI installs
-whatever stable is current (`dtolnay/rust-toolchain@stable`), and the
-workspace's lint attributes track it: an older clippy rejects the tree under
+whatever stable is current (`dtolnay/rust-toolchain@stable`). That is
+deliberate: Cargo's toolchain is not pinned, so each release's new lints
+reach the tree on the first run after it ships, without waiting on a bump.
+The workspace's lint attributes track it: an older clippy rejects the tree under
 `-D warnings` — 1.97 does not know `clippy::unused_async_trait_impl`, and 1.98
 reports the `#[expect(clippy::suboptimal_flops)]`s that only 1.99's widened
 detection fulfils as unfulfilled. Run `rustup update stable` when a new stable

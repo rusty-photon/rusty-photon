@@ -307,7 +307,11 @@ jobs:
         #
         # A lint failure here must not hide test results: the test steps
         # below are gated on the build, not on this step, so a push with a
-        # lint and a failing test reports both in one run.
+        # lint and a failing test reports both in one run. Nor may a failed
+        # build hide the lint: `--config=clippy` never links, so a link-only
+        # failure (a Windows LNK error in one binary) still leaves every
+        # crate lintable. A compile error simply fails both steps.
+        if: ${{ !cancelled() && steps.build.outcome != 'skipped' }}
         #
         # 15 minutes: a cold run of every target is about half a minute on
         # the Linux pool. The cap is for a hang, and the job budget above

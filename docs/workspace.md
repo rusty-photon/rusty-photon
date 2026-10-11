@@ -815,8 +815,8 @@ remain the single source of truth for dependency versions, and Bazel's
 `crate_universe` reads them. The repo root holds `MODULE.bazel` and `BUILD.bazel`;
 `bazel test //...` runs every target except those tagged `requires-cargo` or
 `conformu`, the BDD suites included. The required PR
-checks are `bazel / <os>` (build + clippy + test on Linux/macOS/Windows), `bazel
-coverage`, plus the Cargo `stable / fmt` and `stable / clippy` lint jobs (Bazel
+checks are `bazel / <os>` (build + clippy + test on Linux and Windows; the
+macOS leg runs on pushes to main only), `bazel coverage`, plus the Cargo `stable / fmt` and `stable / clippy` lint jobs (Bazel
 runs no rustfmt, and its clippy step lints each target's Bazel feature set
 rather than Cargo's two passes). `bazel/cargo target parity` and the Cargo
 build/test jobs run nightly as a safety net (coverage is Bazel-only), as do the

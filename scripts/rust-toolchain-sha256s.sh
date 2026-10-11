@@ -27,7 +27,10 @@ curl -fsSL -o "$work/key.asc" "$base/rust-key.gpg.ascii"
 
 mkdir -m 700 "$work/gnupg"
 gpg --homedir "$work/gnupg" --quiet --import "$work/key.asc" 2>/dev/null
-imported=$(gpg --homedir "$work/gnupg" --with-colons --fingerprint | awk -F: '/^fpr:/ {print $10; exit}')
+# Captured, then matched, for the reason given at the verdict below: awk
+# exits at the first fingerprint, and gpg could still be writing.
+keys=$(gpg --homedir "$work/gnupg" --with-colons --fingerprint)
+imported=$(awk -F: '/^fpr:/ {print $10; exit}' <<<"$keys")
 if [[ "$imported" != "$fingerprint" ]]; then
   echo "rust-key.gpg.ascii has fingerprint $imported, expected $fingerprint" >&2
   exit 1

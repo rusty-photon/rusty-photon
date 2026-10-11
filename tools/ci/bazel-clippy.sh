@@ -25,8 +25,9 @@
 # Then it lints `//...` plus the `manual` Rust targets `//...` skips: some are
 # manual only because they cannot LINK without a vendor SDK (svbony-camera's
 # binary), and `--config=clippy` builds the clippy_checks output group alone,
-# which never links. The checks' verdict is reported after the lint, so one
-# run shows both a check miss and a real clippy finding.
+# which never links. The lint runs whatever the checks found, so one run
+# shows both a check miss and a real clippy finding, and the checks' findings
+# are printed after it, where the log ends.
 set -uo pipefail
 
 rust_kinds='kind("^rust_(library|binary|test|proc_macro|shared_library|static_library) rule$", //...)'
@@ -35,45 +36,55 @@ build_scripts='attr(generator_function, "^cargo_build_script$", //...)'
 # maps `-` to `_` before comparing.
 skip_tags='attr(tags, "(?i)\b(no[-_]?clippy|no[-_]?lint)\b", //...)'
 
+# Prints the labels a query matches. Every call sits inside `$(...)`, where
+# an `exit` would leave only that subshell, so it returns 2 and each caller
+# exits on it.
 query() {
   bazel query --output=label "$1" || {
-    echo "::error::bazel query failed: $1"
-    exit 2
+    echo "::error::bazel query failed: $1" >&2
+    return 2
   }
 }
 
 status=0
-
-missing=$(query "$rust_kinds except attr(lint_config, \".\", //...) except $build_scripts")
-if [[ -n "$missing" ]]; then
-  printf '%s\n' "$missing"
-  echo "::error::the Rust targets above have no lint_config, so Bazel's clippy lints them without the workspace deny set. Add \`lint_config = \":lints\"\` (and, in a new package, the \`extract_cargo_lints\` target named \`lints\` — copy any existing BUILD.bazel)."
+# The checks' findings, held back until the lint has run so they are the last
+# thing in the log rather than buried above the build's output.
+report=''
+flag() {
+  local line
+  for line in "$@"; do report+="$line"$'\n'; done
   status=1
+}
+
+missing=$(query "$rust_kinds except attr(lint_config, \".\", //...) except $build_scripts") || exit 2
+if [[ -n "$missing" ]]; then
+  flag "$missing" "::error::the Rust targets above have no lint_config, so Bazel's clippy lints them without the workspace deny set. Add \`lint_config = \":lints\"\` (and, in a new package, the \`extract_cargo_lints\` target named \`lints\` — copy any existing BUILD.bazel)."
 fi
 
-skipped=$(query "($rust_kinds) intersect $skip_tags")
+skipped=$(query "($rust_kinds) intersect $skip_tags") || exit 2
 if [[ -n "$skipped" ]]; then
-  printf '%s\n' "$skipped"
-  echo "::error::the Rust targets above opt out of Bazel's clippy by tag, so their code goes unlinted. Remove the tag and fix what clippy reports instead."
-  status=1
+  flag "$skipped" "::error::the Rust targets above opt out of Bazel's clippy by tag, so their code goes unlinted. Remove the tag and fix what clippy reports instead."
 fi
 
 cargo_msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
 clippy_msrv=$(sed -n 's/^msrv = "\(.*\)"$/\1/p' clippy.toml)
 if [[ -z "$cargo_msrv" || "$cargo_msrv" != "$clippy_msrv" ]]; then
-  echo "::error::clippy.toml msrv (\"$clippy_msrv\") must equal Cargo.toml rust-version (\"$cargo_msrv\"): it is the MSRV Bazel's clippy lints against."
-  status=1
+  flag "::error::clippy.toml msrv (\"$clippy_msrv\") must equal Cargo.toml rust-version (\"$cargo_msrv\"): it is the MSRV Bazel's clippy lints against."
 fi
 
 manual=()
-labels=$(query "attr(tags, \"\\bmanual\\b\", $rust_kinds) except $build_scripts")
+labels=$(query "attr(tags, \"\\bmanual\\b\", $rust_kinds) except $build_scripts") || exit 2
 if [[ -n "$labels" ]]; then
   while IFS= read -r label; do manual+=("$label"); done <<<"$labels"
 fi
 
-bazel build --config=clippy "$@" -- //... "${manual[@]}" || status=1
+# `${manual[@]+...}`: bash before 4.4 (macOS's /bin/bash is 3.2) treats an
+# empty array as unbound under `set -u`.
+bazel build --config=clippy "$@" -- //... ${manual[@]+"${manual[@]}"} || status=1
 
-if [[ "$status" -eq 0 ]]; then
+if [[ -n "$report" ]]; then
+  printf '%s' "$report"
+elif [[ "$status" -eq 0 ]]; then
   echo "Bazel clippy clean: every first-party Rust target linted (${#manual[@]} manual target(s) named explicitly), with the workspace lint set and MSRV $cargo_msrv."
 fi
 exit "$status"
