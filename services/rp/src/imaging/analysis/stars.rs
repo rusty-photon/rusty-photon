@@ -65,9 +65,10 @@ pub struct Star {
     /// Useful for saturation awareness and as an FWHM-fit initial guess.
     pub peak: f64,
     /// Pixel coordinates `(row, column)` — `(y, x)` — belonging to this
-    /// component.
+    /// component, its hot pixels left out.
     pub pixels: Vec<(usize, usize)>,
-    /// Inclusive bounding box `(min_x, min_y, max_x, max_y)`.
+    /// Inclusive bounding box `(min_x, min_y, max_x, max_y)` of the whole
+    /// component, hot pixels included.
     pub bounding_box: (usize, usize, usize, usize),
     /// How many of `pixels` are at or above the camera's `max_adu`.
     /// Always `0` when `DetectionParams::max_adu` is `None`.
@@ -124,17 +125,9 @@ pub fn detect_stars<T: Pixel>(
 
     let components = connected_components_4(&mask.view());
 
-    // A hot pixel inside a star's smoothed footprint is not part of the
-    // star: the measurements read raw pixels, so it leaves the component.
     components
         .into_iter()
-        .map(|pixels| {
-            pixels
-                .into_iter()
-                .filter(|cell| hot.binary_search(cell).is_err())
-                .collect()
-        })
-        .filter_map(|pixels| build_star(view, pixels, background.mean, params, rows, cols))
+        .filter_map(|pixels| build_star(view, pixels, &hot, background.mean, params, rows, cols))
         .collect()
 }
 
@@ -159,11 +152,14 @@ fn detection_levels(background: &BackgroundStats, threshold_sigma: f64) -> (f64,
 /// Smoothing first would spread a hot pixel into a blob several pixels
 /// wide that passes the area filter. A structure of up to four bright
 /// pixels holds no body, so single hot pixels, pairs and 2×2 clusters
-/// go. A star keeps every pixel: a window around its core holds its
-/// body, and so does a window around the core side of every pixel of
-/// its profile. The same holds for the edge of any extended shape.
-/// Windows are read from `view`, so a replacement never feeds the next
-/// pixel's test, and they are clipped at the frame's edge.
+/// go. So does a star with only one to four pixels above `body_level`:
+/// a faint one, or a bright one undersampled to a FWHM under about 1 px
+/// and centred near a pixel corner. Any other star keeps every pixel: a
+/// window around its core holds its body, and so does a window around
+/// the core side of every pixel of its profile. The same holds for the
+/// edge of any extended shape. Windows are read from `view`, so a
+/// replacement never feeds the next pixel's test, and they are clipped
+/// at the frame's edge.
 fn suppress_hot_pixels<T: Pixel>(
     view: &ArrayView2<T>,
     data: &mut Array2<f64>,
@@ -220,9 +216,14 @@ fn window_median<T: Pixel>(view: &ArrayView2<T>, r: usize, c: usize) -> f64 {
     *median
 }
 
+/// Admit `pixels`, one component, as a star and measure it. The area
+/// and border verdicts are the whole component's; a pixel in `hot`, the
+/// hot pixels suppression replaced in row-major order, is left out of
+/// every measurement, since the measurements read raw pixels.
 fn build_star<T: Pixel>(
     view: &ArrayView2<T>,
     pixels: Vec<(usize, usize)>,
+    hot: &[(usize, usize)],
     background_mean: f64,
     params: &DetectionParams,
     rows: usize,
@@ -258,6 +259,11 @@ fn build_star<T: Pixel>(
         return None;
     }
 
+    let pixels: Vec<(usize, usize)> = pixels
+        .into_iter()
+        .filter(|cell| hot.binary_search(cell).is_err())
+        .collect();
+
     let mut total_flux = 0.0;
     let mut weighted_sum_x = 0.0;
     let mut weighted_sum_y = 0.0;
@@ -292,9 +298,10 @@ fn build_star<T: Pixel>(
     let (cx, cy) = if total_flux > 0.0 {
         (weighted_sum_x / total_flux, weighted_sum_y / total_flux)
     } else {
-        // Unweighted fallback for a fully-background-subtracted blob;
-        // components are non-empty, so `n > 0`.
-        let n = f64::from(u32::try_from(area).ok()?);
+        // Unweighted fallback for a fully-background-subtracted blob. A
+        // component left with no pixel once its hot pixels are out has
+        // nothing to measure and is no star.
+        let n = f64::from(u32::try_from(pixels.len()).ok().filter(|&n| n > 0)?);
         (sum_x / n, sum_y / n)
     };
 
@@ -899,6 +906,47 @@ mod tests {
             (beside[0].centroid_x, beside[0].total_flux),
             (alone[0].centroid_x, alone[0].total_flux)
         );
+    }
+
+    /// A star 3 px from the edge whose component reaches column 0 only at
+    /// a hot pixel: the border verdict is the whole component's, so the
+    /// truncated star is rejected rather than measured without that pixel.
+    #[test]
+    fn component_touching_the_border_only_at_a_hot_pixel_is_rejected() {
+        let arr = make_gaussian(16, 16, 3.0, 8.0, 1.0, 5_000.0, 1000.0);
+        let mut pixels: Vec<(usize, usize)> = (6..=10)
+            .flat_map(|r| (1..=6).map(move |c| (r, c)))
+            .collect();
+        pixels.push((8, 0));
+        let star = build_star(
+            &arr.view(),
+            pixels,
+            &[(8, 0)],
+            1000.0,
+            &default_params(1, 2000),
+            16,
+            16,
+        );
+        assert!(
+            star.is_none(),
+            "admitted with box {:?}",
+            star.map(|s| s.bounding_box)
+        );
+    }
+
+    #[test]
+    fn component_of_hot_pixels_only_is_no_star() {
+        let arr = flat_with(&[(8, 8), (8, 9)], 30_000);
+        let star = build_star(
+            &arr.view(),
+            vec![(8, 8), (8, 9)],
+            &[(8, 8), (8, 9)],
+            1000.0,
+            &default_params(1, 2000),
+            64,
+            64,
+        );
+        assert!(star.is_none());
     }
 
     #[test]

@@ -1924,8 +1924,9 @@ The first analysis tool to implement. Behavioral contract:
    Windows are clipped at the frame's edge. A hot pixel is replaced by
    the median of the window centred on it (at an edge, the lower of the
    two middle values). Every measurement in steps 7–8 still reads the
-   raw pixels, and a hot pixel that falls inside a component's smoothed
-   footprint is dropped from the component, so none reads it.
+   raw pixels. A hot pixel that falls inside a component's smoothed
+   footprint counts toward the component's area and border verdict, and
+   is left out of its measurements.
 4. Apply Gaussian smoothing (small kernel, σ ≈ 1.0 px) to suppress noise.
 5. Threshold at `background_mean + threshold_sigma × background_stddev`.
 6. Connected-components labelling on the thresholded mask.
@@ -1957,12 +1958,13 @@ focus. PixInsight's star detector and Hocus Focus also remove hot pixels
 before they blur, for the same reason.
 
 A structure of up to four bright pixels holds no body, so single hot
-pixels, pairs and 2×2 clusters are removed. A star keeps every pixel: a
-window around its core holds its body, and so does a window around the
-core side of every pixel of its profile; the same holds for the edge of
-any extended shape, such as a defocused star's annulus. So a star's
-footprint, and with it the result at any `min_area`, is the same as
-without the step. The body level sits at 2σ above the background mean,
+pixels, pairs and 2×2 clusters are removed. A star with more than four
+pixels above the body level keeps every pixel: a window around its core
+holds its body, and so does a window around the core side of every pixel
+of its profile; the same holds for the edge of any extended shape, such
+as a defocused star's annulus. A star the step keeps therefore has the
+same footprint, and the same verdict at any `min_area`, as without it;
+the caveats below list the stars it does not keep. The body level sits at 2σ above the background mean,
 not at the detection threshold, because a faint star at the detection
 limit, centred on a pixel corner or undersampled, has only one to four
 pixels above the threshold, while the median of nine background pixels
@@ -2010,8 +2012,11 @@ bin 4 (2026-09-09 frames), at `threshold_sigma` 5 and 8.
   stars sitting on a pixel that is also bright in a frame taken hours or
   days later exceed the chance rate by 1–2% at bin 2 and
   `threshold_sigma` 5 (at most 1% at 8), and not at all at bin 1.
-- A faint star whose only pixels more than 2σ above the background are
-  its brightest one to four looks like a hot structure and is removed.
+- A star whose only pixels more than 2σ above the background are its
+  brightest one to four looks like a hot structure and is removed: a
+  faint star, or a bright one undersampled to a FWHM under about 1 px
+  and centred near a pixel corner, whose four core pixels hold nearly
+  all its light. Telling those from a hot cluster needs a defect map.
 - A cluster of five or more hot pixels within a 3×3 window holds a body
   and survives suppression. If its flux is concentrated in one pixel,
   the HFR floor rejects it; otherwise it is counted as a star.
