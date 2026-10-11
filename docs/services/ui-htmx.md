@@ -491,8 +491,9 @@ Its two data sources are joined by device `id`:
 
 - **`GET /api/config`** (rp) — the authoritative device list: every equipment
   entry with its `alpaca_url`, device number, and settings (secrets redacted).
-- **`GET /api/equipment`** (rp) — live state: `{ id, connected }` per device
-  (the singular mount has no id).
+- **`GET /api/equipment`** (rp) — live state per device: `id` and
+  `connected`, which the page reads, plus the bound device's
+  `device_name` and `unique_id` (the singular mount has no id).
 
 Per device the page renders: name/id, kind, address, a **connected LED**, the
 **capability tier**, and Edit / Remove / Configure affordances. The tier comes

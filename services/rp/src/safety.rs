@@ -1043,6 +1043,7 @@ mod tests {
             mount: Some(crate::config::MountConfig {
                 alpaca_url: stub.url(),
                 device_number: 0,
+                unique_id: None,
                 settle_after_slew: None,
                 slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::default(),
                 guiding: None,
@@ -1081,6 +1082,7 @@ mod tests {
                 // the entry is disconnected without any retry delay.
                 alpaca_url: "not-a-url".to_string(),
                 device_number: 0,
+                unique_id: None,
                 settle_after_slew: None,
                 slew_rate_arcsec_per_sec: crate::config::mount::SlewRateArcsecPerSec::default(),
                 guiding: None,
@@ -1118,6 +1120,7 @@ mod tests {
                 alpaca_url: url.to_string(),
                 device_type: String::new(),
                 device_number,
+                unique_id: None,
                 cooler_targets_c: Vec::new(),
                 gain: None,
                 offset: None,
@@ -1206,12 +1209,14 @@ mod tests {
                     id: "reachable".to_string(),
                     alpaca_url: stub.url(),
                     device_number: 0,
+                    unique_id: None,
                     auth: None,
                 },
                 crate::config::SafetyMonitorConfig {
                     id: "never-connected".to_string(),
                     alpaca_url: "not-a-url".to_string(),
                     device_number: 0,
+                    unique_id: None,
                     auth: None,
                 },
             ],

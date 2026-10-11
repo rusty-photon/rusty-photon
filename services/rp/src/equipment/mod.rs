@@ -16,11 +16,17 @@
 //! membership and connectivity status only (rp.md § Equipment Integration)
 //! — no MCP tool integration, unlike the other six kinds.
 //!
+//! Every kind's connect routine is the shared one in [`binding`]:
+//! locate the device in the server's `configureddevices` list, hold it
+//! to the entry's identity pin (rp.md § Device Identity Pin), switch it
+//! on, and log what was bound.
+//!
 //! The submodules' `*Entry` types and shared status types are
 //! re-exported here so existing `crate::equipment::CameraEntry` etc.
 //! callsites keep working unchanged.
 
 pub mod alpaca;
+pub mod binding;
 pub mod camera;
 pub mod cover_calibrator;
 pub mod dome;
@@ -51,6 +57,7 @@ pub use session::DeviceSession;
 pub use supervisor::ReconnectSupervisor;
 pub use switch::SwitchEntry;
 
+use ascom_alpaca::api::Device;
 use serde::Serialize;
 use tracing::debug;
 
@@ -85,16 +92,58 @@ pub struct EquipmentStatus {
     pub mount: Option<MountStatus>,
 }
 
+/// One roster entry's live state (rp.md § Equipment).
 #[derive(Serialize)]
 pub struct DeviceStatus {
     pub id: String,
     pub connected: bool,
+    /// The bound device's listed `DeviceName`; `None` while disconnected.
+    pub device_name: Option<String>,
+    /// The bound device's listed `UniqueID`; `None` while disconnected.
+    pub unique_id: Option<String>,
+}
+
+impl DeviceStatus {
+    /// The entry's id beside its session's state: the mount's shape
+    /// plus the id.
+    fn of<T: Device + ?Sized, M>(id: &str, session: &DeviceSession<T, M>) -> Self {
+        let MountStatus {
+            connected,
+            device_name,
+            unique_id,
+        } = MountStatus::of(session);
+        Self {
+            id: id.to_string(),
+            connected,
+            device_name,
+            unique_id,
+        }
+    }
 }
 
 /// Singular wire-format counterpart to [`MountEntry`] — no `id`.
 #[derive(Serialize)]
 pub struct MountStatus {
     pub connected: bool,
+    /// The bound device's listed `DeviceName`; `None` while disconnected.
+    pub device_name: Option<String>,
+    /// The bound device's listed `UniqueID`; `None` while disconnected.
+    pub unique_id: Option<String>,
+}
+
+impl MountStatus {
+    /// The connected flag and the bound identity, from one read of the
+    /// session (a live session always holds its handle).
+    fn of<T: Device + ?Sized, M>(session: &DeviceSession<T, M>) -> Self {
+        let identity = session.bound_identity();
+        let connected = identity.is_some();
+        let (device_name, unique_id) = identity.map(|i| (i.name, i.unique_id)).unzip();
+        Self {
+            connected,
+            device_name,
+            unique_id,
+        }
+    }
 }
 
 /// Hard tolerance for the lat/lon mismatch check. 0.01° ≈ 1 km on the
@@ -191,78 +240,49 @@ impl EquipmentRegistry {
             cameras: self
                 .cameras
                 .iter()
-                .map(|c| DeviceStatus {
-                    id: c.id.clone(),
-                    connected: c.is_connected(),
-                })
+                .map(|c| DeviceStatus::of(&c.id, &c.session))
                 .collect(),
             filter_wheels: self
                 .filter_wheels
                 .iter()
-                .map(|fw| DeviceStatus {
-                    id: fw.id.clone(),
-                    connected: fw.is_connected(),
-                })
+                .map(|fw| DeviceStatus::of(&fw.id, &fw.session))
                 .collect(),
             cover_calibrators: self
                 .cover_calibrators
                 .iter()
-                .map(|cc| DeviceStatus {
-                    id: cc.id.clone(),
-                    connected: cc.is_connected(),
-                })
+                .map(|cc| DeviceStatus::of(&cc.id, &cc.session))
                 .collect(),
             focusers: self
                 .focusers
                 .iter()
-                .map(|f| DeviceStatus {
-                    id: f.id.clone(),
-                    connected: f.is_connected(),
-                })
+                .map(|f| DeviceStatus::of(&f.id, &f.session))
                 .collect(),
             safety_monitors: self
                 .safety_monitors
                 .iter()
-                .map(|sm| DeviceStatus {
-                    id: sm.id.clone(),
-                    connected: sm.is_connected(),
-                })
+                .map(|sm| DeviceStatus::of(&sm.id, &sm.session))
                 .collect(),
             switches: self
                 .switches
                 .iter()
-                .map(|sw| DeviceStatus {
-                    id: sw.id.clone(),
-                    connected: sw.is_connected(),
-                })
+                .map(|sw| DeviceStatus::of(&sw.id, &sw.session))
                 .collect(),
             rotators: self
                 .rotators
                 .iter()
-                .map(|r| DeviceStatus {
-                    id: r.id.clone(),
-                    connected: r.is_connected(),
-                })
+                .map(|r| DeviceStatus::of(&r.id, &r.session))
                 .collect(),
             observing_conditions: self
                 .observing_conditions
                 .iter()
-                .map(|oc| DeviceStatus {
-                    id: oc.id.clone(),
-                    connected: oc.is_connected(),
-                })
+                .map(|oc| DeviceStatus::of(&oc.id, &oc.session))
                 .collect(),
             domes: self
                 .domes
                 .iter()
-                .map(|d| DeviceStatus {
-                    id: d.id.clone(),
-                    connected: d.is_connected(),
-                })
+                .map(|d| DeviceStatus::of(&d.id, &d.session))
                 .collect(),
-            mount: self.mount.as_ref().map(|m| MountStatus {
-                connected: m.is_connected(),
-            }),
+            mount: self.mount.as_ref().map(|m| MountStatus::of(&m.session)),
         }
     }
 

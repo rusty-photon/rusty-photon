@@ -29,7 +29,8 @@ pub(super) const GET_DEVICES_TIMEOUT: Duration = Duration::from_secs(5);
 /// `Permanent` / `Transient` split is what makes this a retry helper
 /// rather than a sleep-and-hope wrapper: the connect closures map each
 /// failure mode to its own variant. Today only "device-not-found at
-/// the requested index in the Alpaca server's reply" is `Permanent`
+/// the requested index in the Alpaca server's reply" and a refused
+/// identity pin (`binding::establish_listed`) are `Permanent`
 /// inside the closure — every other failure inside the retry loop
 /// (HTTP transport errors including connection-refused on an
 /// unreachable host, `get_devices` timeouts, `set_connected` errors,
@@ -37,24 +38,29 @@ pub(super) const GET_DEVICES_TIMEOUT: Duration = Duration::from_secs(5);
 /// retry/backoff path. Note: `Client::new` failures are filtered
 /// out *before* the retry loop, so that case never produces an
 /// `AttemptOutcome` at all.
-pub(super) enum AttemptOutcome<T> {
+///
+/// `P` is what a permanent failure carries back to the caller, so a
+/// caller that must tell its permanent outcomes apart (an identity
+/// refusal from a device that is not listed) can type them.
+pub(super) enum AttemptOutcome<T, P = String> {
     Ok(T),
-    Permanent(String),
+    Permanent(P),
     Transient(String),
 }
 
 /// Drive `operation` up to [`CONNECT_ATTEMPTS`] times with exponential
 /// backoff between attempts: 1 s, then 2 s. Returns the first `Ok`
-/// result, or the last transient error wrapped with attempt count if
-/// every attempt returned `Transient`. Returns immediately on
-/// `Permanent`.
+/// result, or the last transient error wrapped with attempt count (as a
+/// `P`) if every attempt returned `Transient`. Returns `Permanent`'s
+/// payload immediately.
 ///
 /// `label` is used purely for log lines so the operator can see which
 /// device is retrying — e.g. `"camera main-cam"`.
-pub(super) async fn retry_connect_attempt<T, F, Fut>(label: &str, operation: F) -> Result<T, String>
+pub(super) async fn retry_connect_attempt<T, P, F, Fut>(label: &str, operation: F) -> Result<T, P>
 where
     F: Fn(u32) -> Fut,
-    Fut: Future<Output = AttemptOutcome<T>>,
+    Fut: Future<Output = AttemptOutcome<T, P>>,
+    P: From<String>,
 {
     let mut last_transient = String::from("no attempts made");
     for attempt in 1..=CONNECT_ATTEMPTS {
@@ -67,7 +73,7 @@ where
                 }
                 return Ok(value);
             }
-            AttemptOutcome::Permanent(msg) => return Err(msg),
+            AttemptOutcome::Permanent(failure) => return Err(failure),
             AttemptOutcome::Transient(msg) => {
                 last_transient = msg;
                 if attempt < CONNECT_ATTEMPTS {
@@ -93,9 +99,9 @@ where
             }
         }
     }
-    Err(format!(
+    Err(P::from(format!(
         "gave up after {CONNECT_ATTEMPTS} attempts (last error: {last_transient})"
-    ))
+    )))
 }
 
 /// Connect-phase timeout for every Alpaca HTTP request rp issues. A
