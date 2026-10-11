@@ -2851,8 +2851,9 @@ Recovery](#device-session-recovery)):
 2. **No pin:** the entry binds exactly as it always has.
 3. **The pin matches** the listed `UniqueID`: the entry binds. The
    comparison is exact and case-sensitive. Any whitespace the driver
-   pads its listed `UniqueID` with is ignored, since the pin itself
-   cannot carry any.
+   pads its listed `UniqueID` with is stripped, since the pin itself
+   cannot carry any, and the identity `rp` logs and reports is stripped
+   the same way, so it can be pasted back as a pin.
 4. **The pin differs:** the connect is refused **before**
    `Connected = true` is sent, so the wrong device is never switched on.
    The error names the found device (`DeviceName` and `UniqueID`) and
@@ -2878,10 +2879,13 @@ the entry's number: a driver that restarted with its devices reordered,
 followed by another client (Sentinel polling its safety monitors, say)
 connecting the number it is configured for. So on every pass, a pinned
 entry whose session reads healthy also has its listing re-read and its
-pin re-checked. When the pin no longer holds, the session is dropped at
-once, with a `warn!` and `equipment_changed` `connected: false`. A
-listing that cannot be read on that re-check keeps the session: it was
-checked at establish, and a failed read is no evidence of a swap. The
+pin re-checked. When another device is listed at the entry's number
+(or one listing no `UniqueID`), the session is dropped at once, with a
+`warn!` and `equipment_changed` `connected: false`. A listing that
+cannot be read, or that lists no device at the entry's number, keeps the
+session: it was checked at establish, and neither is evidence of
+another device (a re-enumerating driver can answer a short listing for
+a moment). The
 re-check costs one listing read per pinned entry per pass; an unpinned
 entry costs nothing extra.
 
@@ -2902,8 +2906,10 @@ the entry binds on the first pass that finds the pinned device back at
 binds anything else. The logging follows the usual shape: a refusal at
 startup is an `error!`, a live session lost to one is a `warn!` once
 (with `equipment_changed` `connected: false`), and later passes log at
-`debug!`. Two entries of one kind pinned to the same `UniqueID` are
-rejected at load, because at most one of them could ever bind.
+`debug!`. Two entries of one kind pinned to the same `UniqueID` on the
+same `alpaca_url` are rejected at load, because at most one of them
+could ever bind. The same `UniqueID` on two servers is accepted: an
+index-based serial-less `UniqueID` repeats across hosts.
 
 **What was bound is logged.** Every successful establish, pinned or
 not, logs one `info!` line with the kind, the roster `id`, `alpaca_url`,
@@ -6454,7 +6460,8 @@ whatever device its server lists there, as before. An empty value, or
 one with leading or trailing whitespace, is rejected at load: the
 listed side is compared with any padding stripped, so a padded pin
 could never match. Two entries of one kind pinned to the same
-`UniqueID` are rejected at load too, naming both.
+`UniqueID` on the same `alpaca_url` are rejected at load too, naming
+both.
 
 The top-level `ca_cert` names a PEM CA certificate `rp` trusts for
 every outbound HTTPS connection it makes as a client — Alpaca devices

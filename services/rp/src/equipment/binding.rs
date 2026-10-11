@@ -26,6 +26,8 @@ use ascom_alpaca::api::{
 use rp_auth::config::ClientAuthConfig;
 use tracing::info;
 
+use ascom_alpaca::Client;
+
 use super::alpaca::{
     build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
 };
@@ -203,25 +205,60 @@ impl From<String> for EstablishError {
     }
 }
 
-/// One device's identity as its server lists it in
-/// `configureddevices`.
+/// One device's identity as its server lists it in `configureddevices`.
+///
+/// Its `UniqueID` is stripped of any whitespace the driver padded it
+/// with. A pin cannot carry padding (config load rejects it), so the
+/// identity rp compares, logs and reports is one an operator can paste
+/// back as a pin.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListedIdentity {
     /// The listed `DeviceName`.
     pub name: String,
-    /// The listed `UniqueID`.
+    /// The listed `UniqueID`, stripped of padding.
     pub unique_id: String,
 }
 
 impl ListedIdentity {
+    /// An identity as a server lists it.
+    #[must_use]
+    pub fn new(name: &str, unique_id: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            unique_id: unique_id.trim().to_owned(),
+        }
+    }
+
     /// The identity a client handle carries from the listing it was
     /// built from.
     #[must_use]
     pub fn of<D: Device + ?Sized>(device: &D) -> Self {
-        Self {
-            name: device.static_name().to_owned(),
-            unique_id: device.unique_id().to_owned(),
-        }
+        Self::new(device.static_name(), device.unique_id())
+    }
+}
+
+/// An entry of a server's listing that [`select`] can pick: an identity,
+/// with or without the client handle built for it.
+trait Listed {
+    fn identity(&self) -> &ListedIdentity;
+}
+
+impl Listed for ListedIdentity {
+    fn identity(&self) -> &ListedIdentity {
+        self
+    }
+}
+
+/// A listed device of one kind: the client handle `get_devices` built
+/// for it, beside the identity it was listed under.
+struct ListedDevice<D: ?Sized> {
+    device: Arc<D>,
+    identity: ListedIdentity,
+}
+
+impl<D: ?Sized> Listed for ListedDevice<D> {
+    fn identity(&self) -> &ListedIdentity {
+        &self.identity
     }
 }
 
@@ -241,40 +278,64 @@ enum Refusal {
     },
 }
 
-/// Pick the device at `device_number` among `listed` — the server's
+/// Pick the entry at `device_number` among `listed` — the server's
 /// devices of one kind, in its listing order — and hold it to `pin`.
 ///
 /// Without a pin, any listed device binds, whatever its `UniqueID`.
-/// With one, only a device listing that `UniqueID` binds. The listed
-/// side is compared with any whitespace its driver padded it with
-/// ignored; the pin itself cannot carry any (config load rejects it).
-/// The pin never moves the entry to another position, it only names
-/// where the pinned device is listed.
-fn select(
-    listed: &[ListedIdentity],
+/// With one, only a device listing exactly that `UniqueID` binds. The
+/// pin never moves the entry to another position, it only names where
+/// the pinned device is listed.
+fn select<'a, T: Listed>(
+    listed: &'a [T],
     device_number: u32,
     pin: Option<&str>,
-) -> Result<usize, Refusal> {
-    let index = usize::try_from(device_number).map_err(|_| Refusal::NotListed)?;
-    let found = listed.get(index).ok_or(Refusal::NotListed)?;
+) -> Result<&'a T, Refusal> {
+    let found = usize::try_from(device_number)
+        .ok()
+        .and_then(|index| listed.get(index))
+        .ok_or(Refusal::NotListed)?;
     let Some(pin) = pin else {
-        return Ok(index);
+        return Ok(found);
     };
-    let found_id = found.unique_id.trim();
-    if found_id.is_empty() {
+    let identity = found.identity();
+    if identity.unique_id.is_empty() {
         return Err(Refusal::Unverifiable {
-            found_name: found.name.clone(),
+            found_name: identity.name.clone(),
         });
     }
-    if found_id == pin {
-        return Ok(index);
+    if identity.unique_id == pin {
+        return Ok(found);
     }
     Err(Refusal::Mismatch {
-        found: found.clone(),
+        found: identity.clone(),
         expected_at: listed
             .iter()
-            .position(|other| other.unique_id.trim() == pin),
+            .position(|other| other.identity().unique_id == pin),
     })
+}
+
+/// Read the server's listing and keep the devices of `C`'s kind, in
+/// listing order: the one read that both establishing a session and
+/// re-checking its pin make.
+async fn list_of_kind<C: RosterEntry>(
+    client: &Client,
+) -> Result<Vec<ListedDevice<C::Device>>, String> {
+    let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
+        Ok(Ok(devices)) => devices,
+        Ok(Err(e)) => return Err(format!("get_devices: {e}")),
+        Err(_) => {
+            return Err(format!(
+                "get_devices: timeout after {GET_DEVICES_TIMEOUT:?}"
+            ))
+        }
+    };
+    Ok(devices
+        .filter_map(C::of_kind)
+        .map(|device| {
+            let identity = ListedIdentity::of(device.as_ref());
+            ListedDevice { device, identity }
+        })
+        .collect())
 }
 
 /// Locate the roster entry's device on its Alpaca server, hold it to the
@@ -298,30 +359,12 @@ pub(super) async fn establish_listed<C: RosterEntry>(
 
     let label = address.label();
     let (device, identity) = retry_connect_attempt(&label, |_attempt| async {
-        let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
-            Ok(Ok(devices)) => devices,
-            Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
-            Err(_) => {
-                return AttemptOutcome::Transient(format!(
-                    "get_devices: timeout after {GET_DEVICES_TIMEOUT:?}"
-                ));
-            }
+        let listed = match list_of_kind::<C>(&client).await {
+            Ok(listed) => listed,
+            Err(e) => return AttemptOutcome::Transient(e),
         };
-
-        let of_this_kind: Vec<Arc<C::Device>> = devices.filter_map(C::of_kind).collect();
-        let listed: Vec<ListedIdentity> = of_this_kind
-            .iter()
-            .map(|device| ListedIdentity::of(device.as_ref()))
-            .collect();
-        let bound = select(&listed, address.device_number, pin).and_then(|index| {
-            of_this_kind
-                .into_iter()
-                .zip(listed)
-                .nth(index)
-                .ok_or(Refusal::NotListed)
-        });
-        let (device, identity) = match bound {
-            Ok(pair) => pair,
+        let (device, identity) = match select(&listed, address.device_number, pin) {
+            Ok(entry) => (Arc::clone(&entry.device), entry.identity.clone()),
             Err(refusal) => return AttemptOutcome::Permanent(address.refusal(&refusal)),
         };
 
@@ -355,11 +398,14 @@ pub enum PinCheck {
     /// The entry has no pin, or the device at its number still reports
     /// it.
     Holds,
-    /// The device at its number no longer reports the pin: the live
-    /// session's handle addresses another device.
+    /// Another device is listed at the entry's number, or one with no
+    /// `UniqueID`: the live session's handle addresses a device the pin
+    /// does not name.
     Refused(String),
-    /// The listing could not be read. The session was checked when it
-    /// was established, and a failed read is no evidence of a swap.
+    /// The listing could not be read, or lists no device at the entry's
+    /// number. The session was checked when it was established, and
+    /// neither is evidence of another device: a driver that is
+    /// re-enumerating can answer a short listing for a moment.
     Unchecked(String),
 }
 
@@ -381,21 +427,15 @@ pub(super) async fn check_pin<C: RosterEntry>(config: &C, ca_cert_path: Option<&
         Ok(client) => client,
         Err(e) => return PinCheck::Unchecked(format!("failed to create Alpaca client: {e}")),
     };
-    let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
-        Ok(Ok(devices)) => devices,
-        Ok(Err(e)) => return PinCheck::Unchecked(format!("get_devices: {e}")),
-        Err(_) => {
-            return PinCheck::Unchecked(format!(
-                "get_devices: timeout after {GET_DEVICES_TIMEOUT:?}"
-            ));
-        }
+    let listed = match list_of_kind::<C>(&client).await {
+        Ok(listed) => listed,
+        Err(e) => return PinCheck::Unchecked(e),
     };
-    let listed: Vec<ListedIdentity> = devices
-        .filter_map(C::of_kind)
-        .map(|device| ListedIdentity::of(device.as_ref()))
-        .collect();
     match select(&listed, address.device_number, Some(pin)) {
         Ok(_) => PinCheck::Holds,
+        Err(Refusal::NotListed) => {
+            PinCheck::Unchecked(address.refusal(&Refusal::NotListed).to_string())
+        }
         Err(refusal) => PinCheck::Refused(address.refusal(&refusal).to_string()),
     }
 }
@@ -414,10 +454,7 @@ mod tests {
     fn listed(entries: &[(&str, &str)]) -> Vec<ListedIdentity> {
         entries
             .iter()
-            .map(|(name, unique_id)| ListedIdentity {
-                name: (*name).to_string(),
-                unique_id: (*unique_id).to_string(),
-            })
+            .map(|(name, unique_id)| ListedIdentity::new(name, unique_id))
             .collect()
     }
 
@@ -434,14 +471,16 @@ mod tests {
 
     #[test]
     fn select_without_a_pin_binds_whatever_is_listed_there() {
-        assert_eq!(select(&swapped_pair(), 0, None).unwrap(), 0);
+        let pair = swapped_pair();
+        assert_eq!(select(&pair, 0, None).unwrap().name, "QHY5III678M");
     }
 
     #[test]
     fn select_binds_a_pin_the_listed_device_reports() {
+        let pair = swapped_pair();
         assert_eq!(
-            select(&swapped_pair(), 1, Some("QHY600M-imaging")).unwrap(),
-            1
+            select(&pair, 1, Some("QHY600M-imaging")).unwrap().name,
+            "QHY600M"
         );
     }
 
@@ -498,7 +537,7 @@ mod tests {
     #[test]
     fn select_without_a_pin_binds_an_empty_unique_id() {
         let devices = listed(&[("Anonymous", "")]);
-        assert_eq!(select(&devices, 0, None).unwrap(), 0);
+        assert_eq!(select(&devices, 0, None).unwrap().name, "Anonymous");
     }
 
     #[test]
@@ -520,15 +559,20 @@ mod tests {
         assert!(matches!(refusal, Refusal::Mismatch { .. }), "{refusal:?}");
     }
 
-    /// A driver that pads its listed `UniqueID` can still be pinned: the
-    /// pin cannot carry the padding, so the listed side drops it.
+    /// A driver that pads its listed `UniqueID` can still be pinned, and
+    /// the identity rp reports is the one a pin can carry.
     #[test]
-    fn select_ignores_padding_on_the_listed_unique_id() {
-        let devices = listed(&[
-            ("QHY5III678M", "QHY5III678M-guide"),
-            ("QHY600M", " QHY600M-imaging "),
-        ]);
-        assert_eq!(select(&devices, 1, Some("QHY600M-imaging")).unwrap(), 1);
+    fn a_listed_unique_id_is_stripped_of_padding() {
+        let identity = ListedIdentity::new("QHY600M", " QHY600M-imaging \t");
+        assert_eq!(identity.unique_id, "QHY600M-imaging");
+        let devices = vec![
+            ListedIdentity::new("QHY5III678M", "QHY5III678M-guide"),
+            identity,
+        ];
+        assert_eq!(
+            select(&devices, 1, Some("QHY600M-imaging")).unwrap().name,
+            "QHY600M"
+        );
         assert!(matches!(
             select(&devices, 0, Some("QHY600M-imaging")).unwrap_err(),
             Refusal::Mismatch {
@@ -628,7 +672,8 @@ mod tests {
     }
 
     /// The `rig2` pair after its power cycle, served by one stub: the
-    /// guide camera listed first, the imaging camera second. Every
+    /// guide camera listed first, the imaging camera second, its
+    /// `UniqueID` padded the way a careless driver might list it. Every
     /// `Connected = true` either camera receives is counted.
     async fn swapped_pair_server(
         connects: Arc<AtomicU32>,
@@ -644,7 +689,7 @@ mod tests {
                             {"DeviceName": "QHY5III678M", "DeviceType": "Camera",
                              "DeviceNumber": 0, "UniqueID": "QHY5III678M-guide"},
                             {"DeviceName": "QHY600M", "DeviceType": "Camera",
-                             "DeviceNumber": 1, "UniqueID": "QHY600M-imaging"}
+                             "DeviceNumber": 1, "UniqueID": " QHY600M-imaging "}
                         ],
                         "ErrorNumber": 0,
                         "ErrorMessage": ""
@@ -843,6 +888,19 @@ mod tests {
             panic!("a swapped device must refuse the pin");
         };
         assert!(msg.contains("set this entry's device_number to 1"), "{msg}");
+    }
+
+    /// A listing with no device at the entry's number is no evidence of
+    /// another device there (a re-enumerating driver can list short for
+    /// a moment), so the session is left alone, as at establish.
+    #[tokio::test]
+    async fn check_pin_leaves_a_number_the_listing_lacks_unchecked() {
+        let stub = swapped_pair_server(Arc::new(AtomicU32::new(0))).await;
+        let config = camera_config("qhy600m", &stub.url(), 5, Some("QHY600M-imaging"));
+        assert!(
+            matches!(check_pin(&config, None).await, PinCheck::Unchecked(_)),
+            "a short listing must not refuse the pin"
+        );
     }
 
     /// An unpinned entry is never checked: pointed at a server that

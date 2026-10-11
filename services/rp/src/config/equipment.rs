@@ -218,77 +218,60 @@ impl Default for EquipmentConfig {
 }
 
 impl EquipmentConfig {
-    /// Two entries of one kind pinned to the same `UniqueID`, as
-    /// field-level errors on the later entry. A device has one `UniqueID`
-    /// at one number, so at most one of the two could ever bind; the
-    /// other would be refused every night with an error pointing at its
-    /// twin's number (rp.md § Device Identity Pin).
+    /// Two entries of one kind pinned to the same `UniqueID` on the same
+    /// `alpaca_url`, as field-level errors on the later entry. A server
+    /// lists a device at one number, so at most one of the two could ever
+    /// bind; the other would be refused every night with an error
+    /// pointing at its twin's number (rp.md § Device Identity Pin). The
+    /// check is per server: a `UniqueID` can repeat across servers (two
+    /// hosts, each with one serial-less camera of the same model, list
+    /// the same index-based `UniqueID`), and there both entries bind.
     #[must_use]
     pub fn duplicate_pin_errors(&self) -> Vec<FieldError> {
-        fn pins<'a, E: 'a>(
-            entries: &'a [E],
-            fields: impl Fn(&'a E) -> (&'a str, Option<&'a UniqueIdPin>),
-        ) -> Vec<(&'a str, Option<&'a UniqueIdPin>)> {
-            entries.iter().map(fields).collect()
+        /// `(id, alpaca_url, pin)` of each entry of one kind.
+        type Pinned<'a> = Vec<(&'a str, &'a str, Option<&'a UniqueIdPin>)>;
+        macro_rules! pinned {
+            ($entries:expr) => {
+                $entries
+                    .iter()
+                    .map(|e| (e.id.as_str(), e.alpaca_url.as_str(), e.unique_id.as_ref()))
+                    .collect::<Pinned<'_>>()
+            };
         }
-        let kinds = [
-            (
-                "cameras",
-                pins(&self.cameras, |e| (&e.id, e.unique_id.as_ref())),
-            ),
-            (
-                "filter_wheels",
-                pins(&self.filter_wheels, |e| (&e.id, e.unique_id.as_ref())),
-            ),
-            (
-                "cover_calibrators",
-                pins(&self.cover_calibrators, |e| (&e.id, e.unique_id.as_ref())),
-            ),
-            (
-                "focusers",
-                pins(&self.focusers, |e| (&e.id, e.unique_id.as_ref())),
-            ),
-            (
-                "safety_monitors",
-                pins(&self.safety_monitors, |e| (&e.id, e.unique_id.as_ref())),
-            ),
-            (
-                "switches",
-                pins(&self.switches, |e| (&e.id, e.unique_id.as_ref())),
-            ),
-            (
-                "rotators",
-                pins(&self.rotators, |e| (&e.id, e.unique_id.as_ref())),
-            ),
-            (
-                "observing_conditions",
-                pins(&self.observing_conditions, |e| {
-                    (&e.id, e.unique_id.as_ref())
-                }),
-            ),
-            (
-                "domes",
-                pins(&self.domes, |e| (&e.id, e.unique_id.as_ref())),
-            ),
+        let kinds: [(&str, Pinned<'_>); 9] = [
+            ("cameras", pinned!(self.cameras)),
+            ("filter_wheels", pinned!(self.filter_wheels)),
+            ("cover_calibrators", pinned!(self.cover_calibrators)),
+            ("focusers", pinned!(self.focusers)),
+            ("safety_monitors", pinned!(self.safety_monitors)),
+            ("switches", pinned!(self.switches)),
+            ("rotators", pinned!(self.rotators)),
+            ("observing_conditions", pinned!(self.observing_conditions)),
+            ("domes", pinned!(self.domes)),
         ];
         let mut errors = Vec::new();
         for (key, entries) in kinds {
-            let mut first: std::collections::HashMap<&str, (usize, &str)> =
+            let mut first: std::collections::HashMap<(&str, &str), (usize, &str)> =
                 std::collections::HashMap::new();
-            for (index, (id, pin)) in entries.into_iter().enumerate() {
+            for (index, (id, url, pin)) in entries.into_iter().enumerate() {
                 let Some(pin) = pin else { continue };
-                if let Some(&(first_index, first_id)) = first.get(pin.as_str()) {
-                    errors.push(FieldError {
-                        path: format!("equipment.{key}.{index}.unique_id"),
-                        msg: format!(
-                            "pins the same UniqueID {:?} as equipment.{key}.{first_index} \
-                             ('{first_id}'); a device has one UniqueID at one number, so \
-                             at most one of the two entries could ever bind (entry '{id}')",
-                            pin.as_str()
-                        ),
-                    });
-                } else {
-                    first.insert(pin.as_str(), (index, id));
+                match first.entry((url, pin.as_str())) {
+                    std::collections::hash_map::Entry::Occupied(earlier) => {
+                        let (first_index, first_id) = *earlier.get();
+                        errors.push(FieldError {
+                            path: format!("equipment.{key}.{index}.unique_id"),
+                            msg: format!(
+                                "pins the same UniqueID {:?} on the same server ({url}) as \
+                                 equipment.{key}.{first_index} ('{first_id}'); a server lists \
+                                 a device at one number, so at most one of the two entries \
+                                 could ever bind (entry '{id}')",
+                                pin.as_str()
+                            ),
+                        });
+                    }
+                    std::collections::hash_map::Entry::Vacant(slot) => {
+                        slot.insert((index, id));
+                    }
                 }
             }
         }
@@ -550,9 +533,11 @@ mod tests {
         }
     }
 
-    /// Two entries of one kind pinned to one `UniqueID` fail validation on
-    /// the later entry; the same pin on two kinds (a camera and the
-    /// filter wheel sharing its handle) is legal.
+    /// Two entries of one kind pinned to one `UniqueID` on one server fail
+    /// validation on the later entry. The same pin on two kinds (a camera
+    /// and the filter wheel sharing its handle) is legal, and so is the
+    /// same pin on two servers (index-based serial-less `UniqueID`s repeat
+    /// across hosts).
     #[test]
     fn duplicate_pins_within_a_kind_are_rejected_on_the_later_entry() {
         let (_dir, path) = config_with_equipment(
@@ -563,7 +548,9 @@ mod tests {
                     {"id": "guide", "alpaca_url": "http://127.0.0.1:11121",
                      "device_number": 1},
                     {"id": "imaging-copy", "alpaca_url": "http://127.0.0.1:11121",
-                     "device_number": 2, "unique_id": "QHY600M-a1b2"}
+                     "device_number": 2, "unique_id": "QHY600M-a1b2"},
+                    {"id": "other-host", "alpaca_url": "http://pier2.example:11121",
+                     "device_number": 0, "unique_id": "QHY600M-a1b2"}
                 ],
                 "filter_wheels": [{"id": "cfw", "alpaca_url": "http://127.0.0.1:11121",
                                    "unique_id": "QHY600M-a1b2"}]
