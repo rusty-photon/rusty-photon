@@ -1873,10 +1873,12 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   back homes to slot 0 (C5). On a wheel that has not reported itself moving, a
   write of the failed slot therefore reads the status afresh and goes through
   the slot it names (FW7): while the wheel travels, the Linux SDK names the
-  slot it was last sent, which is the failed one. In the first run through the
-  service the read at the failure named slot 6 and the CFW then homed to slot
-  0; that build primed through slot 6 instead, which moved the wheel, and the
-  write was refused (1 of 1). A write refused on its way, as by a prime its
+  slot it was last sent, which is the failed one. On the dev box the read at
+  the failure named slot 2 or 6, the slot sent before the move, and the CFW
+  then homed to slot 0, so a prime through the slot that read named would have
+  sent a wheel resting on slot 0 to another slot. Read afresh after the
+  homing, the status named slot 0, and both writes went through it and
+  arrived (2 of 2). A write refused on its way, as by a prime its
   status does not confirm, leaves the failure reported: the wheel is where the
   failure left it, and under Linux a read then may name the slot sent before
   the move, which `Position` would take as the slot the wheel rests on. A write
@@ -1901,15 +1903,15 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   The rest (FW5) and the refusal (FW2) guard the two ways a move was measured
   to be lost through this driver, and under Linux a reconnect cannot land
   while the wheel travels. The wheel's connect reads its slot count
-  (`CfwSlotsNum`), which the SDK fails to read in transit: every one of 23
-  connects made during two moves failed with `NOT_CONNECTED`, and the first
-  after each arrival succeeded and read the slot the wheel had reached (2 of
-  2). The deadline is for what is not guarded: a reconnect landing mid-move
+  (`CfwSlotsNum`), which the SDK fails to read in transit: every one of 73
+  connects made during 7 moves failed with `NOT_CONNECTED`, and the first
+  after each arrival succeeded and read the slot the wheel had reached (7 of
+  7). The deadline is for what is not guarded: a reconnect landing mid-move
   under Windows, which is not measured, and any way of losing a move not yet
   measured, such as a CFW losing its power. With the CFW's 12 V cut 1.8 s
-  into a move, `Position` read −1 until 30.8 s after the write and then
-  reported the failure, its status naming the slot sent before the move while
-  the wheel had no power ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-move-deadline/README.md)). Under Windows a dropped move shows
+  into a move, `Position` read −1 and then reported the failure at the first
+  read after the deadline, 30.1–30.3 s after the slot was sent, its status
+  naming the slot sent before the move while the wheel had no power (2 of 2) ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-move-deadline/README.md)). Under Windows a dropped move shows
   sooner, its status naming the slot the wheel stayed on, at rest, where a
   move under way reads `N` from its first read (FW7). The driver does not act
   on that, so a move fails the same way under both SDKs.
