@@ -33,7 +33,10 @@ use super::binding::ListedIdentity;
 ///
 /// A disconnected slot keeps its stale handle and metadata until a
 /// successful re-establish replaces the pair, so no handle vanishes
-/// mid-operation. Calls through a stale handle fail with
+/// mid-operation. The one exception is a slot whose identity pin
+/// refused the device now at its number: [`Self::retire`] drops that
+/// handle, because it is known to address another device. Calls
+/// through a stale handle fail with
 /// `NOT_CONNECTED` (or a transport error) until a re-establish turns
 /// the device back on; from then on the device answers them from the
 /// new session, because `Connected` is device-wide. A caller that must
@@ -162,6 +165,20 @@ impl<T: ?Sized, M> DeviceSession<T, M> {
 }
 
 impl<T: ?Sized, M: Default> DeviceSession<T, M> {
+    /// Drop the handle and its metadata along with the session, for a
+    /// slot whose handle is known to address another device: the
+    /// entry's identity pin refused the device now at its number (rp.md
+    /// § Device Identity Pin). Unlike [`Self::mark_disconnected`], no
+    /// caller can reach that device through the slot afterwards, so a
+    /// tool call answers "not connected" instead. A caller already
+    /// holding the handle keeps it, as with any dead session.
+    pub fn retire(&self) {
+        let mut state = self.write();
+        state.connected = false;
+        state.device = None;
+        state.metadata = M::default();
+    }
+
     /// A slot for a device that has never been reached: no handle, and
     /// metadata nothing has read yet.
     #[must_use]
@@ -342,6 +359,19 @@ mod tests {
             );
         }
         writer.join().unwrap();
+    }
+
+    /// A retired slot keeps nothing a caller could reach the other
+    /// device through: no handle, no metadata, no snapshot.
+    #[test]
+    fn retire_drops_the_handle_and_its_metadata() {
+        let session: DeviceSession<str, u32> =
+            DeviceSession::connected_with(Arc::from("swapped"), 5);
+        session.retire();
+        assert!(!session.is_connected());
+        assert!(session.device().is_none());
+        assert!(session.snapshot().is_none());
+        assert_eq!(session.metadata(), 0);
     }
 
     #[test]

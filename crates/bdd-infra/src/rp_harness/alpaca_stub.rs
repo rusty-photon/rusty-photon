@@ -250,12 +250,25 @@ impl AlpacaDeviceStub {
     /// driver that numbers devices in USB enumeration order does when a
     /// power cycle reorders them.
     pub async fn restart_as(&mut self, unique_id: &str) {
+        self.restart_with(unique_id, false).await;
+    }
+
+    /// [`Self::restart_as`], with the fresh incarnation's device already
+    /// switched on, as another client of the service would leave it: a
+    /// client polling `Connected` reads true from the first request on,
+    /// although the device behind number 0 is a different one.
+    pub async fn restart_as_switched_on(&mut self, unique_id: &str) {
+        self.restart_with(unique_id, true).await;
+    }
+
+    async fn restart_with(&mut self, unique_id: &str, connected: bool) {
         self.halt().await;
         self.state = fresh_state(
             self.state.is_safe.load(Ordering::SeqCst),
             self.focuser_probe(),
             unique_id,
         );
+        self.state.connected.store(connected, Ordering::SeqCst);
         self.serve();
     }
 
@@ -741,6 +754,20 @@ mod tests {
             devices["Value"][0]["UniqueID"], "QHY5III678M-guiding",
             "a plain restart keeps the device the last incarnation hosted"
         );
+    }
+
+    /// A device another client switched on reads connected from the
+    /// fresh incarnation's first request.
+    #[tokio::test]
+    async fn restart_as_switched_on_serves_a_connected_device() {
+        let mut stub = AlpacaDeviceStub::start_as(StubDevice::Camera, "QHY600M-imaging");
+        let base = stub.url();
+        stub.restart_as_switched_on("QHY5III678M-guiding").await;
+        assert!(stub.is_connected());
+        let connected = get_json(&format!("{base}/api/v1/camera/0/connected")).await;
+        assert_eq!(connected["Value"], true);
+        let devices = get_json(&format!("{base}/management/v1/configureddevices")).await;
+        assert_eq!(devices["Value"][0]["UniqueID"], "QHY5III678M-guiding");
     }
 
     /// A disconnected focuser answers `NOT_CONNECTED` without counting

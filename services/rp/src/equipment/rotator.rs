@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use ascom_alpaca::api::{Rotator, TypedDevice};
+use ascom_alpaca::api::Rotator;
 use tracing::{debug, error};
 
-use super::binding::{establish_listed, RosterAddress};
+use super::binding::{establish_listed, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
 
@@ -32,20 +32,8 @@ impl RotatorEntry {
 pub(super) async fn establish_rotator(
     config: &config::RotatorConfig,
     ca_cert_path: Option<&std::path::Path>,
-) -> Result<Arc<dyn Rotator>, String> {
-    let address = RosterAddress {
-        kind: "rotator",
-        id: Some(&config.id),
-        alpaca_url: &config.alpaca_url,
-        device_number: config.device_number,
-        unique_id: config.unique_id.as_ref(),
-        auth: config.auth.as_ref(),
-    };
-    establish_listed(&address, ca_cert_path, |device| match device {
-        TypedDevice::Rotator(device) => Some(device),
-        _ => None,
-    })
-    .await
+) -> Result<Arc<dyn Rotator>, EstablishError> {
+    establish_listed(config, ca_cert_path).await
 }
 
 pub(super) async fn connect_rotator(

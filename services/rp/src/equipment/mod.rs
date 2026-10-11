@@ -136,10 +136,12 @@ impl MountStatus {
     /// session (a live session always holds its handle).
     fn of<T: Device + ?Sized, M>(session: &DeviceSession<T, M>) -> Self {
         let identity = session.bound_identity();
+        let connected = identity.is_some();
+        let (device_name, unique_id) = identity.map(|i| (i.name, i.unique_id)).unzip();
         Self {
-            connected: identity.is_some(),
-            device_name: identity.as_ref().map(|i| i.name.clone()),
-            unique_id: identity.map(|i| i.unique_id),
+            connected,
+            device_name,
+            unique_id,
         }
     }
 }

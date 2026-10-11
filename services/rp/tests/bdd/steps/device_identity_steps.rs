@@ -244,7 +244,29 @@ async fn stub_comes_back_as(world: &mut RpWorld, unique_id: String) {
         .await;
 }
 
+#[when(
+    expr = "the stub Alpaca service comes back hosting a camera with UniqueID {string} that another client has switched on"
+)]
+async fn stub_comes_back_switched_on_as(world: &mut RpWorld, unique_id: String) {
+    world
+        .alpaca_stub
+        .as_mut()
+        .expect("no stub Alpaca service — add a 'Given a stub Alpaca service ...' step")
+        .restart_as_switched_on(&unique_id)
+        .await;
+}
+
 // --- Then steps ---
+
+#[then(expr = "the equipment status should show camera {string} unbound")]
+async fn camera_unbound(world: &mut RpWorld, id: String) {
+    poll_entry_status(world, "cameras", &id, "no bound device", |status| {
+        status["connected"] == false
+            && status["device_name"].is_null()
+            && status["unique_id"].is_null()
+    })
+    .await;
+}
 
 #[then(regex = r"^the equipment status should show the pinned (.+) bound to that UniqueID$")]
 async fn pinned_device_bound(world: &mut RpWorld, name: String) {

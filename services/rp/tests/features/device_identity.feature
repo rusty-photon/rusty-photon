@@ -9,10 +9,15 @@ Feature: Device identity pin
   rp reads that UniqueID from the configureddevices entry it binds. A pin
   that matches binds. A pin that differs, or one the listed entry cannot
   verify, is refused before Connected=true is sent, and rp never
-  re-resolves the entry to another number. Without a pin, the entry
-  binds whatever device its server lists there. GET /api/equipment names
-  the device each connected entry is bound to by device_name and
-  unique_id, and reports both as null while the entry is disconnected.
+  re-resolves the entry to another number. A pinned entry whose session
+  reads healthy is re-checked against the listing on every reconnect
+  pass, since another client may have switched on whatever device is now
+  at its number. Once its pin is refused, rp drops the session together
+  with its handle, so no tool call reaches the other device. Without a
+  pin, the entry binds whatever device its server lists there. GET
+  /api/equipment names the device each connected entry is bound to by
+  device_name and unique_id, and reports both as null while the entry is
+  disconnected.
 
   Scenario Outline: Every device kind binds only the device that reports its pinned UniqueID
     Given a running Alpaca simulator
@@ -64,6 +69,22 @@ Feature: Device identity pin
     When the stub Alpaca service comes back hosting a camera with UniqueID "QHY600M-imaging"
     Then an "equipment_changed" event should report the device "main-cam" as connected
     And the equipment status should show camera "main-cam" bound to UniqueID "QHY600M-imaging"
+
+  Scenario: A pinned camera's live session is dropped when another client has switched on the camera now at its number
+    Given a stub Alpaca service hosting a camera with UniqueID "QHY600M-imaging"
+    And rp is configured with a camera on the stub service
+    And the camera "main-cam" is pinned to UniqueID "QHY600M-imaging"
+    And an equipment reconnect interval of 500 milliseconds
+    And a test webhook receiver subscribed to "equipment_changed"
+    When rp starts
+    Then the equipment status should show camera "main-cam" bound to UniqueID "QHY600M-imaging"
+    When the stub Alpaca service comes back hosting a camera with UniqueID "QHY5III678M-guiding" that another client has switched on
+    Then an "equipment_changed" event should report the device "main-cam" as disconnected
+    And the equipment status should show camera "main-cam" unbound
+    Given an MCP client connected to rp
+    When the MCP client calls "get_camera_info" with camera "main-cam"
+    Then the tool call should return an error
+    And the error message should contain "camera not connected"
 
   Scenario: An unpinned camera follows its number to whichever camera the server lists there
     Given a stub Alpaca service hosting a camera with UniqueID "QHY600M-imaging"

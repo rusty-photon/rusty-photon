@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use ascom_alpaca::api::{Focuser, TypedDevice};
+use ascom_alpaca::api::Focuser;
 use tracing::{debug, error};
 
-use super::binding::{establish_listed, RosterAddress};
+use super::binding::{establish_listed, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
 
@@ -79,20 +79,8 @@ fn step_size_read(focuser_id: &str, read: ascom_alpaca::ASCOMResult<f64>) -> Opt
 pub(super) async fn establish_focuser(
     config: &config::FocuserConfig,
     ca_cert_path: Option<&std::path::Path>,
-) -> Result<(Arc<dyn Focuser>, FocuserInvariants), String> {
-    let address = RosterAddress {
-        kind: "focuser",
-        id: Some(&config.id),
-        alpaca_url: &config.alpaca_url,
-        device_number: config.device_number,
-        unique_id: config.unique_id.as_ref(),
-        auth: config.auth.as_ref(),
-    };
-    let foc = establish_listed(&address, ca_cert_path, |device| match device {
-        TypedDevice::Focuser(device) => Some(device),
-        _ => None,
-    })
-    .await?;
+) -> Result<(Arc<dyn Focuser>, FocuserInvariants), EstablishError> {
+    let foc = establish_listed(config, ca_cert_path).await?;
 
     // `StepSize` is a property of the mechanism, invariant for the life
     // of the session: read once here, after `set_connected` (some

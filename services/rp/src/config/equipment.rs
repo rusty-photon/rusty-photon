@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use rusty_photon_config::actions::FieldError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -213,6 +214,85 @@ impl Default for EquipmentConfig {
             observing_conditions: Vec::new(),
             domes: Vec::new(),
         }
+    }
+}
+
+impl EquipmentConfig {
+    /// Two entries of one kind pinned to the same `UniqueID`, as
+    /// field-level errors on the later entry. A device has one `UniqueID`
+    /// at one number, so at most one of the two could ever bind; the
+    /// other would be refused every night with an error pointing at its
+    /// twin's number (rp.md § Device Identity Pin).
+    #[must_use]
+    pub fn duplicate_pin_errors(&self) -> Vec<FieldError> {
+        fn pins<'a, E: 'a>(
+            entries: &'a [E],
+            fields: impl Fn(&'a E) -> (&'a str, Option<&'a UniqueIdPin>),
+        ) -> Vec<(&'a str, Option<&'a UniqueIdPin>)> {
+            entries.iter().map(fields).collect()
+        }
+        let kinds = [
+            (
+                "cameras",
+                pins(&self.cameras, |e| (&e.id, e.unique_id.as_ref())),
+            ),
+            (
+                "filter_wheels",
+                pins(&self.filter_wheels, |e| (&e.id, e.unique_id.as_ref())),
+            ),
+            (
+                "cover_calibrators",
+                pins(&self.cover_calibrators, |e| (&e.id, e.unique_id.as_ref())),
+            ),
+            (
+                "focusers",
+                pins(&self.focusers, |e| (&e.id, e.unique_id.as_ref())),
+            ),
+            (
+                "safety_monitors",
+                pins(&self.safety_monitors, |e| (&e.id, e.unique_id.as_ref())),
+            ),
+            (
+                "switches",
+                pins(&self.switches, |e| (&e.id, e.unique_id.as_ref())),
+            ),
+            (
+                "rotators",
+                pins(&self.rotators, |e| (&e.id, e.unique_id.as_ref())),
+            ),
+            (
+                "observing_conditions",
+                pins(&self.observing_conditions, |e| {
+                    (&e.id, e.unique_id.as_ref())
+                }),
+            ),
+            (
+                "domes",
+                pins(&self.domes, |e| (&e.id, e.unique_id.as_ref())),
+            ),
+        ];
+        let mut errors = Vec::new();
+        for (key, entries) in kinds {
+            let mut first: std::collections::HashMap<&str, (usize, &str)> =
+                std::collections::HashMap::new();
+            for (index, (id, pin)) in entries.into_iter().enumerate() {
+                let Some(pin) = pin else { continue };
+                if let Some(&(first_index, first_id)) = first.get(pin.as_str()) {
+                    errors.push(FieldError {
+                        path: format!("equipment.{key}.{index}.unique_id"),
+                        msg: format!(
+                            "pins the same UniqueID {:?} as equipment.{key}.{first_index} \
+                             ('{first_id}'); a device has one UniqueID at one number, so \
+                             at most one of the two entries could ever bind (entry '{id}')",
+                            pin.as_str()
+                        ),
+                    });
+                } else {
+                    first.insert(pin.as_str(), (index, id));
+                }
+            }
+        }
+        errors
     }
 }
 
@@ -468,6 +548,41 @@ mod tests {
             let err = load_config(&path).unwrap_err().to_string();
             assert!(err.contains(needle), "pin {bad}: {err}");
         }
+    }
+
+    /// Two entries of one kind pinned to one `UniqueID` fail validation on
+    /// the later entry; the same pin on two kinds (a camera and the
+    /// filter wheel sharing its handle) is legal.
+    #[test]
+    fn duplicate_pins_within_a_kind_are_rejected_on_the_later_entry() {
+        let (_dir, path) = config_with_equipment(
+            r#"{
+                "cameras": [
+                    {"id": "imaging", "alpaca_url": "http://127.0.0.1:11121",
+                     "device_number": 0, "unique_id": "QHY600M-a1b2"},
+                    {"id": "guide", "alpaca_url": "http://127.0.0.1:11121",
+                     "device_number": 1},
+                    {"id": "imaging-copy", "alpaca_url": "http://127.0.0.1:11121",
+                     "device_number": 2, "unique_id": "QHY600M-a1b2"}
+                ],
+                "filter_wheels": [{"id": "cfw", "alpaca_url": "http://127.0.0.1:11121",
+                                   "unique_id": "QHY600M-a1b2"}]
+            }"#,
+        );
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let config: crate::config::Config = serde_json::from_str(&contents).unwrap();
+
+        let errors = config.equipment.duplicate_pin_errors();
+
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].path, "equipment.cameras.2.unique_id");
+        assert!(
+            errors[0].msg.contains("equipment.cameras.0 ('imaging')"),
+            "{}",
+            errors[0].msg
+        );
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(err.contains("equipment.cameras.2.unique_id"), "{err}");
     }
 
     /// A pin serializes back as the plain string it was loaded from, so

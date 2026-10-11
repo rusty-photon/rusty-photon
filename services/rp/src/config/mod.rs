@@ -299,6 +299,7 @@ pub fn validate_config(config: &Config) -> Vec<FieldError> {
     for (index, cam) in config.equipment.cameras.iter().enumerate() {
         errors.extend(cam.field_errors(index));
     }
+    errors.extend(config.equipment.duplicate_pin_errors());
     // The optical-train graph rules (roster existence, terminal camera,
     // order consistency, the one-guiding-train rule) live with the
     // derived model so validation and derivation cannot drift apart.

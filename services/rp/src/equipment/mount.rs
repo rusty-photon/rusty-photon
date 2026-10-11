@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use ascom_alpaca::api::{Telescope, TypedDevice};
+use ascom_alpaca::api::Telescope;
 use tracing::{debug, error};
 
-use super::binding::{establish_listed, RosterAddress};
+use super::binding::{establish_listed, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
 
@@ -33,20 +33,8 @@ impl MountEntry {
 pub(super) async fn establish_mount(
     config: &config::MountConfig,
     ca_cert_path: Option<&std::path::Path>,
-) -> Result<Arc<dyn Telescope>, String> {
-    let address = RosterAddress {
-        kind: "mount",
-        id: None,
-        alpaca_url: &config.alpaca_url,
-        device_number: config.device_number,
-        unique_id: config.unique_id.as_ref(),
-        auth: config.auth.as_ref(),
-    };
-    establish_listed(&address, ca_cert_path, |device| match device {
-        TypedDevice::Telescope(device) => Some(device),
-        _ => None,
-    })
-    .await
+) -> Result<Arc<dyn Telescope>, EstablishError> {
+    establish_listed(config, ca_cert_path).await
 }
 
 pub(super) async fn connect_mount(

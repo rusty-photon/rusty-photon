@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use ascom_alpaca::api::{Switch, TypedDevice};
+use ascom_alpaca::api::Switch;
 use tracing::{debug, error};
 
-use super::binding::{establish_listed, RosterAddress};
+use super::binding::{establish_listed, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
 
@@ -31,20 +31,8 @@ impl SwitchEntry {
 pub(super) async fn establish_switch(
     config: &config::SwitchConfig,
     ca_cert_path: Option<&std::path::Path>,
-) -> Result<Arc<dyn Switch>, String> {
-    let address = RosterAddress {
-        kind: "switch",
-        id: Some(&config.id),
-        alpaca_url: &config.alpaca_url,
-        device_number: config.device_number,
-        unique_id: config.unique_id.as_ref(),
-        auth: config.auth.as_ref(),
-    };
-    establish_listed(&address, ca_cert_path, |device| match device {
-        TypedDevice::Switch(device) => Some(device),
-        _ => None,
-    })
-    .await
+) -> Result<Arc<dyn Switch>, EstablishError> {
+    establish_listed(config, ca_cert_path).await
 }
 
 pub(super) async fn connect_switch(

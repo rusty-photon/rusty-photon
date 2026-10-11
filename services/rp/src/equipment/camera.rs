@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use ascom_alpaca::api::{Camera, TypedDevice};
+use ascom_alpaca::api::Camera;
 use tracing::{debug, error};
 
-use super::binding::{establish_listed, RosterAddress};
+use super::binding::{establish_listed, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
 
@@ -163,20 +163,8 @@ pub(crate) fn optional_read<T, E: std::fmt::Display>(
 pub(super) async fn establish_camera(
     config: &config::CameraConfig,
     ca_cert_path: Option<&std::path::Path>,
-) -> Result<(Arc<dyn Camera>, CameraInvariants), String> {
-    let address = RosterAddress {
-        kind: "camera",
-        id: Some(&config.id),
-        alpaca_url: &config.alpaca_url,
-        device_number: config.device_number,
-        unique_id: config.unique_id.as_ref(),
-        auth: config.auth.as_ref(),
-    };
-    let cam = establish_listed(&address, ca_cert_path, |device| match device {
-        TypedDevice::Camera(cam) => Some(cam),
-        _ => None,
-    })
-    .await?;
+) -> Result<(Arc<dyn Camera>, CameraInvariants), EstablishError> {
+    let cam = establish_listed(config, ca_cert_path).await?;
 
     // The Alpaca device is now Connected — the driver name and the
     // eight physical-sensor properties below are invariant for the life

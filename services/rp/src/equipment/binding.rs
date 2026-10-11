@@ -3,24 +3,33 @@
 //! It locates a roster entry's device in its server's
 //! `configureddevices` list, checks the entry's pinned `UniqueID`,
 //! switches the device on, and logs what was bound (rp.md § Device
-//! Identity Pin, § Device Session Recovery).
+//! Identity Pin, § Device Session Recovery). The reconnect supervisor
+//! also re-checks a pinned entry's live session against the listing on
+//! every pass ([`check_pin`]).
 //!
-//! The identity checked is read from the same listing the device is
-//! located in, so the check and the bind cannot disagree about which
-//! device they mean, and the pin costs no extra request. The check runs
-//! before `Connected = true`, so a refused device is never switched on.
+//! The identity checked is the one the listing gives for the very entry
+//! whose device URL rp binds, read in the same response, so the pin costs
+//! no extra request. The check runs before `Connected = true`, so a
+//! refused device is never switched on. The listing read and the
+//! `Connected = true` request are still two requests, though: a server
+//! that renumbers its devices between them makes rp switch on and bind
+//! whatever device is then at that number. Alpaca has no identity-checked
+//! connect to close that window; the next pass's [`check_pin`] catches it.
 
 use std::path::Path;
 use std::sync::Arc;
 
-use ascom_alpaca::api::{Device, TypedDevice};
+use ascom_alpaca::api::{
+    Camera, CoverCalibrator, Device, Dome, FilterWheel, Focuser, ObservingConditions, Rotator,
+    SafetyMonitor, Switch, Telescope, TypedDevice,
+};
 use rp_auth::config::ClientAuthConfig;
 use tracing::info;
 
 use super::alpaca::{
     build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
 };
-use crate::config::UniqueIdPin;
+use crate::config::{self, UniqueIdPin};
 
 /// What a roster entry says about the device it addresses.
 pub(super) struct RosterAddress<'a> {
@@ -44,19 +53,20 @@ impl RosterAddress<'_> {
             .map_or_else(|| self.kind.to_string(), |id| format!("{} {id}", self.kind))
     }
 
-    /// The operator-facing reason a device was not bound.
-    fn refusal_message(&self, refusal: &Refusal) -> String {
+    /// Why the device at this entry's number was not bound, as the
+    /// operator reads it.
+    fn refusal(&self, refusal: &Refusal) -> EstablishError {
         let kind = self.kind;
         let number = self.device_number;
         let pin = self.unique_id.map_or("", UniqueIdPin::as_str);
         match refusal {
-            Refusal::NotListed => {
-                format!("{kind} at index {number} not found on Alpaca server")
-            }
-            Refusal::Unverifiable { found_name } => format!(
+            Refusal::NotListed => EstablishError::Failed(format!(
+                "{kind} at index {number} not found on Alpaca server"
+            )),
+            Refusal::Unverifiable { found_name } => EstablishError::IdentityRefused(format!(
                 "{kind} at device_number {number} ({found_name:?}) reports an empty UniqueID, \
                  so the pinned unique_id {pin:?} cannot be verified; refusing to connect it"
-            ),
+            )),
             Refusal::Mismatch { found, expected_at } => {
                 let found_name = &found.name;
                 let found_id = &found.unique_id;
@@ -69,13 +79,127 @@ impl RosterAddress<'_> {
                         )
                     },
                 );
-                format!(
+                EstablishError::IdentityRefused(format!(
                     "{kind} at device_number {number} is {found_name:?} with UniqueID \
                      {found_id:?}, not the pinned unique_id {pin:?}; refusing to connect it: \
                      {elsewhere}"
-                )
+                ))
             }
         }
+    }
+}
+
+/// A roster entry kind: how its config addresses the device, and which
+/// entries of a server's listing are of its kind.
+pub(super) trait RosterEntry: Sync {
+    /// The Alpaca device trait object the kind binds (`dyn Camera`, …).
+    type Device: Device + ?Sized;
+
+    /// What the entry says about the device it addresses.
+    fn address(&self) -> RosterAddress<'_>;
+
+    /// This kind's device, if `device` is one.
+    fn of_kind(device: TypedDevice) -> Option<Arc<Self::Device>>;
+}
+
+/// [`RosterEntry`] for the kinds whose entries carry an `id`. Every
+/// address is built here from the same field names, so no kind can bind
+/// without forwarding its `unique_id`.
+macro_rules! roster_entry {
+    ($($config:ty => $variant:ident as $device:ty, $kind:literal;)+) => {
+        $(
+            impl RosterEntry for $config {
+                type Device = $device;
+
+                fn address(&self) -> RosterAddress<'_> {
+                    RosterAddress {
+                        kind: $kind,
+                        id: Some(&self.id),
+                        alpaca_url: &self.alpaca_url,
+                        device_number: self.device_number,
+                        unique_id: self.unique_id.as_ref(),
+                        auth: self.auth.as_ref(),
+                    }
+                }
+
+                fn of_kind(device: TypedDevice) -> Option<Arc<$device>> {
+                    match device {
+                        TypedDevice::$variant(device) => Some(device),
+                        _ => None,
+                    }
+                }
+            }
+        )+
+    };
+}
+
+roster_entry! {
+    config::CameraConfig => Camera as dyn Camera, "camera";
+    config::FilterWheelConfig => FilterWheel as dyn FilterWheel, "filter wheel";
+    config::CoverCalibratorConfig => CoverCalibrator as dyn CoverCalibrator, "cover calibrator";
+    config::FocuserConfig => Focuser as dyn Focuser, "focuser";
+    config::SafetyMonitorConfig => SafetyMonitor as dyn SafetyMonitor, "safety monitor";
+    config::SwitchConfig => Switch as dyn Switch, "switch";
+    config::RotatorConfig => Rotator as dyn Rotator, "rotator";
+    config::ObservingConditionsConfig => ObservingConditions as dyn ObservingConditions, "observing conditions";
+    config::DomeConfig => Dome as dyn Dome, "dome";
+}
+
+/// The singular mount has no `id`; otherwise the same as every kind.
+impl RosterEntry for config::MountConfig {
+    type Device = dyn Telescope;
+
+    fn address(&self) -> RosterAddress<'_> {
+        RosterAddress {
+            kind: "mount",
+            id: None,
+            alpaca_url: &self.alpaca_url,
+            device_number: self.device_number,
+            unique_id: self.unique_id.as_ref(),
+            auth: self.auth.as_ref(),
+        }
+    }
+
+    fn of_kind(device: TypedDevice) -> Option<Arc<dyn Telescope>> {
+        match device {
+            TypedDevice::Telescope(device) => Some(device),
+            _ => None,
+        }
+    }
+}
+
+/// Why an establish routine produced no session.
+#[derive(Debug, PartialEq, Eq)]
+pub enum EstablishError {
+    /// The device at the entry's number is not the one its pin names, or
+    /// cannot be checked against it. Any handle the entry still holds
+    /// addresses that other device.
+    IdentityRefused(String),
+    /// Anything else: the client could not be built, the server could
+    /// not be read or does not list the device, or `Connected = true`
+    /// failed.
+    Failed(String),
+}
+
+impl EstablishError {
+    /// Whether the pin refused the device at the entry's number.
+    #[must_use]
+    pub const fn is_identity_refusal(&self) -> bool {
+        matches!(self, Self::IdentityRefused(_))
+    }
+}
+
+impl std::fmt::Display for EstablishError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::IdentityRefused(message) | Self::Failed(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<String> for EstablishError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
     }
 }
 
@@ -121,9 +245,11 @@ enum Refusal {
 /// devices of one kind, in its listing order — and hold it to `pin`.
 ///
 /// Without a pin, any listed device binds, whatever its `UniqueID`.
-/// With one, only a device listing exactly that `UniqueID` binds; the
-/// pin never moves the entry to another position, it only names where
-/// the pinned device is listed.
+/// With one, only a device listing that `UniqueID` binds. The listed
+/// side is compared with any whitespace its driver padded it with
+/// ignored; the pin itself cannot carry any (config load rejects it).
+/// The pin never moves the entry to another position, it only names
+/// where the pinned device is listed.
 fn select(
     listed: &[ListedIdentity],
     device_number: u32,
@@ -134,17 +260,20 @@ fn select(
     let Some(pin) = pin else {
         return Ok(index);
     };
-    if found.unique_id.is_empty() {
+    let found_id = found.unique_id.trim();
+    if found_id.is_empty() {
         return Err(Refusal::Unverifiable {
             found_name: found.name.clone(),
         });
     }
-    if found.unique_id == pin {
+    if found_id == pin {
         return Ok(index);
     }
     Err(Refusal::Mismatch {
         found: found.clone(),
-        expected_at: listed.iter().position(|other| other.unique_id == pin),
+        expected_at: listed
+            .iter()
+            .position(|other| other.unique_id.trim() == pin),
     })
 }
 
@@ -153,22 +282,18 @@ fn select(
 /// every kind's startup connect and the reconnect supervisor's
 /// re-establish.
 ///
-/// `of_kind` picks the entry's kind out of the server's listing. A
-/// device that is not listed, or whose identity the pin refuses, is a
+/// A device that is not listed, or whose identity the pin refuses, is a
 /// permanent outcome for this routine: no in-routine retries, and the
-/// supervisor re-checks it on its next pass. Nothing here actuates:
-/// the listing is a read, and `Connected = true` is non-actuating by
-/// driver contract.
-pub(super) async fn establish_listed<D>(
-    address: &RosterAddress<'_>,
+/// supervisor re-checks it on its next pass. Nothing here actuates: the
+/// listing is a read, and `Connected = true` is non-actuating by driver
+/// contract.
+pub(super) async fn establish_listed<C: RosterEntry>(
+    config: &C,
     ca_cert_path: Option<&Path>,
-    of_kind: fn(TypedDevice) -> Option<Arc<D>>,
-) -> Result<Arc<D>, String>
-where
-    D: Device + ?Sized,
-{
+) -> Result<Arc<C::Device>, EstablishError> {
+    let address = config.address();
     let client = build_alpaca_client(address.alpaca_url, address.auth, ca_cert_path)
-        .map_err(|e| format!("failed to create Alpaca client: {e}"))?;
+        .map_err(|e| EstablishError::Failed(format!("failed to create Alpaca client: {e}")))?;
     let pin = address.unique_id.map(UniqueIdPin::as_str);
 
     let label = address.label();
@@ -183,19 +308,21 @@ where
             }
         };
 
-        let of_this_kind: Vec<Arc<D>> = devices.filter_map(of_kind).collect();
+        let of_this_kind: Vec<Arc<C::Device>> = devices.filter_map(C::of_kind).collect();
         let listed: Vec<ListedIdentity> = of_this_kind
             .iter()
             .map(|device| ListedIdentity::of(device.as_ref()))
             .collect();
-        let index = match select(&listed, address.device_number, pin) {
-            Ok(index) => index,
-            Err(refusal) => {
-                return AttemptOutcome::Permanent(address.refusal_message(&refusal));
-            }
-        };
-        let Some((device, identity)) = of_this_kind.into_iter().zip(listed).nth(index) else {
-            return AttemptOutcome::Permanent(address.refusal_message(&Refusal::NotListed));
+        let bound = select(&listed, address.device_number, pin).and_then(|index| {
+            of_this_kind
+                .into_iter()
+                .zip(listed)
+                .nth(index)
+                .ok_or(Refusal::NotListed)
+        });
+        let (device, identity) = match bound {
+            Ok(pair) => pair,
+            Err(refusal) => return AttemptOutcome::Permanent(address.refusal(&refusal)),
         };
 
         match device.set_connected(true).await {
@@ -222,12 +349,62 @@ where
     Ok(device)
 }
 
+/// What a reconnect pass found when it re-checked a live session's pin.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PinCheck {
+    /// The entry has no pin, or the device at its number still reports
+    /// it.
+    Holds,
+    /// The device at its number no longer reports the pin: the live
+    /// session's handle addresses another device.
+    Refused(String),
+    /// The listing could not be read. The session was checked when it
+    /// was established, and a failed read is no evidence of a swap.
+    Unchecked(String),
+}
+
+/// Re-check a pinned entry's live session against its server's
+/// listing: the reconnect supervisor's healthy path, which otherwise
+/// reads only `Connected`. A driver that restarts with its devices
+/// reordered, followed by another client switching on the device now at
+/// the entry's number, leaves `Connected` reading true through rp's
+/// handle; only the listing shows the device changed.
+///
+/// An unpinned entry is not checked and costs no request. A read,
+/// never a command.
+pub(super) async fn check_pin<C: RosterEntry>(config: &C, ca_cert_path: Option<&Path>) -> PinCheck {
+    let address = config.address();
+    let Some(pin) = address.unique_id.map(UniqueIdPin::as_str) else {
+        return PinCheck::Holds;
+    };
+    let client = match build_alpaca_client(address.alpaca_url, address.auth, ca_cert_path) {
+        Ok(client) => client,
+        Err(e) => return PinCheck::Unchecked(format!("failed to create Alpaca client: {e}")),
+    };
+    let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
+        Ok(Ok(devices)) => devices,
+        Ok(Err(e)) => return PinCheck::Unchecked(format!("get_devices: {e}")),
+        Err(_) => {
+            return PinCheck::Unchecked(format!(
+                "get_devices: timeout after {GET_DEVICES_TIMEOUT:?}"
+            ));
+        }
+    };
+    let listed: Vec<ListedIdentity> = devices
+        .filter_map(C::of_kind)
+        .map(|device| ListedIdentity::of(device.as_ref()))
+        .collect();
+    match select(&listed, address.device_number, Some(pin)) {
+        Ok(_) => PinCheck::Holds,
+        Err(refusal) => PinCheck::Refused(address.refusal(&refusal).to_string()),
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    use ascom_alpaca::api::Camera;
     use axum::routing::{get, put};
     use axum::{Json, Router};
 
@@ -310,6 +487,15 @@ mod tests {
     }
 
     #[test]
+    fn select_refuses_a_pin_against_a_blank_unique_id() {
+        let devices = listed(&[("Anonymous", "  ")]);
+        assert!(matches!(
+            select(&devices, 0, Some("QHY600M-imaging")).unwrap_err(),
+            Refusal::Unverifiable { .. }
+        ));
+    }
+
+    #[test]
     fn select_without_a_pin_binds_an_empty_unique_id() {
         let devices = listed(&[("Anonymous", "")]);
         assert_eq!(select(&devices, 0, None).unwrap(), 0);
@@ -327,15 +513,32 @@ mod tests {
         );
     }
 
-    /// The comparison is verbatim: a `UniqueID` differing only in case
-    /// is a different device.
+    /// A `UniqueID` differing only in case is a different device.
     #[test]
-    fn select_compares_the_pin_verbatim() {
+    fn select_compares_the_pin_case_sensitively() {
         let refusal = select(&swapped_pair(), 1, Some("qhy600m-imaging")).unwrap_err();
         assert!(matches!(refusal, Refusal::Mismatch { .. }), "{refusal:?}");
     }
 
-    // ----- refusal messages ------------------------------------------
+    /// A driver that pads its listed `UniqueID` can still be pinned: the
+    /// pin cannot carry the padding, so the listed side drops it.
+    #[test]
+    fn select_ignores_padding_on_the_listed_unique_id() {
+        let devices = listed(&[
+            ("QHY5III678M", "QHY5III678M-guide"),
+            ("QHY600M", " QHY600M-imaging "),
+        ]);
+        assert_eq!(select(&devices, 1, Some("QHY600M-imaging")).unwrap(), 1);
+        assert!(matches!(
+            select(&devices, 0, Some("QHY600M-imaging")).unwrap_err(),
+            Refusal::Mismatch {
+                expected_at: Some(1),
+                ..
+            }
+        ));
+    }
+
+    // ----- refusal messages and their class --------------------------
 
     fn camera_address(pin: Option<&UniqueIdPin>) -> RosterAddress<'_> {
         RosterAddress {
@@ -356,13 +559,16 @@ mod tests {
     fn a_mismatch_names_both_identities_and_where_the_pinned_one_is_listed() {
         let expected = pin("QHY600M-imaging");
         let refusal = select(&swapped_pair(), 0, Some(expected.as_str())).unwrap_err();
-        let msg = camera_address(Some(&expected)).refusal_message(&refusal);
+        let error = camera_address(Some(&expected)).refusal(&refusal);
         assert_eq!(
-            msg,
-            "camera at device_number 0 is \"QHY5III678M\" with UniqueID \"QHY5III678M-guide\", \
-             not the pinned unique_id \"QHY600M-imaging\"; refusing to connect it: \
-             \"QHY600M-imaging\" is listed at device_number 1 on this server; \
-             set this entry's device_number to 1 if the device moved"
+            error,
+            EstablishError::IdentityRefused(
+                "camera at device_number 0 is \"QHY5III678M\" with UniqueID \
+                 \"QHY5III678M-guide\", not the pinned unique_id \"QHY600M-imaging\"; \
+                 refusing to connect it: \"QHY600M-imaging\" is listed at device_number 1 \
+                 on this server; set this entry's device_number to 1 if the device moved"
+                    .to_string()
+            )
         );
     }
 
@@ -370,7 +576,9 @@ mod tests {
     fn a_mismatch_with_the_pin_listed_nowhere_says_so() {
         let expected = pin("QHY268M-gone");
         let refusal = select(&swapped_pair(), 0, Some(expected.as_str())).unwrap_err();
-        let msg = camera_address(Some(&expected)).refusal_message(&refusal);
+        let msg = camera_address(Some(&expected))
+            .refusal(&refusal)
+            .to_string();
         assert!(
             msg.ends_with("no camera on this server reports \"QHY268M-gone\""),
             "{msg}"
@@ -378,22 +586,28 @@ mod tests {
     }
 
     #[test]
-    fn an_unverifiable_pin_says_why() {
+    fn an_unverifiable_pin_is_an_identity_refusal_that_says_why() {
         let expected = pin("QHY600M-imaging");
         let refusal =
             select(&listed(&[("Anonymous", "")]), 0, Some(expected.as_str())).unwrap_err();
-        let msg = camera_address(Some(&expected)).refusal_message(&refusal);
         assert_eq!(
-            msg,
-            "camera at device_number 0 (\"Anonymous\") reports an empty UniqueID, so the \
-             pinned unique_id \"QHY600M-imaging\" cannot be verified; refusing to connect it"
+            camera_address(Some(&expected)).refusal(&refusal),
+            EstablishError::IdentityRefused(
+                "camera at device_number 0 (\"Anonymous\") reports an empty UniqueID, so the \
+                 pinned unique_id \"QHY600M-imaging\" cannot be verified; refusing to connect it"
+                    .to_string()
+            )
         );
     }
 
+    /// "Not listed" keeps its old class and wording: it is no identity
+    /// refusal, so an unpinned entry's outcome is unchanged.
     #[test]
-    fn a_missing_position_keeps_the_not_found_wording() {
-        let msg = camera_address(None).refusal_message(&Refusal::NotListed);
-        assert_eq!(msg, "camera at index 0 not found on Alpaca server");
+    fn a_missing_position_is_a_plain_failure_with_the_not_found_wording() {
+        assert_eq!(
+            camera_address(None).refusal(&Refusal::NotListed),
+            EstablishError::Failed("camera at index 0 not found on Alpaca server".to_string())
+        );
     }
 
     #[test]
@@ -407,7 +621,7 @@ mod tests {
         assert_eq!(mount.label(), "mount");
     }
 
-    // ----- establish_listed against a stub server --------------------
+    // ----- establish_listed and check_pin against a stub server ------
 
     fn ok_envelope() -> Json<serde_json::Value> {
         Json(serde_json::json!({"ErrorNumber": 0, "ErrorMessage": ""}))
@@ -460,47 +674,45 @@ mod tests {
         spawn_stub(app).await
     }
 
-    fn camera_of(device: TypedDevice) -> Option<Arc<dyn Camera>> {
-        match device {
-            TypedDevice::Camera(camera) => Some(camera),
-            _ => None,
-        }
-    }
-
-    fn stub_address<'a>(
-        url: &'a str,
+    fn camera_config(
+        id: &str,
+        url: &str,
         device_number: u32,
-        pin: Option<&'a UniqueIdPin>,
-    ) -> RosterAddress<'a> {
-        RosterAddress {
-            kind: "camera",
-            id: Some("qhy600m"),
-            alpaca_url: url,
+        pin: Option<&str>,
+    ) -> config::CameraConfig {
+        config::CameraConfig {
+            id: id.to_string(),
+            name: String::new(),
+            alpaca_url: url.to_string(),
+            device_type: String::new(),
             device_number,
-            unique_id: pin,
+            unique_id: pin.map(|p| UniqueIdPin::try_new(p.to_string()).unwrap()),
+            cooler_targets_c: Vec::new(),
+            gain: None,
+            offset: None,
+            readout_time_estimate: None,
             auth: None,
         }
     }
 
     /// The `rig2` failure itself: the pinned imaging camera's number
-    /// now lists the guide camera. The connect is refused before
-    /// `Connected = true` reaches either camera, and the error names
-    /// where the pinned camera is listed now.
+    /// now lists the guide camera. The connect is refused as an identity
+    /// refusal before `Connected = true` reaches either camera, and the
+    /// error names where the pinned camera is listed now.
     #[tokio::test]
     async fn a_swapped_camera_is_refused_without_being_switched_on() {
         let connects = Arc::new(AtomicU32::new(0));
         let stub = swapped_pair_server(Arc::clone(&connects)).await;
-        let url = stub.url();
-        let expected = pin("QHY600M-imaging");
+        let config = camera_config("qhy600m", &stub.url(), 0, Some("QHY600M-imaging"));
 
-        let err = establish_listed(&stub_address(&url, 0, Some(&expected)), None, camera_of)
-            .await
-            .unwrap_err();
+        let err = establish_listed(&config, None).await.unwrap_err();
 
-        assert!(err.contains("\"QHY5III678M-guide\""), "{err}");
+        assert!(err.is_identity_refusal(), "{err:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("\"QHY5III678M-guide\""), "{msg}");
         assert!(
-            err.contains("set this entry's device_number to 1"),
-            "the error must name where the pinned camera is listed: {err}"
+            msg.contains("set this entry's device_number to 1"),
+            "the error must name where the pinned camera is listed: {msg}"
         );
         assert_eq!(
             connects.load(Ordering::SeqCst),
@@ -513,12 +725,9 @@ mod tests {
     async fn a_pinned_camera_at_its_own_number_binds() {
         let connects = Arc::new(AtomicU32::new(0));
         let stub = swapped_pair_server(Arc::clone(&connects)).await;
-        let url = stub.url();
-        let expected = pin("QHY600M-imaging");
+        let config = camera_config("qhy600m", &stub.url(), 1, Some("QHY600M-imaging"));
 
-        let camera = establish_listed(&stub_address(&url, 1, Some(&expected)), None, camera_of)
-            .await
-            .unwrap();
+        let camera = establish_listed(&config, None).await.unwrap();
 
         assert_eq!(
             ListedIdentity::of(camera.as_ref()).unique_id,
@@ -534,35 +743,12 @@ mod tests {
     async fn an_unpinned_camera_binds_whatever_its_number_lists() {
         let connects = Arc::new(AtomicU32::new(0));
         let stub = swapped_pair_server(Arc::clone(&connects)).await;
-        let url = stub.url();
+        let config = camera_config("qhy600m", &stub.url(), 0, None);
 
-        let camera = establish_listed(&stub_address(&url, 0, None), None, camera_of)
-            .await
-            .unwrap();
+        let camera = establish_listed(&config, None).await.unwrap();
 
         assert_eq!(ListedIdentity::of(camera.as_ref()).name, "QHY5III678M");
         assert_eq!(connects.load(Ordering::SeqCst), 1);
-    }
-
-    fn camera_config(
-        id: &str,
-        url: &str,
-        device_number: u32,
-        pin: Option<&str>,
-    ) -> crate::config::CameraConfig {
-        crate::config::CameraConfig {
-            id: id.to_string(),
-            name: String::new(),
-            alpaca_url: url.to_string(),
-            device_type: String::new(),
-            device_number,
-            unique_id: pin.map(|p| UniqueIdPin::try_new(p.to_string()).unwrap()),
-            cooler_targets_c: Vec::new(),
-            gain: None,
-            offset: None,
-            readout_time_estimate: None,
-            auth: None,
-        }
     }
 
     /// The equipment status names the device each live entry is bound
@@ -572,7 +758,7 @@ mod tests {
     async fn the_status_names_the_device_each_entry_is_bound_to() {
         let stub = swapped_pair_server(Arc::new(AtomicU32::new(0))).await;
         let url = stub.url();
-        let equipment = crate::config::EquipmentConfig {
+        let equipment = config::EquipmentConfig {
             cameras: vec![
                 camera_config("guide", &url, 0, None),
                 camera_config("imaging", &url, 0, Some("QHY600M-imaging")),
@@ -598,10 +784,8 @@ mod tests {
     #[tokio::test]
     async fn a_dead_session_reports_no_bound_identity() {
         let stub = swapped_pair_server(Arc::new(AtomicU32::new(0))).await;
-        let url = stub.url();
-        let camera = establish_listed(&stub_address(&url, 1, None), None, camera_of)
-            .await
-            .unwrap();
+        let config = camera_config("qhy600m", &stub.url(), 1, None);
+        let camera = establish_listed(&config, None).await.unwrap();
         let session: crate::equipment::DeviceSession<dyn Camera> =
             crate::equipment::DeviceSession::connected(camera);
         assert_eq!(
@@ -636,14 +820,46 @@ mod tests {
             }),
         );
         let stub = spawn_stub(app).await;
-        let url = stub.url();
-        let expected = pin("QHY600M-imaging");
+        let config = camera_config("qhy600m", &stub.url(), 0, Some("QHY600M-imaging"));
 
-        let err = establish_listed(&stub_address(&url, 0, Some(&expected)), None, camera_of)
-            .await
-            .unwrap_err();
+        let err = establish_listed(&config, None).await.unwrap_err();
 
-        assert!(err.contains("refusing to connect it"), "{err}");
+        assert!(err.is_identity_refusal(), "{err:?}");
         assert_eq!(reads.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn check_pin_holds_while_the_pinned_device_is_at_its_number() {
+        let stub = swapped_pair_server(Arc::new(AtomicU32::new(0))).await;
+        let config = camera_config("qhy600m", &stub.url(), 1, Some("QHY600M-imaging"));
+        assert_eq!(check_pin(&config, None).await, PinCheck::Holds);
+    }
+
+    #[tokio::test]
+    async fn check_pin_refuses_once_another_device_is_at_its_number() {
+        let stub = swapped_pair_server(Arc::new(AtomicU32::new(0))).await;
+        let config = camera_config("qhy600m", &stub.url(), 0, Some("QHY600M-imaging"));
+        let PinCheck::Refused(msg) = check_pin(&config, None).await else {
+            panic!("a swapped device must refuse the pin");
+        };
+        assert!(msg.contains("set this entry's device_number to 1"), "{msg}");
+    }
+
+    /// An unpinned entry is never checked: pointed at a server that
+    /// cannot be reached, it still holds, because no request is made.
+    #[tokio::test]
+    async fn check_pin_makes_no_request_for_an_unpinned_entry() {
+        let config = camera_config("qhy600m", "http://127.0.0.1:1", 0, None);
+        assert_eq!(check_pin(&config, None).await, PinCheck::Holds);
+    }
+
+    /// A listing that cannot be read is no evidence of a swap.
+    #[tokio::test]
+    async fn check_pin_leaves_an_unreadable_listing_unchecked() {
+        let config = camera_config("qhy600m", "http://127.0.0.1:1", 0, Some("QHY600M-imaging"));
+        assert!(
+            matches!(check_pin(&config, None).await, PinCheck::Unchecked(_)),
+            "an unreachable server must leave the pin unchecked"
+        );
     }
 }
