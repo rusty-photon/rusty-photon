@@ -3129,6 +3129,25 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
         assert!(!query.contains('\0'), "no NUL reaches the argument");
     }
 
+    /// Windows keeps a not-present record, with its last location, for a
+    /// device that has left; read, each would be a fault at a port the
+    /// device is no longer on. The parser tests cannot run `PowerShell`,
+    /// so this pins the filter in the query text itself: one device
+    /// listing, filtered, whatever the order of its arguments.
+    #[test]
+    fn test_usb_query_lists_present_devices_only() {
+        let query = super::windows::USB_QUERY;
+        assert_eq!(query.matches("Get-PnpDevice ").count(), 1, "{query}");
+        let listing = query.split('|').next().unwrap();
+        assert!(listing.contains("Get-PnpDevice "), "{query}");
+        assert!(
+            listing
+                .split_whitespace()
+                .any(|arg| arg.eq_ignore_ascii_case("-PresentOnly")),
+            "{query}"
+        );
+    }
+
     /// A per-interface child is skipped whatever its problem field holds:
     /// one composite child must not fail the listing.
     #[test]
