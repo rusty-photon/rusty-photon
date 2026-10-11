@@ -6,12 +6,17 @@ use rmcp::service::RequestContext;
 use rmcp::{tool, tool_router, RoleServer};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use tracing::debug;
 
 use crate::equipment::trains::TrainDeviceKind;
 
 use super::super::handler::McpHandler;
 use super::super::inflight::Cancel;
 use super::super::{resolve_device, tool_error, tool_success};
+
+/// How often `set_filter` reads the wheel while it waits for a move to
+/// end: the one already under way, then its own.
+const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(extend("oneOf" = [{"required": ["filter_wheel_id"]}, {"required": ["train_id"]}]))]
@@ -65,6 +70,29 @@ impl McpHandler {
             return Ok(tool_error!("filter not found: {}", params.filter_name));
         };
 
+        // A wheel written while it travels does not take the new slot
+        // (rp.md § Filter Wheel Tool Details), so a move already under
+        // way — another client's, or one a cancelled call left going —
+        // is waited out before the write.
+        loop {
+            match fw.position().await {
+                Ok(None) => {}
+                Ok(Some(_)) => break,
+                // The write says what is wrong with the wheel, and a
+                // driver may answer a failed move with an error until a
+                // write goes out.
+                Err(e) => {
+                    debug!(%filter_wheel_id, error = %e, "the filter wheel could not be read before the write; writing all the same");
+                    break;
+                }
+            }
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Ok(tool_error!("{}", cancel.error())),
+                () = tokio::time::sleep(POLL_INTERVAL) => {}
+            }
+        }
+
         if let Err(e) = fw.set_position(position).await {
             return Ok(tool_error!("failed to set filter position: {}", e));
         }
@@ -75,7 +103,7 @@ impl McpHandler {
             tokio::select! {
                 biased;
                 () = cancel.cancelled() => return Ok(tool_error!("{}", cancel.error())),
-                () = tokio::time::sleep(Duration::from_millis(100)) => {}
+                () = tokio::time::sleep(POLL_INTERVAL) => {}
             }
             match fw.position().await {
                 Ok(Some(p)) if p == position => break,

@@ -20,6 +20,22 @@ Feature: MCP tool execution against equipment
     And the MCP client calls "get_filter" with filter wheel "main-fw"
     Then the current filter should be "Red"
 
+  # A wheel written while it travels does not take the new slot: the
+  # simulator, like qhy-camera, refuses it as "already moving". So
+  # set_filter waits for the move another client started to end, then
+  # writes. The simulator turns one slot a second, so the move from
+  # Luminance to slot 3 is still under way when set_filter arrives.
+  Scenario: Set filter waits out a move already under way and lands on its filter
+    Given a running Alpaca simulator
+    And rp is running with a filter wheel on the simulator
+    And an MCP client connected to rp
+    When the MCP client calls "set_filter" with filter wheel "main-fw" and filter "Luminance"
+    And another client starts the filter wheel on the simulator moving to slot 3
+    And the MCP client calls "set_filter" with filter wheel "main-fw" and filter "Green"
+    Then the tool call should succeed
+    When the MCP client calls "get_filter" with filter wheel "main-fw"
+    Then the current filter should be "Green"
+
   Scenario: Capture with invalid camera id returns an error
     Given a running Alpaca simulator
     And rp is running with a camera on the simulator

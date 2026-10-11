@@ -545,13 +545,21 @@ struct MockFilterWheel {
     /// The slot `position()` reports (`Lum` at 0, `Red` at 1 in the
     /// test registry's names).
     position: usize,
+    /// A move already under way: `position()` reads moving for this
+    /// many more reads, then names `position`.
+    moving_reads: std::sync::atomic::AtomicU32,
+    /// Every write of a slot, each with the reads its move under way
+    /// still had to run when it came.
+    writes: std::sync::Mutex<Vec<(usize, u32)>>,
 }
 
 impl_mock_device!(MockFilterWheel);
 
 #[async_trait::async_trait]
 impl ascom_alpaca::api::FilterWheel for MockFilterWheel {
-    async fn set_position(&self, _position: usize) -> ascom_alpaca::ASCOMResult<()> {
+    async fn set_position(&self, position: usize) -> ascom_alpaca::ASCOMResult<()> {
+        let under_way = self.moving_reads.load(std::sync::atomic::Ordering::SeqCst);
+        self.writes.lock().unwrap().push((position, under_way));
         if self.fail_set_position {
             return Err(ASCOMError::invalid_operation("wheel stuck"));
         }
@@ -563,6 +571,17 @@ impl ascom_alpaca::api::FilterWheel for MockFilterWheel {
             return Err(ASCOMError::invalid_operation("encoder error"));
         }
         if self.report_moving {
+            return Ok(None);
+        }
+        let travelling = self
+            .moving_reads
+            .try_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |left| left.checked_sub(1),
+            )
+            .is_ok();
+        if travelling {
             return Ok(None);
         }
         Ok(Some(self.position))
@@ -1735,6 +1754,73 @@ async fn test_set_filter_set_position_fails() {
         )
         .await;
     assert_tool_error(result, "failed to set filter position");
+}
+
+fn set_lum() -> SetFilterParams {
+    SetFilterParams {
+        filter_wheel_id: Some("fw".into()),
+        train_id: None,
+        filter_name: "Lum".into(),
+    }
+}
+
+/// rp.md § Filter Wheel Tool Details: a wheel written while it travels
+/// does not take the new slot, so a move already under way is waited
+/// out before the write.
+#[tokio::test]
+async fn set_filter_waits_out_a_move_under_way_before_it_writes() {
+    let fw = Arc::new(MockFilterWheel {
+        moving_reads: 3.into(),
+        ..Default::default()
+    });
+    let handler = test_handler(filter_wheel_registry(
+        Arc::clone(&fw) as Arc<dyn ascom_alpaca::api::FilterWheel>
+    ));
+
+    let result = handler.set_filter_inner(set_lum(), &Cancel::never()).await;
+
+    assert!(!result.unwrap().is_error.unwrap_or(false));
+    assert_eq!(
+        *fw.writes.lock().unwrap(),
+        vec![(0, 0)],
+        "one write, once the move under way had ended"
+    );
+}
+
+#[tokio::test]
+async fn set_filter_cancelled_while_a_move_is_under_way_writes_nothing() {
+    let fw = Arc::new(MockFilterWheel {
+        report_moving: true,
+        ..Default::default()
+    });
+    let handler = test_handler(filter_wheel_registry(
+        Arc::clone(&fw) as Arc<dyn ascom_alpaca::api::FilterWheel>
+    ));
+    let cancel = Cancel::never();
+    cancel.cancel(super::inflight::CancelReason::ClientDisconnected);
+
+    let result = handler.set_filter_inner(set_lum(), &cancel).await;
+
+    assert_tool_error(result, "cancelled");
+    assert!(fw.writes.lock().unwrap().is_empty());
+}
+
+/// A wheel that cannot be read is written all the same: the write says
+/// what is wrong with it.
+#[tokio::test]
+async fn set_filter_writes_a_wheel_it_could_not_read_first() {
+    let fw = Arc::new(MockFilterWheel {
+        fail_position_poll: true,
+        ..Default::default()
+    });
+    let handler = test_handler(filter_wheel_registry(
+        Arc::clone(&fw) as Arc<dyn ascom_alpaca::api::FilterWheel>
+    ));
+
+    let result = handler.set_filter_inner(set_lum(), &Cancel::never()).await;
+
+    assert_tool_error(result, "error waiting for filter wheel");
+    assert_eq!(*fw.writes.lock().unwrap(), vec![(0, 0)]);
 }
 
 // -----------------------------------------------------------------------
