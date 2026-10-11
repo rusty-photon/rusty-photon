@@ -31,13 +31,10 @@ async fn camera_returns_to_the_bus(world: &mut CameraWorld, _device: u32) {
 }
 
 #[when(regex = r"^I try to connect camera device (\d+)$")]
-async fn try_connect_camera(world: &mut CameraWorld, _device: u32) {
-    world.last_error_code = world
-        .camera()
-        .set_connected(true)
-        .await
-        .err()
-        .map(|e| e.code.raw());
+async fn try_connect_camera(world: &mut CameraWorld, device: u32) {
+    let error = world.device(device).set_connected(true).await.err();
+    world.last_error_code = error.as_ref().map(|e| e.code.raw());
+    world.last_error_message = error.map(|e| e.message.to_string());
 }
 
 /// A departed camera is found out by its exposure's read timing out at its

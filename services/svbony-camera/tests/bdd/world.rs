@@ -37,7 +37,10 @@ const IMAGE_READY_BUDGET: Duration = Duration::from_secs(20);
 #[derive(Debug, Default, World)]
 pub struct CameraWorld {
     pub handle: Option<ServiceHandle>,
+    /// Camera device 0, the one most scenarios address.
     pub camera: Option<Arc<dyn Camera>>,
+    /// Every registered Camera device, indexed by its device number.
+    pub cameras: Vec<Arc<dyn Camera>>,
     pub temp_dir: Option<TempDir>,
 
     // Config knobs set by Given steps before the service starts.
@@ -45,11 +48,23 @@ pub struct CameraWorld {
     /// The file whose existence takes the simulated camera off the bus (C6);
     /// `None` starts a camera that never leaves.
     pub departure_file: Option<PathBuf>,
+    /// The configuration the next start writes, minus its `server` block;
+    /// `None` writes the default (no `usb_devices` list).
+    pub config_json: Option<serde_json::Value>,
+    /// The staged USB inventory handed over with `--usb-inventory` (U7);
+    /// `None` leaves the simulation build its default inventory.
+    pub usb_inventory: Option<PathBuf>,
 
     // Result stashes ("When does, Then asserts").
     pub last_error_code: Option<u16>,
+    pub last_error_message: Option<String>,
     pub last_response: Option<serde_json::Value>,
     pub last_actions: Option<Vec<String>>,
+    /// How the last start that was expected to fail went: `Err` with the
+    /// harness's account of the refusal, or `Ok` when the service came up.
+    pub start_refusal: Option<Result<(), String>>,
+    /// The last `doctor` run's output (`doctor --json` or `doctor --devices`).
+    pub doctor_output: Option<std::process::Output>,
 
     /// State for the shared TLS + auth smoke steps (`auth.feature`).
     pub tls_auth: TlsAuthState,
@@ -89,13 +104,28 @@ impl TlsAuthSmokeWorld for CameraWorld {
 }
 
 impl CameraWorld {
-    fn write_config(&mut self) -> String {
-        let config = serde_json::json!({
-            "devices": {},
-            // Port 0 → OS-assigned; the real port is read from the `bound_addr=`
-            // line on stdout by ServiceHandle.
-            "server": { "port": 0 },
-        });
+    /// Write the scenario's configuration and return its path.
+    ///
+    /// Port 0 (OS-assigned) by default; the real port is read from the
+    /// `bound_addr=` line on stdout by `ServiceHandle`. A configuration with a
+    /// `usb_devices` list takes a reserved port instead, because a list is the
+    /// one configuration whose service reloads itself (U6): a reload rebinds
+    /// the configured port, and port 0 would move the service to a port the
+    /// harness never learns.
+    pub fn write_config(&mut self) -> String {
+        let mut config = self
+            .config_json
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({ "devices": {} }));
+        let port = if config.get("usb_devices").is_some() {
+            bdd_infra::reserved_test_port()
+        } else {
+            0
+        };
+        config
+            .as_object_mut()
+            .expect("the scenario's configuration is a JSON object")
+            .insert("server".to_string(), serde_json::json!({ "port": port }));
         let path = self.scratch_dir().join("svbony-camera.json");
         std::fs::write(
             &path,
@@ -117,69 +147,96 @@ impl CameraWorld {
             .to_path_buf()
     }
 
-    /// Spawn the service binary and acquire the typed Camera client.
-    pub async fn start(&mut self) {
+    /// The service's command line for this scenario.
+    fn start_args(&mut self) -> Vec<String> {
         let config_path = self.write_config();
-        let handle = if self.empty_backend {
-            ServiceHandle::start_with_args(
-                env!("CARGO_PKG_NAME"),
-                &["--config", &config_path, "--simulation-empty"],
-            )
-            .await
-        } else if let Some(departure) = &self.departure_file {
-            let departure = departure.to_str().expect("utf8 departure path");
-            ServiceHandle::start_with_args(
-                env!("CARGO_PKG_NAME"),
-                &[
-                    "--config",
-                    &config_path,
-                    "--simulation-departure-file",
-                    departure,
-                ],
-            )
-            .await
-        } else {
-            ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await
-        };
+        let mut args = vec!["--config".to_string(), config_path];
+        if self.empty_backend {
+            args.push("--simulation-empty".to_string());
+        }
+        if let Some(departure) = &self.departure_file {
+            args.push("--simulation-departure-file".to_string());
+            args.push(departure.to_str().expect("utf8 departure path").to_string());
+        }
+        if let Some(inventory) = &self.usb_inventory {
+            args.push("--usb-inventory".to_string());
+            args.push(inventory.to_str().expect("utf8 inventory path").to_string());
+        }
+        args
+    }
+
+    /// Spawn the service binary and acquire the typed Camera clients.
+    pub async fn start(&mut self) {
+        let args = self.start_args();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let handle = ServiceHandle::start_with_args(env!("CARGO_PKG_NAME"), &args).await;
         self.handle = Some(handle);
         self.acquire().await;
     }
 
+    /// Start the service when the scenario expects it to refuse, recording
+    /// how it went in [`Self::start_refusal`].
+    pub async fn try_start(&mut self) {
+        let args = self.start_args();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        match ServiceHandle::try_start_with_args(env!("CARGO_PKG_NAME"), &args).await {
+            Ok(handle) => {
+                self.handle = Some(handle);
+                self.start_refusal = Some(Ok(()));
+            }
+            Err(why) => self.start_refusal = Some(Err(why)),
+        }
+    }
+
+    /// Whether this scenario's service should register at least one Camera:
+    /// a list registers exactly its entries, whatever the SDK sees (U4), and
+    /// no list registers what the SDK enumerates (C0).
+    fn expects_a_camera(&self) -> bool {
+        match self.config_json.as_ref().and_then(|c| c.get("usb_devices")) {
+            Some(list) => list.as_array().is_some_and(|l| !l.is_empty()),
+            None => !self.empty_backend,
+        }
+    }
+
     async fn acquire(&mut self) {
-        let port = self.handle.as_ref().expect("service handle").port;
-        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let port = self.port();
+        let expects_a_camera = self.expects_a_camera();
         for _ in 0..80 {
-            let client = AlpacaClient::new_from_addr(addr);
-            if let Ok(devices) = client.get_devices().await {
-                let mut camera = None;
-                for device in devices {
-                    #[allow(clippy::single_match)]
-                    match device {
-                        TypedDevice::Camera(c) => camera = Some(c),
-                        #[allow(unreachable_patterns)]
-                        _ => {}
-                    }
-                }
-                if self.empty_backend {
-                    // Zero cameras is the expected, healthy state here (C0).
-                    self.camera = camera;
-                    return;
-                }
-                if camera.is_some() {
-                    self.camera = camera;
+            if let Some(cameras) = registered_cameras(port).await {
+                // Zero cameras is the expected, healthy state for an empty
+                // backend or an empty list (C0).
+                if !cameras.is_empty() || !expects_a_camera {
+                    self.camera = cameras.first().cloned();
+                    self.cameras = cameras;
                     return;
                 }
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         assert!(
-            self.empty_backend,
+            !expects_a_camera,
             "svbony-camera did not register a Camera device within 20s"
         );
     }
 
     pub fn camera(&self) -> Arc<dyn Camera> {
         Arc::clone(self.camera.as_ref().expect("camera not acquired"))
+    }
+
+    /// The Camera registered at `device_number`.
+    pub fn device(&self, device_number: u32) -> Arc<dyn Camera> {
+        let index = usize::try_from(device_number).expect("device number fits usize");
+        Arc::clone(self.cameras.get(index).unwrap_or_else(|| {
+            panic!(
+                "no camera device {device_number}; {} registered",
+                self.cameras.len()
+            )
+        }))
+    }
+
+    /// The port the running service listens on.
+    pub const fn port(&self) -> u16 {
+        self.handle.as_ref().expect("service handle").port
     }
 
     pub fn base_url(&self) -> String {
@@ -352,6 +409,23 @@ impl CameraWorld {
             .and_then(|r| r.get("config").cloned())
             .expect("config.get response missing `config`")
     }
+}
+
+/// The Camera devices a server at `port` registers, in device-number order,
+/// or `None` when its management API does not answer.
+pub async fn registered_cameras(port: u16) -> Option<Vec<Arc<dyn Camera>>> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let devices = AlpacaClient::new_from_addr(addr).get_devices().await.ok()?;
+    let mut cameras = Vec::new();
+    for device in devices {
+        #[allow(clippy::single_match)]
+        match device {
+            TypedDevice::Camera(camera) => cameras.push(camera),
+            #[allow(unreachable_patterns)]
+            _ => {}
+        }
+    }
+    Some(cameras)
 }
 
 /// Map an ASCOM error-code *name* (as written in the feature files) to its raw
