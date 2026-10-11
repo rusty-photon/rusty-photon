@@ -1439,6 +1439,25 @@ mod tests {
         assert_eq!(device.position().await.unwrap(), Some(5));
     }
 
+    /// A write after the deadline whose read finds the move arrived, late,
+    /// settles it as arrived rather than failed, and goes out.
+    #[tokio::test]
+    async fn a_write_after_the_deadline_that_finds_the_move_arrived_does_not_fail_it() {
+        let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
+        handle.defer_move.store(true, Ordering::SeqCst);
+        let device = connected_with_test_deadline(&handle).await;
+        device.set_position(3).await.unwrap();
+        tokio::time::sleep(TEST_DEADLINE).await;
+        handle.complete_move();
+
+        device.set_position(5).await.unwrap();
+
+        assert_eq!(*device.state.settled_position.lock(), Some(3));
+        assert_eq!(handle.commands(), vec![0, 3, 5]);
+        handle.complete_move();
+        assert_eq!(device.position().await.unwrap(), Some(5));
+    }
+
     /// A move whose status names its slot at the first read past the deadline
     /// has arrived; the deadline is for a wheel that has not.
     #[tokio::test]
