@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use rusty_photon_config::actions::FieldError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +69,65 @@ impl TryFrom<f64> for TemperatureEventDeltaC {
 
     fn try_from(value: f64) -> Result<Self, Self::Error> {
         Self::try_new(value)
+    }
+}
+
+/// An equipment entry's identity pin (rp.md § Device Identity Pin).
+///
+/// The Alpaca `UniqueID` the device at the entry's `device_number` must
+/// report in its server's `configureddevices` list, or the connect is
+/// refused.
+///
+/// Validated at load (parse-don't-validate): an empty value, or one with
+/// leading or trailing whitespace, is rejected during deserialization.
+/// The pin is compared verbatim with what the server lists, so a padded
+/// value could never match, and rejecting it beats trimming a value the
+/// operator did not write. Serializes transparently as the inner string;
+/// each field carrying one declares its JSON Schema as a plain optional
+/// string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct UniqueIdPin(String);
+
+impl UniqueIdPin {
+    /// The single validating constructor.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message naming the field if `value` is empty or has
+    /// leading or trailing whitespace.
+    pub fn try_new(value: String) -> Result<Self, String> {
+        if value.is_empty() {
+            return Err(
+                "unique_id must not be empty; omit the key to leave the entry unpinned".into(),
+            );
+        }
+        if value.trim() != value {
+            return Err(format!(
+                "unique_id must not have leading or trailing whitespace, got {value:?}"
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// The pinned `UniqueID`.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for UniqueIdPin {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl From<UniqueIdPin> for String {
+    fn from(pin: UniqueIdPin) -> Self {
+        pin.0
     }
 }
 
@@ -155,6 +215,114 @@ impl Default for EquipmentConfig {
             domes: Vec::new(),
         }
     }
+}
+
+impl EquipmentConfig {
+    /// Entries of one kind that pin the same `UniqueID` on the same server
+    /// at two or more different `device_number`s, as a field-level error
+    /// on every entry of that group. A server lists a device at one
+    /// number, so the entries at all but one of those numbers could never
+    /// bind; they would be refused every night with an error pointing at a
+    /// twin's number (rp.md § Device Identity Pin).
+    ///
+    /// Entries that share the server, the `device_number` *and* the pin
+    /// all address the one device and are consistent, so they are not
+    /// flagged: rp accepts two entries for one device unpinned, and a pin
+    /// they agree on changes nothing about that. The check is per server:
+    /// a `UniqueID` can repeat across servers (two hosts, each with one
+    /// serial-less camera of the same model, list the same index-based
+    /// `UniqueID`), and there every entry binds.
+    #[must_use]
+    pub fn duplicate_pin_errors(&self) -> Vec<FieldError> {
+        /// `(id, alpaca_url, device_number, pin)` of each entry of one kind.
+        type Pinned<'a> = Vec<(&'a str, &'a str, u32, Option<&'a UniqueIdPin>)>;
+        /// Pinned entries by `(server, pin)`, each as `(index, id, device_number)`.
+        type Groups<'a> = std::collections::BTreeMap<(String, &'a str), Vec<(usize, &'a str, u32)>>;
+        macro_rules! pinned {
+            ($entries:expr) => {
+                $entries
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.id.as_str(),
+                            e.alpaca_url.as_str(),
+                            e.device_number,
+                            e.unique_id.as_ref(),
+                        )
+                    })
+                    .collect::<Pinned<'_>>()
+            };
+        }
+        let kinds: [(&str, Pinned<'_>); 9] = [
+            ("cameras", pinned!(self.cameras)),
+            ("filter_wheels", pinned!(self.filter_wheels)),
+            ("cover_calibrators", pinned!(self.cover_calibrators)),
+            ("focusers", pinned!(self.focusers)),
+            ("safety_monitors", pinned!(self.safety_monitors)),
+            ("switches", pinned!(self.switches)),
+            ("rotators", pinned!(self.rotators)),
+            ("observing_conditions", pinned!(self.observing_conditions)),
+            ("domes", pinned!(self.domes)),
+        ];
+        let mut errors = Vec::new();
+        for (key, entries) in kinds {
+            // Entries grouped by (server, pin), in roster order.
+            let mut groups = Groups::new();
+            for (index, (id, url, number, pin)) in entries.into_iter().enumerate() {
+                if let Some(pin) = pin {
+                    groups
+                        .entry((server_key(url), pin.as_str()))
+                        .or_default()
+                        .push((index, id, number));
+                }
+            }
+            for ((_, pin), members) in groups {
+                let numbers: std::collections::BTreeSet<u32> =
+                    members.iter().map(|&(_, _, number)| number).collect();
+                if numbers.len() < 2 {
+                    // One number: every entry addresses the same device.
+                    continue;
+                }
+                let numbers: Vec<String> = numbers.iter().map(u32::to_string).collect();
+                // Every member carries the error, so whichever entry an
+                // editor has open shows it next to its own field.
+                for &(index, id, number) in &members {
+                    let others: Vec<String> = members
+                        .iter()
+                        .filter(|&&(other, _, _)| other != index)
+                        .map(|(other, other_id, other_number)| {
+                            format!(
+                                "equipment.{key}.{other} ('{other_id}') at device_number \
+                                 {other_number}"
+                            )
+                        })
+                        .collect();
+                    errors.push(FieldError {
+                        path: format!("equipment.{key}.{index}.unique_id"),
+                        msg: format!(
+                            "UniqueID {pin:?} is pinned on the same server at device_number \
+                             {} (this entry '{id}' at {number}; also {}); a server lists a \
+                             device at one number, so the entries at all but one of those \
+                             numbers could never bind",
+                            numbers.join(" and "),
+                            others.join(", ")
+                        ),
+                    });
+                }
+            }
+        }
+        errors.sort_by(|a, b| a.path.cmp(&b.path));
+        errors
+    }
+}
+
+/// The server an `alpaca_url` names, spelled one way: parsed and
+/// re-serialized, so a trailing slash, the host's case or an explicit
+/// default port do not hide a duplicate. Two names for one host
+/// (`localhost` and `127.0.0.1`) still read as two servers. A URL that
+/// does not parse is compared as written.
+fn server_key(url: &str) -> String {
+    reqwest::Url::parse(url).map_or_else(|_| url.to_string(), |parsed| parsed.to_string())
 }
 
 const fn default_reconnect_interval() -> Duration {
@@ -346,6 +514,229 @@ mod tests {
         }
         assert!(super::TemperatureEventDeltaC::try_new(f64::NAN).is_err());
         assert!(super::TemperatureEventDeltaC::try_new(f64::INFINITY).is_err());
+    }
+
+    fn config_with_equipment(equipment: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{
+                    "session": {{"data_directory": "/tmp/rp-test"}},
+                    "equipment": {equipment},
+                    "server": {{ "port": 0 }}
+                }}"#
+            ),
+        )
+        .unwrap();
+        (dir, path)
+    }
+
+    /// The pin is accepted on an array kind and on the singular mount,
+    /// and is held verbatim.
+    #[test]
+    fn unique_id_pin_loads_on_array_entries_and_the_mount() {
+        let (_dir, path) = config_with_equipment(
+            r#"{
+                "cameras": [{"id": "qhy600m", "alpaca_url": "http://127.0.0.1:11121",
+                             "device_number": 1, "unique_id": "QHY600M-a1b2 c3"}],
+                "mount": {"alpaca_url": "http://127.0.0.1:11117",
+                          "unique_id": "GTi-mount-1"}
+            }"#,
+        );
+        let config = load_config(&path).unwrap();
+        let camera_pin = config.equipment.cameras[0].unique_id.as_ref().unwrap();
+        assert_eq!(camera_pin.as_str(), "QHY600M-a1b2 c3");
+        let mount_pin = config.equipment.mount.unwrap().unique_id.unwrap();
+        assert_eq!(mount_pin.as_str(), "GTi-mount-1");
+    }
+
+    #[test]
+    fn an_absent_unique_id_leaves_the_entry_unpinned() {
+        let (_dir, path) = config_with_equipment(
+            r#"{"switches": [{"id": "ppba", "alpaca_url": "http://127.0.0.1:11112"}]}"#,
+        );
+        let config = load_config(&path).unwrap();
+        assert!(config.equipment.switches[0].unique_id.is_none());
+    }
+
+    /// An empty or padded pin could never match a listed `UniqueID`, so
+    /// it fails the load instead of refusing the device every night.
+    #[test]
+    fn unique_id_pin_rejects_empty_and_padded_values() {
+        for (bad, needle) in [
+            (r#""""#, "unique_id must not be empty"),
+            (r#"" QHY600M-a1b2""#, "leading or trailing whitespace"),
+            (r#""QHY600M-a1b2\n""#, "leading or trailing whitespace"),
+        ] {
+            let (_dir, path) = config_with_equipment(&format!(
+                r#"{{"focusers": [{{"id": "f", "alpaca_url": "http://127.0.0.1:11113",
+                                    "unique_id": {bad}}}]}}"#
+            ));
+            let err = load_config(&path).unwrap_err().to_string();
+            assert!(err.contains(needle), "pin {bad}: {err}");
+        }
+    }
+
+    /// Entries of one kind pinning one `UniqueID` at different numbers on
+    /// one server all fail validation, each naming the numbers and the
+    /// others, so an editor sees the error on whichever entry it has open;
+    /// spelling the URL differently (a trailing slash) does not hide the
+    /// duplicate. The same pin on two kinds (a camera and the filter
+    /// wheel sharing its handle) is legal, and so is the same pin on two
+    /// servers (index-based serial-less `UniqueID`s repeat across hosts).
+    #[test]
+    fn duplicate_pins_within_a_kind_are_rejected_on_every_entry() {
+        let (_dir, path) = config_with_equipment(
+            r#"{
+                "cameras": [
+                    {"id": "imaging", "alpaca_url": "http://127.0.0.1:11121",
+                     "device_number": 0, "unique_id": "QHY600M-a1b2"},
+                    {"id": "guide", "alpaca_url": "http://127.0.0.1:11121",
+                     "device_number": 1},
+                    {"id": "imaging-copy", "alpaca_url": "http://127.0.0.1:11121/",
+                     "device_number": 2, "unique_id": "QHY600M-a1b2"},
+                    {"id": "other-host", "alpaca_url": "http://pier2.example:11121",
+                     "device_number": 0, "unique_id": "QHY600M-a1b2"}
+                ],
+                "filter_wheels": [{"id": "cfw", "alpaca_url": "http://127.0.0.1:11121",
+                                   "unique_id": "QHY600M-a1b2"}]
+            }"#,
+        );
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let config: crate::config::Config = serde_json::from_str(&contents).unwrap();
+
+        let errors = config.equipment.duplicate_pin_errors();
+
+        let paths: Vec<&str> = errors.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "equipment.cameras.0.unique_id",
+                "equipment.cameras.2.unique_id"
+            ]
+        );
+        assert!(
+            errors[0]
+                .msg
+                .contains("device_number 0 and 2 (this entry 'imaging' at 0; also equipment.cameras.2 ('imaging-copy') at device_number 2)"),
+            "{}",
+            errors[0].msg
+        );
+        assert!(
+            errors[1]
+                .msg
+                .contains("(this entry 'imaging-copy' at 2; also equipment.cameras.0 ('imaging') at device_number 0)"),
+            "{}",
+            errors[1].msg
+        );
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(err.contains("equipment.cameras.0.unique_id"), "{err}");
+    }
+
+    /// Entries that share the server, the `device_number` and the pin all
+    /// address one device, so they load: rp accepts two entries for one
+    /// device unpinned, and a pin they agree on is consistent with that.
+    #[test]
+    fn entries_for_one_device_load_pinned_alike_or_unpinned() {
+        let (_dir, path) = config_with_equipment(
+            r#"{
+                "cameras": [
+                    {"id": "a", "alpaca_url": "http://127.0.0.1:11121", "device_number": 0},
+                    {"id": "b", "alpaca_url": "http://127.0.0.1:11121", "device_number": 0},
+                    {"id": "c", "alpaca_url": "http://127.0.0.1:11121", "device_number": 1,
+                     "unique_id": "QHY600M-a1b2"},
+                    {"id": "d", "alpaca_url": "http://127.0.0.1:11121/", "device_number": 1,
+                     "unique_id": "QHY600M-a1b2"}
+                ]
+            }"#,
+        );
+        let config = load_config(&path).unwrap();
+        assert_eq!(config.equipment.duplicate_pin_errors(), Vec::new());
+    }
+
+    /// A group mixing entries at one number with one at another is a
+    /// conflict for all of them: each is flagged, and the message names
+    /// both numbers without claiming the same-number entries conflict
+    /// with each other.
+    #[test]
+    fn a_pin_at_two_numbers_flags_every_entry_including_those_sharing_one() {
+        let (_dir, path) = config_with_equipment(
+            r#"{
+                "focusers": [
+                    {"id": "f0", "alpaca_url": "http://127.0.0.1:11113", "device_number": 0,
+                     "unique_id": "EAF-1234"},
+                    {"id": "f0-alias", "alpaca_url": "http://127.0.0.1:11113",
+                     "device_number": 0, "unique_id": "EAF-1234"},
+                    {"id": "f1", "alpaca_url": "http://127.0.0.1:11113", "device_number": 1,
+                     "unique_id": "EAF-1234"}
+                ]
+            }"#,
+        );
+        let contents = std::fs::read_to_string(&path).unwrap();
+        let config: crate::config::Config = serde_json::from_str(&contents).unwrap();
+
+        let errors = config.equipment.duplicate_pin_errors();
+
+        let paths: Vec<&str> = errors.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "equipment.focusers.0.unique_id",
+                "equipment.focusers.1.unique_id",
+                "equipment.focusers.2.unique_id",
+            ]
+        );
+        for error in &errors {
+            assert!(
+                error.msg.contains("at device_number 0 and 1"),
+                "the message must name both numbers: {}",
+                error.msg
+            );
+            assert!(
+                error
+                    .msg
+                    .contains("the entries at all but one of those numbers"),
+                "{}",
+                error.msg
+            );
+        }
+        assert!(
+            errors[1].msg.contains(
+                "(this entry 'f0-alias' at 0; also equipment.focusers.0 ('f0') at device_number 0, \
+                 equipment.focusers.2 ('f1') at device_number 1)"
+            ),
+            "{}",
+            errors[1].msg
+        );
+    }
+
+    /// A pin serializes back as the plain string it was loaded from, so
+    /// `PUT /api/config` persists what the operator wrote.
+    #[test]
+    fn unique_id_pin_round_trips_as_a_plain_string() {
+        let pin = super::UniqueIdPin::try_new("ZWO:ASI1600MM:noserial-0".to_string()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&pin).unwrap(),
+            serde_json::json!("ZWO:ASI1600MM:noserial-0")
+        );
+    }
+
+    /// The schema advertises the pin as an optional plain string, the
+    /// shape the web UI's schema walker renders as a text input
+    /// (docs/services/ui-htmx.md § Schema-driven rendering).
+    #[test]
+    fn unique_id_schema_is_an_optional_string() {
+        let schema = schemars::schema_for!(crate::config::DomeConfig);
+        let value = serde_json::to_value(&schema).unwrap();
+        let field = value
+            .pointer("/properties/unique_id")
+            .expect("schema must carry the unique_id property");
+        assert_eq!(
+            field.pointer("/type").unwrap(),
+            &serde_json::json!(["string", "null"])
+        );
     }
 
     #[test]

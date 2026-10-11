@@ -32,6 +32,12 @@
 //!   `MOCK_PHD2_ROTATOR` - "connected" populates `get_current_equipment`'s
 //!     rotator slot ({"name": "Mock Rotator", "connected": true});
 //!     unset/anything else reports null (no rotator in the profile)
+//!   `MOCK_PHD2_IMAGE_DIR` - Absolute directory `save_image` writes its FITS
+//!     file to. Each call writes a new file and replies
+//!     {"filename": "<full path>"}, as PHD2 does; the file is left for the
+//!     client to remove. There is no default: unset, not UTF-8 or not
+//!     absolute, `save_image` writes nothing and answers PHD2's "error
+//!     saving image"
 //!
 //! Command line argument takes precedence over environment variable for port.
 //! Default port is 4400 (same as PHD2).
@@ -68,9 +74,12 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use rp_fits::writer::write_u16_image;
 
 /// Application state shared across connections, mirroring the single
 /// state machine inside a real PHD2 instance.
@@ -272,6 +281,104 @@ fn emit_settle_sequence(writer: Arc<Mutex<TcpStream>>) {
     });
 }
 
+/// Geometry of the frame `save_image` writes.
+const SAVED_FRAME_WIDTH: usize = 8;
+const SAVED_FRAME_HEIGHT: usize = 6;
+const SAVED_FRAME_PIXELS: usize = SAVED_FRAME_WIDTH * SAVED_FRAME_HEIGHT;
+/// Step of the saved frame's row-major ramp: pixel `i` is `i × 1365`, so
+/// the 48 values span 0..=64155 and cross the signed midpoint that the
+/// `BZERO = 32768` encoding of unsigned 16-bit pixels pivots on.
+const SAVED_FRAME_STEP: usize = 1365;
+
+/// Answer `save_image` in PHD2's wire format: write the current frame to
+/// a new FITS file and return its full path. The frame is a fixed 8×6
+/// unsigned 16-bit ramp (primary HDU, `BITPIX = 16`, `BZERO = 32768`).
+/// The mock always has this frame to save: it does not model which
+/// exposure a frame came from, nor PHD2's `no image available` (code 2)
+/// before the first one. For the same reason the header carries none of
+/// the time cards real PHD2's `usImage::Save` writes (`EXPOSURE`, `DATE`,
+/// `DATE-OBS`): their values depend on when an exposure ran. A completion
+/// watermark that compares `DATE-OBS` (option 3 of D9 in
+/// `docs/plans/device-claims-and-phd2-camera.md`) has to add them here,
+/// together with an exposure model.
+///
+/// The file goes to `MOCK_PHD2_IMAGE_DIR` and is left there: as with
+/// PHD2, removing it is the client's job. There is no default
+/// directory, so no run can scatter files into a shared one. The call
+/// fails, leaving nothing behind, when the variable is unset, not UTF-8
+/// (the reply carries the path as a JSON string), or not absolute. The
+/// absolute-path check refuses both an empty and a relative value; without
+/// it, an empty value would become the filesystem root once the separator
+/// is appended, and a relative one would land in the mock's working
+/// directory.
+/// The reply is the variable's own text plus an ASCII name, so it is
+/// never converted back from a path.
+///
+/// PHD2's file name depends on its platform. It comes from
+/// `wxFileName::CreateTempFileName(<dir>/save_image_)`, whose
+/// implementation (`wxCreateTempImpl` in wxWidgets'
+/// `src/common/filename.cpp`) branches on the OS. On Unix it appends six
+/// `mkstemp` characters: `<dir>/save_image_XXXXXX`, no extension. On
+/// Windows it calls `GetTempFileName`, which Microsoft documents as
+/// keeping only the first three characters of the prefix and producing
+/// `<path>\<pre><uuuu>.TMP`: `<dir>\sav<hex>.TMP`. The mock copies the
+/// Unix form only (`save_image_<pid>_<n>`, no extension). A client must
+/// take the name from the reply and key on neither the `save_image_`
+/// prefix nor a missing extension.
+///
+/// The file's life is an approximation of PHD2's. PHD2 reserves the name
+/// (`mkstemp`, or `GetTempFileName` on Windows), then saves through
+/// cfitsio with the clobber prefix `!`, which deletes that reserved file
+/// and creates a new one under the same name. The mock creates the file
+/// once and writes into it, so it never shows the moment the name is
+/// missing. If the write fails it removes the file, as PHD2 removes the
+/// file of a failed save. Names are the process id plus a per-process
+/// counter. Creation refuses a name that already exists, so one left by
+/// an earlier run with the same process id is skipped for the next, never
+/// overwritten, as `mkstemp` skips a taken name.
+fn save_image() -> Result<String, String> {
+    static NEXT_IMAGE: AtomicU64 = AtomicU64::new(0);
+
+    let mut prefix = std::env::var("MOCK_PHD2_IMAGE_DIR")
+        .map_err(|e| format!("MOCK_PHD2_IMAGE_DIR: {e}, so there is nowhere to save"))?;
+    if !Path::new(&prefix).is_absolute() {
+        return Err(format!(
+            "MOCK_PHD2_IMAGE_DIR must be an absolute directory, not \"{prefix}\""
+        ));
+    }
+    if !prefix.ends_with(std::path::is_separator) {
+        prefix.push(std::path::MAIN_SEPARATOR);
+    }
+
+    let pixels: Vec<u16> = (0..=u16::MAX)
+        .step_by(SAVED_FRAME_STEP)
+        .take(SAVED_FRAME_PIXELS)
+        .collect();
+    let (filename, mut file) = loop {
+        let serial = NEXT_IMAGE.fetch_add(1, Ordering::Relaxed);
+        let filename = format!("{prefix}save_image_{}_{serial}", std::process::id());
+        match std::fs::File::create_new(&filename) {
+            Ok(file) => break (filename, file),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(format!("cannot create {filename}: {e}")),
+        }
+    };
+    if let Err(write_err) = write_u16_image(
+        &mut file,
+        &pixels,
+        SAVED_FRAME_WIDTH,
+        SAVED_FRAME_HEIGHT,
+        &[],
+    ) {
+        drop(file);
+        if let Err(e) = std::fs::remove_file(&filename) {
+            eprintln!("Mock PHD2: cannot remove {filename}: {e}");
+        }
+        return Err(format!("cannot write {filename}: {write_err}"));
+    }
+    Ok(filename)
+}
+
 fn handle_client(
     stream: TcpStream,
     shutdown: &Arc<AtomicBool>,
@@ -405,6 +512,16 @@ fn handle_request(
             emit_settle_sequence(writer.clone());
             serde_json::json!(0)
         }
+        "save_image" => match save_image() {
+            Ok(filename) => serde_json::json!({ "filename": filename }),
+            Err(e) => {
+                // PHD2's own reply when it cannot write the file.
+                eprintln!("Mock PHD2: save_image failed: {e}");
+                return format!(
+                    r#"{{"jsonrpc":"2.0","error":{{"code":3,"message":"error saving image"}},"id":{id}}}"#
+                );
+            }
+        },
         "shutdown" => {
             if ignore_shutdown {
                 // Report success but don't actually shut down.
@@ -484,7 +601,6 @@ fn canned_response(method: &str) -> Option<serde_json::Value> {
             "star_pos": [16.0, 16.0],
             "pixels": "AAAA"
         }),
-        "save_image" => serde_json::json!("/tmp/mock_image.fits"),
         _ => return None,
     };
     Some(value)

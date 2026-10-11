@@ -14,6 +14,7 @@ pub mod config_rest_steps;
 pub mod cooling_steps;
 pub mod cover_calibrator_steps;
 pub mod detect_stars_steps;
+pub mod device_identity_steps;
 pub mod doctor_steps;
 pub mod document_http_api_steps;
 pub mod ephemeris_steps;

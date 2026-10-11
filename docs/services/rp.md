@@ -2816,6 +2816,168 @@ alongside the observatory CA. Without `ca_cert` set, an `https://`
 device signed by that CA fails certificate verification regardless of
 per-device `auth` credentials.
 
+### Device Identity Pin
+
+A roster entry addresses its device by position. `alpaca_url` names the
+server, and `device_number` is the device's position among that
+server's devices of the entry's kind in
+`GET /management/v1/configureddevices`. On a server that numbers each
+kind densely from 0 *and lists it in that order*, which every driver in
+this repo and OmniSim do, that position is the Alpaca `DeviceNumber`.
+On a server that does not, rp's position and the handle's
+`DeviceNumber` differ, and the per-pass re-check below can refuse a
+correct session or miss a swap; keying on the listed `DeviceNumber`
+instead is tracked in
+[#1471](https://github.com/rusty-photon/rusty-photon/issues/1471).
+Nothing in the address says
+*which* device it is. A driver that numbers its devices in USB
+enumeration order can put a different device behind the same number
+after a power cycle. On Starfront `rig2` one `qhy-camera` service serves
+a QHY600M (imaging) and a QHY5III678M (guiding); after a power cycle the
+two swapped numbers, and `rp` bound the guide camera as the imaging
+camera without complaint (issue #1184). The lasting fix is that drivers
+pin numbers to USB ports
+([device-claims plan](../plans/device-claims-and-phd2-camera.md),
+Part A). The pin below is the cheap guard `rp` adds in the meantime.
+
+**Every equipment entry, of every kind, takes an optional
+`unique_id`**: the Alpaca `UniqueID` the device behind `device_number`
+must report. The connect routine is the same for all ten kinds, so the
+guard is too.
+
+On every establish, both the startup connect and the reconnect
+supervisor's re-establish (§ [Device Session
+Recovery](#device-session-recovery)):
+
+1. `rp` reads the server's `configureddevices` list and takes the entry
+   at `device_number` among the entries of the kind. That is the read
+   that locates the device anyway, so the pin adds no request, and the
+   identity checked is the one listed for the very entry whose device
+   URL `rp` binds.
+2. **No pin:** the entry binds exactly as it always has.
+3. **The pin matches** the listed `UniqueID`: the entry binds. The
+   comparison is exact and case-sensitive. Any whitespace the driver
+   pads its listed `UniqueID` with is stripped, since the pin itself
+   cannot carry any, and the identity `rp` logs and reports is stripped
+   the same way, so it can be pasted back as a pin.
+4. **The pin differs:** the connect is refused **before**
+   `Connected = true` is sent, so the wrong device is never switched on.
+   The error names the found device (`DeviceName` and `UniqueID`) and
+   the expected `UniqueID`. When the pinned `UniqueID` is listed at
+   another position of the same kind on that server, the error names
+   that `device_number` too, so the operator can re-point the entry.
+   `rp` does **not** re-resolve the entry to that position itself: the
+   device-claims plan makes the USB port the only device key (D1) and
+   gives drivers stable numbers (D4.7). Re-keying by `UniqueID` in `rp`
+   would be a second keying mechanism beside it, and a silent re-bind
+   is exactly the failure this guard exists to stop.
+5. **The pin cannot be verified**, because the listed entry's
+   `UniqueID` is empty. A driver still filling in its listing can
+   answer that for a moment, so the routine's 1 s / 2 s retries ride it
+   out like a transport error. If every attempt still lists it blank,
+   the connect is refused, naming why. A pin that cannot be checked
+   never passes, and the blank device is never switched on. A list
+   that cannot be read, or one
+   with no entry at `device_number`, fails the connect as it always
+   has, pinned or not: without the list there is no device to bind, so
+   there is no case where an unread identity is waved through.
+
+**Live sessions are re-checked too.** The supervisor's health check
+reads only `Connected`, and that reads true through `rp`'s handle
+whenever *some* client has switched on whatever device now answers at
+the entry's number: a driver that restarted with its devices reordered,
+followed by another client (Sentinel polling its safety monitors, say)
+connecting the number it is configured for. So on every pass, a pinned
+entry whose session reads healthy also has its listing re-read and its
+pin re-checked. When another device, with another `UniqueID`, is
+listed at the entry's number, the session is dropped at once, with a
+`warn!` and `equipment_changed` `connected: false`. Some listings keep
+the session:
+- one that cannot be read;
+- one that lists no device at the entry's number;
+- one that lists that device with a blank `UniqueID`.
+
+The session was checked at establish, and none of these is evidence of
+another device: a re-enumerating driver can answer a short or
+half-filled listing for a moment. The
+re-check costs one listing read per pinned entry per pass; an unpinned
+entry costs nothing extra.
+
+**A refusal drops the handle as well as the session.** Whether the pin
+refuses the device at establish or on the re-check, the entry's handle
+is known to address another device, so `rp` drops it too. This is the
+one exception to § [Device Session
+Recovery](#device-session-recovery)'s rule that a dead session keeps its
+stale handle. A tool call on the entry then answers "not connected"
+instead of reaching the other device, and the entry binds again only
+through a fresh establish that finds the pinned device.
+
+**Retry class.** A mismatch is permanent within one connect routine,
+like "device not found": no 1 s / 2 s in-routine retries. A blank
+`UniqueID` is the one exception (item 5). The
+supervisor re-checks it once per pass, re-reading the list each time, so
+the entry binds on the first pass that finds the pinned device back at
+`device_number` (say, the driver restarted in its old order), and never
+binds anything else. A refused safety monitor reads unsafe, like any
+monitor without a live session (§ Safety: a monitor read is
+fail-unsafe), and the enforcer answers that unsafe transition the way it
+answers any other. Tenet 3 permits stop, abort and park on a safety
+transition only *inside an operator-started session*. The enforcer
+today parks on every unsafe transition, session or not, so a refused
+pin can lead to a park outside a session, as a monitor service restart
+or a mistyped `alpaca_url` already can. That predates the pin and is
+tracked in issue #1468; the pin does not change the enforcer. Reading
+`IsSafe` from a monitor the pin says is not the one configured would be
+the worse failure. The logging follows the usual shape: a refusal at
+startup is an `error!`, a live session lost to one is a `warn!` once
+(with `equipment_changed` `connected: false`), and later passes log at
+`debug!`. Entries of one kind that pin the same `UniqueID` on the same
+server at two or more different `device_number`s are rejected at load.
+Every entry of that group is flagged with the numbers and the other
+entries named, because a server lists a device at one number, so the
+entries at all but one of those numbers could never bind. Entries that
+share the server, the `device_number` *and* the pin all address one
+device and are accepted, just as two unpinned entries for one device
+are. Two spellings of one URL (a trailing slash, the host's case) count
+as one server; `localhost` and `127.0.0.1` count as two. The same
+`UniqueID` on two servers is accepted: an index-based serial-less
+`UniqueID` repeats across hosts.
+
+**What was bound is logged.** Every successful establish, pinned or
+not, logs one `info!` line with the kind, the roster `id`, `alpaca_url`,
+`device_number`, the device's listed `DeviceName` and `UniqueID`, and
+whether a pin was checked. It is once per established session (the
+supervisor's own "re-established" line is a `debug!`, so a re-establish
+logs one `info!` line, not two), and it is the line that shows which
+physical device an entry is on: the line that would have made the
+`rig2` swap visible. To pin an entry, copy the
+`UniqueID` from that line or from `GET /api/equipment`
+(§ [Equipment](#equipment)), which reports the bound device's
+`device_name` and `unique_id` for every connected entry.
+
+**Limits.**
+
+- **The pin is only as strong as the driver's `UniqueID`.**
+  - `qhy-camera`'s `UniqueID` is the SDK id, model plus serial, so it
+    tells two cameras apart. The exception is a model whose id carries a
+    constant serial, where two such cameras collide (device-claims plan,
+    D4.6).
+  - `zwo-camera`'s and `svbony-camera`'s fallback for a serial-less
+    camera is `noserial-{index}`, which follows the enumeration index.
+    A pin on such a camera still catches a swap with a different model,
+    but not a swap of two serial-less cameras of the same model, and it
+    cannot name where the pinned camera went.
+  - The device-claims plan's C5 replaces that fallback with a port-based
+    one. That changes those `UniqueID`s, so after the C5 upgrade every
+    pin on a serial-less camera is refused loudly until it is re-copied.
+- **The check and the connect are two requests.** The listing read and
+  `Connected = true` cannot be made atomic: Alpaca has no
+  identity-checked connect. If a server renumbers its devices between
+  the two (a driver reload landing in that instant), `rp` switches on
+  and binds whatever device is then at that number. The next pass's
+  re-check reads the listing and drops that session, so the window
+  closes within one `reconnect_interval`.
+
 ### Device Session Recovery
 
 An Alpaca device session is server-side state: `Connected = true` lives
@@ -2842,12 +3004,16 @@ a busy loop and is rejected at config load) it walks the configured
 devices:
 
 - **Health check.** For an entry whose session is marked live, read the
-  Alpaca `Connected` property. `true` ⇒ healthy, nothing else happens.
+  Alpaca `Connected` property. `true` ⇒ healthy, nothing else happens,
+  except that a pinned entry also has its pin re-checked against the
+  listing (§ [Device Identity Pin](#device-identity-pin)).
 - **Re-establish.** For an entry reporting `Connected = false`, failing
   the health read, or already marked disconnected, run the full connect
-  routine: re-enumerate the server's device roster, re-issue
-  `Connected = true`, and re-read the connect-time property cache (a
-  camera's `MaxADU`, pixel pitch, sensor geometry). Nothing is carried
+  routine: re-enumerate the server's device roster, check the entry's
+  pinned `UniqueID` if it has one (§ [Device Identity
+  Pin](#device-identity-pin)), re-issue `Connected = true`, and re-read
+  the connect-time property cache (a camera's `MaxADU`, pixel pitch,
+  sensor geometry). Nothing is carried
   over from the dead session — the service may have come back with a
   different device behind the same config entry, so nothing is assumed.
   This holds even when some other client turned the device back on in
@@ -2878,26 +3044,28 @@ devices:
   `connected: false` once per transition, not once per attempt) and the
   next pass retries.
   There is no give-up state: an outcome that is permanent within one
-  connect routine ("device not found") is still retried on the next
-  pass, which is exactly what case 3 needs.
-- **A placeholder camera is permanent for the pass.** A camera driver
+  connect routine ("device not found", or a refused identity pin) is
+  still retried on the next pass, which is exactly what case 3 needs.
+- **A placeholder device is permanent for the pass.** A camera driver
   with a `usb_devices` list holds a listed number whose camera it cannot
   serve tonight with a placeholder, whose `Connected = true` fails with
   ASCOM error `0x540` ([device-claims plan](../plans/device-claims-and-phd2-camera.md)
   D4.5, [svbony-camera.md](svbony-camera.md) U4). Retrying it cannot
-  help — a placeholder becomes a camera only when its driver reloads —
+  help — a placeholder becomes a device only when its driver reloads —
   so the connect routine takes that refusal as it takes "device not
   found": one attempt, no backoff, logged at `debug!` with the driver's
   reason, and the entry stays disconnected. The next pass tries again, so
-  the camera is picked up on the first pass after a reload serves it. A
+  the device is picked up on the first pass after a reload serves it. A
   refusal counts as a placeholder's only when the device's `UniqueID` has
   the placeholder form (`placeholder:<service>:<usb_port>`) as well: the
   `0x500`–`0xFFF` range is every Alpaca driver's to use, so another
-  driver's `0x540` is still retried. The classification lives in the
-  shared connect helper (`alpaca::connect_refused`). Only the camera
-  connect calls it today, since only cameras have placeholders yet; the
-  plan's C4 routes the filter-wheel connect through it when `qhy-camera`'s
-  placeholder filter wheels arrive.
+  driver's `0x540` is still retried. The connect routine every kind
+  shares classifies it (`alpaca::connect_refused`), so the plan's C4
+  placeholder filter wheels need no rp change. A pinned entry never
+  reaches that refusal: no pin matches a placeholder's `UniqueID`, so the
+  pin refuses it first (§ [Device Identity Pin](#device-identity-pin)),
+  naming the placeholder's `UniqueID`, and the next pass binds the
+  device once the driver serves it again.
 
 The cadence is fixed — no exponential backoff. One `Connected` read per
 device per interval is the steady-state cost, and the interval itself
@@ -2922,7 +3090,9 @@ Consequences and constraints:
   properties (the transport is stateless HTTP). A disconnected entry
   keeps its stale handle and cache until a successful re-establish
   replaces the pair, so no caller has a handle swapped out from under
-  it mid-operation. A call through a stale handle fails `NOT_CONNECTED`
+  it mid-operation. The exception is an entry whose identity pin
+  refused the device now at its number: it loses its handle (§ [Device
+  Identity Pin](#device-identity-pin)). A call through a stale handle fails `NOT_CONNECTED`
   (or with a transport error) until the re-establish turns the device
   back on; from then on the device answers it from the **new** session,
   because `Connected` is device-wide, not per client. A caller that
@@ -6119,11 +6289,21 @@ the target-store CRUD tools; those are MCP-only (§ Target Store).
   response mirrors the config's equipment shape: ten fixed keys
   (`cameras`, `filter_wheels`, `cover_calibrators`, `focusers`,
   `safety_monitors`, `switches`, `rotators`, `observing_conditions`,
-  `domes` — arrays of `{ "id", "connected" }` — and `mount`, a
-  `{ "connected" }` object or `null`). The `id` is the operator-supplied
-  config id; the mount is singular and has none. Device *addresses and
-  settings* are not repeated here — they live in the config, readable via
-  `GET /api/config`, and a UI joins the two by `id`.
+  `domes` — arrays of `{ "id", "connected", "device_name", "unique_id" }`
+  — and `mount`, a `{ "connected", "device_name", "unique_id" }` object
+  or `null`). The `id` is the operator-supplied config id; the mount is
+  singular and has none. `device_name` and `unique_id` identify the
+  device the live session was bound to, as its Alpaca server listed it
+  in `configureddevices` when the session was established. Both are
+  `null` while the entry is disconnected. A pinned entry is re-checked
+  against the listing every reconnect pass, so its identity stays true.
+  An unpinned entry is not re-checked. After its server reorders its
+  devices, the entry can name a device that is no longer the one behind
+  its number, until its session is next re-established. That is the
+  case a pin exists to catch (§ [Device Identity
+  Pin](#device-identity-pin)). Device *addresses
+  and settings* are not repeated here — they live in the config,
+  readable via `GET /api/config`, and a UI joins the two by `id`.
 - Runtime device connect/disconnect is **not** a REST route: the registry is
   built once at startup, sessions are kept alive by the reconnect supervisor
   (§ [Device Session Recovery](#device-session-recovery)) — so `connected`
@@ -6330,6 +6510,16 @@ otherwise.
 `cameras[].cooler_targets_c` must hold unique integers on the 5 °C grid
 (−40 … +15); off-grid values are rejected at load with the offending
 field named (see [Camera Cooling](#camera-cooling)).
+Every equipment entry, each kind's array entries and the singular
+`mount` alike, takes an optional `unique_id`: the Alpaca `UniqueID` the
+device at `device_number` must report, or the connect is refused (see
+[Device Identity Pin](#device-identity-pin)). Omitted, the entry binds
+whatever device its server lists there, as before. An empty value, or
+one with leading or trailing whitespace, is rejected at load: the
+listed side is compared with any padding stripped, so a padded pin
+could never match. Entries of one kind that pin the same `UniqueID` at
+different `device_number`s on the same server are rejected at load too
+(§ [Device Identity Pin](#device-identity-pin)).
 
 The top-level `ca_cert` names a PEM CA certificate `rp` trusts for
 every outbound HTTPS connection it makes as a client — Alpaca devices
@@ -6393,6 +6583,7 @@ return a structured "site not configured" error.
         "alpaca_url": "https://localhost:11120",
         "device_type": "camera",
         "device_number": 0,
+        "unique_id": "QHY600M-a1b2c3d4e5f60718",
         "cooler_targets_c": [-10, 5],
         "gain": 100,
         "offset": 50,
@@ -6686,6 +6877,10 @@ services/rp/src/
                         per-interval health check + session re-establish,
                         plus the tool-provider lane (mcp/providers.rs)
     alpaca.rs           Generic Alpaca client (reqwest-based)
+    binding.rs          The connect routine shared by every kind:
+                        locate the entry's device in configureddevices,
+                        check its pinned UniqueID, switch it on, log
+                        what was bound (§ Device Identity Pin)
     camera.rs           Camera device wrapper (expose, abort, cooler, readout)
     mount.rs            Mount wrapper (slew, park, flip, tracking, side of pier)
     focuser.rs          Focuser wrapper (move, temperature)
@@ -6950,6 +7145,14 @@ Behavioral specifications for `rp`'s responsibilities:
   answering an error with the catalog unchanged and the supervisor
   bringing the provider back, and the registration's `gate` opt-out
 - MCP tool validation and safety guardrails
+- Device identity pins (`device_identity.feature`): every device kind
+  binds only the device that reports its pinned `UniqueID`, the
+  equipment status names the bound device, a pinned camera whose
+  number comes back addressing another camera is refused on reconnect,
+  and its live session and handle are dropped when another client has
+  already switched that camera on (against the `bdd-infra` Alpaca stub,
+  which can restart as a different device), while an unpinned camera
+  follows its number
 - Event delivery to webhook endpoints
 - Power failure recovery (`startup_recovery.feature`: derived
   progress survives an rp restart on disk — see § What Survives an rp

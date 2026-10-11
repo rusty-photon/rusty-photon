@@ -1158,23 +1158,55 @@ impl Phd2Client {
 
     /// Save the current camera frame to a file
     ///
-    /// Saves the current frame to a FITS file in PHD2's default image directory.
-    /// Returns the path to the saved file.
+    /// PHD2 writes the current frame to a new FITS file in its default
+    /// image directory and replies `{"filename": "<full path>"}`. Returns
+    /// that path, which names a file on **PHD2's** host, not necessarily
+    /// this one.
+    ///
+    /// The caller owns the file and must remove it: PHD2's contract is
+    /// that "the client should remove the file when done with it", and
+    /// this method does not. Every successful call leaves one more file
+    /// behind until its caller does.
     ///
     /// # Errors
     ///
     /// Returns an error when the client is not connected, the request
     /// cannot be sent, no reply arrives within the command timeout or the
-    /// connection drops mid-flight, or PHD2 rejects the RPC. A reply that
-    /// does not decode as a filename string is also an error.
+    /// connection drops mid-flight, or PHD2 rejects the RPC (it does when
+    /// it has no image, or cannot write the file). A reply that is not an
+    /// object carrying a non-empty string `filename` is an
+    /// [`Phd2Error::InvalidState`] naming the reply that came back.
     pub async fn save_image(&self) -> Result<String> {
         debug!("Saving current image");
         let result = self.send_request("save_image", None).await?;
-        let filename = result.as_str().ok_or_else(|| {
-            Phd2Error::InvalidState("Expected string for saved image filename".to_string())
-        })?;
-        Ok(filename.to_string())
+        let filename = parse_save_image_reply(&result)?;
+        debug!("PHD2 saved the current image to {}", filename);
+        Ok(filename)
     }
+}
+
+/// Extract the path from PHD2's `save_image` reply,
+/// `{"filename": "<full path>"}`. Any other shape is an error carrying
+/// the reply, never a default: a caller handed a made-up path would go
+/// on to read, or delete, the wrong file.
+fn parse_save_image_reply(result: &serde_json::Value) -> Result<String> {
+    let reply = result.as_object().ok_or_else(|| {
+        Phd2Error::InvalidState(format!("save_image reply is not an object: {result}"))
+    })?;
+    let filename = reply.get("filename").ok_or_else(|| {
+        Phd2Error::InvalidState(format!("save_image reply has no \"filename\": {result}"))
+    })?;
+    let filename = filename.as_str().ok_or_else(|| {
+        Phd2Error::InvalidState(format!(
+            "save_image reply's \"filename\" is not a string: {result}"
+        ))
+    })?;
+    if filename.is_empty() {
+        return Err(Phd2Error::InvalidState(format!(
+            "save_image reply's \"filename\" is empty: {result}"
+        )));
+    }
+    Ok(filename.to_owned())
 }
 
 #[cfg(test)]
@@ -2625,17 +2657,106 @@ mod mock_tests {
         assert_eq!(image.height, 31);
     }
 
-    #[tokio::test]
-    async fn test_save_image() {
+    /// Send `save_image` against a canned `result` and return the outcome.
+    async fn save_image_with_result(result: &str) -> Result<String> {
         let (client, _sent) = create_test_client_with_responses(vec![
             Some(version_event()),
-            Some(rpc_response(1, r#""/tmp/phd2_image.fits""#)),
+            Some(rpc_response(1, result)),
         ]);
-
         client.connect().await.unwrap();
-        let path = client.save_image().await.unwrap();
+        client.save_image().await
+    }
 
-        assert_eq!(path, "/tmp/phd2_image.fits");
+    /// Unwrap the `InvalidState` message a malformed reply must produce.
+    fn invalid_state_message(outcome: Result<String>) -> String {
+        match outcome {
+            Err(Phd2Error::InvalidState(message)) => message,
+            other => panic!("expected InvalidState, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_save_image_returns_filename_from_reply_object() {
+        let path = save_image_with_result(r#"{"filename":"/home/obs/PHD2/save_image_a1B2c3"}"#)
+            .await
+            .unwrap();
+
+        assert_eq!(path, "/home/obs/PHD2/save_image_a1B2c3");
+    }
+
+    #[tokio::test]
+    async fn test_save_image_sends_save_image_without_params() {
+        let (client, sent) = create_test_client_with_responses(vec![
+            Some(version_event()),
+            Some(rpc_response(1, r#"{"filename":"/tmp/f"}"#)),
+        ]);
+        client.connect().await.unwrap();
+        client.save_image().await.unwrap();
+
+        let messages = sent.lock().unwrap();
+        let request: serde_json::Value = serde_json::from_str(&messages[0]).unwrap();
+        assert_eq!(request["method"], "save_image");
+        assert!(
+            request.get("params").is_none(),
+            "unexpected params: {request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_save_image_rejects_bare_string_reply() {
+        let message =
+            invalid_state_message(save_image_with_result(r#""/tmp/phd2_image.fits""#).await);
+
+        assert!(message.contains("not an object"), "{message}");
+        assert!(message.contains(r#""/tmp/phd2_image.fits""#), "{message}");
+    }
+
+    #[tokio::test]
+    async fn test_save_image_rejects_reply_without_filename() {
+        let message =
+            invalid_state_message(save_image_with_result(r#"{"path":"/tmp/f.fits"}"#).await);
+
+        assert!(message.contains("no \"filename\""), "{message}");
+        assert!(message.contains(r#"{"path":"/tmp/f.fits"}"#), "{message}");
+    }
+
+    #[tokio::test]
+    async fn test_save_image_rejects_non_string_filename() {
+        let message = invalid_state_message(save_image_with_result(r#"{"filename":42}"#).await);
+
+        assert!(message.contains("not a string"), "{message}");
+        assert!(message.contains(r#"{"filename":42}"#), "{message}");
+    }
+
+    #[tokio::test]
+    async fn test_save_image_rejects_null_filename() {
+        let message = invalid_state_message(save_image_with_result(r#"{"filename":null}"#).await);
+
+        assert!(message.contains("not a string"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn test_save_image_rejects_empty_filename() {
+        let message = invalid_state_message(save_image_with_result(r#"{"filename":""}"#).await);
+
+        assert!(message.contains("is empty"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn test_save_image_surfaces_phd2_rpc_error() {
+        let (client, _sent) = create_test_client_with_responses(vec![
+            Some(version_event()),
+            Some(rpc_error(1, 2, "no image available")),
+        ]);
+        client.connect().await.unwrap();
+
+        match client.save_image().await {
+            Err(Phd2Error::RpcError { code, message }) => {
+                assert_eq!(code, 2);
+                assert_eq!(message, "no image available");
+            }
+            other => panic!("expected RpcError, got {other:?}"),
+        }
     }
 
     // ============================================================================

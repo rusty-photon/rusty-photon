@@ -99,9 +99,9 @@ recorded here so the option is not lost.
 | C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Landed: `port`/`serial` extraction, the failed-vs-empty inventory, the staged synthetic inventory, faults (a record that is not a working device is a fault, not a failed scan — D4.4), and the Linux port spelled by controller and USB revision instead of bus number (D2). The spike's last leg, a move to a different port, was made on a Windows VM rather than `rig2` (D2, spike item 7) | `chore/device-claims-c1-spike` ([#1306](https://github.com/rusty-photon/rusty-photon/pull/1306)), `chore/device-claims-c1-synthetic-inventory` ([#1308](https://github.com/rusty-photon/rusty-photon/pull/1308)), `fix/doctor-usb-faults-1322` ([#1365](https://github.com/rusty-photon/rusty-photon/pull/1365)), `feature/device-claims-linux-port-spelling` ([#1450](https://github.com/rusty-photon/rusty-photon/pull/1450)), `fix/device-claims-linux-fault-location` ([#1458](https://github.com/rusty-photon/rusty-photon/pull/1458)), `chore/device-claims-c1-port-move` ([#1462](https://github.com/rusty-photon/rusty-photon/pull/1462)) |
 | C2 | `usb_devices` schema + `svbony-camera` — port placement (the join), listed numbers, placeholders (their fixed connect error code, which rp treats as permanent for the pass, and their config actions), the failed-scan re-scan, each simulation backend's synthetic inventory, and `svbony-camera doctor --devices` (D5's listing and paste-ready block; the `usb-devices.*` checks stay in C5), so no driver serves the list before its paste source exists. `usb_devices` is part of `config.schema`/`config.apply` from the phase that adds it, under the ordinary `Reload` disposition (D4.1), and D3's validation rejects a bad list in `config.apply` as well as at load. The easy case; proves schema, join and placeholder behaviour | In review — [svbony-camera.md](../services/svbony-camera.md) U1-U9; the D4.8 twin hint is deferred to a collector change (D4.8) | `feature/device-claims-c2-svbony` ([#1466](https://github.com/rusty-photon/rusty-photon/pull/1466)) |
 | C3 | `usb_devices` in `zwo-camera`, with its `doctor --devices` listing; a failed identity open is a per-camera outcome (D7) | Not started | |
-| C4 | `usb_devices` in `qhy-camera`, with its `doctor --devices` listing and each entry's declared filter wheel (D4.7), whose placeholder rp's filter-wheel connect classifies through the shared `connect_refused` C2 added for cameras + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup and reload entirely** (the split alone narrows the tenet-3 problem, it does not discharge it) | Not started | |
+| C4 | `usb_devices` in `qhy-camera`, with its `doctor --devices` listing and each entry's declared filter wheel (D4.7), whose placeholder rp already classifies (C2 taught the connect routine every kind shares the placeholder's refusal) + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup and reload entirely** (the split alone narrows the tenet-3 problem, it does not discharge it) | Not started | |
 | C5 | `usb-devices.resolve` / `usb-devices.unlisted` / `usb-devices.implicit` checks on top of the per-driver `--devices` listings, and central doctor's `service.devices` recognising placeholders (D5); **the breaking no-list changes for all three drivers at once** — numbering by port order, unplaceable cameras refused, and the port-based `UniqueID` fallback for serial-less cameras (ZWO/SVBony; QHY's case decided here, D4.6) | Not started | |
-| C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | Not started | |
+| C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | Not started, except the `save_image` wire-format fix (D9) | `fix/phd2-save-image-wire-format` ([#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)) |
 | C7 | rp wiring: guide camera as a train-terminal camera, capture-sweep focusing for the guiding train, doc updates. **Blocked on reconciling with [`focus-model.md`](focus-model.md) S7/D17**, which retires rp's capture-based `auto_focus` and keeps the metric sweep under that name | Not started | |
 | C8 | `ui-htmx` editing of `usb_devices` | Deferred | |
 
@@ -1027,15 +1027,19 @@ date. (`name` is display text, never a key.)
    `UniqueID` + host + port + number, which is one more reason for
    numbers that never move.
 
-   **rp does need one small change elsewhere.** `establish_camera` maps
-   every `set_connected` error to a transient outcome, so left alone it
+   **rp does need one small change elsewhere.** rp's connect routine
+   (`establish_listed` in `services/rp/src/equipment/binding.rs`, which
+   every kind's `establish_*` calls) maps every `set_connected` error to
+   a transient outcome, so left alone it
    would retry a placeholder three times with 1 s + 2 s backoff and log
    two `info!` lines on every reconnect-supervisor pass, all night —
    retries that cannot succeed, because a placeholder becomes a camera
    only on a reload (D8). rp therefore maps the placeholder's fixed error
    code (D4.5) to the permanent outcome its "camera not found" already
    gets: one attempt per pass, logged at `debug!`, and the camera is
-   picked up on the first pass after a reload serves it.
+   picked up on the first pass after a reload serves it. The routine is
+   shared, so C4's placeholder filter wheels get the same treatment with
+   no further rp change.
 
    **`qhy-camera`'s filter wheels are pinned the same way.**
    `qhy-camera` registers a FilterWheel for each camera with a CFW, and
@@ -1150,6 +1154,20 @@ disruption, one upgrade step: re-run `doctor --devices`, paste the
 `usb_devices` block it prints, and fix rp's device numbers once. The
 upgrade note lives in the C5 PR body and in each driver's design doc,
 since there is no CHANGELOG to carry it.
+
+**Migration note for C5: rp's roster pins.** rp gained an optional
+`unique_id` on every roster entry, which refuses a connect when the
+device at the entry's number reports a different `UniqueID`
+([rp.md § Device Identity Pin](../services/rp.md#device-identity-pin)).
+It is an interim guard for #1184, outside this plan, and it is only as
+strong as each driver's `UniqueID`. QHY's is serial-derived and tells
+two cameras apart. The `noserial-{index}` fallback in `zwo-camera` and
+`svbony-camera` follows the enumeration index, so today a pin on a
+serial-less camera cannot tell two of the same model apart. D4.6's
+`noserial-{port}` changes those `UniqueID`s, so after C5 every rp pin
+on a serial-less camera is stale and rp refuses it loudly. C5's upgrade
+note must tell the operator to re-copy those pins from rp's bound-device
+log line or from `GET /api/equipment`.
 
 ### D5. Doctor as the setup tool
 
@@ -1503,13 +1521,33 @@ phase against a live PHD2:
 This is the single largest unknown in Part B, and C6's design-doc phase
 does not end until one of these is demonstrated against a real PHD2.
 
-**Prerequisite defect:** `Phd2Client::save_image`
+**Prerequisite defect (fixed in C6's first PR, [#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)):** `Phd2Client::save_image`
 ([`services/phd2-guider/src/client.rs`](../../services/phd2-guider/src/client.rs))
-parses the result as a bare string, but PHD2 returns the object above. It
-fails against real PHD2 every time and passes CI only because
-`mock_phd2.rs` returns the same wrong shape. Fix the client, the mock
-(which must also serve a real small FITS for the facade's tests) and the
-`save_image` row in `phd2-guider.md` as the first commit of C6.
+parsed the result as a bare string, but PHD2 returns the object above, so
+it failed against real PHD2 every time; it passed CI only because
+`mock_phd2.rs` returned the same wrong shape. The client now accepts only
+the object and rejects any other shape with an error carrying the reply.
+The mock replies with the object and writes a real FITS file for each
+call: a fixed 8×6 16-bit frame, into `MOCK_PHD2_IMAGE_DIR`. The facade's
+tests can decode that frame. The file is left for the caller to remove,
+so cleanup is the facade's job (D10). `phd2-guider.md` documents both.
+
+The mock's frame carries none of PHD2's time cards (`EXPOSURE`, `DATE`,
+`DATE-OBS`), because it models no exposures. If option 3 above wins, C6
+adds them to the mock along with its exposure model.
+
+The mock names its files in PHD2's **Unix** form,
+`save_image_<pid>_<n>` with no extension. PHD2's own names come from
+wxWidgets' `CreateTempFileName`:
+
+- **Unix:** `mkstemp` gives `<dir>/save_image_XXXXXX`, with no
+  extension.
+- **Windows:** `GetTempFileName` gives `<dir>\sav<hex>.TMP`, keeping only
+  three characters of the prefix (wxWidgets'
+  `src/common/filename.cpp`; Microsoft's `GetTempFileName` reference).
+
+So D10's cleanup sweep must key on neither the `save_image_` prefix nor a
+missing extension.
 
 ### D10. Shape of the facade
 

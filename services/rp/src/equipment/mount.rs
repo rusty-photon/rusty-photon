@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
-use ascom_alpaca::api::{Telescope, TypedDevice};
+use ascom_alpaca::api::Telescope;
 use tracing::{debug, error};
 
-use super::alpaca::{
-    build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
-};
+use super::binding::{establish_listed, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
 
@@ -35,46 +33,8 @@ impl MountEntry {
 pub(super) async fn establish_mount(
     config: &config::MountConfig,
     ca_cert_path: Option<&std::path::Path>,
-) -> Result<Arc<dyn Telescope>, String> {
-    let client = build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path)
-        .map_err(|e| format!("failed to create Alpaca client: {e}"))?;
-
-    retry_connect_attempt("mount", |_attempt| async {
-        let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
-            Ok(Ok(devices)) => devices,
-            Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
-            Err(_) => {
-                return AttemptOutcome::Transient(format!(
-                    "get_devices: timeout after {GET_DEVICES_TIMEOUT:?}"
-                ));
-            }
-        };
-
-        let mut mount_index = 0u32;
-        let mut found_mount: Option<Arc<dyn Telescope>> = None;
-        for device in devices {
-            if let TypedDevice::Telescope(t) = device {
-                if mount_index == config.device_number {
-                    found_mount = Some(t);
-                    break;
-                }
-                mount_index = mount_index.saturating_add(1);
-            }
-        }
-
-        let Some(t) = found_mount else {
-            return AttemptOutcome::Permanent(format!(
-                "mount at index {} not found on Alpaca server",
-                config.device_number
-            ));
-        };
-
-        match t.set_connected(true).await {
-            Ok(()) => AttemptOutcome::Ok(t),
-            Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
-        }
-    })
-    .await
+) -> Result<Arc<dyn Telescope>, EstablishError> {
+    establish_listed(config, ca_cert_path).await
 }
 
 pub(super) async fn connect_mount(
@@ -119,6 +79,7 @@ mod tests {
         config::MountConfig {
             alpaca_url: url.to_string(),
             device_number: 0,
+            unique_id: None,
             settle_after_slew: None,
             slew_rate_arcsec_per_sec: config::mount::SlewRateArcsecPerSec::default(),
             guiding: None,

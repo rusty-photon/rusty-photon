@@ -1,11 +1,9 @@
 use std::sync::Arc;
 
-use ascom_alpaca::api::{Dome, TypedDevice};
+use ascom_alpaca::api::Dome;
 use tracing::{debug, error};
 
-use super::alpaca::{
-    build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
-};
+use super::binding::{establish_listed, EstablishError};
 use super::session::DeviceSession;
 use crate::config;
 
@@ -34,47 +32,8 @@ impl DomeEntry {
 pub(super) async fn establish_dome(
     config: &config::DomeConfig,
     ca_cert_path: Option<&std::path::Path>,
-) -> Result<Arc<dyn Dome>, String> {
-    let client = build_alpaca_client(&config.alpaca_url, config.auth.as_ref(), ca_cert_path)
-        .map_err(|e| format!("failed to create Alpaca client: {e}"))?;
-
-    let label = format!("dome {}", config.id);
-    retry_connect_attempt(&label, |_attempt| async {
-        let devices = match tokio::time::timeout(GET_DEVICES_TIMEOUT, client.get_devices()).await {
-            Ok(Ok(devices)) => devices,
-            Ok(Err(e)) => return AttemptOutcome::Transient(format!("get_devices: {e}")),
-            Err(_) => {
-                return AttemptOutcome::Transient(format!(
-                    "get_devices: timeout after {GET_DEVICES_TIMEOUT:?}"
-                ));
-            }
-        };
-
-        let mut dome_index = 0u32;
-        let mut found_dome: Option<Arc<dyn Dome>> = None;
-        for device in devices {
-            if let TypedDevice::Dome(dome) = device {
-                if dome_index == config.device_number {
-                    found_dome = Some(dome);
-                    break;
-                }
-                dome_index = dome_index.saturating_add(1);
-            }
-        }
-
-        let Some(dome) = found_dome else {
-            return AttemptOutcome::Permanent(format!(
-                "dome at index {} not found on Alpaca server",
-                config.device_number
-            ));
-        };
-
-        match dome.set_connected(true).await {
-            Ok(()) => AttemptOutcome::Ok(dome),
-            Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
-        }
-    })
-    .await
+) -> Result<Arc<dyn Dome>, EstablishError> {
+    establish_listed(config, ca_cert_path).await
 }
 
 pub(super) async fn connect_dome(
@@ -121,6 +80,7 @@ mod tests {
             name: None,
             alpaca_url: url.to_string(),
             device_number,
+            unique_id: None,
             auth: None,
         }
     }
