@@ -357,7 +357,7 @@ ASI662MC      PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)    Port_#0004.Hub_#0
    throughout. A genuine move to a *different* port needed physical
    access to `rig2`; it was made on a Windows VM instead (item 7). What
    real Windows hardware has not shown: a camera plugged straight into a
-   root port, and item 7's limits for the move.
+   root port, and a move to another port (item 7).
 
 4. **Windows publishes no USB serial for any of the three cameras.** The
    third field of the instance id is a port-derived string
@@ -461,8 +461,8 @@ ASI662MC      PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)    Port_#0004.Hub_#0
    afterwards on the same guest: read without the filter, through the
    collector's own `ConfigManagerErrorCode` expression, all 15 stale USB
    records gave problem code 45 (`CM_PROB_PHANTOM`), which the parser
-   takes as not working: 11 ZWO (the nine above, plus this run's `…&0&9`
-   and `…&0&12`), one QHY (`1618:c179`), one SVBony (`f266:9a0a`) and two
+   takes as not working: 11 ZWO (the nine above, this camera's own
+   `…&0&4` among them, plus this run's `…&0&9` and `…&0&12`), one QHY (`1618:c179`), one SVBony (`f266:9a0a`) and two
    FTDI bridges (`0403:6015`) that do publish a serial, each still
    carrying its last `LocationPaths`. D4.5's match
    of a fault to a listed port would then blame a dead device for a
@@ -2250,8 +2250,8 @@ and on 2026-10-11 the owner accepted the legs no real hardware has read
 - **Windows — the legs only a VM read.** A camera plugged straight into
   a real controller's root port, and a move between ports of a real
   controller, with item 7's limits (a hub in the path, a vendor
-  controller, a device that publishes a serial). Accepted for C2 by the
-  owner on 2026-10-11 (decision 2); to be read on `rig2` or another
+  controller, a device that publishes a serial). Accepted as C1's close
+  by the owner on 2026-10-11 (decision 2); to be read on `rig2` or another
   Windows host when someone is at one. Blocks no phase.
 
 - **C6 — the capture completion watermark**, waiting on one measurement

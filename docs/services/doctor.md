@@ -358,8 +358,9 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   fault at its old port, whether that port is now empty or holds
   another device. Measured for ports left empty, on a Windows 11 VM:
   after a camera was moved between ports of its USB controller, the
-  query without the filter read problem code 45 for every one of the
-  host's 15 stale USB records, the camera's and other devices' alike
+  query's own problem-code expression, read without the filter, gave
+  problem code 45 for every one of the VM's 15 stale USB records, the
+  camera's and other devices' alike
   ([device-claims plan](../plans/device-claims-and-phd2-camera.md), D2
   spike item 7).
 
