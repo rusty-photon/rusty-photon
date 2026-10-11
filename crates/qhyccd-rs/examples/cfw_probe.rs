@@ -29,6 +29,11 @@
 //                                neither (none)
 //   cfw_probe travel             a rested wheel's move from every slot to every
 //                                other: how long it travels
+//   cfw_probe powercut <slot> <s> [<then> <at>]
+//                                a rested wheel's move to <slot>, then <s> s of
+//                                status reads, while the CFW's 12 V is cut and
+//                                restored from outside the probe ([<then> <at>]:
+//                                a command to <then> <at> s after the move)
 //
 // It opens the last camera the SDK lists, or, with CFW_PROBE_CAMERA set, the
 // one whose SDK id starts with it (a host with several QHY cameras).
@@ -339,6 +344,35 @@ fn travel(cam: &Camera, slots: u32) {
     }
 }
 
+/// What the status says while the CFW's 12 V is cut mid-move and after it is
+/// restored, which happens outside the probe once it prints `ready`. The
+/// first command goes to the slot the wheel stands on, as in `travel`.
+fn powercut(cam: &Camera, args: &[String]) {
+    let slot: u32 = arg(args, 2, "a slot");
+    let secs: u64 = arg(args, 3, "seconds to read for");
+    let at = read(cam, "powercut").expect("precondition: the status names a slot");
+    assert_ne!(at, slot, "precondition: the wheel stands off slot {slot}");
+    send(cam, at, "prime");
+    assert!(
+        wait_for(cam, at, Duration::from_secs(5), "prime").is_some(),
+        "precondition: the wheel names the slot it was sent back to"
+    );
+    thread::sleep(RESTED);
+    emit("\"ev\":\"ready\"");
+    let moved = Instant::now();
+    send(cam, slot, "powercut");
+    if args.len() > 4 {
+        let then: u32 = arg(args, 4, "a slot");
+        let at: f64 = arg(args, 5, "seconds after the move");
+        let until = moved + Duration::from_secs_f64(at);
+        while Instant::now() < until {
+            read(cam, "powercut");
+        }
+        send(cam, then, "then");
+    }
+    watch(cam, secs, "powercut");
+}
+
 /// A rested wheel's move from `from` to `to`: when, after it was sent, a
 /// status read first named `to`.
 fn timed_move(cam: &Camera, from: u32, to: u32) {
@@ -407,12 +441,13 @@ fn main() {
         Some("same") => same(camera),
         Some("forget") => forget(camera, &args),
         Some("travel") => travel(camera, slots),
+        Some("powercut") => powercut(camera, &args),
         Some("rest") => rest(camera, &args),
         Some("during") => during(camera, &args),
         Some("overlap") => overlap(camera, &args),
         Some("lost") => lost(camera, &args),
         Some("reads") => reads(camera, &args),
-        _ => panic!("usage: cfw_probe home|rest|during|overlap|lost|reads|settle|zero|same|forget|travel ... (see the header)"),
+        _ => panic!("usage: cfw_probe home|rest|during|overlap|lost|reads|settle|zero|same|forget|travel|powercut ... (see the header)"),
     }
     camera.close().expect("close");
     emit("\"ev\":\"done\"");

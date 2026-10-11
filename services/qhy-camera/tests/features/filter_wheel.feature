@@ -11,8 +11,9 @@ Feature: Filter wheel
   a write of another is refused with INVALID_OPERATION, since a CFW drops a
   move sent while it travels; a write of the slot under way is accepted and
   not sent again (FW2). A move that has not arrived 30 s after it was sent
-  has failed, and Position reports that as an error until the next write
-  (FW8); the simulated CFW drops no move, so the unit tests pin that.
+  has failed, and Position reports that as an error until a write goes out
+  to the wheel (FW8); the simulated CFW drops no move, so the unit tests pin
+  that.
   FocusOffsets returns zero for every filter in v0 (FW3). The simulated CFW
   has 7 positions.
 

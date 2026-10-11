@@ -195,9 +195,6 @@ impl FilterWheelState {
         if let Some(under_way) = commanded.filter(|_| self.move_sent_at.lock().is_some()) {
             return Ok(Write::Refused { under_way });
         }
-        // The client has acted on a failed move: from here `Position` reads
-        // the wheel again, whatever becomes of this write (FW8).
-        *self.failed_move.lock() = None;
         if !self.reports_moving.load(Ordering::SeqCst)
             && last_sent.is_none_or(|last| last == target)
         {
@@ -220,6 +217,11 @@ impl FilterWheelState {
         if sent.is_ok() {
             *self.target_position.lock() = Some(slot);
             *self.move_sent_at.lock() = Some(Instant::now());
+            // Only a move that went out ends a failed move's report: a write
+            // refused on the way leaves the wheel where the failure left it,
+            // and under Linux a read then may name the slot sent before the
+            // move, which `Position` would take as where the wheel rests (FW8).
+            *self.failed_move.lock() = None;
         }
         *last_sent = sent.is_ok().then_some(target);
         drop(last_sent);
@@ -1395,11 +1397,11 @@ mod tests {
         assert_eq!(handle.commands(), vec![0, 2, 3, 0, 3]);
     }
 
-    /// The failure is reported until the client acts on it, not until the
-    /// client's next move succeeds: a write that fails leaves `Position`
-    /// reading the wheel.
+    /// A write refused on its way to the wheel leaves the failure reported:
+    /// what the status names then need not be where the wheel rests, and
+    /// `Position` would take it as such.
     #[tokio::test]
-    async fn a_write_that_fails_after_a_failed_move_leaves_position_reading_the_wheel() {
+    async fn a_write_that_fails_after_a_failed_move_leaves_the_failure_reported() {
         let handle = Arc::new(MockFilterWheelHandle::new("SIM-QHY178M", 7));
         handle.drop_next_move.store(true, Ordering::SeqCst);
         let device = connected_with_test_deadline(&handle).await;
@@ -1411,7 +1413,14 @@ mod tests {
         let err = device.set_position(5).await.unwrap_err();
 
         assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION);
-        assert_eq!(device.position().await.unwrap(), Some(0));
+        assert!(device
+            .position()
+            .await
+            .unwrap_err()
+            .message
+            .starts_with("the filter wheel did not reach slot 3"));
+        device.set_position(5).await.unwrap();
+        assert_eq!(device.position().await.unwrap(), Some(5));
     }
 
     /// A write that comes after the deadline, before any read saw it pass, is

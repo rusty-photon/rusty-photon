@@ -521,7 +521,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   re-inits and a close and re-open
   ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-first-move/README.md)). Power does home a CFW, before any connect: left at
   slot 5 and at slot 4 with its 12 V off, the dev box's wheel read slot 0
-  once the 12 V came back. A readout-mode change runs `InitQHYCCD`
+  once the 12 V came back. The homing takes about 20 s. With the 12 V cut
+  mid-move and restored 8 s later, the status read at the pace of a wheel in
+  transit for 17.4–19.5 s after the power came back, at rest once, in transit
+  2.1 s more, and at rest on slot 0 from 19.9–21.9 s on (3 of 3). A command
+  sent 5 s into the homing was dropped (1 of 1) ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-move-deadline/README.md)). A readout-mode change runs `InitQHYCCD`
   too (RM1), so what holds for a connect holds there.
 - **C6.** A connect **clears every cache its handshake republishes** — the CCD
   info and effective area, the size reported from it, the valid binning modes,
@@ -1703,7 +1707,7 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 - **FW1.** `Names` lists `filter_names` (or generated `Filter0..N`); `Position`
   returns the current slot, or the "moving" sentinel (`-1`/`None` → ASCOM moving)
   while target ≠ actual or the wheel reports itself moving (FW7), and an error
-  once a move has failed, until the next write (FW8). A **settled** wheel answers from the slot cached at
+  once a move has failed, until a write goes out (FW8). A **settled** wheel answers from the slot cached at
   connect or at the end of the last move — the SDK is read only while a move is
   outstanding. `GetQHYCCDCFWStatus` is a serial round-trip through the camera and
   measures **~260 ms** on a QHY178M + CFW3, which alone would put `Position` (and
@@ -1857,25 +1861,32 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   capture's `ImageArray` answers too (E9), with a message naming the slot asked
   for and the slot the status names, or that it names none: `the filter wheel
   did not reach slot 4 within 30s; its status names slot 2`. It goes on
-  answering that, without reading the wheel, until a client writes `Position`
-  again or the wheel is connected anew, and the failure is logged at `warn!`.
-  The driver sends the wheel nothing when a move fails, neither a retry nor a
-  move back: a move is a client's to ask for (tenet 3). The next write goes
-  out even when it names the slot that failed (FW2), and once it reaches the
-  wheel `Position` reads the wheel again, whatever becomes of the write. The
-  driver no longer holds a slot for the wheel: the status a failed move ends
-  on need not name where the wheel is. Under Linux, a wheel that has not
-  stopped names the slot sent before the move, and a CFW whose power comes
-  back homes to slot 0 (C5). On a wheel that has not reported itself moving,
-  a write of the failed slot therefore reads the status afresh and goes
-  through the slot it names (FW7): while the wheel travels, the Linux SDK
-  names the slot it was last sent, which is the failed one. In the run below
-  the read at the failure named slot 6 and the CFW then homed to slot 0; a
-  build that primed through slot 6 instead moved the wheel and was refused (1
-  of 1). A write that comes after the deadline, before any read has seen it
-  pass, reads the status first and settles the move the same way (arrived, if
-  the status names its slot), so it is not refused on behalf of a move that
-  has failed.
+  answering that, without reading the wheel, until a client's write goes out
+  to the wheel or the wheel is connected anew, and the failure is logged at
+  `warn!`. The driver sends the wheel nothing when a move fails, neither a
+  retry nor a move back: a move is a client's to ask for (tenet 3). The next
+  write goes out even when it names the slot that failed (FW2).
+
+  The driver no longer holds a slot for the wheel, since the status a failed
+  move ends on need not name where the wheel is: under Linux a wheel that has
+  not stopped names the slot sent before the move, and a CFW whose power comes
+  back homes to slot 0 (C5). On a wheel that has not reported itself moving, a
+  write of the failed slot therefore reads the status afresh and goes through
+  the slot it names (FW7): while the wheel travels, the Linux SDK names the
+  slot it was last sent, which is the failed one. In the first run through the
+  service the read at the failure named slot 6 and the CFW then homed to slot
+  0; that build primed through slot 6 instead, which moved the wheel, and the
+  write was refused (1 of 1). A write refused on its way, as by a prime its
+  status does not confirm, leaves the failure reported: the wheel is where the
+  failure left it, and under Linux a read then may name the slot sent before
+  the move, which `Position` would take as the slot the wheel rests on. A write
+  of the failed slot meets that while a CFW whose power has come back still
+  homes, since the homing reads as a wheel in transit and drops any command
+  sent meanwhile (C5); a write after the homing goes through
+  ([record](../validation/2026-10-10-qhy-camera-qhy178m-cfw-linux-move-deadline/README.md)). A write that comes after the deadline, before any read
+  has seen it pass, reads the status first and settles the move the same way
+  (arrived, if the status names its slot), so it is not refused on behalf of a
+  move that has failed.
 
   An error, rather than the slot the wheel stands on, which is what ASCOM's
   `Position` describes for a wheel at rest: rp's `set_filter` waits until
