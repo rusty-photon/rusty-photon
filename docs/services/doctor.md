@@ -350,13 +350,13 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   reported as a fault (below) rather than listed without a port.
 
   The Windows collector lists **present** devices only (`Get-PnpDevice
-  -PresentOnly`). Windows keeps a record for every device it has seen,
-  and one whose device has gone stays behind, not present
-  (`CM_PROB_PHANTOM`, problem code 45) and still carrying its last
-  `LocationPaths`. A device with no USB serial gets an instance id built
-  from its port, so it leaves one such record on every port it has used.
-  Read without the filter, each of those records would be a fault at its
-  old port: a dead device reported on a socket that is simply empty.
+  -PresentOnly`). When a device goes, Windows keeps its record until a
+  cleanup removes it: not present (`CM_PROB_PHANTOM`) and still carrying
+  its last `LocationPaths`. A device with no USB serial gets an instance
+  id built from its port, so it leaves one such record on every port it
+  has used. Read without the filter, each of those records would be a
+  fault at its old port, which may be empty or may now hold another
+  device.
   Measured by moving a camera between ports of
   a Windows 11 VM's USB controller
   ([device-claims plan](../plans/device-claims-and-phd2-camera.md), D2

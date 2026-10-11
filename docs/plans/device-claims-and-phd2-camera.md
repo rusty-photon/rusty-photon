@@ -106,11 +106,13 @@ recorded here so the option is not lost.
 | C8 | `ui-htmx` editing of `usb_devices` | Deferred | |
 
 Order: C1 first and **blocking** — no schema commits to a port spelling
-that has not been proven stable. Linux and Windows were measured on
-hardware (D2). macOS's `location_id` is the platform's own encoding of
-the port chain, extracted and unit-tested in C1 but not yet read on a
-Mac; that is checked with the macOS item in the waiting list, before
-C5's no-list flip. C2 → C3 → C4 then
+that has not been proven stable. The gate is on the spelling that was
+still unchosen, Windows' (D2). Linux was measured on hardware; Windows
+on `rig2`, except the move to a different port, which was measured on a
+VM (D2, spike items 1–3 and 7). macOS's `location_id` is the platform's
+own encoding of the port chain, extracted and unit-tested in C1 but
+**not yet read on a Mac**. The plan carries that risk until the macOS
+item in the waiting list is answered, before C5's no-list flip. C2 → C3 → C4 then
 land per driver, each on its own, adding the list path and leaving the
 no-list path as it is today. C5 lands after all three: it flips the
 no-list default in every driver at once (D4), so it inherits C4's
@@ -449,11 +451,14 @@ ASI662MC      PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(2)#USB(4)    Port_#0004.Hub_#0
    (`CM_PROB_PHANTOM`) and **still carrying its old `LocationPaths`**.
    The guest held nine such records for ZWO cameras from earlier
    sessions before this one began. Any device that leaves keeps such a
-   record; a serial-less one leaves one per port it has used. A
-   collector that read every record would report each one as a fault at
-   its old port, since its problem code (45) is not 0, and D4.5's match
-   of a fault to a listed port would then blame a dead device for a
-   listed port the camera has simply left. This one reads
+   record until a cleanup removes it; a serial-less one leaves one per
+   port it has used. A collector that read every record would report
+   each one as a fault at its old port: `Get-PnpDevice` showed every
+   stale record as `CM_PROB_PHANTOM`, and the parser takes any problem
+   code but 0, or none, as not working. D4.5's match of a fault to a
+   listed port would then blame a dead device for a listed port the
+   camera has left, whether that port is now empty or holds another
+   camera. This one reads
    `Get-PnpDevice -PresentOnly`, and no stale record reached its
    inventory or its faults at any step.
 
@@ -2210,7 +2215,7 @@ review.
 | # | Decision | Why |
 |---|---|---|
 | 1 | **The USB port path is the only device key** (D1) | Serial does not exist for every camera (the ASI1600 exposes neither serial nor flash id); three ways to name one device means three code paths and a config whose meaning depends on which key the author reached for. Serial and model stay as internal join signals and doctor display columns, never config surface. |
-| 2 | **C1 is a blocking hardware spike** (D2) | The Windows port spelling was the one leg still unchosen; the Linux directory name was chosen first, but its bus number depends on controller registration order, so it gave way to a controller-anchored spelling (D2). Prove the Windows spelling on the real box — direct and behind a hub, across replug and reboot — before any schema commits to a spelling. An unstable key on one platform is worse than no key. **Met:** on `rig2` behind the hub, across a port power cycle and a reboot (2026-09-21); the move to a different port, with the camera on a root port, on a Windows 11 VM (2026-10-10), which the owner chose over a trip to `rig2`. A camera plugged straight into a real controller's root port was not read (D2, spike items 1–3 and 7). |
+| 2 | **C1 is a blocking hardware spike** (D2) | The Windows port spelling was the one leg still unchosen; the Linux directory name was chosen first, but its bus number depends on controller registration order, so it gave way to a controller-anchored spelling (D2). Prove the Windows spelling on the real box — direct and behind a hub, across replug and reboot — before any schema commits to a spelling. An unstable key on one platform is worse than no key. **Evidence:** on `rig2` behind the hub, across a port power cycle and a reboot (2026-09-21); the move to a different port, with the camera on a root port, on a Windows 11 VM (2026-10-10), which the owner chose over a trip to `rig2`. A camera plugged straight into a real controller's root port was not read (D2, spike items 1–3 and 7). |
 | 3 | **The facade listens on 11128** (D10) | It joins the Alpaca device block because a port should say what a client finds there, and what is there is an ASCOM Camera. Its hosting process is not a client-visible fact. The port is a second listener under a new nested `camera.server` block — not a reuse of the existing REST `server` — and it brings catalog, packaging and firewall registration with it. |
 | 4 | **`PixelSizeX`/`Y` come from config alone — as two fields** (D10) | ASCOM clients and ConformU read `PixelSizeX` right after connect, before any exposure, and tenet 3 forbids capturing a frame on connect to discover it. A FITS-header cross-check was dropped as a second source of truth for a value typed once per rig. `pixel_size_x_um` and `pixel_size_y_um` are separate because ASCOM and rp treat them as separate invariants; one value would advertise square pixels for a rectangular sensor. |
 | 5 | **No list is the permanent default: every camera the USB scan can place, numbered by port order; cameras it cannot place are refused** (D3, D4.3, D4.4, D4.7) | No deprecation and no future release demanding the list: an existing file stays valid and single-camera rigs never meet the block. The default's behaviour still changes once, in C5 (row 6): a multi-camera no-list rig can be renumbered and look-alikes it serves today are refused, so rp's device numbers may need revisiting once (D3). Port order is stable while the set of cameras is unchanged. Refusing unplaceable cameras (look-alikes, unrecognised models, faults, a failed scan) keeps every served number tied to a socket, at the price of a failed scan leaving a no-list rig with no cameras until a background re-scan succeeds (row 14). Doctor's `usb-devices.implicit` finding nudges only the multi-camera case. |
@@ -2242,7 +2247,8 @@ nothing now blocks C2.
   leaves a no-list rig with no cameras (D4.4), this needs checking on a
   current Mac before C5 flips the no-list default. The same Mac answers
   what C1 did not measure on macOS: that a camera's `location_id` stays
-  the same across a replug and a reboot.
+  the same across a replug and a reboot, changes when the camera moves
+  to another port, and carries the hop when the camera is behind a hub.
 - **C4 — a tenet-3-safe CFW detection path**, waiting on a choice
   between deferring the probe to client connect, finding a non-actuating
   detection call, or an explicitly-unsafe operator command (D6). A listed
