@@ -858,8 +858,10 @@ means plain, unauthenticated HTTP.
     under. Explicit rather than positional: reordering entries renumbers
     nothing.
   - **usb_port** — the port path, compared verbatim with the USB scan.
-  - **name**, **description** — optional display overrides for the camera
-    (or its placeholder, U4).
+  - **name** — optional display name for the camera, and for the
+    placeholder that holds its number when it cannot be served (U4).
+  - **description** — optional description for the camera. A placeholder's
+    `Description` is always its reason (U4), so it does not use this one.
 
   Validated at load, before any USB or SDK work, and again by `config.apply`
   (U9); a list that fails either is named entry by entry and nothing starts
@@ -995,7 +997,7 @@ on.
 Named, testable behaviours. ASCOM error names per
 [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md). Every
 contract below is real as of Phase E; the BDD feature files under
-`tests/features/` (111 scenarios, 563 steps) and the unit tests in
+`tests/features/` (111 scenarios, 564 steps) and the unit tests in
 `src/camera.rs`/`src/backend.rs` exercise them — see "Testing" below for
 which layer covers which contract (E9's two branches, the
 generation-counter abort race and E10 are unit-test-only, per the design's
@@ -1323,12 +1325,14 @@ second driver needs it.
 
   A match places a camera only when it is **one-to-one**: the camera matches
   exactly one candidate, and that candidate matches exactly one SDK camera.
-  After the keyed matches, the one SDK camera and the one record left over
-  are **paired by elimination** when nothing else could explain either:
-  exactly one SDK camera and exactly one `f266` record remain unpaired, no
-  fault carries `f266`, and the record's product id is not one the normalizer
-  gives a different model. That keeps a single camera whose model nobody has
-  observed yet working.
+  After the keyed matches, an SDK camera whose model the normalizer does not
+  know and the one record left over are **paired by elimination** when nothing
+  else could explain either: exactly one SDK camera and exactly one `f266`
+  record remain unpaired, no fault carries `f266`, and the record's product id
+  is not one the normalizer gives any model. That keeps a single camera whose
+  model nobody has observed yet working. A known model is never paired this
+  way: its product id is known, so a leftover record under another one is a
+  different device, and its own record is missing.
 
   The **normalizer** knows only observed pairs:
 
@@ -1428,9 +1432,13 @@ second driver needs it.
   query cannot have produced — has no opinion about what is on the bus, so
   nothing is placed: every listed number is a placeholder naming the
   collector's error, the SDK is not enumerated, and the error is logged at
-  `error!`. It is never a startup failure — the service starts and answers at
-  once — so the service manager's restart-on-failure would never retry it,
-  and one slow `powershell.exe` at boot would otherwise cost the night. The
+  `error!`. It is never a startup failure — the service starts and serves its
+  placeholders — so the service manager's restart-on-failure would never retry
+  it, and one slow `powershell.exe` at boot would otherwise cost the night.
+  (Like the SDK enumeration, the scan runs before the listener binds, so a
+  start or reload with a list is unreachable for as long as the scan takes:
+  milliseconds on Linux, where it reads sysfs, and at most the collector's
+  10 s deadline on macOS and Windows.) The
   service therefore re-scans in the background, after waits of 10 s, 20 s and
   40 s and then every 60 s, logging each repeat failure at `debug!`.
   The first scan that succeeds is logged at `info!` and fires the service's
@@ -2205,7 +2213,7 @@ Layered per [`testing.md`](../skills/testing.md).
   capture's own capture restart has run, so "the cancel landed in the poll
   loop" is a fact rather than a nap.
 - **BDD** (`bdd-infra::ServiceHandle`, eleven feature files, 111 scenarios /
-  563 steps) — all genuinely green, including `enumeration_connection`'s
+  564 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
   behavioural feature (`exposure`, `binning_and_roi`, `cooling`,
   `gain_offset_readout`, `sensor_properties`) — see each file's header

@@ -31,19 +31,11 @@ pub const PLACEHOLDER_ERROR_CODE: u16 = 0x540;
 /// `ascom-alpaca`'s `ASCOMErrorCode::new_for_driver` takes.
 pub const PLACEHOLDER_DRIVER_CODE: u16 = 0x40;
 
-/// The prefix of every placeholder's `UniqueID`; no camera's can start with it.
-const PLACEHOLDER_ID_PREFIX: &str = "placeholder:";
-
-/// A placeholder's `UniqueID`: `placeholder:<service>:<usb_port>`.
+/// A placeholder's `UniqueID`: `placeholder:<service>:<usb_port>`, a form no
+/// camera's can take.
 #[must_use]
 pub fn placeholder_unique_id(service: &str, usb_port: &str) -> String {
-    format!("{PLACEHOLDER_ID_PREFIX}{service}:{usb_port}")
-}
-
-/// Whether a `UniqueID` is a placeholder's rather than a camera's.
-#[must_use]
-pub fn is_placeholder_unique_id(unique_id: &str) -> bool {
-    unique_id.starts_with(PLACEHOLDER_ID_PREFIX)
+    format!("placeholder:{service}:{usb_port}")
 }
 
 // --- the list -------------------------------------------------------------------
@@ -282,11 +274,13 @@ fn keyed_match(normalizer: &Normalizer<'_>, camera: &SdkCamera, record: &UsbDevi
 ///
 /// A camera is placed only on a **one-to-one** match: it matches exactly one
 /// of this vendor's records, and that record matches no other camera. After
-/// the keyed matches, the one camera and the one record left over are paired
-/// **by elimination** when nothing else could explain either: exactly one of
-/// each remains, no fault carries this vendor's id, the record's product id is
-/// not one the normalizer gives a different model, and their serials, when
-/// both have one, agree. Everything else is refused, never guessed (D4.3).
+/// the keyed matches, a camera whose **model the normalizer does not know** is
+/// paired **by elimination** with the one record left over when nothing else
+/// could explain either: exactly one of each remains, no fault carries this
+/// vendor's id, the record's product id is not one the normalizer gives any
+/// model, and their serials, when both have one, agree. A known model is never
+/// paired this way — its product id is known, and a record under another one
+/// is some other device. Everything else is refused, never guessed (D4.3).
 #[must_use]
 pub fn place(normalizer: &Normalizer<'_>, sdk: &[SdkCamera], scan: &UsbScan) -> Placement {
     let records: Vec<&UsbDevice> = scan
@@ -332,13 +326,17 @@ pub fn place(normalizer: &Normalizer<'_>, sdk: &[SdkCamera], scan: &UsbScan) -> 
                 .faults
                 .iter()
                 .any(|f| f.vendor.as_deref() == Some(normalizer.vendor));
-            let another_models_product = normalizer.assigns_product(&rec.product)
-                && normalizer.product_for(&sdk_camera.model) != Some(rec.product.as_str());
+            // A known model has a known product id, so a record under another
+            // one is evidence against the pair, not the absence of evidence
+            // elimination needs: its own record may be missing, and the one
+            // left over a different device of this vendor.
+            let model_known = normalizer.product_for(&sdk_camera.model).is_some();
+            let product_known = normalizer.assigns_product(&rec.product);
             let serials_disagree = matches!(
                 (&sdk_camera.serial, &rec.serial),
                 (Some(sdk), Some(bus)) if sdk != bus
             );
-            if !vendor_fault && !another_models_product && !serials_disagree {
+            if !vendor_fault && !model_known && !product_known && !serials_disagree {
                 if let Some(slot) = placed.get_mut(*camera) {
                     *slot = Some(*record);
                 }
@@ -515,7 +513,12 @@ impl<'a> Claims<'a> {
         if let Some(record) = record {
             let product = record.model.as_deref().unwrap_or("a device");
             let id = format!("{}:{}", record.vendor, record.product);
-            if self.normalizer.is_own_record(record) {
+            // Only a record no known model claims could be the unrecognised
+            // camera's: one under a known model's product id is that model,
+            // which the SDK does not report, and no new entry would pair it.
+            if self.normalizer.is_own_record(record)
+                && !self.normalizer.assigns_product(&record.product)
+            {
                 if let Some(index) = placement
                     .cameras
                     .iter()
@@ -907,12 +910,6 @@ mod tests {
     fn a_placeholder_unique_id_names_the_service_and_the_port() {
         let id = placeholder_unique_id("svbony-camera", "pci-0000:00:14.0-usbv3-0:4.2");
         assert_eq!(id, "placeholder:svbony-camera:pci-0000:00:14.0-usbv3-0:4.2");
-        assert!(is_placeholder_unique_id(&id));
-    }
-
-    #[test]
-    fn a_camera_unique_id_is_not_a_placeholder_one() {
-        assert!(!is_placeholder_unique_id("SVBONY:SV605CC:SVB0123456789AB"));
     }
 
     // --- the list ------------------------------------------------------------
@@ -1142,6 +1139,18 @@ mod tests {
     }
 
     #[test]
+    fn a_known_model_is_never_paired_by_elimination() {
+        // Its own record (9a0a) is missing; the one left over is some other
+        // device of this vendor.
+        let placement = place(
+            &SVB,
+            &[camera("SV605CC")],
+            &scan(vec![record("9a0f", "p2")]),
+        );
+        assert_eq!(placement.cameras, vec![CameraPlace::NoRecord]);
+    }
+
+    #[test]
     fn elimination_never_takes_a_record_the_normalizer_gives_another_model() {
         let placement = place(&SVB, &[camera("SV905C")], &scan(vec![record("9a0a", "p1")]));
         assert_eq!(placement.cameras, vec![CameraPlace::Unrecognised]);
@@ -1287,11 +1296,30 @@ mod tests {
     }
 
     #[test]
-    fn an_unrecognised_camera_beside_an_unpaired_record_names_the_model() {
-        let claims = claims(Ok(scan(vec![record("9a0a", "p1")])), vec![camera("SV905C")]);
+    fn an_unrecognised_camera_beside_an_unclaimed_record_names_the_model() {
+        // Two unclaimed records, so elimination cannot pair either.
+        let claims = claims(
+            Ok(scan(vec![record("9a0f", "p1"), record("9a0e", "p2")])),
+            vec![camera("SV905C")],
+        );
         let reason = placeholder_reason(claims.resolve("p1"));
         assert!(
             reason.contains("the SVBony SDK reports a SV905C this driver knows no product id for"),
+            "{reason}"
+        );
+    }
+
+    #[test]
+    fn a_known_models_record_beside_an_unrecognised_camera_is_the_known_model() {
+        // No entry for SV905C could pair it with 9a0a: that record is an
+        // SV605CC the SDK does not report.
+        let claims = claims(Ok(scan(vec![record("9a0a", "p1")])), vec![camera("SV905C")]);
+        let reason = placeholder_reason(claims.resolve("p1"));
+        assert!(
+            reason.starts_with(
+                "p1 holds SVBONY 9a0a (f266:9a0a), which the SVBony SDK does not report as a \
+                 camera."
+            ),
             "{reason}"
         );
     }

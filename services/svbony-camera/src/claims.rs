@@ -271,6 +271,12 @@ fn no_list_block(
              into the right entry by hand."
         ));
     }
+    if !config.devices.is_empty() {
+        notes.push(format!(
+            "Delete the devices map from {SERVICE}.json when you paste this block: the block \
+             carries its names, and a devices map beside a usb_devices list refuses the start."
+        ));
+    }
     block
 }
 
@@ -382,6 +388,14 @@ mod tests {
                 .notes
                 .iter()
                 .any(|n| n.contains("devices override stale")),
+            "{:?}",
+            listing.notes
+        );
+        assert!(
+            listing
+                .notes
+                .iter()
+                .any(|n| n.starts_with("Delete the devices map from svbony-camera.json")),
             "{:?}",
             listing.notes
         );

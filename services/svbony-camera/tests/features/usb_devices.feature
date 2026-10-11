@@ -34,7 +34,10 @@ Feature: Device claims -- the usb_devices list
   one working record for the simulated camera, f266:9a0a on port
   simulated-usbv3-0:1; the hidden --usb-inventory flag replaces it with a
   staged document. The simulated camera is SV605CC-Simulated, CameraSN
-  SVB0123456789AB, publishing no USB serial.
+  SVB0123456789AB, publishing no USB serial. Since the simulation fabricates
+  one camera, the look-alikes here are one camera matching two identical
+  records; two SDK cameras of one model sharing records are pinned in the
+  join's unit tests.
 
   Scenario: A camera on a listed port is served at its number with the entry's name
     Given the configuration lists these USB devices:
@@ -125,7 +128,7 @@ Feature: Device claims -- the usb_devices list
     Then the connect is rejected with ASCOM error 0x540
     And the rejection says "its idProduct could not be read: No such device (os error 19)"
 
-  Scenario: Two cameras the bus cannot tell apart are refused, never guessed
+  Scenario: A camera matching two identical records is refused, never guessed
     Given the staged USB inventory:
       """
       {
@@ -187,7 +190,7 @@ Feature: Device claims -- the usb_devices list
   Scenario Outline: A list that breaks a rule refuses the start, and doctor names what is wrong
     Given the configuration JSON <config>
     When the svbony-camera service is started
-    Then the service refuses to start
+    Then the service refuses to start saying <message>
     When the doctor subcommand runs on the configuration
     Then the doctor's config.full-shape check fails saying <message>
 
@@ -232,13 +235,14 @@ Feature: Device claims -- the usb_devices list
       [ { "device_number": 0, "usb_port": "simulated-usbv3-0:1" } ]
       """
 
-  Scenario: doctor --devices carries a devices override into the block, so pasting keeps the name
+  Scenario: doctor --devices carries a devices override into the block, and says to delete the map
     Given the configuration JSON {"devices": {"SVB0123456789AB": {"name": "Main Imaging"}}}
     When doctor --devices runs
     Then the paste-ready usb_devices block is:
       """
       [ { "device_number": 0, "usb_port": "simulated-usbv3-0:1", "name": "Main Imaging" } ]
       """
+    And the doctor output says "Delete the devices map from svbony-camera.json when you paste this block"
 
   Scenario: doctor --devices reproduces a configured list and marks a camera it leaves out
     Given the configuration lists these USB devices:
@@ -254,7 +258,7 @@ Feature: Device claims -- the usb_devices list
       [ { "device_number": 0, "usb_port": "simulated-usbv3-0:9", "name": "Guide port" } ]
       """
 
-  Scenario: doctor --devices names cameras the bus cannot tell apart, and places neither
+  Scenario: doctor --devices names a camera matching two identical records, and places it nowhere
     Given the staged USB inventory:
       """
       {

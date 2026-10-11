@@ -148,7 +148,7 @@ impl CameraWorld {
     }
 
     /// The service's command line for this scenario.
-    fn start_args(&mut self) -> Vec<String> {
+    pub fn start_args(&mut self) -> Vec<String> {
         let config_path = self.write_config();
         let mut args = vec!["--config".to_string(), config_path];
         if self.empty_backend {

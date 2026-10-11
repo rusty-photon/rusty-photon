@@ -75,8 +75,13 @@ async fn service_is_started(world: &mut CameraWorld) {
     world.try_start().await;
 }
 
-#[then("the service refuses to start")]
-async fn service_refuses_to_start(world: &mut CameraWorld) {
+/// The start must have exited without binding, and for the reason the
+/// scenario names. The harness forwards a child's stderr rather than keeping
+/// it, so once the start is known to exit, the same command line runs again
+/// to completion to read what it said — safe only after that: a start the
+/// service accepted would never complete.
+#[then(regex = r"^the service refuses to start saying (.+)$")]
+async fn service_refuses_to_start(world: &mut CameraWorld, expected: String) {
     match world
         .start_refusal
         .as_ref()
@@ -85,6 +90,15 @@ async fn service_refuses_to_start(world: &mut CameraWorld) {
         Err(_) => {}
         Ok(()) => panic!("the service started from a configuration it should refuse"),
     }
+    let args = world.start_args();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let output = bdd_infra::run_once_async(env!("CARGO_PKG_NAME"), &args, None).await;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "the refused start exited cleanly");
+    assert!(
+        stderr.contains(&expected),
+        "the refused start does not say {expected:?}:\n{stderr}"
+    );
 }
 
 // --- what the server registers --------------------------------------------------

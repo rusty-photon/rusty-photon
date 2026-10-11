@@ -213,8 +213,12 @@ impl ServerBuilder {
     /// error: it is served as placeholders and retried (U6).
     pub async fn build(self) -> Result<BoundServer, SvbonyCameraError> {
         let mut server = Server::new(CargoServerInfo!());
-        let (registered, rescan) = match &self.config.usb_devices {
-            None => (self.register_enumerated(&mut server).await?, None),
+        let registered = match &self.config.usb_devices {
+            None => Registered {
+                cameras: self.register_enumerated(&mut server).await?,
+                placeholders: 0,
+                rescan: None,
+            },
             Some(list) => self.register_list(&mut server, list).await?,
         };
 
@@ -269,14 +273,19 @@ impl ServerBuilder {
         if !rusty_photon_service_lifecycle::is_scm_service() {
             println!("Bound Alpaca server bound_addr={local_addr}");
         }
-        info!(cameras = registered, address = %local_addr, "Service started successfully");
+        info!(
+            cameras = registered.cameras,
+            placeholders = registered.placeholders,
+            address = %local_addr,
+            "Service started successfully"
+        );
         Ok(BoundServer {
             listener,
             app,
             local_addr,
             tls,
             discovery,
-            rescan,
+            rescan: registered.rescan,
         })
     }
 
@@ -303,19 +312,19 @@ impl ServerBuilder {
     /// A `usb_devices` list: take the USB scan, enumerate the SDK, place each
     /// SDK camera on a port, and register each entry in number order — the
     /// camera placed on its port (U5), or a placeholder that says why there
-    /// is none (U4). Nothing is opened. Returns how many devices were
-    /// registered, and the re-scan to run when the scan failed (U6).
+    /// is none (U4). Nothing is opened. Returns what was registered, and the
+    /// re-scan to run when the scan failed (U6).
     async fn register_list(
         &self,
         server: &mut Server,
         list: &[UsbDeviceEntry],
-    ) -> Result<(usize, Option<Rescan>), SvbonyCameraError> {
+    ) -> Result<Registered, SvbonyCameraError> {
         if list.is_empty() {
             warn!(
                 "usb_devices is an empty list: no SVBony camera is registered, every one is \
                  left to other applications"
             );
-            return Ok((0, None));
+            return Ok(Registered::default());
         }
         let source = self.usb_source.clone();
         let scan = tokio::task::spawn_blocking(move || source.scan()).await?;
@@ -331,7 +340,6 @@ impl ServerBuilder {
             Ok(_) if self.force_empty => Vec::new(),
             Ok(_) => enumerate_cameras().await?,
         };
-        let scan_failed = scan.is_err();
         let infos: Vec<CameraInfo> = cameras.iter().map(|c| c.info.clone()).collect();
         let claims = Claims::new(
             claims::NORMALIZER,
@@ -340,6 +348,7 @@ impl ServerBuilder {
             claims::sdk_cameras(&infos),
         );
 
+        let mut registered = Registered::default();
         let mut entries: Vec<&UsbDeviceEntry> = list.iter().collect();
         entries.sort_by_key(|e| e.device_number);
         for entry in entries {
@@ -357,6 +366,7 @@ impl ServerBuilder {
                         "a listed port holds an SVBony camera"
                     );
                     self.register_camera(server, cam, Some(&entry.display_override()))?;
+                    registered.cameras = registered.cameras.saturating_add(1);
                 }
                 Err(reason) => {
                     warn!(
@@ -370,6 +380,7 @@ impl ServerBuilder {
                         placeholder = placeholder.with_config_actions(ctx);
                     }
                     server.devices.register(placeholder);
+                    registered.placeholders = registered.placeholders.saturating_add(1);
                 }
             }
         }
@@ -382,7 +393,9 @@ impl ServerBuilder {
             }
         }
 
-        let rescan = scan_failed
+        registered.rescan = claims
+            .scan_error()
+            .is_some()
             .then(|| {
                 let rescan = self.reload.clone().map(|reload| Rescan {
                     source: self.usb_source.clone(),
@@ -394,7 +407,7 @@ impl ServerBuilder {
                 rescan
             })
             .flatten();
-        Ok((list.len(), rescan))
+        Ok(registered)
     }
 
     /// Register one enumerated camera with its display overrides.
@@ -432,6 +445,15 @@ impl ServerBuilder {
             reload,
         })
     }
+}
+
+/// What a build registered: the cameras it serves, the placeholders holding
+/// listed numbers, and the re-scan to run when the USB scan failed.
+#[derive(Default)]
+struct Registered {
+    cameras: usize,
+    placeholders: usize,
+    rescan: Option<Rescan>,
 }
 
 /// The background re-scan after a failed USB scan (U6): it waits 10 s, 20 s,
@@ -667,20 +689,20 @@ mod simulation_tests {
     }
 
     /// Register `entries` and read back each Camera's `UniqueID`, in device
-    /// number order, with the re-scan the build asked for.
+    /// number order, with what the build says it registered.
     async fn register(
         builder: &ServerBuilder,
         entries: &[(u32, &str)],
-    ) -> Result<(Vec<String>, Option<Rescan>), SvbonyCameraError> {
+    ) -> Result<(Vec<String>, Registered), SvbonyCameraError> {
         let mut server = Server::new(CargoServerInfo!());
-        let (count, rescan) = builder.register_list(&mut server, &list(entries)).await?;
+        let registered = builder.register_list(&mut server, &list(entries)).await?;
         let ids: Vec<String> = server
             .devices
             .iter::<dyn ascom_alpaca::api::Camera>()
             .map(|camera| camera.unique_id().to_string())
             .collect();
-        assert_eq!(ids.len(), count);
-        Ok((ids, rescan))
+        assert_eq!(ids.len(), registered.cameras + registered.placeholders);
+        Ok((ids, registered))
     }
 
     /// A staged inventory file holding `document`, kept alive by the guard.
@@ -695,7 +717,7 @@ mod simulation_tests {
 
     #[tokio::test]
     async fn a_list_registers_its_entries_in_number_order() {
-        let (ids, rescan) = register(
+        let (ids, registered) = register(
             &ServerBuilder::new(),
             &[(1, "simulated-usbv3-0:1"), (0, "simulated-usbv3-0:9")],
         )
@@ -708,7 +730,11 @@ mod simulation_tests {
                 "SVBONY:SV605CC-Simulated:SVB0123456789AB",
             ]
         );
-        assert!(rescan.is_none(), "a scan that ran needs no re-scan");
+        assert_eq!((registered.cameras, registered.placeholders), (1, 1));
+        assert!(
+            registered.rescan.is_none(),
+            "a scan that ran needs no re-scan"
+        );
     }
 
     #[tokio::test]
@@ -719,9 +745,9 @@ mod simulation_tests {
                 "/nonexistent/inventory.json",
             )))
             .with_reload_signal(ReloadSignal::new());
-        let (ids, rescan) = register(&builder, &[]).await.unwrap();
+        let (ids, registered) = register(&builder, &[]).await.unwrap();
         assert_eq!(ids, Vec::<String>::new());
-        assert!(rescan.is_none());
+        assert!(registered.rescan.is_none());
     }
 
     #[tokio::test]
@@ -730,21 +756,22 @@ mod simulation_tests {
         let builder = ServerBuilder::new()
             .with_usb_source(source)
             .with_reload_signal(ReloadSignal::new());
-        let (ids, rescan) = register(&builder, &[(0, "simulated-usbv3-0:1")])
+        let (ids, registered) = register(&builder, &[(0, "simulated-usbv3-0:1")])
             .await
             .unwrap();
         assert_eq!(ids, vec!["placeholder:svbony-camera:simulated-usbv3-0:1"]);
-        assert!(rescan.is_some());
+        assert_eq!((registered.cameras, registered.placeholders), (0, 1));
+        assert!(registered.rescan.is_some());
     }
 
     #[tokio::test]
     async fn without_a_reload_path_a_failed_scan_is_not_retried() {
         let (_dir, source) = staged(FAILED_SCAN).unwrap();
         let builder = ServerBuilder::new().with_usb_source(source);
-        let (_, rescan) = register(&builder, &[(0, "simulated-usbv3-0:1")])
+        let (_, registered) = register(&builder, &[(0, "simulated-usbv3-0:1")])
             .await
             .unwrap();
-        assert!(rescan.is_none());
+        assert!(registered.rescan.is_none());
     }
 
     #[tokio::test]
