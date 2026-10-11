@@ -451,21 +451,13 @@ impl OmniSimHandle {
     ///
     /// # Errors
     ///
-    /// Returns a message if the GET fails in transport, its body is not
-    /// JSON, or the body has no integer `Value`.
-    pub async fn filter_wheel_position() -> Result<i64, String> {
+    /// Returns a message if the GET fails in transport, answers a
+    /// non-success HTTP status or a body that is not an Alpaca response,
+    /// reports a non-zero Alpaca `ErrorNumber`, or carries no numeric
+    /// `Value`.
+    pub async fn filter_wheel_position() -> Result<f64, String> {
         let base_url = Self::singleton_base_url().await;
-        let url =
-            format!("{base_url}/api/v1/filterwheel/0/position?ClientID=77&ClientTransactionID=1");
-        let body: serde_json::Value = reqwest::get(&url)
-            .await
-            .map_err(|e| format!("GET {url} failed: {e}"))?
-            .json()
-            .await
-            .map_err(|e| format!("GET {url}: unparseable body: {e}"))?;
-        body.get("Value")
-            .and_then(serde_json::Value::as_i64)
-            .ok_or_else(|| format!("GET {url}: no integer Value in {body}"))
+        Self::get_device_number_at(&base_url, "filterwheel", 0, "position").await
     }
 
     /// The cover-calibrator simulator's Alpaca `CalibratorState` (1 =

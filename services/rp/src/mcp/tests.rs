@@ -554,6 +554,9 @@ struct MockFilterWheel {
     /// A write lands at once: once there is one, `position()` names the
     /// last slot written, whatever it read before.
     follows_writes: bool,
+    /// How long each `position()` read takes, so a test can land a
+    /// cancellation inside one.
+    read_delay: Duration,
 }
 
 impl_mock_device!(MockFilterWheel);
@@ -570,6 +573,9 @@ impl ascom_alpaca::api::FilterWheel for MockFilterWheel {
     }
 
     async fn position(&self) -> ascom_alpaca::ASCOMResult<Option<usize>> {
+        if !self.read_delay.is_zero() {
+            tokio::time::sleep(self.read_delay).await;
+        }
         if self.fail_position_poll {
             return Err(ASCOMError::invalid_operation("encoder error"));
         }
@@ -1815,15 +1821,42 @@ async fn set_filter_writes_a_wheel_that_reads_moving_past_the_ceiling() {
     assert_eq!(ok_json(result)["position"], 1);
     assert_eq!(*fw.writes.lock().unwrap(), vec![(1, 0)]);
     assert!(
-        started.elapsed() >= MOVE_UNDER_WAY_CEILING,
+        started.elapsed() >= MOVE_CEILING,
         "written after {:?}",
         started.elapsed()
     );
 }
 
-/// A wheel already resting on the slot asked for is not written.
+/// Its own move is bounded too: a wheel that has not reached the slot
+/// written by the ceiling fails the call rather than holding it, as when
+/// another client's write sent it elsewhere.
 #[tokio::test(start_paused = true)]
-async fn set_filter_to_the_slot_the_wheel_rests_on_writes_nothing() {
+async fn set_filter_fails_a_move_that_has_not_arrived_by_the_ceiling() {
+    let fw = Arc::new(MockFilterWheel::default());
+    let handler = handler_with_wheel(&fw);
+    let started = tokio::time::Instant::now();
+
+    let result = handler
+        .set_filter_inner(set_filter_to("Red"), &Cancel::never())
+        .await;
+
+    assert_tool_error(
+        result,
+        "the filter wheel did not reach Red (slot 1) within 60s",
+    );
+    assert_eq!(*fw.writes.lock().unwrap(), vec![(1, 0)]);
+    assert!(
+        started.elapsed() >= MOVE_CEILING,
+        "failed after {:?}",
+        started.elapsed()
+    );
+}
+
+/// A wheel that already names the slot asked for is written all the
+/// same: a driver's `Position` can be stale, and the write is the
+/// command.
+#[tokio::test(start_paused = true)]
+async fn set_filter_writes_the_slot_the_wheel_already_names() {
     let fw = Arc::new(MockFilterWheel::default());
     let handler = handler_with_wheel(&fw);
 
@@ -1832,10 +1865,12 @@ async fn set_filter_to_the_slot_the_wheel_rests_on_writes_nothing() {
         .await;
 
     assert_eq!(ok_json(result)["position"], 0);
-    assert!(fw.writes.lock().unwrap().is_empty());
+    assert_eq!(*fw.writes.lock().unwrap(), vec![(0, 0)]);
 }
 
-#[tokio::test]
+/// A cancellation while a move under way is waited out ends the call
+/// at the next poll, and nothing is written.
+#[tokio::test(start_paused = true)]
 async fn set_filter_cancelled_while_a_move_is_under_way_writes_nothing() {
     let fw = Arc::new(MockFilterWheel {
         report_moving: true,
@@ -1843,28 +1878,43 @@ async fn set_filter_cancelled_while_a_move_is_under_way_writes_nothing() {
     });
     let handler = handler_with_wheel(&fw);
     let cancel = Cancel::never();
-    cancel.cancel(super::inflight::CancelReason::ClientDisconnected);
+    let started = tokio::time::Instant::now();
 
-    let result = handler
-        .set_filter_inner(set_filter_to("Red"), &cancel)
-        .await;
+    let (result, ()) = tokio::join!(
+        handler.set_filter_inner(set_filter_to("Red"), &cancel),
+        async {
+            tokio::time::sleep(Duration::from_millis(350)).await;
+            cancel.cancel(super::inflight::CancelReason::ClientDisconnected);
+        }
+    );
 
     assert_tool_error(result, "cancelled");
     assert!(fw.writes.lock().unwrap().is_empty());
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the call ran on {:?} after its cancellation",
+        started.elapsed()
+    );
 }
 
-/// A cancellation that lands while the wheel is read, here one already
-/// made when the call begins, writes nothing even to a wheel at rest.
-#[tokio::test]
-async fn set_filter_cancelled_before_its_write_leaves_a_resting_wheel_alone() {
-    let fw = Arc::new(MockFilterWheel::default());
+/// A cancellation that lands while the wheel is being read writes
+/// nothing, even when the read finds the wheel at rest.
+#[tokio::test(start_paused = true)]
+async fn set_filter_cancelled_during_its_read_leaves_a_resting_wheel_alone() {
+    let fw = Arc::new(MockFilterWheel {
+        read_delay: Duration::from_millis(250),
+        ..Default::default()
+    });
     let handler = handler_with_wheel(&fw);
     let cancel = Cancel::never();
-    cancel.cancel(super::inflight::CancelReason::ClientDisconnected);
 
-    let result = handler
-        .set_filter_inner(set_filter_to("Red"), &cancel)
-        .await;
+    let (result, ()) = tokio::join!(
+        handler.set_filter_inner(set_filter_to("Red"), &cancel),
+        async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            cancel.cancel(super::inflight::CancelReason::ClientDisconnected);
+        }
+    );
 
     assert_tool_error(result, "cancelled");
     assert!(fw.writes.lock().unwrap().is_empty());

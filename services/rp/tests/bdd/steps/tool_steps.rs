@@ -99,9 +99,9 @@ async fn the_simulators_wheel_is_still_moving(_world: &mut RpWorld) {
     let position = OmniSimHandle::filter_wheel_position()
         .await
         .expect("the simulator's filter wheel should answer Position");
-    assert_eq!(
-        position, -1,
-        "the move had already ended, so the scenario cannot show set_filter waiting it out"
+    assert!(
+        position < 0.0,
+        "the wheel read slot {position}: the move had already ended, so the scenario cannot show set_filter waiting it out"
     );
 }
 

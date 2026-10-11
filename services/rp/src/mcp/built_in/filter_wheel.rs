@@ -18,11 +18,12 @@ use super::super::{resolve_device, tool_error, tool_success};
 /// end: the one already under way, then its own.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-/// How long `set_filter` waits for a move already under way before it
-/// writes all the same. A full turn of a sixteen-slot wheel at ~1.2 s a
-/// slot takes ~19 s, so a wheel still reading moving past this is not
-/// finishing a move, and the write lets its driver say what it is doing.
-pub(crate) const MOVE_UNDER_WAY_CEILING: Duration = Duration::from_secs(30);
+/// The longest `set_filter` gives a move: the one already under way
+/// before it writes all the same, and its own before the call fails. A
+/// full turn of a sixteen-slot wheel at ~1.2 s a slot takes ~19 s, and
+/// this is three times that, the calibrator tools' ceiling too. A wheel
+/// still moving past it is not finishing a move.
+pub(crate) const MOVE_CEILING: Duration = Duration::from_secs(60);
 
 /// One poll interval, or the tool's answer if the call is cancelled
 /// first.
@@ -92,60 +93,69 @@ impl McpHandler {
         // is waited out before the write.
         let started = tokio::time::Instant::now();
         let mut waiting = false;
-        let at_rest_on = loop {
+        loop {
             match fw.position().await {
-                Ok(None) if started.elapsed() < MOVE_UNDER_WAY_CEILING => {
+                Ok(None) if started.elapsed() < MOVE_CEILING => {
                     if !waiting {
                         debug!(%filter_wheel_id, "the filter wheel is moving; waiting for its move to end before the write");
                         waiting = true;
                     }
                 }
                 Ok(None) => {
-                    debug!(%filter_wheel_id, ceiling = ?MOVE_UNDER_WAY_CEILING, "the filter wheel still reads moving; writing all the same");
-                    break None;
+                    debug!(%filter_wheel_id, ceiling = ?MOVE_CEILING, "the filter wheel still reads moving; writing all the same");
+                    break;
                 }
                 Ok(Some(slot)) => {
                     if waiting {
                         debug!(%filter_wheel_id, slot, "the move under way has ended");
                     }
-                    break Some(slot);
+                    break;
                 }
                 // The write says what is wrong with the wheel, and a
                 // driver may answer a failed move with an error until a
                 // write goes out.
                 Err(e) => {
                     debug!(%filter_wheel_id, error = %e, "the filter wheel could not be read before the write; writing all the same");
-                    break None;
+                    break;
                 }
             }
             if let Some(cancelled) = pause(cancel).await {
                 return Ok(cancelled);
             }
-        };
+        }
         // Also a cancellation that landed during the last read, or before
         // the call began: a cancelled call writes nothing.
         if cancel.is_cancelled() {
             return Ok(tool_error!("{}", cancel.error()));
         }
 
-        // A wheel at rest on the slot asked for has nothing to do.
-        if at_rest_on != Some(position) {
-            if let Err(e) = fw.set_position(position).await {
-                return Ok(tool_error!("failed to set filter position: {}", e));
-            }
+        // Written even when the wheel already names the slot: a driver's
+        // `Position` can be stale, and the write is the command.
+        if let Err(e) = fw.set_position(position).await {
+            return Ok(tool_error!("failed to set filter position: {}", e));
+        }
 
-            loop {
-                // No stop-class counterpart for a wheel (rp.md § In-Flight
-                // Tool Calls): the wait ends, the wheel finishes its move.
-                if let Some(cancelled) = pause(cancel).await {
-                    return Ok(cancelled);
+        let sent = tokio::time::Instant::now();
+        loop {
+            // No stop-class counterpart for a wheel (rp.md § In-Flight
+            // Tool Calls): the wait ends, the wheel finishes its move.
+            if let Some(cancelled) = pause(cancel).await {
+                return Ok(cancelled);
+            }
+            match fw.position().await {
+                Ok(Some(p)) if p == position => break,
+                Ok(Some(_) | None) if sent.elapsed() < MOVE_CEILING => {}
+                // Not there by the ceiling: another client's write may
+                // have sent it elsewhere, or the move was lost.
+                Ok(reading) => {
+                    debug!(%filter_wheel_id, ?reading, ceiling = ?MOVE_CEILING, "the filter wheel did not reach the slot written");
+                    return Ok(tool_error!(
+                        "the filter wheel did not reach {} (slot {position}) within {MOVE_CEILING:?}",
+                        params.filter_name
+                    ));
                 }
-                match fw.position().await {
-                    Ok(Some(p)) if p == position => break,
-                    Ok(Some(_) | None) => {}
-                    Err(e) => {
-                        return Ok(tool_error!("error waiting for filter wheel: {}", e));
-                    }
+                Err(e) => {
+                    return Ok(tool_error!("error waiting for filter wheel: {}", e));
                 }
             }
         }
