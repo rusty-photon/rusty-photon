@@ -17,6 +17,7 @@
 //! connect to close that window; the next pass's [`check_pin`] catches it.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 
 use ascom_alpaca::api::{
@@ -29,7 +30,8 @@ use tracing::info;
 use ascom_alpaca::Client;
 
 use super::alpaca::{
-    build_alpaca_client, retry_connect_attempt, AttemptOutcome, GET_DEVICES_TIMEOUT,
+    build_alpaca_client, retry_connect_attempt, AttemptOutcome, CONNECT_ATTEMPTS,
+    GET_DEVICES_TIMEOUT,
 };
 use crate::config::{self, UniqueIdPin};
 
@@ -343,9 +345,13 @@ async fn list_of_kind<C: RosterEntry>(
 /// every kind's startup connect and the reconnect supervisor's
 /// re-establish.
 ///
-/// A device that is not listed, or whose identity the pin refuses, is a
-/// permanent outcome for this routine: no in-routine retries, and the
-/// supervisor re-checks it on its next pass. Nothing here actuates: the
+/// A device that is not listed, or that lists another `UniqueID` than
+/// the pin, is a permanent outcome for this routine: no in-routine
+/// retries, and the supervisor re-checks it on its next pass. A blank
+/// listed `UniqueID` is ridden out by the in-routine retries instead (a
+/// driver still filling in its listing can answer one for a moment), and
+/// refused as unverifiable only when every attempt still lists it blank:
+/// a pin that cannot be checked never binds. Nothing here actuates: the
 /// listing is a read, and `Connected = true` is non-actuating by driver
 /// contract.
 pub(super) async fn establish_listed<C: RosterEntry>(
@@ -358,13 +364,18 @@ pub(super) async fn establish_listed<C: RosterEntry>(
     let pin = address.unique_id.map(UniqueIdPin::as_str);
 
     let label = address.label();
-    let (device, identity) = retry_connect_attempt(&label, |_attempt| async {
+    let blank_listings = AtomicU32::new(0);
+    let established = retry_connect_attempt(&label, |_attempt| async {
         let listed = match list_of_kind::<C>(&client).await {
             Ok(listed) => listed,
             Err(e) => return AttemptOutcome::Transient(e),
         };
         let (device, identity) = match select(&listed, address.device_number, pin) {
             Ok(entry) => (Arc::clone(&entry.device), entry.identity.clone()),
+            Err(refusal @ Refusal::Unverifiable { .. }) => {
+                blank_listings.fetch_add(1, Ordering::SeqCst);
+                return AttemptOutcome::Transient(address.refusal(&refusal).to_string());
+            }
             Err(refusal) => return AttemptOutcome::Permanent(address.refusal(&refusal)),
         };
 
@@ -373,7 +384,19 @@ pub(super) async fn establish_listed<C: RosterEntry>(
             Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
         }
     })
-    .await?;
+    .await;
+    let (device, identity) = match established {
+        Ok(bound) => bound,
+        // Every attempt read the listing and found the pinned entry's
+        // UniqueID blank: the pin cannot be checked, so it is an identity
+        // refusal, not a plain failure.
+        Err(EstablishError::Failed(message))
+            if blank_listings.load(Ordering::SeqCst) == CONNECT_ATTEMPTS =>
+        {
+            return Err(EstablishError::IdentityRefused(message));
+        }
+        Err(e) => return Err(e),
+    };
 
     // Once per established session, and the line that shows which
     // physical device an entry is on, so it is worth default verbosity.
@@ -529,10 +552,11 @@ mod tests {
     #[test]
     fn select_refuses_a_pin_against_a_blank_unique_id() {
         let devices = listed(&[("Anonymous", "  ")]);
-        assert!(matches!(
-            select(&devices, 0, Some("QHY600M-imaging")).unwrap_err(),
-            Refusal::Unverifiable { .. }
-        ));
+        let refusal = select(&devices, 0, Some("QHY600M-imaging")).unwrap_err();
+        assert!(
+            matches!(refusal, Refusal::Unverifiable { .. }),
+            "{refusal:?}"
+        );
     }
 
     #[test]
@@ -574,13 +598,17 @@ mod tests {
             select(&devices, 1, Some("QHY600M-imaging")).unwrap().name,
             "QHY600M"
         );
-        assert!(matches!(
-            select(&devices, 0, Some("QHY600M-imaging")).unwrap_err(),
-            Refusal::Mismatch {
-                expected_at: Some(1),
-                ..
-            }
-        ));
+        let refusal = select(&devices, 0, Some("QHY600M-imaging")).unwrap_err();
+        assert!(
+            matches!(
+                refusal,
+                Refusal::Mismatch {
+                    expected_at: Some(1),
+                    ..
+                }
+            ),
+            "{refusal:?}"
+        );
     }
 
     // ----- refusal messages and their class --------------------------
@@ -898,41 +926,114 @@ mod tests {
     async fn check_pin_leaves_a_number_the_listing_lacks_unchecked() {
         let stub = swapped_pair_server(Arc::new(AtomicU32::new(0))).await;
         let config = camera_config("qhy600m", &stub.url(), 5, Some("QHY600M-imaging"));
+        let check = check_pin(&config, None).await;
         assert!(
-            matches!(check_pin(&config, None).await, PinCheck::Unchecked(_)),
-            "a short listing must not refuse the pin"
+            matches!(check, PinCheck::Unchecked(_)),
+            "a short listing must not refuse the pin: {check:?}"
         );
+    }
+
+    /// One camera at number 0 whose listed `UniqueID` is blank for the
+    /// first `blank_reads` listing reads and `QHY600M-imaging` after
+    /// that — a driver still filling in its listing. Counts the listing
+    /// reads and the `Connected = true` requests it serves.
+    async fn filling_in_server(
+        blank_reads: u32,
+        reads: Arc<AtomicU32>,
+        connects: Arc<AtomicU32>,
+    ) -> crate::equipment::test_support::AlpacaStub {
+        let app = Router::new()
+            .route(
+                "/management/v1/configureddevices",
+                get(move || {
+                    let reads = Arc::clone(&reads);
+                    async move {
+                        let read = reads.fetch_add(1, Ordering::SeqCst);
+                        let unique_id = if read < blank_reads {
+                            ""
+                        } else {
+                            "QHY600M-imaging"
+                        };
+                        Json(serde_json::json!({
+                            "Value": [{"DeviceName": "QHY600M", "DeviceType": "Camera",
+                                       "DeviceNumber": 0, "UniqueID": unique_id}],
+                            "ErrorNumber": 0,
+                            "ErrorMessage": ""
+                        }))
+                    }
+                }),
+            )
+            .route(
+                "/api/v1/camera/0/connected",
+                put(move || {
+                    let connects = Arc::clone(&connects);
+                    async move {
+                        connects.fetch_add(1, Ordering::SeqCst);
+                        ok_envelope()
+                    }
+                }),
+            );
+        spawn_stub(app).await
     }
 
     /// A listed device with a blank `UniqueID` cannot be checked against
     /// the pin, but it is no evidence of another device either, so a
-    /// session verified at establish is kept (establish itself refuses
-    /// it: a pin that cannot be checked never binds).
+    /// session verified at establish is kept.
     #[tokio::test]
     async fn check_pin_leaves_a_blank_listed_unique_id_unchecked() {
-        let app = Router::new().route(
-            "/management/v1/configureddevices",
-            get(|| async {
-                Json(serde_json::json!({
-                    "Value": [{"DeviceName": "QHY600M", "DeviceType": "Camera",
-                               "DeviceNumber": 0, "UniqueID": ""}],
-                    "ErrorNumber": 0,
-                    "ErrorMessage": ""
-                }))
-            }),
-        );
-        let stub = spawn_stub(app).await;
+        let stub = filling_in_server(
+            u32::MAX,
+            Arc::new(AtomicU32::new(0)),
+            Arc::new(AtomicU32::new(0)),
+        )
+        .await;
         let config = camera_config("qhy600m", &stub.url(), 0, Some("QHY600M-imaging"));
+        let check = check_pin(&config, None).await;
         assert!(
-            matches!(check_pin(&config, None).await, PinCheck::Unchecked(_)),
-            "a blank UniqueID must leave a live session's pin unchecked"
+            matches!(check, PinCheck::Unchecked(_)),
+            "a blank UniqueID must leave a live session's pin unchecked: {check:?}"
         );
-        assert!(
-            establish_listed(&config, None)
-                .await
-                .unwrap_err()
-                .is_identity_refusal(),
-            "but a fresh establish must refuse it"
+    }
+
+    /// A driver that lists the pinned device's `UniqueID` blank for a
+    /// moment is ridden out by the in-routine retries: the next attempt
+    /// finds it filled in and binds.
+    #[tokio::test]
+    async fn a_blank_listed_unique_id_is_ridden_out_by_the_retries() {
+        let reads = Arc::new(AtomicU32::new(0));
+        let connects = Arc::new(AtomicU32::new(0));
+        let stub = filling_in_server(1, Arc::clone(&reads), Arc::clone(&connects)).await;
+        let config = camera_config("qhy600m", &stub.url(), 0, Some("QHY600M-imaging"));
+
+        let camera = establish_listed(&config, None).await.unwrap();
+
+        assert_eq!(
+            ListedIdentity::of(camera.as_ref()).unique_id,
+            "QHY600M-imaging"
+        );
+        assert_eq!(reads.load(Ordering::SeqCst), 2, "one blank read, one retry");
+        assert_eq!(connects.load(Ordering::SeqCst), 1);
+    }
+
+    /// A `UniqueID` that every attempt still lists blank is an identity
+    /// refusal: a pin that cannot be checked never binds, and the blank
+    /// device is never switched on.
+    #[tokio::test]
+    async fn a_unique_id_listed_blank_on_every_attempt_is_an_identity_refusal() {
+        let reads = Arc::new(AtomicU32::new(0));
+        let connects = Arc::new(AtomicU32::new(0));
+        let stub = filling_in_server(u32::MAX, Arc::clone(&reads), Arc::clone(&connects)).await;
+        let config = camera_config("qhy600m", &stub.url(), 0, Some("QHY600M-imaging"));
+
+        let err = establish_listed(&config, None).await.unwrap_err();
+
+        assert!(err.is_identity_refusal(), "{err:?}");
+        assert!(err.to_string().contains("empty UniqueID"), "{err}");
+        assert_eq!(reads.load(Ordering::SeqCst), CONNECT_ATTEMPTS);
+        assert_eq!(
+            connects.load(Ordering::SeqCst),
+            0,
+            "a device whose pin cannot be checked must never be switched on"
         );
     }
 
@@ -948,9 +1049,10 @@ mod tests {
     #[tokio::test]
     async fn check_pin_leaves_an_unreadable_listing_unchecked() {
         let config = camera_config("qhy600m", "http://127.0.0.1:1", 0, Some("QHY600M-imaging"));
+        let check = check_pin(&config, None).await;
         assert!(
-            matches!(check_pin(&config, None).await, PinCheck::Unchecked(_)),
-            "an unreachable server must leave the pin unchecked"
+            matches!(check, PinCheck::Unchecked(_)),
+            "an unreachable server must leave the pin unchecked: {check:?}"
         );
     }
 }

@@ -559,7 +559,7 @@ mod tests {
     /// and so is the same pin on two servers (index-based serial-less
     /// `UniqueID`s repeat across hosts).
     #[test]
-    fn duplicate_pins_within_a_kind_are_rejected_on_the_later_entry() {
+    fn duplicate_pins_within_a_kind_are_rejected_on_every_entry() {
         let (_dir, path) = config_with_equipment(
             r#"{
                 "cameras": [

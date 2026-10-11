@@ -23,7 +23,7 @@
 //! `provider_changed` where a device emits `equipment_changed`.
 
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,7 +31,7 @@ use ascom_alpaca::api::Device;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use super::binding::{check_pin, EstablishError, PinCheck};
+use super::binding::{check_pin, EstablishError, PinCheck, RosterEntry};
 use super::session::DeviceSession;
 use super::{
     camera, cover_calibrator, dome, filter_wheel, focuser, mount, observing_conditions, rotator,
@@ -117,10 +117,10 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.cameras {
             supervise_with_metadata(
                 "camera",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
-                || check_pin(&entry.config, ca),
                 || camera::establish_camera(&entry.config, ca),
             )
             .await;
@@ -128,10 +128,10 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.filter_wheels {
             supervise(
                 "filter_wheel",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
-                || check_pin(&entry.config, ca),
                 || filter_wheel::establish_filter_wheel(&entry.config, ca),
             )
             .await;
@@ -139,10 +139,10 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.cover_calibrators {
             supervise(
                 "cover_calibrator",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
-                || check_pin(&entry.config, ca),
                 || cover_calibrator::establish_cover_calibrator(&entry.config, ca),
             )
             .await;
@@ -150,10 +150,10 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.focusers {
             supervise_with_metadata(
                 "focuser",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
-                || check_pin(&entry.config, ca),
                 || focuser::establish_focuser(&entry.config, ca),
             )
             .await;
@@ -161,10 +161,10 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.safety_monitors {
             supervise(
                 "safety_monitor",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
-                || check_pin(&entry.config, ca),
                 || safety_monitor::establish_safety_monitor(&entry.config, ca),
             )
             .await;
@@ -177,10 +177,10 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.switches {
             supervise(
                 "switch",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
-                || check_pin(&entry.config, ca),
                 || switch::establish_switch(&entry.config, ca),
             )
             .await;
@@ -188,10 +188,10 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.rotators {
             supervise(
                 "rotator",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
-                || check_pin(&entry.config, ca),
                 || rotator::establish_rotator(&entry.config, ca),
             )
             .await;
@@ -199,10 +199,10 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.observing_conditions {
             supervise(
                 "observing_conditions",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
-                || check_pin(&entry.config, ca),
                 || observing_conditions::establish_observing_conditions(&entry.config, ca),
             )
             .await;
@@ -210,10 +210,10 @@ impl ReconnectSupervisor {
         for entry in &self.equipment.domes {
             supervise(
                 "dome",
-                Some(&entry.id),
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
-                || check_pin(&entry.config, ca),
                 || dome::establish_dome(&entry.config, ca),
             )
             .await;
@@ -221,10 +221,10 @@ impl ReconnectSupervisor {
         if let Some(entry) = self.equipment.mount.as_ref() {
             supervise(
                 "mount",
-                None,
+                &entry.config,
+                ca,
                 &entry.session,
                 &self.event_bus,
-                || check_pin(&entry.config, ca),
                 || mount::establish_mount(&entry.config, ca),
             )
             .await;
@@ -237,21 +237,19 @@ impl ReconnectSupervisor {
 ///
 /// The metadata-free half of [`supervise_with_metadata`], which
 /// carries the documentation for both.
-async fn supervise<T, P, PFut, F, Fut>(
+async fn supervise<C, F, Fut>(
     kind: &str,
-    id: Option<&str>,
-    session: &DeviceSession<T>,
+    config: &C,
+    ca: Option<&Path>,
+    session: &DeviceSession<C::Device>,
     event_bus: &EventBus,
-    recheck_pin: P,
     reestablish: F,
 ) where
-    T: Device + ?Sized,
-    P: FnOnce() -> PFut,
-    PFut: Future<Output = PinCheck>,
+    C: RosterEntry,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<Arc<T>, EstablishError>>,
+    Fut: Future<Output = Result<Arc<C::Device>, EstablishError>>,
 {
-    supervise_with_metadata(kind, id, session, event_bus, recheck_pin, || async {
+    supervise_with_metadata(kind, config, ca, session, event_bus, || async {
         reestablish().await.map(|device| (device, ()))
     })
     .await;
@@ -292,32 +290,33 @@ async fn supervise<T, P, PFut, F, Fut>(
 /// attempt.
 ///
 /// A session that reads healthy is then held to the entry's identity
-/// pin by `recheck_pin` (rp.md § Device Identity Pin): a healthy
+/// pin by [`check_pin`] (rp.md § Device Identity Pin), which this runs
+/// itself from the entry's `config`, so no kind can skip it: a healthy
 /// `Connected` through rp's handle says nothing about *which* device
 /// now answers at the entry's number. When the pin no longer holds, the
 /// session and its handle are dropped at once, as they are whenever the
 /// re-establish routine itself refuses the device on identity: the
 /// handle is known to address another device, so no tool call may
 /// reach it.
-async fn supervise_with_metadata<T, M, P, PFut, F, Fut>(
+async fn supervise_with_metadata<C, M, F, Fut>(
     kind: &str,
-    id: Option<&str>,
-    session: &DeviceSession<T, M>,
+    config: &C,
+    ca: Option<&Path>,
+    session: &DeviceSession<C::Device, M>,
     event_bus: &EventBus,
-    recheck_pin: P,
     reestablish: F,
 ) where
-    T: Device + ?Sized,
+    C: RosterEntry,
     M: Default + Send + Sync,
-    P: FnOnce() -> PFut,
-    PFut: Future<Output = PinCheck>,
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<(Arc<T>, M), EstablishError>>,
+    Fut: Future<Output = Result<(Arc<C::Device>, M), EstablishError>>,
 {
+    let address = config.address();
+    let id = address.id;
     if session.is_connected() {
         if let Some(device) = session.device() {
             match device.connected().await {
-                Ok(true) => match recheck_pin().await {
+                Ok(true) => match check_pin(config, ca).await {
                     PinCheck::Holds => return,
                     PinCheck::Unchecked(e) => {
                         debug!(kind, id, error = %e, "could not re-check the pinned UniqueID; keeping the session it was checked against at establish");
@@ -700,10 +699,10 @@ mod tests {
         let connected_during_establish = AtomicBool::new(true);
         supervise(
             "safety_monitor",
-            Some(&entry.id),
+            &entry.config,
+            None,
             &entry.session,
             &event_bus,
-            || async { PinCheck::Holds },
             || async {
                 connected_during_establish.store(entry.is_connected(), Ordering::SeqCst);
                 crate::equipment::safety_monitor::establish_safety_monitor(&entry.config, None)

@@ -2866,8 +2866,12 @@ Recovery](#device-session-recovery)):
    would be a second keying mechanism beside it, and a silent re-bind
    is exactly the failure this guard exists to stop.
 5. **The pin cannot be verified**, because the listed entry's
-   `UniqueID` is empty: the connect is refused, naming why. A pin that
-   cannot be checked never passes. A list that cannot be read, or one
+   `UniqueID` is empty. A driver still filling in its listing can
+   answer that for a moment, so the routine's 1 s / 2 s retries ride it
+   out like a transport error. If every attempt still lists it blank,
+   the connect is refused, naming why. A pin that cannot be checked
+   never passes, and the blank device is never switched on. A list
+   that cannot be read, or one
    with no entry at `device_number`, fails the connect as it always
    has, pinned or not: without the list there is no device to bind, so
    there is no case where an unread identity is waved through.
@@ -2902,17 +2906,22 @@ stale handle. A tool call on the entry then answers "not connected"
 instead of reaching the other device, and the entry binds again only
 through a fresh establish that finds the pinned device.
 
-**Retry class.** A refusal is permanent within one connect routine,
-like "device not found": no 1 s / 2 s in-routine retries. The
+**Retry class.** A mismatch is permanent within one connect routine,
+like "device not found": no 1 s / 2 s in-routine retries. A blank
+`UniqueID` is the one exception (item 5). The
 supervisor re-checks it once per pass, re-reading the list each time, so
 the entry binds on the first pass that finds the pinned device back at
 `device_number` (say, the driver restarted in its old order), and never
 binds anything else. A refused safety monitor reads unsafe, like any
 monitor without a live session (§ Safety: a monitor read is
 fail-unsafe), and the enforcer answers that unsafe transition the way it
-answers any other. Tenet 3 allows that response: stop, abort and park on
-a safety transition are permitted. The alternative would be reading
-`IsSafe` from a monitor the pin says is not the one configured, which is
+answers any other. Tenet 3 permits stop, abort and park on a safety
+transition only *inside an operator-started session*. The enforcer
+today parks on every unsafe transition, session or not, so a refused
+pin can lead to a park outside a session, as a monitor service restart
+or a mistyped `alpaca_url` already can. That predates the pin and is
+tracked in issue #1468; the pin does not change the enforcer. Reading
+`IsSafe` from a monitor the pin says is not the one configured would be
 the worse failure. The logging follows the usual shape: a refusal at
 startup is an `error!`, a live session lost to one is a `warn!` once
 (with `equipment_changed` `connected: false`), and later passes log at

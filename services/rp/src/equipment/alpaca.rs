@@ -29,12 +29,13 @@ pub(super) const GET_DEVICES_TIMEOUT: Duration = Duration::from_secs(5);
 /// `Permanent` / `Transient` split is what makes this a retry helper
 /// rather than a sleep-and-hope wrapper: the connect closures map each
 /// failure mode to its own variant. Today only "device-not-found at
-/// the requested index in the Alpaca server's reply" and a refused
-/// identity pin (`binding::establish_listed`) are `Permanent`
-/// inside the closure — every other failure inside the retry loop
-/// (HTTP transport errors including connection-refused on an
+/// the requested index in the Alpaca server's reply" and an identity
+/// pin the listed `UniqueID` contradicts (`binding::establish_listed`)
+/// are `Permanent` inside the closure — every other failure inside the
+/// retry loop (HTTP transport errors including connection-refused on an
 /// unreachable host, `get_devices` timeouts, `set_connected` errors,
-/// `OmniSim` under GC pressure) is `Transient` and goes through the
+/// `OmniSim` under GC pressure, a blank listed `UniqueID` a pin cannot
+/// be checked against yet) is `Transient` and goes through the
 /// retry/backoff path. Note: `Client::new` failures are filtered
 /// out *before* the retry loop, so that case never produces an
 /// `AttemptOutcome` at all.
