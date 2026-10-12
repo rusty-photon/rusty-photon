@@ -17,12 +17,16 @@
 #  2. No first-party Rust target opts out of clippy with one of the tags
 #     rules_rust's clippy aspect skips (`noclippy`, `no_lint`, ...). An
 #     opt-out drops code from the lint without any trace in the run.
-#  3. clippy.toml's `msrv`, the root Cargo.toml's `rust-version` and
-#     MODULE.bazel's stable Rust pin are one version. rules_rust sets no
-#     CARGO_PKG_RUST_VERSION, so the key is the only MSRV Bazel's clippy sees;
-#     Cargo's clippy only warns when the first two differ, and a warning about
-#     configuration is not a lint `-D warnings` can deny. The pin is the MSRV
-#     so that every PR compiles with it (MODULE.bazel says why).
+#  3. The MSRV and MODULE.bazel's toolchain pins agree:
+#     - clippy.toml's `msrv` equals the root Cargo.toml's `rust-version`.
+#       rules_rust sets no CARGO_PKG_RUST_VERSION, so the key is the only MSRV
+#       Bazel's clippy sees. Cargo's clippy only warns when the two differ,
+#       and a warning about configuration is not a lint `-D warnings` can
+#       deny.
+#     - The stable Rust pin is the MSRV's release (a point release of it
+#       counts), so every PR compiles with it; MODULE.bazel says why.
+#     - Every `sha256s` key names the stable pin or the coverage nightly. A
+#       pin bumped without its hashes would otherwise download unverified.
 #
 # Then it lints `//...` plus the `manual` Rust targets `//...` skips: some are
 # manual only because they cannot LINK without a vendor SDK (svbony-camera's
@@ -84,11 +88,26 @@ fi
 
 cargo_msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
 clippy_msrv=$(sed -n 's/^msrv = "\(.*\)"$/\1/p' clippy.toml)
-# The one bare version in rust.toolchain's `versions` list; the nightly entry
-# and the `sha256s` keys never match.
-bazel_pin=$(sed -n 's/^ *"\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)",$/\1/p' MODULE.bazel)
-if [[ -z "$cargo_msrv" || "$cargo_msrv" != "$clippy_msrv" || "$cargo_msrv" != "$bazel_pin" ]]; then
-  flag "::error::Cargo.toml rust-version (\"$cargo_msrv\"), clippy.toml msrv (\"$clippy_msrv\") and MODULE.bazel's stable Rust pin (\"$bazel_pin\") must be one version: the pin is the MSRV, so every PR compiles with it, and clippy.toml's key is the only MSRV Bazel's clippy sees."
+if [[ -z "$cargo_msrv" || "$cargo_msrv" != "$clippy_msrv" ]]; then
+  flag "::error::clippy.toml msrv (\"$clippy_msrv\") must equal Cargo.toml rust-version (\"$cargo_msrv\"): it is the only MSRV Bazel's clippy sees."
+fi
+
+# rust.toolchain's call in MODULE.bazel, from its opening line to its closing
+# parenthesis. Its `versions` list holds the stable pin (a bare X.Y.Z) and
+# the coverage nightly, one per line.
+toolchain=$(sed -n '/^rust\.toolchain($/,/^)$/p' MODULE.bazel)
+bazel_pin=$(sed -n 's/^ *"\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)",$/\1/p' <<<"$toolchain")
+nightly=$(sed -n 's/^ *"nightly\/\([0-9][0-9-]*\)",$/\1/p' <<<"$toolchain")
+if [[ -z "$bazel_pin" || "$bazel_pin" == *$'\n'* || -z "$nightly" || "$nightly" == *$'\n'* ]]; then
+  flag "::error::could not read one stable pin and one nightly from rust.toolchain's \`versions\` in MODULE.bazel (read \"$bazel_pin\" and \"$nightly\"); keep one entry per line."
+elif [[ "${bazel_pin%.*}" != "${cargo_msrv%.*}" ]]; then
+  flag "::error::MODULE.bazel's stable Rust pin ($bazel_pin) is not the MSRV's release (Cargo.toml rust-version \"$cargo_msrv\"): the pin is the MSRV's release, so every PR compiles with the MSRV. Bump them together."
+else
+  keys=$(grep -o '"[^"]*\.tar\.xz"' <<<"$toolchain" | tr -d '"')
+  stale=$(grep -v -F -e "$nightly/" -e "-$bazel_pin-" <<<"$keys")
+  if [[ -n "$stale" ]] || ! grep -q -F -e "-$bazel_pin-" <<<"$keys" || ! grep -q -F -e "$nightly/" <<<"$keys"; then
+    flag ${stale:+"$stale"} "::error::MODULE.bazel's sha256s must hold the archives of the stable pin ($bazel_pin) and of the coverage nightly ($nightly), and nothing else (any key naming neither is listed above). Regenerate them with scripts/rust-toolchain-sha256s.sh, or the toolchains download unverified."
+  fi
 fi
 
 manual=()

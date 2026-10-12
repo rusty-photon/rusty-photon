@@ -754,26 +754,50 @@ needs from you:
   A `rust_test` built with `crate_features = ["mock"]` is linted with `mock`,
   the production `rust_library` beside it without. The Cargo `stable / clippy`
   job covers the two Cargo shapes, so a finding can appear on one side only.
-- **Bazel's Rust pin tracks current stable, and it is the MSRV**
-  (`MODULE.bazel`, `rust.toolchain`). Current stable, because this step runs
-  that toolchain's clippy, and the tree's lint attributes track stable clippy
-  (see *Keep stable current* above). The MSRV, because then every PR
-  compiles its Linux and Windows code with the MSRV: a std API or a language
-  feature newer than it fails the build. (macOS-only code meets the MSRV only
-  after a merge, on the macOS leg.)
+- **Bazel's Rust pin tracks current stable, and it is the MSRV's release**
+  (`MODULE.bazel`, `rust.toolchain`).
+  - Current stable, because this step runs that toolchain's clippy, and the
+    tree's lint attributes track stable clippy (see *Keep stable current*
+    above).
+  - The MSRV's release, because then every PR compiles what its Linux and
+    Windows Bazel targets build with the MSRV: a std API or a language
+    feature newer than it fails the build.
+  - Two kinds of code meet the MSRV only later. macOS-only code meets it
+    after a merge, on the macOS leg. Code reached only through Cargo
+    feature combinations no Bazel target builds is compiled on a PR by
+    Cargo's floating stable alone.
+  - A point release of the pin (1.99.1) needs no MSRV bump.
 - **Bump them together in the first PR after each stable release**:
   - the pin, with its `sha256s` (`scripts/rust-toolchain-sha256s.sh <version>`
     prints them from the release's GPG-signed channel manifest);
   - the root Cargo.toml's `rust-version` and `clippy.toml`'s `msrv`, then
     `scripts/repin-bazel-lock.sh`;
-  - the coverage nightly, to a date `MODULE.bazel`'s comment describes.
+  - the coverage nightly, to the last nightly of the new MSRV's cycle
+    (`MODULE.bazel` says why), with its hashes from
+    `scripts/rust-toolchain-sha256s.sh nightly/<date>`. The script prints the
+    date's rustc version, so you can see which cycle it is in;
+  - expect MSRV-gated clippy lints to start firing in that PR. Raising the
+    MSRV unlocks lints that suggest newer APIs, and the `beta / clippy` census
+    runs at the old MSRV, so it cannot list them ahead. The raise to 1.99.0
+    unlocked none.
 
-  Until then the two clippies are on different releases, and code written
-  against the new one (an `#[expect]` only it fulfils) fails `bazel clippy`.
+  After it merges, rebuild the pool runner templates
+  (docs/skills/proxmox-runner-pool.md): they pre-fetch the pinned toolchains,
+  the coverage nightly included.
+  Until then, every pool PR job downloads the new ones over the WAN; a cold
+  coverage nightly costs ~12 minutes.
+
+  Until the bump lands, the two clippies are on different releases, and code
+  written against the new one (an `#[expect]` only it fulfils) fails
+  `bazel clippy`.
 - **Bazel's clippy learns the MSRV from `clippy.toml`'s `msrv` key**, because
-  rules_rust sets no `CARGO_PKG_RUST_VERSION`. That key, the root Cargo.toml's
-  `rust-version` and the Bazel pin must agree. `cargo clippy` only warns when
-  the first two differ, so `tools/ci/bazel-clippy.sh` fails on any mismatch.
+  rules_rust sets no `CARGO_PKG_RUST_VERSION`. `tools/ci/bazel-clippy.sh`
+  checks three things:
+  - that key equals the root Cargo.toml's `rust-version` (`cargo clippy` only
+    warns when they differ);
+  - the Bazel pin is that version's release;
+  - every `sha256s` key names the stable pin or the coverage nightly, so a
+    pin bumped without its hashes can't download unverified.
 
 ### Refreshing MODULE.bazel.lock
 
