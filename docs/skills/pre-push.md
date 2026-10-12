@@ -710,7 +710,7 @@ printing it. That is what makes a warning firing on only one target OS a gate:
 the *required* `cargo clippy -D warnings` runs on ubuntu only, and CI builds all
 three platforms. (Clippy's own OS gap is covered on PRs by the `bazel clippy`
 step on the Windows leg. macOS-only code is linted only after a merge, by the
-macOS leg on pushes to main and off-PR by check.yml's `macos / clippy`, which
+macOS leg on pushes to main and nightly, and by check.yml's `macos / clippy`, which
 runs beside `windows / clippy`; see the check.yml section above.)
 A plain local `bazel build //...` does *not* deny — the pre-commit hook already
 runs `cargo clippy -- -D warnings` (a superset of rustc's lints) for your host
@@ -757,6 +757,12 @@ needs from you:
   A `rust_test` built with `crate_features = ["mock"]` is linted with `mock`,
   the production `rust_library` beside it without. The Cargo `stable / clippy`
   job covers the two Cargo shapes, so a finding can appear on one side only.
+- **Bazel never checks cfg names.** `unexpected_cfgs` is the one workspace
+  lint Bazel can't enforce. `extract_cargo_lints` drops its `check-cfg`, and
+  rules_rust passes rustc no `--check-cfg`, so a misspelled
+  `#[cfg(feature = "...")]` fails only Cargo's clippy. On a PR that means
+  only in code Linux compiles, so check OS-gated cfgs with the local
+  `cargo clippy --target …` recipe above.
 - **Bazel's Rust pin tracks current stable, and it is the MSRV's release**
   (`MODULE.bazel`, `rust.toolchain`).
   - Current stable, because this step runs that toolchain's clippy, and the
@@ -766,13 +772,17 @@ needs from you:
     Windows Bazel targets build with the MSRV: a std API or a language
     feature newer than it fails the build.
   - Two kinds of code meet the MSRV only later. macOS-only code meets it
-    after a merge, on the macOS leg. Code reached only through Cargo
+    after a merge, on the macOS leg (pushes to main and nightly). Code reached only through Cargo
     feature combinations no Bazel target builds is compiled on a PR by
     Cargo's floating stable alone. Check macOS-only code at the MSRV by hand
-    when you write it: `cargo +<msrv> check --target aarch64-apple-darwin -p
-    <crate> --all-targets --all-features`, after `rustup toolchain install
-    <msrv> --target aarch64-apple-darwin` (as under *Run it locally when your
-    change adds OS-gated code* above).
+    when you write it, in both shapes, after `rustup toolchain install <msrv>
+    --target aarch64-apple-darwin` (*Run it locally when your change adds
+    OS-gated code*, above, says why both):
+
+    ```sh
+    cargo +<msrv> check --target aarch64-apple-darwin -p <crate> --all-targets --all-features
+    cargo +<msrv> check --target aarch64-apple-darwin -p <crate> --lib --bins
+    ```
   - A point release of the pin (1.99.1) needs no MSRV bump.
 - **Bump them together in the first PR after each stable release**:
   - the pin, with its `sha256s` (`scripts/rust-toolchain-sha256s.sh <version>`
@@ -781,8 +791,9 @@ needs from you:
     `scripts/repin-bazel-lock.sh`;
   - the coverage nightly, to the last nightly of the new MSRV's cycle
     (`MODULE.bazel` says why), with its hashes from
-    `scripts/rust-toolchain-sha256s.sh nightly/<date>`. The script prints the
-    date's rustc version: paste that line directly above the nightly entry.
+    `scripts/rust-toolchain-sha256s.sh nightly/<date>`. On stderr the script
+    prints a comment line with the date's rustc version: paste it, as printed,
+    directly above the nightly entry.
     If the script refuses the date because a component is missing on a
     host, take the latest earlier date it accepts;
   - the places that state the MSRV for readers. Nothing checks these, so
@@ -807,16 +818,11 @@ needs from you:
   written against the new one (an `#[expect]` only it fulfils) fails
   `bazel clippy`.
 - **Bazel's clippy learns the MSRV from `clippy.toml`'s `msrv` key**, because
-  rules_rust sets no `CARGO_PKG_RUST_VERSION`. `tools/ci/bazel-clippy.sh`
-  checks four things:
-  - that key equals the root Cargo.toml's `rust-version` (`cargo clippy` only
-    warns when they differ);
-  - the Bazel pin is that version's release;
-  - the coverage nightly's recorded rustc version (the line directly above
-    its entry) names that date and the MSRV's release. That shows the
-    nightly's cycle; whether it's the cycle's last nightly is up to the bump;
-  - `sha256s` holds each pin's full set of archives and nothing else, so a
-    pin bumped without its hashes can't download unverified.
+  rules_rust sets no `CARGO_PKG_RUST_VERSION`. That key must equal the root
+  Cargo.toml's `rust-version` (`cargo clippy` only warns when they differ),
+  and MODULE.bazel's pins and hashes must agree with them.
+  `tools/ci/bazel-clippy.sh` enforces all of it; its header is the list of
+  what it checks.
 
 ### Refreshing MODULE.bazel.lock
 

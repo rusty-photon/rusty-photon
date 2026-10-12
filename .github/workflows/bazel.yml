@@ -318,15 +318,10 @@ jobs:
         # carries it on top of the build's and the tests'.
         timeout-minutes: 15
         run: |
-          # The same script a developer runs locally. It checks the inputs
-          # Bazel's clippy takes on trust, then lints `//...` plus the
-          # `manual` targets `//...` skips, and prints the checks' findings
-          # after the lint. The checks:
-          # - lint_config on every target, and no opt-out tags;
-          # - clippy.toml's msrv equals Cargo.toml's rust-version;
-          # - the MODULE.bazel toolchain pins agree with the MSRV;
-          # - every pin has its full set of sha256s.
-          # The script's header has the details, so a red step here can also
+          # The same script a developer runs locally. It first checks the
+          # inputs Bazel's clippy takes on trust, the lint setup and the
+          # toolchain pins (its header lists the checks), then lints `//...`
+          # plus the `manual` targets `//...` skips. So a red step can also
           # mean a toolchain bump left something behind.
           # Remote-cache routing for this job's venue and credentials.
           source tools/ci/bazel-remote-flags.sh

@@ -6,8 +6,9 @@ use std::time::Duration;
 
 #[when(expr = "I POST two concurrent solve requests with timeout {string} each")]
 async fn when_two_concurrent_solves(world: &mut PlateSolverWorld, timeout: String) {
-    // Each mock_astap child writes its spawn time to its own file under this
-    // directory, so the Then step can observe serialization server-side. Must
+    // Each mock_astap child creates an empty file under this directory, named
+    // for its spawn time, so the Then step can observe serialization
+    // server-side. Must
     // be set before the wrapper starts so it lands in the wrapper's config.
     let spawn_dir = world.temp_dir_path().join("spawns");
     std::fs::create_dir_all(&spawn_dir).expect("create spawn dir");
@@ -48,8 +49,8 @@ async fn then_both_responses_504(world: &mut PlateSolverWorld) {
 
 #[then("the two solves were serialized by the single-flight semaphore")]
 async fn then_solves_serialized(world: &mut PlateSolverWorld) {
-    // Observe serialization server-side: each `mock_astap` child writes its
-    // spawn time (ns since the Unix epoch) to its own file under
+    // Observe serialization server-side: each `mock_astap` child records its
+    // spawn time (ns since the Unix epoch) as the name of its own file under
     // `MOCK_ASTAP_SPAWN_DIR`. With a capacity-1 semaphore the second child
     // cannot spawn until the first releases the permit — which happens only
     // after the first request's full 100ms deadline elapses. So serialized

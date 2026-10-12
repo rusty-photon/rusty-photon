@@ -417,10 +417,11 @@ rust.toolchain(
     #   missing on a host, take the latest earlier date it accepts.
     #
     # `scripts/rust-toolchain-sha256s.sh nightly/<date>` prints the hashes
-    # and, on stderr, the date's rustc version. That line goes directly above
-    # the entry. tools/ci/bazel-clippy.sh checks that it names the entry's
-    # date and the MSRV's release, so a bump that leaves the nightly behind
-    # fails there. It cannot tell whether the date is the cycle's last.
+    # and, on stderr, the comment line with the date's rustc version, which
+    # goes directly above the entry as printed. tools/ci/bazel-clippy.sh
+    # checks it: it must name the entry's date, and the MSRV's release or the
+    # next one (the remedy above). So a bump that leaves the nightly behind
+    # fails there.
     versions = [
         "1.99.0",
         # nightly/2026-08-15 is rustc 1.99.0-nightly (d453bdd8f 2026-08-14)
