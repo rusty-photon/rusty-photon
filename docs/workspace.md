@@ -346,7 +346,8 @@ root `Cargo.toml` (`rust-version`), and again in `clippy.toml`'s
 `msrv`, the only MSRV Bazel's clippy sees. It is the release of Bazel's
 stable Rust pin (`MODULE.bazel`), which tracks current stable. The three
 move together, with the coverage nightly, in the first PR after each stable
-release, so every PR compiles what its Bazel targets build with the MSRV.
+release, so every PR compiles what its Linux and Windows Bazel targets build
+with the MSRV.
 `tools/ci/bazel-clippy.sh` fails when they disagree; the bump steps are in
 [pre-push.md](skills/pre-push.md), *Clippy under Bazel*. Every member listed in
 `[workspace].members` inherits it via `rust-version.workspace = true` —

@@ -12,8 +12,9 @@
 # after checking the manifest's detached signature against the Rust release
 # key, whose fingerprint is pinned below rather than trusted from the same
 # server that serves the manifest. A nightly's manifest is signed by the same
-# key. For a nightly, its rustc version goes to stderr as the comment line that
-# sits directly above the nightly entry in MODULE.bazel, ready to paste.
+# key. For a nightly, once every archive has passed, its rustc version goes to
+# stderr as the comment line that sits directly above the nightly entry in
+# MODULE.bazel, ready to paste.
 #
 # Covers the seven tools rules_rust fetches for a host, for the five hosts CI
 # and the dev machines run on, plus rust-src: one archive for every host,
@@ -93,10 +94,8 @@ hosts = [
 ]
 with open(manifest_path, "rb") as f:
     manifest = tomllib.load(f)
-if date:
-    if manifest.get("date") != date:
-        sys.exit(f"the manifest is dated {manifest.get('date')}, not {date}")
-    print(f"        # nightly/{date} is rustc {manifest['pkg']['rustc']['version']}", file=sys.stderr)
+if date and manifest.get("date") != date:
+    sys.exit(f"the manifest is dated {manifest.get('date')}, not {date}")
 entries = {}
 for package, tool in packages.items():
     for host in hosts:
@@ -114,6 +113,9 @@ name = PurePosixPath(target["xz_url"]).name
 if name != f"rust-src-{version}.tar.xz":
     sys.exit(f"unexpected archive name {name} for rust-src")
 entries[f"{date}/{name}" if date else name] = target["xz_hash"]
+# Only now, so a refused release prints an error and no line to paste.
+if date:
+    print(f"        # nightly/{date} is rustc {manifest['pkg']['rustc']['version']}", file=sys.stderr)
 for key in sorted(entries):
     print(f'        "{key}": "{entries[key]}",')
 EOF

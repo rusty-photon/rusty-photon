@@ -65,7 +65,7 @@ async fn then_solves_serialized(world: &mut PlateSolverWorld) {
     // observed gap below the threshold and failing even though serialization
     // worked. Spawn times are recorded inside the children, so they reflect
     // true server-side ordering regardless of how the client is scheduled.
-    // Each child writes its own uniquely-named file; a shared append file
+    // Each child creates its own uniquely-named, empty file; a shared append file
     // dropped writes across processes on Windows.
     //
     // The spawn time is the file's NAME (`<nanos>-<pid>`); the file itself is
