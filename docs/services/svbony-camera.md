@@ -2213,7 +2213,8 @@ file, and the success never travels on the service-wide `ReloadSignal`, where
 a late one could stop the next server. A stop or a reload that lands while
 the re-scanned server drains has no stop future left to see it, so the loop
 honours it before that rebuild: the stop ends the service, and the reload
-rebuilds from the file, once.
+rebuilds from the file, once. A stop always wins: one that lands with a
+reload ends the service without building another server first.
 
 ---
 

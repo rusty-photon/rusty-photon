@@ -23,9 +23,11 @@ pub type Stop = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 /// the next server is built from what `load` reads now. After a re-scan it is
 /// built from the configuration the stopped server was serving: nobody asked
 /// for that rebuild, so it applies no edit to the file that no reload has
-/// applied. A shutdown or a reload that lands while a re-scanned server
-/// drains has no stop future left to see it, so it is honoured before that
-/// rebuild: the shutdown ends the loop, and the reload builds from `load`.
+/// applied. A shutdown ends the loop whatever else ended the server, so one
+/// that lands with a reload, or while a server drains, never waits out a
+/// rebuild. A reload that lands while a re-scanned server drains has no stop
+/// future left to see it, so it is honoured before that rebuild, which then
+/// builds from `load`.
 ///
 /// # Errors
 ///
@@ -59,11 +61,14 @@ where
             }
         };
         let ended = serve(config.clone(), Box::pin(stop)).await?;
+        if shutdown.is_cancelled() {
+            return Ok(());
+        }
         if reloaded.load(Ordering::SeqCst) {
             debug!("reload signalled; rebuilding from the new configuration");
             continue;
         }
-        if ended == Ended::Stopped || shutdown.is_cancelled() {
+        if ended == Ended::Stopped {
             return Ok(());
         }
         if reload_pending(&reload).await {
@@ -97,6 +102,8 @@ mod tests {
     enum Then {
         /// Signals a reload, then waits for its stop, as a server does.
         Reload,
+        /// Its stop resolves on a reload, and a shutdown lands as it drains.
+        ReloadWithShutdown,
         /// Its re-scan succeeds: reports `Rescanned` without its stop.
         Rescan,
         /// A reload lands as its re-scan succeeds.
@@ -129,6 +136,12 @@ mod tests {
                     match then {
                         None => shutdown.cancel(),
                         Some(Then::Reload) => reload.notify(),
+                        Some(Then::ReloadWithShutdown) => {
+                            reload.notify();
+                            stop.await;
+                            shutdown.cancel();
+                            return Ok(Ended::Stopped);
+                        }
                         Some(Then::Rescan) => return Ok(Ended::Rescanned),
                         Some(Then::RescanWithReload) => {
                             reload.notify();
@@ -158,6 +171,11 @@ mod tests {
     #[tokio::test]
     async fn a_reload_rebuilds_from_what_the_file_says_now() {
         assert_eq!(run(&[Then::Reload]).await, [1, 2]);
+    }
+
+    #[tokio::test]
+    async fn a_shutdown_that_lands_with_a_reload_ends_the_loop_without_a_rebuild() {
+        assert_eq!(run(&[Then::ReloadWithShutdown]).await, [1]);
     }
 
     #[tokio::test]

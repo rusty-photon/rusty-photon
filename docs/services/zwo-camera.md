@@ -217,7 +217,8 @@ graph TD;
   svbony-camera: after a reload it rebuilds from the config file, after a
   failed scan's re-scan from the configuration it was serving (U6), and a
   stop or reload that lands while a re-scanned server drains is honoured
-  before that rebuild.
+  before that rebuild. A stop always wins: one that lands with a reload ends
+  the service without building another server first.
 - **`lib.rs`** — `ServerBuilder` that, on `build()`, opens the SDK and, with
   no `usb_devices` list, **enumerates every connected ASI camera**,
   registering each as an ASCOM device (index 0, 1, 2, …) with its serial-derived

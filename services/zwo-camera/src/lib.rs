@@ -13,8 +13,10 @@
 //! camera via [`zwo_rs`] and registers each as an ASCOM [`ZwoCamera`] device on
 //! one port, with a serial-derived `UniqueID`. With a list it registers the
 //! list, in number order: the camera the USB join placed on each entry's port,
-//! or a placeholder that says why there is none — and it opens only the
-//! cameras on listed ports (`docs/services/zwo-camera.md` U1-U9). Each device
+//! or a placeholder that says why there is none — and a start or reload opens
+//! only the cameras on listed ports. A connect finds its camera by name and
+//! serial, not by port, so it can still reach a camera of a listed one's model
+//! plugged in after the start (`docs/services/zwo-camera.md` U1-U9). Each device
 //! implements the full `Device` + `Camera` surface (exposure state machine,
 //! ROI/binning, gain/offset, cooling, readout, ST4 pulse-guiding) over the
 //! [`backend::CameraHandle`] SDK seam. EFW filter wheels and EAF focusers are
