@@ -115,8 +115,8 @@ impl CameraWorld {
     /// one configuration whose service rebuilds itself (U6): a rebuild rebinds
     /// the configured port, and port 0 would move the service to a port the
     /// harness never learns. The port is reserved once per scenario, so a
-    /// later rewrite (a doctor run, say) cannot move a running service that
-    /// rebuilds from the file.
+    /// later rewrite (a doctor run, say, or a hand edit) keeps the port a
+    /// reload of the running service would rebind.
     pub fn write_config(&mut self) -> String {
         let mut config = self
             .config_json

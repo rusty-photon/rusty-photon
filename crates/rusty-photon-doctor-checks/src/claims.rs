@@ -1089,6 +1089,72 @@ pub fn render_listing(listing: &Listing) -> String {
     out
 }
 
+/// What `<service> doctor --devices` prints, and its exit code.
+///
+/// The cameras by port and the block to paste, exit 0 — or why there is no
+/// listing, exit 1: the scan failed, or the SDK could not enumerate. A list
+/// in `config_path` that breaks a rule (`list_check`'s error) is said first
+/// whatever else fails, so a host fault fixed first does not hide it; with
+/// one the block is withheld, since it would only reproduce the list the
+/// service refuses, and the exit code is 1.
+///
+/// `enumerate` runs only once the scan has, and returns the SDK's cameras as
+/// the join takes them beside whatever `listing` builds the listing from.
+pub fn devices_report<I>(
+    normalizer: Normalizer<'_>,
+    service: &str,
+    config_path: &std::path::Path,
+    list_check: Result<(), String>,
+    scan: Result<UsbScan, String>,
+    enumerate: impl FnOnce() -> Result<(Vec<SdkCamera>, I), String>,
+    listing: impl FnOnce(&Claims<'_>, &I) -> Listing,
+) -> (String, i32) {
+    let list_note = list_check.err().map(|error| {
+        format!(
+            "The usb_devices list in {} breaks a rule, so the service refuses to start: \
+             {error}.",
+            config_path.display()
+        )
+    });
+    let with_list_note = |text: String| match &list_note {
+        Some(note) => format!("{note}\n\n{text}"),
+        None => text,
+    };
+    if let Err(error) = &scan {
+        return (
+            with_list_note(format!(
+                "{} cameras on the bus (vendor {}):\n\n  the USB scan failed: {error}\n",
+                normalizer.sdk, normalizer.vendor
+            )),
+            1,
+        );
+    }
+    let (cameras, facts) = match enumerate() {
+        Ok(enumerated) => enumerated,
+        Err(error) => {
+            return (
+                with_list_note(format!(
+                    "{} SDK enumeration failed: {error}\n",
+                    normalizer.sdk
+                )),
+                1,
+            )
+        }
+    };
+    let claims = Claims::new(normalizer, service, scan, cameras);
+    let mut listing = listing(&claims, &facts);
+    let Some(note) = list_note else {
+        return (render_listing(&listing), 0);
+    };
+    // A block reproducing a list the service refuses would only be pasted
+    // back; the ports listed are what the operator fixes it from.
+    listing.block = None;
+    listing
+        .notes
+        .insert(0, format!("{note} Fix it from the ports above."));
+    (render_listing(&listing), 1)
+}
+
 /// The `"usb_devices": [...]` member, one entry per line, indented to paste.
 fn render_block(block: &[BlockEntry]) -> String {
     if block.is_empty() {
@@ -2247,5 +2313,88 @@ mod tests {
         assert_eq!(source.scan().unwrap_err(), "timed out");
         std::fs::write(&path, r#"{"usb": []}"#).unwrap();
         assert_eq!(source.scan().unwrap(), scan(Vec::new()));
+    }
+    /// `doctor --devices` over one SV605CC on 1-4.2, with `list_check`, a
+    /// scan that answers `scan`, and an SDK that answers `enumerate`.
+    fn report(
+        list_check: Result<(), String>,
+        scan: Result<UsbScan, String>,
+        enumerate: Result<(), String>,
+    ) -> (String, i32) {
+        devices_report(
+            SVB,
+            "svbony-camera",
+            std::path::Path::new("/etc/svbony-camera.json"),
+            list_check,
+            scan,
+            || enumerate.map(|()| (vec![camera("SV605CC")], ())),
+            |claims, ()| {
+                claims.listing(&[facts("SV605CC", "A", Some("A"))], None, &BTreeMap::new())
+            },
+        )
+    }
+
+    fn one_camera() -> UsbScan {
+        scan(vec![record("9a0a", "1-4.2")])
+    }
+
+    #[test]
+    fn devices_lists_the_cameras_and_prints_the_block() {
+        let (output, code) = report(Ok(()), Ok(one_camera()), Ok(()));
+        assert_eq!(code, 0, "{output}");
+        assert!(output.contains("1-4.2"), "{output}");
+        assert!(output.contains("\"usb_devices\""), "{output}");
+    }
+
+    #[test]
+    fn devices_fails_on_a_failed_scan_without_asking_the_sdk() {
+        let (output, code) = report(
+            Ok(()),
+            Err("powershell.exe timed out".to_string()),
+            Err("the SDK was asked".to_string()),
+        );
+        assert_eq!(code, 1);
+        assert_eq!(
+            output,
+            "SVBony cameras on the bus (vendor f266):\n\n  the USB scan failed: powershell.exe \
+             timed out\n"
+        );
+    }
+
+    #[test]
+    fn devices_fails_when_the_sdk_cannot_enumerate() {
+        let (output, code) = report(Ok(()), Ok(one_camera()), Err("no SDK".to_string()));
+        assert_eq!(code, 1);
+        assert_eq!(output, "SVBony SDK enumeration failed: no SDK\n");
+    }
+
+    #[test]
+    fn devices_names_a_broken_list_first_whatever_else_fails() {
+        let (output, code) = report(
+            Err("number 0 is missing".to_string()),
+            Err("powershell.exe timed out".to_string()),
+            Ok(()),
+        );
+        assert_eq!(code, 1);
+        assert!(
+            output.starts_with(
+                "The usb_devices list in /etc/svbony-camera.json breaks a rule, so the service \
+                 refuses to start: number 0 is missing.\n\nSVBony cameras on the bus"
+            ),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn devices_withholds_the_block_of_a_broken_list_and_lists_the_ports() {
+        let (output, code) = report(
+            Err("number 0 is missing".to_string()),
+            Ok(one_camera()),
+            Ok(()),
+        );
+        assert_eq!(code, 1);
+        assert!(output.contains("1-4.2"), "{output}");
+        assert!(!output.contains("\"usb_devices\""), "{output}");
+        assert!(output.contains("Fix it from the ports above."), "{output}");
     }
 }

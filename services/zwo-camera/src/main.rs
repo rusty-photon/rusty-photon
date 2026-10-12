@@ -192,11 +192,18 @@ fn main() -> ServiceResult {
         .with_reload()
         .scm_mode(args.service)
         .run_with_reload(move |shutdown, reload| async move {
+            // A failed USB scan's rebuild (U6) is built from the
+            // configuration the server it replaces was serving: nobody asked
+            // for it, so it applies no edit to the file that no reload has.
+            let mut serving = None;
             loop {
-                let config = load_effective_config(&config_path, &overrides)?;
+                let config = match serving.take() {
+                    Some(config) => config,
+                    None => load_effective_config(&config_path, &overrides)?,
+                };
 
                 let builder = ServerBuilder::new()
-                    .with_config(config)
+                    .with_config(config.clone())
                     .with_config_source(config_path.clone(), overrides.clone())
                     .with_reload_signal(reload.clone());
 
@@ -234,7 +241,11 @@ fn main() -> ServiceResult {
                     if shutdown.is_cancelled() {
                         return Ok(());
                     }
-                    debug!("a failed USB scan succeeds again; rebuilding zwo-camera");
+                    debug!(
+                        "a failed USB scan succeeds again; rebuilding zwo-camera from the \
+                         configuration it serves"
+                    );
+                    serving = Some(config);
                     continue;
                 }
                 return Ok(());

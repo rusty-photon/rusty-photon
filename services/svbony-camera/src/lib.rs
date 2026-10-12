@@ -89,7 +89,7 @@ use std::sync::Arc;
 use ascom_alpaca::api::{CargoServerInfo, Device};
 use ascom_alpaca::Server;
 use rusty_photon_doctor_checks::claims::{Claims, Resolution};
-use rusty_photon_driver::claims::{first_blocker, Blocker, Rescan};
+use rusty_photon_driver::claims::Rescan;
 use rusty_photon_driver::ConfigActionCtx;
 use rusty_photon_service_lifecycle::ReloadSignal;
 use rusty_photon_tls::config::TlsConfig;
@@ -417,19 +417,22 @@ impl ServerBuilder {
         Ok(registered)
     }
 
-    /// The background re-scan after a failed USB scan (U6): on the first try
-    /// after which a rebuild would serve the list, it ends its own server,
-    /// which the caller rebuilds ([`Ended::Rescanned`]) — placing the listed
-    /// cameras afresh.
+    /// The background re-scan after a failed USB scan (U6): each try takes
+    /// this build's scan and, once that runs, enumerates the SDK; on the first
+    /// try both pass, it ends its own server, which the caller rebuilds from
+    /// the configuration it was serving ([`Ended::Rescanned`]) — placing the
+    /// listed cameras afresh.
     fn rescan(&self) -> Rescan {
         let source = self.usb_source();
-        let config = self
-            .config_path
-            .clone()
-            .map(|path| (path, self.overrides.clone()));
-        Rescan::new(claims::SDK_NAME, move || {
-            rescan_blocker(config.as_ref(), &source)
-        })
+        Rescan::new(
+            claims::SDK_NAME,
+            move || source.scan().map(drop),
+            || {
+                sdk_camera_infos()
+                    .map(drop)
+                    .map_err(|error| error.to_string())
+            },
+        )
     }
 
     /// Register one enumerated camera with its display overrides.
@@ -485,28 +488,6 @@ struct Registered {
     cameras: usize,
     placeholders: usize,
     rescan: Option<Rescan>,
-}
-
-/// What would keep a rebuild now from serving the list (U6), in
-/// [`first_blocker`]'s order, or `None` when nothing would. Blocking. `config`
-/// is the file the rebuild will read and the CLI overrides layered on it,
-/// `None` when the builder has no config source.
-fn rescan_blocker(config: Option<&(PathBuf, CliOverrides)>, source: &UsbSource) -> Option<Blocker> {
-    first_blocker(
-        || {
-            config.map_or(Ok(true), |(path, overrides)| {
-                load_effective_config(path, overrides)
-                    .map(|config| config.usb_devices.is_some())
-                    .map_err(|error| error.to_string())
-            })
-        },
-        || source.scan().map(drop),
-        || {
-            sdk_camera_infos()
-                .map(drop)
-                .map_err(|error| error.to_string())
-        },
-    )
 }
 
 /// A svbony-camera server bound to a local port, ready to [`start`](Self::start).
@@ -660,6 +641,7 @@ mod identity_tests {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod simulation_tests {
     use super::*;
+    use rusty_photon_driver::claims::Blocker;
 
     /// End-to-end proof against the `svbony-rs` simulation backend: the
     /// builder enumerates the one simulated camera, registers it, and binds
@@ -794,51 +776,21 @@ mod simulation_tests {
         assert_eq!(ids, vec!["placeholder:svbony-camera:simulated-usbv3-0:1"]);
     }
 
-    /// A config file at a fresh path holding `json`, kept alive by the guard.
-    fn config_file(json: &str) -> std::io::Result<(tempfile::TempDir, (PathBuf, CliOverrides))> {
-        let dir = tempfile::tempdir()?;
-        let path = dir.path().join("svbony-camera.json");
-        std::fs::write(&path, json)?;
-        Ok((dir, (path, CliOverrides::default())))
-    }
-
-    const BROKEN_LIST: &str = r#"{"usb_devices": [{"device_number": 1, "usb_port": "a"}]}"#;
-
     #[test]
     fn a_rescan_with_nothing_in_the_way_finds_no_blocker() {
-        let (_dir, config) =
-            config_file(r#"{"usb_devices": [{"device_number": 0, "usb_port": "a"}]}"#).unwrap();
-        let blocker = rescan_blocker(Some(&config), &claims::default_usb_source());
-        assert_eq!(blocker, None);
-    }
-
-    #[test]
-    fn a_rescan_leaves_a_file_with_no_list_to_a_reload() {
-        // A hand edit dropped the list: a rebuild would take the no-list path,
-        // which nobody asked for. The scan would pass; the file blocks first.
-        let (_dir, config) = config_file("{}").unwrap();
-        let blocker = rescan_blocker(Some(&config), &claims::default_usb_source());
-        assert_eq!(blocker, Some(Blocker::NoList));
+        assert_eq!(ServerBuilder::new().rescan().check(), None);
     }
 
     #[test]
     fn a_rescan_is_blocked_while_the_scan_fails() {
         let (_dir, source) = staged(FAILED_SCAN).unwrap();
-        let blocker = rescan_blocker(None, &source);
         assert_eq!(
-            blocker,
+            ServerBuilder::new()
+                .with_usb_source(source)
+                .rescan()
+                .check(),
             Some(Blocker::Scan("powershell.exe timed out".to_string()))
         );
-    }
-
-    #[test]
-    fn a_rescan_checks_the_config_file_before_it_scans() {
-        // A scan of this source would fail; a config that does not load is
-        // what the blocker names, so no scan was taken.
-        let (_dir, config) = config_file(BROKEN_LIST).unwrap();
-        let source = UsbSource::Staged(PathBuf::from("/nonexistent/inventory.json"));
-        let blocker = rescan_blocker(Some(&config), &source);
-        assert!(matches!(blocker, Some(Blocker::Config(_))), "{blocker:?}");
     }
 
     #[tokio::test]

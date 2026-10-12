@@ -912,9 +912,11 @@ on its own (U5).
   its model the SDK enumerated at the start — two would have been look-alikes
   (U3) — so that touches no unlisted camera unless one of the same model is
   plugged in after the start. Then a connect may open it, uninitialised, to
-  read its serial, and, for a camera with no serial, which a connect takes by
-  name alone, open it in place of the listed camera if a rescan has given it
-  the listed camera's startup index. A listed camera re-cabled onto an
+  read its serial. A camera with no serial (the ASI1600MM-Cool reports none)
+  is taken by name alone, so a connect opens and initialises the newcomer in
+  place of the listed camera whenever the listed one is off the bus, or a
+  rescan has given the newcomer the listed camera's startup index, which a
+  connect tries first. A listed camera re-cabled onto an
   unlisted port while the service runs is likewise still opened at its listed
   number. Both are a reload's to correct: it places every camera afresh. The
   device-claims plan's D8 records watching placement as out of scope, and a
@@ -1106,26 +1108,24 @@ on its own (U5).
   Windows.) The service therefore re-scans in the background, after waits of
   10 s, 20 s and 40 s and then every 60 s, logging each repeat failure at
   `debug!`. When a scan succeeds, it is logged at `info!` and the server it
-  belongs to stops and is rebuilt, as for a reload, which runs the start path
-  again, placement and identity opens and all. That is safe because the
-  failed-scan outcome opened nothing, so there is no session to interrupt. The
-  success ends that server only: it is not the service-wide reload signal, so
-  one landing after another reload has already stopped the server reaches
-  nothing, and cannot stop the next server. Nobody asked for this rebuild,
-  though, and a rebuild that cannot load its config file, or whose SDK
-  enumeration fails — with the first scan failed, the rebuild is the first
-  enumeration since the start — ends the service. So each try checks the
-  config file first, then takes the scan, then checks that the SDK enumerates,
-  and rebuilds only when all three pass. A file that loads but no longer has a
-  list — a hand edit no reload applied — blocks it too: the rebuild exists to
-  place the listed cameras, and one with no list would take the no-list path,
-  which opens every camera and fails the start on one it cannot open (C0), so
-  the edit waits for the reload or restart that applies it. A config file or
-  SDK that blocks it is logged at `warn!` each time it starts to, and at
-  `debug!` while it persists, and the re-scan carries on, without scanning
-  while the file does not load or has no list. A try already running when
-  the server stops is not interrupted: it runs out under the scan's own
-  deadline and its answer goes nowhere. An identity open that fails in the rebuild costs that camera a
+  belongs to stops and is rebuilt, which runs the start path again, placement
+  and identity opens and all. That is safe because the failed-scan outcome
+  opened nothing, so there is no session to interrupt. The success ends that
+  server only: it is not the service-wide reload signal, so one landing after
+  another reload has already stopped the server reaches nothing, and cannot
+  stop the next server. Nobody asked for this rebuild, though, so it is built
+  from the configuration the stopped server was serving, not from the config
+  file: an edit to the file that no reload has applied — a list removed, a
+  port or a certificate changed — waits for the reload (`config.apply`,
+  `SIGHUP`) or restart that applies it, rather than moving or ending the
+  service. A rebuild whose SDK enumeration fails would still end it — with
+  the first scan failed, the rebuild is the first enumeration since the start
+  — so each try takes the scan, then checks that the SDK enumerates, and
+  rebuilds only when both pass. An SDK that blocks it is logged at `warn!`
+  each time it starts to, and at `debug!` while it persists, and the re-scan
+  carries on. A try already running when the server stops is not
+  interrupted: it runs out under the scan's own deadline and its answer goes
+  nowhere. An identity open that fails in the rebuild costs that camera a
   placeholder (U5), never the service. The re-scan stops when it rebuilds,
   and with the server it belongs to. It is not hot-plug: a successful scan
   whose listed port is merely empty serves a placeholder until the next
@@ -1916,10 +1916,10 @@ else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md). Phase E landed **45 unit tests**
 and **57 BDD scenarios** (all green), plus a full **ConformU** pass; the suite
-now stands at **182 unit tests** (with `--all-features`; 149 without, since the
-`simulation` feature gates `lib.rs`'s fifteen `simulation_tests`, the sixteen
+now stands at **181 unit tests** (with `--all-features`; 149 without, since the
+`simulation` feature gates `lib.rs`'s thirteen `simulation_tests`, the sixteen
 `backend::handle_tests` that drive the production handle against the `zwo-rs`
-simulation, and two of `claims.rs`'s) and **115 BDD scenarios**.
+simulation, and three of `claims.rs`'s) and **116 BDD scenarios**.
 
 - **Unit** (`src/*.rs` `#[cfg(test)]`) — config parse/newtype validation, ROI/
   binning geometry math (including the %8 / %2 alignment rules), the `Camera`
@@ -2054,7 +2054,8 @@ simulation, and two of `claims.rs`'s) and **115 BDD scenarios**.
   ZWO focuser's port, a fault, a look-alike, a camera that cannot be opened
   and a failed scan, with its `0x540` connect error, `Description`, `UniqueID`
   form, `NOT_CONNECTED` members and config actions; the failed scan's re-scan
-  that rebuilds the server; the empty list; the list's validation at start and
+  that rebuilds the server, from the configuration it serves rather than a
+  hand edit to the file; the empty list; the list's validation at start and
   over `config.apply`; a camera that cannot be opened failing a start without
   a list (C0); and `doctor --devices`' listing and block. The join, the
   reasons, port order and the listing are unit-tested once, in

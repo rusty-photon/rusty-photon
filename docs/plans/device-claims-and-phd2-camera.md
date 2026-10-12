@@ -836,7 +836,9 @@ date. (`name` is display text, never a key.)
    startup, then re-scans in the background — after 10 s, 20 s and
    40 s, then every 60 s — and the first successful scan fires the
    driver's own reload, which re-runs placement exactly as `config.apply`
-   does (D4.1). That is safe because the failed-scan outcome has opened
+   does (D4.1). (Settled in C3: that rebuild is built from the
+   configuration the driver is serving, not from the file, so a hand edit
+   no reload has applied cannot move or end the service.) That is safe because the failed-scan outcome has opened
    nothing, so there is no session to interrupt, and because the reload
    runs the startup path, which tenet 3 binds exactly as it binds startup
    (C4). It is not hot-plug (D8): the re-scan runs only while the scan is

@@ -36,6 +36,11 @@ pub const VENDOR: &str = "03c3";
 #[cfg(feature = "simulation")]
 pub const SIMULATED_MODEL: &str = "ASI2600MM-Pro-Simulated";
 
+/// [`zwo_rs::SIM_CAMERA_PRODUCT_ID`] as the inventory spells it: the product
+/// id the simulated camera is placed by and staged under.
+#[cfg(feature = "simulation")]
+const SIMULATED_PRODUCT: &str = "2600";
+
 /// Each ASI model this driver has seen on the bus, by the name the SDK gives
 /// it, with the product id it enumerates under — observed pairs only, since a
 /// guess here serves the wrong camera at the wrong number. All three were read
@@ -59,7 +64,7 @@ const MODELS: &[(&str, &str)] = &[
     OBSERVED[0],
     OBSERVED[1],
     OBSERVED[2],
-    (SIMULATED_MODEL, "2600"),
+    (SIMULATED_MODEL, SIMULATED_PRODUCT),
 ];
 
 /// What this driver knows about ASI cameras on the bus. A product id it has
@@ -132,7 +137,7 @@ fn simulated_inventory() -> rusty_photon_doctor_checks::UsbScan {
         devices: (1..=zwo_rs::SIM_CAMERA_COUNT)
             .map(|n| rusty_photon_doctor_checks::UsbDevice {
                 vendor: VENDOR.to_string(),
-                product: format!("{:04x}", zwo_rs::SIM_CAMERA_PRODUCT_ID),
+                product: SIMULATED_PRODUCT.to_string(),
                 model: Some(SIMULATED_MODEL.to_string()),
                 port: Some(format!("simulated-usbv3-0:{n}")),
                 serial: None,
@@ -311,6 +316,18 @@ mod tests {
         );
         assert_eq!(claims.placed(), vec![(0, "p2")]);
         assert_eq!(claims.unplaced_notes(), Vec::<String>::new());
+    }
+
+    /// The normalizer, the staged inventory and the simulated SDK's check
+    /// all name the simulated camera by one product id.
+    #[cfg(feature = "simulation")]
+    #[test]
+    fn the_simulated_product_is_the_one_the_simulated_sdk_supports() {
+        assert_eq!(
+            SIMULATED_PRODUCT,
+            format!("{:04x}", zwo_rs::SIM_CAMERA_PRODUCT_ID)
+        );
+        assert!(sdk_supports(SIMULATED_PRODUCT));
     }
 
     #[cfg(feature = "simulation")]

@@ -996,7 +996,7 @@ on.
 Named, testable behaviours. ASCOM error names per
 [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md). Every
 contract below is real as of Phase E; the BDD feature files under
-`tests/features/` (112 scenarios, 572 steps) and the unit tests in
+`tests/features/` (113 scenarios, 579 steps) and the unit tests in
 `src/camera.rs`/`src/backend.rs` exercise them — see "Testing" below for
 which layer covers which contract (E9's two branches, the
 generation-counter abort race and E10 are unit-test-only, per the design's
@@ -1469,24 +1469,23 @@ and what `doctor --devices` can say about a camera without opening it — is
   service therefore re-scans in the background, after waits of 10 s, 20 s and
   40 s and then every 60 s, logging each repeat failure at `debug!`.
   When a scan succeeds, it is logged at `info!` and the server it belongs to
-  stops and is rebuilt, as for a reload, which runs the start path again,
-  placement and all. That is safe because the failed-scan outcome opened
-  nothing, so there is no session to interrupt. The success ends that server
-  only: it is not the service-wide reload signal, so one landing after another
-  reload has already stopped the server reaches nothing, and cannot stop the
-  next server. Nobody asked for this rebuild, though, and a rebuild that cannot
-  load its config file, or whose SDK enumeration fails — with the first scan
-  failed, the rebuild is the first enumeration since the start — ends the
-  service. So each try checks the config file first, then takes the scan, then
-  checks that the SDK enumerates, and rebuilds only when all three pass. A
-  file that loads but no longer has a list — a hand edit no reload applied —
-  blocks it too: the rebuild exists to place the listed cameras, not to apply
-  an edit nobody has asked to apply, so the edit waits for the reload or
-  restart that does. A config file or SDK that blocks it is logged at `warn!`
-  each time it starts to, and at `debug!` while it persists, and the re-scan
-  carries on, without scanning while the file does not load or has no list. A
-  try already running when the server stops is not interrupted: it runs out
-  under the scan's own deadline and its answer goes nowhere. The re-scan stops
+  stops and is rebuilt, which runs the start path again, placement and all.
+  That is safe because the failed-scan outcome opened nothing, so there is no
+  session to interrupt. The success ends that server only: it is not the
+  service-wide reload signal, so one landing after another reload has already
+  stopped the server reaches nothing, and cannot stop the next server. Nobody
+  asked for this rebuild, though, so it is built from the configuration the
+  stopped server was serving, not from the config file: an edit to the file
+  that no reload has applied — a list removed, a port or a certificate
+  changed — waits for the reload (`config.apply`, `SIGHUP`) or restart that
+  applies it, rather than moving or ending the service. A rebuild whose SDK
+  enumeration fails would still end it — with the first scan failed, the
+  rebuild is the first enumeration since the start — so each try takes the
+  scan, then checks that the SDK enumerates, and rebuilds only when both pass.
+  An SDK that blocks it is logged at `warn!` each time it starts to, and at
+  `debug!` while it persists, and the re-scan carries on. A try already
+  running when the server stops is not interrupted: it runs out under the
+  scan's own deadline and its answer goes nowhere. The re-scan stops
   when it rebuilds, and with the server it belongs to. It is not hot-plug: a
   successful scan whose listed port is merely empty serves a placeholder until
   the next reload, as at any start.
@@ -2206,8 +2205,9 @@ The background re-scan after a failed USB scan (U6) belongs to the bound
 server: it runs while that server serves and stops when it does. Its success
 ends that server, and `BoundServer::start` says so by returning
 `Ended::Rescanned` instead of `Ended::Stopped`. The loop rebuilds on it
-exactly as it does after a reload, so the success never travels on the
-service-wide `ReloadSignal`, where a late one could stop the next server.
+from the configuration that server was serving, where a reload re-reads the
+config file, and the success never travels on the service-wide
+`ReloadSignal`, where a late one could stop the next server.
 
 ---
 
@@ -2215,7 +2215,7 @@ service-wide `ReloadSignal`, where a late one could stop the next server.
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 174 no-features / 207 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 168 no-features / 199 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
@@ -2262,8 +2262,8 @@ Layered per [`testing.md`](../skills/testing.md).
   `Camera::video_capture_starts`, a read-only count that tells the test the
   capture's own capture restart has run, so "the cancel landed in the poll
   loop" is a fact rather than a nap.
-- **BDD** (`bdd-infra::ServiceHandle`, eleven feature files, 112 scenarios /
-  572 steps) — all genuinely green, including `enumeration_connection`'s
+- **BDD** (`bdd-infra::ServiceHandle`, eleven feature files, 113 scenarios /
+  579 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
   behavioural feature (`exposure`, `binning_and_roi`, `cooling`,
   `gain_offset_readout`, `sensor_properties`) — see each file's header

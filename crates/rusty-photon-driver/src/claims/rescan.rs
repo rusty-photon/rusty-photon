@@ -4,20 +4,17 @@
 //! and opens nothing. A failed scan is never a startup failure, so nothing
 //! else would retry it: the driver re-scans after waits of 10 s, 20 s and
 //! 40 s, then every 60 s, and on the first try after which a rebuild would
-//! serve the list it ends its own server, which the driver's run loop
-//! rebuilds as for a reload ([`Ended::Rescanned`]). That success ends that
-//! server only — it is not the service-wide reload signal — so one landing
-//! after another reload has already stopped the server reaches nothing, and
-//! cannot stop the next one.
+//! serve the list it ends its own server ([`Ended::Rescanned`]). The driver's
+//! run loop rebuilds it from the configuration that server was serving, not
+//! from the config file: nobody asked for this rebuild, so it applies no edit
+//! to the file that no reload has applied. That success ends that server only
+//! — it is not the service-wide reload signal — so one landing after another
+//! reload has already stopped the server reaches nothing, and cannot stop the
+//! next one.
 //!
-//! What a try checks is the driver's ([`Rescan::new`]): its config file, its
-//! scan, its SDK's enumeration, cheapest first ([`first_blocker`]). Nobody
-//! asked for this rebuild, and one that cannot load its config or enumerate
-//! its SDK ends the service, so the re-scan waits those out too. It also waits
-//! for a reload or restart when the file no longer has a list: the rebuild
-//! exists to place the listed cameras, and one with no list would take the
-//! driver's no-list path instead, which can end the service on a camera it
-//! cannot open.
+//! What a try checks is the driver's ([`Rescan::new`]): its scan, then — only
+//! once the scan runs — its SDK's enumeration. A rebuild whose enumeration
+//! fails ends the service, so the re-scan waits that out too.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,25 +38,17 @@ pub fn rescan_waits() -> impl Iterator<Item = Duration> {
 pub enum Blocker {
     /// The USB scan still fails.
     Scan(String),
-    /// The config file no longer loads, and a rebuild that cannot load its
-    /// config ends the service.
-    Config(String),
     /// The SDK cannot enumerate, and a rebuild that cannot enumerate ends the
     /// service: with the first scan failed, the rebuild is the first
     /// enumeration since the start.
     Sdk(String),
-    /// The config file loads but no longer has a `usb_devices` list: a hand
-    /// edit no reload applied. A rebuild would have no listed camera to
-    /// place, so the edit waits for the reload or restart that applies it.
-    NoList,
 }
 
 impl Blocker {
     /// Whether this blocker is news to the operator after `previous`, the
-    /// one the try before met: a config file or SDK that blocks the rebuild is
-    /// warned about each time it starts to, so one that clears and comes back
-    /// — or gives way to the other — is said again, while one that persists
-    /// from the try before is not.
+    /// one the try before met: an SDK that blocks the rebuild is warned about
+    /// each time it starts to, so one that clears and comes back is said
+    /// again, while one that persists from the try before is not.
     fn is_new(&self, previous: Option<&Self>) -> bool {
         previous.is_none_or(|p| std::mem::discriminant(p) != std::mem::discriminant(self))
     }
@@ -70,24 +59,12 @@ impl Blocker {
 type Check = Arc<dyn Fn() -> Option<Blocker> + Send + Sync>;
 
 /// What would keep a rebuild now from serving the list, or `None` when
-/// nothing would. Blocking.
-///
-/// The checks run cheapest first — the config file, then the scan, then the
-/// SDK's enumeration — each only when the ones before it pass.
-///
-/// `config` loads the file the rebuild would read and says whether it still
-/// has a `usb_devices` list; a driver with no config file to read answers
-/// `Ok(true)` for the list it was built with.
-pub fn first_blocker(
-    config: impl FnOnce() -> Result<bool, String>,
+/// nothing would: the scan's failure, else the SDK's. The SDK is asked only
+/// once the scan runs. Blocking.
+fn first_blocker(
     scan: impl FnOnce() -> Result<(), String>,
     enumerate: impl FnOnce() -> Result<(), String>,
 ) -> Option<Blocker> {
-    match config() {
-        Err(error) => return Some(Blocker::Config(error)),
-        Ok(false) => return Some(Blocker::NoList),
-        Ok(true) => {}
-    }
     if let Err(error) = scan() {
         return Some(Blocker::Scan(error));
     }
@@ -111,8 +88,19 @@ impl std::fmt::Debug for Rescan {
 }
 
 impl Rescan {
-    /// A re-scan whose every try runs `check` on the blocking pool.
+    /// A re-scan whose every try takes the driver's USB `scan` and, once that
+    /// runs, has its `sdk` `enumerate`; each says why it failed. Both run on
+    /// the blocking pool.
     pub fn new(
+        sdk: &'static str,
+        scan: impl Fn() -> Result<(), String> + Send + Sync + 'static,
+        enumerate: impl Fn() -> Result<(), String> + Send + Sync + 'static,
+    ) -> Self {
+        Self::checking(sdk, move || first_blocker(&scan, &enumerate))
+    }
+
+    /// A re-scan whose every try runs `check`.
+    fn checking(
         sdk: &'static str,
         check: impl Fn() -> Option<Blocker> + Send + Sync + 'static,
     ) -> Self {
@@ -120,6 +108,13 @@ impl Rescan {
             sdk,
             check: Arc::new(check),
         }
+    }
+
+    /// One try, on the calling thread: what would keep a rebuild now from
+    /// serving the list, or `None` when nothing would. Blocking.
+    #[must_use]
+    pub fn check(&self) -> Option<Blocker> {
+        (self.check)()
     }
 
     /// Try after each of `waits` until a rebuild would serve the list, then
@@ -146,9 +141,6 @@ impl Rescan {
             let new = blocker.is_new(previous.as_ref());
             match &blocker {
                 Blocker::Scan(error) => debug!(%error, "the USB scan still fails"),
-                Blocker::Config(error) if new => {
-                    warn!(%error, "the config file no longer loads; not rebuilding until it does");
-                }
                 Blocker::Sdk(error) if new => {
                     warn!(
                         %error,
@@ -157,16 +149,7 @@ impl Rescan {
                          rebuilding until it can"
                     );
                 }
-                Blocker::NoList if new => {
-                    warn!(
-                        "the config file no longer has a usb_devices list; leaving the rebuild \
-                         to a reload or restart"
-                    );
-                }
-                Blocker::Config(error) | Blocker::Sdk(error) => {
-                    debug!(%error, "the rebuild is still blocked");
-                }
-                Blocker::NoList => debug!("the config file still has no usb_devices list"),
+                Blocker::Sdk(error) => debug!(%error, "the rebuild is still blocked"),
             }
             previous = Some(blocker);
         }
@@ -178,8 +161,8 @@ impl Rescan {
 pub enum Ended {
     /// The caller's stop future resolved.
     Stopped,
-    /// A failed USB scan succeeds again: rebuild the server, as for a reload,
-    /// to place the listed cameras.
+    /// A failed USB scan succeeds again: rebuild the server from the
+    /// configuration it was serving, to place the listed cameras.
     Rescanned,
 }
 
@@ -261,7 +244,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_try_with_nothing_in_the_way_says_the_server_can_rebuild() {
-        let rescan = Rescan::new("ZWO", || None);
+        let rescan = Rescan::checking("ZWO", || None);
         assert!(ready_within(rescan, Duration::from_secs(300)).await);
     }
 
@@ -269,11 +252,9 @@ mod tests {
     async fn a_rescan_never_asks_for_a_rebuild_while_something_blocks_it() {
         for blocker in [
             Blocker::Scan("no sysfs".to_string()),
-            Blocker::Config("broken".to_string()),
             Blocker::Sdk("no SDK".to_string()),
-            Blocker::NoList,
         ] {
-            let rescan = Rescan::new("ZWO", move || Some(blocker.clone()));
+            let rescan = Rescan::checking("ZWO", move || Some(blocker.clone()));
             assert!(
                 !ready_within(rescan, Duration::from_secs(300)).await,
                 "a blocked re-scan asked for a rebuild"
@@ -285,7 +266,7 @@ mod tests {
     async fn a_rescan_tries_after_each_wait_until_nothing_blocks_it() {
         let tries = Arc::new(AtomicUsize::new(0));
         let counted = Arc::clone(&tries);
-        let rescan = Rescan::new("ZWO", move || {
+        let rescan = Rescan::checking("ZWO", move || {
             let n = counted.fetch_add(1, Ordering::SeqCst);
             (n < 2).then(|| Blocker::Scan("still failing".to_string()))
         });
@@ -296,99 +277,59 @@ mod tests {
         assert_eq!(tries.load(Ordering::SeqCst), 3);
     }
 
-    /// The checks a [`first_blocker`] call ran, in order.
-    #[derive(Default)]
-    struct Ran(std::cell::RefCell<Vec<&'static str>>);
-
-    impl Ran {
-        fn check<'a, T: 'a>(&'a self, name: &'static str, outcome: T) -> impl FnOnce() -> T + 'a {
+    /// A re-scan whose scan and enumeration answer `scan` and `enumerate`,
+    /// and the log of which of the two each try ran, in order.
+    fn recorded(
+        scan: Result<(), String>,
+        enumerate: Result<(), String>,
+    ) -> (Rescan, Arc<std::sync::Mutex<Vec<&'static str>>>) {
+        let ran = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (scans, enumerates) = (Arc::clone(&ran), Arc::clone(&ran));
+        let rescan = Rescan::new(
+            "ZWO",
             move || {
-                self.0.borrow_mut().push(name);
-                outcome
-            }
-        }
-
-        fn names(&self) -> Vec<&'static str> {
-            self.0.borrow().clone()
-        }
+                scans.lock().unwrap().push("scan");
+                scan.clone()
+            },
+            move || {
+                enumerates.lock().unwrap().push("enumerate");
+                enumerate.clone()
+            },
+        );
+        (rescan, ran)
     }
 
     #[test]
-    fn a_rebuild_with_every_check_passing_is_not_blocked() {
-        let ran = Ran::default();
-        let blocker = first_blocker(
-            ran.check("config", Ok(true)),
-            ran.check("scan", Ok(())),
-            ran.check("enumerate", Ok(())),
-        );
-        assert_eq!(blocker, None);
-        assert_eq!(ran.names(), ["config", "scan", "enumerate"]);
-    }
-
-    #[test]
-    fn a_config_file_that_does_not_load_blocks_before_the_scan_is_taken() {
-        let ran = Ran::default();
-        let blocker = first_blocker(
-            ran.check("config", Err("broken".to_string())),
-            ran.check("scan", Ok(())),
-            ran.check("enumerate", Ok(())),
-        );
-        assert_eq!(blocker, Some(Blocker::Config("broken".to_string())));
-        assert_eq!(ran.names(), ["config"]);
-    }
-
-    #[test]
-    fn a_config_file_with_no_list_blocks_before_the_scan_is_taken() {
-        let ran = Ran::default();
-        let blocker = first_blocker(
-            ran.check("config", Ok(false)),
-            ran.check("scan", Ok(())),
-            ran.check("enumerate", Ok(())),
-        );
-        assert_eq!(blocker, Some(Blocker::NoList));
-        assert_eq!(ran.names(), ["config"]);
+    fn a_try_with_the_scan_and_the_sdk_working_is_not_blocked() {
+        let (rescan, ran) = recorded(Ok(()), Ok(()));
+        assert_eq!(rescan.check(), None);
+        assert_eq!(*ran.lock().unwrap(), ["scan", "enumerate"]);
     }
 
     #[test]
     fn a_failed_scan_blocks_before_the_sdk_enumerates() {
-        let ran = Ran::default();
-        let blocker = first_blocker(
-            ran.check("config", Ok(true)),
-            ran.check("scan", Err("no sysfs".to_string())),
-            ran.check("enumerate", Ok(())),
-        );
-        assert_eq!(blocker, Some(Blocker::Scan("no sysfs".to_string())));
-        assert_eq!(ran.names(), ["config", "scan"]);
+        let (rescan, ran) = recorded(Err("no sysfs".to_string()), Ok(()));
+        assert_eq!(rescan.check(), Some(Blocker::Scan("no sysfs".to_string())));
+        assert_eq!(*ran.lock().unwrap(), ["scan"]);
     }
 
     #[test]
     fn an_sdk_that_cannot_enumerate_blocks_the_rebuild() {
-        let ran = Ran::default();
-        let blocker = first_blocker(
-            ran.check("config", Ok(true)),
-            ran.check("scan", Ok(())),
-            ran.check("enumerate", Err("no SDK".to_string())),
-        );
-        assert_eq!(blocker, Some(Blocker::Sdk("no SDK".to_string())));
-        assert_eq!(ran.names(), ["config", "scan", "enumerate"]);
+        let (rescan, ran) = recorded(Ok(()), Err("no SDK".to_string()));
+        assert_eq!(rescan.check(), Some(Blocker::Sdk("no SDK".to_string())));
+        assert_eq!(*ran.lock().unwrap(), ["scan", "enumerate"]);
     }
 
     #[test]
     fn a_blocker_is_news_each_time_it_starts() {
-        let config = || Blocker::Config("broken".to_string());
         let scan = || Blocker::Scan("no sysfs".to_string());
         let sdk = || Blocker::Sdk("no SDK".to_string());
-        assert!(config().is_new(None), "the first try's");
-        assert!(!config().is_new(Some(&config())), "one that persists");
+        assert!(sdk().is_new(None), "the first try's");
+        assert!(!sdk().is_new(Some(&sdk())), "one that persists");
         assert!(
-            config().is_new(Some(&scan())),
+            sdk().is_new(Some(&scan())),
             "one that clears and comes back"
         );
-        assert!(
-            sdk().is_new(Some(&config())),
-            "one that gives way to the other"
-        );
-        assert!(config().is_new(Some(&sdk())), "and back again");
     }
 
     #[tokio::test(start_paused = true)]
@@ -400,8 +341,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_rescan_that_succeeds_ends_its_server_as_rescanned() {
-        let (stop, cause) =
-            stop_or_rescanned(std::future::pending(), Some(Rescan::new("ZWO", || None)));
+        let (stop, cause) = stop_or_rescanned(
+            std::future::pending(),
+            Some(Rescan::checking("ZWO", || None)),
+        );
         tokio::time::timeout(Duration::from_secs(300), stop)
             .await
             .expect("the re-scan's success did not end the server");
@@ -414,7 +357,7 @@ mod tests {
         let counted = Arc::clone(&tries);
         let (stop, cause) = stop_or_rescanned(
             tokio::time::sleep(Duration::from_secs(5)),
-            Some(Rescan::new("ZWO", move || {
+            Some(Rescan::checking("ZWO", move || {
                 counted.fetch_add(1, Ordering::SeqCst);
                 None
             })),
