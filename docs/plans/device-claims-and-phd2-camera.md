@@ -1443,12 +1443,13 @@ the init: open, ask up to three times, close. No `InitQHYCCD` is reachable
 from startup or reload in either path, and the tenet-3 problem is discharged
 rather than narrowed ([`qhy-camera.md`](../services/qhy-camera.md) C0, C5).
 
-What that measurement does not cover, recorded in the waiting list: a camera
-fresh from power-up (the one measured had been initialised by earlier
-processes since it last powered on), the Windows SDK, and any model but the
-QHY178M. If a cold camera turns out to need the init, the no-list path
-registers no wheel for it — a missing device, logged, never a moved one — and
-the remedy is a list declaring the wheel.
+The camera had been initialised by earlier processes since it last powered
+on, so it was re-plugged and asked again as the first process to open it
+since its power-up: the same answers, a wheel 3 of 3 and a slot count of 7.
+What the measurement does not cover, recorded in the waiting list: the
+Windows SDK, and any model but the QHY178M. If one of those turns out to need
+the init, the no-list path registers no wheel for it — a missing device,
+logged, never a moved one — and the remedy is a list declaring the wheel.
 
 The same session measured what the probe does to a camera another process
 holds, which is the no-list path's PHD2 case: the QHY SDK lets a second
@@ -2385,14 +2386,13 @@ and on 2026-10-11 the owner accepted the legs no real hardware has read
   the same across a replug and a reboot, changes when the camera moves
   to another port, and carries the hop when the camera is behind a hub.
   The owner accepted that gap for C2–C4 on 2026-10-11.
-- **C4 — the no-init CFW probe on a cold camera, under Windows, and on
-  other models.** D6 settled on option 2 from one camera: a QHY178M under
-  Linux that earlier processes had initialised since its last power-up.
-  Owed: the same `cfw_probe detect` as the first process to open a camera
-  fresh from power-up (a cable re-seat on the dev box), and on `rig2`'s
-  QHY600M under Windows. If either needs the init, the no-list path finds no
-  wheel there, and a list declaring it is the remedy (D6). Blocks no phase,
-  but C4's PR records the cold-camera run or says why it is missing.
+- **C4 — the no-init CFW probe under Windows, and on other models.** D6
+  settled on option 2 from one camera, a QHY178M under Linux, asked both
+  after earlier processes had initialised it and as the first opener since
+  its power-up (a cable re-seat). Owed: the same `cfw_probe detect` on
+  `rig2`'s QHY600M under Windows. If it needs the init, the no-list path
+  finds no wheel there, and a list declaring it is the remedy (D6). Blocks no
+  phase.
 - **C4 — `rig2`'s two QHY models for the normalizer.** `GetQHYCCDModel` for
   the QHY600M (`1618:c601`) and QHY5III678M (`1618:0679`) has not been read;
   `qhyccd-rs`'s `examples/enumerate` reads it with nothing opened. Until it

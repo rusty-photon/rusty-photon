@@ -80,8 +80,8 @@ const CFW_PROBE_ATTEMPTS: u32 = 1;
 /// probe made at a service's startup must not risk. The plug query does not
 /// need it: on a QHY178M + CFW3 (Linux, SDK 26.06.04), asked in a process that
 /// had run no init, it answered as an init would have (a wheel 3 of 3 with the
-/// CFW's 12 V on, none with it off), and a wheel resting off its home slot
-/// stayed there.
+/// CFW's 12 V on, none with it off) — also as the first open since the camera's
+/// power-up — and a wheel resting off its home slot stayed there.
 fn cfw_probe(camera: &Camera) -> Result<bool> {
     let id = camera.id();
     camera.open().inspect_err(|error| {

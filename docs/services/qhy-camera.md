@@ -550,9 +550,13 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   the pace of a wheel at rest (≈255 ms a read, 13 reads) throughout the probe,
   so the probe moved nothing. Through the service, a real-SDK start with no
   list and the wheel settled at slot 3 registered `cameras=1 filter_wheels=1`,
-  and the wheel read slot 3 at rest afterwards. That camera had been
-  initialised by earlier processes since it last powered up; a camera fresh
-  from power-up, and the Windows SDK, are not yet measured.
+  and the wheel read slot 3 at rest afterwards. Those runs were on a camera
+  earlier processes had initialised since it last powered up, so the camera
+  was then re-plugged and the probe made the first open since its power-up:
+  yes 3 of 3, slot count 7, the same answers as after the init that followed.
+  (Its wheel stood on slot 0, where the power-up of its 12 V homes it, so that
+  run could not show a wheel left in place.) The Windows SDK, and models other
+  than the QHY178M, are not yet measured.
 
   A camera whose probe cannot open or close it is not registered, logged at
   `warn!`. **The probe opens every camera the SDK enumerates, including one
@@ -1146,8 +1150,11 @@ which a list replaces with the declaration.
      (`<vid>:<pid>`), which the QHY SDK does not report as a camera"*. A QHY
      camera whose firmware never loaded is one: it enumerates under its
      loader's product id until `fxload` (Linux) or QHY's driver (Windows) loads
-     it — the dev box's QHY178M once came back from a replug as `1618:c178` at
-     full speed. When the record is a known model's and the SDK reports a model
+     it. Every power-up passes through that state — the dev box's QHY178M
+     enumerates as `1618:c178` on the hub's USB 2.0 half, then about a second
+     later as `1618:c179` at SuperSpeed (2026-10-11) — and once it stayed there,
+     after a replug following a wedge, until the cable was re-seated. When the
+     record is a known model's and the SDK reports a model
      this driver does not know, the reason names both possible causes: the SDK
      does not see the device, or it names it as that model, and the normalizer
      needs the name;
