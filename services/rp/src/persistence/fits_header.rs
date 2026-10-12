@@ -3,13 +3,14 @@
 //!
 //! The header is an export of the exposure document for other
 //! programs: every card below is projected from an [`ExposureDocument`]
-//! field, or from rig configuration the document does not repeat yet
-//! ([`HeaderContext`]). The sidecar is the record, and `rp` never reads
-//! a fact back from the header (rp.md §"Ground rules"). A card whose source is absent is left
-//! out, never written as a placeholder. Free text has its typographic
-//! punctuation folded to ASCII; a value `rp-fits` still refuses (`Hα`,
-//! one longer than a card) drops only that card — no header problem
-//! fails a capture. `DOC_ID` is not built here: [`super::fits`] stamps
+//! field, or from a source the document does not repeat yet: the rig
+//! configuration and the camera's connect-time reads ([`HeaderContext`]),
+//! and the build's version (`SWCREATE`). The sidecar is the record, and
+//! `rp` never reads a fact back from the header (rp.md §"Ground rules").
+//! A card whose source is absent is left out, never written as a
+//! placeholder. Free text has its typographic punctuation folded to
+//! ASCII; a value `rp-fits` still refuses (`Hα`, one longer than a
+//! card) drops only that card — no header problem fails a capture. `DOC_ID` is not built here: [`super::fits`] stamps
 //! it on every write.
 
 use chrono::{DateTime, SecondsFormat, Utc};

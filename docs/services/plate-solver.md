@@ -292,12 +292,12 @@ chain is:
    solve. (MCP directionality: clients call rp; rp calls the
    wrapper.) See `docs/services/rp.md` §"`plate_solve` Contract"
    for the full input shape and validation rules.
-2. **`fov_hint_deg`** comes from the caller as an MCP parameter in
-   v1. Its right source is the frame's own sidecar:
+2. **`fov_hint_deg`** comes from the caller as an MCP parameter.
+   Its right source is the frame's own sidecar:
    `optics.fov_height_deg`, recorded at capture time. It is never the
    live camera or train config looked up by the frame's camera, which
    may have changed since the frame was taken (`docs/services/rp.md`
-   §"Ground rules"). `rp` does not default it from there yet.
+   §"Ground rules", whose gap list tracks the default).
 3. **`search_radius_deg`** is the harder field. **The ASCOM Alpaca
    Telescope spec does not standardize a "pointing uncertainty"
    property.** Mount drivers may expose vendor-specific accuracy

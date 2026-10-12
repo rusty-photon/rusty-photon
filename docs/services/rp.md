@@ -157,43 +157,57 @@ frame's facts from:
    from a header. Beyond the structural cards its FITS reader parses
    along with the pixel array (`BITPIX`, `NAXIS*`, `BSCALE`, `BZERO`,
    `BLANK`), the one card it reads is `DOC_ID`, and only to confirm
-   that a FITS file's pixels belong to the document
-   ([Document Resolution](#document-resolution)): the sidecar is found
-   by the FITS file's name, so `DOC_ID` is the only check that can
-   confirm the two belong together. A FITS file with no sidecar, such
-   as one another program wrote, gives `rp` its pixels and nothing
-   else.
-2. **The sidecar records the exposure as it was taken.** Every fact
-   about the exposure is copied into the document at capture time:
-   what the devices reported, and the configuration in force, the
-   optical train's data included. A later config edit cannot reach
-   back and change what a frame says about itself. `camera_id` and
-   `train_id` name what took the frame; they are labels, not lookups.
-   No consumer resolves a past frame's facts through them against the
-   live config.
+   that a FITS file's pixels belong to the requested document
+   ([Document Resolution](#document-resolution)). The sidecar is found
+   by the FITS file's name, so it needs a check of its own: its `id`
+   confirms the record, as `DOC_ID` confirms the pixels. A FITS file
+   with no sidecar, such as one another program wrote, gives `rp` its
+   pixels and nothing else.
+2. **The sidecar records the exposure as it was taken.** It carries
+   everything `rp` knows about the image as it was taken and about the
+   system at the time: what the devices reported, the state of the
+   rig, and the configuration in force, the optical train's data
+   included. All of it is copied into the document at capture time,
+   so a later config edit cannot reach back and change what a frame
+   says about itself. `camera_id` and `train_id` name what took the
+   frame; they are labels, not lookups. No consumer resolves a past
+   frame's facts through them against the live config.
 
 So the header should never carry a fact the sidecar lacks, and
 `rp`'s own work should never depend on what the header carries. These
-are not yet in line with the rules:
+are not yet in line with the rules, each tracked by its own issue:
 
+- When a frame is resolved from disk and its `DOC_ID` matches, the
+  sidecar found beside it by name is served without its `id` being
+  compared with the request. A sidecar from another frame, left there
+  by a rename or by two frames sharing a file stem, is served as this
+  frame's record ([#1491](https://github.com/rusty-photon/rusty-photon/issues/1491)).
 - The train's `aperture_mm`, the configured site's latitude and
   longitude, and the `rp` version that wrote the frame reach the
   header (`APTDIA`, `SITELAT`, `SITELONG`, `SWCREATE`) without being
-  recorded in the sidecar. `FOCRATIO` needs no field of its own once
-  `aperture_mm` and the focal length are both recorded; today the
-  focal length is recorded only inside `optics` (next item).
+  recorded in the sidecar ([#1493](https://github.com/rusty-photon/rusty-photon/issues/1493)). `FOCRATIO` needs no
+  field of its own once `aperture_mm` and the focal length are both
+  recorded; today the focal length is recorded only inside `optics`
+  (next item).
 - `optics` is all-or-nothing: when one of its inputs is unknown or
   unusable (a non-positive pixel size, say), the whole block is left
   out, while the header still writes `FOCALLEN`, `FOCRATIO` and
   `XPIXSZ`/`YPIXSZ` from the inputs it has. It writes them unchecked:
   a driver that reports a pixel size of 0 puts `XPIXSZ = 0` in the
-  header.
+  header ([#1492](https://github.com/rusty-photon/rusty-photon/issues/1492)).
 - Train data the sidecar does not record at all: the filter's
-  configured `wavelength_nm`, and the terminal focuser's
-  `microns_per_step` (both reported by
-  [`get_train_info`](#train-optics)).
-- Device state the sidecar does not record: the focuser's position,
-  the rotator's angle and the mount's pier side.
+  configured `wavelength_nm` and the terminal focuser's
+  `microns_per_step`, both reported by
+  [`get_train_info`](#train-optics) ([#1494](https://github.com/rusty-photon/rusty-photon/issues/1494)).
+- Camera facts the sidecar does not record: `SensorType` and the
+  Bayer offsets, so the record cannot tell a one-shot-colour frame
+  from a mono one; `ReadoutMode`; `ElectronsPerADU`; and
+  `CoolerPower` ([#1495](https://github.com/rusty-photon/rusty-photon/issues/1495)).
+- Rig state the sidecar does not record: the focuser's position and
+  temperature, the rotator's angle, the mount's pier side and tracking
+  state, the guider's state over the exposure, and the
+  observing-conditions and safety-monitor readings
+  ([#1496](https://github.com/rusty-photon/rusty-photon/issues/1496)).
 - `rp`'s own plate solves lean on the header and on live state.
   `center_on_target`, and `plate_solve` called without `fov_hint_deg`,
   pass ASTAP no scale, and plate solvers derive a frame's scale from
@@ -202,12 +216,14 @@ are not yet in line with the rules:
   `OBJCTRA`/`OBJCTDEC` as a free hint ([plate-solver.md](plate-solver.md)).
   And `use_mount_hints` reads where the mount points now, even for a
   past frame whose sidecar records its `pointing`. Both hints should
-  come from the sidecar: `optics.fov_height_deg` and `pointing`.
+  come from the sidecar: `optics.fov_height_deg` and `pointing`
+  ([#1497](https://github.com/rusty-photon/rusty-photon/issues/1497)).
 - [Progress derivation](#progress-derivation) takes a past frame's
   target, frame type, filter, binning and exposure time from its file
-  and directory names, parsed through the naming patterns as configured now, rather
-  than from its sidecar. A frame whose name the current patterns no
-  longer parse is not counted.
+  and directory names, parsed through the naming patterns as
+  configured now, rather than from its sidecar. A frame whose name the
+  current patterns no longer parse is not counted
+  ([#1498](https://github.com/rusty-photon/rusty-photon/issues/1498)).
 
 ### Core Fields (owned by `rp`)
 
@@ -441,10 +457,9 @@ The `plate_solve` built-in tool (Phase 6c-2 in
 `docs/plans/archive/image-evaluation-tools.md`) accepts an explicit
 `fov_hint_deg` parameter that callers can populate from
 `optics.fov_height_deg` on the document — `fov_height_deg` matches
-ASTAP's `-fov` semantics ("image height in degrees"). v1 does **not**
-auto-default `fov_hint_deg` from the optics block when the parameter
-is omitted, so a solve without one takes its scale from the header
-([Ground rules](#ground-rules) lists this as a gap).
+ASTAP's `-fov` semantics ("image height in degrees"). Where a solve
+called without it gets its scale is covered in
+[Ground rules](#ground-rules).
 
 ### Plugin Sections (contributed via API)
 
@@ -2577,10 +2592,11 @@ A `document_id` (the full UUID) resolves through this order:
    `directory_pattern` stay reachable too. For each candidate, verify
    by reading the FITS header `DOC_ID` against the requested full
    UUID; if the FITS is unreadable or has no `DOC_ID`, check the
-   sidecar's `id` instead. The header goes first because the sidecar
-   is found by the FITS file's name, and `DOC_ID` is the only check
-   that can confirm the pixels belong to the document
-   ([Ground rules](#ground-rules), rule 1). A FITS file without
+   sidecar's `id` instead. `DOC_ID` confirms the pixels and the
+   sidecar's `id` the record ([Ground rules](#ground-rules), rule 1),
+   but today a matching `DOC_ID` is the whole check: the sidecar
+   beside the file is served without its `id` being compared, a gap
+   Ground rules lists. A FITS file without
    `DOC_ID`, one another program rewrote, say, is matched on its name
    and the sidecar's `id` alone, so its pixels go unconfirmed. On
    match, read both files, populate the cache, and return the entry.
@@ -5073,9 +5089,9 @@ own contract.
     explicitly opted in, so failures are surfaced rather than
     silently dropping to blind solve).
 - `fov_hint_deg` — optional `f64`. Forwarded verbatim to the
-  wrapper's `fov_hint_deg`. Callers pass it per request; it is not
-  yet defaulted from the document's `optics.fov_height_deg`, the
-  source [Ground rules](#ground-rules) names for it.
+  wrapper's `fov_hint_deg`; absent ⇒ omitted from the wrapper
+  request. [Ground rules](#ground-rules) names the document's
+  `optics.fov_height_deg` as its source.
 - `search_radius_deg` — optional `f64`. Per-call value overrides
   `plate_solver.default_search_radius_deg` from rp config. Both
   absent ⇒ omit from wrapper request ⇒ ASTAP uses its own default.

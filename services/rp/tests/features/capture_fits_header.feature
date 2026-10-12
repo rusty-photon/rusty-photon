@@ -4,8 +4,9 @@ Feature: FITS header on captured frames
   third-party tools read - ASTAP, PixInsight, Siril, astrometry.net - so a
   frame stays self-describing after it leaves rp without its sidecar
   (rp.md, Persistence: FITS header). The header is an export of the
-  exposure document: each keyword mirrors a document field or the rig
-  configuration, and the sidecar is the record (rp.md, Ground rules).
+  exposure document: each keyword mirrors a document field, the rig
+  configuration, a connect-time camera read or the build's version, and
+  the sidecar is the record (rp.md, Ground rules).
 
   A keyword whose source is unknown is left out, never written as a
   placeholder, and no header problem fails a capture. The simulator camera

@@ -643,11 +643,12 @@ fn find_candidates_by_suffix(dir: &Path, depth: usize, full_uuid: &str) -> Vec<P
 }
 
 /// Confirm that `fits_path` and its sidecar resolve to the requested
-/// `full_uuid`. FITS `DOC_ID` goes first: the sidecar is found by the
-/// FITS file's name, so it is the only check that can confirm the
-/// pixels belong to the document. The sidecar's `id` is checked when
-/// the FITS is unreadable or has no `DOC_ID`, and then the pixels go
-/// unconfirmed. Returns the sidecar path on match.
+/// `full_uuid`. FITS `DOC_ID` goes first, and confirms the pixels.
+/// When it matches, the sidecar found by the FITS file's name is
+/// returned without its `id` being checked, a gap rp.md §"Ground rules"
+/// lists. The sidecar's `id` is checked only when the FITS is
+/// unreadable or has no `DOC_ID`, and then the pixels go unconfirmed.
+/// Returns the sidecar path on match.
 fn confirm_candidate(fits_path: &Path, full_uuid: &str) -> Option<PathBuf> {
     if let Ok(Some(doc_id)) = super::fits::read_fits_doc_id(fits_path) {
         if doc_id == full_uuid {

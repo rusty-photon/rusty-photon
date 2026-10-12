@@ -124,8 +124,9 @@ pub struct ExposureDocument {
     pub pointing: Option<MountPointing>,
     /// Optical-train geometry resolved at capture time. Carries both the raw
     /// Alpaca camera readings (`pixel_size_*_um`, `sensor_*_px`) and the
-    /// derived pixel scale and FOV that consumers like `plate_solve` and
-    /// annotation tools want without re-deriving from the FITS header.
+    /// derived pixel scale and FOV, so a consumer, such as a caller
+    /// passing `plate_solve`'s `fov_hint_deg`, need not re-derive them
+    /// from the FITS header.
     /// Omitted when any input was missing — see `docs/services/rp.md`
     /// §"Core Fields".
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -218,8 +219,8 @@ pub struct Optics {
     pub fov_width_deg: f64,
     /// Derived: `pixel_scale_y_arcsec_per_pixel × sensor_height_px / 3600`.
     /// Matches ASTAP's `-fov` semantics ("image height in degrees"), so
-    /// a caller can pass it as `plate_solve`'s `fov_hint_deg`; `rp` does
-    /// not default the hint from it yet (rp.md §"Ground rules").
+    /// it is the source rp.md §"Ground rules" names for `plate_solve`'s
+    /// `fov_hint_deg`.
     pub fov_height_deg: f64,
 }
 
