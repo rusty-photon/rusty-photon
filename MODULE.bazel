@@ -285,7 +285,7 @@ rust.toolchain(
     edition = "2021",
     # Hashes of both pinned releases' archives, the stable pin's and the
     # coverage nightly's, from their GPG-signed channel manifests
-    # (`scripts/rust-toolchain-sha256s.sh 1.99.0` and `... nightly/2026-08-15`).
+    # (`scripts/rust-toolchain-sha256s.sh <pin>` and `... nightly/<date>`).
     # rules_rust's own table ends at stable 1.98.0 and pins only a few nightly
     # dates, so without these the toolchains download unverified.
     # tools/ci/bazel-clippy.sh fails unless this holds each pin's full set
@@ -405,20 +405,22 @@ rust.toolchain(
     # E0658 while the stable build passes.
     #
     # When raising rust-version, move it to the LAST nightly of the MSRV's own
-    # cycle: the one the release's beta branched from. It has every
-    # stabilization the MSRV has and nothing newer, so coverage compiles what
-    # the stable build compiles. An earlier nightly can predate
-    # stabilizations that landed later in the cycle, and a later one is the
-    # next release, with its new lints and deprecations. 2026-08-15 is the
-    # last 1.99.0-nightly (2026-08-16 is 1.100.0). If the hash script refuses
-    # the last date because a component is missing on a host, take the latest
-    # earlier date it accepts.
+    # cycle: the last date whose rustc reports the MSRV's release.
+    # - It has the MSRV's stabilizations, except any that merged in the day
+    #   between its build and the release's beta branch, or were backported
+    #   to beta. Code using one of those passes the stable build and fails
+    #   `bazel coverage` with E0658. The remedy is then the next cycle's
+    #   first nightly.
+    # - An earlier nightly can predate more of those stabilizations. A later
+    #   one is the next release, with its new lints and deprecations.
+    # - If the hash script refuses the last date because a component is
+    #   missing on a host, take the latest earlier date it accepts.
     #
     # `scripts/rust-toolchain-sha256s.sh nightly/<date>` prints the hashes
-    # and, on stderr, the date's rustc version. That line is the comment
-    # above the entry: tools/ci/bazel-clippy.sh checks that it names the
-    # entry's date and the MSRV's release, so a bump that leaves the nightly
-    # behind fails there.
+    # and, on stderr, the date's rustc version. That line goes directly above
+    # the entry. tools/ci/bazel-clippy.sh checks that it names the entry's
+    # date and the MSRV's release, so a bump that leaves the nightly behind
+    # fails there. It cannot tell whether the date is the cycle's last.
     versions = [
         "1.99.0",
         # nightly/2026-08-15 is rustc 1.99.0-nightly (d453bdd8f 2026-08-14)

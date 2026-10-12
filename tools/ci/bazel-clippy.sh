@@ -25,9 +25,10 @@
 #       deny.
 #     - The stable Rust pin is the MSRV's release (a point release of it
 #       counts), so every PR compiles with it; MODULE.bazel says why.
-#     - The coverage nightly's recorded rustc version, the comment above its
-#       entry, names that date and the MSRV's release, so a bump cannot leave
-#       the nightly behind.
+#     - The coverage nightly's recorded rustc version, the line directly above
+#       its entry, names that date and the MSRV's release, so a bump cannot
+#       leave the nightly behind. This shows the nightly's cycle, not that it
+#       is the cycle's last nightly; choosing that date is the bump's job.
 #     - `sha256s` holds each pin's full set of archives and nothing else. A
 #       pin bumped without its hashes would otherwise download unverified.
 #
@@ -104,23 +105,29 @@ release_of() {
 
 # rust.toolchain's call in MODULE.bazel, from its opening line to its closing
 # parenthesis. Its `versions` list holds the stable pin (a bare X.Y.Z) and
-# the coverage nightly, one per line, the nightly under the line the hash
-# script prints for it: `# nightly/<date> is rustc <version>-nightly (...)`.
+# the coverage nightly, one per line, the nightly directly under the line the
+# hash script prints for it: `# nightly/<date> is rustc <version>-nightly (...)`.
 toolchain=$(sed -n '/^rust\.toolchain($/,/^)$/p' MODULE.bazel)
 bazel_pin=$(sed -n 's/^ *"\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)",$/\1/p' <<<"$toolchain")
 nightly=$(sed -n 's/^ *"nightly\/\([0-9][0-9-]*\)",$/\1/p' <<<"$toolchain")
-recorded=$(sed -n 's/^ *# nightly\/\([0-9-]*\) is rustc \([0-9][0-9.]*\)-nightly .*/\1 \2/p' <<<"$toolchain")
+recorded=$(awk '/^ *"nightly\/[0-9-]*",$/ { print prev } { prev = $0 }' <<<"$toolchain" \
+  | sed -n 's/^ *# nightly\/\([0-9-]*\) is rustc \([0-9][0-9.]*\)-nightly .*/\1 \2/p')
 msrv_release=$(release_of "$cargo_msrv")
 # What scripts/rust-toolchain-sha256s.sh prints for one release: seven tools
 # for each of five hosts, plus rust-src.
 archives_per_release=36
 if [[ -z "$bazel_pin" || "$bazel_pin" == *$'\n'* || -z "$nightly" || "$nightly" == *$'\n'* ]]; then
   flag "::error::could not read one stable pin and one nightly from rust.toolchain's \`versions\` in MODULE.bazel (read \"$bazel_pin\" and \"$nightly\"); keep one entry per line."
-elif [[ -z "$msrv_release" || "$(release_of "$bazel_pin")" != "$msrv_release" ]]; then
-  flag "::error::MODULE.bazel's stable Rust pin ($bazel_pin) is not the MSRV's release (Cargo.toml rust-version \"$cargo_msrv\"): the pin is the MSRV's release, so every PR compiles with the MSRV. Bump them together."
 else
-  if [[ "$recorded" != "$nightly $msrv_release."* ]]; then
-    flag "::error::the coverage nightly must be the last nightly of the MSRV's ($msrv_release) cycle, and the comment above its entry must say so; for nightly/$nightly it reads \"${recorded:-nothing}\". Paste the line \`scripts/rust-toolchain-sha256s.sh nightly/<date>\` prints."
+  # Each check reports on its own, so one run names every mismatch a bump
+  # left behind.
+  if [[ -z "$msrv_release" || "$(release_of "$bazel_pin")" != "$msrv_release" ]]; then
+    flag "::error::MODULE.bazel's stable Rust pin ($bazel_pin) is not the MSRV's release (Cargo.toml rust-version \"$cargo_msrv\"): the pin is the MSRV's release, so every PR compiles with the MSRV. Bump them together."
+  fi
+  # This can tell the nightly's cycle, not that it is the cycle's last
+  # nightly: picking that one is the bump procedure's job (MODULE.bazel).
+  if [[ -n "$msrv_release" && "$recorded" != "$nightly $msrv_release."* ]]; then
+    flag "::error::the coverage nightly must come from the MSRV's ($msrv_release) cycle (its last nightly, as MODULE.bazel explains), and the line directly above its entry must record that; for nightly/$nightly it reads \"${recorded:-no recorded version}\". Paste the line \`scripts/rust-toolchain-sha256s.sh nightly/<date>\` prints."
   fi
   keys=$(grep -o '"[^"]*\.tar\.xz"' <<<"$toolchain" | tr -d '"')
   stable_keys=$(grep -c -F -e "-$bazel_pin-" -e "-$bazel_pin.tar.xz" <<<"$keys")

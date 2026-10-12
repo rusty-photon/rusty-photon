@@ -351,7 +351,7 @@ python3 tools/ci/beta_clippy_census.py --root "$PWD" --summary /tmp/census.md \
 `--all-targets` compiles each source file once per target, so the script
 deduplicates sites on (lint, file, line, column); the raw JSON over-counts.
 
-The workspace uses a single MSRV (currently 1.99.0) declared in the root
+The workspace uses a single MSRV, declared in the root
 `Cargo.toml` via `[workspace.package]`. It equals Bazel's stable Rust pin and
 moves with it, so every PR compiles with it (*Clippy under Bazel* says why
 and how to bump). Every member inherits it with
@@ -782,9 +782,16 @@ needs from you:
   - the coverage nightly, to the last nightly of the new MSRV's cycle
     (`MODULE.bazel` says why), with its hashes from
     `scripts/rust-toolchain-sha256s.sh nightly/<date>`. The script prints the
-    date's rustc version: paste that line as the comment above the nightly
-    entry. If the script refuses the date because a component is missing on
-    a host, take the latest earlier date it accepts;
+    date's rustc version: paste that line directly above the nightly entry.
+    If the script refuses the date because a component is missing on a
+    host, take the latest earlier date it accepts;
+  - the places that state the MSRV for readers. Nothing checks these, so
+    update each by hand:
+    - README.md's *Prerequisites*;
+    - `crates/qhyccd-rs/README.md`;
+    - the `qhyccd-rs`, `svbony-rs` and `zwo-rs` CHANGELOGs. Amend the
+      *Unreleased* MSRV entry, or add one if the last raise has been
+      released;
   - expect MSRV-gated clippy lints to start firing in that PR. Raising the
     MSRV unlocks lints that suggest newer APIs, and the `beta / clippy` census
     runs at the old MSRV, so it cannot list them ahead. The raise to 1.99.0
@@ -805,8 +812,9 @@ needs from you:
   - that key equals the root Cargo.toml's `rust-version` (`cargo clippy` only
     warns when they differ);
   - the Bazel pin is that version's release;
-  - the coverage nightly's recorded rustc version (the comment above its
-    entry) names that date and the MSRV's release;
+  - the coverage nightly's recorded rustc version (the line directly above
+    its entry) names that date and the MSRV's release. That shows the
+    nightly's cycle; whether it's the cycle's last nightly is up to the bump;
   - `sha256s` holds each pin's full set of archives and nothing else, so a
     pin bumped without its hashes can't download unverified.
 

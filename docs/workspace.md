@@ -342,7 +342,7 @@ sentinel/src/
 ## MSRV
 
 The minimum supported Rust version is pinned in `[workspace.package]` of the
-root `Cargo.toml` (`rust-version = "1.99.0"`), and again in `clippy.toml`'s
+root `Cargo.toml` (`rust-version`), and again in `clippy.toml`'s
 `msrv`, the only MSRV Bazel's clippy sees. It is the release of Bazel's
 stable Rust pin (`MODULE.bazel`), which tracks current stable. The three
 move together, with the coverage nightly, in the first PR after each stable
