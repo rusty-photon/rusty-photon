@@ -1261,7 +1261,7 @@ tool across the line with `safety.gate` (§ Configuration).
 | `unpark` | Gated | — | — | Clear the mount's `AtPark` flag. Returns immediately. Does NOT auto-enable `Tracking`; call `set_tracking` before slewing |
 | `get_park_state` | Ungated | — | at_park, can_park, can_unpark | Read park state and capabilities; fails loud on `AtPark` read error |
 | `abort_slew` | Ungated | — | — | Abort an in-progress mount slew or park. Per ASCOM, only valid while `Slewing == true`; the natural Alpaca error propagates otherwise |
-| `set_filter` | Ungated | filter_wheel_id *or* train_id (exactly one), filter_name | filter_wheel_id, filter_name, position | Change filter wheel position. `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id` |
+| `set_filter` | Ungated | filter_wheel_id *or* train_id (exactly one), filter_name | filter_wheel_id, filter_name, position | Change filter wheel position: waits out a move already under way, writes the slot, and blocks until the wheel names it, each wait bounded at 60 s (see [Filter Wheel Tool Details](#filter-wheel-tool-details)). `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id` |
 | `get_filter` | Ungated | filter_wheel_id | filter_name, position | Read current filter |
 | `get_cover_state` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, cover_state | Read the cover state (`NotPresent` \| `Closed` \| `Moving` \| `Open` \| `Unknown` \| `Error`) without actuating anything — e.g. so an orchestrator can restore the state it found. `train_id` resolves the train's cover calibrator; `trains` lists every train containing it. See [CoverCalibrator Tool Details](#covercalibrator-tool-details) |
 | `close_cover` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Close the dust cover (blocks until closed) |
@@ -1702,6 +1702,59 @@ tools called with `document_id`) return 404. `rp` emits a
 `file_path`, and the error. Subscribers and operators recover by
 reading the FITS directly via `file_path` (e.g. image-analysis tools
 called with `image_path` instead of `document_id`).
+
+#### Filter Wheel Tool Details
+
+`set_filter` resolves the filter name to its slot, writes the wheel's
+`Position`, and polls it every 100 ms until it names that slot. Another
+slot, or the moving sentinel (−1), keeps the wait going. It writes the
+slot even when the wheel already names it: a driver's `Position` can be
+stale, and the write is the command. An error ends the wait, and so
+does a cancellation, after which the wheel finishes its move on its own
+(§ [In-Flight Tool Calls](#in-flight-tool-calls)). A cancellation ends
+the call at once: each read, the write and each pause between reads are
+raced against it, since a read or a write can take a serial round trip
+or an HTTP request's whole timeout. A write cut short that way may
+still reach the wheel, which then finishes its move on its own, as
+`unpark`'s request does. So does the **60 s ceiling**: a wheel that has
+not named the slot 60 s after the write fails the call with *"the
+filter wheel did not reach Red (slot 1) within 60s"*. That is three
+times a full turn of a sixteen-slot wheel at ~1.2 s a slot (~19 s). The
+wheel has lost the move, or another client's write has sent it
+elsewhere.
+
+**A move already under way is waited out before the write.**
+`set_filter` reads `Position` first, and while that reads the moving
+sentinel it polls every 100 ms, writing only once the wheel has come to
+rest. A wheel written while it travels does not take the new slot:
+- ASCOM's reference simulator (OmniSim, `PreemptMoves` off by default)
+  answers `INVALID_OPERATION` (`0x40B`), *"The FilterWheel is already
+  moving"*, though it then goes to the slot it refused all the same;
+- `qhy-camera` refuses it the same way (its FW2), since a QHY CFW drops
+  a slot sent while it travels.
+
+The move may be another client's, or one that a cancelled `set_filter`
+left going: focus-model puts the wheel back with a `set_filter` straight
+after a cancelled sweep. The wait ends one of four ways:
+- **The wheel comes to rest** on a slot, and the slot is written.
+- **A read errors.** The slot is written all the same. The write then
+  reports what is wrong with the wheel, and a `qhy-camera` wheel whose
+  move failed answers an error until a write goes out (its FW8).
+- **The wheel still reads moving at the 60 s ceiling.** Such a wheel is
+  not finishing a move, so the slot is written all the same, and its
+  driver says what it is doing.
+- **The call is cancelled.** A cancelled call writes nothing, including
+  a cancellation that lands during the read that would have found the
+  wheel at rest.
+
+A move can also begin between the read that found the wheel at rest and
+the write, or hide behind a read that errored. The write is then refused
+like any write mid-move. If the wheel reads moving after that refusal,
+`set_filter` waits again and writes again, within the same 60 s. At the
+ceiling the refusal is the call's answer. The wait before the write and
+the wait for the move each have their own 60 s, so that a long wait for
+another client's move does not leave this call's own move no time. A
+call therefore answers within about two minutes.
 
 #### CoverCalibrator Tool Details
 

@@ -87,6 +87,24 @@ async fn mcp_call_set_filter(world: &mut RpWorld, fw_id: String, filter_name: St
     world.last_tool_result = Some(result);
 }
 
+#[when(expr = "another client starts the filter wheel on the simulator moving to slot {int}")]
+async fn another_client_starts_a_wheel_move(_world: &mut RpWorld, slot: usize) {
+    OmniSimHandle::start_filter_wheel_move(slot)
+        .await
+        .expect("the simulator's filter wheel should take the move");
+}
+
+#[then("the filter wheel on the simulator is still moving")]
+async fn the_simulators_wheel_is_still_moving(_world: &mut RpWorld) {
+    let position = OmniSimHandle::filter_wheel_position()
+        .await
+        .expect("the simulator's filter wheel should answer Position");
+    assert!(
+        position < 0.0,
+        "the wheel read slot {position}: the move had already ended, so the scenario cannot show set_filter waiting it out"
+    );
+}
+
 #[when(expr = "the MCP client calls \"get_filter\" with filter wheel {string}")]
 async fn mcp_call_get_filter(world: &mut RpWorld, fw_id: String) {
     ensure_mcp_client(world).await;
