@@ -85,6 +85,13 @@ pub enum QHYError {
     /// SDK as a C string.
     #[error("camera id contains an interior NUL byte: {0}")]
     InvalidCameraId(#[from] std::ffi::NulError),
+    /// [`Sdk::probe_filter_wheels`](crate::Sdk::probe_filter_wheels) was asked
+    /// about an id that names no camera the SDK enumerated.
+    #[error("no camera with id '{id}' was enumerated")]
+    UnknownCameraId {
+        /// The id that matched no enumerated camera.
+        id: String,
+    },
 }
 
 /// Convenience alias for fallible QHYCCD SDK operations: `Result<T, QHYError>`.

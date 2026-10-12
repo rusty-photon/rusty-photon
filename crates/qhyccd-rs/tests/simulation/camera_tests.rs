@@ -425,16 +425,19 @@ fn test_simulated_sdk_add_camera() {
 #[test]
 fn test_sdk_new_with_default_simulated_camera() {
     // Test that Sdk::new() automatically creates a simulated SDK with a default camera
-    let sdk = Sdk::new().expect("Failed to create SDK");
+    let mut sdk = Sdk::new().expect("Failed to create SDK");
 
     // Should have exactly 1 camera
     assert_eq!(sdk.cameras().count(), 1);
 
-    let camera = sdk.cameras().next().unwrap();
+    let camera = sdk.cameras().next().unwrap().clone();
     assert_eq!(camera.id(), "SIM-QHY178M");
     assert!(camera.is_simulated());
 
-    // Should have exactly 1 filter wheel (7 positions)
+    // Enumeration finds no wheel; the probe finds its 7-position one.
+    assert_eq!(sdk.filter_wheels().count(), 0);
+    let outcomes = sdk.probe_filter_wheels(&["SIM-QHY178M"]);
+    assert_eq!(outcomes, vec![("SIM-QHY178M".to_string(), Ok(true))]);
     assert_eq!(sdk.filter_wheels().count(), 1);
 
     let filter_wheel = sdk.filter_wheels().next().unwrap();
@@ -469,10 +472,149 @@ fn test_simulated_sdk_add_camera_with_filter_wheel() {
     sdk.add_simulated_camera(config);
 
     assert_eq!(sdk.cameras().count(), 1);
+    assert_eq!(sdk.filter_wheels().count(), 0);
+    sdk.probe_filter_wheels(&["CAM-WITH-FW"]);
     assert_eq!(sdk.filter_wheels().count(), 1);
 
     let fw = sdk.filter_wheels().next().unwrap();
     assert_eq!(fw.id(), "CAM-WITH-FW");
+}
+
+#[test]
+fn enumeration_opens_no_camera() {
+    let sdk = Sdk::new().unwrap();
+    let camera = sdk.cameras().next().unwrap();
+    assert!(!camera.is_open().unwrap());
+}
+
+#[test]
+fn probe_leaves_the_camera_closed() {
+    let mut sdk = Sdk::new().unwrap();
+    sdk.probe_filter_wheels(&["SIM-QHY178M"]);
+    let camera = sdk.cameras().next().unwrap();
+    assert!(!camera.is_open().unwrap());
+}
+
+#[test]
+fn probe_opens_only_the_cameras_it_is_given() {
+    let mut sdk = Sdk::new_simulated();
+    let unnamed = SimulatedCameraConfig::default()
+        .with_id("UNNAMED")
+        .with_filter_wheel(5);
+    sdk.add_simulated_camera(unnamed);
+    sdk.add_simulated_camera(
+        SimulatedCameraConfig::default()
+            .with_id("NAMED")
+            .with_filter_wheel(5),
+    );
+    // Hold the unnamed camera open: a probe that opened, initialised and closed
+    // it would leave it closed.
+    let unnamed = sdk.cameras().next().unwrap().clone();
+    unnamed.open().unwrap();
+
+    let outcomes = sdk.probe_filter_wheels(&["NAMED"]);
+
+    assert_eq!(outcomes, vec![("NAMED".to_string(), Ok(true))]);
+    assert!(unnamed.is_open().unwrap());
+    let wheels: Vec<_> = sdk.filter_wheels().map(|w| w.id().to_string()).collect();
+    assert_eq!(wheels, vec!["NAMED".to_string()]);
+}
+
+#[test]
+fn probe_of_a_camera_without_a_wheel_answers_false() {
+    let mut sdk = Sdk::new_simulated();
+    sdk.add_simulated_camera(SimulatedCameraConfig::default().with_id("BARE"));
+
+    let outcomes = sdk.probe_filter_wheels(&["BARE"]);
+
+    assert_eq!(outcomes, vec![("BARE".to_string(), Ok(false))]);
+    assert_eq!(sdk.filter_wheels().count(), 0);
+}
+
+#[test]
+fn probe_of_an_unknown_id_is_its_own_error() {
+    let mut sdk = Sdk::new().unwrap();
+
+    let outcomes = sdk.probe_filter_wheels(&["NO-SUCH-CAMERA", "SIM-QHY178M"]);
+
+    assert_eq!(
+        outcomes,
+        vec![
+            (
+                "NO-SUCH-CAMERA".to_string(),
+                Err(QHYError::UnknownCameraId {
+                    id: "NO-SUCH-CAMERA".to_string()
+                })
+            ),
+            ("SIM-QHY178M".to_string(), Ok(true)),
+        ]
+    );
+}
+
+#[test]
+fn probe_of_a_camera_that_cannot_open_is_that_cameras_error() {
+    let departure = departure_file("probe_cannot_open");
+    std::fs::write(&departure, b"").unwrap();
+    let mut sdk = Sdk::new_simulated();
+    sdk.add_simulated_camera(
+        SimulatedCameraConfig::default()
+            .with_id("GONE")
+            .with_filter_wheel(5)
+            .with_departure_file(&departure),
+    );
+    sdk.add_simulated_camera(
+        SimulatedCameraConfig::default()
+            .with_id("HERE")
+            .with_filter_wheel(5),
+    );
+
+    let outcomes = sdk.probe_filter_wheels(&["GONE", "HERE"]);
+
+    assert_eq!(
+        outcomes,
+        vec![
+            ("GONE".to_string(), Err(QHYError::Sdk { op: "open_camera" })),
+            ("HERE".to_string(), Ok(true)),
+        ]
+    );
+    // The camera that could not be probed stays enumerated; only its wheel is
+    // not found.
+    assert_eq!(sdk.cameras().count(), 2);
+    let wheels: Vec<_> = sdk.filter_wheels().map(|w| w.id().to_string()).collect();
+    assert_eq!(wheels, vec!["HERE".to_string()]);
+    let _ = std::fs::remove_file(&departure);
+}
+
+#[test]
+fn probe_never_initialises_the_camera() {
+    // An init resets the region to the full frame, so a region that survives the
+    // probe shows no init ran.
+    let mut sdk = Sdk::new().unwrap();
+    let camera = sdk.cameras().next().unwrap().clone();
+    camera.open().unwrap();
+    camera.init().unwrap();
+    let region = CCDChipArea {
+        start_x: 100,
+        start_y: 100,
+        width: 1000,
+        height: 800,
+    };
+    camera.set_roi(region).unwrap();
+    camera.close().unwrap();
+
+    sdk.probe_filter_wheels(&["SIM-QHY178M"]);
+
+    camera.open().unwrap();
+    assert_eq!(camera.get_current_roi().unwrap(), region);
+    camera.close().unwrap();
+}
+
+#[test]
+fn probing_a_camera_twice_adds_its_wheel_once() {
+    let mut sdk = Sdk::new().unwrap();
+    sdk.probe_filter_wheels(&["SIM-QHY178M"]);
+    sdk.probe_filter_wheels(&["SIM-QHY178M"]);
+    assert_eq!(sdk.filter_wheels().count(), 1);
 }
 
 #[test]
@@ -513,6 +655,7 @@ fn test_sdk_shares_one_handle_between_camera_and_filter_wheel() {
             .with_id("SHARED-CAM")
             .with_filter_wheel(7),
     );
+    sdk.probe_filter_wheels(&["SHARED-CAM"]);
 
     let camera = sdk.cameras().next().unwrap();
     let wheel = sdk.filter_wheels().next().unwrap();
@@ -819,12 +962,18 @@ fn test_set_debayer() {
 }
 
 #[test]
+fn model_is_read_without_an_open() {
+    let camera = Camera::new_simulated(SimulatedCameraConfig::default());
+    assert_eq!(camera.get_model().unwrap(), "QHY-SIMULATED");
+    assert!(!camera.is_open().unwrap());
+}
+
+#[test]
 fn test_camera_not_open_errors() {
     let config = SimulatedCameraConfig::default();
     let camera = Camera::new_simulated(config);
 
     // Camera is not open - these should all fail
-    assert!(camera.get_model().is_err());
     assert!(camera.get_ccd_info().is_err());
     assert!(camera.get_firmware_version().is_err());
     assert!(camera.get_effective_area().is_err());
@@ -1254,6 +1403,7 @@ fn test_multiple_simulated_cameras() {
     );
 
     assert_eq!(sdk.cameras().count(), 3);
+    sdk.probe_filter_wheels(&["CAM-001", "CAM-002", "CAM-003"]);
     assert_eq!(sdk.filter_wheels().count(), 1); // Only CAM-003 has a filter wheel
 
     // Verify camera IDs

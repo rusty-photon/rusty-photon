@@ -29,6 +29,13 @@
 //                                neither (none)
 //   cfw_probe travel             a rested wheel's move from every slot to every
 //                                other: how long it travels
+//   cfw_probe detect [init]      the wheel's plug, port and slot-count queries on a
+//                                handle no init has run on in this process ([init]:
+//                                then again after one) — runs no init first, unlike
+//                                every other mode
+//   cfw_probe hold <s>           hold the camera open and initialised, reading the
+//                                status for <s> s (another process's `detect`
+//                                runs meanwhile)
 //   cfw_probe powercut <slot> <s> [<then> <at>]
 //                                a rested wheel's move to <slot>, then <s> s of
 //                                status reads, while the CFW's 12 V is cut and
@@ -409,6 +416,42 @@ fn forget(cam: &Camera, args: &[String]) {
     outcome(cam, TO, sent, Duration::from_secs(8), "forget");
 }
 
+/// What the wheel's own queries answer on a handle no `InitQHYCCD` has run on in
+/// this process, then (`init`) the same after one: whether a plugged CFW can be
+/// found without the init. Reads the slot before and after, and watches the
+/// status for a few seconds, so a wheel that moved would show.
+fn detect(cam: &Camera, args: &[String]) {
+    let queries = |tag: &str| {
+        for attempt in 1..=3 {
+            let start = ms();
+            let plugged = cam.is_cfw_plugged_in();
+            emit(&format!(
+                "\"ev\":\"plugged\",\"tag\":\"{tag}\",\"attempt\":{attempt},\"start\":{start},\"answer\":\"{plugged:?}\""
+            ));
+            thread::sleep(Duration::from_millis(200));
+        }
+        let available = cam.is_control_available(ControlType::CfwPort);
+        let slots = cam.cfw_slot_count();
+        emit(&format!(
+            "\"ev\":\"controls\",\"tag\":\"{tag}\",\"cfw_port_available\":\"{available:?}\",\"slot_count\":\"{slots:?}\""
+        ));
+        read(cam, tag);
+        watch(cam, 3, tag);
+    };
+    cam.open().expect("precondition: the camera opens");
+    emit(&format!(
+        "\"ev\":\"start\",\"camera\":\"{}\",\"init\":false",
+        cam.id()
+    ));
+    queries("no-init");
+    if args.get(2).map(String::as_str) == Some("init") {
+        assert!(init_sequence(cam, "init"), "the init succeeds");
+        queries("after-init");
+    }
+    cam.close().expect("close");
+    emit("\"ev\":\"done\"");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let _ = ms();
@@ -419,6 +462,10 @@ fn main() {
         .filter(|c| wanted.as_deref().is_none_or(|w| c.id().starts_with(w)))
         .last()
         .expect("precondition: the camera on the bus");
+    if args.get(1).map(String::as_str) == Some("detect") {
+        detect(camera, &args);
+        return;
+    }
     camera.open().expect("precondition: the camera opens");
     assert!(
         camera.is_cfw_plugged_in().expect("CFW plug query"),
@@ -451,7 +498,14 @@ fn main() {
         Some("overlap") => overlap(camera, &args),
         Some("lost") => lost(camera, &args),
         Some("reads") => reads(camera, &args),
-        _ => panic!("usage: cfw_probe home|rest|during|overlap|lost|reads|settle|zero|same|forget|travel|powercut ... (see the header)"),
+        Some("hold") => {
+            let secs = args
+                .get(2)
+                .and_then(|s| s.parse().ok())
+                .expect("usage: hold <s>");
+            watch(camera, secs, "hold");
+        }
+        _ => panic!("usage: cfw_probe detect|hold|home|rest|during|overlap|lost|reads|settle|zero|same|forget|travel|powercut ... (see the header)"),
     }
     camera.close().expect("close");
     emit("\"ev\":\"done\"");

@@ -141,10 +141,11 @@ impl ServerBuilder {
         // handshake happens later on `set_connected(true)`, but the device list is
         // fixed at build (so a reload re-enumerates). Zero cameras is not a hard
         // failure (C0).
-        let sdk = match self.injected_sdk {
+        let mut sdk = match self.injected_sdk {
             Some(sdk) => sdk,
             None => qhyccd_rs::Sdk::new().map_err(|e| QhyCameraError::Sdk(format!("{e:#}")))?,
         };
+        let unprobed = probe_every_camera(&mut sdk);
 
         let mut server = Server::new(CargoServerInfo!());
         server.listen_addr = self.config.server.socket_addr();
@@ -160,7 +161,11 @@ impl ServerBuilder {
         let cfw_ids: std::collections::HashSet<String> =
             sdk.filter_wheels().map(|w| w.id().to_string()).collect();
 
-        let cameras: Vec<qhyccd_rs::Camera> = sdk.cameras().cloned().collect();
+        let cameras: Vec<qhyccd_rs::Camera> = sdk
+            .cameras()
+            .filter(|camera| !unprobed.contains(camera.id()))
+            .cloned()
+            .collect();
         let mut camera_count = 0usize;
         let mut fw_count = 0usize;
         for camera in cameras {
@@ -265,6 +270,21 @@ impl ServerBuilder {
             _sdk: sdk,
         })
     }
+}
+
+/// Probe every enumerated camera for a CFW. Returns the ids of the cameras the
+/// probe could not open or close, which are not registered.
+fn probe_every_camera(sdk: &mut qhyccd_rs::Sdk) -> std::collections::HashSet<String> {
+    let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
+    let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    let mut unprobed = std::collections::HashSet::new();
+    for (id, outcome) in sdk.probe_filter_wheels(&id_refs) {
+        if let Err(error) = outcome {
+            warn!(camera = %id, %error, "camera not registered: the CFW probe could not open or close it");
+            unprobed.insert(id);
+        }
+    }
+    unprobed
 }
 
 /// A fully bound qhy-camera server ready to accept connections.

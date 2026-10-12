@@ -1,9 +1,5 @@
 use crate::Result;
-// `QHYError` is only used on the real-SDK paths (`Sdk::new`, `version`, `Drop`),
-// which are `#[cfg]`'d out under `simulation`.
-#[cfg(not(feature = "simulation"))]
-use crate::QHYError;
-use crate::{Camera, FilterWheel, SDKVersion};
+use crate::{Camera, FilterWheel, QHYError, SDKVersion};
 
 #[cfg(not(feature = "simulation"))]
 use std::ffi::{c_char, CStr};
@@ -26,6 +22,18 @@ use crate::sys::{
 /// The representation of the SDK. It automatically allocates the SDK when constructed
 /// and automatically frees resource when deconstructed.
 ///
+/// # Two stages
+///
+/// [`Sdk::new`] **enumerates** and nothing more: it scans the bus and reads each
+/// camera's id (`ScanQHYCCD` + `GetQHYCCDId`), and opens no camera. Every camera
+/// it found is in [`Sdk::cameras`]. Finding a filter wheel is a second, separate
+/// stage, [`Sdk::probe_filter_wheels`], made only for the cameras its caller
+/// names: it opens each of them (it never initialises one), so it is not a
+/// passive call, and a caller decides which cameras it may touch before making
+/// it.
+/// [`Sdk::filter_wheels`] lists the wheels that stage found, and nothing until
+/// it has run.
+///
 /// # Lifetime
 ///
 /// Construct **at most one `Sdk` at a time**. `Sdk::new` calls the process-global
@@ -38,11 +46,13 @@ use crate::sys::{
 /// ```no_run
 /// use qhyccd_rs::Sdk;
 ///
-/// let sdk = Sdk::new().expect("SDK::new failed");
+/// let mut sdk = Sdk::new().expect("SDK::new failed");
 /// let sdk_version = sdk.version().expect("get_sdk_version failed");
 /// println!("SDK version: {:?}", sdk_version);
 /// let camera = sdk.cameras().last().expect("no camera found");
 /// println!("Camera: {:?}", camera);
+/// let id = camera.id().to_string();
+/// sdk.probe_filter_wheels(&[id.as_str()]);
 /// println!("{} filter wheels connected.", sdk.filter_wheels().count());
 /// ```
 pub struct Sdk {
@@ -50,69 +60,66 @@ pub struct Sdk {
     filter_wheels: Vec<FilterWheel>,
 }
 
-/// Probe whether `camera` reports a plugged CFW. `None` means `open` or
-/// `close` failed and the caller skips the camera (exactly the `continue`
-/// the inline block used to take). An `init` or probe failure is logged and
-/// yields `Some(false)` — the camera is kept and assumed wheel-less, also
-/// exactly as before the extraction.
-///
-/// The CFW-plugged probe is a live transaction over the camera USB link that
-/// `InitQHYCCD` must bring up first; the reference driver (indi-qhy) calls
-/// `InitQHYCCD` (return-checked) BEFORE `IsQHYCCDCFWPlugged`, and retries the
-/// probe because a single post-init probe still occasionally misses the wheel.
-/// Reachable only on real hardware — the `simulation` `Sdk::new` decides
-/// `has_filter_wheel` from config and never runs this
-/// open -> init -> probe -> close path.
+/// How many times the CFW-plugged probe is asked before a camera is taken to
+/// have no wheel. The reference driver retries because a single probe
+/// occasionally misses the wheel; a simulated camera answers from its
+/// configuration, the same every time, so it is asked once.
 #[cfg(not(feature = "simulation"))]
-fn cfw_probe(camera: &Camera, id: &str) -> Option<bool> {
-    // Retry the CFW-plugged probe a few times (200ms apart), like the
-    // reference driver: a single post-init probe occasionally misses the wheel.
-    const CFW_PROBE_ATTEMPTS: u32 = 3;
-    if let Err(error) = camera.open() {
+const CFW_PROBE_ATTEMPTS: u32 = 3;
+#[cfg(feature = "simulation")]
+const CFW_PROBE_ATTEMPTS: u32 = 1;
+
+/// Probe whether `camera` reports a plugged CFW: open, ask
+/// `IsQHYCCDCFWPlugged` up to [`CFW_PROBE_ATTEMPTS`] times 200 ms apart, close.
+///
+/// A failed open or close is the camera's error. A probe failure is logged and
+/// answers `Ok(false)`: the camera is assumed wheel-less.
+///
+/// **No `InitQHYCCD`.** The reference driver (indi-qhy) inits before it asks,
+/// and QHY documents the init as one that may home a filter wheel, which a
+/// probe made at a service's startup must not risk. The plug query does not
+/// need it: on a QHY178M + CFW3 (Linux, SDK 26.06.04), asked in a process that
+/// had run no init, it answered as an init would have (a wheel 3 of 3 with the
+/// CFW's 12 V on, none with it off), and a wheel resting off its home slot
+/// stayed there.
+fn cfw_probe(camera: &Camera) -> Result<bool> {
+    let id = camera.id();
+    camera.open().inspect_err(|error| {
         tracing::error!(error = ?error, id, "camera open failed before the CFW probe");
-        return None;
-    }
+    })?;
     let mut has_filter_wheel = false;
-    match camera.init() {
-        Ok(()) => {
-            for attempt in 1..=CFW_PROBE_ATTEMPTS {
-                match camera.is_cfw_plugged_in() {
-                    Ok(true) => {
-                        tracing::trace!("Camera {} reporting a filter wheel", id);
-                        has_filter_wheel = true;
-                        break;
-                    }
-                    Ok(false) => {
-                        if attempt < CFW_PROBE_ATTEMPTS {
-                            std::thread::sleep(std::time::Duration::from_millis(200));
-                        } else {
-                            tracing::trace!("Camera {} has no filter wheel", id);
-                        }
-                    }
-                    Err(error) => {
-                        tracing::error!(error = ?error, id, "CFW-plugged probe failed");
-                        break;
-                    }
+    for attempt in 1..=CFW_PROBE_ATTEMPTS {
+        match camera.is_cfw_plugged_in() {
+            Ok(true) => {
+                tracing::trace!("Camera {} reporting a filter wheel", id);
+                has_filter_wheel = true;
+                break;
+            }
+            Ok(false) => {
+                if attempt < CFW_PROBE_ATTEMPTS {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                } else {
+                    tracing::trace!("Camera {} has no filter wheel", id);
                 }
             }
-        }
-        Err(error) => {
-            tracing::error!(
-                error = ?error,
-                id,
-                "init before CFW probe failed; assuming no filter wheel"
-            );
+            Err(error) => {
+                tracing::error!(error = ?error, id, "CFW-plugged probe failed");
+                break;
+            }
         }
     }
-    if let Err(error) = camera.close() {
+    camera.close().inspect_err(|error| {
         tracing::error!(error = ?error, id, "camera close failed after the CFW probe");
-        return None;
-    }
-    Some(has_filter_wheel)
+    })?;
+    Ok(has_filter_wheel)
 }
 
 impl Sdk {
-    /// Creates a new instance of the SDK
+    /// Creates a new instance of the SDK and enumerates the cameras on the bus:
+    /// `InitQHYCCDResource`, `ScanQHYCCD`, and `GetQHYCCDId` for each camera
+    /// found. **No camera is opened.** [`Sdk::cameras`] lists every camera the
+    /// scan found; [`Sdk::filter_wheels`] is empty until
+    /// [`Sdk::probe_filter_wheels`] runs.
     /// # Errors
     /// Returns [`QHYError::Sdk`] if SDK initialisation, the camera scan, or
     /// reading a scanned camera's id fails, or [`QHYError::InvalidUtf8`] if
@@ -144,7 +151,6 @@ impl Sdk {
         // same count.
         let hint = usize::try_from(num_cameras).unwrap_or(0);
         let mut cameras = Vec::with_capacity(hint);
-        let mut filter_wheels = Vec::with_capacity(hint);
         for index in 0..num_cameras {
             let id = {
                 let mut c_id: [c_char; 32] = [0; 32];
@@ -163,31 +169,22 @@ impl Sdk {
                     }
                 }
             }?;
-            let camera = Camera::new(id.clone());
-            let Some(has_filter_wheel) = cfw_probe(&camera, &id) else {
-                continue;
-            };
-            if has_filter_wheel {
-                // Share the camera's handle cell (Arc) instead of opening
-                // the same id a second time: a QHY CFW is driven through the
-                // camera handle, and the SDK keeps one open device per id.
-                filter_wheels.push(FilterWheel::new(camera.clone()));
-            }
-            cameras.push(camera);
+            cameras.push(Camera::new(id));
         }
 
         Ok(Self {
             cameras,
-            filter_wheels,
+            filter_wheels: Vec::new(),
         })
     }
 
     /// Creates a new SDK instance with automatic simulation when the feature is enabled
     ///
     /// When compiled with the `simulation` feature, this automatically returns a simulated
-    /// SDK with a default camera (QHY178M-Simulated) that includes a 7-position filter wheel
-    /// and cooler support. This allows the same code to work seamlessly in both real and
-    /// simulated environments.
+    /// SDK with a default camera (QHY178M-Simulated) that has a 7-position filter wheel
+    /// and cooler support. As on real hardware, the wheel is found by
+    /// [`Sdk::probe_filter_wheels`], not by this call. This allows the same code to work
+    /// seamlessly in both real and simulated environments.
     ///
     /// For custom simulated camera configurations, use `new_simulated()` and
     /// `add_simulated_camera()` instead.
@@ -238,8 +235,9 @@ impl Sdk {
 
     /// Adds a simulated camera to the SDK
     ///
-    /// If the camera configuration includes a filter wheel (`filter_wheel_slots` > 0),
-    /// a corresponding [`FilterWheel`] will also be added.
+    /// A camera configured with a filter wheel (`filter_wheel_slots` > 0) reports
+    /// it to [`Sdk::probe_filter_wheels`], which then adds the [`FilterWheel`],
+    /// exactly as a real camera's wheel is found.
     ///
     /// # Example
     /// ```no_run
@@ -257,18 +255,58 @@ impl Sdk {
     /// ```
     #[cfg(feature = "simulation")]
     pub fn add_simulated_camera(&mut self, config: simulation::SimulatedCameraConfig) {
-        let has_filter_wheel = config.filter_wheel_slots > 0;
-        let camera = Camera::new_simulated(config);
+        self.cameras.push(Camera::new_simulated(config));
+    }
 
-        if has_filter_wheel {
-            // Share the camera's backend state (Arc) with the wheel, mirroring the
-            // real path (one handle per device). The camera's own config already
-            // carries the CFW controls whenever it has a wheel: `with_filter_wheel`
-            // sets both the slot count and the `CfwPort`/`CfwSlotsNum` controls.
-            self.filter_wheels.push(FilterWheel::new(camera.clone()));
+    /// Finds the filter wheel, if any, on each camera named in `ids` — the
+    /// second stage, after [`Sdk::new`]'s enumeration. Each named camera is
+    /// opened, asked `IsQHYCCDCFWPlugged` and closed — never initialised, so
+    /// this sends no `InitQHYCCD`, the call that may home a wheel. It still
+    /// **touches the device**: a second process's open of a camera another
+    /// holds disturbs that process's CFW status reads while it lasts, and its
+    /// plug query answers no. A caller names only the cameras it owns. A camera
+    /// that is not named is not opened.
+    ///
+    /// Returns one outcome per id, in the order given: `Ok(true)` when a wheel
+    /// answered, `Ok(false)` when none did (or the probe failed, which is
+    /// logged), and an error when the camera could not be opened or
+    /// closed, or when the id names no camera [`Sdk::cameras`] lists
+    /// ([`QHYError::UnknownCameraId`]). Each wheel found is added to
+    /// [`Sdk::filter_wheels`], sharing its camera's handle; probing a camera
+    /// twice adds its wheel once.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use qhyccd_rs::Sdk;
+    /// let mut sdk = Sdk::new().expect("SDK::new failed");
+    /// let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
+    /// let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    /// for (id, outcome) in sdk.probe_filter_wheels(&ids) {
+    ///     println!("{id}: {outcome:?}");
+    /// }
+    /// ```
+    pub fn probe_filter_wheels(&mut self, ids: &[&str]) -> Vec<(String, Result<bool>)> {
+        let mut outcomes = Vec::with_capacity(ids.len());
+        for &id in ids {
+            let outcome = match self.cameras.iter().find(|camera| camera.id() == id) {
+                None => Err(QHYError::UnknownCameraId { id: id.to_owned() }),
+                Some(camera) => {
+                    let outcome = cfw_probe(camera);
+                    if matches!(outcome, Ok(true))
+                        && !self.filter_wheels.iter().any(|wheel| wheel.id() == id)
+                    {
+                        // Share the camera's handle cell (Arc) instead of opening
+                        // the same id a second time: a QHY CFW is driven through
+                        // the camera handle, and the SDK keeps one open device per
+                        // id.
+                        self.filter_wheels.push(FilterWheel::new(camera.clone()));
+                    }
+                    outcome
+                }
+            };
+            outcomes.push((id.to_owned(), outcome));
         }
-
-        self.cameras.push(camera);
+        outcomes
     }
 
     /// Returns an iterator over all cameras found by the SDK
@@ -284,12 +322,16 @@ impl Sdk {
         self.cameras.iter()
     }
 
-    /// Returns an iterator over all filter wheels found by the SDK
+    /// Returns an iterator over the filter wheels [`Sdk::probe_filter_wheels`]
+    /// has found — none before it runs.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::Sdk;
     ///
-    /// let sdk = Sdk::new().expect("SDK::new failed");
+    /// let mut sdk = Sdk::new().expect("SDK::new failed");
+    /// let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
+    /// let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    /// sdk.probe_filter_wheels(&ids);
     /// println!("{} filter wheels connected.", sdk.filter_wheels().count());
     /// ```
     pub fn filter_wheels(&self) -> impl Iterator<Item = &FilterWheel> {
