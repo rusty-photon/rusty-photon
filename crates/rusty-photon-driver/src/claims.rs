@@ -16,4 +16,6 @@ mod placeholder;
 mod rescan;
 
 pub use placeholder::{Placeholder, PlaceholderCamera};
-pub use rescan::{rescan_waits, stop_or_rescanned, Blocker, Ended, Rescan, StopCause};
+pub use rescan::{
+    first_blocker, rescan_waits, stop_or_rescanned, Blocker, Ended, Rescan, StopCause,
+};

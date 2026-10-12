@@ -142,7 +142,9 @@ pub const ZWO_VENDOR_ID: u16 = 0x03c3;
 /// needs no camera on the bus, so it can tell a camera's USB record from a ZWO
 /// EFW's or EAF's — both enumerate under [`ZWO_VENDOR_ID`] too — before any
 /// open. Measured with SDK 1.41 on Linux: true for `03c3:1603`, `178c`, `120e`
-/// and `662b`, false for an EAF's `1f10`.
+/// and `662b`, false for every product id the EFW and EAF SDKs list for their
+/// own devices (`EFWGetProductIDs`: `1f01`, `1f02`; `EAFGetProductIDs`:
+/// `1f10`).
 #[cfg(all(feature = "camera", not(feature = "simulation")))]
 #[must_use]
 pub fn is_camera_product(vendor: u16, product: u16) -> bool {
@@ -611,11 +613,14 @@ mod tests {
     }
 
     /// No camera on the bus is needed: the SDK's table answers by itself.
-    /// The product ids are the ones SDK 1.41 was measured on.
+    /// The product ids are the ones SDK 1.41 was measured on: the EFW's two
+    /// and the EAF's one are every id their own SDKs list.
     #[cfg(all(feature = "camera", not(feature = "simulation")))]
     #[test]
-    fn the_sdk_table_knows_cameras_from_a_focuser() {
+    fn the_sdk_table_knows_cameras_from_a_wheel_or_a_focuser() {
         assert!(is_camera_product(ZWO_VENDOR_ID, 0x1603));
+        assert!(!is_camera_product(ZWO_VENDOR_ID, 0x1f01));
+        assert!(!is_camera_product(ZWO_VENDOR_ID, 0x1f02));
         assert!(!is_camera_product(ZWO_VENDOR_ID, 0x1f10));
         assert!(!is_camera_product(0x1618, 0x1603));
     }

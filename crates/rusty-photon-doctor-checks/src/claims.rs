@@ -46,6 +46,13 @@ pub fn placeholder_unique_id(service: &str, usb_port: &str) -> String {
     format!("{PLACEHOLDER_ID_PREFIX}{service}:{usb_port}")
 }
 
+/// A placeholder's `Name` when its entry gives none: `<sdk> camera on
+/// <usb_port> (placeholder)`.
+#[must_use]
+pub fn placeholder_name(sdk: &str, usb_port: &str) -> String {
+    format!("{sdk} camera on {usb_port} (placeholder)")
+}
+
 /// Whether a device is a device-claims placeholder, by its `UniqueID`.
 ///
 /// The driver range is shared by every Alpaca driver, so a client tells a
@@ -1195,6 +1202,14 @@ mod tests {
     fn the_placeholder_error_code_is_driver_code_0x40() {
         assert_eq!(PLACEHOLDER_DRIVER_CODE, 0x40);
         assert_eq!(PLACEHOLDER_ERROR_CODE, 0x500 + PLACEHOLDER_DRIVER_CODE);
+    }
+
+    #[test]
+    fn a_placeholder_with_no_name_of_its_own_names_the_sdk_and_the_port() {
+        assert_eq!(
+            placeholder_name("ZWO", "pci-0000:00:14.0-usbv3-0:4.2"),
+            "ZWO camera on pci-0000:00:14.0-usbv3-0:4.2 (placeholder)"
+        );
     }
 
     #[test]

@@ -940,8 +940,11 @@ on its own (U5).
   candidate, a row of `doctor --devices`, or a record a placeholder's reason
   blames. Measured with SDK 1.41 on Linux (2026-10-11): `ASICameraCheck`
   answers true for `03c3:1603`, `178c` and `120e` (below) and for `rig2`'s
-  ASI662MC, `662b`, which is not on the dev box at all, and false for the EAF's
-  `1f10`.
+  ASI662MC, `662b`, which is not on the dev box at all, and false for every
+  product id ZWO's other SDKs list for their own devices: the EFW's `1f01` and
+  `1f02` (`EFWGetProductIDs`, EFW SDK 1.7) and the EAF's `1f10`
+  (`EAFGetProductIDs`, EAF SDK 1.7.7). Those lists are tables too, so this
+  needs no wheel or focuser on the bus.
 
   Each SDK camera is matched on the strongest signal both sides carry. The
   shared join takes a serial when both sides offer one, but neither side has
@@ -1113,10 +1116,16 @@ on its own (U5).
   enumeration fails — with the first scan failed, the rebuild is the first
   enumeration since the start — ends the service. So each try checks the
   config file first, then takes the scan, then checks that the SDK enumerates,
-  and rebuilds only when all three pass. A config file or SDK that blocks it
-  is logged at `warn!` each time it starts to, and at `debug!` while it
-  persists, and the re-scan carries on, without scanning while the file does
-  not load. An identity open that fails in the rebuild costs that camera a
+  and rebuilds only when all three pass. A file that loads but no longer has a
+  list — a hand edit no reload applied — blocks it too: the rebuild exists to
+  place the listed cameras, and one with no list would take the no-list path,
+  which opens every camera and fails the start on one it cannot open (C0), so
+  the edit waits for the reload or restart that applies it. A config file or
+  SDK that blocks it is logged at `warn!` each time it starts to, and at
+  `debug!` while it persists, and the re-scan carries on, without scanning
+  while the file does not load or has no list. A try already running when
+  the server stops is not interrupted: it runs out under the scan's own
+  deadline and its answer goes nowhere. An identity open that fails in the rebuild costs that camera a
   placeholder (U5), never the service. The re-scan stops when it rebuilds,
   and with the server it belongs to. It is not hot-plug: a successful scan
   whose listed port is merely empty serves a placeholder until the next
@@ -1907,8 +1916,8 @@ else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md). Phase E landed **45 unit tests**
 and **57 BDD scenarios** (all green), plus a full **ConformU** pass; the suite
-now stands at **181 unit tests** (with `--all-features`; 149 without, since the
-`simulation` feature gates `lib.rs`'s fourteen `simulation_tests`, the sixteen
+now stands at **182 unit tests** (with `--all-features`; 149 without, since the
+`simulation` feature gates `lib.rs`'s fifteen `simulation_tests`, the sixteen
 `backend::handle_tests` that drive the production handle against the `zwo-rs`
 simulation, and two of `claims.rs`'s) and **115 BDD scenarios**.
 

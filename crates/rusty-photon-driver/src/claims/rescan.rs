@@ -11,9 +11,13 @@
 //! cannot stop the next one.
 //!
 //! What a try checks is the driver's ([`Rescan::new`]): its config file, its
-//! scan, its SDK's enumeration, cheapest first. Nobody asked for this rebuild,
-//! and one that cannot load its config or enumerate its SDK ends the service,
-//! so the re-scan waits those out too.
+//! scan, its SDK's enumeration, cheapest first ([`first_blocker`]). Nobody
+//! asked for this rebuild, and one that cannot load its config or enumerate
+//! its SDK ends the service, so the re-scan waits those out too. It also waits
+//! for a reload or restart when the file no longer has a list: the rebuild
+//! exists to place the listed cameras, and one with no list would take the
+//! driver's no-list path instead, which can end the service on a camera it
+//! cannot open.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,6 +48,10 @@ pub enum Blocker {
     /// service: with the first scan failed, the rebuild is the first
     /// enumeration since the start.
     Sdk(String),
+    /// The config file loads but no longer has a `usb_devices` list: a hand
+    /// edit no reload applied. A rebuild would have no listed camera to
+    /// place, so the edit waits for the reload or restart that applies it.
+    NoList,
 }
 
 impl Blocker {
@@ -60,6 +68,31 @@ impl Blocker {
 /// What one try checks: what would keep a rebuild now from serving the list,
 /// or `None` when nothing would. Blocking.
 type Check = Arc<dyn Fn() -> Option<Blocker> + Send + Sync>;
+
+/// What would keep a rebuild now from serving the list, or `None` when
+/// nothing would. Blocking.
+///
+/// The checks run cheapest first — the config file, then the scan, then the
+/// SDK's enumeration — each only when the ones before it pass.
+///
+/// `config` loads the file the rebuild would read and says whether it still
+/// has a `usb_devices` list; a driver with no config file to read answers
+/// `Ok(true)` for the list it was built with.
+pub fn first_blocker(
+    config: impl FnOnce() -> Result<bool, String>,
+    scan: impl FnOnce() -> Result<(), String>,
+    enumerate: impl FnOnce() -> Result<(), String>,
+) -> Option<Blocker> {
+    match config() {
+        Err(error) => return Some(Blocker::Config(error)),
+        Ok(false) => return Some(Blocker::NoList),
+        Ok(true) => {}
+    }
+    if let Err(error) = scan() {
+        return Some(Blocker::Scan(error));
+    }
+    enumerate().err().map(Blocker::Sdk)
+}
 
 /// The background re-scan of one server whose USB scan failed.
 #[derive(Clone)]
@@ -124,9 +157,16 @@ impl Rescan {
                          rebuilding until it can"
                     );
                 }
+                Blocker::NoList if new => {
+                    warn!(
+                        "the config file no longer has a usb_devices list; leaving the rebuild \
+                         to a reload or restart"
+                    );
+                }
                 Blocker::Config(error) | Blocker::Sdk(error) => {
                     debug!(%error, "the rebuild is still blocked");
                 }
+                Blocker::NoList => debug!("the config file still has no usb_devices list"),
             }
             previous = Some(blocker);
         }
@@ -163,9 +203,13 @@ impl StopCause {
 ///
 /// That is `shutdown`, or — when `rescan` is given — the re-scan finding that
 /// a rebuild would serve the list, whichever comes first. The re-scan runs
-/// while the server serves, and stops the moment the server starts to stop,
-/// so it cannot leave a success for the next server; the returned
-/// [`StopCause`] says which stop it was.
+/// while the server serves, and is aborted the moment the server starts to
+/// stop, so it cannot leave a success for the next server; the returned
+/// [`StopCause`] says which stop it was. A try already on the blocking pool
+/// is not stopped by the abort: it runs to its end, which the scan's own
+/// deadline bounds, and its answer goes nowhere. Its enumeration cannot
+/// renumber the SDK's camera list under a rebuild's placement: `zwo-rs` and
+/// `svbony-rs` serialise every enumeration on a process-wide lock.
 ///
 /// Call it from within the runtime the server runs on: it spawns the re-scan.
 pub fn stop_or_rescanned(
@@ -227,6 +271,7 @@ mod tests {
             Blocker::Scan("no sysfs".to_string()),
             Blocker::Config("broken".to_string()),
             Blocker::Sdk("no SDK".to_string()),
+            Blocker::NoList,
         ] {
             let rescan = Rescan::new("ZWO", move || Some(blocker.clone()));
             assert!(
@@ -249,6 +294,83 @@ mod tests {
         tries.store(0, Ordering::SeqCst);
         assert!(ready_within(rescan, Duration::from_secs(71)).await);
         assert_eq!(tries.load(Ordering::SeqCst), 3);
+    }
+
+    /// The checks a [`first_blocker`] call ran, in order.
+    #[derive(Default)]
+    struct Ran(std::cell::RefCell<Vec<&'static str>>);
+
+    impl Ran {
+        fn check<'a, T: 'a>(&'a self, name: &'static str, outcome: T) -> impl FnOnce() -> T + 'a {
+            move || {
+                self.0.borrow_mut().push(name);
+                outcome
+            }
+        }
+
+        fn names(&self) -> Vec<&'static str> {
+            self.0.borrow().clone()
+        }
+    }
+
+    #[test]
+    fn a_rebuild_with_every_check_passing_is_not_blocked() {
+        let ran = Ran::default();
+        let blocker = first_blocker(
+            ran.check("config", Ok(true)),
+            ran.check("scan", Ok(())),
+            ran.check("enumerate", Ok(())),
+        );
+        assert_eq!(blocker, None);
+        assert_eq!(ran.names(), ["config", "scan", "enumerate"]);
+    }
+
+    #[test]
+    fn a_config_file_that_does_not_load_blocks_before_the_scan_is_taken() {
+        let ran = Ran::default();
+        let blocker = first_blocker(
+            ran.check("config", Err("broken".to_string())),
+            ran.check("scan", Ok(())),
+            ran.check("enumerate", Ok(())),
+        );
+        assert_eq!(blocker, Some(Blocker::Config("broken".to_string())));
+        assert_eq!(ran.names(), ["config"]);
+    }
+
+    #[test]
+    fn a_config_file_with_no_list_blocks_before_the_scan_is_taken() {
+        let ran = Ran::default();
+        let blocker = first_blocker(
+            ran.check("config", Ok(false)),
+            ran.check("scan", Ok(())),
+            ran.check("enumerate", Ok(())),
+        );
+        assert_eq!(blocker, Some(Blocker::NoList));
+        assert_eq!(ran.names(), ["config"]);
+    }
+
+    #[test]
+    fn a_failed_scan_blocks_before_the_sdk_enumerates() {
+        let ran = Ran::default();
+        let blocker = first_blocker(
+            ran.check("config", Ok(true)),
+            ran.check("scan", Err("no sysfs".to_string())),
+            ran.check("enumerate", Ok(())),
+        );
+        assert_eq!(blocker, Some(Blocker::Scan("no sysfs".to_string())));
+        assert_eq!(ran.names(), ["config", "scan"]);
+    }
+
+    #[test]
+    fn an_sdk_that_cannot_enumerate_blocks_the_rebuild() {
+        let ran = Ran::default();
+        let blocker = first_blocker(
+            ran.check("config", Ok(true)),
+            ran.check("scan", Ok(())),
+            ran.check("enumerate", Err("no SDK".to_string())),
+        );
+        assert_eq!(blocker, Some(Blocker::Sdk("no SDK".to_string())));
+        assert_eq!(ran.names(), ["config", "scan", "enumerate"]);
     }
 
     #[test]

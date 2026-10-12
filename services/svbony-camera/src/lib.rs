@@ -89,7 +89,7 @@ use std::sync::Arc;
 use ascom_alpaca::api::{CargoServerInfo, Device};
 use ascom_alpaca::Server;
 use rusty_photon_doctor_checks::claims::{Claims, Resolution};
-use rusty_photon_driver::claims::{Blocker, Rescan};
+use rusty_photon_driver::claims::{first_blocker, Blocker, Rescan};
 use rusty_photon_driver::ConfigActionCtx;
 use rusty_photon_service_lifecycle::ReloadSignal;
 use rusty_photon_tls::config::TlsConfig;
@@ -487,23 +487,26 @@ struct Registered {
     rescan: Option<Rescan>,
 }
 
-/// What would keep a rebuild now from serving the list, checked cheapest
-/// first — the config file, then the scan, then the SDK's enumeration — or
-/// `None` when nothing would (U6). Blocking. `config` is the file the rebuild
-/// will read and the CLI overrides layered on it, `None` when the builder has
-/// no config source.
+/// What would keep a rebuild now from serving the list (U6), in
+/// [`first_blocker`]'s order, or `None` when nothing would. Blocking. `config`
+/// is the file the rebuild will read and the CLI overrides layered on it,
+/// `None` when the builder has no config source.
 fn rescan_blocker(config: Option<&(PathBuf, CliOverrides)>, source: &UsbSource) -> Option<Blocker> {
-    if let Some((path, overrides)) = config {
-        if let Err(error) = load_effective_config(path, overrides) {
-            return Some(Blocker::Config(error.to_string()));
-        }
-    }
-    if let Err(error) = source.scan() {
-        return Some(Blocker::Scan(error));
-    }
-    sdk_camera_infos()
-        .err()
-        .map(|error| Blocker::Sdk(error.to_string()))
+    first_blocker(
+        || {
+            config.map_or(Ok(true), |(path, overrides)| {
+                load_effective_config(path, overrides)
+                    .map(|config| config.usb_devices.is_some())
+                    .map_err(|error| error.to_string())
+            })
+        },
+        || source.scan().map(drop),
+        || {
+            sdk_camera_infos()
+                .map(drop)
+                .map_err(|error| error.to_string())
+        },
+    )
 }
 
 /// A svbony-camera server bound to a local port, ready to [`start`](Self::start).
@@ -803,9 +806,19 @@ mod simulation_tests {
 
     #[test]
     fn a_rescan_with_nothing_in_the_way_finds_no_blocker() {
-        let (_dir, config) = config_file("{}").unwrap();
+        let (_dir, config) =
+            config_file(r#"{"usb_devices": [{"device_number": 0, "usb_port": "a"}]}"#).unwrap();
         let blocker = rescan_blocker(Some(&config), &claims::default_usb_source());
         assert_eq!(blocker, None);
+    }
+
+    #[test]
+    fn a_rescan_leaves_a_file_with_no_list_to_a_reload() {
+        // A hand edit dropped the list: a rebuild would take the no-list path,
+        // which nobody asked for. The scan would pass; the file blocks first.
+        let (_dir, config) = config_file("{}").unwrap();
+        let blocker = rescan_blocker(Some(&config), &claims::default_usb_source());
+        assert_eq!(blocker, Some(Blocker::NoList));
     }
 
     #[test]

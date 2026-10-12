@@ -137,7 +137,7 @@ pub fn placeholder(
         name: entry
             .name
             .clone()
-            .unwrap_or_else(|| format!("{SDK_NAME} camera on {} (placeholder)", entry.usb_port)),
+            .unwrap_or_else(|| claims::placeholder_name(SDK_NAME, &entry.usb_port)),
         unique_id: claims::placeholder_unique_id(SERVICE, &entry.usb_port),
         usb_port: entry.usb_port.clone(),
         reason,

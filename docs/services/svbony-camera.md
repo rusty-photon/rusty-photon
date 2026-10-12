@@ -1479,9 +1479,14 @@ and what `doctor --devices` can say about a camera without opening it — is
   failed, the rebuild is the first enumeration since the start — ends the
   service. So each try checks the config file first, then takes the scan, then
   checks that the SDK enumerates, and rebuilds only when all three pass. A
-  config file or SDK that blocks it is logged at `warn!` each time it starts
-  to, and at `debug!` while it persists, and the re-scan carries on, without
-  scanning while the file does not load. The re-scan stops
+  file that loads but no longer has a list — a hand edit no reload applied —
+  blocks it too: the rebuild exists to place the listed cameras, not to apply
+  an edit nobody has asked to apply, so the edit waits for the reload or
+  restart that does. A config file or SDK that blocks it is logged at `warn!`
+  each time it starts to, and at `debug!` while it persists, and the re-scan
+  carries on, without scanning while the file does not load or has no list. A
+  try already running when the server stops is not interrupted: it runs out
+  under the scan's own deadline and its answer goes nowhere. The re-scan stops
   when it rebuilds, and with the server it belongs to. It is not hot-plug: a
   successful scan whose listed port is merely empty serves a placeholder until
   the next reload, as at any start.

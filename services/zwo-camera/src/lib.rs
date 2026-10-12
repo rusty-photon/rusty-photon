@@ -83,7 +83,7 @@ use ascom_alpaca::api::{CargoServerInfo, Device};
 use ascom_alpaca::Server;
 use rusty_photon_doctor_checks::claims::{Claims, Resolution};
 use rusty_photon_doctor_checks::UsbScan;
-use rusty_photon_driver::claims::{Blocker, Rescan};
+use rusty_photon_driver::claims::{first_blocker, Blocker, Rescan};
 use rusty_photon_driver::ConfigActionCtx;
 use rusty_photon_service_lifecycle::ReloadSignal;
 use rusty_photon_tls::config::TlsConfig;
@@ -182,8 +182,10 @@ impl ServerBuilder {
     /// Test-only: give every registered camera's SDK `zwo-rs`'s departure
     /// file, so the simulated camera leaves the bus while `path` exists and
     /// returns when it is removed — the camera that loses its power or cable
-    /// while connected (C6). `None` keeps a camera that never leaves.
-    /// Enumeration is unaffected: the file is created after startup.
+    /// while connected (C6). `None` keeps a camera that never leaves. The
+    /// start's enumeration and identity opens go through the same switches
+    /// ([`Self::simulated`]), so a file present at a start hides the camera
+    /// from them too; the scenarios create it after startup.
     #[cfg(feature = "simulation")]
     #[must_use]
     pub fn with_departure_file(mut self, path: Option<PathBuf>) -> Self {
@@ -208,14 +210,21 @@ impl ServerBuilder {
             .unwrap_or_else(claims::default_usb_source)
     }
 
-    /// `sdk`, with every open of the simulated camera failing when this
-    /// builder asks for that ([`Self::with_unopenable`]).
+    /// `sdk` with every simulation switch this builder was given
+    /// ([`Self::with_unopenable`], [`Self::with_departure_file`]): what a
+    /// build's enumeration, identity opens and registered cameras all go
+    /// through.
     #[cfg(feature = "simulation")]
-    const fn unopenable_if_asked(&self, sdk: zwo_rs::Sdk) -> zwo_rs::Sdk {
-        if self.unopenable {
-            return sdk.with_unopenable();
+    fn simulated(&self, sdk: zwo_rs::Sdk) -> zwo_rs::Sdk {
+        let sdk = if self.unopenable {
+            sdk.with_unopenable()
+        } else {
+            sdk
+        };
+        match &self.departure_file {
+            Some(path) => sdk.with_departure_file(path),
+            None => sdk,
         }
-        sdk
     }
 
     /// Register the cameras this configuration serves and bind the Alpaca
@@ -329,7 +338,7 @@ impl ServerBuilder {
         } else {
             let sdk = zwo_rs::Sdk::new()?;
             #[cfg(feature = "simulation")]
-            let sdk = self.unopenable_if_asked(sdk);
+            let sdk = self.simulated(sdk);
             enumerate_cameras(sdk).await?
         };
         if cameras.is_empty() {
@@ -382,7 +391,7 @@ impl ServerBuilder {
         entries.sort_by_key(|e| e.device_number);
         let sdk = zwo_rs::Sdk::new()?;
         #[cfg(feature = "simulation")]
-        let sdk = self.unopenable_if_asked(sdk);
+        let sdk = self.simulated(sdk);
         let force_empty = self.force_empty;
         let placed =
             tokio::task::spawn_blocking(move || place_list(&sdk, scan, entries, force_empty))
@@ -438,12 +447,7 @@ impl ServerBuilder {
     ) -> Result<(), ZwoCameraError> {
         let sdk = zwo_rs::Sdk::new()?;
         #[cfg(feature = "simulation")]
-        let sdk = self.unopenable_if_asked(sdk);
-        #[cfg(feature = "simulation")]
-        let sdk = match &self.departure_file {
-            Some(path) => sdk.with_departure_file(path),
-            None => sdk,
-        };
+        let sdk = self.simulated(sdk);
         let handle: Arc<dyn CameraHandle> = Arc::new(ZwoCameraHandle::new(
             sdk,
             cam.index,
@@ -582,24 +586,27 @@ fn resolve_list(
         .collect()
 }
 
-/// What would keep a rebuild now from serving the list, checked cheapest
-/// first — the config file, then the scan, then the SDK's enumeration — or
-/// `None` when nothing would (U6). Blocking. `config` is the file the rebuild
-/// will read and the CLI overrides layered on it, `None` when the builder has
-/// no config source.
+/// What would keep a rebuild now from serving the list (U6), in
+/// [`first_blocker`]'s order, or `None` when nothing would. Blocking. `config`
+/// is the file the rebuild will read and the CLI overrides layered on it,
+/// `None` when the builder has no config source.
 fn rescan_blocker(config: Option<&(PathBuf, CliOverrides)>, source: &UsbSource) -> Option<Blocker> {
-    if let Some((path, overrides)) = config {
-        if let Err(error) = load_effective_config(path, overrides) {
-            return Some(Blocker::Config(error.to_string()));
-        }
-    }
-    if let Err(error) = source.scan() {
-        return Some(Blocker::Scan(error));
-    }
-    zwo_rs::Sdk::new()
-        .and_then(|sdk| sdk.cameras())
-        .err()
-        .map(|error| Blocker::Sdk(error.to_string()))
+    first_blocker(
+        || {
+            config.map_or(Ok(true), |(path, overrides)| {
+                load_effective_config(path, overrides)
+                    .map(|config| config.usb_devices.is_some())
+                    .map_err(|error| error.to_string())
+            })
+        },
+        || source.scan().map(drop),
+        || {
+            zwo_rs::Sdk::new()
+                .and_then(|sdk| sdk.cameras())
+                .map(drop)
+                .map_err(|error| error.to_string())
+        },
+    )
 }
 
 /// A zwo-camera server bound to a local port, ready to [`start`](Self::start).
@@ -1149,9 +1156,19 @@ mod simulation_tests {
 
     #[test]
     fn a_rescan_with_nothing_in_the_way_finds_no_blocker() {
-        let (_dir, config) = config_file("{}").unwrap();
+        let (_dir, config) =
+            config_file(r#"{"usb_devices": [{"device_number": 0, "usb_port": "a"}]}"#).unwrap();
         let blocker = rescan_blocker(Some(&config), &claims::default_usb_source());
         assert_eq!(blocker, None);
+    }
+
+    #[test]
+    fn a_rescan_leaves_a_file_with_no_list_to_a_reload() {
+        // A hand edit dropped the list: a rebuild would take the no-list path,
+        // which nobody asked for. The scan would pass; the file blocks first.
+        let (_dir, config) = config_file("{}").unwrap();
+        let blocker = rescan_blocker(Some(&config), &claims::default_usb_source());
+        assert_eq!(blocker, Some(Blocker::NoList));
     }
 
     #[test]
