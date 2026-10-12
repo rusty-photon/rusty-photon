@@ -288,7 +288,8 @@ rust.toolchain(
     # (`scripts/rust-toolchain-sha256s.sh 1.99.0` and `... nightly/2026-08-15`).
     # rules_rust's own table ends at stable 1.98.0 and pins only a few nightly
     # dates, so without these the toolchains download unverified.
-    # tools/ci/bazel-clippy.sh fails on a key that names neither pin.
+    # tools/ci/bazel-clippy.sh fails unless this holds each pin's full set
+    # (what the script prints for one release) and nothing else.
     sha256s = {
         "2026-08-15/cargo-nightly-aarch64-apple-darwin.tar.xz": "fb7295c093b9cb26743a4bf8552cf8709196708f254a4e8108a9ffdb0a34f7a8",
         "2026-08-15/cargo-nightly-aarch64-unknown-linux-gnu.tar.xz": "2dab7500df5dff33dcb6adf9264fdeacc8b6a11291b0a63c69d8233fe9a42377",
@@ -310,6 +311,7 @@ rust.toolchain(
         "2026-08-15/rust-analyzer-nightly-x86_64-apple-darwin.tar.xz": "f06d2710cef8b6d26c8945911f2070c103655f0c790ed78f676ea6568e3bb669",
         "2026-08-15/rust-analyzer-nightly-x86_64-pc-windows-msvc.tar.xz": "d27d757c01754adddb47738f65c4486b576d18fd5e8e66828318bd7ffec0a798",
         "2026-08-15/rust-analyzer-nightly-x86_64-unknown-linux-gnu.tar.xz": "b4c6c32592e567ab05d0147e1501ca3b95f354bb7e2266a776e0c0c20ea7c9cd",
+        "2026-08-15/rust-src-nightly.tar.xz": "c4b39f09039b9231878152e9796c1c5cbf595a3ae4966bdf5bc3bb7aa243e095",
         "2026-08-15/rust-std-nightly-aarch64-apple-darwin.tar.xz": "a756efaca1b00da00ffe16f8efe3e56b55cc4fc812903fa5cd0eb713d759f498",
         "2026-08-15/rust-std-nightly-aarch64-unknown-linux-gnu.tar.xz": "adc8408de8d38862091e164575fa8e4eaee6345c16a7415bd74a6bf33a79e349",
         "2026-08-15/rust-std-nightly-x86_64-apple-darwin.tar.xz": "1742587a031980bdbd0759d4d6f49770972ddb02ca78433bf7939bdd3b35521f",
@@ -345,6 +347,7 @@ rust.toolchain(
         "rust-analyzer-1.99.0-x86_64-apple-darwin.tar.xz": "abc0d38c2771a968e09a7ae23a1e149cdedfdd72f0d47659755f4fef4ca57615",
         "rust-analyzer-1.99.0-x86_64-pc-windows-msvc.tar.xz": "308e3e6370f7f27c83e25410290b4d1bdf16963f567a3a57c7516898b508a2e5",
         "rust-analyzer-1.99.0-x86_64-unknown-linux-gnu.tar.xz": "52dfae764797c3c7f32ba2ba82d49659741a867e7a3f45bc3291b822c955d6a8",
+        "rust-src-1.99.0.tar.xz": "3f1f9b7ed48f4596fc87889b7b3c61747336a55c9c22db1ab0c697e0aadb77aa",
         "rust-std-1.99.0-aarch64-apple-darwin.tar.xz": "a7c6de8aa21e7c31163a7656295b321bb85f5dce55ed8ea95ac9ac561202bb5b",
         "rust-std-1.99.0-aarch64-unknown-linux-gnu.tar.xz": "1cf7e2ef58ed1cfa6f1adea18e155cbf254c1951f39e5f5e3376879f55fd64a4",
         "rust-std-1.99.0-x86_64-apple-darwin.tar.xz": "18ee81961a73c3ae966ecb1e8f6096438c90aeefece8856201a6ecc17f5bc850",
@@ -380,7 +383,10 @@ rust.toolchain(
     # the pin with its `sha256s`, rust-version, clippy.toml's msrv and the
     # coverage nightly below (docs/skills/pre-push.md lists the steps). Until
     # then the two clippies differ, and a change written against the new
-    # stable fails `bazel clippy` here.
+    # stable fails `bazel clippy` here. After it merges, rebuild the pool
+    # runner templates (docs/skills/proxmox-runner-pool.md), which pre-fetch
+    # both toolchains: until then every pool PR job downloads the new ones
+    # over the WAN.
     #
     # The pinned nightly is used ONLY by the
     # coverage workflow (.github/workflows/bazel-coverage.yml, via
@@ -404,11 +410,18 @@ rust.toolchain(
     # the stable build compiles. An earlier nightly can predate
     # stabilizations that landed later in the cycle, and a later one is the
     # next release, with its new lints and deprecations. 2026-08-15 is the
-    # last 1.99.0-nightly (2026-08-16 is 1.100.0). The hash script prints
-    # each date's rustc version, so it shows which cycle a date is in. Add
-    # the hashes with `scripts/rust-toolchain-sha256s.sh nightly/<date>`.
+    # last 1.99.0-nightly (2026-08-16 is 1.100.0). If the hash script refuses
+    # the last date because a component is missing on a host, take the latest
+    # earlier date it accepts.
+    #
+    # `scripts/rust-toolchain-sha256s.sh nightly/<date>` prints the hashes
+    # and, on stderr, the date's rustc version. That line is the comment
+    # above the entry: tools/ci/bazel-clippy.sh checks that it names the
+    # entry's date and the MSRV's release, so a bump that leaves the nightly
+    # behind fails there.
     versions = [
         "1.99.0",
+        # nightly/2026-08-15 is rustc 1.99.0-nightly (d453bdd8f 2026-08-14)
         "nightly/2026-08-15",
     ],
 )

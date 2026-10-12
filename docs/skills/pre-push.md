@@ -749,7 +749,10 @@ needs from you:
 - **`manual` targets are linted too.** `//...` skips them, but the script
   names them explicitly: `--config=clippy` builds the `clippy_checks` output
   group alone, which never links, so a target that is manual only because it
-  cannot link without a vendor SDK (svbony-camera's binary) still lints.
+  cannot link without a vendor SDK (svbony-camera's binary) still lints. So
+  do the three `cargo_build_script` build.rs binaries, which rules_rust tags
+  `manual`. They get clippy's defaults, since the macro does not pass
+  `lint_config` through.
 - **Bazel lints the feature set each target compiles**, not Cargo's two passes.
   A `rust_test` built with `crate_features = ["mock"]` is linted with `mock`,
   the production `rust_library` beside it without. The Cargo `stable / clippy`
@@ -765,7 +768,11 @@ needs from you:
   - Two kinds of code meet the MSRV only later. macOS-only code meets it
     after a merge, on the macOS leg. Code reached only through Cargo
     feature combinations no Bazel target builds is compiled on a PR by
-    Cargo's floating stable alone.
+    Cargo's floating stable alone. Check macOS-only code at the MSRV by hand
+    when you write it: `cargo +<msrv> check --target aarch64-apple-darwin -p
+    <crate> --all-targets --all-features`, after `rustup toolchain install
+    <msrv> --target aarch64-apple-darwin` (as under *Run it locally when your
+    change adds OS-gated code* above).
   - A point release of the pin (1.99.1) needs no MSRV bump.
 - **Bump them together in the first PR after each stable release**:
   - the pin, with its `sha256s` (`scripts/rust-toolchain-sha256s.sh <version>`
@@ -775,7 +782,9 @@ needs from you:
   - the coverage nightly, to the last nightly of the new MSRV's cycle
     (`MODULE.bazel` says why), with its hashes from
     `scripts/rust-toolchain-sha256s.sh nightly/<date>`. The script prints the
-    date's rustc version, so you can see which cycle it is in;
+    date's rustc version: paste that line as the comment above the nightly
+    entry. If the script refuses the date because a component is missing on
+    a host, take the latest earlier date it accepts;
   - expect MSRV-gated clippy lints to start firing in that PR. Raising the
     MSRV unlocks lints that suggest newer APIs, and the `beta / clippy` census
     runs at the old MSRV, so it cannot list them ahead. The raise to 1.99.0
@@ -792,11 +801,13 @@ needs from you:
   `bazel clippy`.
 - **Bazel's clippy learns the MSRV from `clippy.toml`'s `msrv` key**, because
   rules_rust sets no `CARGO_PKG_RUST_VERSION`. `tools/ci/bazel-clippy.sh`
-  checks three things:
+  checks four things:
   - that key equals the root Cargo.toml's `rust-version` (`cargo clippy` only
     warns when they differ);
   - the Bazel pin is that version's release;
-  - every `sha256s` key names the stable pin or the coverage nightly, so a
+  - the coverage nightly's recorded rustc version (the comment above its
+    entry) names that date and the MSRV's release;
+  - `sha256s` holds each pin's full set of archives and nothing else, so a
     pin bumped without its hashes can't download unverified.
 
 ### Refreshing MODULE.bazel.lock

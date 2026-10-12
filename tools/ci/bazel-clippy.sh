@@ -25,13 +25,18 @@
 #       deny.
 #     - The stable Rust pin is the MSRV's release (a point release of it
 #       counts), so every PR compiles with it; MODULE.bazel says why.
-#     - Every `sha256s` key names the stable pin or the coverage nightly. A
+#     - The coverage nightly's recorded rustc version, the comment above its
+#       entry, names that date and the MSRV's release, so a bump cannot leave
+#       the nightly behind.
+#     - `sha256s` holds each pin's full set of archives and nothing else. A
 #       pin bumped without its hashes would otherwise download unverified.
 #
-# Then it lints `//...` plus the `manual` Rust targets `//...` skips: some are
+# Then it lints `//...` plus the `manual` Rust targets `//...` skips. Some are
 # manual only because they cannot LINK without a vendor SDK (svbony-camera's
 # binary), and `--config=clippy` builds the clippy_checks output group alone,
-# which never links. The lint runs whatever the checks found, so one run
+# which never links. The `cargo_build_script` build.rs binaries are manual
+# too: rules_rust tags them so. They are linted with clippy's defaults, since
+# they have no lint_config. The lint runs whatever the checks found, so one run
 # shows both a check miss and a real clippy finding, and the checks' findings
 # are printed after it, where the log ends.
 set -uo pipefail
@@ -92,26 +97,42 @@ if [[ -z "$cargo_msrv" || "$cargo_msrv" != "$clippy_msrv" ]]; then
   flag "::error::clippy.toml msrv (\"$clippy_msrv\") must equal Cargo.toml rust-version (\"$cargo_msrv\"): it is the only MSRV Bazel's clippy sees."
 fi
 
+# The release a version names: 1.99 for `1.99`, `1.99.0` or `1.99.1`.
+release_of() {
+  [[ $1 =~ ^([0-9]+\.[0-9]+)(\.[0-9]+)?$ ]] && echo "${BASH_REMATCH[1]}"
+}
+
 # rust.toolchain's call in MODULE.bazel, from its opening line to its closing
 # parenthesis. Its `versions` list holds the stable pin (a bare X.Y.Z) and
-# the coverage nightly, one per line.
+# the coverage nightly, one per line, the nightly under the line the hash
+# script prints for it: `# nightly/<date> is rustc <version>-nightly (...)`.
 toolchain=$(sed -n '/^rust\.toolchain($/,/^)$/p' MODULE.bazel)
 bazel_pin=$(sed -n 's/^ *"\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)",$/\1/p' <<<"$toolchain")
 nightly=$(sed -n 's/^ *"nightly\/\([0-9][0-9-]*\)",$/\1/p' <<<"$toolchain")
+recorded=$(sed -n 's/^ *# nightly\/\([0-9-]*\) is rustc \([0-9][0-9.]*\)-nightly .*/\1 \2/p' <<<"$toolchain")
+msrv_release=$(release_of "$cargo_msrv")
+# What scripts/rust-toolchain-sha256s.sh prints for one release: seven tools
+# for each of five hosts, plus rust-src.
+archives_per_release=36
 if [[ -z "$bazel_pin" || "$bazel_pin" == *$'\n'* || -z "$nightly" || "$nightly" == *$'\n'* ]]; then
   flag "::error::could not read one stable pin and one nightly from rust.toolchain's \`versions\` in MODULE.bazel (read \"$bazel_pin\" and \"$nightly\"); keep one entry per line."
-elif [[ "${bazel_pin%.*}" != "${cargo_msrv%.*}" ]]; then
+elif [[ -z "$msrv_release" || "$(release_of "$bazel_pin")" != "$msrv_release" ]]; then
   flag "::error::MODULE.bazel's stable Rust pin ($bazel_pin) is not the MSRV's release (Cargo.toml rust-version \"$cargo_msrv\"): the pin is the MSRV's release, so every PR compiles with the MSRV. Bump them together."
 else
+  if [[ "$recorded" != "$nightly $msrv_release."* ]]; then
+    flag "::error::the coverage nightly must be the last nightly of the MSRV's ($msrv_release) cycle, and the comment above its entry must say so; for nightly/$nightly it reads \"${recorded:-nothing}\". Paste the line \`scripts/rust-toolchain-sha256s.sh nightly/<date>\` prints."
+  fi
   keys=$(grep -o '"[^"]*\.tar\.xz"' <<<"$toolchain" | tr -d '"')
-  stale=$(grep -v -F -e "$nightly/" -e "-$bazel_pin-" <<<"$keys")
-  if [[ -n "$stale" ]] || ! grep -q -F -e "-$bazel_pin-" <<<"$keys" || ! grep -q -F -e "$nightly/" <<<"$keys"; then
-    flag ${stale:+"$stale"} "::error::MODULE.bazel's sha256s must hold the archives of the stable pin ($bazel_pin) and of the coverage nightly ($nightly), and nothing else (any key naming neither is listed above). Regenerate them with scripts/rust-toolchain-sha256s.sh, or the toolchains download unverified."
+  stable_keys=$(grep -c -F -e "-$bazel_pin-" -e "-$bazel_pin.tar.xz" <<<"$keys")
+  nightly_keys=$(grep -c -F -e "$nightly/" <<<"$keys")
+  stale=$(grep -v -F -e "$nightly/" -e "-$bazel_pin-" -e "-$bazel_pin.tar.xz" <<<"$keys")
+  if [[ -n "$stale" || "$stable_keys" -ne $archives_per_release || "$nightly_keys" -ne $archives_per_release ]]; then
+    flag ${stale:+"$stale"} "::error::MODULE.bazel's sha256s must hold the $archives_per_release archives of each pin and nothing else: it has $stable_keys for the stable pin ($bazel_pin) and $nightly_keys for the coverage nightly ($nightly), and any key naming neither is listed above. Regenerate them with scripts/rust-toolchain-sha256s.sh, or the toolchains download unverified."
   fi
 fi
 
 manual=()
-labels=$(query "attr(tags, \"\\bmanual\\b\", $rust_kinds) except $build_scripts") || exit 2
+labels=$(query "attr(tags, \"\\bmanual\\b\", $rust_kinds)") || exit 2
 if [[ -n "$labels" ]]; then
   while IFS= read -r label; do manual+=("$label"); done <<<"$labels"
 fi

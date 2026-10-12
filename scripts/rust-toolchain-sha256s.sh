@@ -15,7 +15,9 @@
 # key; its rustc version is printed to stderr, to show which cycle it is in.
 #
 # Covers the seven tools rules_rust fetches for a host, for the five hosts CI
-# and the dev machines run on. Paste the output over the existing entries.
+# and the dev machines run on, plus rust-src: one archive for every host,
+# which rules_rust fetches for its rust-analyzer toolchain. Paste the output
+# over the existing entries.
 set -euo pipefail
 
 usage="usage: $0 <stable version, e.g. 1.99.0 | nightly/<date>, e.g. nightly/2026-08-15>"
@@ -104,6 +106,13 @@ for package, tool in packages.items():
         if name != f"{tool}-{version}-{host}.tar.xz":
             sys.exit(f"unexpected archive name {name} for {package} on {host}")
         entries[f"{date}/{name}" if date else name] = target["xz_hash"]
+target = manifest["pkg"]["rust-src"]["target"].get("*")
+if not target or not target.get("available"):
+    sys.exit(f"rust-src {version} has no build")
+name = PurePosixPath(target["xz_url"]).name
+if name != f"rust-src-{version}.tar.xz":
+    sys.exit(f"unexpected archive name {name} for rust-src")
+entries[f"{date}/{name}" if date else name] = target["xz_hash"]
 for key in sorted(entries):
     print(f'        "{key}": "{entries[key]}",')
 EOF
