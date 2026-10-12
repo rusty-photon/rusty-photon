@@ -23,7 +23,7 @@ async fn mcp_call_measure_basic_with_last_path(world: &mut RpWorld) {
         .clone()
         .expect("no captured image path available");
 
-    call_measure_basic(world, Some(&image_path), None, None).await;
+    call_measure_basic(world, Some(&image_path), None, None, DEFAULT_AREAS).await;
 }
 
 #[when("the MCP client calls \"measure_basic\" with the captured document_id")]
@@ -33,7 +33,7 @@ async fn mcp_call_measure_basic_with_last_document_id(world: &mut RpWorld) {
         .clone()
         .expect("no captured document_id available");
 
-    call_measure_basic(world, None, Some(&document_id), None).await;
+    call_measure_basic(world, None, Some(&document_id), None, DEFAULT_AREAS).await;
 }
 
 #[when(
@@ -45,17 +45,54 @@ async fn mcp_call_measure_basic_with_threshold(world: &mut RpWorld, threshold_si
         .clone()
         .expect("no captured image path available");
 
-    call_measure_basic(world, Some(&image_path), None, Some(threshold_sigma)).await;
+    call_measure_basic(
+        world,
+        Some(&image_path),
+        None,
+        Some(threshold_sigma),
+        DEFAULT_AREAS,
+    )
+    .await;
 }
 
 #[when(expr = "the MCP client calls \"measure_basic\" with image path {string}")]
 async fn mcp_call_measure_basic_with_path(world: &mut RpWorld, image_path: String) {
-    call_measure_basic(world, Some(&image_path), None, None).await;
+    call_measure_basic(world, Some(&image_path), None, None, DEFAULT_AREAS).await;
 }
 
 #[when(expr = "the MCP client calls \"measure_basic\" with document_id {string}")]
 async fn mcp_call_measure_basic_with_document_id(world: &mut RpWorld, document_id: String) {
-    call_measure_basic(world, None, Some(&document_id), None).await;
+    call_measure_basic(world, None, Some(&document_id), None, DEFAULT_AREAS).await;
+}
+
+#[when(
+    expr = "the MCP client calls \"measure_basic\" on the fixture {string} with threshold_sigma {float}, min_area {int} and max_area {int}"
+)]
+async fn mcp_call_measure_basic_on_fixture(
+    world: &mut RpWorld,
+    fixture: String,
+    threshold_sigma: f64,
+    min_area: u64,
+    max_area: u64,
+) {
+    // The suite runs from the package directory (cargo's default, and
+    // `BDD_PACKAGE_DIR` under Bazel); rp gets an absolute path because it
+    // runs as its own process.
+    let path = std::env::current_dir()
+        .expect("current directory")
+        .join("tests/fixtures")
+        .join(&fixture);
+    assert!(path.is_file(), "fixture {} not found", path.display());
+    let path = path.to_str().expect("fixture path is UTF-8").to_string();
+
+    call_measure_basic(
+        world,
+        Some(&path),
+        None,
+        Some(threshold_sigma),
+        (min_area, max_area),
+    )
+    .await;
 }
 
 #[when("the MCP client calls \"measure_basic\" with no arguments")]
@@ -177,6 +214,23 @@ fn measure_basic_field_equals_int(world: &mut RpWorld, field: String, expected: 
     );
 }
 
+#[then(expr = "the measure_basic result should contain {string} between {float} and {float}")]
+fn measure_basic_field_between(world: &mut RpWorld, field: String, low: f64, high: f64) {
+    let result = result_or_panic(world);
+    let value = result
+        .get(&field)
+        .unwrap_or_else(|| panic!("expected '{field}' in measure_basic result, got: {result:?}"));
+
+    let num = value
+        .as_f64()
+        .unwrap_or_else(|| panic!("expected '{field}' to be a number, got: {value:?}"));
+
+    assert!(
+        (low..=high).contains(&num),
+        "expected '{field}' between {low} and {high}, got: {num}"
+    );
+}
+
 #[then(expr = "the exposure document should contain a section named {string}")]
 fn exposure_document_has_section(world: &mut RpWorld, section_name: String) {
     let doc = world
@@ -216,11 +270,17 @@ fn section_contains_field(world: &mut RpWorld, section_name: String, field: Stri
 
 // --- Helpers ---
 
+/// `(min_area, max_area)` for scenarios that do not name their own:
+/// 5 admits any plausible PSF, 65536 admits even very large smoothed
+/// components on the Alpaca simulator's synthetic frame.
+const DEFAULT_AREAS: (u64, u64) = (5, 65_536);
+
 async fn call_measure_basic(
     world: &mut RpWorld,
     image_path: Option<&str>,
     document_id: Option<&str>,
     threshold_sigma: Option<f64>,
+    (min_area, max_area): (u64, u64),
 ) {
     ensure_mcp_client(world).await;
 
@@ -235,11 +295,9 @@ async fn call_measure_basic(
         args.insert("threshold_sigma".to_string(), serde_json::json!(threshold));
     }
     // min_area and max_area are required parameters (no defaults — they encode
-    // pixel-scale assumptions per docs/services/rp.md). Bake test-fixture
-    // values: 5 admits any plausible PSF, 65536 admits even very large
-    // smoothed components on the OmniSim synthetic frame.
-    args.insert("min_area".to_string(), serde_json::json!(5));
-    args.insert("max_area".to_string(), serde_json::json!(65_536));
+    // pixel-scale assumptions per docs/services/rp.md).
+    args.insert("min_area".to_string(), serde_json::json!(min_area));
+    args.insert("max_area".to_string(), serde_json::json!(max_area));
 
     let result = world
         .mcp()

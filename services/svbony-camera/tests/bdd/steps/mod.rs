@@ -8,3 +8,4 @@ pub mod doctor_steps;
 pub mod exposure_steps;
 pub mod gain_offset_steps;
 pub mod sensor_steps;
+pub mod usb_devices_steps;

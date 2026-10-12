@@ -244,14 +244,23 @@ sidecar stays the authority.
   capture's `StartExposure` cannot have overwritten it). `rp` accepts
   the driver's value only when it falls inside the window `rp` itself
   observed — no earlier than just before `StartExposure` was sent, and
-  no later than `ImageReady` less the exposure time, since an exposure
-  begun after that could not have finished — widened by 2 s on each
-  side for clock differences between the camera's host and `rp`'s. A
-  driver that does not implement the property, fails the read, or
-  reports a time outside that window (a stale start, or one stamped at
-  readout) gets `rp`'s own clock reading instead, taken the moment
-  `StartExposure` returned. Present on every frame this version
-  captures. `captured_at` is unchanged: it marks capture *completion*
+  no later than the latest the exposure can have begun, `ImageReady`
+  less the exposure time (never before the request) — widened by 2 s on
+  each side for clock differences between the camera's host and
+  `rp`'s, but never past `ImageReady` itself. A driver that flushes its
+  sensor or locks its mirror up after `StartExposure` returns begins
+  later than that return, and is still believed. A driver that does not
+  implement the property, fails the read, or reports a time outside the
+  window (a stale start, or one stamped at the end of the exposure or
+  at readout — caught once the exposure outlasts the readout plus the
+  slack; on a shorter frame such a stamp still lands inside the window,
+  since `ImageReady` includes the readout) gets `rp`'s own estimate
+  instead: the earlier of the
+  moment `StartExposure` returned and that latest possible start —
+  `rp`'s clock as `StartExposure` returned for the usual asynchronous
+  driver, and never the end of the exposure for one whose
+  `StartExposure` blocks through it. Present on every frame this
+  version captures. `captured_at` is unchanged: it marks capture *completion*
   (after readout), which is what `{night_date}` is keyed on.
 - `camera_name` — the driver's ASCOM `Name` (e.g. `"QHY600M"`), read
   once per connection with the other invariants and cached on
@@ -269,8 +278,14 @@ sidecar stays the authority.
   answers through the camera's own driver. Omitted for `Dark`/`Bias`
   (dark current is not filter-dependent, and an incidental wheel
   position on a dark is noise) and when the train has no wheel, or the
-  wheel is disconnected, moving, fails the read, or does not answer
-  within 3 s. When a naming template is configured
+  wheel is disconnected, moving, fails the read, or — when the frame's
+  filename does not depend on it — does not answer within 3 s (a
+  templated capture waits the wheel out, as it always has, rather than
+  lose a finished exposure to a slow read; a cancel, the unsafe
+  transition's among them, still ends the capture once the frame's
+  reads have run 3 s — [In-Flight Tool Calls](#in-flight-tool-calls)).
+  When a naming template is
+  configured
   (`session.file_naming_pattern`), the one read feeds both the filename
   and this field, so they cannot disagree — and there a failed read
   fails a typed capture, whether or not the pattern names `{filter}`
@@ -278,8 +293,12 @@ sidecar stays the authority.
 - `gain`, `offset` — the camera's ASCOM `Gain`/`Offset`, read on every
   capture while it holds the camera. Never cached: both are
   operator-mutable, the same reason `get_camera_info` reads them live.
-  Omitted when the driver does not implement them (common on CCDs) or
-  the read fails.
+  Omitted when the driver does not implement them (common on CCDs), or
+  the read fails or does not answer within 3 s. Each of these reads,
+  `LastExposureStartTime`'s included, has its own 3 s bound, so a slow
+  property costs only its own field. Recorded as the driver reports them:
+  for a driver in ASCOM's gain-index mode that is the index into its
+  `Gains` list, which still keeps frames at different gains apart.
 - `pointing` — where the mount was pointing: `ra_hours`/`dec_degrees`
   exactly as the mount reports them, in the mount's own equatorial
   system (often JNow; `rp` does not convert). Read once, right after
@@ -287,9 +306,15 @@ sidecar stays the authority.
   [mount motion gate](#mount-motion-gate) keeps the mount from slewing
   under an imaging-train exposure, so one read describes the frame. A
   camera outside the imaging train is not held by the gate, so a mount
-  that reports `Slewing` at the read leaves the field out rather than
-  record a point mid-move. Also omitted when no mount is configured or
-  connected, or the read fails or does not answer within 3 s.
+  that reports `Slewing` at the read — or fails to say — leaves the
+  field out rather than record a point mid-move (a driver without
+  `Slewing` counts as still). The read runs on its own task, untimed
+  while the camera exposes; once the image is ready it gets up to one
+  second more, alongside the camera's own reads, so a healthy mount
+  costs the frame nothing and a wedged one at most that second. A read
+  still out then is dropped and aborted, as it is when the exposure
+  fails or the capture is cancelled. Also omitted when no mount is
+  configured or connected, or the read fails.
   Distinct from `target.ra_hours`/`target.dec_degrees`, which are the
   catalog (J2000) coordinates of what the frame is *of*.
 
@@ -550,7 +575,7 @@ The keyword set below is a contract, pinned field by field in
 | `OBJECT` | string | `target.display_name` | the frame resolved a target-store row (not a reserved `dark`/`flat`/`bias` slug) |
 | `OBJCTRA` | string | `target.ra_hours`, sexagesimal `'HH MM SS.ss'` (J2000) | as `OBJECT` |
 | `OBJCTDEC` | string | `target.dec_degrees`, sexagesimal `'+DD MM SS.s'` (J2000) | as `OBJECT` |
-| `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) | `pointing` present |
+| `RA` | real | `pointing.ra_hours × 15`, degrees, wrapped into [0, 360) as printed (a value that would print as 360 is written as 0) | `pointing` present |
 | `DEC` | real | `pointing.dec_degrees`, degrees | `pointing` present and within ±90° |
 | `INSTRUME` | string | `camera_name` | `camera_name` present |
 | `TELESCOP` | string | `telescope` | `telescope` present |
@@ -591,13 +616,27 @@ Rules the table does not show:
 - **No `SITEELEV`**: the site carries no elevation
   ([Site Configuration](#site-configuration)).
 - **Absent means unknown, never a placeholder.** A keyword whose source
-  is missing is omitted rather than written as `0`, `''` or `'NA'`. A
-  value that cannot be written as a FITS card — a string with
-  non-ASCII characters, or too long for one 80-byte card — drops that
-  card (logged at `debug!`); the sidecar still carries the value. No
-  header problem fails a capture.
+  is missing is omitted rather than written as `0`, `''` or `'NA'`.
+- **Typographic variants are folded; anything else a card cannot
+  carry is left out.** In a target, filter, telescope or camera name,
+  typographic dashes, quotes (curly, low-9 and guillemets) and spaces
+  become their ASCII look-alikes (`Pleiades – M45` → `Pleiades - M45`,
+  `„M31“` → `"M31"`) — deliberately one name, since editors substitute
+  them for the ASCII forms — and the invisible characters copy-paste
+  carries (zero-width space and joiners, word joiner, byte order mark,
+  soft hyphen) are dropped. The fold is rp-fits' `fold_to_ascii`. A value a card still cannot carry exactly
+  drops that one card: one with any other character outside printable
+  ASCII — a filter named `Hα`, a control character — or one longer than
+  the card's 68 characters (an apostrophe counting twice). Neither a
+  stand-in nor a cut keeps such a value distinct (`Hα` and `Hβ` would
+  both read `H?`; two names differing past column 68 would read alike),
+  and a stacker would group each pair as one; a missing card at least
+  reads as unknown. The sidecar keeps the original either way.
+  `telescope` is validated at config load on its folded form, so its
+  card is never dropped. No header problem fails a capture.
 - Reals are written in the FITS exponential form
-  (`EXPTIME = 3.0000000000E+02`), which every reader accepts.
+  (`EXPTIME = 3.0000000000E+02`), which every reader accepts; a
+  negative zero is written as zero.
 
 Both the FITS file and the sidecar JSON are written atomically:
 staged to a sibling temp file, fsynced, renamed into place, parent
@@ -1222,7 +1261,7 @@ tool across the line with `safety.gate` (§ Configuration).
 | `unpark` | Gated | — | — | Clear the mount's `AtPark` flag. Returns immediately. Does NOT auto-enable `Tracking`; call `set_tracking` before slewing |
 | `get_park_state` | Ungated | — | at_park, can_park, can_unpark | Read park state and capabilities; fails loud on `AtPark` read error |
 | `abort_slew` | Ungated | — | — | Abort an in-progress mount slew or park. Per ASCOM, only valid while `Slewing == true`; the natural Alpaca error propagates otherwise |
-| `set_filter` | Ungated | filter_wheel_id *or* train_id (exactly one), filter_name | filter_wheel_id, filter_name, position | Change filter wheel position. `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id` |
+| `set_filter` | Ungated | filter_wheel_id *or* train_id (exactly one), filter_name | filter_wheel_id, filter_name, position | Change filter wheel position: waits out a move already under way, writes the slot, and blocks until the wheel names it, each wait bounded at 60 s (see [Filter Wheel Tool Details](#filter-wheel-tool-details)). `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id` |
 | `get_filter` | Ungated | filter_wheel_id | filter_name, position | Read current filter |
 | `get_cover_state` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, cover_state | Read the cover state (`NotPresent` \| `Closed` \| `Moving` \| `Open` \| `Unknown` \| `Error`) without actuating anything — e.g. so an orchestrator can restore the state it found. `train_id` resolves the train's cover calibrator; `trains` lists every train containing it. See [CoverCalibrator Tool Details](#covercalibrator-tool-details) |
 | `close_cover` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Close the dust cover (blocks until closed) |
@@ -1615,10 +1654,11 @@ incidental filter position on a dark/bias would be noise, not signal.
 The read happens once per capture, once the exposure completes, and the
 same value becomes the document's `filter` field and the header's
 `FILTER` card — those leave the field out where the filename renders
-`"NA"`. A failed read (the wheel errors, reports itself moving, or does
-not answer within 3 s) fails a templated capture rather than mis-filing
-the frame; for a capture that renders no filename it only drops the
-`filter` field.
+`"NA"`. A failed read (the wheel errors or reports itself moving) fails
+a templated capture rather than mis-filing the frame — and a templated
+capture waits a slow wheel out rather than time it; for a capture that
+renders no filename the read is bounded at 3 s and a failure only drops
+the `filter` field.
 
 *Directory/file rendering.* Once `target`/`frame_type` are resolved,
 `capture` renders `session.directory_pattern` then
@@ -1662,6 +1702,59 @@ tools called with `document_id`) return 404. `rp` emits a
 `file_path`, and the error. Subscribers and operators recover by
 reading the FITS directly via `file_path` (e.g. image-analysis tools
 called with `image_path` instead of `document_id`).
+
+#### Filter Wheel Tool Details
+
+`set_filter` resolves the filter name to its slot, writes the wheel's
+`Position`, and polls it every 100 ms until it names that slot. Another
+slot, or the moving sentinel (−1), keeps the wait going. It writes the
+slot even when the wheel already names it: a driver's `Position` can be
+stale, and the write is the command. An error ends the wait, and so
+does a cancellation, after which the wheel finishes its move on its own
+(§ [In-Flight Tool Calls](#in-flight-tool-calls)). A cancellation ends
+the call at once: each read, the write and each pause between reads are
+raced against it, since a read or a write can take a serial round trip
+or an HTTP request's whole timeout. A write cut short that way may
+still reach the wheel, which then finishes its move on its own, as
+`unpark`'s request does. So does the **60 s ceiling**: a wheel that has
+not named the slot 60 s after the write fails the call with *"the
+filter wheel did not reach Red (slot 1) within 60s"*. That is three
+times a full turn of a sixteen-slot wheel at ~1.2 s a slot (~19 s). The
+wheel has lost the move, or another client's write has sent it
+elsewhere.
+
+**A move already under way is waited out before the write.**
+`set_filter` reads `Position` first, and while that reads the moving
+sentinel it polls every 100 ms, writing only once the wheel has come to
+rest. A wheel written while it travels does not take the new slot:
+- ASCOM's reference simulator (OmniSim, `PreemptMoves` off by default)
+  answers `INVALID_OPERATION` (`0x40B`), *"The FilterWheel is already
+  moving"*, though it then goes to the slot it refused all the same;
+- `qhy-camera` refuses it the same way (its FW2), since a QHY CFW drops
+  a slot sent while it travels.
+
+The move may be another client's, or one that a cancelled `set_filter`
+left going: focus-model puts the wheel back with a `set_filter` straight
+after a cancelled sweep. The wait ends one of four ways:
+- **The wheel comes to rest** on a slot, and the slot is written.
+- **A read errors.** The slot is written all the same. The write then
+  reports what is wrong with the wheel, and a `qhy-camera` wheel whose
+  move failed answers an error until a write goes out (its FW8).
+- **The wheel still reads moving at the 60 s ceiling.** Such a wheel is
+  not finishing a move, so the slot is written all the same, and its
+  driver says what it is doing.
+- **The call is cancelled.** A cancelled call writes nothing, including
+  a cancellation that lands during the read that would have found the
+  wheel at rest.
+
+A move can also begin between the read that found the wheel at rest and
+the write, or hide behind a read that errored. The write is then refused
+like any write mid-move. If the wheel reads moving after that refusal,
+`set_filter` waits again and writes again, within the same 60 s. At the
+ceiling the refusal is the call's answer. The wait before the write and
+the wait for the move each have their own 60 s, so that a long wait for
+another client's move does not leave this call's own move no time. A
+call therefore answers within about two minutes.
 
 #### CoverCalibrator Tool Details
 
@@ -1915,10 +2008,25 @@ The first analysis tool to implement. Behavioral contract:
 **Algorithm (in order)**:
 1. Load pixels (image-cache hit or `rp-fits` read).
 2. Estimate background via sigma-clipped mean/stddev.
-3. Apply Gaussian smoothing (small kernel, σ ≈ 1.0 px) to suppress noise.
-4. Threshold at `background_mean + threshold_sigma × background_stddev`.
-5. Connected-components labelling on the thresholded mask.
-6. Filter components: pixel area in `[min_area, max_area]`; reject
+3. Suppress hot pixels in the copy that steps 4–5 smooth and threshold.
+   A pixel is hot when it is above the detection threshold
+   (`background_mean + threshold_sigma × background_stddev`) and none of
+   the 3×3 windows that contain it holds a star's body. A body is enough
+   of a window's pixels above `background_mean + 2 × background_stddev`,
+   capped at the threshold: at least five in a window on the pixel grid
+   (in a full window, its median), and at least six in a window on every
+   second row and column. Windows are clipped at the frame's edge. A hot
+   pixel is replaced by the median of the pixels of the grid window
+   centred on it that are not hot (the lower of the two middle values
+   for an even count), or by `background_mean` when all of them are.
+   Every measurement in steps 7–8 still reads the raw pixels. A hot
+   pixel that falls inside a component's smoothed footprint counts
+   toward the component's area and border verdict, and is left out of
+   its measurements.
+4. Apply Gaussian smoothing (small kernel, σ ≈ 1.0 px) to suppress noise.
+5. Threshold at `background_mean + threshold_sigma × background_stddev`.
+6. Connected-components labelling on the thresholded mask.
+7. Filter components: pixel area in `[min_area, max_area]`; reject
    components touching the image border. Saturated components are *not*
    rejected — they are flagged (see `saturated_star_count`). Saturated
    stars carry real signal: bright in-focus stars routinely clip at
@@ -1927,11 +2035,121 @@ The first analysis tool to implement. Behavioral contract:
    make HFR-vs-focus non-monotonic and break auto-focus, so the policy
    is to measure them and let downstream consumers decide whether to
    weight or warn.
-7. For each surviving component, compute intensity-weighted centroid and
+8. For each surviving component, compute intensity-weighted centroid and
    per-star HFR (radial flux accumulation to half of total flux).
    Centroiding uses background-subtracted flux to avoid bbox-center bias.
-8. Return aggregate HFR (median of per-star HFRs), star count,
+   Reject a component whose HFR is under **0.25 px**: its flux sits in
+   the one pixel under its centroid.
+9. Return aggregate HFR (median of per-star HFRs), star count,
    saturated-star count, and background.
+
+**Why hot pixels are removed before smoothing.** Smoothing spreads a
+single hot pixel into a blob of 5–25 pixels that passes any `min_area` a
+caller would choose for real stars, and its HFR, measured on the raw
+pixels, is close to 0. On an uncooled QHY600M those blobs outnumbered the
+stars many times over and pulled the median HFR to about 0.004 px, so
+`auto_focus` saw a flat curve. The only way out was a `min_area` large
+enough to exclude them, which also excluded the compact stars at best
+focus. PixInsight's star detector and Hocus Focus also remove hot pixels
+before they blur, for the same reason.
+
+A structure of up to four bright pixels holds no body, so single hot
+pixels, pairs and 2×2 clusters are removed. A star with more than four
+pixels above the body level keeps every pixel: a window around its core
+holds its body, and so does a window around the core side of every pixel
+of its profile; the same holds for the edge of any extended shape, such
+as a defocused star's annulus. A star the step keeps therefore has the
+same footprint, and the same verdict at any `min_area`, as without it;
+the caveats below list the stars it does not keep. The body level sits at 2σ above the background mean,
+not at the detection threshold, because a faint star at the detection
+limit, centred on a pixel corner or undersampled, has only one to four
+pixels above the threshold, while the median of nine background pixels
+scatters by only about 0.4σ. A body level at the threshold erased up to
+18% of the stars on rig2's bin-2 frames and up to 42% at bin 4.
+
+**Why windows on every second row and column.** `rp` measures a colour
+camera's raw mosaic as it is. In a 2×2 Bayer pattern no 3×3 grid window
+holds more than four red or four blue pixels, so a star seen in one of
+those colours only, through a narrowband filter or a dual-band filter's
+Ha line, holds no body on the grid and would lose every pixel. The
+pixels two rows or columns apart are the pixel's own colour in every
+Bayer layout, so a window on that spacing sees such a star's body
+without `rp` knowing the sensor is a colour one. A hot cluster that fits
+in 2×2 puts one pixel in such a window and a line of hot pixels three,
+so both still go. These windows need six pixels, not five: with five, a
+hot pixel two pixels beyond the cross a bright compact star's core makes
+on that spacing completes a body and is kept. Measured on rig2's mono
+frames (18 frames, three parameter sets, 16,514 stars), six adds, drops
+or changes the measurement of 0.4% of the stars, five of 1%.
+
+**Why the HFR floor.** The body level is measured from the frame's
+global background, so where the sky is brighter than the frame's mean,
+in a gradient, a hot pixel's windows can reach the body level and the
+pixel survives suppression. It survives as a single bright pixel whose
+HFR is close to 0, and the floor removes it. A window built on the local
+background instead does not let it through, but on rig2's frames that
+kept only 23–57% of the stars on a frame of defocused donuts, whose
+annulus raises the local background. On rig2's frames the floor removes 14–103 such
+detections per frame. In a frame taken hours or days later, 96–100% of
+them are bright at the same sensor pixel, as a hot pixel is; for the
+stars that rate is 0–5%. The floor also catches a cosmic-ray hit.
+
+**Measured on rig2's QHY600M** (uncooled, 530 mm). The nine sweep frames of one
+2026-09-26 `auto_focus` run plus its confirmation frame were measured at
+`threshold_sigma 8`, `min_area 6`, `max_area 2000`. Without step 3 and
+the HFR floor, every frame reported 566–747 detections with a median HFR
+of 0.002–0.003 px. With them, the frames report 36–202 stars, and the
+HFRs trace the V-curve (3.77, 2.44, 1.75, 1.14, 0.95, 1.00, 1.35, 2.16
+and 2.49 px). The confirmation frame reports 146 stars at 0.87 px,
+against 2 at the settings that run had to use (`threshold_sigma 10`,
+`min_area 40`). At those settings, all ten frames report the same
+result with and without the two steps. Of the detections the detector
+without these steps measures at an HFR of 0.6 px or more (its stars,
+and any hot cluster that large), it keeps 86–99% at bin 1 (2026-09-08
+and 2026-09-26 frames), 97–99% at bin 2, 92–98% at bin 3 and 85–95% at
+bin 4 (2026-09-09 frames), at `threshold_sigma` 5 and 8.
+
+**Caveats**:
+- A hot pixel next to a star's body, where a window around it holds
+  the body, is not removed. A faint one adds to that star's flux and
+  pulls its HFR down. One that outshines the star pulls the centroid
+  onto itself, so the star measures under the HFR floor and is dropped.
+  Removing it needs a defect map built from dark frames, which `rp` does
+  not have.
+- Where the sky is more than 2σ above the frame's mean (a gradient, amp
+  glow), a hot pixel's windows can hold a body and it survives
+  suppression. The HFR floor removes it when it carries half its
+  component's flux; otherwise it counts as a star. On rig2's frames, the
+  stars sitting on a pixel that is also bright in a frame taken hours or
+  days later exceed the chance rate by 1–2% at bin 2 and
+  `threshold_sigma` 5 (at most 1% at 8), and not at all at bin 1.
+- A star whose only pixels more than 2σ above the background are its
+  brightest one to four looks like a hot structure and is removed: a
+  faint star, or a bright one undersampled to a FWHM under about 1 px
+  and centred near a pixel corner, whose four core pixels hold nearly
+  all its light. Telling those from a hot cluster needs a defect map.
+- A star seen in one colour only on a raw colour mosaic is measured at
+  half the resolution, so the undersampling limits in these caveats
+  double. In a noise-free
+  simulation at `threshold_sigma` 5, such a star 50σ bright is kept from
+  a FWHM of about 3 px on the mosaic and a 1000σ one from about 2 px;
+  the detector without these two steps found most 50σ ones down to
+  about 2 px. On rig2's mono frames reduced to their red pixels, the step
+  keeps 52–100% of the stars that detector finds at bin 1, 22–89% at
+  bin 2 and 7–13% of the compact ones at bins 3 and 4.
+- A cluster of five or more hot pixels within a 3×3 window, or six on
+  every second row and column, holds a body and survives suppression.
+  If its flux is concentrated in one pixel, the HFR floor rejects it;
+  otherwise it is counted as a star.
+- A star measures under the HFR floor when it is centred near a pixel's
+  centre and undersampled: FWHM under about 1.1 px, or about 1.3 px for
+  a faint star whose component is only its core and four neighbours. On
+  rig2's bin-2 frames, with stars at a FWHM of about 1.5 px, 96–100% of
+  what the floor removed were hot pixels; a setup that samples its stars
+  more coarsely at best focus loses some of them there.
+- Neither step needs a large `min_area`. A value chosen to exclude hot
+  pixels now only excludes faint and compact stars. A `min_area` in the
+  single digits admits every star the threshold finds.
 
 **Error cases**:
 - Neither `document_id` nor `image_path` provided → MCP error mentioning
@@ -2028,10 +2246,11 @@ exposure.
   effectively applied.
 
 **Algorithm**: same pipeline `measure_basic` runs internally — sigma-
-clipped background → Gaussian smoothing (σ ≈ 1 px) → threshold at
-`mean + threshold_sigma × stddev` → 4-connectivity BFS → area / border
-filter → intensity-weighted centroiding. Saturated components are
-flagged, not rejected (same rationale as `measure_basic`).
+clipped background → hot-pixel suppression → Gaussian smoothing (σ ≈
+1 px) → threshold at `mean + threshold_sigma × stddev` → 4-connectivity
+BFS → area / border filter → intensity-weighted centroiding → the
+0.25 px HFR floor. Saturated components are flagged, not rejected (same
+rationale as `measure_basic`), and the `measure_basic` caveats apply.
 
 **Error cases**:
 - Neither `document_id` nor `image_path` → MCP error mentioning
@@ -2871,7 +3090,16 @@ Recovery](#device-session-recovery)):
    gives drivers stable numbers (D4.7). Re-keying by `UniqueID` in `rp`
    would be a second keying mechanism beside it, and a silent re-bind
    is exactly the failure this guard exists to stop.
-5. **The pin cannot be verified**, because the listed entry's
+5. **The device is a placeholder**: its `UniqueID` has the device-claims
+   form `placeholder:<service>:<usb_port>` (§ [Device Session
+   Recovery](#device-session-recovery)). It is refused before its
+   `UniqueID` is compared with the pin, and before `Connected = true`,
+   whatever the pin says. A placeholder is no device rather than another
+   one, so this is a plain connect failure, as it is for an unpinned
+   entry, not an identity refusal: the error names the placeholder,
+   points at its `Description` for the reason, and the next pass checks
+   the pin again.
+6. **The pin cannot be verified**, because the listed entry's
    `UniqueID` is empty. A driver still filling in its listing can
    answer that for a moment, so the routine's 1 s / 2 s retries ride it
    out like a transport error. If every attempt still lists it blank,
@@ -2895,7 +3123,8 @@ listed at the entry's number, the session is dropped at once, with a
 the session:
 - one that cannot be read;
 - one that lists no device at the entry's number;
-- one that lists that device with a blank `UniqueID`.
+- one that lists that device with a blank `UniqueID`;
+- one that lists a driver's placeholder there.
 
 The session was checked at establish, and none of these is evidence of
 another device: a re-enumerating driver can answer a short or
@@ -2914,7 +3143,7 @@ through a fresh establish that finds the pinned device.
 
 **Retry class.** A mismatch is permanent within one connect routine,
 like "device not found": no 1 s / 2 s in-routine retries. A blank
-`UniqueID` is the one exception (item 5). The
+`UniqueID` is the one exception (item 6). The
 supervisor re-checks it once per pass, re-reading the list each time, so
 the entry binds on the first pass that finds the pinned device back at
 `device_number` (say, the driver restarted in its old order), and never
@@ -3046,6 +3275,26 @@ devices:
   There is no give-up state: an outcome that is permanent within one
   connect routine ("device not found", or a refused identity pin) is
   still retried on the next pass, which is exactly what case 3 needs.
+- **A placeholder device is permanent for the pass.** A camera driver
+  with a `usb_devices` list holds a listed number whose camera it cannot
+  serve tonight with a placeholder, whose `Connected = true` fails with
+  ASCOM error `0x540` ([device-claims plan](../plans/device-claims-and-phd2-camera.md)
+  D4.5, [svbony-camera.md](svbony-camera.md) U4). Retrying it cannot
+  help — a placeholder becomes a device only when its driver reloads —
+  so the connect routine takes that refusal as it takes "device not
+  found": one attempt, no backoff, logged at `debug!` with the driver's
+  reason, and the entry stays disconnected. The next pass tries again, so
+  the device is picked up on the first pass after a reload serves it. A
+  refusal counts as a placeholder's only when the device's `UniqueID` has
+  the placeholder form (`placeholder:<service>:<usb_port>`) as well: the
+  `0x500`–`0xFFF` range is every Alpaca driver's to use, so another
+  driver's `0x540` is still retried. The connect routine every kind
+  shares classifies it (`alpaca::connect_refused`), so the plan's C4
+  placeholder filter wheels need no rp change. A pinned entry refuses a
+  placeholder by its `UniqueID` alone, before switching it on and with
+  the same plain failure (§ [Device Identity Pin](#device-identity-pin),
+  item 5), so the driver's reason reaches it through the placeholder's
+  `Description` rather than the connect error.
 
 The cadence is fixed — no exponential backoff. One `Connected` read per
 device per interval is the steady-state cost, and the interval itself
@@ -3159,10 +3408,13 @@ Semantics:
   `"Takahashi FSQ-106EDX4"`). Optional. Frames through the train's
   camera carry it as the FITS `TELESCOP` card and the sidecar's
   `telescope`; omitted, they carry neither — the train id is not
-  substituted, since it names a light path, not an instrument. It must
-  fit one FITS string card: 1 to 68 printable ASCII characters, an
-  apostrophe counting twice. Anything else is rejected at load, so the
-  card can never be dropped at capture time.
+  substituted, since it names a light path, not an instrument. Once its
+  typographic dashes, quotes and spaces fold to ASCII (as every
+  free-text card's do — [FITS header](#fits-header)), it must fit one
+  FITS string card: 1 to 68 printable ASCII characters, an apostrophe
+  counting twice. Anything else is rejected at load, so the card can
+  never be dropped at capture time; the sidecar keeps the name as
+  written.
 - `focal_length_mm` is the effective focal length of that light path
   in millimetres — a positive finite number, rejected at load
   otherwise. Optional: omitted, captures through that train's camera
@@ -4438,8 +4690,9 @@ and read their `image_analysis` sections.
 - The confirmation frame costs one exposure per run and is always
   taken. It catches a fit that landed away from the measured
   minimum; it cannot catch a sweep whose every sample was dense yet
-  wrong (frames dominated by hot pixels, say) — that is the
-  detector's problem, see the `measure_basic` caveats.
+  wrong (frames dominated by artifacts the detector still admits,
+  say) — that is the detector's problem, see the `measure_basic`
+  caveats.
 - The retry is bounded and never changes the step. `max_attempts`
   sweeps with the same parameters, the grid shifted toward the
   minimum after a monotonic curve, is what N.I.N.A., Ekos, SGP and
@@ -6012,7 +6265,9 @@ On the overall safe → unsafe transition:
    Calls](#in-flight-tool-calls)): each cancelled body issues its
    stop-class counterpart (a slew aborts, an exposure aborts, an opening
    cover halts) and answers its caller with the tool error
-   `cancelled: safety`. Every other ungated body already in flight — a
+   `cancelled: safety` — except a `capture` whose exposure had already
+   finished, which keeps its frame (§ [In-Flight Tool
+   Calls](#in-flight-tool-calls)). Every other ungated body already in flight — a
    `park`, a `close_cover`, a `set_filter` — runs to completion. `rp`
    waits up to `CANCEL_ACK_TIMEOUT` (3 s) for the cancelled bodies to
    acknowledge before the hardware steps below run, so a cancelled
@@ -6171,7 +6426,10 @@ unsafe reading. With no monitors configured `overall` is `safe` and
 answers its caller with the tool error `cancelled: <reason>`, where the
 reason is `safety` (the unsafe transition) or `client disconnected`
 (the caller's connection dropped before the response, or it sent
-`notifications/cancelled`).
+`notifications/cancelled`). The one exception is a `capture` cancelled
+after its exposure finished: a cancel then stops nothing physical, so
+the frame is read out and kept and the call succeeds, unless a read the
+3 s bound does not cover holds it past that bound (the table below).
 The operation's `*_failed` event carries the same text as its `error`.
 A body still waiting for the [mount motion gate](#mount-motion-gate)
 returns without moving anything.
@@ -6179,7 +6437,7 @@ returns without moving anything.
 | Cancelled body | Stop-class counterpart |
 |---|---|
 | `slew`, and the slews inside `center_on_target` | `AbortSlew` |
-| `capture`, and the captures inside `auto_focus` / `center_on_target` | `AbortExposure` |
+| `capture`, and the captures inside `auto_focus` / `center_on_target` | `AbortExposure` while the exposure runs. Once the image is ready, a cancel stops nothing physical: the frame's own reads (gain, offset, temperature, filter, the mount's pointing grace) finish — a bounded one gives up at its 3 s deadline as usual — and the frame is downloaded and kept. Only a read that deadline does not bound, still out at it (a wedged wheel a templated capture is waiting out), makes the capture answer `cancelled: <reason>` and release the camera at the deadline |
 | `move_focuser`, and the moves inside `auto_focus` / `refocus_train` | focuser `Halt` on the leg in flight. A backlash-compensated move checks the handle before each leg, so a cancellation that lands as the overshoot leg settles commands no return leg and halts nothing |
 | `move_rotator` | rotator `Halt` |
 | `open_cover` | `HaltCover` |

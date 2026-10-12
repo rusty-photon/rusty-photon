@@ -30,7 +30,7 @@ use tracing::info;
 use ascom_alpaca::Client;
 
 use super::alpaca::{
-    build_alpaca_client, retry_connect_attempt, AttemptOutcome, CONNECT_ATTEMPTS,
+    build_alpaca_client, connect_refused, retry_connect_attempt, AttemptOutcome, CONNECT_ATTEMPTS,
     GET_DEVICES_TIMEOUT,
 };
 use crate::config::{self, UniqueIdPin};
@@ -66,6 +66,12 @@ impl RosterAddress<'_> {
         match refusal {
             Refusal::NotListed => EstablishError::Failed(format!(
                 "{kind} at index {number} not found on Alpaca server"
+            )),
+            Refusal::Placeholder { found } => EstablishError::Failed(format!(
+                "{kind} at device_number {number} is {:?}, a placeholder (UniqueID {:?}) \
+                 its driver serves until it reloads, not a device: its Description says \
+                 why, and the next pass checks the pinned unique_id {pin:?} again",
+                found.name, found.unique_id
             )),
             Refusal::Unverifiable { found_name } => EstablishError::IdentityRefused(format!(
                 "{kind} at device_number {number} ({found_name:?}) reports an empty UniqueID, \
@@ -278,15 +284,21 @@ enum Refusal {
         found: ListedIdentity,
         expected_at: Option<usize>,
     },
+    /// The device there is a driver's placeholder: its `UniqueID` has the
+    /// device-claims placeholder form, and it holds the number for a
+    /// device its driver cannot serve until it reloads. That is no device
+    /// at all rather than another one, so it is not an identity refusal.
+    Placeholder { found: ListedIdentity },
 }
 
 /// Pick the entry at `device_number` among `listed` — the server's
 /// devices of one kind, in its listing order — and hold it to `pin`.
 ///
 /// Without a pin, any listed device binds, whatever its `UniqueID`.
-/// With one, only a device listing exactly that `UniqueID` binds. The
-/// pin never moves the entry to another position, it only names where
-/// the pinned device is listed.
+/// With one, only a device listing exactly that `UniqueID` binds, and
+/// never a placeholder, which is refused as one before its `UniqueID` is
+/// compared. The pin never moves the entry to another position, it only
+/// names where the pinned device is listed.
 fn select<'a, T: Listed>(
     listed: &'a [T],
     device_number: u32,
@@ -300,6 +312,11 @@ fn select<'a, T: Listed>(
         return Ok(found);
     };
     let identity = found.identity();
+    if rusty_photon_doctor_checks::claims::is_placeholder_unique_id(&identity.unique_id) {
+        return Err(Refusal::Placeholder {
+            found: identity.clone(),
+        });
+    }
     if identity.unique_id.is_empty() {
         return Err(Refusal::Unverifiable {
             found_name: identity.name.clone(),
@@ -345,9 +362,10 @@ async fn list_of_kind<C: RosterEntry>(
 /// every kind's startup connect and the reconnect supervisor's
 /// re-establish.
 ///
-/// A device that is not listed, or that lists another `UniqueID` than
-/// the pin, is a permanent outcome for this routine: no in-routine
-/// retries, and the supervisor re-checks it on its next pass. A blank
+/// A device that is not listed, that lists another `UniqueID` than the
+/// pin, or that is a driver's placeholder refusing `Connected = true`
+/// ([`connect_refused`]), is a permanent outcome for this routine: no
+/// in-routine retries, and the supervisor re-checks it on its next pass. A blank
 /// listed `UniqueID` is ridden out by the in-routine retries instead (a
 /// driver still filling in its listing can answer one for a moment), and
 /// refused as unverifiable only when every attempt still lists it blank:
@@ -381,7 +399,7 @@ pub(super) async fn establish_listed<C: RosterEntry>(
 
         match device.set_connected(true).await {
             Ok(()) => AttemptOutcome::Ok((device, identity)),
-            Err(e) => AttemptOutcome::Transient(format!("set_connected: {e}")),
+            Err(e) => connect_refused(&label, &identity.unique_id, &e),
         }
     })
     .await;
@@ -426,7 +444,8 @@ pub enum PinCheck {
     /// not name.
     Refused(String),
     /// The listing could not be read, lists no device at the entry's
-    /// number, or lists one with a blank `UniqueID`. The session was
+    /// number, lists one with a blank `UniqueID`, or lists a driver's
+    /// placeholder there. The session was
     /// checked when it was established, and none of these is evidence of
     /// another device: a driver that is re-enumerating can answer a
     /// short or half-filled listing for a moment.
@@ -611,7 +630,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn select_refuses_a_placeholder_under_a_pin_as_one() {
+        let devices = listed(&[(
+            "SVBONY camera on p9 (placeholder)",
+            "placeholder:svbony-camera:p9",
+        )]);
+        let refusal = select(&devices, 0, Some("SVBONY:SV605CC:noserial-0")).unwrap_err();
+        assert!(
+            matches!(refusal, Refusal::Placeholder { .. }),
+            "{refusal:?}"
+        );
+        // Not even a pin naming the placeholder itself binds it.
+        let refusal = select(&devices, 0, Some("placeholder:svbony-camera:p9")).unwrap_err();
+        assert!(
+            matches!(refusal, Refusal::Placeholder { .. }),
+            "{refusal:?}"
+        );
+    }
+
+    #[test]
+    fn select_without_a_pin_leaves_a_placeholder_to_its_connect() {
+        let devices = listed(&[("Main", "placeholder:svbony-camera:p9")]);
+        assert_eq!(select(&devices, 0, None).unwrap().name, "Main");
+    }
+
     // ----- refusal messages and their class --------------------------
+
+    #[test]
+    fn a_placeholder_under_a_pin_is_a_plain_failure_that_says_so() {
+        let expected = pin("SVBONY:SV605CC:noserial-0");
+        let refusal = select(
+            &listed(&[("Main", "placeholder:svbony-camera:p9")]),
+            0,
+            Some(expected.as_str()),
+        )
+        .unwrap_err();
+        assert_eq!(
+            camera_address(Some(&expected)).refusal(&refusal),
+            EstablishError::Failed(
+                "camera at device_number 0 is \"Main\", a placeholder (UniqueID \
+                 \"placeholder:svbony-camera:p9\") its driver serves until it reloads, not a \
+                 device: its Description says why, and the next pass checks the pinned \
+                 unique_id \"SVBONY:SV605CC:noserial-0\" again"
+                    .to_string()
+            )
+        );
+    }
 
     fn camera_address(pin: Option<&UniqueIdPin>) -> RosterAddress<'_> {
         RosterAddress {
@@ -792,6 +857,50 @@ mod tests {
             connects.load(Ordering::SeqCst),
             0,
             "a refused device must never be switched on"
+        );
+    }
+
+    /// A pinned entry whose number holds a placeholder is refused once, as
+    /// a plain failure, before `Connected = true` reaches the placeholder.
+    #[tokio::test]
+    async fn a_pinned_entry_meets_a_placeholder_without_switching_it_on() {
+        let connects = Arc::new(AtomicU32::new(0));
+        let counted = Arc::clone(&connects);
+        let app = Router::new()
+            .route(
+                "/management/v1/configureddevices",
+                get(|| async {
+                    Json(serde_json::json!({
+                        "Value": [
+                            {"DeviceName": "Main", "DeviceType": "Camera",
+                             "DeviceNumber": 0, "UniqueID": "placeholder:svbony-camera:p9"}
+                        ],
+                        "ErrorNumber": 0,
+                        "ErrorMessage": ""
+                    }))
+                }),
+            )
+            .route(
+                "/api/v1/camera/0/connected",
+                put(move || {
+                    let connects = Arc::clone(&counted);
+                    async move {
+                        connects.fetch_add(1, Ordering::SeqCst);
+                        ok_envelope()
+                    }
+                }),
+            );
+        let stub = spawn_stub(app).await;
+        let config = camera_config("main", &stub.url(), 0, Some("SVBONY:SV605CC:noserial-0"));
+
+        let err = establish_listed(&config, None).await.unwrap_err();
+
+        assert!(!err.is_identity_refusal(), "{err:?}");
+        assert!(err.to_string().contains("a placeholder"), "{err}");
+        assert_eq!(
+            connects.load(Ordering::SeqCst),
+            0,
+            "a placeholder must never be switched on under a pin"
         );
     }
 

@@ -50,6 +50,10 @@ use crate::config::DeviceOverride;
 use crate::config_actions::SvbonyCameraDriver;
 use rusty_photon_driver::{connected_transition, ConfigActionCtx, ConnectedTransition};
 
+/// `DriverInfo`, the same for every device this service registers — its
+/// cameras and its placeholders alike.
+pub const DRIVER_INFO: &str = "rusty-photon svbony-camera";
+
 /// 0x500 — driver-specific catch-all for an asynchronous capture failure
 /// surfaced lazily via `image_array` (E9).
 const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
@@ -1242,7 +1246,7 @@ impl Device for SvbonyCamera {
     }
 
     async fn driver_info(&self) -> ASCOMResult<String> {
-        Ok("rusty-photon svbony-camera".to_string())
+        Ok(DRIVER_INFO.to_string())
     }
 
     async fn driver_version(&self) -> ASCOMResult<String> {

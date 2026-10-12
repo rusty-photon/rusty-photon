@@ -446,6 +446,20 @@ impl OmniSimHandle {
             .ok_or_else(|| format!("GET {url}: no integer Value in {body}"))
     }
 
+    /// The filter-wheel simulator's Alpaca `Position`: its slot, or -1
+    /// while it moves.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the GET fails in transport, answers a
+    /// non-success HTTP status or a body that is not an Alpaca response,
+    /// reports a non-zero Alpaca `ErrorNumber`, or carries no numeric
+    /// `Value`.
+    pub async fn filter_wheel_position() -> Result<f64, String> {
+        let base_url = Self::singleton_base_url().await;
+        Self::get_device_number_at(&base_url, "filterwheel", 0, "position").await
+    }
+
     /// The cover-calibrator simulator's Alpaca `CalibratorState` (1 =
     /// Off, 2 = `NotReady`, 3 = Ready): whether the flat panel is lit.
     ///
@@ -659,6 +673,29 @@ impl OmniSimHandle {
                 ("RightAscension", format!("{ra_hours}")),
                 ("Declination", format!("{dec_degrees}")),
             ],
+        )
+        .await
+    }
+
+    /// Start the filter-wheel simulator moving to `slot` the way another
+    /// client would, without waiting for it to arrive. `OmniSim` turns
+    /// the wheel one slot a second by default, so a scenario has seconds
+    /// to act while the move is under way.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message if the PUT cannot be built or sent, answers a
+    /// non-success HTTP status or a body that is not an Alpaca response,
+    /// or reports a non-zero Alpaca `ErrorNumber` — which is how
+    /// `OmniSim` refuses a move while the wheel already travels.
+    pub async fn start_filter_wheel_move(slot: usize) -> Result<(), String> {
+        let base_url = Self::singleton_base_url().await;
+        Self::put_device_form_at(
+            &base_url,
+            "filterwheel",
+            0,
+            "position",
+            &[("Position", slot.to_string())],
         )
         .await
     }

@@ -336,8 +336,8 @@ impl McpClient {
     }
 
     /// Detect stars on a captured frame. Area bounds are fixed at
-    /// values that admit ordinary stellar PSFs and reject hot pixels
-    /// and extended blobs.
+    /// values that admit ordinary stellar PSFs and reject extended
+    /// blobs; `rp`'s detector rejects hot pixels itself.
     ///
     /// # Errors
     ///

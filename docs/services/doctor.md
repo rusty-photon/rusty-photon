@@ -350,13 +350,17 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   reported as a fault (below) rather than listed without a port.
 
   The Windows collector lists **present** devices only (`Get-PnpDevice
-  -PresentOnly`). A device with no USB serial gets an instance id built
-  from its port, so Windows keeps one record per port it has used, and
-  a record whose device has gone stays behind, not present
-  (`CM_PROB_PHANTOM`) and still carrying that port's `LocationPaths`.
-  Read without the filter, a camera moved between ports would sit on
-  every port it ever used. Measured by moving a camera between ports of
-  a Windows 11 VM's USB controller
+  -PresentOnly`). When a device goes, Windows keeps its record until a
+  cleanup removes it: not present (`CM_PROB_PHANTOM`) and still carrying
+  its last `LocationPaths`. A device with no USB serial gets an instance
+  id built from its port, so it leaves one such record on every port it
+  has left. Read without the filter, each of those records would be a
+  fault at its old port, whether that port is now empty or holds
+  another device. Measured for ports left empty, on a Windows 11 VM:
+  after a camera was moved between ports of its USB controller, the
+  query's own problem-code expression, read without the filter, gave
+  problem code 45 for every one of the VM's 15 stale USB records, the
+  camera's and other devices' alike
   ([device-claims plan](../plans/device-claims-and-phd2-camera.md), D2
   spike item 7).
 
@@ -560,8 +564,13 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   `--platform-facts`, which stages the whole facts document.) The crate owns
   the document and its
   rules; a driver exposes it as a hidden `--usb-inventory <file>` flag under
-  its own `simulation` feature as it gains device claims. No driver reads the
-  USB inventory today — doctor is its only consumer.
+  its own `simulation` feature as it gains device claims. Doctor and
+  `svbony-camera` read the USB inventory today: a camera driver with a
+  `usb_devices` list places each SDK camera on a port from it before it
+  registers anything ([device-claims plan](../plans/device-claims-and-phd2-camera.md)
+  D4, [svbony-camera.md](svbony-camera.md) U1-U9). The collectors are the same
+  for both: a driver takes the USB scan alone (`facts::scan_usb`), without
+  the rest of the gather.
 - **Serial ports** (Windows) — read in-process from the registry key every
   serial driver registers its ports under, `HKLM\HARDWARE\DEVICEMAP\SERIALCOMM`:
   one value per port, named after the kernel device (`\Device\Serial0`),
@@ -970,6 +979,19 @@ Two checks, the second only on services that link an SDK:
 
 Per-service checks plan no fixes in D5 — machine-applicable repair stays a
 central-doctor concern, so `--fix` semantics live in exactly one binary.
+
+A camera driver with device claims also answers `doctor --devices`: instead
+of the report, a listing of every camera of its SDK on the bus by USB port,
+and a paste-ready `usb_devices` block
+([device-claims plan](../plans/device-claims-and-phd2-camera.md) D5). It
+holds to the same rules — read-only, enumeration only, never an open — and
+the same exit codes, and it is text only. `svbony-camera` has it today
+([svbony-camera.md](svbony-camera.md) U8); `zwo-camera` and `qhy-camera`
+gain it with their own lists (plan C3, C4), and the `usb-devices.*` checks
+that judge a list come with plan C5. The listing's layout, the join that
+places each camera and the port order it is printed in are shared code in
+`rusty-photon-doctor-checks`' `claims` module, beside the inventory they
+read.
 
 The shared machinery — schema, check constructors, config-load harness,
 text/JSON rendering, exit-code mapping — lives in
