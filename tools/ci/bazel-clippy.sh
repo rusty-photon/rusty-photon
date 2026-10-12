@@ -17,10 +17,12 @@
 #  2. No first-party Rust target opts out of clippy with one of the tags
 #     rules_rust's clippy aspect skips (`noclippy`, `no_lint`, ...). An
 #     opt-out drops code from the lint without any trace in the run.
-#  3. clippy.toml's `msrv` equals the root Cargo.toml's `rust-version`.
-#     rules_rust sets no CARGO_PKG_RUST_VERSION, so the key is the only MSRV
-#     Bazel's clippy sees; Cargo's clippy only warns when the two differ, and
-#     a warning about configuration is not a lint `-D warnings` can deny.
+#  3. clippy.toml's `msrv`, the root Cargo.toml's `rust-version` and
+#     MODULE.bazel's stable Rust pin are one version. rules_rust sets no
+#     CARGO_PKG_RUST_VERSION, so the key is the only MSRV Bazel's clippy sees;
+#     Cargo's clippy only warns when the first two differ, and a warning about
+#     configuration is not a lint `-D warnings` can deny. The pin is the MSRV
+#     so that every PR compiles with it (MODULE.bazel says why).
 #
 # Then it lints `//...` plus the `manual` Rust targets `//...` skips: some are
 # manual only because they cannot LINK without a vendor SDK (svbony-camera's
@@ -82,8 +84,11 @@ fi
 
 cargo_msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
 clippy_msrv=$(sed -n 's/^msrv = "\(.*\)"$/\1/p' clippy.toml)
-if [[ -z "$cargo_msrv" || "$cargo_msrv" != "$clippy_msrv" ]]; then
-  flag "::error::clippy.toml msrv (\"$clippy_msrv\") must equal Cargo.toml rust-version (\"$cargo_msrv\"): it is the MSRV Bazel's clippy lints against."
+# The one bare version in rust.toolchain's `versions` list; the nightly entry
+# and the `sha256s` keys never match.
+bazel_pin=$(sed -n 's/^ *"\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)",$/\1/p' MODULE.bazel)
+if [[ -z "$cargo_msrv" || "$cargo_msrv" != "$clippy_msrv" || "$cargo_msrv" != "$bazel_pin" ]]; then
+  flag "::error::Cargo.toml rust-version (\"$cargo_msrv\"), clippy.toml msrv (\"$clippy_msrv\") and MODULE.bazel's stable Rust pin (\"$bazel_pin\") must be one version: the pin is the MSRV, so every PR compiles with it, and clippy.toml's key is the only MSRV Bazel's clippy sees."
 fi
 
 manual=()

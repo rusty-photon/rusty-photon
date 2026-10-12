@@ -285,7 +285,8 @@ rust.toolchain(
     edition = "2021",
     # Hashes of the 1.99.0 archives, from its GPG-signed channel manifest
     # (scripts/rust-toolchain-sha256s.sh): rules_rust's own table ends at
-    # 1.98.0, so without these the toolchain downloads unverified.
+    # 1.98.0, so without these the toolchain downloads unverified. The
+    # coverage nightly needs none: its date is in that table.
     sha256s = {
         "cargo-1.99.0-aarch64-apple-darwin.tar.xz": "76abff0ad79a10a3152dff640ea0d8b3c37637d9300bf55da41b95c3ddc069c1",
         "cargo-1.99.0-aarch64-unknown-linux-gnu.tar.xz": "113229fcc16cc1ba004923a4cc275fbf3281dafaaf8b97269f9c00189d497fd4",
@@ -324,24 +325,21 @@ rust.toolchain(
         "rustfmt-1.99.0-x86_64-unknown-linux-gnu.tar.xz": "b22c09ab9e258ec5571da170d88bd1624a4ea602e6d70d95720c5b47494cadce",
     },
     # Stable (the default channel, selected in .bazelrc) is current stable —
-    # the release check.yml's `stable / clippy` installs — NOT
-    # workspace.package.rust-version: the clippy aspect (`--config=clippy`)
-    # runs this toolchain's clippy-driver, and the workspace's lint attributes
-    # track current stable clippy (an `#[expect]` only a newer clippy fulfils
-    # is an error on an older one; see docs/skills/pre-push.md). Bump it in the
-    # first PR after each stable release, with `sha256s` from
-    # scripts/rust-toolchain-sha256s.sh: until then the two clippies differ,
-    # and a change written against the new stable fails `bazel clippy` here.
-    #
-    # The MSRV stays in Cargo.toml, but nothing compiles with it on a PR any
-    # more; what still holds it there is narrower. Both clippies know it —
-    # Cargo's from `rust-version`, this one from clippy.toml's `msrv` — and
-    # deny `incompatible_msrv`, a std API newer than the MSRV, on every leg
-    # this one runs (Windows included). A newer LANGUAGE feature is caught
-    # only where code is compiled by the coverage nightly below, which sits in
-    # the MSRV's nightly cycle and fails `bazel coverage` with E0658 — Linux,
-    # so `#[cfg(windows)]` / macOS-only code is not covered — and by check.yml's
-    # nightly `msrv` job, which compiles with the MSRV itself, also on Linux.
+    # the release check.yml's `stable / clippy` installs — and it IS the
+    # workspace MSRV: the root Cargo.toml's `rust-version` and clippy.toml's
+    # `msrv` name the same version, and tools/ci/bazel-clippy.sh fails when
+    # the three differ.
+    # - Current stable, because the clippy aspect (`--config=clippy`) runs
+    #   this toolchain's clippy-driver, and the workspace's lint attributes
+    #   track current stable clippy (an `#[expect]` only a newer clippy
+    #   fulfils is an error on an older one; see docs/skills/pre-push.md).
+    # - The MSRV, because then every PR compiles its Linux and Windows code
+    #   with the MSRV, so code newer than it (a std API or a language
+    #   feature) fails the build.
+    # Bump all three in the first PR after each stable release, with
+    # `sha256s` from scripts/rust-toolchain-sha256s.sh and the coverage
+    # nightly below. Until then the two clippies differ, and a change written
+    # against the new stable fails `bazel clippy` here.
     #
     # The pinned nightly is used ONLY by the
     # coverage workflow (.github/workflows/bazel-coverage.yml, via
@@ -354,15 +352,21 @@ rust.toolchain(
     # change every coverage action's cache key on each bump and bust the
     # coverage cache. Bump it if this nightly lacks the llvm-tools / rust-std /
     # rustc components for the host triple (`bazel coverage` needs llvm-cov +
-    # llvm-profdata from the toolchain). It must also be at least as new as the
-    # MSRV's own nightly cycle: coverage compiles the same sources, so an
-    # API the workspace MSRV allows but this nightly still marks unstable fails
-    # `bazel coverage` with E0658 while the stable build passes. When raising
-    # rust-version, move the nightly to a date inside that release's nightly
-    # cycle or later (`rustc +nightly-<date> --version` prints the cycle).
+    # llvm-profdata from the toolchain). It must also accept everything the
+    # MSRV does: coverage compiles the same sources, so a feature the MSRV
+    # allows but this nightly still marks unstable fails `bazel coverage` with
+    # E0658 while the stable build passes.
+    #
+    # When raising rust-version, pick the new date this way:
+    # - the first nightly of the NEXT release's cycle, or later. An early
+    #   nightly from the MSRV's own cycle can predate stabilizations that
+    #   landed later in it. 2026-08-20 is 1.100.0-nightly, the first after
+    #   1.99 branched; `rustc +nightly-<date> --version` prints the cycle.
+    # - a date rules_rust's known_shas.bzl pins, so the archives are verified
+    #   without `sha256s` entries above.
     versions = [
         "1.99.0",
-        "nightly/2026-07-01",
+        "nightly/2026-08-20",
     ],
 )
 use_repo(rust, "rust_toolchains")

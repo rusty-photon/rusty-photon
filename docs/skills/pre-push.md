@@ -351,8 +351,10 @@ python3 tools/ci/beta_clippy_census.py --root "$PWD" --summary /tmp/census.md \
 `--all-targets` compiles each source file once per target, so the script
 deduplicates sites on (lint, file, line, column); the raw JSON over-counts.
 
-The workspace uses a single MSRV (currently 1.98.1) declared in the root
-`Cargo.toml` via `[workspace.package]`. Every member inherits it with
+The workspace uses a single MSRV (currently 1.99.0) declared in the root
+`Cargo.toml` via `[workspace.package]`. It equals Bazel's stable Rust pin and
+moves with it, so every PR compiles with it (*Clippy under Bazel* says why
+and how to bump). Every member inherits it with
 `rust-version.workspace = true`, the six dual-homed FFI crates included, and
 the **msrv** job (`check.yml`) runs `cargo msrv verify` on each member against
 the shared lockfile.
@@ -752,27 +754,26 @@ needs from you:
   A `rust_test` built with `crate_features = ["mock"]` is linted with `mock`,
   the production `rust_library` beside it without. The Cargo `stable / clippy`
   job covers the two Cargo shapes, so a finding can appear on one side only.
-- **Bazel's Rust pin tracks current stable**, not the MSRV (`MODULE.bazel`,
-  `rust.toolchain`): this step runs that toolchain's clippy, and the tree's
-  lint attributes track stable clippy (see *Keep stable current* above). Bump
-  it in the first PR after each stable release, together with its `sha256s`
-  (`scripts/rust-toolchain-sha256s.sh <version>` prints them from the
-  release's GPG-signed channel manifest). Until then the two clippies are on
-  different releases, and code written against the new one — an `#[expect]`
-  only it fulfils — fails `bazel clippy`.
-- **The MSRV is held more narrowly than when Bazel compiled with it.** Both
-  clippies deny `incompatible_msrv` (a std API newer than the MSRV) on every
-  leg they run, Windows included. A newer *language* feature is caught only
-  in Linux-compiled code: the coverage nightly sits in the MSRV's nightly
-  cycle and fails `bazel coverage` with E0658, and check.yml's nightly `msrv`
-  job builds with the MSRV itself — both on Linux. A newer language feature
-  in `#[cfg(windows)]` or macOS-only code reaches main unflagged, so check it
-  by hand when you write such code (`cargo +1.98.1 check --target …`, as
-  under *Run it locally when your change adds OS-gated code* above). Bazel's
-  clippy learns the MSRV from `clippy.toml`'s `msrv` key — rules_rust sets no
-  `CARGO_PKG_RUST_VERSION` — so that key must equal the root Cargo.toml's
-  `rust-version`; `cargo clippy` only warns when they differ, so
-  `tools/ci/bazel-clippy.sh` fails on it.
+- **Bazel's Rust pin tracks current stable, and it is the MSRV**
+  (`MODULE.bazel`, `rust.toolchain`). Current stable, because this step runs
+  that toolchain's clippy, and the tree's lint attributes track stable clippy
+  (see *Keep stable current* above). The MSRV, because then every PR
+  compiles its Linux and Windows code with the MSRV: a std API or a language
+  feature newer than it fails the build. (macOS-only code meets the MSRV only
+  after a merge, on the macOS leg.)
+- **Bump them together in the first PR after each stable release**:
+  - the pin, with its `sha256s` (`scripts/rust-toolchain-sha256s.sh <version>`
+    prints them from the release's GPG-signed channel manifest);
+  - the root Cargo.toml's `rust-version` and `clippy.toml`'s `msrv`, then
+    `scripts/repin-bazel-lock.sh`;
+  - the coverage nightly, to a date `MODULE.bazel`'s comment describes.
+
+  Until then the two clippies are on different releases, and code written
+  against the new one (an `#[expect]` only it fulfils) fails `bazel clippy`.
+- **Bazel's clippy learns the MSRV from `clippy.toml`'s `msrv` key**, because
+  rules_rust sets no `CARGO_PKG_RUST_VERSION`. That key, the root Cargo.toml's
+  `rust-version` and the Bazel pin must agree. `cargo clippy` only warns when
+  the first two differ, so `tools/ci/bazel-clippy.sh` fails on any mismatch.
 
 ### Refreshing MODULE.bazel.lock
 

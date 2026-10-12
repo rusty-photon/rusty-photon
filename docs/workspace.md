@@ -342,7 +342,10 @@ sentinel/src/
 ## MSRV
 
 The minimum supported Rust version is pinned in `[workspace.package]` of the
-root `Cargo.toml` (`rust-version = "1.98.1"`). Every member listed in
+root `Cargo.toml` (`rust-version = "1.99.0"`). It is Bazel's stable Rust pin
+(`MODULE.bazel`), which tracks current stable: the two move together in the
+first PR after each stable release, so every PR compiles with the MSRV
+([pre-push.md](skills/pre-push.md), *Clippy under Bazel*). Every member listed in
 `[workspace].members` inherits it via `rust-version.workspace = true` —
 including the six dual-homed FFI crates (`qhyccd-rs`, `libqhyccd-sys`,
 `zwo-rs`, `libzwo-sys`, `svbony-rs`, `libsvbony-sys`), whose crates.io
