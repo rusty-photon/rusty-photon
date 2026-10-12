@@ -827,16 +827,18 @@ mod tests {
         detect_stars(&arr.view(), &flat_background(), &default_params(1, 2000))
     }
 
+    /// The pixels of the 7×7 square centred on (32, 32).
+    fn square_at_the_centre() -> Vec<(usize, usize)> {
+        (29..36)
+            .flat_map(|r| (29..36).map(move |c| (r, c)))
+            .collect()
+    }
+
     /// A 7×7 plateau 100 ADU above the background, the shape a fragment
     /// of a defocused star's annulus takes, with an optional hot pixel at
     /// its centre.
     fn plateau(spike: Option<u16>) -> Array2<u16> {
-        let mut arr = flat_with(&[], 1000);
-        for r in 29..36 {
-            for c in 29..36 {
-                arr[[r, c]] = 1100;
-            }
-        }
+        let mut arr = flat_with(&square_at_the_centre(), 1100);
         if let Some(value) = spike {
             arr[[32, 32]] = value;
         }
@@ -1077,18 +1079,11 @@ mod tests {
             &arr.view(),
             pixels,
             hot,
-            1000.0,
+            flat_background().mean,
             &default_params(min_area, 2000),
             &mut rejected,
         )
         .ok_or(rejected)
-    }
-
-    /// The pixels of the 7×7 square centred on (32, 32), `plateau`'s.
-    fn square_at_the_centre() -> Vec<(usize, usize)> {
-        (29..36)
-            .flat_map(|r| (29..36).map(move |c| (r, c)))
-            .collect()
     }
 
     #[test]
