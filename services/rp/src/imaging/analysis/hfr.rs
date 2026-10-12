@@ -8,7 +8,7 @@
 //!
 //! Works on saturated stars (the cumulative-flux curve is still monotonic) and
 //! on donut-shaped PSFs at extreme defocus (the curve crosses half-max around
-//! the donut radius). See `docs/services/rp.md` (algorithm step 7).
+//! the donut radius). See `docs/services/rp.md` (`measure_basic` algorithm step 8).
 
 use ndarray::ArrayView2;
 

@@ -1,5 +1,16 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_doc_test", "rust_library", "rust_test")
+
+# The crate's `[lints]` table (inherited from `[workspace.lints]`), read from
+# Cargo.toml so Cargo and Bazel enforce one lint set. Every Rust target below
+# names it as `lint_config`: rustc applies its rustc lints, and the clippy
+# aspect (`--config=clippy`, see .bazelrc) its clippy deny set.
+extract_cargo_lints(
+    name = "lints",
+    manifest = "Cargo.toml",
+    workspace = "//:Cargo.toml",
+)
 
 exports_files(
     ["Cargo.toml"],
@@ -17,6 +28,7 @@ rust_library(
     aliases = aliases(),
     crate_name = "rusty_photon_camera_core",
     edition = "2021",
+    lint_config = ":lints",
     visibility = ["//visibility:public"],
     deps = all_crate_deps(normal = True),
 )
@@ -25,6 +37,7 @@ rust_test(
     name = "rusty-photon-camera-core_unit_test",
     size = "small",
     crate = ":rusty-photon-camera-core",
+    lint_config = ":lints",
 )
 
 # The public functions carry runnable examples, and those examples are the

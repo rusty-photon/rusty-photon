@@ -93,8 +93,9 @@ jobs:
     # rp:bdd is sharded on every OS (private OmniSim per test process since
     # #467 — --multi-instance + OMNISIM_SETTINGS_DIR), so the BDD step is
     # bounded by the slowest shard; 40 leaves generous headroom for a
-    # cold-cache first run.
-    timeout-minutes: 40
+    # cold-cache first run. Plus 15 for the `bazel clippy` step's own cap, so
+    # a stalled clippy runs out its step budget instead of the tests'.
+    timeout-minutes: 55
     defaults:
       run:
         shell: bash
@@ -264,57 +265,18 @@ jobs:
         uses: ./.github/actions/install-zwo-sdk
 
       - name: bazel build
+        id: build
         # Step budget: a fully cold build fits well under 30 minutes on every
-        # OS, and a wedged build must not eat the whole 40-minute job budget
-        # (the tests after this step need ~10). This is also the backstop for
+        # OS, and a wedged build must not eat the whole 55-minute job budget
+        # (the clippy step after it is capped at 15, and the tests need ~10).
+        # This is also the backstop for
         # the macOS remote-cache wedge — a silent stall with no diagnostics —
         # whose mitigations are the `build:macos` remote-cache settings in
         # .bazelrc.
         timeout-minutes: 30
         run: |
-          REMOTE_FLAGS=(--config=remote-cache)
-          if [[ -n "${RP_LAN_CACHE_GRPC_URL:-}" ]]; then
-            # Pool venue with the remote downloader on (RP_LAN_ASSET_API;
-            # endpoint derived by the mask step): the LAN bazel-remote
-            # serves the cache AND the Remote Asset API on one gRPC
-            # endpoint. The cache channel must be gRPC too: Bazel refuses
-            # a remote downloader next to an http(s) --remote_cache.
-            # Bazel routes EVERY repository download through the asset
-            # Fetch RPC, and bazel-remote gates that RPC behind write
-            # auth even for a pure cache hit — so only jobs holding the
-            # write credential (push-to-main) actually fetch via the LAN
-            # and populate it. An anonymous (PR) job gets UNAUTHENTICATED
-            # on every downloader fetch, and the local fallback turns
-            # that into the direct WAN download it would have performed
-            # anyway — one failed LAN round-trip and a log warning, no
-            # behavior change. The flags stay on anonymous jobs even so:
-            # both venues run one code path, and a bazel-remote that
-            # learns to serve anonymous checksummed hits from CAS would
-            # make PR fetches LAN hits with no workflow change.
-            REMOTE_FLAGS+=(--remote_cache="$RP_LAN_CACHE_GRPC_URL")
-            REMOTE_FLAGS+=(--experimental_remote_downloader="$RP_LAN_CACHE_GRPC_URL")
-            REMOTE_FLAGS+=(--experimental_remote_downloader_local_fallback)
-            if [[ -n "$LAN_CACHE_WRITE_AUTH" ]]; then
-              REMOTE_FLAGS+=(--remote_header="Authorization=$LAN_CACHE_WRITE_AUTH")
-              REMOTE_FLAGS+=(--remote_downloader_header="Authorization=$LAN_CACHE_WRITE_AUTH")
-            else
-              REMOTE_FLAGS+=(--remote_upload_local_results=false)
-            fi
-          elif [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
-            # Pool venue: --remote_cache after --config=remote-cache
-            # overrides the cloud URL (last single-valued flag wins) while
-            # keeping the config's timeout/keep_going settings.
-            REMOTE_FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
-            if [[ -n "$LAN_CACHE_WRITE_AUTH" ]]; then
-              REMOTE_FLAGS+=(--remote_header="Authorization=$LAN_CACHE_WRITE_AUTH")
-            else
-              REMOTE_FLAGS+=(--remote_upload_local_results=false)
-            fi
-          elif [[ -n "$CACHE_WRITE_TOKEN" ]]; then
-            REMOTE_FLAGS+=(--remote_header="Authorization=Bearer $CACHE_WRITE_TOKEN")
-          else
-            REMOTE_FLAGS+=(--remote_upload_local_results=false)
-          fi
+          # Remote-cache routing for this job's venue and credentials.
+          source tools/ci/bazel-remote-flags.sh
           # --keep_going (surfaces every failing target instead of stopping at
           # the first -- originally added here just for Windows, as an E0463
           # diagnostic) now comes from `.bazelrc`'s `build:remote-cache`
@@ -332,55 +294,55 @@ jobs:
           fi
           bazel build --config=ci "${REMOTE_FLAGS[@]}" "${PROFILE_FLAGS[@]}" //...
 
+      - name: bazel clippy
+        id: clippy
+        # rules_rust's clippy aspect over every first-party target
+        # (`--config=clippy`; what it lints and with which lint set: .bazelrc).
+        # Its own step, after the build, so its cost reads straight off the
+        # step timing: everything it depends on is already built, which leaves
+        # only the Clippy actions — one per target, served from the remote
+        # cache for every crate the change does not reach. It runs on every
+        # OS leg, so `#[cfg(windows)]` code is linted before a merge, not only
+        # by check.yml's off-PR `windows / clippy`.
+        #
+        # A lint failure here must not hide test results: the test steps
+        # below are gated on the build, not on this step, so a push with a
+        # lint and a failing test reports both in one run. Nor may a failed
+        # build hide the lint: `--config=clippy` never links, so a link-only
+        # failure (a Windows LNK error in one binary) still leaves every
+        # crate lintable. A compile error simply fails both steps.
+        if: ${{ !cancelled() && steps.build.outcome != 'skipped' }}
+        #
+        # 15 minutes: a cold run of every target is about half a minute on
+        # the Linux pool. The cap is for a hang, and the job budget above
+        # carries it on top of the build's and the tests'.
+        timeout-minutes: 15
+        run: |
+          # The same script a developer runs locally: it checks the inputs
+          # Bazel's clippy takes on trust (lint_config on every target, no
+          # opt-out tags, clippy.toml's msrv = Cargo.toml's), then lints
+          # `//...` plus the `manual` targets `//...` skips, and reports the
+          # checks' verdict after the lint.
+          # Remote-cache routing for this job's venue and credentials.
+          source tools/ci/bazel-remote-flags.sh
+          # Windows: this step's trace, as in the build step.
+          PROFILE_FLAGS=()
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            PROFILE_FLAGS=(--config=profile --profile=bazel-profile-clippy.json.gz)
+          fi
+          tools/ci/bazel-clippy.sh --config=ci "${REMOTE_FLAGS[@]}" "${PROFILE_FLAGS[@]}"
+
       - name: bazel test (fast)
+        id: fast
+        # Runs whenever the build succeeded, even if `bazel clippy` failed.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # The .bazelrc default filter includes bdd (for the local loop);
         # exclude it here explicitly to keep the fast unit + integration
         # pass separate from BDD, so log output and failure attribution
         # stay useful when something breaks.
         run: |
-          REMOTE_FLAGS=(--config=remote-cache)
-          if [[ -n "${RP_LAN_CACHE_GRPC_URL:-}" ]]; then
-            # Pool venue with the remote downloader on (RP_LAN_ASSET_API;
-            # endpoint derived by the mask step): the LAN bazel-remote
-            # serves the cache AND the Remote Asset API on one gRPC
-            # endpoint. The cache channel must be gRPC too: Bazel refuses
-            # a remote downloader next to an http(s) --remote_cache.
-            # Bazel routes EVERY repository download through the asset
-            # Fetch RPC, and bazel-remote gates that RPC behind write
-            # auth even for a pure cache hit — so only jobs holding the
-            # write credential (push-to-main) actually fetch via the LAN
-            # and populate it. An anonymous (PR) job gets UNAUTHENTICATED
-            # on every downloader fetch, and the local fallback turns
-            # that into the direct WAN download it would have performed
-            # anyway — one failed LAN round-trip and a log warning, no
-            # behavior change. The flags stay on anonymous jobs even so:
-            # both venues run one code path, and a bazel-remote that
-            # learns to serve anonymous checksummed hits from CAS would
-            # make PR fetches LAN hits with no workflow change.
-            REMOTE_FLAGS+=(--remote_cache="$RP_LAN_CACHE_GRPC_URL")
-            REMOTE_FLAGS+=(--experimental_remote_downloader="$RP_LAN_CACHE_GRPC_URL")
-            REMOTE_FLAGS+=(--experimental_remote_downloader_local_fallback)
-            if [[ -n "$LAN_CACHE_WRITE_AUTH" ]]; then
-              REMOTE_FLAGS+=(--remote_header="Authorization=$LAN_CACHE_WRITE_AUTH")
-              REMOTE_FLAGS+=(--remote_downloader_header="Authorization=$LAN_CACHE_WRITE_AUTH")
-            else
-              REMOTE_FLAGS+=(--remote_upload_local_results=false)
-            fi
-          elif [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
-            # Pool venue: --remote_cache after --config=remote-cache
-            # overrides the cloud URL (last single-valued flag wins) while
-            # keeping the config's timeout/keep_going settings.
-            REMOTE_FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
-            if [[ -n "$LAN_CACHE_WRITE_AUTH" ]]; then
-              REMOTE_FLAGS+=(--remote_header="Authorization=$LAN_CACHE_WRITE_AUTH")
-            else
-              REMOTE_FLAGS+=(--remote_upload_local_results=false)
-            fi
-          elif [[ -n "$CACHE_WRITE_TOKEN" ]]; then
-            REMOTE_FLAGS+=(--remote_header="Authorization=Bearer $CACHE_WRITE_TOKEN")
-          else
-            REMOTE_FLAGS+=(--remote_upload_local_results=false)
-          fi
+          # Remote-cache routing for this job's venue and credentials.
+          source tools/ci/bazel-remote-flags.sh
           # Windows: this step's trace, as in the build step.
           PROFILE_FLAGS=()
           if [[ "$RUNNER_OS" == "Windows" ]]; then
@@ -391,6 +353,9 @@ jobs:
 
       - name: bazel test (BDD)
         id: bdd
+        # Only after a passing fast pass. Spelled out because the default
+        # `success()` would also skip it when `bazel clippy` alone failed.
+        if: ${{ !cancelled() && steps.fast.outcome == 'success' }}
         # BDD cucumber tests spawn service binaries and take 30-150s each;
         # run them explicitly in their own step. They need OMNISIM_PATH (the
         # install-omnisim action's pinned binary path, consumed by
@@ -404,49 +369,8 @@ jobs:
         # surfaces rp:bdd's BDD-TRACE per-scenario breadcrumbs even on a passing run
         # (services/rp/tests/bdd.rs).
         run: |
-          REMOTE_FLAGS=(--config=remote-cache)
-          if [[ -n "${RP_LAN_CACHE_GRPC_URL:-}" ]]; then
-            # Pool venue with the remote downloader on (RP_LAN_ASSET_API;
-            # endpoint derived by the mask step): the LAN bazel-remote
-            # serves the cache AND the Remote Asset API on one gRPC
-            # endpoint. The cache channel must be gRPC too: Bazel refuses
-            # a remote downloader next to an http(s) --remote_cache.
-            # Bazel routes EVERY repository download through the asset
-            # Fetch RPC, and bazel-remote gates that RPC behind write
-            # auth even for a pure cache hit — so only jobs holding the
-            # write credential (push-to-main) actually fetch via the LAN
-            # and populate it. An anonymous (PR) job gets UNAUTHENTICATED
-            # on every downloader fetch, and the local fallback turns
-            # that into the direct WAN download it would have performed
-            # anyway — one failed LAN round-trip and a log warning, no
-            # behavior change. The flags stay on anonymous jobs even so:
-            # both venues run one code path, and a bazel-remote that
-            # learns to serve anonymous checksummed hits from CAS would
-            # make PR fetches LAN hits with no workflow change.
-            REMOTE_FLAGS+=(--remote_cache="$RP_LAN_CACHE_GRPC_URL")
-            REMOTE_FLAGS+=(--experimental_remote_downloader="$RP_LAN_CACHE_GRPC_URL")
-            REMOTE_FLAGS+=(--experimental_remote_downloader_local_fallback)
-            if [[ -n "$LAN_CACHE_WRITE_AUTH" ]]; then
-              REMOTE_FLAGS+=(--remote_header="Authorization=$LAN_CACHE_WRITE_AUTH")
-              REMOTE_FLAGS+=(--remote_downloader_header="Authorization=$LAN_CACHE_WRITE_AUTH")
-            else
-              REMOTE_FLAGS+=(--remote_upload_local_results=false)
-            fi
-          elif [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
-            # Pool venue: --remote_cache after --config=remote-cache
-            # overrides the cloud URL (last single-valued flag wins) while
-            # keeping the config's timeout/keep_going settings.
-            REMOTE_FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
-            if [[ -n "$LAN_CACHE_WRITE_AUTH" ]]; then
-              REMOTE_FLAGS+=(--remote_header="Authorization=$LAN_CACHE_WRITE_AUTH")
-            else
-              REMOTE_FLAGS+=(--remote_upload_local_results=false)
-            fi
-          elif [[ -n "$CACHE_WRITE_TOKEN" ]]; then
-            REMOTE_FLAGS+=(--remote_header="Authorization=Bearer $CACHE_WRITE_TOKEN")
-          else
-            REMOTE_FLAGS+=(--remote_upload_local_results=false)
-          fi
+          # Remote-cache routing for this job's venue and credentials.
+          source tools/ci/bazel-remote-flags.sh
           # `bdd,-requires-cargo`: run every bdd-tagged suite, minus the
           # cargo-shelling bdd-infra unit tests (the only `requires-cargo` users
           # left). //services/qhy-camera:bdd IS included — it spawns the
@@ -488,7 +412,7 @@ jobs:
       # The Windows build step on a PR made entirely of cache hits has taken
       # anything from one minute to five, with nothing in the log to say why,
       # and on the pool the clone that ran it is destroyed with the job. Keep
-      # the three steps' traces, on success as well as failure: a slow green
+      # every Bazel step's trace, on success as well as failure: a slow green
       # run is the case worth reading, set against a fast one. `always()`
       # keeps a failed run's traces too; a step killed outright (a timeout)
       # can leave its trace unwritten, and the warning below says so.
@@ -548,8 +472,14 @@ jobs:
       # messages -- so dump the state directly: the `_main\external` link the
       # generated runner creates, and for every .rlib the manifest names, both
       # spellings of it. Cheap and silent unless something is actually wrong.
+      # Only after a build or test failure: a run red on `bazel clippy` alone
+      # has no doc-test problem to dump, and a post-mortem there misleads.
       - name: Dump doc-test runfiles state (Windows diagnostic)
-        if: failure() && runner.os == 'Windows'
+        if: >-
+          ${{ !cancelled() && runner.os == 'Windows'
+          && (steps.build.outcome == 'failure'
+              || steps.fast.outcome == 'failure'
+              || steps.bdd.outcome == 'failure') }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
