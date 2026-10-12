@@ -17,6 +17,10 @@
 //!   fire-after-response in-process reload.
 //! - [`connected_transition`] — what an ASCOM `Connected` write does on a device
 //!   whose session may have been lost to a device that left the bus.
+//! - `claims` (the `claims` feature) — a camera driver's device claims at
+//!   runtime: the placeholder Camera that holds a listed device number whose
+//!   camera cannot be served, and the failed USB scan's background re-scan.
+//!   Only the camera drivers with a `usb_devices` list turn the feature on.
 //!
 //! A driver invokes [`driver_error!`] for its error type and delegates
 //! `Device::action` / `Device::supported_actions` to the functions here. See
@@ -50,6 +54,8 @@
 )]
 
 pub mod actions;
+#[cfg(feature = "claims")]
+pub mod claims;
 pub mod connection;
 pub mod discovery;
 pub mod error;

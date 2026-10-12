@@ -6,8 +6,8 @@ use cucumber::{then, when};
 use crate::world::CameraWorld;
 
 #[when(regex = r"^the supported actions are queried on camera device (\d+)$")]
-async fn query_supported_actions(world: &mut CameraWorld, _device: u32) {
-    let camera = world.camera();
+async fn query_supported_actions(world: &mut CameraWorld, device: u32) {
+    let camera = world.device(device);
     world.last_actions = Some(camera.supported_actions().await.unwrap());
 }
 

@@ -4739,6 +4739,7 @@ name = "rusty-photon-driver"
 version = "0.1.0"
 dependencies = [
  "ascom-alpaca",
+ "async-trait",
  "rusty-photon-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-shared-transport",
@@ -4749,6 +4750,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -5520,7 +5522,6 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-test",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

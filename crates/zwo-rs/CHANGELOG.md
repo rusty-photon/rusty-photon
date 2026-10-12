@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `is_camera_product(vendor, product)` wraps `ASICameraCheck`: whether the ASI
+  SDK supports a USB device as a camera, a table lookup that opens nothing, so
+  a camera's USB record can be told from a ZWO EFW's or EAF's before any open.
+  `ZWO_VENDOR_ID` is the vendor id they share.
+- Simulation: `SIM_CAMERA_PRODUCT_ID`, the product id the simulated camera
+  stands for and the only one the simulated `is_camera_product` recognises,
+  and `Sdk::with_unopenable`, under which every open of the simulated camera
+  fails with `AsiError::GeneralError`.
+
 ### Changed
 
 - Both crates require Rust 1.99.0 (`zwo-rs` was 1.87.0, `libzwo-sys` 1.71.0):

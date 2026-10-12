@@ -46,6 +46,9 @@ use crate::config::{DeviceOverride, MaxAduReporting};
 use crate::config_actions::ZwoCameraDriver;
 use rusty_photon_driver::{connected_transition, ConfigActionCtx, ConnectedTransition};
 
+/// `DriverInfo`, which a placeholder at a listed number answers too (U4).
+pub const DRIVER_INFO: &str = "rusty-photon zwo-camera";
+
 /// 0x500 — driver-specific catch-all for an asynchronous capture failure
 /// surfaced lazily via `image_array` (E9).
 const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
@@ -1093,7 +1096,7 @@ impl Device for ZwoCamera {
     }
 
     async fn driver_info(&self) -> ASCOMResult<String> {
-        Ok("rusty-photon zwo-camera".to_string())
+        Ok(DRIVER_INFO.to_string())
     }
 
     async fn driver_version(&self) -> ASCOMResult<String> {

@@ -18,8 +18,8 @@ Feature: Device claims -- the usb_devices list
   another (U3); a working record no SDK camera is placed on; otherwise no
   working camera on the port. A failed scan is never a startup failure: the
   service re-scans in the background after waits of 10 s, 20 s and 40 s and
-  every 60 s after that, and reloads itself on the first scan that succeeds
-  (U6). An empty list registers nothing. A list that breaks a rule -- numbers
+  every 60 s after that, and reloads itself on the first scan that succeeds,
+  from the configuration it serves (U6). An empty list registers nothing. A list that breaks a rule -- numbers
   not running 0..N-1, a port listed twice, a blank or padded port, a devices
   override beside it -- refuses the start, and config.apply answers it with
   field errors and persists nothing (U9).
@@ -180,6 +180,26 @@ Feature: Device claims -- the usb_devices list
       { "usb": [ { "vendor": "f266", "product": "9a0a", "port": "simulated-usbv3-0:1" } ] }
       """
     Then within 30 seconds camera device 0 reports the UniqueID "SVBONY:SV605CC-Simulated:SVB0123456789AB"
+
+  Scenario: The rebuild after a failed USB scan applies no edit made to the file since the start
+    Given the staged USB inventory:
+      """
+      { "usb_unavailable": "powershell.exe did not answer within 10 s" }
+      """
+    And the configuration lists these USB devices:
+      | device_number | usb_port            | name |
+      | 0             | simulated-usbv3-0:1 | Main |
+    When the svbony-camera service starts
+    And the configuration file is edited by hand to:
+      """
+      { "usb_devices": [ { "device_number": 0, "usb_port": "simulated-usbv3-0:1", "name": "Edited" } ] }
+      """
+    And the staged USB inventory becomes:
+      """
+      { "usb": [ { "vendor": "f266", "product": "9a0a", "port": "simulated-usbv3-0:1" } ] }
+      """
+    Then within 30 seconds camera device 0 reports the UniqueID "SVBONY:SV605CC-Simulated:SVB0123456789AB"
+    And camera device 0 reports the Name "Main"
 
   Scenario: An empty list registers no camera
     Given the configuration JSON {"usb_devices": []}
