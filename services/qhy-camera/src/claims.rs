@@ -17,6 +17,8 @@ use rusty_photon_doctor_checks::claims::{
 };
 use rusty_photon_driver::claims::{Placeholder, PlaceholderCamera};
 
+use tracing::warn;
+
 use crate::config::{Config, UsbDeviceEntry};
 use crate::config_actions::QhyCameraDriver;
 use crate::filterwheel::PlaceholderFilterWheel;
@@ -46,10 +48,7 @@ const SIMULATED_PRODUCT: &str = "f178";
 /// wrong number. The QHY178M was read on the dev box (Fedora 44, `x86_64`,
 /// SDK 26.06.04), its bus record from sysfs; the QHY600M and the QHY5III678M
 /// on `rig2` (Windows 11, SDK 24.01.09), from its Plug and Play properties; all on
-/// 2026-10-11, none of them publishing a USB serial. A QHY camera also
-/// enumerates under its firmware loader's product id until its firmware is
-/// loaded (the QHY178M's is `c178`); such a record is no model's, so it is
-/// never placed.
+/// 2026-10-11, none of them publishing a USB serial.
 const OBSERVED: [(&str, &str); 3] = [
     ("QHY178M", "c179"),
     ("QHY600M", "c601"),
@@ -69,14 +68,24 @@ const MODELS: &[(&str, &str)] = &[
     (SIMULATED_MODEL, SIMULATED_PRODUCT),
 ];
 
-/// What this driver knows about QHY cameras on the bus. The QHY SDK has no
-/// passive check of a product id, so every one of QHYCCD's product ids the
-/// table does not assign could be a camera's (U2).
+/// The firmware loaders this driver has seen on the bus: a QHY camera
+/// enumerates under its loader's product id until its firmware is loaded —
+/// every power-up passes through it — and a loader is no camera the SDK can
+/// report. Listed so that a loader's record is never a camera's, not even by
+/// elimination, which would otherwise pair it with an unrecognised camera
+/// whose own record is missing. The QHY178M's is `c178` (the dev box, 2026-10-11).
+const LOADERS: &[&str] = &["c178"];
+
+/// What this driver knows about QHY cameras on the bus.
+///
+/// The QHY SDK has no passive check of a product id, so every one of QHYCCD's
+/// product ids that is neither the table's nor a loader's could be a camera's
+/// (U2).
 pub const NORMALIZER: Normalizer<'static> = Normalizer {
     sdk: SDK_NAME,
     vendor: VENDOR,
     models: MODELS,
-    not_cameras: &[],
+    not_cameras: LOADERS,
     sdk_check: None,
 };
 
@@ -91,19 +100,28 @@ pub struct Enumerated {
 /// Each camera `sdk` enumerated, in SDK order, with its model. Blocking: a
 /// model read is an SDK call. Nothing is opened.
 ///
-/// # Errors
-/// The SDK's error when a camera's model cannot be read: the model is part of
-/// the enumeration a list is placed from (U1), and a camera whose model is
-/// unknown could only be guessed at.
-pub fn enumerate(sdk: &qhyccd_rs::Sdk) -> Result<Vec<Enumerated>, qhyccd_rs::QHYError> {
+/// A camera whose model cannot be read is joined as a model this driver does
+/// not know ([`enumerated`]), so one unreadable camera — the guide camera a
+/// list leaves out, say — costs no other camera its number.
+#[must_use]
+pub fn enumerate(sdk: &qhyccd_rs::Sdk) -> Vec<Enumerated> {
     sdk.cameras()
-        .map(|camera| {
-            Ok(Enumerated {
-                id: camera.id().to_string(),
-                model: camera.get_model()?,
-            })
-        })
+        .map(|camera| enumerated(camera.id(), camera.get_model()))
         .collect()
+}
+
+/// The camera `id`, with the model its read returned — or, when the read
+/// failed, a model no normalizer entry can name, which the join treats as an
+/// unrecognised one (U2, U3) and the messages show as unreadable.
+fn enumerated(id: &str, model: Result<String, qhyccd_rs::QHYError>) -> Enumerated {
+    let model = model.unwrap_or_else(|error| {
+        warn!(camera = %id, %error, "the QHY SDK could not read the camera's model");
+        format!("<model unreadable: {id}>")
+    });
+    Enumerated {
+        id: id.to_string(),
+        model,
+    }
 }
 
 /// The SDK's cameras as the join reads them: their models alone. No QHY
@@ -250,6 +268,19 @@ pub fn listing(config: &Config, claims: &Claims<'_>, cameras: &[Enumerated]) -> 
         .collect();
     let mut listing = claims.listing(&facts, list.as_deref(), &overrides);
     listing.wheels = true;
+    if list.is_none() && listing.block.is_some() {
+        // A camera whose override names no filters may still have a wheel the
+        // service serves now, which the block cannot declare, so the wheel
+        // numbers the block gives may not be the served ones even when no
+        // camera moves.
+        listing.notes.push(
+            "Check rp's filter_wheels[].device_number when you paste this block: without a \
+             list the service numbers the wheels its probe finds in SDK order, and --devices \
+             cannot see which cameras have one, so the wheel numbers you declare may not be \
+             the ones it serves now."
+                .to_string(),
+        );
+    }
     listing
 }
 
@@ -354,11 +385,85 @@ mod tests {
         assert_eq!(claims.placed(), Vec::<(usize, &str)>::new());
     }
 
+    #[test]
+    fn a_firmware_loaders_record_is_no_camera_even_by_elimination() {
+        let claims = claims_for(
+            vec![record("c178", "Q178", "p1")],
+            &[camera("QHY268M-1", "QHY268M")],
+        );
+        assert_eq!(claims.placed(), Vec::<(usize, &str)>::new());
+    }
+
+    #[test]
+    fn an_unrecognised_camera_is_still_paired_by_elimination_with_a_lone_unknown_record() {
+        let claims = claims_for(
+            vec![record("c268", "QHY268", "p1")],
+            &[camera("QHY268M-1", "QHY268M")],
+        );
+        assert_eq!(claims.placed(), vec![(0, "p1")]);
+    }
+
+    #[test]
+    fn a_camera_whose_model_cannot_be_read_is_joined_as_an_unknown_model() {
+        let camera = enumerated(
+            "QHY600M-1",
+            Err(qhyccd_rs::QHYError::Sdk { op: "get_model" }),
+        );
+        assert_eq!(camera.id, "QHY600M-1");
+        assert_eq!(camera.model, "<model unreadable: QHY600M-1>");
+        assert_eq!(
+            NORMALIZER.models.iter().find(|(m, _)| *m == camera.model),
+            None
+        );
+    }
+
+    /// The guide camera a list leaves out cannot have its model read: the
+    /// imaging camera is still placed, and the guide camera is not paired by
+    /// elimination with its record, whose product id is a known model's.
+    #[test]
+    fn an_unreadable_camera_costs_no_other_camera_its_port() {
+        let claims = claims_for(
+            vec![
+                record("c601", "QHY600U3G20", "p1"),
+                record("0679", "QHY678U3G20", "p2"),
+            ],
+            &[
+                enumerated(
+                    "QHY5III678M-1",
+                    Err(qhyccd_rs::QHYError::Sdk { op: "get_model" }),
+                ),
+                camera("QHY600M-1", "QHY600M"),
+            ],
+        );
+        assert_eq!(claims.placed(), vec![(1, "p1")]);
+    }
+
+    #[test]
+    fn a_no_list_block_warns_that_the_wheel_numbers_may_not_be_the_served_ones() {
+        let cameras = [camera("QHY178M-222b16468c5966524", "QHY178M")];
+        let claims = claims_for(vec![record("c179", "Q178-Cool", "p1")], &cameras);
+        let wheel_note = |listing: &Listing| {
+            listing
+                .notes
+                .iter()
+                .any(|n| n.starts_with("Check rp's filter_wheels[].device_number"))
+        };
+        assert!(wheel_note(&listing(&Config::default(), &claims, &cameras)));
+        let listed = Config {
+            usb_devices: Some(vec![entry(None)]),
+            ..Config::default()
+        };
+        assert!(
+            !wheel_note(&listing(&listed, &claims, &cameras)),
+            "a list's block reproduces its wheel numbers"
+        );
+    }
+
     #[cfg(feature = "simulation")]
     #[test]
     fn the_simulated_inventory_places_the_simulated_camera() {
         let sdk = qhyccd_rs::Sdk::new().unwrap();
-        let cameras = enumerate(&sdk).unwrap();
+        let cameras = enumerate(&sdk);
         assert_eq!(cameras, [camera("SIM-QHY178M", SIMULATED_MODEL)]);
         let claims = Claims::new(
             NORMALIZER,

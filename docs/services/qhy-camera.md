@@ -1084,10 +1084,12 @@ which a list replaces with the declaration.
   camera is left unregistered on its new port. Re-cabling is a reload's job. The
   device-claims plan's D8 records watching placement as out of scope, and a
   passive scan on every connect to re-confirm the port is the cost that would
-  close this. An SDK enumeration that fails after a scan that ran — a camera
-  whose model cannot be read included, since a model nobody read could only be
-  guessed at — fails the start or reload, with or without a list, as it always
-  has (C0). Only the
+  close this. An SDK enumeration that fails after a scan that ran fails the
+  start or reload, with or without a list, as it always has (C0). A camera
+  whose model alone cannot be read is not that: it is joined as a model this
+  driver does not know (U2, U3), so an unreadable camera — the guide camera a
+  list leaves out, say — costs no other camera its number, and is logged at
+  `warn!`. Only the
   scan, which the list adds, is made non-fatal and retried. None of these steps
   is an open, let alone an actuation, and a reload — `config.apply`'s,
   `SIGHUP`'s, or U6's own — runs the same path (tenet 3, C5).
@@ -1098,6 +1100,10 @@ which a list replaces with the declaration.
   publishes one, USB serial. The **candidates** are the scan's working records —
   a fault is never one — with QHY's vendor id, `1618`, that are cameras: a
   product id the normalizer knows as a model's, or one it does not know at all.
+  A firmware loader's product id is neither: the normalizer lists the loaders
+  it has seen (the QHY178M's `c178`) as no camera's, so a camera whose firmware
+  is not loaded is never placed on its loader's record, not even by the
+  elimination below.
   The id's serial field is not offered to the join: no QHY camera has been seen
   publishing a USB serial (the dev box's QHY178M, and `rig2`'s QHY600M and
   QHY5III678M under Windows, plan D2), so how the bus would spell one beside the
@@ -1350,7 +1356,12 @@ which a list replaces with the declaration.
   never makes — least of all on a camera another application may be streaming.
   So pasting the block and deleting the `devices` map keeps every name. A
   `devices` key that matches no placed camera is named, with a note to move its
-  fields by hand. Until the plan's C5 the no-list default serves SDK order, so
+  fields by hand. And since only a camera whose override names its
+  filters gets a wheel in the block, while the no-list default serves every
+  wheel its probe finds, the wheel numbers the block declares may not be the
+  ones served now — so a no-list block always says to check rp's
+  `filter_wheels[].device_number` before pasting. Until the plan's C5 the
+  no-list default serves SDK order, so
   when port order differs the listing says pasting renumbers the cameras and
   their wheels, and to check rp's `cameras[].device_number` and
   `filter_wheels[].device_number`. With a list, the block reproduces it — every
@@ -1405,12 +1416,16 @@ which a list replaces with the declaration.
   **Whether a CFW answers is learned on the wheel's own connect**, never at
   startup: the connect reads the wheel's slot count, and with no CFW answering —
   none plugged, its cable out, or its 12 V off, where the slot count read fails
-  (measured, C0) — the connect fails with `NOT_CONNECTED` and *"no filter wheel
-  answers on `<id>`: check the CFW's cable and its 12 V"*. That failure is
-  transient, unlike the no-list path's: a CFW whose 12 V comes on after the
-  start is found by the next connect, once its power-up homing is done (≈20 s,
-  C5), with no reload — where without a list a wheel that had no power at
-  startup is not registered until a reload (C0).
+  (measured, C0) — the connect fails with `NOT_CONNECTED` and *"the filter
+  wheel on `<id>` did not report its slot count, which a CFW that is
+  unplugged, has no 12 V or is still moving does not: check its cable and its
+  12 V, or connect again once it has stopped"*. A wheel in transit fails the
+  read too (every one of 73 connects made during 7 moves, FW8), which is why
+  the message names it, and it applies to a probed wheel's connect alike. The
+  failure is transient, unlike the no-list path's: a CFW whose 12 V comes on
+  after the start is found by the next connect, once its power-up homing is
+  done (≈20 s, C5), with no reload — where without a list a wheel that had no
+  power at startup is not registered until a reload (C0).
 
   When its camera is a placeholder (U4), a declared wheel is a **placeholder
   FilterWheel** with the same reason: `Connected` reads `false`, `Connected =

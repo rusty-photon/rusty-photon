@@ -36,9 +36,7 @@ impl ConfigurableDriver for ZwoCameraDriver {
     /// validation left with the EFW config surface — ADR-014.)
     fn validate(config: &Config) -> Vec<FieldError> {
         let mut errors = config.list_errors();
-        if config.usb_devices.as_ref().is_some_and(Vec::is_empty) {
-            errors.push(claims::empty_list_over_apply());
-        }
+        errors.extend(claims::apply_errors(config.usb_devices.as_deref()));
         errors
             .into_iter()
             .map(|error| FieldError {

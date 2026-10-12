@@ -78,7 +78,10 @@ const CFW_PROBE_INTERVAL: std::time::Duration = std::time::Duration::ZERO;
 /// [`CFW_PROBE_INTERVAL`] apart, close.
 ///
 /// A camera that is already open is asked on that handle and left open:
-/// closing it would end its holder's session under it.
+/// closing it would end its holder's session under it. The open state is read
+/// once, so a holder that opens the camera while the probe runs shares the
+/// probe's handle, and the probe's close ends its session too (see
+/// [`Sdk::probe_filter_wheels`]).
 ///
 /// A failed open or close is the camera's error. A camera whose close failed
 /// stays open, as after any failed close (the handle is kept), until a later
@@ -278,7 +281,11 @@ impl Sdk {
     /// second stage, after [`Sdk::new`]'s enumeration. Each named camera is
     /// opened, asked `IsQHYCCDCFWPlugged` and closed — never initialised, so
     /// this sends no `InitQHYCCD`, the call that may home a wheel. A camera
-    /// already open is asked on its handle and left open. The probe still
+    /// already open when its probe starts is asked on its handle and left
+    /// open. One opened by another thread while its probe runs is not: a
+    /// [`Camera`] clone shares one handle with no count of its holders, so
+    /// that thread's open joins the probe's, and the probe's close ends both.
+    /// Probe before handing the cameras to other threads. The probe still
     /// **touches the device**: a second process's open of a camera another
     /// holds disturbs that process's CFW status reads while it lasts, and its
     /// plug query answers no. A caller names only the cameras it owns. A camera

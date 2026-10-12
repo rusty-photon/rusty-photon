@@ -318,8 +318,14 @@ impl ServerBuilder {
                 registered.filter_wheels = registered.filter_wheels.saturating_add(1);
             }
         }
-        if registered.cameras == 0 {
+        if registered.cameras == 0 && unprobed.is_empty() {
             warn!("no QHY cameras discovered; starting with no Camera devices");
+        } else if registered.cameras == 0 {
+            warn!(
+                enumerated = unprobed.len(),
+                "every QHY camera the SDK enumerated failed its CFW probe (see the warnings \
+                 above); starting with no Camera devices"
+            );
         }
         Ok((registered, Some(held)))
     }
@@ -450,8 +456,7 @@ impl ServerBuilder {
         }
         let (held, cameras) = tokio::task::spawn_blocking(move || {
             let held = HeldSdk::take(injected)?;
-            let cameras =
-                claims::enumerate(&held.sdk).map_err(|e| QhyCameraError::Sdk(format!("{e:#}")))?;
+            let cameras = claims::enumerate(&held.sdk);
             Ok::<_, QhyCameraError>((held, cameras))
         })
         .await??;
@@ -493,8 +498,8 @@ impl ServerBuilder {
     }
 
     /// The background re-scan after a failed USB scan (U6): each try takes
-    /// this build's scan and, once that runs, checks the SDK enumerates —
-    /// models included, as a rebuild reads them; on the first try both pass,
+    /// this build's scan and, once that runs, checks the SDK enumerates; on
+    /// the first try both pass,
     /// it ends its own server, which the caller rebuilds from the
     /// configuration it was serving ([`Ended::Rescanned`]), placing the listed
     /// cameras afresh.
@@ -509,12 +514,10 @@ impl ServerBuilder {
                 let Some(gate) = SDK_GATE.try_acquire() else {
                     return Err("another server holds the QHY SDK".to_string());
                 };
-                let sdk = qhyccd_rs::Sdk::new().map_err(|e| format!("{e:#}"))?;
-                let enumerated = claims::enumerate(&sdk)
+                // The SDK is released, by `drop`, before the gate is.
+                let enumerated = qhyccd_rs::Sdk::new()
                     .map(drop)
                     .map_err(|e| format!("{e:#}"));
-                // The SDK is released before the gate.
-                drop(sdk);
                 drop(gate);
                 enumerated
             },

@@ -134,7 +134,7 @@ fn enumerated() -> Result<Vec<claims::Enumerated>, String> {
     #[cfg(all(windows, not(feature = "simulation")))]
     crate::preflight::ensure_qhyccd_dll().map_err(|error| error.to_string())?;
     let sdk = qhyccd_rs::Sdk::new().map_err(|error| error.to_string())?;
-    claims::enumerate(&sdk).map_err(|error| error.to_string())
+    Ok(claims::enumerate(&sdk))
 }
 
 pub fn run(config: Option<PathBuf>, json: bool) -> ! {

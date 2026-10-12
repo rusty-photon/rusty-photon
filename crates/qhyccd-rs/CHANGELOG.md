@@ -14,7 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   given that names no enumerated camera. It takes any slice of string-likes
   (`&[&str]`, `&[String]`). A camera already open is asked on its handle and
   left open; a closed one is opened, asked up to three times and closed. A
-  camera whose close fails stays open until a later close succeeds.
+  camera whose close fails stays open until a later close succeeds. A camera
+  another thread opens while its probe runs shares the probe's handle and is
+  closed with it, so probe before handing cameras to other threads.
 - `SimulatedCameraConfig::with_cfw_plug_misses(n)`: the first `n` CFW-plugged
   queries after each open answer `false`, as a real plug query occasionally
   misses a wheel. A new `cfw_plug_misses` field, with the same struct literal

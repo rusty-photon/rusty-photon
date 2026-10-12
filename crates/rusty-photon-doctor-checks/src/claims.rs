@@ -297,6 +297,18 @@ pub fn empty_list_over_apply() -> ListError {
     )
 }
 
+/// The rule `config.apply` adds to the load's: an empty list is refused
+/// ([`empty_list_over_apply`]). Every driver's apply runs it beside the
+/// rules its load applies.
+#[must_use]
+pub fn apply_errors<E>(list: Option<&[E]>) -> Vec<ListError> {
+    if list.is_some_and(<[E]>::is_empty) {
+        vec![empty_list_over_apply()]
+    } else {
+        Vec::new()
+    }
+}
+
 // --- the join -------------------------------------------------------------------
 
 /// What one driver knows about its SDK's cameras on the bus.
@@ -2348,6 +2360,16 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("serial"), "{error}");
+    }
+
+    #[test]
+    fn only_an_empty_list_breaks_the_apply_rule() {
+        let apply = |list: Option<&[UsbDeviceEntry]>| -> Vec<String> {
+            apply_errors(list).iter().map(|e| e.path.clone()).collect()
+        };
+        assert_eq!(apply(Some(&[])), ["usb_devices"]);
+        assert_eq!(apply(Some(&[usb_entry(0, "a")])), Vec::<String>::new());
+        assert_eq!(apply(None), Vec::<String>::new());
     }
 
     #[test]

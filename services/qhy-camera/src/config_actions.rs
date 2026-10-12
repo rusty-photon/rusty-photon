@@ -32,9 +32,7 @@ impl ConfigurableDriver for QhyCameraDriver {
     /// overrides' filter names, each non-empty.
     fn validate(config: &Config) -> Vec<FieldError> {
         let mut list_errors = config.list_errors();
-        if config.usb_devices.as_ref().is_some_and(Vec::is_empty) {
-            list_errors.push(claims::empty_list_over_apply());
-        }
+        list_errors.extend(claims::apply_errors(config.usb_devices.as_deref()));
         let mut errors: Vec<FieldError> = list_errors
             .into_iter()
             .map(|error| FieldError {

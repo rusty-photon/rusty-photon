@@ -488,14 +488,18 @@ impl QhyFilterWheelDevice {
         let mut last_sent = self.state.last_sent.lock();
         // The slot count is where a wheel that is not there shows: with no CFW
         // plugged in, its cable out or its 12 V off, the read fails (C0). That
-        // is how a declared wheel learns whether a CFW answers (U10), and it
-        // is transient: a CFW powered up later is found by the next connect.
+        // is how a declared wheel learns whether a CFW answers (U10). A wheel
+        // still moving fails it too (FW8), so the message names both, and the
+        // failure is transient either way: the next connect finds a CFW that
+        // has since powered up or stopped.
         let count = self.handle.get_number_of_filters().map_err(|e| {
-            debug!(filter_wheel = %self.unique_id, error = %e, "the slot count read failed: no CFW answers");
+            debug!(filter_wheel = %self.unique_id, error = %e, "the slot count read failed");
             ASCOMError::new(
                 ASCOMErrorCode::NOT_CONNECTED,
                 format!(
-                    "no filter wheel answers on {}: check the CFW's cable and its 12 V",
+                    "the filter wheel on {} did not report its slot count, which a CFW that is \
+                     unplugged, has no 12 V or is still moving does not: check its cable and its \
+                     12 V, or connect again once it has stopped",
                     self.handle.id()
                 ),
             )
@@ -1103,7 +1107,9 @@ mod tests {
         assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
         assert_eq!(
             err.message,
-            "no filter wheel answers on QHY600M-01: check the CFW's cable and its 12 V"
+            "the filter wheel on QHY600M-01 did not report its slot count, which a CFW that \
+             is unplugged, has no 12 V or is still moving does not: check its cable and its \
+             12 V, or connect again once it has stopped"
         );
         assert!(!device.connected().await.unwrap());
     }

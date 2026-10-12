@@ -20,9 +20,14 @@ fn main() {
         "precondition: a camera on the bus"
     );
     for (index, camera) in sdk.cameras().enumerate() {
-        let model = camera.get_model();
+        // `{:?}` quotes and escapes a string, which is a JSON string for the
+        // ASCII ids and models the SDK reports.
+        let model = match camera.get_model() {
+            Ok(model) => format!("\"model\":{model:?}"),
+            Err(error) => format!("\"model_error\":{:?}", error.to_string()),
+        };
         println!(
-            "{{\"index\":{index},\"id\":\"{}\",\"model\":\"{model:?}\",\"open\":{}}}",
+            "{{\"index\":{index},\"id\":{:?},{model},\"open\":{}}}",
             camera.id(),
             camera.is_open().expect("open state")
         );
