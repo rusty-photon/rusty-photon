@@ -255,7 +255,11 @@ Optional pointing and FOV hints map directly to ASTAP CLI flags:
 | `fov_hint_deg` | `-fov <degrees>` | Pass-through (image height, per ASTAP CLI documentation). |
 | `search_radius_deg` | `-r <degrees>` | Pass-through. Defaults to ASTAP's own default when omitted. |
 
-Omitted fields produce no flag — ASTAP falls back to blind solve.
+Omitted fields produce no flag. ASTAP then reads its hints from the
+FITS header where it can (the header's `RA`/`DEC` or
+`OBJCTRA`/`OBJCTDEC` for position, see the timings below) and
+searches blind only without them; `docs/services/rp.md` §"Ground
+rules" lists `rp`'s reliance on the header as a gap.
 The wrapper does not synthesize hints; it never invents data the
 caller did not provide.
 
@@ -288,8 +292,10 @@ chain is:
      surfaced rather than silently dropping to blind solve).
 
    The two modes are mutually exclusive — supplying both is a
-   caller error. Neither supplied ⇒ wrapper falls back to blind
-   solve. (MCP directionality: clients call rp; rp calls the
+   caller error. Neither supplied ⇒ no position hint is passed, and
+   ASTAP falls back to the header's coordinates, or a blind search
+   without them (see the table above). (MCP directionality: clients
+   call rp; rp calls the
    wrapper.) See `docs/services/rp.md` §"`plate_solve` Contract"
    for the full input shape and validation rules.
 2. **`fov_hint_deg`** comes from the caller as an MCP parameter.

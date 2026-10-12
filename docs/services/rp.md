@@ -161,8 +161,9 @@ frame's facts from:
    ([Document Resolution](#document-resolution)). The sidecar is found
    by the FITS file's name, so it needs a check of its own: its `id`
    confirms the record, as `DOC_ID` confirms the pixels. A FITS file
-   with no sidecar, such as one another program wrote, gives `rp` its
-   pixels and nothing else.
+   without `DOC_ID` cannot have its pixels confirmed, so `rp` refuses
+   it as a document's frame. A FITS file with no sidecar, such as one
+   another program wrote, gives `rp` its pixels and nothing else.
 2. **The sidecar records the exposure as it was taken.** It carries
    everything `rp` knows about the image as it was taken and about the
    system at the time: what the devices reported, the state of the
@@ -174,14 +175,25 @@ frame's facts from:
    frame's facts through them against the live config.
 
 So the header should never carry a fact the sidecar lacks, and
-`rp`'s own work should never depend on what the header carries. These
-are not yet in line with the rules, each tracked by its own issue:
+`rp`'s own work should never depend on a fact the header carries: the
+`DOC_ID` check is the one read rule 1 allows. These are not yet in
+line with the rules, each tracked by its own issue:
 
-- When a frame is resolved from disk and its `DOC_ID` matches, the
-  sidecar found beside it by name is served without its `id` being
-  compared with the request. A sidecar from another frame, left there
-  by a rename or by two frames sharing a file stem, is served as this
-  frame's record ([#1491](https://github.com/rusty-photon/rusty-photon/issues/1491)).
+- Lookups from disk do not confirm that a FITS file and its sidecar
+  belong together, and then work on the wrong files
+  ([#1491](https://github.com/rusty-photon/rusty-photon/issues/1491)):
+  - A lookup by `document_id` whose `DOC_ID` matches serves the
+    sidecar found beside the FITS file without comparing its `id`. A
+    sidecar from another frame, left there by a rename or by two
+    frames sharing a file stem, is served as this frame's record. A
+    FITS file without `DOC_ID` is served, not refused.
+  - A lookup by path (`plate_solve`'s `image_path`) reads no
+    `DOC_ID`. It checks only that the sidecar's recorded `file_path`
+    has the requested file's name.
+  - After a lookup, `plate_solve` and `put_section`'s disk fallback
+    use the sidecar's recorded `file_path`, not the files found. A
+    frame whose night directory has moved is solved, and its sections
+    written, at its old location.
 - The train's `aperture_mm`, the configured site's latitude and
   longitude, and the `rp` version that wrote the frame reach the
   header (`APTDIA`, `SITELAT`, `SITELONG`, `SWCREATE`) without being
@@ -198,15 +210,19 @@ are not yet in line with the rules, each tracked by its own issue:
 - Train data the sidecar does not record at all: the filter's
   configured `wavelength_nm` and the terminal focuser's
   `microns_per_step`, both reported by
-  [`get_train_info`](#train-optics) ([#1494](https://github.com/rusty-photon/rusty-photon/issues/1494)).
+  [`get_train_info`](#train-optics); the filter's slot, which the
+  capture reads along with its name and then drops; and which
+  focuser, filter wheel and rotator were in the train
+  ([#1494](https://github.com/rusty-photon/rusty-photon/issues/1494)).
 - Camera facts the sidecar does not record: `SensorType` and the
   Bayer offsets, so the record cannot tell a one-shot-colour frame
   from a mono one; `ReadoutMode`; `ElectronsPerADU`; and
   `CoolerPower` ([#1495](https://github.com/rusty-photon/rusty-photon/issues/1495)).
 - Rig state the sidecar does not record: the focuser's position and
-  temperature, the rotator's angle, the mount's pier side and tracking
-  state, the guider's state over the exposure, and the
-  observing-conditions and safety-monitor readings
+  temperature, the rotator's angle and the position angle the frame
+  was meant to be taken at, the mount's pier side and tracking state,
+  the guider's state over the exposure, and the observing-conditions
+  and safety-monitor readings
   ([#1496](https://github.com/rusty-photon/rusty-photon/issues/1496)).
 - `rp`'s own plate solves lean on the header and on live state.
   `center_on_target`, and `plate_solve` called without `fov_hint_deg`,
@@ -222,8 +238,9 @@ are not yet in line with the rules, each tracked by its own issue:
   target, frame type, filter, binning and exposure time from its file
   and directory names, parsed through the naming patterns as
   configured now, rather than from its sidecar. A frame whose name the
-  current patterns no longer parse is not counted
-  ([#1498](https://github.com/rusty-photon/rusty-photon/issues/1498)).
+  current patterns no longer parse is not counted. `{frame_number}`
+  counts earlier frames the same way, so after a pattern edit the
+  numbering starts again at 001 ([#1498](https://github.com/rusty-photon/rusty-photon/issues/1498)).
 
 ### Core Fields (owned by `rp`)
 
@@ -648,11 +665,10 @@ document's core fields, and a frame stays self-describing after it
 leaves `rp` without its sidecar. The export goes one way
 ([Ground rules](#ground-rules)): it is written in the same step as
 the sidecar, from the same capture-time values, it may be lossy, and
-`rp` never reads a fact back from it. Today some cards (`FOCALLEN`,
-`XPIXSZ`/`YPIXSZ`, `APTDIA`, `FOCRATIO`, `SITELAT`, `SITELONG`,
-`SWCREATE`) are filled from configuration, connect-time reads and
-the build's version rather than from the document; Ground rules lists
-the gaps that leaves. The keyword set below is what `rp` writes
+`rp` never reads a fact back from it. Today some cards are filled
+from configuration, connect-time reads and the build's version rather
+than from the document (the table gives each card's source); Ground
+rules lists the gaps that leaves. The keyword set below is what `rp` writes
 today, pinned field by field in
 `services/rp/tests/features/capture_fits_header.feature`. It is not a
 promise that every fact in the document reaches the header.
@@ -2593,13 +2609,13 @@ A `document_id` (the full UUID) resolves through this order:
    by reading the FITS header `DOC_ID` against the requested full
    UUID; if the FITS is unreadable or has no `DOC_ID`, check the
    sidecar's `id` instead. `DOC_ID` confirms the pixels and the
-   sidecar's `id` the record ([Ground rules](#ground-rules), rule 1),
-   but today a matching `DOC_ID` is the whole check: the sidecar
-   beside the file is served without its `id` being compared, a gap
-   Ground rules lists. A FITS file without
-   `DOC_ID`, one another program rewrote, say, is matched on its name
-   and the sidecar's `id` alone, so its pixels go unconfirmed. On
-   match, read both files, populate the cache, and return the entry.
+   sidecar's `id` the record, and rule 1 refuses a FITS file without
+   `DOC_ID` ([Ground rules](#ground-rules)). Today a matching
+   `DOC_ID` is the whole check, and a FITS file without `DOC_ID`,
+   one another program rewrote, say, is matched on its name and the
+   sidecar's `id` alone and served with its pixels unconfirmed; Ground
+   rules lists both as a gap. On match, read both files, populate the
+   cache, and return the entry.
 3. **Not found.** Return `None`. The HTTP API returns `404`.
 
 Ghost-match disambiguation runs only when multiple files in the data
