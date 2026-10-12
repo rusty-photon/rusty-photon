@@ -154,10 +154,9 @@ frame's facts from:
    programs can work with the frames `rp` writes. The copy may be
    lossy, and it is not guaranteed to be complete: a fact can be
    rounded, folded to ASCII, or left out. `rp` never reads a fact back
-   from a header. Beyond the cards that describe the pixel data
-   itself (`BITPIX`, `NAXIS*`, `BSCALE`, `BZERO`, `BLANK`), the one
-   card it reads is `DOC_ID`, and only to match a FITS file to its
-   document
+   from a header. Beyond the cards it needs to decode the pixels
+   (`BITPIX`, `NAXIS*`, `BSCALE`, `BZERO`), the one card it reads is
+   `DOC_ID`, and only to match a FITS file to its document
    ([Document Resolution](#document-resolution)). A FITS file with no
    sidecar, such as one another program wrote, gives `rp` its pixels
    and nothing else.
@@ -170,20 +169,34 @@ frame's facts from:
    No consumer resolves a past frame's facts through them against the
    live config.
 
-So the header never carries a fact the sidecar lacks. Where it does
-today, the sidecar is missing a field. These are not yet in line with
-the rules:
+So the header never carries a fact the sidecar lacks, and `rp`'s own
+work never depends on what the header carries. These are not yet in
+line with the rules:
 
-- The train's `aperture_mm` and focal ratio, and the configured site's
-  latitude and longitude, reach the header (`APTDIA`, `FOCRATIO`,
-  `SITELAT`, `SITELONG`) without being recorded in the sidecar.
-- `optics` is all-or-nothing: when one of its inputs is unknown, the
-  whole block is left out, while the header still writes `FOCALLEN`
-  and `XPIXSZ`/`YPIXSZ` from the inputs it has.
+- The train's `aperture_mm`, the configured site's latitude and
+  longitude, and the `rp` version that wrote the frame reach the
+  header (`APTDIA`, `SITELAT`, `SITELONG`, `SWCREATE`) without being
+  recorded in the sidecar. `FOCRATIO` needs no field of its own: it is
+  derived from `aperture_mm` and `optics.focal_length_mm`.
+- `optics` is all-or-nothing: when one of its inputs is unknown or
+  unusable (a non-positive pixel size, say), the whole block is left
+  out, while the header still writes `FOCALLEN` and `XPIXSZ`/`YPIXSZ`
+  from the inputs it has.
 - Train data the sidecar does not record at all: the filter's
   configured `wavelength_nm`, and the terminal focuser's
   `microns_per_step` (both reported by
   [`get_train_info`](#train-optics)).
+- Device state the sidecar does not record: the focuser's position,
+  the rotator's angle and the mount's pier side.
+- `rp`'s own plate solves lean on the header. `center_on_target`, and
+  `plate_solve` called without `fov_hint_deg`, pass ASTAP no scale,
+  and plate solvers derive a frame's scale from `FOCALLEN` and
+  `XPIXSZ` ([FITS header](#fits-header)). The hint should come from
+  the sidecar's `optics.fov_height_deg`.
+- [Document Resolution](#document-resolution) matches a FITS file by
+  its header's `DOC_ID` first, and checks the sidecar's `id` only when
+  the header is unreadable or has none. Under rule 1 the sidecar's `id`
+  should decide.
 
 ### Core Fields (owned by `rp`)
 
@@ -419,9 +432,8 @@ The `plate_solve` built-in tool (Phase 6c-2 in
 `optics.fov_height_deg` on the document — `fov_height_deg` matches
 ASTAP's `-fov` semantics ("image height in degrees"). v1 does **not**
 auto-default `fov_hint_deg` from the optics block when the parameter
-is omitted; that auto-default is tracked by
-[issue #153](https://github.com/rusty-photon/rusty-photon/issues/153)
-and lands when the first workflow is blocked without it.
+is omitted, so a solve without one takes its scale from the header
+([Ground rules](#ground-rules) lists this as a gap).
 
 ### Plugin Sections (contributed via API)
 
@@ -596,7 +608,9 @@ The FITS file's primary HDU header carries `DOC_ID = '<full-uuid>'`,
 making each FITS self-describing for lineage, downstream tools, and
 disambiguation when multiple files in the data directory happen to
 share an 8-char suffix. The sidecar's `id` field carries the same
-full UUID as a fallback authority.
+full UUID. [Document Resolution](#document-resolution) checks the
+header's copy first today, which [Ground rules](#ground-rules) lists
+as a gap.
 
 #### FITS header
 
@@ -606,9 +620,13 @@ calibration matching, archival lineage and stacking-time weighting all
 come from the header. So the primary HDU carries an export of the
 document's core fields, and a frame stays self-describing after it
 leaves `rp` without its sidecar. The export goes one way
-([Ground rules](#ground-rules)): it is written from the document's
-capture-time values in the same step, it may be lossy, and `rp` never
-reads a fact back from it. The keyword set below is what `rp` writes
+([Ground rules](#ground-rules)): it is written in the same step as
+the sidecar, from the same capture-time values, it may be lossy, and
+`rp` never reads a fact back from it. Today some cards (`FOCALLEN`,
+`XPIXSZ`/`YPIXSZ`, `APTDIA`, `FOCRATIO`, `SITELAT`, `SITELONG`,
+`SWCREATE`) are filled from configuration and connect-time reads
+rather than from the document; Ground rules lists the gaps that
+leaves. The keyword set below is what `rp` writes
 today, pinned field by field in
 `services/rp/tests/features/capture_fits_header.feature`. It is not a
 promise that every fact in the document reaches the header.
@@ -2547,9 +2565,11 @@ A `document_id` (the full UUID) resolves through this order:
    templated tree, and frames from an earlier, shallower
    `directory_pattern` stay reachable too. For each candidate, verify
    by reading the FITS header `DOC_ID` against the requested full
-   UUID. The sidecar's `id` field is the fallback authority if the
-   FITS is unreadable. On match, read both files, populate the cache,
-   and return the entry.
+   UUID; if the FITS is unreadable or has no `DOC_ID`, check the
+   sidecar's `id` instead. (Under [Ground rules](#ground-rules) the
+   sidecar's `id` should decide; checking the header first is a listed
+   gap.) On match, read both files, populate the cache, and return the
+   entry.
 3. **Not found.** Return `None`. The HTTP API returns `404`.
 
 Ghost-match disambiguation runs only when multiple files in the data
@@ -5039,9 +5059,9 @@ own contract.
     explicitly opted in, so failures are surfaced rather than
     silently dropping to blind solve).
 - `fov_hint_deg` — optional `f64`. Forwarded verbatim to the
-  wrapper's `fov_hint_deg`. v1 has no per-camera FOV stash on the
-  exposure document — callers pass this per request. Tracked by
-  [issue #153](https://github.com/rusty-photon/rusty-photon/issues/153).
+  wrapper's `fov_hint_deg`. Callers pass it per request; it is not
+  yet defaulted from the document's `optics.fov_height_deg`, the
+  source [Ground rules](#ground-rules) names for it.
 - `search_radius_deg` — optional `f64`. Per-call value overrides
   `plate_solver.default_search_radius_deg` from rp config. Both
   absent ⇒ omit from wrapper request ⇒ ASTAP uses its own default.
