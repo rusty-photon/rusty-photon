@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use rusty_photon_doctor_checks::claims::{self, EntryView, ListError};
 pub use rusty_photon_server_config::AlpacaServerConfig;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -30,7 +31,13 @@ pub const DEFAULT_PORT: u16 = 11122;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Optional per-device overrides keyed by SDK serial (Phase E+).
+    /// Optional: pins each USB port to an Alpaca device number
+    /// (docs/services/zwo-camera.md U1-U9). Absent registers every camera the
+    /// SDK enumerates, in SDK order; `[]` registers none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usb_devices: Option<Vec<UsbDeviceEntry>>,
+    /// Optional per-device overrides keyed by SDK serial. Read only with no
+    /// `usb_devices` list; beside one it is refused.
     pub devices: BTreeMap<String, DeviceOverride>,
     /// Which `MaxADU` contract to present to clients (ST3).
     pub max_adu_reporting: MaxAduReporting,
@@ -43,9 +50,78 @@ impl rusty_photon_config::ConfigFile for Config {}
 impl Default for Config {
     fn default() -> Self {
         Self {
+            usb_devices: None,
             devices: BTreeMap::new(),
             max_adu_reporting: MaxAduReporting::default(),
             server: AlpacaServerConfig::new(DEFAULT_PORT),
+        }
+    }
+}
+
+impl Config {
+    /// Every rule the `usb_devices` list breaks, and every `devices` override
+    /// beside it; empty without a list. The load and `config.apply` both
+    /// refuse a config with any.
+    #[must_use]
+    pub fn list_errors(&self) -> Vec<ListError> {
+        let Some(list) = &self.usb_devices else {
+            return Vec::new();
+        };
+        let views: Vec<EntryView<'_>> = list
+            .iter()
+            .map(|entry| EntryView {
+                device_number: entry.device_number,
+                usb_port: &entry.usb_port,
+            })
+            .collect();
+        let mut errors = claims::validate_list(&views);
+        errors.extend(
+            self.devices
+                .keys()
+                .map(|key| claims::override_beside_list(key)),
+        );
+        errors
+    }
+
+    /// [`Self::list_errors`] as one message, every rule broken named.
+    ///
+    /// # Errors
+    /// The joined message, when the list breaks any rule.
+    pub fn check_list(&self) -> Result<(), String> {
+        let errors = self.list_errors();
+        if errors.is_empty() {
+            return Ok(());
+        }
+        let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
+        Err(errors.join("; "))
+    }
+}
+
+/// One `usb_devices` entry: the camera on `usb_port` is served at
+/// `device_number`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UsbDeviceEntry {
+    /// The Alpaca device number the camera on this port is served under.
+    pub device_number: u32,
+    /// The port, in the platform's native spelling, pasted from
+    /// `zwo-camera doctor --devices`.
+    pub usb_port: String,
+    /// Display name override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Description override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl UsbDeviceEntry {
+    /// The entry's display names as the override a camera is built with.
+    #[must_use]
+    pub fn display_override(&self) -> DeviceOverride {
+        DeviceOverride {
+            name: self.name.clone(),
+            description: self.description.clone(),
         }
     }
 }
@@ -117,8 +193,29 @@ impl CliOverrides {
 ///
 /// # Errors
 /// Returns [`ZwoCameraError::Config`] when the file exists but cannot be read or
-/// parsed.
+/// parsed, or when its `usb_devices` list breaks a rule — every rule it breaks
+/// is named, entry by entry, before any USB or SDK work.
 pub fn load_effective_config(
+    path: &Path,
+    overrides: &CliOverrides,
+) -> Result<Config, ZwoCameraError> {
+    let config = read_effective_config(path, overrides)?;
+    config
+        .check_list()
+        .map_err(|errors| ZwoCameraError::Config(format!("{}: {errors}", path.display())))?;
+    Ok(config)
+}
+
+/// [`load_effective_config`] without the `usb_devices` rules.
+///
+/// What the file says, for a reader that must see a list the service would
+/// refuse — `doctor --devices`, whose port listing is how such a list gets
+/// fixed.
+///
+/// # Errors
+/// Returns [`ZwoCameraError::Config`] when the file exists but cannot be read or
+/// parsed.
+pub fn read_effective_config(
     path: &Path,
     overrides: &CliOverrides,
 ) -> Result<Config, ZwoCameraError> {
@@ -234,6 +331,101 @@ mod tests {
     #[test]
     fn no_override_pins_nothing() {
         assert_eq!(CliOverrides::default().pinned_paths(), Vec::<String>::new());
+    }
+
+    fn load(json: &str) -> Result<Config, ZwoCameraError> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("zwo-camera.json");
+        std::fs::write(&path, json).unwrap();
+        load_effective_config(&path, &CliOverrides::default())
+    }
+
+    #[test]
+    fn a_valid_list_loads_with_its_display_names() {
+        let config = load(
+            r#"{"usb_devices": [
+                {"device_number": 1, "usb_port": "b"},
+                {"device_number": 0, "usb_port": "a", "name": "Main"}
+            ]}"#,
+        )
+        .unwrap();
+        let list = config.usb_devices.unwrap();
+        assert_eq!(list[1].display_override().name.as_deref(), Some("Main"));
+    }
+
+    #[test]
+    fn no_list_is_the_default() {
+        assert_eq!(load("{}").unwrap().usb_devices, None);
+    }
+
+    #[test]
+    fn an_empty_list_loads() {
+        assert_eq!(
+            load(r#"{"usb_devices": []}"#).unwrap().usb_devices,
+            Some(Vec::new())
+        );
+    }
+
+    #[test]
+    fn a_list_that_breaks_a_rule_refuses_the_load_naming_every_entry() {
+        let err = load(
+            r#"{"usb_devices": [
+                {"device_number": 0, "usb_port": "a"},
+                {"device_number": 2, "usb_port": " a"}
+            ]}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("usb_devices[1]: usb_port has leading or trailing whitespace"),
+            "{err}"
+        );
+        assert!(
+            err.contains("usb_devices: device numbers must run 0..N-1, and 1 is missing"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_devices_override_beside_a_list_refuses_the_load() {
+        let err = load(
+            r#"{"usb_devices": [{"device_number": 0, "usb_port": "a"}],
+                "devices": {"1915d5081b090900": {"name": "Main"}}}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("devices.1915d5081b090900: move its fields into the usb_devices entry"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_devices_override_without_a_list_still_loads() {
+        let config = load(r#"{"devices": {"1915d5081b090900": {"name": "Main"}}}"#).unwrap();
+        assert!(config.devices.contains_key("1915d5081b090900"));
+    }
+
+    #[test]
+    fn an_unknown_entry_key_is_rejected_loudly() {
+        let err =
+            load(r#"{"usb_devices": [{"device_number": 0, "usb_port": "a", "serial": "x"}]}"#)
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("serial"), "{err}");
+    }
+
+    #[test]
+    fn a_list_the_load_refuses_is_still_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("zwo-camera.json");
+        std::fs::write(
+            &path,
+            r#"{"usb_devices": [{"device_number": 1, "usb_port": "a"}]}"#,
+        )
+        .unwrap();
+        let config = read_effective_config(&path, &CliOverrides::default()).unwrap();
+        assert_eq!(config.usb_devices.unwrap()[0].device_number, 1);
     }
 }
 

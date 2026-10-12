@@ -570,7 +570,9 @@ graph TD;
   under `ServiceRunner::new("svbony-camera").with_reload().run_with_reload(...)`
   per [`service-lifecycle.md`](../skills/service-lifecycle.md). Config
   bootstrap via `rusty_photon_config::resolve_and_init` with an **empty
-  identity-pointer list** (identities are hardware-derived).
+  identity-pointer list** (identities are hardware-derived). Its serve loop
+  is `rusty-photon-driver`'s `claims::serve_and_rebuild`, shared with
+  zwo-camera (see "Service lifecycle" below).
 - **`lib.rs`** — `ServerBuilder` that, on `build()`, enumerates connected
   SVBony cameras and registers each as an ASCOM device with its
   serial-derived UniqueID. Because `CameraSN` arrives at enumeration time
@@ -581,18 +583,17 @@ graph TD;
   scan failed, starts the background re-scan (U6). Returns a `BoundServer`.
 - **`claims.rs`** — this driver's half of the device claims: its normalizer
   (the SDK models it knows and the product id each enumerates under on the
-  bus, U2), the USB scan source (the host collector, or the staged inventory
-  in a simulation build, U7), and the `doctor --devices` listing (U8). The
-  vendor-neutral half — the join itself, the list validation, port order, the
-  listing's layout, the placeholder's fixed error code, `UniqueID` form and
-  reason text — is `rusty-photon-doctor-checks`' `claims` module, so
-  `zwo-camera` and `qhy-camera` take the same rules from the same code (plan
-  C3/C4).
-- **`placeholder.rs`** — `PlaceholderCamera`, the `Device` + `Camera` that
-  holds a listed number whose camera cannot be served (U4). Service-local
-  while this is its one consumer: `rusty-photon-camera-core` is by its own
-  rule no home for a `Camera` implementation, so the shared home is chosen
-  when `zwo-camera` becomes the second consumer (plan C3).
+  bus, U2), the simulated scan (U7), what `doctor --devices` can say about
+  each camera without opening it (U8), and the placeholder it registers (U4).
+  The vendor-neutral half — the join itself, the list validation, port order,
+  the scan source, the listing and its block, the placeholder's fixed error
+  code, `UniqueID` form and reason text — is `rusty-photon-doctor-checks`'
+  `claims` module, and the placeholder device (`PlaceholderCamera`, the
+  `Device` + `Camera` that holds a listed number whose camera cannot be
+  served) and the failed scan's re-scan (U6) are `rusty-photon-driver`'s
+  `claims` module, so `zwo-camera` and `qhy-camera` take the same rules from
+  the same code (plan C3/C4). `rusty-photon-camera-core` is by its own rule no
+  home for a `Camera` implementation.
 - **`camera.rs`** — `SvbonyCamera` (one instance per discovered camera)
   implementing both `Device` and `Camera` against the `backend::CameraHandle`
   seam — the full exposure state machine, ROI/binning, gain/offset,
@@ -997,7 +998,7 @@ on.
 Named, testable behaviours. ASCOM error names per
 [`docs/references/ascom-alpaca.md`](../references/ascom-alpaca.md). Every
 contract below is real as of Phase E; the BDD feature files under
-`tests/features/` (112 scenarios, 572 steps) and the unit tests in
+`tests/features/` (113 scenarios, 579 steps) and the unit tests in
 `src/camera.rs`/`src/backend.rs` exercise them — see "Testing" below for
 which layer covers which contract (E9's two branches, the
 generation-counter abort race and E10 are unit-test-only, per the design's
@@ -1289,13 +1290,17 @@ Part A, of which this driver is phase C2. Nothing here applies without a
 list: the no-list default registers every camera the SDK enumerates, in SDK
 order, with no USB scan, as it always has.
 
-The vendor-neutral rules live in shared code so that `zwo-camera` (C3) and
-`qhy-camera` (C4) take them unchanged: the join, the list validation, port
-order, the `--devices` layout and the placeholder's error code, `UniqueID`
-form and reason text, all in `rusty-photon-doctor-checks`' `claims` module.
-What is SVBony's own — the normalizer and the USB scan source — is
-`claims.rs`; the placeholder device, `placeholder.rs`, stays here until a
-second driver needs it.
+The vendor-neutral rules live in shared code, which `zwo-camera` (plan C3,
+[zwo-camera.md](zwo-camera.md) U1-U9) takes unchanged and `qhy-camera` (C4)
+will: the join, the list validation, port order, the scan source, the
+`--devices` listing and block, and the placeholder's error code, `UniqueID`
+form and reason text in `rusty-photon-doctor-checks`' `claims` module; the
+placeholder Camera device and the failed scan's re-scan in
+`rusty-photon-driver`'s `claims` module, behind that crate's `claims` feature
+(`rusty-photon-camera-core` is by its own rule no home for a `Camera`
+implementation). What is SVBony's own — the normalizer, the simulated scan,
+and what `doctor --devices` can say about a camera without opening it — is
+`claims.rs`.
 
 - **U1. The list is applied before anything could open a camera.** With a
   list, `build()` takes the host's USB scan (the passive collector of
@@ -1466,19 +1471,23 @@ second driver needs it.
   service therefore re-scans in the background, after waits of 10 s, 20 s and
   40 s and then every 60 s, logging each repeat failure at `debug!`.
   When a scan succeeds, it is logged at `info!` and the server it belongs to
-  stops and is rebuilt, as for a reload, which runs the start path again,
-  placement and all. That is safe because the failed-scan outcome opened
-  nothing, so there is no session to interrupt. The success ends that server
-  only: it is not the service-wide reload signal, so one landing after another
-  reload has already stopped the server reaches nothing, and cannot stop the
-  next server. Nobody asked for this rebuild, though, and a rebuild that cannot
-  load its config file, or whose SDK enumeration fails — with the first scan
-  failed, the rebuild is the first enumeration since the start — ends the
-  service. So each try checks the config file first, then takes the scan, then
-  checks that the SDK enumerates, and rebuilds only when all three pass. A
-  config file or SDK that blocks it is logged at `warn!` each time it starts
-  to, and at `debug!` while it persists, and the re-scan carries on, without
-  scanning while the file does not load. The re-scan stops
+  stops and is rebuilt, which runs the start path again, placement and all.
+  That is safe because the failed-scan outcome opened nothing, so there is no
+  session to interrupt. The success ends that server only: it is not the
+  service-wide reload signal, so one landing after another reload has already
+  stopped the server reaches nothing, and cannot stop the next server. Nobody
+  asked for this rebuild, though, so it is built from the configuration the
+  stopped server was serving, not from the config file: an edit to the file
+  that no reload has applied — a list removed, a port or a certificate
+  changed — waits for the reload (`config.apply`, `SIGHUP`) or restart that
+  applies it, rather than moving or ending the service. A rebuild whose SDK
+  enumeration fails would still end it — with the first scan failed, the
+  rebuild is the first enumeration since the start — so each try takes the
+  scan, then checks that the SDK enumerates, and rebuilds only when both pass.
+  An SDK that blocks it is logged at `warn!` each time it starts to, and at
+  `debug!` while it persists, and the re-scan carries on. A try already
+  running when the server stops is not interrupted: it runs out under the
+  scan's own deadline and its answer goes nowhere. The re-scan stops
   when it rebuilds, and with the server it belongs to. It is not hot-plug: a
   successful scan whose listed port is merely empty serves a placeholder until
   the next reload, as at any start.
@@ -2197,9 +2206,15 @@ everything else is `debug!` (CLAUDE.md Rule 9).
 The background re-scan after a failed USB scan (U6) belongs to the bound
 server: it runs while that server serves and stops when it does. Its success
 ends that server, and `BoundServer::start` says so by returning
-`Ended::Rescanned` instead of `Ended::Stopped`. The loop rebuilds on it
-exactly as it does after a reload, so the success never travels on the
-service-wide `ReloadSignal`, where a late one could stop the next server.
+`Ended::Rescanned` instead of `Ended::Stopped`. The loop
+(`rusty_photon_driver::claims::serve_and_rebuild`) rebuilds on it from the
+configuration that server was serving, where a reload re-reads the config
+file, and the success never travels on the service-wide `ReloadSignal`, where
+a late one could stop the next server. A stop or a reload that lands while
+the re-scanned server drains has no stop future left to see it, so the loop
+honours it before that rebuild: the stop ends the service, and the reload
+rebuilds from the file, once. A stop always wins: one that lands with a
+reload ends the service without building another server first.
 
 ---
 
@@ -2207,7 +2222,7 @@ service-wide `ReloadSignal`, where a late one could stop the next server.
 
 Layered per [`testing.md`](../skills/testing.md).
 
-- **Unit** (`src/*.rs` `#[cfg(test)]`, 174 no-features / 207 with
+- **Unit** (`src/*.rs` `#[cfg(test)]`, 168 no-features / 199 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
   `noserial-{index}`-fallback branches), config-actions editability tiers,
@@ -2254,8 +2269,8 @@ Layered per [`testing.md`](../skills/testing.md).
   `Camera::video_capture_starts`, a read-only count that tells the test the
   capture's own capture restart has run, so "the cancel landed in the poll
   loop" is a fact rather than a nap.
-- **BDD** (`bdd-infra::ServiceHandle`, eleven feature files, 112 scenarios /
-  572 steps) — all genuinely green, including `enumeration_connection`'s
+- **BDD** (`bdd-infra::ServiceHandle`, eleven feature files, 113 scenarios /
+  579 steps) — all genuinely green, including `enumeration_connection`'s
   disconnect-cancels-an-in-flight-exposure scenario (C3b) and every
   behavioural feature (`exposure`, `binning_and_roi`, `cooling`,
   `gain_offset_readout`, `sensor_properties`) — see each file's header
@@ -2321,7 +2336,8 @@ Layered per [`testing.md`](../skills/testing.md).
   serial route the simulation cannot reach (its camera publishes no USB
   serial), every look-alike shape — and port order are unit-tested in
   `rusty-photon-doctor-checks`' `claims` module, the normalizer in
-  `claims.rs`, and the placeholder's members in `placeholder.rs`.
+  `claims.rs`, and the placeholder's members and the re-scan's schedule in
+  `rusty-photon-driver`'s `claims` module.
 - **ConformU** — `tests/conformu_integration.rs` (Phase F), mirroring
   `zwo-camera`'s: starts the `--features conformu` binary (real SDK link
   required, per "Native dependency & build gating" above — `conformu`

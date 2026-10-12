@@ -57,6 +57,20 @@ async fn staged_usb_inventory(world: &mut CameraWorld, step: &Step) {
     world.usb_inventory = Some(path);
 }
 
+#[when("the configuration file is edited by hand to:")]
+async fn configuration_edited_by_hand(world: &mut CameraWorld, step: &Step) {
+    let document = step
+        .docstring()
+        .expect("the hand-edit step needs a docstring");
+    world.config_json = Some(
+        serde_json::from_str(document)
+            .unwrap_or_else(|e| panic!("the hand edit is not JSON: {e}: {document}")),
+    );
+    // Written as a start writes it, on the scenario's port, and no reload is
+    // signalled: only a reload or a restart would apply it.
+    world.write_config();
+}
+
 // --- starting the service -------------------------------------------------------
 
 #[when("the svbony-camera service starts")]

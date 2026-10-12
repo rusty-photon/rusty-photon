@@ -98,12 +98,19 @@ cargo run  -p zwo-camera --features simulation -- --port 11122
 | `--config <path>` | Config file (default: `~/.config/rusty-photon/zwo-camera.json`). |
 | `--port <port>` | Override `server.port`. |
 | `--log-level <level>` | `trace`\|`debug`\|`info`\|`warn`\|`error` (default `info`). |
+| `doctor [--json]` | Read-only diagnosis of the config file and what the ASI SDK sees. |
+| `doctor --devices` | List the ASI cameras on the bus by USB port and print the `usb_devices` block to paste. Opens nothing. |
 
 ## Configuration
 
 ```jsonc
 {
-  "devices": {},          // per-serial name/description overrides
+  // Optional: pin each USB port to an Alpaca device number; a camera on an
+  // unlisted port is never opened. Paste it from `zwo-camera doctor --devices`
+  // (docs/services/zwo-camera.md "Device claims"). Absent = every camera the
+  // SDK enumerates, in SDK order.
+  // "usb_devices": [{ "device_number": 0, "usb_port": "pci-0000:c1:00.4-usbv3-0:1.4" }],
+  "devices": {},          // per-serial name/description overrides (no list only)
   "server": {
     "port": 11122,
     "bind_address": "0.0.0.0", // default: all interfaces

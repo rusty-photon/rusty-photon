@@ -564,11 +564,12 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   `--platform-facts`, which stages the whole facts document.) The crate owns
   the document and its
   rules; a driver exposes it as a hidden `--usb-inventory <file>` flag under
-  its own `simulation` feature as it gains device claims. Doctor and
-  `svbony-camera` read the USB inventory today: a camera driver with a
-  `usb_devices` list places each SDK camera on a port from it before it
-  registers anything ([device-claims plan](../plans/device-claims-and-phd2-camera.md)
-  D4, [svbony-camera.md](svbony-camera.md) U1-U9). The collectors are the same
+  its own `simulation` feature as it gains device claims. Doctor,
+  `svbony-camera` and `zwo-camera` read the USB inventory today: a camera
+  driver with a `usb_devices` list places each SDK camera on a port from it
+  before it registers or opens anything ([device-claims plan](../plans/device-claims-and-phd2-camera.md)
+  D4, [svbony-camera.md](svbony-camera.md) U1-U9,
+  [zwo-camera.md](zwo-camera.md) U1-U9). The collectors are the same
   for both: a driver takes the USB scan alone (`facts::scan_usb`), without
   the rest of the gather.
 - **Serial ports** (Windows) — read in-process from the registry key every
@@ -985,11 +986,12 @@ of the report, a listing of every camera of its SDK on the bus by USB port,
 and a paste-ready `usb_devices` block
 ([device-claims plan](../plans/device-claims-and-phd2-camera.md) D5). It
 holds to the same rules — read-only, enumeration only, never an open — and
-the same exit codes, and it is text only. `svbony-camera` has it today
-([svbony-camera.md](svbony-camera.md) U8); `zwo-camera` and `qhy-camera`
-gain it with their own lists (plan C3, C4), and the `usb-devices.*` checks
-that judge a list come with plan C5. The listing's layout, the join that
-places each camera and the port order it is printed in are shared code in
+the same exit codes, and it is text only. `svbony-camera` and `zwo-camera`
+have it today ([svbony-camera.md](svbony-camera.md) U8,
+[zwo-camera.md](zwo-camera.md) U8); `qhy-camera` gains it with its own list
+(plan C4), and the `usb-devices.*` checks that judge a list come with plan
+C5. The listing, its paste-ready block, the join that places each camera and
+the port order it is printed in are shared code in
 `rusty-photon-doctor-checks`' `claims` module, beside the inventory they
 read.
 
