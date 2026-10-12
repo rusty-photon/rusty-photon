@@ -2062,11 +2062,14 @@ second row and column, keeps every pixel: a window around its core holds
 its body, and so does a window around the core side of every pixel of
 its profile. The same holds for the edge of any extended shape whose
 pixels above the body level are at least two pixels wide, such as a
-defocused star's annulus. A straight line of them one pixel wide, a line
-of hot pixels or a faint, thin trail, puts at most three in any window
-and is removed (see the caveats). A star the step keeps therefore has the
-same footprint, and the same verdict at any `min_area`, as without it;
-the caveats below list the stars it does not keep. The body level sits at 2σ above the background mean,
+defocused star's annulus. A line of them one pixel wide along a row, a
+column or a diagonal, a line of hot pixels or a faint, thin trail, puts
+at most three in any window and is removed; at another angle, the steps
+of its pixels put more in some windows, so a thin trail there loses
+only some of its pixels (see the caveats). A star the step keeps whole
+therefore has the same footprint, and the same verdict at any
+`min_area`, as without it; the caveats below list the stars it does not
+keep whole. The body level sits at 2σ above the background mean,
 not at the detection threshold, because a faint star at the detection
 limit, centred on a pixel corner or undersampled, has only one to four
 pixels above the threshold, while the median of nine background pixels
@@ -2134,14 +2137,17 @@ bin 4 (2026-09-09 frames), at `threshold_sigma` 5 and 8.
   faint star, or a bright one undersampled to a FWHM under about 1 px
   and centred near a pixel corner, whose four core pixels hold nearly
   all its light. Telling those from a hot cluster needs a defect map.
-- A star trailed by a wind gust or a tracking error, whose pixels more
-  than 2σ above the background form a line one pixel wide, looks like a
-  line of hot pixels and is removed. That takes a trail both faint and
-  thin. In a noise-free simulation, a trail centred on a row or a column
-  whose brightest pixels are 10σ above the background is removed when
-  its FWHM across is under about 1.1 px, and a 50σ one when it is under
-  about 0.65 px. A trail centred between two rows keeps every pixel, and
-  one along a diagonal is removed only under about 0.6 px at 10σ.
+- A star trailed by a wind gust or a tracking error into a line so thin
+  and faint that only its ridge, one pixel wide, is more than 2σ above
+  the background looks like a line of hot pixels and loses pixels. In a
+  noise-free simulation at every angle, a trail whose brightest pixels
+  are 10σ above the background loses pixels only when its FWHM across is
+  at most about 1.1 px, a 20σ one at most about 0.8 px and a 50σ one at
+  most about 0.6 px. A trail along a row or a column, centred on it, is
+  then removed whole. One at an angle between those and a diagonal loses
+  only some pixels along its ridge, so it is measured with gaps: less
+  flux, a different HFR, and where a gap cuts its smoothed footprint,
+  several detections instead of one.
 - A star seen in one colour only on a raw colour mosaic is measured at
   half the resolution, so the undersampling limits in these caveats
   double. In a noise-free
@@ -2262,8 +2268,10 @@ exposure.
 **Algorithm**: same pipeline `measure_basic` runs internally — sigma-
 clipped background → hot-pixel suppression → Gaussian smoothing (σ ≈
 1 px) → threshold at `mean + threshold_sigma × stddev` → 4-connectivity
-BFS → area / border filter → intensity-weighted centroiding → the
-0.25 px HFR floor. Saturated components are flagged, not rejected (same
+BFS → area / border filter → rejection of a component with no flux
+above the background once its hot pixels are left out →
+intensity-weighted centroiding → the 0.25 px HFR floor. Saturated
+components are flagged, not rejected (same
 rationale as `measure_basic`), and the `measure_basic` caveats apply.
 
 **Error cases**:
@@ -2303,9 +2311,9 @@ in addition to the HFR / flux that `measure_basic` aggregates.
   - `x` / `y` — flux-weighted centroid in 0-based pixel coordinates:
     `x` along the image width (FITS `NAXIS1`), `y` along the height
     (`NAXIS2`).
-  - `hfr` — empirical half-flux radius (pixels), or `null` when no
-    positive flux above background (rare; `detect_stars` already filters
-    this out).
+  - `hfr` — empirical half-flux radius (pixels). The field is nullable,
+    but the only star without an HFR is one with no positive flux above
+    the background, which `detect_stars` rejects, so it is never `null`.
   - `fwhm` — geometric-mean FWHM = 2.3548·√(σx·σy) from the Gaussian
     fit (pixels), or `null` when the fit fails.
   - `eccentricity` — √(1 − (σmin/σmax)²) from the Gaussian fit, or

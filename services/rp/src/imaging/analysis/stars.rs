@@ -136,10 +136,29 @@ pub fn detect_stars<T: Pixel>(
 
     let components = connected_components_4(&mask.view());
 
-    components
+    let mut rejected = Rejections::default();
+    let stars: Vec<Star> = components
         .into_iter()
-        .filter_map(|pixels| build_star(view, pixels, &hot, background.mean, params, rows, cols))
-        .collect()
+        .filter_map(|pixels| build_star(view, pixels, &hot, background.mean, params, &mut rejected))
+        .collect();
+    debug!(
+        stars = stars.len(),
+        outside_area_range = rejected.area,
+        on_border = rejected.border,
+        no_flux = rejected.no_flux,
+        under_hfr_floor = rejected.hfr_floor,
+        "star detection admitted stars and rejected components"
+    );
+    stars
+}
+
+/// How many components [`build_star`] rejected, by reason.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Rejections {
+    area: usize,
+    border: usize,
+    no_flux: usize,
+    hfr_floor: usize,
 }
 
 /// The detection threshold for `threshold_sigma`, and the body level
@@ -172,8 +191,10 @@ fn detection_levels(background: &BackgroundStats, threshold_sigma: f64) -> (f64,
 /// around its core holds its body, and so does a window around the core
 /// side of every pixel of its profile. The same holds for the edge of any
 /// extended shape whose pixels above `body_level` are at least two
-/// pixels wide. A straight line of them one pixel wide, a hot line or a
-/// faint, thin trail, puts at most three in any window and goes. On a
+/// pixels wide. A line of them one pixel wide along a row, a column or a
+/// diagonal, a hot line or a faint, thin trail, puts at most three in any
+/// window and goes; at another angle the steps of its pixels put more in
+/// some windows, so a thin trail there loses only some pixels. On a
 /// raw colour mosaic no grid window holds more than four red or four
 /// blue pixels, so a star seen in one of those colours only, as through
 /// a narrowband filter, is kept by the windows on every second row and
@@ -267,18 +288,19 @@ fn median_of_the_rest<T: Pixel>(
 /// Admit `pixels`, one component, as a star and measure it. The area
 /// and border verdicts are the whole component's; a pixel in `hot`, the
 /// hot pixels suppression replaced in row-major order, is left out of
-/// every measurement, since the measurements read raw pixels.
+/// every measurement, since the measurements read raw pixels. A
+/// rejection is counted in `rejected`.
 fn build_star<T: Pixel>(
     view: &ArrayView2<T>,
     pixels: Vec<(usize, usize)>,
     hot: &[(usize, usize)],
     background_mean: f64,
     params: &DetectionParams,
-    rows: usize,
-    cols: usize,
+    rejected: &mut Rejections,
 ) -> Option<Star> {
     let area = pixels.len();
     if area < params.min_area || area > params.max_area {
+        rejected.area = rejected.area.saturating_add(1);
         return None;
     }
 
@@ -299,11 +321,13 @@ fn build_star<T: Pixel>(
         }
     }
 
+    let (rows, cols) = view.dim();
     if min_x == 0
         || min_y == 0
         || max_y == rows.saturating_sub(1)
         || max_x == cols.saturating_sub(1)
     {
+        rejected.border = rejected.border.saturating_add(1);
         return None;
     }
 
@@ -340,9 +364,10 @@ fn build_star<T: Pixel>(
     }
 
     // A component with no flux above the background once its hot pixels
-    // are out, or with no pixel left at all, has nothing to measure and
-    // no half-flux radius, and is no star.
+    // are out, or with no pixel left at all, has no centroid to weight,
+    // and no half-flux radius either, so the floor below would reject it.
     if total_flux <= 0.0 {
+        rejected.no_flux = rejected.no_flux.saturating_add(1);
         return None;
     }
 
@@ -355,7 +380,8 @@ fn build_star<T: Pixel>(
         bounding_box: (min_x, min_y, max_x, max_y),
         saturated_pixel_count: saturated,
     };
-    if star_hfr(view, &star, background_mean).is_some_and(|hfr| hfr < MIN_STAR_HFR) {
+    if star_hfr(view, &star, background_mean).is_none_or(|hfr| hfr < MIN_STAR_HFR) {
+        rejected.hfr_floor = rejected.hfr_floor.saturating_add(1);
         return None;
     }
     Some(star)
@@ -1039,6 +1065,26 @@ mod tests {
         );
     }
 
+    /// What `build_star` makes of one component of `arr`, with `hot` its
+    /// hot pixels, against the pinned background: the star, or the
+    /// rejection it counted.
+    fn verdict(
+        arr: &Array2<u16>,
+        pixels: Vec<(usize, usize)>,
+        hot: &[(usize, usize)],
+    ) -> Result<Star, Rejections> {
+        let mut rejected = Rejections::default();
+        build_star(
+            &arr.view(),
+            pixels,
+            hot,
+            1000.0,
+            &default_params(1, 2000),
+            &mut rejected,
+        )
+        .ok_or(rejected)
+    }
+
     /// A star 3 px from the edge whose component reaches column 0 only at
     /// a hot pixel: the border verdict is the whole component's, so the
     /// truncated star is rejected rather than measured without that pixel.
@@ -1049,35 +1095,23 @@ mod tests {
             .flat_map(|r| (1..=6).map(move |c| (r, c)))
             .collect();
         pixels.push((8, 0));
-        let star = build_star(
-            &arr.view(),
-            pixels,
-            &[(8, 0)],
-            1000.0,
-            &default_params(1, 2000),
-            16,
-            16,
-        );
-        assert!(
-            star.is_none(),
-            "admitted with box {:?}",
-            star.map(|s| s.bounding_box)
-        );
+        let result = verdict(&arr, pixels, &[(8, 0)]).map(|s| s.bounding_box);
+        let border = Rejections {
+            border: 1,
+            ..Rejections::default()
+        };
+        assert_eq!(result, Err(border));
     }
 
     #[test]
     fn component_of_hot_pixels_only_is_no_star() {
         let arr = flat_with(&[(8, 8), (8, 9)], 30_000);
-        let star = build_star(
-            &arr.view(),
-            vec![(8, 8), (8, 9)],
-            &[(8, 8), (8, 9)],
-            1000.0,
-            &default_params(1, 2000),
-            64,
-            64,
-        );
-        assert!(star.is_none());
+        let result = verdict(&arr, vec![(8, 8), (8, 9)], &[(8, 8), (8, 9)]).map(|s| s.total_flux);
+        let no_flux = Rejections {
+            no_flux: 1,
+            ..Rejections::default()
+        };
+        assert_eq!(result, Err(no_flux));
     }
 
     /// A component whose pixels, its hot ones left out, are all at the
@@ -1085,20 +1119,12 @@ mod tests {
     #[test]
     fn component_with_no_flux_above_the_background_is_no_star() {
         let arr = flat_with(&[], 1000);
-        let star = build_star(
-            &arr.view(),
-            vec![(8, 8), (8, 9)],
-            &[],
-            1000.0,
-            &default_params(1, 2000),
-            64,
-            64,
-        );
-        assert!(
-            star.is_none(),
-            "admitted at {:?}",
-            star.map(|s| (s.centroid_x, s.centroid_y))
-        );
+        let result = verdict(&arr, vec![(8, 8), (8, 9)], &[]).map(|s| (s.centroid_x, s.centroid_y));
+        let no_flux = Rejections {
+            no_flux: 1,
+            ..Rejections::default()
+        };
+        assert_eq!(result, Err(no_flux));
     }
 
     #[test]
