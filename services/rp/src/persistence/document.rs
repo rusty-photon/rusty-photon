@@ -212,8 +212,9 @@ pub struct Optics {
     /// Derived: `pixel_scale_x_arcsec_per_pixel × sensor_width_px / 3600`.
     pub fov_width_deg: f64,
     /// Derived: `pixel_scale_y_arcsec_per_pixel × sensor_height_px / 3600`.
-    /// Matches ASTAP's `-fov` semantics ("image height in degrees"); used
-    /// as the `plate_solve` `fov_hint_deg` default in `document_id` mode.
+    /// Matches ASTAP's `-fov` semantics ("image height in degrees"), so
+    /// a caller can pass it as `plate_solve`'s `fov_hint_deg`; `rp` does
+    /// not default the hint from it yet (rp.md §"Ground rules").
     pub fov_height_deg: f64,
 }
 

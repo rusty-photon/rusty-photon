@@ -154,10 +154,13 @@ frame's facts from:
    programs can work with the frames `rp` writes. The copy may be
    lossy, and it is not guaranteed to be complete: a fact can be
    rounded, folded to ASCII, or left out. `rp` never reads a fact back
-   from a header. Beyond the cards it needs to decode the pixels
-   (`BITPIX`, `NAXIS*`, `BSCALE`, `BZERO`), the one card it reads is
-   `DOC_ID`, and only to match a FITS file to its document
-   ([Document Resolution](#document-resolution)). A FITS file with no
+   from a header. Beyond the structural cards its FITS reader parses
+   along with the pixel array (`BITPIX`, `NAXIS*`, `BSCALE`, `BZERO`,
+   `BLANK`), the one card it reads is `DOC_ID`, and only to confirm
+   that a FITS file's pixels belong to the document
+   ([Document Resolution](#document-resolution)): the sidecar is found
+   by the FITS file's name, so `DOC_ID` is the one check that the two
+   belong together. A FITS file with no
    sidecar, such as one another program wrote, gives `rp` its pixels
    and nothing else.
 2. **The sidecar records the exposure as it was taken.** Every fact
@@ -169,19 +172,20 @@ frame's facts from:
    No consumer resolves a past frame's facts through them against the
    live config.
 
-So the header never carries a fact the sidecar lacks, and `rp`'s own
-work never depends on what the header carries. These are not yet in
-line with the rules:
+So the header should never carry a fact the sidecar lacks, and
+`rp`'s own work should never depend on what the header carries. These
+are not yet in line with the rules:
 
 - The train's `aperture_mm`, the configured site's latitude and
   longitude, and the `rp` version that wrote the frame reach the
   header (`APTDIA`, `SITELAT`, `SITELONG`, `SWCREATE`) without being
-  recorded in the sidecar. `FOCRATIO` needs no field of its own: it is
-  derived from `aperture_mm` and `optics.focal_length_mm`.
+  recorded in the sidecar. `FOCRATIO` needs no field of its own once
+  `aperture_mm` is recorded: it derives from that and the focal
+  length.
 - `optics` is all-or-nothing: when one of its inputs is unknown or
   unusable (a non-positive pixel size, say), the whole block is left
-  out, while the header still writes `FOCALLEN` and `XPIXSZ`/`YPIXSZ`
-  from the inputs it has.
+  out, while the header still writes `FOCALLEN`, `FOCRATIO` and
+  `XPIXSZ`/`YPIXSZ` from the inputs it has.
 - Train data the sidecar does not record at all: the filter's
   configured `wavelength_nm`, and the terminal focuser's
   `microns_per_step` (both reported by
@@ -193,10 +197,11 @@ line with the rules:
   and plate solvers derive a frame's scale from `FOCALLEN` and
   `XPIXSZ` ([FITS header](#fits-header)). The hint should come from
   the sidecar's `optics.fov_height_deg`.
-- [Document Resolution](#document-resolution) matches a FITS file by
-  its header's `DOC_ID` first, and checks the sidecar's `id` only when
-  the header is unreadable or has none. Under rule 1 the sidecar's `id`
-  should decide.
+- [Progress derivation](#progress-derivation) takes a past frame's
+  target, filter, binning and exposure time from its file and directory
+  names, parsed through the naming patterns as configured now, rather
+  than from its sidecar. A frame whose name the current patterns no
+  longer parse is not counted.
 
 ### Core Fields (owned by `rp`)
 
@@ -608,9 +613,9 @@ The FITS file's primary HDU header carries `DOC_ID = '<full-uuid>'`,
 making each FITS self-describing for lineage, downstream tools, and
 disambiguation when multiple files in the data directory happen to
 share an 8-char suffix. The sidecar's `id` field carries the same
-full UUID. [Document Resolution](#document-resolution) checks the
-header's copy first today, which [Ground rules](#ground-rules) lists
-as a gap.
+full UUID. The header's copy is what lets
+[Document Resolution](#document-resolution) confirm that a FITS
+file's pixels belong to the document.
 
 #### FITS header
 
@@ -624,9 +629,9 @@ leaves `rp` without its sidecar. The export goes one way
 the sidecar, from the same capture-time values, it may be lossy, and
 `rp` never reads a fact back from it. Today some cards (`FOCALLEN`,
 `XPIXSZ`/`YPIXSZ`, `APTDIA`, `FOCRATIO`, `SITELAT`, `SITELONG`,
-`SWCREATE`) are filled from configuration and connect-time reads
-rather than from the document; Ground rules lists the gaps that
-leaves. The keyword set below is what `rp` writes
+`SWCREATE`) are filled from configuration, connect-time reads and
+the build's version rather than from the document; Ground rules lists
+the gaps that leaves. The keyword set below is what `rp` writes
 today, pinned field by field in
 `services/rp/tests/features/capture_fits_header.feature`. It is not a
 promise that every fact in the document reaches the header.
@@ -2566,10 +2571,11 @@ A `document_id` (the full UUID) resolves through this order:
    `directory_pattern` stay reachable too. For each candidate, verify
    by reading the FITS header `DOC_ID` against the requested full
    UUID; if the FITS is unreadable or has no `DOC_ID`, check the
-   sidecar's `id` instead. (Under [Ground rules](#ground-rules) the
-   sidecar's `id` should decide; checking the header first is a listed
-   gap.) On match, read both files, populate the cache, and return the
-   entry.
+   sidecar's `id` instead. The header goes first because the sidecar
+   is found by the FITS file's name, and `DOC_ID` is the one check that
+   the pixels belong to the document
+   ([Ground rules](#ground-rules), rule 1). On match, read both files,
+   populate the cache, and return the entry.
 3. **Not found.** Return `None`. The HTTP API returns `404`.
 
 Ghost-match disambiguation runs only when multiple files in the data
