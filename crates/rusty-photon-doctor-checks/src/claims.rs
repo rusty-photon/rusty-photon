@@ -1602,7 +1602,7 @@ mod tests {
     // --- the SDK's own check ---------------------------------------------------
 
     /// The ASI SDK's table as SDK 1.41 answered it on the dev box: cameras
-    /// 1603 and 662b, and not the EAF's 1f10.
+    /// 1603, 178c and 662b, and not the EAF's 1f10.
     fn asi_check(product: &str) -> bool {
         matches!(product, "1603" | "178c" | "662b")
     }

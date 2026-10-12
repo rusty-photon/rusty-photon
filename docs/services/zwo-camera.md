@@ -212,7 +212,12 @@ graph TD;
   [`service-lifecycle.md`](../skills/service-lifecycle.md). No hand-rolled signal
   handling; config bootstrap via `rusty_photon_config::resolve_and_init` with an
   **empty identity-pointer list** (identities are hardware-derived), which still
-  materializes the default config file on first start.
+  materializes the default config file on first start. Its serve loop is
+  `rusty-photon-driver`'s `claims::serve_and_rebuild`, shared with
+  svbony-camera: after a reload it rebuilds from the config file, after a
+  failed scan's re-scan from the configuration it was serving (U6), and a
+  stop or reload that lands while a re-scanned server drains is honoured
+  before that rebuild.
 - **`lib.rs`** — `ServerBuilder` that, on `build()`, opens the SDK and, with
   no `usb_devices` list, **enumerates every connected ASI camera**,
   registering each as an ASCOM device (index 0, 1, 2, …) with its serial-derived

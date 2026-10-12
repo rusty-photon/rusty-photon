@@ -207,8 +207,10 @@ pub fn stop_or_rescanned(
     let rescanned = Arc::new(AtomicBool::new(false));
     let cause = StopCause(Arc::clone(&rescanned));
     let stop = async move {
+        // With no re-scan, the sender went with the closure that never ran,
+        // so the receiver errs at once and this never resolves.
         let ready = async {
-            if rescan.is_some() && ready_rx.await.is_ok() {
+            if ready_rx.await.is_ok() {
                 return;
             }
             std::future::pending::<()>().await;
@@ -336,6 +338,18 @@ mod tests {
     async fn a_server_with_no_rescan_stops_when_told() {
         let (stop, cause) = stop_or_rescanned(async {}, None);
         stop.await;
+        assert_eq!(cause.ended(), Ended::Stopped);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_server_with_no_rescan_is_never_ended_as_rescanned() {
+        let (stop, cause) = stop_or_rescanned(std::future::pending(), None);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(300), stop)
+                .await
+                .is_err(),
+            "a server with no re-scan stopped on its own"
+        );
         assert_eq!(cause.ended(), Ended::Stopped);
     }
 

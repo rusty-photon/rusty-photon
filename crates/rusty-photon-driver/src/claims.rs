@@ -8,12 +8,15 @@
 //! `rusty-photon-doctor-checks`' `claims` module, beside the USB inventory it
 //! reads. What lives here is what that crate cannot hold, being neither an
 //! ASCOM nor an async one: the placeholder Camera device a driver registers at
-//! a listed number whose camera it cannot serve, and the background re-scan a
-//! failed USB scan starts. `rusty-photon-camera-core` is by its own rule no
+//! a listed number whose camera it cannot serve, the background re-scan a
+//! failed USB scan starts, and the run loop that rebuilds the server after a
+//! reload or a re-scan. `rusty-photon-camera-core` is by its own rule no
 //! home for a `Camera` implementation.
 
 mod placeholder;
 mod rescan;
+mod serve;
 
 pub use placeholder::{Placeholder, PlaceholderCamera};
 pub use rescan::{rescan_waits, stop_or_rescanned, Blocker, Ended, Rescan, StopCause};
+pub use serve::{serve_and_rebuild, Stop};

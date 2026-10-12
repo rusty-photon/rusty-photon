@@ -72,7 +72,7 @@ pub use config::{
 };
 pub use config_actions::ZwoCameraDriver;
 pub use error::ZwoCameraError;
-pub use rusty_photon_driver::claims::Ended;
+pub use rusty_photon_driver::claims::{serve_and_rebuild, Ended};
 
 use std::future::Future;
 use std::net::SocketAddr;

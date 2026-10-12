@@ -570,7 +570,9 @@ graph TD;
   under `ServiceRunner::new("svbony-camera").with_reload().run_with_reload(...)`
   per [`service-lifecycle.md`](../skills/service-lifecycle.md). Config
   bootstrap via `rusty_photon_config::resolve_and_init` with an **empty
-  identity-pointer list** (identities are hardware-derived).
+  identity-pointer list** (identities are hardware-derived). Its serve loop
+  is `rusty-photon-driver`'s `claims::serve_and_rebuild`, shared with
+  zwo-camera (see "Service lifecycle" below).
 - **`lib.rs`** — `ServerBuilder` that, on `build()`, enumerates connected
   SVBony cameras and registers each as an ASCOM device with its
   serial-derived UniqueID. Because `CameraSN` arrives at enumeration time
@@ -2204,10 +2206,14 @@ everything else is `debug!` (CLAUDE.md Rule 9).
 The background re-scan after a failed USB scan (U6) belongs to the bound
 server: it runs while that server serves and stops when it does. Its success
 ends that server, and `BoundServer::start` says so by returning
-`Ended::Rescanned` instead of `Ended::Stopped`. The loop rebuilds on it
-from the configuration that server was serving, where a reload re-reads the
-config file, and the success never travels on the service-wide
-`ReloadSignal`, where a late one could stop the next server.
+`Ended::Rescanned` instead of `Ended::Stopped`. The loop
+(`rusty_photon_driver::claims::serve_and_rebuild`) rebuilds on it from the
+configuration that server was serving, where a reload re-reads the config
+file, and the success never travels on the service-wide `ReloadSignal`, where
+a late one could stop the next server. A stop or a reload that lands while
+the re-scanned server drains has no stop future left to see it, so the loop
+honours it before that rebuild: the stop ends the service, and the reload
+rebuilds from the file, once.
 
 ---
 
