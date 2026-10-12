@@ -555,8 +555,12 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   was then re-plugged and the probe made the first open since its power-up:
   yes 3 of 3, slot count 7, the same answers as after the init that followed.
   (Its wheel stood on slot 0, where the power-up of its 12 V homes it, so that
-  run could not show a wheel left in place.) The Windows SDK, and models other
-  than the QHY178M, are not yet measured.
+  run could not show a wheel left in place.) Under Windows, on `rig2`'s QHY600M
+  + CFW with its own SDK (24.01.09, 2026-10-11), the same: a process that ran no
+  init got yes 3 of 3 and a slot count of 7, as the init that followed did, and
+  with the wheel parked on slot 3 a fresh no-init probe read slot 3 at rest on
+  all 13 reads. Whether anything had initialised that camera since it last
+  powered up is not known.
 
   A camera whose probe cannot open or close it is not registered, logged at
   `warn!`. **The probe opens every camera the SDK enumerates, including one
@@ -1104,14 +1108,13 @@ which a list replaces with the declaration.
   | SDK model (`GetQHYCCDModel`) | Bus record | Observed |
   |---|---|---|
   | `QHY178M` (SDK id `QHY178M-222b16468c5966524`) | `1618:c179`, product string `Q178-Cool`, no USB serial | dev box (Fedora 44, x86_64, SDK 26.06.04), 2026-10-11 |
+  | `QHY600M` (SDK id `QHY600M-3b1ea54688eb9f9d7`) | `1618:c601`, bus-reported description `QHY600U3G20-20230614`, no USB serial | `rig2` (Windows 11, SDK 24.01.09), 2026-10-11 |
+  | `QHY5III678M` (SDK id `QHY5III678M-4a94be45b27d3aa79`) | `1618:0679`, bus-reported description `QHY678U3G20-20230106`, no USB serial | the same |
 
-  A simulation build also knows its fabricated `QHY178M-Simulated` under `f178`,
-  a product id chosen for the simulation (U7). **`rig2`'s two cameras are not in
-  the table yet**: the QHY600M (`1618:c601`) and QHY5III678M (`1618:0679`) were
-  read on the bus (plan D2), but `GetQHYCCDModel` has not been asked about either.
-  Until it is — `qhyccd-rs`'s `examples/enumerate` prints it, opening nothing —
-  both are unrecognised, and two unrecognised cameras on one host defeat
-  elimination, so a list on `rig2` holds both their numbers with placeholders.
+  The models are what `qhyccd-rs`'s `examples/enumerate` printed, opening
+  nothing; the bus records are sysfs's on Linux and the PnP properties' on
+  Windows (plan D2). A simulation build also knows its fabricated
+  `QHY178M-Simulated` under `f178`, a product id chosen for the simulation (U7).
 
   Joining on the product id alone means **two cameras of one model on one host
   are look-alikes** (U3), whatever their serials. Variants *within* one QHY

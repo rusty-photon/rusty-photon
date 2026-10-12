@@ -1446,10 +1446,11 @@ rather than narrowed ([`qhy-camera.md`](../services/qhy-camera.md) C0, C5).
 The camera had been initialised by earlier processes since it last powered
 on, so it was re-plugged and asked again as the first process to open it
 since its power-up: the same answers, a wheel 3 of 3 and a slot count of 7.
-What the measurement does not cover, recorded in the waiting list: the
-Windows SDK, and any model but the QHY178M. If one of those turns out to need
-the init, the no-list path registers no wheel for it — a missing device,
-logged, never a moved one — and the remedy is a list declaring the wheel.
+The Windows SDK answered the same on `rig2`'s QHY600M + CFW (SDK 24.01.09):
+yes 3 of 3 and 7 slots with no init, and a wheel parked on slot 3 stayed
+there. A model neither covers could still turn out to need the init; then the
+no-list path registers no wheel for it — a missing device, logged, never a
+moved one — and the remedy is a list declaring the wheel.
 
 The same session measured what the probe does to a camera another process
 holds, which is the no-list path's PHD2 case: the QHY SDK lets a second
@@ -2359,11 +2360,13 @@ review.
 | 15 | **A camera on a port's USB 2.0 twin is on a different port, and the placeholder says why** (D4.8) — 2026-10-01 | The native spelling is the key, and one socket answering to two entries would undo the list. Where a passive pairing signal exists the reason points at the cable instead of the generic one. |
 | 16 | **`usb_devices` numbers must run `0..N-1`; a gap is rejected, not filled** (D3) — 2026-10-01 | Every served number is one the operator wrote, so a typo cannot become a phantom camera. Retiring a camera below the highest number means renumbering the entries above it (and rp); a retired camera's entry is never kept to hold a number, because a listed port opens whatever is plugged in there next. |
 
-Nothing in this plan is waiting on an *operator* answer. **Seven** things
+Nothing in this plan is waiting on an *operator* answer. **Five** things
 are waiting on evidence or an implementation choice, each named at its
 rule — two of them block a phase outright (the macOS `system_profiler`
 check before C5's no-list flip, and C7's focus-model reconciliation). C4's
-tenet-3-safe probe path, the third, was settled in C4's design (D6). C1's last wait, a move to a different
+tenet-3-safe probe path, the third, was settled in C4's design (D6),
+measured under Linux on a camera fresh from power-up and under Windows on
+`rig2`. C1's last wait, a move to a different
 port, was answered on a Windows VM on 2026-10-10 (D2, spike item 7),
 and on 2026-10-11 the owner accepted the legs no real hardware has read
 (decision 2), so nothing now blocks C2.
@@ -2386,19 +2389,6 @@ and on 2026-10-11 the owner accepted the legs no real hardware has read
   the same across a replug and a reboot, changes when the camera moves
   to another port, and carries the hop when the camera is behind a hub.
   The owner accepted that gap for C2–C4 on 2026-10-11.
-- **C4 — the no-init CFW probe under Windows, and on other models.** D6
-  settled on option 2 from one camera, a QHY178M under Linux, asked both
-  after earlier processes had initialised it and as the first opener since
-  its power-up (a cable re-seat). Owed: the same `cfw_probe detect` on
-  `rig2`'s QHY600M under Windows. If it needs the init, the no-list path
-  finds no wheel there, and a list declaring it is the remedy (D6). Blocks no
-  phase.
-- **C4 — `rig2`'s two QHY models for the normalizer.** `GetQHYCCDModel` for
-  the QHY600M (`1618:c601`) and QHY5III678M (`1618:0679`) has not been read;
-  `qhyccd-rs`'s `examples/enumerate` reads it with nothing opened. Until it
-  is, both are unrecognised and a list on `rig2` holds both their numbers
-  with placeholders ([`qhy-camera.md`](../services/qhy-camera.md) U2). Blocks
-  `rig2` adopting a list, not C4.
 - **C5 — QHY's serial-less identity policy**, waiting on a choice
   between giving those models a port-based identity (with the matching
   `devices`-key and shared-CFW-id migration) and documenting the existing
