@@ -2038,8 +2038,10 @@ The first analysis tool to implement. Behavioral contract:
 8. For each surviving component, compute intensity-weighted centroid and
    per-star HFR (radial flux accumulation to half of total flux).
    Centroiding uses background-subtracted flux to avoid bbox-center bias.
-   Reject a component whose HFR is under **0.25 px**: its flux sits in
-   the one pixel under its centroid.
+   Reject a component with no flux above the background once its hot
+   pixels are left out: it has no centroid to weight and no HFR. Reject
+   one whose HFR is under **0.25 px**: its flux sits in the one pixel
+   under its centroid.
 9. Return aggregate HFR (median of per-star HFRs), star count,
    saturated-star count, and background.
 
@@ -2054,11 +2056,15 @@ focus. PixInsight's star detector and Hocus Focus also remove hot pixels
 before they blur, for the same reason.
 
 A structure of up to four bright pixels holds no body, so single hot
-pixels, pairs and 2×2 clusters are removed. A star with more than four
-pixels above the body level keeps every pixel: a window around its core
-holds its body, and so does a window around the core side of every pixel
-of its profile; the same holds for the edge of any extended shape, such
-as a defocused star's annulus. A star the step keeps therefore has the
+pixels, pairs and 2×2 clusters are removed. A star with at least five
+pixels above the body level in one 3×3 window, or six in one on every
+second row and column, keeps every pixel: a window around its core holds
+its body, and so does a window around the core side of every pixel of
+its profile. The same holds for the edge of any extended shape whose
+pixels above the body level are at least two pixels wide, such as a
+defocused star's annulus. A straight line of them one pixel wide, a line
+of hot pixels or a faint, thin trail, puts at most three in any window
+and is removed (see the caveats). A star the step keeps therefore has the
 same footprint, and the same verdict at any `min_area`, as without it;
 the caveats below list the stars it does not keep. The body level sits at 2σ above the background mean,
 not at the detection threshold, because a faint star at the detection
@@ -2128,6 +2134,14 @@ bin 4 (2026-09-09 frames), at `threshold_sigma` 5 and 8.
   faint star, or a bright one undersampled to a FWHM under about 1 px
   and centred near a pixel corner, whose four core pixels hold nearly
   all its light. Telling those from a hot cluster needs a defect map.
+- A star trailed by a wind gust or a tracking error, whose pixels more
+  than 2σ above the background form a line one pixel wide, looks like a
+  line of hot pixels and is removed. That takes a trail both faint and
+  thin. In a noise-free simulation, a trail centred on a row or a column
+  whose brightest pixels are 10σ above the background is removed when
+  its FWHM across is under about 1.1 px, and a 50σ one when it is under
+  about 0.65 px. A trail centred between two rows keeps every pixel, and
+  one along a diagonal is removed only under about 0.6 px at 10σ.
 - A star seen in one colour only on a raw colour mosaic is measured at
   half the resolution, so the undersampling limits in these caveats
   double. In a noise-free

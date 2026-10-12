@@ -167,14 +167,18 @@ fn detection_levels(background: &BackgroundStats, threshold_sigma: f64) -> (f64,
 /// pixels, pairs and 2×2 clusters go. So does a star with only one to
 /// four pixels above `body_level`: a faint one, or a bright one
 /// undersampled to a FWHM under about 1 px and centred near a pixel
-/// corner. Any other star keeps every pixel: a window around its core
-/// holds its body, and so does a window around the core side of every
-/// pixel of its profile. The same holds for the edge of any extended
-/// shape. On a raw colour mosaic no grid window holds more than four red
-/// or four blue pixels, so a star seen in one of those colours only, as
-/// through a narrowband filter, is kept by the windows on every second
-/// row and column, which hold only its colour; that sees the star at
-/// half the resolution, so the undersampling limit doubles.
+/// corner. A star with at least five of them in one grid window, or six
+/// in one on every second row and column, keeps every pixel: a window
+/// around its core holds its body, and so does a window around the core
+/// side of every pixel of its profile. The same holds for the edge of any
+/// extended shape whose pixels above `body_level` are at least two
+/// pixels wide. A straight line of them one pixel wide, a hot line or a
+/// faint, thin trail, puts at most three in any window and goes. On a
+/// raw colour mosaic no grid window holds more than four red or four
+/// blue pixels, so a star seen in one of those colours only, as through
+/// a narrowband filter, is kept by the windows on every second row and
+/// column, which hold only its colour; that sees the star at half the
+/// resolution, so the undersampling limit doubles.
 ///
 /// Windows are read from `view`, so a replacement never feeds the next
 /// pixel's test, and they are clipped at the frame's edge. A pixel whose
@@ -311,8 +315,6 @@ fn build_star<T: Pixel>(
     let mut total_flux = 0.0;
     let mut weighted_sum_x = 0.0;
     let mut weighted_sum_y = 0.0;
-    let mut sum_x = 0.0;
-    let mut sum_y = 0.0;
     let mut saturated = 0u32;
     let mut peak = f64::NEG_INFINITY;
     for &(r, c) in &pixels {
@@ -327,8 +329,6 @@ fn build_star<T: Pixel>(
         total_flux += f;
         weighted_sum_x = f.mul_add(c_f, weighted_sum_x);
         weighted_sum_y = f.mul_add(r_f, weighted_sum_y);
-        sum_x += c_f;
-        sum_y += r_f;
         if raw_f > peak {
             peak = raw_f;
         }
@@ -339,19 +339,16 @@ fn build_star<T: Pixel>(
         }
     }
 
-    let (cx, cy) = if total_flux > 0.0 {
-        (weighted_sum_x / total_flux, weighted_sum_y / total_flux)
-    } else {
-        // Unweighted fallback for a fully-background-subtracted blob. A
-        // component left with no pixel once its hot pixels are out has
-        // nothing to measure and is no star.
-        let n = f64::from(u32::try_from(pixels.len()).ok().filter(|&n| n > 0)?);
-        (sum_x / n, sum_y / n)
-    };
+    // A component with no flux above the background once its hot pixels
+    // are out, or with no pixel left at all, has nothing to measure and
+    // no half-flux radius, and is no star.
+    if total_flux <= 0.0 {
+        return None;
+    }
 
     let star = Star {
-        centroid_x: cx,
-        centroid_y: cy,
+        centroid_x: weighted_sum_x / total_flux,
+        centroid_y: weighted_sum_y / total_flux,
         total_flux,
         peak,
         pixels,
@@ -784,10 +781,19 @@ mod tests {
         arr
     }
 
-    /// `suppress_hot_pixels` over `arr` against the pinned background.
+    /// `suppress_hot_pixels` over `arr` against the pinned background, at
+    /// the levels detection uses at `threshold_sigma` 5.
     fn suppressed(arr: &Array2<u16>) -> Array2<f64> {
+        let background = flat_background();
+        let (threshold, body_level) = detection_levels(&background, 5.0);
         let mut data = arr.mapv(Pixel::to_f64);
-        suppress_hot_pixels(&arr.view(), &mut data, 1025.0, 1010.0, 1000.0);
+        suppress_hot_pixels(
+            &arr.view(),
+            &mut data,
+            threshold,
+            body_level,
+            background.mean,
+        );
         data
     }
 
@@ -1074,10 +1080,43 @@ mod tests {
         assert!(star.is_none());
     }
 
+    /// A component whose pixels, its hot ones left out, are all at the
+    /// background has no centroid to weight and no half-flux radius.
+    #[test]
+    fn component_with_no_flux_above_the_background_is_no_star() {
+        let arr = flat_with(&[], 1000);
+        let star = build_star(
+            &arr.view(),
+            vec![(8, 8), (8, 9)],
+            &[],
+            1000.0,
+            &default_params(1, 2000),
+            64,
+            64,
+        );
+        assert!(
+            star.is_none(),
+            "admitted at {:?}",
+            star.map(|s| (s.centroid_x, s.centroid_y))
+        );
+    }
+
     #[test]
     fn component_whose_flux_sits_in_one_pixel_is_rejected() {
         let stars = detect_any(&plateau(Some(60_000)));
         assert!(stars.is_empty(), "got {} stars", stars.len());
+    }
+
+    /// A star centred on a pixel, undersampled until its core holds just
+    /// under half its light: its HFR, about 0.3 px, is just above the
+    /// floor, and it is admitted.
+    #[test]
+    fn undersampled_star_centred_on_a_pixel_is_detected() {
+        let arr = make_gaussian(64, 64, 32.0, 32.0, 0.583, 5_000.0, 1000.0);
+        let stars = detect_any(&arr);
+        assert_eq!(stars.len(), 1, "got {} stars", stars.len());
+        let hfr = star_hfr(&arr.view(), &stars[0], 1000.0).unwrap();
+        assert!(hfr < 0.4, "HFR {hfr} is not near the floor");
     }
 
     #[test]
