@@ -142,6 +142,49 @@ The exposure document is the central data exchange mechanism. Each exposure
 produces one document — a sidecar JSON file that lives alongside the FITS file.
 The document accumulates data as it flows through the system.
 
+### Ground rules
+
+Two rules decide what the document holds and where `rp` reads a
+frame's facts from:
+
+1. **The sidecar is the record; the FITS header is an export.** All of
+   `rp`'s data about a frame goes into the sidecar, at whatever
+   fidelity it needs, and `rp` reads it from there. The
+   [FITS header](#fits-header) is a copy written so that other
+   programs can work with the frames `rp` writes. The copy may be
+   lossy, and it is not guaranteed to be complete: a fact can be
+   rounded, folded to ASCII, or left out. `rp` never reads a fact back
+   from a header. Beyond the cards that describe the pixel data
+   itself (`BITPIX`, `NAXIS*`, `BSCALE`, `BZERO`, `BLANK`), the one
+   card it reads is `DOC_ID`, and only to match a FITS file to its
+   document
+   ([Document Resolution](#document-resolution)). A FITS file with no
+   sidecar, such as one another program wrote, gives `rp` its pixels
+   and nothing else.
+2. **The sidecar records the exposure as it was taken.** Every fact
+   about the exposure is copied into the document at capture time:
+   what the devices reported, and the configuration in force, the
+   optical train's data included. A later config edit cannot reach
+   back and change what a frame says about itself. `camera_id` and
+   `train_id` name what took the frame; they are labels, not lookups.
+   No consumer resolves a past frame's facts through them against the
+   live config.
+
+So the header never carries a fact the sidecar lacks. Where it does
+today, the sidecar is missing a field. These are not yet in line with
+the rules:
+
+- The train's `aperture_mm` and focal ratio, and the configured site's
+  latitude and longitude, reach the header (`APTDIA`, `FOCRATIO`,
+  `SITELAT`, `SITELONG`) without being recorded in the sidecar.
+- `optics` is all-or-nothing: when one of its inputs is unknown, the
+  whole block is left out, while the header still writes `FOCALLEN`
+  and `XPIXSZ`/`YPIXSZ` from the inputs it has.
+- Train data the sidecar does not record at all: the filter's
+  configured `wavelength_nm`, and the terminal focuser's
+  `microns_per_step` (both reported by
+  [`get_train_info`](#train-optics)).
+
 ### Core Fields (owned by `rp`)
 
 ```json
@@ -235,8 +278,8 @@ metadata, never gating capture.
 doing while the frame was exposed. Like `optics`, each is auxiliary: a
 failed read drops that one field (logged at `debug!`), never the
 capture, and an unavailable field is omitted (absent, not `null`). The
-FITS header carries the same values ([FITS header](#fits-header)); the
-sidecar stays the authority.
+FITS header exports the same values ([FITS header](#fits-header)); the
+sidecar is the record ([Ground rules](#ground-rules)).
 
 - `exposure_started_at` — when the exposure began, RFC 3339 UTC. It is
   the camera's own record, ASCOM `LastExposureStartTime`, read after
@@ -560,12 +603,15 @@ full UUID as a fallback authority.
 Third-party tools — ASTAP, PixInsight, Siril, astrometry.net — read
 the standard FITS keywords, not the sidecar: plate-solve hints,
 calibration matching, archival lineage and stacking-time weighting all
-come from the header. So the primary HDU carries a portable copy of the
+come from the header. So the primary HDU carries an export of the
 document's core fields, and a frame stays self-describing after it
-leaves `rp` without its sidecar. The sidecar remains the authority; the
-header is written from the same capture-time values in the same step.
-The keyword set below is a contract, pinned field by field in
-`services/rp/tests/features/capture_fits_header.feature`.
+leaves `rp` without its sidecar. The export goes one way
+([Ground rules](#ground-rules)): it is written from the document's
+capture-time values in the same step, it may be lossy, and `rp` never
+reads a fact back from it. The keyword set below is what `rp` writes
+today, pinned field by field in
+`services/rp/tests/features/capture_fits_header.feature`. It is not a
+promise that every fact in the document reaches the header.
 
 | Keyword | Type | Value | Present when |
 |---|---|---|---|
