@@ -112,6 +112,44 @@ build --local_resources=omnisim=35
 # Use the stable Rust toolchain channel for Bazel builds.
 build --@rules_rust//rust/toolchain/channel=stable
 
+# `--config=clippy` runs clippy over first-party Rust targets through rules_rust's
+# aspect: one `Clippy` action per target, keyed on its sources, its deps'
+# metadata, its lint files and clippy.toml, so the remote cache serves every
+# crate a change does not reach. Run it through tools/ci/bazel-clippy.sh, as
+# bazel.yml does on each OS leg after `bazel build` (which makes it the only
+# clippy that lints `#[cfg(windows)]` code before a merge): the script also
+# checks the inputs below and lints the `manual` targets `//...` skips.
+#
+# The deny set comes from each target's `lint_config` — an
+# `extract_cargo_lints` reading the crate's Cargo.toml `[lints]`, so Cargo and
+# Bazel enforce one list. A target without one is linted with clippy's
+# defaults only, and that includes the three `cargo_build_script` build.rs
+# binaries: the macro does not pass `lint_config` through.
+#
+# Each target is linted with the feature set its BUILD rule compiles, not
+# Cargo's two passes (check.yml's `stable / clippy`): a test target built with
+# `mock` is linted with `mock`, the production library beside it without.
+#
+# The two settings sit on `build`, not `build:clippy`: a Starlark flag that
+# changes between invocations discards the analysis cache, and neither one
+# enters any action but clippy's. `-Dwarnings` is explicit because the aspect
+# adds it on its own only for a target with no `lint_config`; without it a
+# clippy warning would pass, and be cached as passing.
+#
+# The clippy_checks output group ALONE (no `+`): a clippy run builds what the
+# Clippy actions need (dependency metadata) and nothing else — no linking —
+# so it also works on a target that cannot link here, which is why bazel.yml
+# can name the `manual` targets `//...` would skip.
+#
+# --keep_going: one run reports every crate's findings, not just the first
+# failing crate's. CI already has it from `build:remote-cache`; this gives a
+# local run the same.
+build --@rules_rust//rust/settings:clippy.toml=//:clippy.toml
+build --@rules_rust//rust/settings:clippy_flag=-Dwarnings
+build:clippy --aspects=@rules_rust//rust:defs.bzl%rust_clippy_aspect
+build:clippy --output_groups=clippy_checks
+build:clippy --keep_going
+
 # Drop debuginfo from Bazel-built artifacts. CI only needs pass/fail, not debug
 # symbols, and debuginfo bloats the rlibs/test binaries the remote cache moves
 # over the wire — keeping them small matters for a LAN cache and keeps CAS
@@ -133,15 +171,28 @@ build --@rules_rust//rust/settings:extra_rustc_flags=-Cdebuginfo=0
 # `bazel build //...` costs ~6 % more; cached, nothing.
 build --@rules_rust//rust/settings:per_crate_rustc_flag=external/@-Copt-level=1
 
-# That line applies in every compilation mode: .bazelrc cannot condition a
+# Keeping them in step takes a second flag. Cargo's dev profile keeps
+# `debug-assertions = true` at every opt-level and says so to rustc
+# (`-C debug-assertions=on` on each dependency), but rustc's own default is
+# "on only at opt-level 0" — so the line above alone turns debug assertions,
+# and the overflow checks that follow them, OFF in every dependency. That
+# changes more than which asserts run: it changes types. mio's `IoSource`
+# carries a `#[cfg(debug_assertions)]` `AtomicUsize`, so tokio's sockets are
+# interior-mutable under Cargo and plain under Bazel, and clippy's
+# `must_use_candidate` — which skips a function taking an interior-mutable
+# argument — fired under Bazel on nineteen methods Cargo's clippy passes.
+build --@rules_rust//rust/settings:per_crate_rustc_flag=external/@-Cdebug-assertions=on
+
+# Both lines apply in every compilation mode: .bazelrc cannot condition a
 # line on `-c`, and the flag takes no select. Under a bare `-c opt` rules_rust
-# emits `--codegen=opt-level=3` and the flag above still follows it, leaving
-# the dependencies at level 1. Nothing here builds with Bazel in opt mode
-# (release artifacts come from `cargo build --release`); an optimized Bazel
-# build goes through `--config=opt`, whose per-crate flag lands last and puts
-# the dependencies back at level 3.
+# emits `--codegen=opt-level=3` and the flags above still follow it, leaving
+# the dependencies at level 1 with debug assertions on. Nothing here builds
+# with Bazel in opt mode (release artifacts come from `cargo build --release`);
+# an optimized Bazel build goes through `--config=opt`, whose per-crate flags
+# land last and put the dependencies back at level 3 without assertions.
 build:opt --compilation_mode=opt
 build:opt --@rules_rust//rust/settings:per_crate_rustc_flag=external/@-Copt-level=3
+build:opt --@rules_rust//rust/settings:per_crate_rustc_flag=external/@-Cdebug-assertions=off
 
 # --- Platform-specific config -----------------------------------------------
 

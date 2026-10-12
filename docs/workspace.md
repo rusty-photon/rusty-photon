@@ -815,12 +815,13 @@ remain the single source of truth for dependency versions, and Bazel's
 `crate_universe` reads them. The repo root holds `MODULE.bazel` and `BUILD.bazel`;
 `bazel test //...` runs every target except those tagged `requires-cargo` or
 `conformu`, the BDD suites included. The required PR
-checks are `bazel / <os>` (build + test on Linux/macOS/Windows), `bazel coverage`,
-plus the Cargo `stable / fmt` and `stable / clippy` lint jobs (Bazel does not run
-rustfmt/clippy). `bazel/cargo target parity` and the Cargo build/test jobs run
-nightly as a safety net (coverage is Bazel-only), as do the `windows / clippy` +
-`macos / clippy` legs that enforce the clippy deny set on OS-cfg'd code the
-ubuntu gate never compiles. `bazel build //... && bazel test //...` is
+checks are `bazel / <os>` (build + clippy + test on Linux and Windows; the
+macOS leg runs on pushes to main only), `bazel coverage`, plus the Cargo `stable / fmt` and `stable / clippy` lint jobs (Bazel
+runs no rustfmt, and its clippy step lints each target's Bazel feature set
+rather than Cargo's two passes). `bazel/cargo target parity` and the Cargo
+build/test jobs run nightly as a safety net (coverage is Bazel-only), as do the
+`windows / clippy` + `macos / clippy` legs that enforce the clippy deny set on
+OS-cfg'd code in Cargo's feature shapes. `bazel build //... && bazel test //...` is
 the local pre-commit loop (see [docs/skills/pre-push.md](skills/pre-push.md)).
 
 Any commit that changes `Cargo.lock` or any workspace `Cargo.toml` (the root's

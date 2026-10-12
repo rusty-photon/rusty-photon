@@ -66,6 +66,13 @@ async fn then_solves_serialized(world: &mut PlateSolverWorld) {
     // true server-side ordering regardless of how the client is scheduled.
     // Each child writes its own uniquely-named file; a shared append file
     // dropped writes across processes on Windows.
+    //
+    // The spawn time is the file's NAME (`<nanos>-<pid>`); the file itself is
+    // empty, because a second `write` after the create is a step a child the
+    // wrapper kills could miss. That leaves one assumption, and it is a timing
+    // one: each child reaches `record_spawn` before its 100ms deadline. A
+    // child a loaded runner holds past that is killed with no file, and the
+    // count assertion below fails.
     let dir = world
         .spawn_dir_path
         .as_ref()
@@ -73,12 +80,14 @@ async fn then_solves_serialized(world: &mut PlateSolverWorld) {
     let mut spawns: Vec<u128> = std::fs::read_dir(dir)
         .expect("read spawn dir")
         .map(|entry| {
-            let path = entry.expect("spawn dir entry").path();
-            std::fs::read_to_string(&path)
-                .expect("read spawn file")
-                .trim()
+            let name = entry.expect("spawn dir entry").file_name();
+            let name = name.to_str().expect("spawn file name is UTF-8");
+            let (nanos, _pid) = name
+                .split_once('-')
+                .expect("spawn file name is <nanos>-<pid>");
+            nanos
                 .parse::<u128>()
-                .expect("spawn timestamp parses as u128 ns")
+                .expect("spawn file name starts with the spawn time in u128 ns")
         })
         .collect();
     assert_eq!(

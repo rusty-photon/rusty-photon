@@ -19,12 +19,16 @@
 | act | `curl -s https://raw.githubusercontent.com/nektos/act/master/install.sh \| sudo bash` | Local CI runner |
 
 **Keep stable current: the clippy gate requires clippy ≥ 1.99.** CI installs
-whatever stable is current (`dtolnay/rust-toolchain@stable`), and the
-workspace's lint attributes track it: an older clippy rejects the tree under
+whatever stable is current (`dtolnay/rust-toolchain@stable`). That is
+deliberate: Cargo's toolchain is not pinned, so each release's new lints
+reach the tree on the first run after it ships, without waiting on a bump.
+The workspace's lint attributes track it: an older clippy rejects the tree under
 `-D warnings` — 1.97 does not know `clippy::unused_async_trait_impl`, and 1.98
 reports the `#[expect(clippy::suboptimal_flops)]`s that only 1.99's widened
 detection fulfils as unfulfilled. Run `rustup update stable` when a new stable
-ships, before the clippy passes below. Each stable bump can add newly-denied
+ships, before the clippy passes below. Bazel's own Rust pin (`MODULE.bazel`)
+moves with it for the same reason: the `bazel clippy` step runs that
+toolchain's clippy. Each stable bump can add newly-denied
 lints; the `beta / clippy` census files them as `beta-clippy` issues ~6 weeks
 ahead (docs/plans/archive/workspace-lints.md, "Standing consequences").
 Absorb them before the release with a change that is clean on **both**
@@ -57,9 +61,10 @@ clippy 1.99 does not lint `suboptimal_flops` inside a `const fn` body, and
 ## Procedure
 
 > **Bazel is the per-PR gate.** The required checks are
-> `bazel / {ubuntu,windows}-latest` (build + test), `bazel coverage`, and
-> the Cargo `stable / fmt` + `stable / clippy` lint jobs (Bazel does not run
-> rustfmt/clippy). `bazel / macos-latest` is **not** a PR check — it runs on
+> `bazel / {ubuntu,windows}-latest` (build + clippy + test), `bazel coverage`,
+> and the Cargo `stable / fmt` + `stable / clippy` lint jobs (Bazel runs no
+> rustfmt, and its clippy lints each target's Bazel feature set rather than
+> Cargo's two passes). `bazel / macos-latest` is **not** a PR check — it runs on
 > push-to-main and nightly, so a macOS-only break is caught on main within
 > minutes of the merge rather than blocking the PR. `bazel/cargo target
 > parity`, plus the Cargo build / test / hack / msrv jobs, run nightly and do
@@ -68,6 +73,7 @@ clippy 1.99 does not lint `suboptimal_flops` inside a `const fn` body, and
 >
 > ```bash
 > bazel build //... && bazel test //...                       # bazel / <os> (build + tests incl. BDD; OmniSim suites need OMNISIM_PATH/OMNISIM_DIR)
+> tools/ci/bazel-clippy.sh                                    # bazel / <os> `bazel clippy` step
 > bazel coverage --config=coverage //...                      # bazel coverage (needs OmniSim)
 > cargo fmt --check                                           # `stable / fmt`
 > cargo clippy --all-targets --all-features -- -D warnings    # `stable / clippy` pass 1
@@ -232,8 +238,10 @@ still surfaces in the nightly `--workspace --all-features` build and the off-PR
 
 ### check.yml
 
-`fmt` and stable `clippy` run on every PR + push to main (required PR gates,
-because Bazel does not run rustfmt/clippy). The `clippy-os`, `hack`, and `msrv`
+`fmt` and stable `clippy` run on every PR + push to main (required PR gates:
+Bazel runs no rustfmt, and its `bazel clippy` step lints the Bazel targets'
+feature sets, not Cargo's two passes — see *Clippy under Bazel* below). The
+`clippy-os`, `hack`, and `msrv`
 jobs run on push to main, the nightly schedule, and `workflow_dispatch` —
 skipped on PRs via `if: github.event_name != 'pull_request'`. ("Off-PR" below =
 that set.) `clippy (beta)` is narrower still: schedule and `workflow_dispatch`
@@ -252,14 +260,16 @@ cucumber defaults under which a suite can exit 0 having proved nothing.
 | **hack** | `cargo hack --feature-powerset check` | cargo-hack | Off-PR |
 | **msrv** | `cargo msrv verify` | cargo-msrv | Off-PR |
 
-**`clippy-os` is the only clippy in CI that compiles OS-gated code.** The
-required stable gate runs on ubuntu, so `#[cfg(windows)]` / `#[cfg(target_os =
-"macos")]` production code is outside it — and Bazel cannot substitute (it runs
-no clippy, and its `-Dwarnings` is rustc's set, which never evaluates
-`clippy::` tool lints). The `windows / clippy` + `macos / clippy` legs close
-that hole off-PR (#984): a violation lands on main and surfaces within minutes
-of the merge (push) or overnight (schedule, via the `check-nightly` tracking
-issue) rather than failing only a Windows/macOS contributor's pre-commit hook.
+**OS-gated code is linted twice, in different feature shapes.** The required
+stable gate runs on ubuntu, so `#[cfg(windows)]` / `#[cfg(target_os =
+"macos")]` production code is outside it. bazel.yml's `bazel clippy` step lints
+it on every PR's Windows leg (and on the macOS leg after a push to main) — but
+only in the feature sets the Bazel targets compile (*Clippy under Bazel*,
+below). The `windows / clippy` + `macos / clippy` legs add Cargo's two shapes
+off-PR (#984): a violation that only those shapes reach lands on main and
+surfaces within minutes of the merge (push) or overnight (schedule, via the
+`check-nightly` tracking issue) rather than failing only a Windows/macOS
+contributor's pre-commit hook.
 
 **Run it locally when your change adds OS-gated code — you do not need those
 hosts.** clippy only *checks*: it neither links nor runs tests, so a crate
@@ -269,7 +279,10 @@ reproduces a `clippy-os` failure exactly.
 **Run both passes per target** — `clippy-os` runs both, for the reasons under
 *Every clippy job runs two passes* below, and the default-features one is what
 compiles code behind `not(feature = ...)`. An all-features-only run can
-therefore miss the very violation this is here to catch.
+therefore miss the very violation this is here to catch. (The `bazel clippy`
+step on the Windows leg reproduces only from a Windows host — a Linux box
+cannot build the Bazel Windows targets — so these cargo commands are the local
+check either way.)
 
 ```sh
 rustup target add x86_64-pc-windows-msvc aarch64-apple-darwin
@@ -358,8 +371,8 @@ runs `--workspace` (no narrowing job).
 | **macos / windows** | same, per host OS (all three jobs shard the BDD step) | -- | Off-PR |
 
 The `macos` job runs with `RUSTFLAGS=-Dwarnings`. Nothing on a PR denies rustc
-warnings for macOS — `bazel / macos-latest` is off the PR gate and clippy runs
-on ubuntu only — so this job is where a macOS-only warning is enforced rather
+warnings for macOS — `bazel / macos-latest` is off the PR gate and no PR clippy
+runs on macOS — so this job is where a macOS-only warning is enforced rather
 than merely printed.
 
 This workflow does not collect coverage — `bazel coverage` (bazel-coverage.yml)
@@ -663,11 +676,12 @@ is a different task with a version gate of its own — see
 ## Quick Reference
 
 Pre-push checks (copy-paste) — these mirror the full required gate (`bazel / <os>`,
-`bazel coverage`, `stable / fmt`, `stable / clippy`); `fmt`/`clippy` are the
-Cargo-only lint jobs Bazel doesn't cover:
+`bazel coverage`, `stable / fmt`, `stable / clippy`); `fmt` and Cargo's two
+clippy passes are the lint shapes Bazel doesn't cover:
 
 ```bash
 bazel build //... && bazel test //...                     # bazel / <os> (build + tests incl. BDD; OmniSim suites need OMNISIM_PATH/OMNISIM_DIR)
+tools/ci/bazel-clippy.sh                                  # bazel / <os> `bazel clippy` step
 bazel coverage --config=coverage //...                    # bazel coverage (heavier; needs OmniSim)
 cargo fmt --check                                         # stable / fmt
 cargo clippy --all-targets --all-features -- -D warnings  # stable / clippy pass 1
@@ -692,8 +706,10 @@ bazel test //...           # filters out tagged `requires-cargo` and `conformu`;
 rustc for first-party code, so the CI Bazel jobs fail on any warning rather than
 printing it. That is what makes a warning firing on only one target OS a gate:
 the *required* `cargo clippy -D warnings` runs on ubuntu only, and CI builds all
-three platforms. (Clippy's own OS gap is covered off-PR by check.yml's
-`windows / clippy` + `macos / clippy` legs — see the check.yml section above.)
+three platforms. (Clippy's own OS gap is covered on PRs by the `bazel clippy`
+step on the Windows leg. macOS-only code is linted only after a merge, by the
+macOS leg on pushes to main and off-PR by check.yml's `macos / clippy`, which
+runs beside `windows / clippy`; see the check.yml section above.)
 A plain local `bazel build //...` does *not* deny — the pre-commit hook already
 runs `cargo clippy -- -D warnings` (a superset of rustc's lints) for your host
 platform, and a Linux host cannot build the macOS/Windows targets where the
@@ -708,6 +724,61 @@ than `--config=ci` (which also disables your disk cache):
 bazel build --@rules_rust//rust/settings:extra_rustc_flags=-Dwarnings \
             --@rules_rust//rust/settings:extra_exec_rustc_flags=-Dwarnings //...
 ```
+
+### Clippy under Bazel
+
+`tools/ci/bazel-clippy.sh` runs clippy over every first-party Rust target
+through rules_rust's `rust_clippy_aspect` (`--config=clippy`) — the same
+script the `bazel clippy` step of each `bazel / <os>` leg runs, so run it
+as-is locally. Each target is one cached `Clippy` action, so a PR re-lints
+only the crates its change reaches; the rest are remote-cache hits. What it
+needs from you:
+
+- **Every Rust target sets `lint_config = ":lints"`**, and its package
+  declares the `extract_cargo_lints` target named `lints` that reads the
+  crate's Cargo.toml `[lints]` (copy it from any existing BUILD.bazel). A
+  target without one is linted with clippy's defaults and passes, so the
+  script asks `bazel query` for any such target and fails on it. The three
+  `cargo_build_script` targets are the exception — the macro cannot pass the
+  attribute through.
+- **No opt-out tags.** The script also fails on a Rust target carrying one of
+  the tags rules_rust's aspect skips (`noclippy`, `no_lint`, …): fix what
+  clippy reports instead.
+- **`manual` targets are linted too.** `//...` skips them, but the script
+  names them explicitly: `--config=clippy` builds the `clippy_checks` output
+  group alone, which never links, so a target that is manual only because it
+  cannot link without a vendor SDK (svbony-camera's binary) still lints. So
+  do the three `cargo_build_script` build.rs binaries, which rules_rust tags
+  `manual`. They get clippy's defaults, since the macro does not pass
+  `lint_config` through.
+- **Bazel lints the feature set each target compiles**, not Cargo's two passes.
+  A `rust_test` built with `crate_features = ["mock"]` is linted with `mock`,
+  the production `rust_library` beside it without. The Cargo `stable / clippy`
+  job covers the two Cargo shapes, so a finding can appear on one side only.
+- **Bazel's Rust pin tracks current stable**, not the MSRV (`MODULE.bazel`,
+  `rust.toolchain`): this step runs that toolchain's clippy, and the tree's
+  lint attributes track stable clippy (see *Keep stable current* above). Bump
+  it in the first PR after each stable release, together with its `sha256s`
+  (`scripts/rust-toolchain-sha256s.sh <version>` prints them from the
+  release's GPG-signed channel manifest). Until then the two clippies are on
+  different releases, and code written against the new one — an `#[expect]`
+  only it fulfils — fails `bazel clippy`. After the bump merges, rebuild the
+  pool runner templates (docs/skills/proxmox-runner-pool.md), which pre-fetch
+  the pinned toolchain. Until then, every pool PR job downloads the new one
+  over the WAN.
+- **The MSRV is held more narrowly than when Bazel compiled with it.** Both
+  clippies deny `incompatible_msrv` (a std API newer than the MSRV) on every
+  leg they run, Windows included. A newer *language* feature is caught only
+  in Linux-compiled code: the coverage nightly sits in the MSRV's nightly
+  cycle and fails `bazel coverage` with E0658, and check.yml's nightly `msrv`
+  job builds with the MSRV itself — both on Linux. A newer language feature
+  in `#[cfg(windows)]` or macOS-only code reaches main unflagged, so check it
+  by hand when you write such code (`cargo +1.98.1 check --target …`, as
+  under *Run it locally when your change adds OS-gated code* above). Bazel's
+  clippy learns the MSRV from `clippy.toml`'s `msrv` key — rules_rust sets no
+  `CARGO_PKG_RUST_VERSION` — so that key must equal the root Cargo.toml's
+  `rust-version`; `cargo clippy` only warns when they differ, so
+  `tools/ci/bazel-clippy.sh` fails on it.
 
 ### Refreshing MODULE.bazel.lock
 

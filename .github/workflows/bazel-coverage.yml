@@ -191,52 +191,8 @@ jobs:
       - name: bazel coverage
         run: |
           set -uo pipefail
-          REMOTE_FLAGS=(--config=remote-cache)
-          if [[ -n "${RP_LAN_CACHE_GRPC_URL:-}" ]]; then
-            # Pool venue with the remote downloader on (RP_LAN_ASSET_API;
-            # endpoint derived by the mask step): the LAN bazel-remote serves
-            # the cache AND the Remote Asset API on one gRPC endpoint. The
-            # cache channel must be gRPC too: Bazel refuses a remote
-            # downloader next to an http(s) --remote_cache. Bazel routes
-            # EVERY repository download through the asset Fetch RPC, and
-            # bazel-remote gates that RPC behind write auth even for a pure
-            # cache hit — so only jobs holding the write credential
-            # (push-to-main) fetch via the LAN and populate it; that covers
-            # the pinned nightly coverage toolchain, the single most
-            # expensive cold fetch a clone can hit after a pin bump. An
-            # anonymous (PR) job gets UNAUTHENTICATED on every downloader
-            # fetch, and the local fallback turns that into the direct WAN
-            # download it would have performed anyway — one failed LAN
-            # round-trip and a log warning, no behavior change. The flags
-            # stay on anonymous jobs even so: both venues run one code
-            # path, and a bazel-remote that learns to serve anonymous
-            # checksummed hits from CAS would make PR fetches LAN hits
-            # with no workflow change.
-            REMOTE_FLAGS+=(--remote_cache="$RP_LAN_CACHE_GRPC_URL")
-            REMOTE_FLAGS+=(--experimental_remote_downloader="$RP_LAN_CACHE_GRPC_URL")
-            REMOTE_FLAGS+=(--experimental_remote_downloader_local_fallback)
-            if [[ -n "$LAN_CACHE_WRITE_AUTH" ]]; then
-              REMOTE_FLAGS+=(--remote_header="Authorization=$LAN_CACHE_WRITE_AUTH")
-              REMOTE_FLAGS+=(--remote_downloader_header="Authorization=$LAN_CACHE_WRITE_AUTH")
-            else
-              REMOTE_FLAGS+=(--remote_upload_local_results=false)
-            fi
-          elif [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
-            # Pool venue: --remote_cache after --config=remote-cache overrides
-            # the cloud URL (last single-valued flag wins) while keeping the
-            # config's timeout settings. Push-to-main writes the LAN cache's
-            # coverage namespace; PR jobs on the pool read it anonymously.
-            REMOTE_FLAGS+=(--remote_cache="$RP_LAN_CACHE_URL")
-            if [[ -n "$LAN_CACHE_WRITE_AUTH" ]]; then
-              REMOTE_FLAGS+=(--remote_header="Authorization=$LAN_CACHE_WRITE_AUTH")
-            else
-              REMOTE_FLAGS+=(--remote_upload_local_results=false)
-            fi
-          elif [[ -n "$CACHE_WRITE_TOKEN" ]]; then
-            REMOTE_FLAGS+=(--remote_header="Authorization=Bearer $CACHE_WRITE_TOKEN")
-          else
-            REMOTE_FLAGS+=(--remote_upload_local_results=false)
-          fi
+          # Remote-cache routing for this job's venue and credentials.
+          source tools/ci/bazel-remote-flags.sh
           # --config=coverage selects the nightly channel + --cfg=coverage_nightly
           # + --combined_report=lcov + first-party instrumentation filter +
           # --test_timeout=900 (.bazelrc). --test_tag_filters=-requires-cargo

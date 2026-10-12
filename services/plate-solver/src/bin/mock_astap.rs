@@ -15,9 +15,12 @@
 //! file at `<path>`, one arg per line, with a trailing blank line as record
 //! separator. Used for end-to-end argv-flow assertions.
 //!
-//! `MOCK_ASTAP_SPAWN_DIR=<dir>` (any mode) writes this invocation's spawn
-//! time — nanoseconds since the Unix epoch — to its own uniquely-named file
-//! in `<dir>`. Each child writes its own file so concurrent invocations never
+//! `MOCK_ASTAP_SPAWN_DIR=<dir>` (any mode) records this invocation's spawn
+//! time — nanoseconds since the Unix epoch — as the NAME of its own empty
+//! file `<nanos>-<pid>` in `<dir>`: creating the file publishes the name in
+//! one step, so a child killed at any point leaves either no file or a
+//! complete record, never a half-written one. Each child creates its own file
+//! so concurrent invocations never
 //! share a handle (cross-process appends to one file proved lossy on
 //! Windows). The single-flight BDD scenario reads the directory to observe
 //! server-side spawn ordering directly, which is immune to the client-side
@@ -154,8 +157,11 @@ fn write_argv(path: &str, args: &[String]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Write this invocation's spawn time — nanoseconds since the Unix epoch —
-/// to its own uniquely-named file under `dir`. `SystemTime` (wall clock) is
+/// Record this invocation's spawn time — nanoseconds since the Unix epoch —
+/// as the name of its own empty file under `dir`. Nothing is written into
+/// it: a second write after the create is a step a killed child can miss,
+/// leaving an empty file a reader of the contents would misparse.
+/// `SystemTime` (wall clock) is
 /// used rather than `Instant` because the timestamps are compared across
 /// separate `mock_astap` processes and `Instant`'s epoch is process-local.
 ///
@@ -170,7 +176,7 @@ fn record_spawn(dir: &str) -> std::io::Result<()> {
         .map_or(0, |d| d.as_nanos());
     std::fs::create_dir_all(dir)?;
     let path = std::path::Path::new(dir).join(format!("{nanos}-{}", std::process::id()));
-    std::fs::write(path, nanos.to_string())
+    std::fs::File::create(path).map(drop)
 }
 
 fn fits_path_from_argv(args: &[String]) -> Option<PathBuf> {

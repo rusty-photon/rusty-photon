@@ -485,9 +485,12 @@ the test sets before spawning the wrapper:
 
 Setting `MOCK_ASTAP_ARGV_OUT=<file>` (any mode) writes the received
 argv to the named file, used for end-to-end argv-flow assertions.
-Setting `MOCK_ASTAP_SPAWN_DIR=<dir>` (any mode) writes each invocation's
-spawn time (ns since the Unix epoch) to its own uniquely-named file in
-`<dir>`. The single-flight BDD scenario reads the directory to assert
+Setting `MOCK_ASTAP_SPAWN_DIR=<dir>` (any mode) records each invocation's
+spawn time (ns since the Unix epoch) as the *name* of its own empty file,
+`<nanos>-<pid>`, in `<dir>`. Creating the file publishes the name in one
+step, so a child killed at any point leaves either no file or a complete
+record, never a half-written one. The single-flight BDD scenario reads the
+file names to assert
 serialization from the children's actual spawn ordering, rather than
 from client-side HTTP-completion timing (which was jitter-prone on
 loaded CI runners). Per-child files avoid a shared handle — cross-process

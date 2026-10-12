@@ -1,5 +1,16 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# The crate's `[lints]` table (inherited from `[workspace.lints]`), read from
+# Cargo.toml so Cargo and Bazel enforce one lint set. Every Rust target below
+# names it as `lint_config`: rustc applies its rustc lints, and the clippy
+# aspect (`--config=clippy`, see .bazelrc) its clippy deny set.
+extract_cargo_lints(
+    name = "lints",
+    manifest = "Cargo.toml",
+    workspace = "//:Cargo.toml",
+)
 
 exports_files(
     [
@@ -69,6 +80,7 @@ rust_library(
     aliases = aliases(),
     crate_name = "qhy_camera",
     edition = "2021",
+    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
     deps = [_QHYCCD_REAL] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
@@ -79,6 +91,7 @@ rust_binary(
     srcs = ["src/main.rs"],
     aliases = aliases(),
     edition = "2021",
+    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     rustc_flags = _WINDOWS_DELAYLOAD_FLAGS,
     visibility = ["//visibility:public"],
@@ -113,6 +126,7 @@ rust_test(
         "mock",
         "simulation",
     ],
+    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -140,6 +154,7 @@ rust_library(
     ],
     crate_name = "qhy_camera",
     edition = "2021",
+    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     deps = [_QHYCCD_SIM] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
@@ -154,6 +169,7 @@ rust_binary(
         "simulation",
     ],
     edition = "2021",
+    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     deps = [
         ":qhy-camera_lib_sim",
@@ -180,6 +196,7 @@ rust_test(
         "QHY_CAMERA_BINARY": "$(rootpath :qhy-camera_sim)",
         "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :qhy-camera_sim)",
     },
+    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -220,6 +237,7 @@ rust_test(
         "QHY_CAMERA_BINARY": "$(rootpath :qhy-camera_sim)",
         "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :qhy-camera_sim)",
     },
+    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,

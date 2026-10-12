@@ -1,5 +1,16 @@
 load("@cr//:defs.bzl", "aliases", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "extract_cargo_lints")
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+# The crate's `[lints]` table (inherited from `[workspace.lints]`), read from
+# Cargo.toml so Cargo and Bazel enforce one lint set. Every Rust target below
+# names it as `lint_config`: rustc applies its rustc lints, and the clippy
+# aspect (`--config=clippy`, see .bazelrc) its clippy deny set.
+extract_cargo_lints(
+    name = "lints",
+    manifest = "Cargo.toml",
+    workspace = "//:Cargo.toml",
+)
 
 exports_files(
     [
@@ -30,6 +41,7 @@ rust_library(
     aliases = aliases(),
     crate_name = "planetarium_bridge",
     edition = "2021",
+    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
     deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
@@ -40,6 +52,7 @@ rust_binary(
     srcs = ["src/main.rs"],
     aliases = aliases(),
     edition = "2021",
+    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
     # Pin CARGO_PKG_NAME to the Cargo package name (rules_rust defaults it to
     # the Bazel target name), matching the other services.
@@ -57,6 +70,7 @@ rust_test(
     ),
     compile_data = ["pkg/doctor.toml"],
     crate = ":planetarium-bridge_lib",
+    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -88,6 +102,7 @@ rust_test(
         "PLANETARIUM_BRIDGE_BINARY": "$(rootpath :planetarium-bridge)",
         "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :planetarium-bridge)",
     },
+    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
@@ -120,6 +135,7 @@ rust_test(
         "PLANETARIUM_BRIDGE_BINARY": "$(rootpath :planetarium-bridge)",
         "RUST_COVERAGE_EXTRA_OBJECTS": "$(rootpath :planetarium-bridge)",
     },
+    lint_config = ":lints",
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,
