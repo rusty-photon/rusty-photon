@@ -1918,15 +1918,18 @@ The first analysis tool to implement. Behavioral contract:
 3. Suppress hot pixels in the copy that steps 4–5 smooth and threshold.
    A pixel is hot when it is above the detection threshold
    (`background_mean + threshold_sigma × background_stddev`) and none of
-   the 3×3 windows that contain it holds a star's body: at least five of
-   its pixels (in a full window, its median) above
-   `background_mean + 2 × background_stddev`, capped at the threshold.
-   Windows are clipped at the frame's edge. A hot pixel is replaced by
-   the median of the window centred on it (at an edge, the lower of the
-   two middle values). Every measurement in steps 7–8 still reads the
-   raw pixels. A hot pixel that falls inside a component's smoothed
-   footprint counts toward the component's area and border verdict, and
-   is left out of its measurements.
+   the 3×3 windows that contain it holds a star's body. A body is enough
+   of a window's pixels above `background_mean + 2 × background_stddev`,
+   capped at the threshold: at least five in a window on the pixel grid
+   (in a full window, its median), and at least six in a window on every
+   second row and column. Windows are clipped at the frame's edge. A hot
+   pixel is replaced by the median of the pixels of the grid window
+   centred on it that are not hot (the lower of the two middle values
+   for an even count), or by `background_mean` when all of them are.
+   Every measurement in steps 7–8 still reads the raw pixels. A hot
+   pixel that falls inside a component's smoothed footprint counts
+   toward the component's area and border verdict, and is left out of
+   its measurements.
 4. Apply Gaussian smoothing (small kernel, σ ≈ 1.0 px) to suppress noise.
 5. Threshold at `background_mean + threshold_sigma × background_stddev`.
 6. Connected-components labelling on the thresholded mask.
@@ -1970,6 +1973,21 @@ limit, centred on a pixel corner or undersampled, has only one to four
 pixels above the threshold, while the median of nine background pixels
 scatters by only about 0.4σ. A body level at the threshold erased up to
 18% of the stars on rig2's bin-2 frames and up to 42% at bin 4.
+
+**Why windows on every second row and column.** `rp` measures a colour
+camera's raw mosaic as it is. In a 2×2 Bayer pattern no 3×3 grid window
+holds more than four red or four blue pixels, so a star seen in one of
+those colours only, through a narrowband filter or a dual-band filter's
+Ha line, holds no body on the grid and would lose every pixel. The
+pixels two rows or columns apart are the pixel's own colour in every
+Bayer layout, so a window on that spacing sees such a star's body
+without `rp` knowing the sensor is a colour one. A hot cluster that fits
+in 2×2 puts one pixel in such a window and a line of hot pixels three,
+so both still go. These windows need six pixels, not five: with five, a
+hot pixel two pixels beyond the cross a bright compact star's core makes
+on that spacing completes a body and is kept. Measured on rig2's mono
+frames (18 frames, three parameter sets, 16,514 stars), six adds, drops
+or changes the measurement of 0.4% of the stars, five of 1%.
 
 **Why the HFR floor.** The body level is measured from the frame's
 global background, so where the sky is brighter than the frame's mean,
@@ -2017,9 +2035,19 @@ bin 4 (2026-09-09 frames), at `threshold_sigma` 5 and 8.
   faint star, or a bright one undersampled to a FWHM under about 1 px
   and centred near a pixel corner, whose four core pixels hold nearly
   all its light. Telling those from a hot cluster needs a defect map.
-- A cluster of five or more hot pixels within a 3×3 window holds a body
-  and survives suppression. If its flux is concentrated in one pixel,
-  the HFR floor rejects it; otherwise it is counted as a star.
+- A star seen in one colour only on a raw colour mosaic is measured at
+  half the resolution, so the undersampling limits in these caveats
+  double. In a noise-free
+  simulation at `threshold_sigma` 5, such a star 50σ bright is kept from
+  a FWHM of about 3 px on the mosaic and a 1000σ one from about 2 px;
+  the detector without these two steps found most 50σ ones down to
+  about 2 px. On rig2's mono frames reduced to their red pixels, the step
+  keeps 52–100% of the stars that detector finds at bin 1, 22–89% at
+  bin 2 and 7–13% of the compact ones at bins 3 and 4.
+- A cluster of five or more hot pixels within a 3×3 window, or six on
+  every second row and column, holds a body and survives suppression.
+  If its flux is concentrated in one pixel, the HFR floor rejects it;
+  otherwise it is counted as a star.
 - A star measures under the HFR floor when it is centred near a pixel's
   centre and undersampled: FWHM under about 1.1 px, or about 1.3 px for
   a faint star whose component is only its core and four neighbours. On

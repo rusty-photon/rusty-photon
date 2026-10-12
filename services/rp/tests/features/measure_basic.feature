@@ -9,10 +9,12 @@ Feature: Basic image measurement tool
   populated background fields -- the caller decides whether that is a failure.
 
   Hot pixels are not stars. Before smoothing, a pixel above the detection
-  threshold is replaced by the median of its 3x3 neighbourhood, unless a 3x3
-  window that contains it has a median more than 2 background deviations
-  above the background mean (or above the threshold, if that is lower), as
-  windows in and around a star do.
+  threshold is replaced by the median of the pixels around it that are not
+  hot, unless a 3x3 window that contains it holds at least five pixels more
+  than 2 background deviations above the background mean (or above the
+  threshold, if that is lower), as windows in and around a star do. A 3x3
+  window on every second row and column, which on a raw colour mosaic holds
+  one colour only, keeps the pixel with six such pixels.
   After measuring, a component whose half-flux radius is under 0.25 px is
   rejected. The real-frame scenario runs on a 512x512 crop of a QHY600M
   best-focus frame, whose twelve stars sit among the sensor's hot pixels.

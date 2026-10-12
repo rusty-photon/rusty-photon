@@ -42,13 +42,24 @@ use super::pixel::Pixel;
 pub const MIN_STAR_HFR: f64 = 0.25;
 
 /// How far above the background mean, in background standard deviations,
-/// a 3×3 window's median must be for the window to hold a star's body
-/// (capped at the detection threshold). The median of nine background
-/// pixels scatters by about 0.4 σ, so a median 2 σ up is signal, while
-/// a hot structure of up to four pixels leaves it in the background's
-/// noise. A level at the threshold would also erase the faint stars
-/// that have only one to four pixels above it.
+/// a window's cells must be to count toward a star's body (capped at the
+/// detection threshold); [`WINDOWS`] says how many make one. Five of a
+/// full grid window's nine is its median, and the median of nine
+/// background pixels scatters by about 0.4 σ, so a median 2 σ up is
+/// signal, while a hot structure of up to four pixels leaves it in the
+/// background's noise. A level at the threshold would also erase the
+/// faint stars that have only one to four pixels above it.
 const BODY_SIGMA: f64 = 2.0;
+
+/// The 3×3 windows suppression tests for a star's body, as the spacing of
+/// their cells in pixels and how many of the nine must be above the body
+/// level: the pixel grid, and every second row and column, which on a raw
+/// colour mosaic holds only the pixel's own colour. The second needs six:
+/// with five, a hot pixel two pixels beyond a bright compact star's core
+/// cross on that spacing completes a body with it and is kept. On rig2's
+/// mono frames, six adds, drops or changes the measurement of about 0.4%
+/// of the stars, five about 1%.
+const WINDOWS: [(usize, usize); 2] = [(1, 5), (2, 6)];
 
 /// A detected star.
 #[derive(Debug, Clone)]
@@ -114,7 +125,7 @@ pub fn detect_stars<T: Pixel>(
 
     // Clear hot pixels from a f64 copy of the input, then smooth it.
     let mut f64_data: Array2<f64> = view.mapv(super::pixel::Pixel::to_f64);
-    let hot = suppress_hot_pixels(view, &mut f64_data, threshold, body_level);
+    let hot = suppress_hot_pixels(view, &mut f64_data, threshold, body_level, background.mean);
     let smoothed = if params.smoothing_sigma > 0.0 && rows > 4 && cols > 4 {
         gaussian_filter(&f64_data, params.smoothing_sigma, 0, BorderMode::Reflect, 4)
     } else {
@@ -144,43 +155,59 @@ fn detection_levels(background: &BackgroundStats, threshold_sigma: f64) -> (f64,
 }
 
 /// Replace, in `data`, every hot pixel of `view` with the median of the
-/// 3×3 window centred on it, and return the hot pixels in row-major
-/// order. A pixel is hot when it is above `threshold` and none of the
-/// 3×3 windows that contain it holds a star's body: at least five of its
-/// pixels above `body_level`, which in a full window is its median.
+/// pixels around it that are not hot, and return the hot pixels in
+/// row-major order. A pixel is hot when it is above `threshold` and none
+/// of the 3×3 windows of [`WINDOWS`] that contain it holds a star's body:
+/// enough of its cells above `body_level`.
 ///
 /// Smoothing first would spread a hot pixel into a blob several pixels
 /// wide that passes the area filter. A structure of up to four bright
-/// pixels holds no body, so single hot pixels, pairs and 2×2 clusters
-/// go. So does a star with only one to four pixels above `body_level`:
-/// a faint one, or a bright one undersampled to a FWHM under about 1 px
-/// and centred near a pixel corner. Any other star keeps every pixel: a
-/// window around its core holds its body, and so does a window around
-/// the core side of every pixel of its profile. The same holds for the
-/// edge of any extended shape. Windows are read from `view`, so a
-/// replacement never feeds the next pixel's test, and they are clipped
-/// at the frame's edge.
+/// pixels holds no body on the pixel grid, and one that fits in 2×2 puts
+/// one pixel in a window on every second row and column, so single hot
+/// pixels, pairs and 2×2 clusters go. So does a star with only one to
+/// four pixels above `body_level`: a faint one, or a bright one
+/// undersampled to a FWHM under about 1 px and centred near a pixel
+/// corner. Any other star keeps every pixel: a window around its core
+/// holds its body, and so does a window around the core side of every
+/// pixel of its profile. The same holds for the edge of any extended
+/// shape. On a raw colour mosaic no grid window holds more than four red
+/// or four blue pixels, so a star seen in one of those colours only, as
+/// through a narrowband filter, is kept by the windows on every second
+/// row and column, which hold only its colour; that sees the star at
+/// half the resolution, so the undersampling limit doubles.
+///
+/// Windows are read from `view`, so a replacement never feeds the next
+/// pixel's test, and they are clipped at the frame's edge. A pixel whose
+/// clipped window is all hot, a 2×2 cluster in a corner, is replaced by
+/// `background_mean`.
 fn suppress_hot_pixels<T: Pixel>(
     view: &ArrayView2<T>,
     data: &mut Array2<f64>,
     threshold: f64,
     body_level: f64,
+    background_mean: f64,
 ) -> Vec<(usize, usize)> {
     let dim = view.dim();
-    let holds_body = |(r, c): (usize, usize)| {
-        window(dim, r, c)
+    let holds_body = |step: usize, needed: usize, (r, c): (usize, usize)| {
+        window(dim, r, c, step)
             .filter(|&cell| view.get(cell).is_some_and(|v| v.to_f64() > body_level))
             .count()
-            >= 5
+            >= needed
     };
-    let mut hot = Vec::new();
-    for ((r, c), raw) in view.indexed_iter() {
-        if raw.to_f64() <= threshold || window(dim, r, c).any(holds_body) {
-            continue;
-        }
+    let hot: Vec<(usize, usize)> = view
+        .indexed_iter()
+        .filter(|&((r, c), raw)| {
+            raw.to_f64() > threshold
+                && !WINDOWS.iter().any(|&(step, needed)| {
+                    window(dim, r, c, step).any(|centre| holds_body(step, needed, centre))
+                })
+        })
+        .map(|(cell, _)| cell)
+        .collect();
+    for &(r, c) in &hot {
+        let replacement = median_of_the_rest(view, &hot, r, c).unwrap_or(background_mean);
         if let Some(slot) = data.get_mut((r, c)) {
-            *slot = window_median(view, r, c);
-            hot.push((r, c));
+            *slot = replacement;
         }
     }
     debug!(
@@ -190,30 +217,47 @@ fn suppress_hot_pixels<T: Pixel>(
     hot
 }
 
-/// The cells of the 3×3 window centred on `(r, c)` that lie in a frame
-/// of `(rows, cols)`: nine inside it, six on an edge, four in a corner.
+/// The cells of the 3×3 window centred on `(r, c)`, `step` pixels apart,
+/// that lie in a frame of `(rows, cols)`: nine inside it, fewer at an edge.
 fn window(
     (rows, cols): (usize, usize),
     r: usize,
     c: usize,
+    step: usize,
 ) -> impl Iterator<Item = (usize, usize)> {
-    let col_range = c.saturating_sub(1)..=c.saturating_add(1).min(cols.saturating_sub(1));
-    (r.saturating_sub(1)..=r.saturating_add(1).min(rows.saturating_sub(1)))
-        .flat_map(move |rr| col_range.clone().map(move |cc| (rr, cc)))
+    let col_cells = axis_cells(c, step, cols);
+    axis_cells(r, step, rows).flat_map(move |rr| col_cells.clone().map(move |cc| (rr, cc)))
 }
 
-/// Median of the 3×3 window centred on `(r, c)`, clipped at the frame's
-/// edge; with an even count, the lower of the two middle values, so a
-/// hot pair in a four-cell corner window is replaced by background.
-fn window_median<T: Pixel>(view: &ArrayView2<T>, r: usize, c: usize) -> f64 {
-    let mut values: Vec<f64> = window(view.dim(), r, c)
+/// `centre` and the indices `step` either side of it that are under `len`.
+fn axis_cells(centre: usize, step: usize, len: usize) -> impl Iterator<Item = usize> + Clone {
+    [
+        centre.checked_sub(step),
+        Some(centre),
+        centre.checked_add(step),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(move |&i| i < len)
+}
+
+/// Median of the pixels of the 3×3 window centred on `(r, c)` that are not
+/// in `hot`, the hot pixels in row-major order; with an even count, the
+/// lower of the two middle values. `None` when every pixel is hot.
+fn median_of_the_rest<T: Pixel>(
+    view: &ArrayView2<T>,
+    hot: &[(usize, usize)],
+    r: usize,
+    c: usize,
+) -> Option<f64> {
+    let mut values: Vec<f64> = window(view.dim(), r, c, 1)
+        .filter(|cell| hot.binary_search(cell).is_err())
         .filter_map(|cell| view.get(cell).copied())
         .map(Pixel::to_f64)
         .collect();
-    // Never empty: `(r, c)` itself is in the frame.
-    let middle = values.len().saturating_sub(1) / 2;
+    let middle = values.len().checked_sub(1)? / 2;
     let (_, median, _) = values.select_nth_unstable_by(middle, f64::total_cmp);
-    *median
+    Some(*median)
 }
 
 /// Admit `pixels`, one component, as a star and measure it. The area
@@ -743,7 +787,7 @@ mod tests {
     /// `suppress_hot_pixels` over `arr` against the pinned background.
     fn suppressed(arr: &Array2<u16>) -> Array2<f64> {
         let mut data = arr.mapv(Pixel::to_f64);
-        suppress_hot_pixels(&arr.view(), &mut data, 1025.0, 1010.0);
+        suppress_hot_pixels(&arr.view(), &mut data, 1025.0, 1010.0, 1000.0);
         data
     }
 
@@ -793,6 +837,27 @@ mod tests {
     fn suppression_replaces_a_hot_pair_in_the_corner() {
         let data = suppressed(&flat_with(&[(0, 0), (0, 1)], 30_000));
         assert_eq!((data[[0, 0]], data[[0, 1]]), (1000.0, 1000.0));
+    }
+
+    /// A 2×2 cluster against the top edge: the clipped windows of its top
+    /// pixels hold four hot pixels of six, so each is replaced by the
+    /// median of the two that are not hot.
+    #[test]
+    fn suppression_replaces_a_two_by_two_cluster_on_the_edge() {
+        let cluster = [(0, 5), (0, 6), (1, 5), (1, 6)];
+        let data = suppressed(&flat_with(&cluster, 30_000));
+        let values: Vec<f64> = cluster.iter().map(|&cell| data[cell]).collect();
+        assert_eq!(values, [1000.0; 4]);
+    }
+
+    /// A 2×2 cluster in the corner: the corner pixel's window holds only
+    /// the cluster, so that pixel takes the background mean.
+    #[test]
+    fn suppression_replaces_a_two_by_two_cluster_in_the_corner() {
+        let cluster = [(0, 0), (0, 1), (1, 0), (1, 1)];
+        let data = suppressed(&flat_with(&cluster, 30_000));
+        let values: Vec<f64> = cluster.iter().map(|&cell| data[cell]).collect();
+        assert_eq!(values, [1000.0; 4]);
     }
 
     /// Stars with a 2 px FWHM, from near the detection limit to bright:
@@ -859,6 +924,56 @@ mod tests {
         assert_eq!(data[[32, 32]], 60_000.0);
     }
 
+    /// `make_gaussian`'s star seen in the red pixels of an RGGB mosaic
+    /// only, as through a narrowband filter: every pixel off an even row
+    /// and column is background.
+    fn one_colour(cx: f64, cy: f64, sigma: f64, peak: f64) -> Array2<u16> {
+        let mut arr = make_gaussian(64, 64, cx, cy, sigma, peak, 1000.0);
+        for ((r, c), v) in arr.indexed_iter_mut() {
+            if r % 2 == 1 || c % 2 == 1 {
+                *v = 1000;
+            }
+        }
+        arr
+    }
+
+    /// A 3 px FWHM star in one colour, centred on one of its pixels and
+    /// between four: no grid window holds more than four of its pixels,
+    /// but the windows on every second row and column hold its body.
+    #[test]
+    fn suppression_leaves_a_star_seen_in_one_colour_untouched() {
+        for centre in [32.0, 33.0] {
+            let arr = one_colour(centre, centre, 1.3, 3_000.0);
+            assert_eq!(suppressed(&arr), arr.mapv(Pixel::to_f64), "centre {centre}");
+        }
+    }
+
+    /// A 2.4 px FWHM star in one colour, centred between two of its
+    /// pixels on a row: the windows on every second row and column hold
+    /// six of its pixels above the body level, and none holds more.
+    #[test]
+    fn suppression_leaves_a_compact_star_seen_in_one_colour_untouched() {
+        let arr = one_colour(33.0, 32.0, 1.0, 500.0);
+        assert_eq!(suppressed(&arr), arr.mapv(Pixel::to_f64));
+    }
+
+    #[test]
+    fn star_seen_in_one_colour_is_detected() {
+        let stars = detect_any(&one_colour(32.0, 32.0, 1.3, 3_000.0));
+        assert_eq!(stars.len(), 1, "got {} stars", stars.len());
+    }
+
+    /// At the frame's edge, a window on every second row and column leaves
+    /// out the cells it has no room for, rather than taking the next pixel,
+    /// which on a mosaic is another colour.
+    #[test]
+    fn window_on_every_second_row_and_column_is_clipped_at_the_edge() {
+        let near: Vec<_> = window((10, 10), 1, 1, 2).collect();
+        let far: Vec<_> = window((10, 10), 8, 8, 2).collect();
+        assert_eq!(near, [(1, 1), (1, 3), (3, 1), (3, 3)]);
+        assert_eq!(far, [(6, 6), (6, 8), (8, 6), (8, 8)]);
+    }
+
     #[test]
     fn isolated_hot_pixel_is_not_a_star() {
         let stars = detect_any(&flat_with(&[(32, 32)], 30_000));
@@ -875,6 +990,16 @@ mod tests {
     fn two_by_two_hot_cluster_is_not_a_star() {
         let cluster = [(32, 32), (32, 33), (33, 32), (33, 33)];
         let stars = detect_any(&flat_with(&cluster, 30_000));
+        assert!(stars.is_empty(), "got {} stars", stars.len());
+    }
+
+    /// A row of hot pixels, a bad column's segment: a grid window holds at
+    /// most three of them, and so does a window on every second row and
+    /// column.
+    #[test]
+    fn hot_line_is_not_a_star() {
+        let line: Vec<(usize, usize)> = (28..37).map(|c| (32, c)).collect();
+        let stars = detect_any(&flat_with(&line, 30_000));
         assert!(stars.is_empty(), "got {} stars", stars.len());
     }
 
@@ -991,7 +1116,7 @@ mod tests {
         let bg = super::super::background::estimate_background(&arr.view()).unwrap();
         let (threshold, body_level) = detection_levels(&bg, 5.0);
         let mut data = arr.mapv(Pixel::to_f64);
-        let hot = suppress_hot_pixels(&arr.view(), &mut data, threshold, body_level);
+        let hot = suppress_hot_pixels(&arr.view(), &mut data, threshold, body_level, bg.mean);
         let kept: Vec<_> = CROP_HOT_PIXELS
             .iter()
             .filter(|cell| hot.binary_search(cell).is_err())
