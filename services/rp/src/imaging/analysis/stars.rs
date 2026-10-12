@@ -143,10 +143,7 @@ pub fn detect_stars<T: Pixel>(
         .collect();
     debug!(
         stars = stars.len(),
-        outside_area_range = rejected.area,
-        on_border = rejected.border,
-        no_flux = rejected.no_flux,
-        under_hfr_floor = rejected.hfr_floor,
+        ?rejected,
         "star detection admitted stars and rejected components"
     );
     stars
@@ -191,10 +188,11 @@ fn detection_levels(background: &BackgroundStats, threshold_sigma: f64) -> (f64,
 /// around its core holds its body, and so does a window around the core
 /// side of every pixel of its profile. The same holds for the edge of any
 /// extended shape whose pixels above `body_level` are at least two
-/// pixels wide. A line of them one pixel wide along a row, a column or a
-/// diagonal, a hot line or a faint, thin trail, puts at most three in any
-/// window and goes; at another angle the steps of its pixels put more in
-/// some windows, so a thin trail there loses only some pixels. On a
+/// pixels wide. A line of them one pixel wide, one per column or one per
+/// row at any angle, puts at most three in any window and goes, as a hot
+/// line does. A faint, thin trail at a slant is wider than that near its
+/// steps from one row or column to the next, where windows can hold a
+/// body, so it keeps some pixels there and loses the rest. On a
 /// raw colour mosaic no grid window holds more than four red or four
 /// blue pixels, so a star seen in one of those colours only, as through
 /// a narrowband filter, is kept by the windows on every second row and
@@ -1066,12 +1064,13 @@ mod tests {
     }
 
     /// What `build_star` makes of one component of `arr`, with `hot` its
-    /// hot pixels, against the pinned background: the star, or the
-    /// rejection it counted.
+    /// hot pixels, against the pinned background and at `min_area`: the
+    /// star, or the rejection it counted.
     fn verdict(
         arr: &Array2<u16>,
         pixels: Vec<(usize, usize)>,
         hot: &[(usize, usize)],
+        min_area: usize,
     ) -> Result<Star, Rejections> {
         let mut rejected = Rejections::default();
         build_star(
@@ -1079,10 +1078,27 @@ mod tests {
             pixels,
             hot,
             1000.0,
-            &default_params(1, 2000),
+            &default_params(min_area, 2000),
             &mut rejected,
         )
         .ok_or(rejected)
+    }
+
+    /// The pixels of the 7×7 square centred on (32, 32), `plateau`'s.
+    fn square_at_the_centre() -> Vec<(usize, usize)> {
+        (29..36)
+            .flat_map(|r| (29..36).map(move |c| (r, c)))
+            .collect()
+    }
+
+    #[test]
+    fn component_under_min_area_is_rejected_for_its_area() {
+        let result = verdict(&plateau(None), square_at_the_centre(), &[], 50).map(|s| s.centroid_x);
+        let area = Rejections {
+            area: 1,
+            ..Rejections::default()
+        };
+        assert_eq!(result, Err(area));
     }
 
     /// A star 3 px from the edge whose component reaches column 0 only at
@@ -1095,7 +1111,7 @@ mod tests {
             .flat_map(|r| (1..=6).map(move |c| (r, c)))
             .collect();
         pixels.push((8, 0));
-        let result = verdict(&arr, pixels, &[(8, 0)]).map(|s| s.bounding_box);
+        let result = verdict(&arr, pixels, &[(8, 0)], 1).map(|s| s.bounding_box);
         let border = Rejections {
             border: 1,
             ..Rejections::default()
@@ -1106,7 +1122,8 @@ mod tests {
     #[test]
     fn component_of_hot_pixels_only_is_no_star() {
         let arr = flat_with(&[(8, 8), (8, 9)], 30_000);
-        let result = verdict(&arr, vec![(8, 8), (8, 9)], &[(8, 8), (8, 9)]).map(|s| s.total_flux);
+        let result =
+            verdict(&arr, vec![(8, 8), (8, 9)], &[(8, 8), (8, 9)], 1).map(|s| s.total_flux);
         let no_flux = Rejections {
             no_flux: 1,
             ..Rejections::default()
@@ -1119,7 +1136,8 @@ mod tests {
     #[test]
     fn component_with_no_flux_above_the_background_is_no_star() {
         let arr = flat_with(&[], 1000);
-        let result = verdict(&arr, vec![(8, 8), (8, 9)], &[]).map(|s| (s.centroid_x, s.centroid_y));
+        let result =
+            verdict(&arr, vec![(8, 8), (8, 9)], &[], 1).map(|s| (s.centroid_x, s.centroid_y));
         let no_flux = Rejections {
             no_flux: 1,
             ..Rejections::default()
@@ -1131,6 +1149,19 @@ mod tests {
     fn component_whose_flux_sits_in_one_pixel_is_rejected() {
         let stars = detect_any(&plateau(Some(60_000)));
         assert!(stars.is_empty(), "got {} stars", stars.len());
+    }
+
+    /// The spike on the plateau carries most of the square's flux, so its
+    /// HFR is about 0, and the floor is what rejects it.
+    #[test]
+    fn component_whose_flux_sits_in_one_pixel_is_rejected_by_the_floor() {
+        let arr = plateau(Some(60_000));
+        let result = verdict(&arr, square_at_the_centre(), &[], 1).map(|s| s.centroid_x);
+        let hfr_floor = Rejections {
+            hfr_floor: 1,
+            ..Rejections::default()
+        };
+        assert_eq!(result, Err(hfr_floor));
     }
 
     /// A star centred on a pixel, undersampled until its core holds just

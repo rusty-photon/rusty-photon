@@ -2062,11 +2062,12 @@ second row and column, keeps every pixel: a window around its core holds
 its body, and so does a window around the core side of every pixel of
 its profile. The same holds for the edge of any extended shape whose
 pixels above the body level are at least two pixels wide, such as a
-defocused star's annulus. A line of them one pixel wide along a row, a
-column or a diagonal, a line of hot pixels or a faint, thin trail, puts
-at most three in any window and is removed; at another angle, the steps
-of its pixels put more in some windows, so a thin trail there loses
-only some of its pixels (see the caveats). A star the step keeps whole
+defocused star's annulus. A line of them one pixel wide, one per column
+or one per row at any angle, puts at most three in any window and is
+removed, as a line of hot pixels is. A faint, thin trail at a slant is
+wider than that near its steps from one row or column to the next,
+where windows can hold a body, so it keeps some pixels there and loses
+the rest (see the caveats). A star the step keeps whole
 therefore has the same footprint, and the same verdict at any
 `min_area`, as without it; the caveats below list the stars it does not
 keep whole. The body level sits at 2σ above the background mean,
@@ -2144,8 +2145,9 @@ bin 4 (2026-09-09 frames), at `threshold_sigma` 5 and 8.
   are 10σ above the background loses pixels only when its FWHM across is
   at most about 1.1 px, a 20σ one at most about 0.8 px and a 50σ one at
   most about 0.6 px. A trail along a row or a column, centred on it, is
-  then removed whole. One at an angle between those and a diagonal loses
-  only some pixels along its ridge, so it is measured with gaps: less
+  then removed whole. One at an angle between those and a diagonal keeps
+  some pixels near its steps from one row or column to the next and
+  loses the rest of its ridge, so it is measured with gaps: less
   flux, a different HFR, and where a gap cuts its smoothed footprint,
   several detections instead of one.
 - A star seen in one colour only on a raw colour mosaic is measured at
