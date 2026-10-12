@@ -2008,10 +2008,25 @@ The first analysis tool to implement. Behavioral contract:
 **Algorithm (in order)**:
 1. Load pixels (image-cache hit or `rp-fits` read).
 2. Estimate background via sigma-clipped mean/stddev.
-3. Apply Gaussian smoothing (small kernel, σ ≈ 1.0 px) to suppress noise.
-4. Threshold at `background_mean + threshold_sigma × background_stddev`.
-5. Connected-components labelling on the thresholded mask.
-6. Filter components: pixel area in `[min_area, max_area]`; reject
+3. Suppress hot pixels in the copy that steps 4–5 smooth and threshold.
+   A pixel is hot when it is above the detection threshold
+   (`background_mean + threshold_sigma × background_stddev`) and none of
+   the 3×3 windows that contain it holds a star's body. A body is enough
+   of a window's pixels above `background_mean + 2 × background_stddev`,
+   capped at the threshold: at least five in a window on the pixel grid
+   (in a full window, its median), and at least six in a window on every
+   second row and column. Windows are clipped at the frame's edge. A hot
+   pixel is replaced by the median of the pixels of the grid window
+   centred on it that are not hot (the lower of the two middle values
+   for an even count), or by `background_mean` when all of them are.
+   Every measurement in steps 7–8 still reads the raw pixels. A hot
+   pixel that falls inside a component's smoothed footprint counts
+   toward the component's area and border verdict, and is left out of
+   its measurements.
+4. Apply Gaussian smoothing (small kernel, σ ≈ 1.0 px) to suppress noise.
+5. Threshold at `background_mean + threshold_sigma × background_stddev`.
+6. Connected-components labelling on the thresholded mask.
+7. Filter components: pixel area in `[min_area, max_area]`; reject
    components touching the image border. Saturated components are *not*
    rejected — they are flagged (see `saturated_star_count`). Saturated
    stars carry real signal: bright in-focus stars routinely clip at
@@ -2020,11 +2035,121 @@ The first analysis tool to implement. Behavioral contract:
    make HFR-vs-focus non-monotonic and break auto-focus, so the policy
    is to measure them and let downstream consumers decide whether to
    weight or warn.
-7. For each surviving component, compute intensity-weighted centroid and
+8. For each surviving component, compute intensity-weighted centroid and
    per-star HFR (radial flux accumulation to half of total flux).
    Centroiding uses background-subtracted flux to avoid bbox-center bias.
-8. Return aggregate HFR (median of per-star HFRs), star count,
+   Reject a component whose HFR is under **0.25 px**: its flux sits in
+   the one pixel under its centroid.
+9. Return aggregate HFR (median of per-star HFRs), star count,
    saturated-star count, and background.
+
+**Why hot pixels are removed before smoothing.** Smoothing spreads a
+single hot pixel into a blob of 5–25 pixels that passes any `min_area` a
+caller would choose for real stars, and its HFR, measured on the raw
+pixels, is close to 0. On an uncooled QHY600M those blobs outnumbered the
+stars many times over and pulled the median HFR to about 0.004 px, so
+`auto_focus` saw a flat curve. The only way out was a `min_area` large
+enough to exclude them, which also excluded the compact stars at best
+focus. PixInsight's star detector and Hocus Focus also remove hot pixels
+before they blur, for the same reason.
+
+A structure of up to four bright pixels holds no body, so single hot
+pixels, pairs and 2×2 clusters are removed. A star with more than four
+pixels above the body level keeps every pixel: a window around its core
+holds its body, and so does a window around the core side of every pixel
+of its profile; the same holds for the edge of any extended shape, such
+as a defocused star's annulus. A star the step keeps therefore has the
+same footprint, and the same verdict at any `min_area`, as without it;
+the caveats below list the stars it does not keep. The body level sits at 2σ above the background mean,
+not at the detection threshold, because a faint star at the detection
+limit, centred on a pixel corner or undersampled, has only one to four
+pixels above the threshold, while the median of nine background pixels
+scatters by only about 0.4σ. A body level at the threshold erased up to
+18% of the stars on rig2's bin-2 frames and up to 42% at bin 4.
+
+**Why windows on every second row and column.** `rp` measures a colour
+camera's raw mosaic as it is. In a 2×2 Bayer pattern no 3×3 grid window
+holds more than four red or four blue pixels, so a star seen in one of
+those colours only, through a narrowband filter or a dual-band filter's
+Ha line, holds no body on the grid and would lose every pixel. The
+pixels two rows or columns apart are the pixel's own colour in every
+Bayer layout, so a window on that spacing sees such a star's body
+without `rp` knowing the sensor is a colour one. A hot cluster that fits
+in 2×2 puts one pixel in such a window and a line of hot pixels three,
+so both still go. These windows need six pixels, not five: with five, a
+hot pixel two pixels beyond the cross a bright compact star's core makes
+on that spacing completes a body and is kept. Measured on rig2's mono
+frames (18 frames, three parameter sets, 16,514 stars), six adds, drops
+or changes the measurement of 0.4% of the stars, five of 1%.
+
+**Why the HFR floor.** The body level is measured from the frame's
+global background, so where the sky is brighter than the frame's mean,
+in a gradient, a hot pixel's windows can reach the body level and the
+pixel survives suppression. It survives as a single bright pixel whose
+HFR is close to 0, and the floor removes it. A window built on the local
+background instead does not let it through, but on rig2's frames that
+kept only 23–57% of the stars on a frame of defocused donuts, whose
+annulus raises the local background. On rig2's frames the floor removes 14–103 such
+detections per frame. In a frame taken hours or days later, 96–100% of
+them are bright at the same sensor pixel, as a hot pixel is; for the
+stars that rate is 0–5%. The floor also catches a cosmic-ray hit.
+
+**Measured on rig2's QHY600M** (uncooled, 530 mm). The nine sweep frames of one
+2026-09-26 `auto_focus` run plus its confirmation frame were measured at
+`threshold_sigma 8`, `min_area 6`, `max_area 2000`. Without step 3 and
+the HFR floor, every frame reported 566–747 detections with a median HFR
+of 0.002–0.003 px. With them, the frames report 36–202 stars, and the
+HFRs trace the V-curve (3.77, 2.44, 1.75, 1.14, 0.95, 1.00, 1.35, 2.16
+and 2.49 px). The confirmation frame reports 146 stars at 0.87 px,
+against 2 at the settings that run had to use (`threshold_sigma 10`,
+`min_area 40`). At those settings, all ten frames report the same
+result with and without the two steps. Of the detections the detector
+without these steps measures at an HFR of 0.6 px or more (its stars,
+and any hot cluster that large), it keeps 86–99% at bin 1 (2026-09-08
+and 2026-09-26 frames), 97–99% at bin 2, 92–98% at bin 3 and 85–95% at
+bin 4 (2026-09-09 frames), at `threshold_sigma` 5 and 8.
+
+**Caveats**:
+- A hot pixel next to a star's body, where a window around it holds
+  the body, is not removed. A faint one adds to that star's flux and
+  pulls its HFR down. One that outshines the star pulls the centroid
+  onto itself, so the star measures under the HFR floor and is dropped.
+  Removing it needs a defect map built from dark frames, which `rp` does
+  not have.
+- Where the sky is more than 2σ above the frame's mean (a gradient, amp
+  glow), a hot pixel's windows can hold a body and it survives
+  suppression. The HFR floor removes it when it carries half its
+  component's flux; otherwise it counts as a star. On rig2's frames, the
+  stars sitting on a pixel that is also bright in a frame taken hours or
+  days later exceed the chance rate by 1–2% at bin 2 and
+  `threshold_sigma` 5 (at most 1% at 8), and not at all at bin 1.
+- A star whose only pixels more than 2σ above the background are its
+  brightest one to four looks like a hot structure and is removed: a
+  faint star, or a bright one undersampled to a FWHM under about 1 px
+  and centred near a pixel corner, whose four core pixels hold nearly
+  all its light. Telling those from a hot cluster needs a defect map.
+- A star seen in one colour only on a raw colour mosaic is measured at
+  half the resolution, so the undersampling limits in these caveats
+  double. In a noise-free
+  simulation at `threshold_sigma` 5, such a star 50σ bright is kept from
+  a FWHM of about 3 px on the mosaic and a 1000σ one from about 2 px;
+  the detector without these two steps found most 50σ ones down to
+  about 2 px. On rig2's mono frames reduced to their red pixels, the step
+  keeps 52–100% of the stars that detector finds at bin 1, 22–89% at
+  bin 2 and 7–13% of the compact ones at bins 3 and 4.
+- A cluster of five or more hot pixels within a 3×3 window, or six on
+  every second row and column, holds a body and survives suppression.
+  If its flux is concentrated in one pixel, the HFR floor rejects it;
+  otherwise it is counted as a star.
+- A star measures under the HFR floor when it is centred near a pixel's
+  centre and undersampled: FWHM under about 1.1 px, or about 1.3 px for
+  a faint star whose component is only its core and four neighbours. On
+  rig2's bin-2 frames, with stars at a FWHM of about 1.5 px, 96–100% of
+  what the floor removed were hot pixels; a setup that samples its stars
+  more coarsely at best focus loses some of them there.
+- Neither step needs a large `min_area`. A value chosen to exclude hot
+  pixels now only excludes faint and compact stars. A `min_area` in the
+  single digits admits every star the threshold finds.
 
 **Error cases**:
 - Neither `document_id` nor `image_path` provided → MCP error mentioning
@@ -2121,10 +2246,11 @@ exposure.
   effectively applied.
 
 **Algorithm**: same pipeline `measure_basic` runs internally — sigma-
-clipped background → Gaussian smoothing (σ ≈ 1 px) → threshold at
-`mean + threshold_sigma × stddev` → 4-connectivity BFS → area / border
-filter → intensity-weighted centroiding. Saturated components are
-flagged, not rejected (same rationale as `measure_basic`).
+clipped background → hot-pixel suppression → Gaussian smoothing (σ ≈
+1 px) → threshold at `mean + threshold_sigma × stddev` → 4-connectivity
+BFS → area / border filter → intensity-weighted centroiding → the
+0.25 px HFR floor. Saturated components are flagged, not rejected (same
+rationale as `measure_basic`), and the `measure_basic` caveats apply.
 
 **Error cases**:
 - Neither `document_id` nor `image_path` → MCP error mentioning
@@ -4564,8 +4690,9 @@ and read their `image_analysis` sections.
 - The confirmation frame costs one exposure per run and is always
   taken. It catches a fit that landed away from the measured
   minimum; it cannot catch a sweep whose every sample was dense yet
-  wrong (frames dominated by hot pixels, say) — that is the
-  detector's problem, see the `measure_basic` caveats.
+  wrong (frames dominated by artifacts the detector still admits,
+  say) — that is the detector's problem, see the `measure_basic`
+  caveats.
 - The retry is bounded and never changes the step. `max_attempts`
   sweeps with the same parameters, the grid shifted toward the
   minimum after a monotonic curve, is what N.I.N.A., Ekos, SGP and
