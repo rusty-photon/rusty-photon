@@ -13,7 +13,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use rusty_photon_doctor_checks::claims::{self, BlockEntry, EntryView, ListEntry, ListError};
+use rusty_photon_doctor_checks::claims::{
+    self, BlockEntry, EntryView, ListEntry, ListError, Numbering,
+};
 pub use rusty_photon_server_config::AlpacaServerConfig;
 use serde::{Deserialize, Serialize};
 
@@ -103,40 +105,19 @@ fn wheel_errors(list: &[UsbDeviceEntry]) -> Vec<ListError> {
                 }
             }
         }
-        let Some(number) = entry.filter_wheel_number else {
-            continue;
-        };
-        let earlier = list.get(..index).unwrap_or_default();
-        if let Some(first) = earlier
-            .iter()
-            .position(|e| e.filter_wheel_number == Some(number))
-        {
-            errors.push(ListError::entry(
-                index,
-                "filter_wheel_number",
-                format!("filter_wheel_number {number} is also usb_devices[{first}]'s"),
-            ));
-        }
     }
-    let wheels = list
-        .iter()
-        .filter(|e| e.filter_wheel_number.is_some())
-        .count();
-    let missing: Vec<String> = (0..wheels)
-        .filter_map(|n| u32::try_from(n).ok())
-        .filter(|n| !list.iter().any(|e| e.filter_wheel_number == Some(*n)))
-        .map(|n| n.to_string())
-        .collect();
-    if !missing.is_empty() {
-        let verb = if missing.len() == 1 { "is" } else { "are" };
-        errors.push(ListError::list(format!(
-            "filter wheel numbers must run 0..M-1, and {} {verb} missing; a gap is rejected \
-             rather than filled, so renumber the wheels above it",
-            missing.join(", ")
-        )));
-    }
+    let numbers: Vec<Option<u32>> = list.iter().map(|e| e.filter_wheel_number).collect();
+    errors.extend(claims::numbering_errors(&numbers, WHEEL_NUMBERS));
     errors
 }
+
+/// A list's declared wheels, numbered as its cameras are.
+const WHEEL_NUMBERS: Numbering<'static> = Numbering {
+    field: "filter_wheel_number",
+    numbers: "filter wheel numbers",
+    bound: "M",
+    renumber: "wheels",
+};
 
 /// One `usb_devices` entry: the camera on `usb_port` is served at
 /// `device_number`, and the CFW on it, when it declares one, at

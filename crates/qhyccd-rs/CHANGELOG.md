@@ -22,7 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   misses a wheel. A new `cfw_plug_misses` field, with the same struct literal
   note as `departure_file`. Simulation only.
 - `examples/enumerate.rs`, a hand-run probe that prints each camera's id and
-  model with nothing opened, and fails if any camera reads open afterwards.
+  model without opening one (`GetQHYCCDModel` takes the id, so no
+  `OpenQHYCCD` precedes it).
 - `cfw_probe` modes `detect [init]` (the wheel's plug, port and slot-count
   queries on a handle no init has run on, then, with `init`, after one) and
   `hold <s>` (hold the camera open and initialised, reading the wheel's status,
@@ -121,6 +122,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Sdk::new()` releases the SDK's resource (`ReleaseQHYCCDResource`) when the
+  scan or an id read fails after `InitQHYCCDResource` succeeded. It returned
+  the error with the initialisation still held, and no `Sdk` whose drop would
+  release it, so every failed call left one unreleased.
 - `GetQHYCCDModel` takes the camera's id, as the SDK header declares
   (`GetQHYCCDModel(char *id, char *model)`), not its handle. `libqhyccd-sys`
   declared it with the handle, so `Camera::get_model` passed an open handle where

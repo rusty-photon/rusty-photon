@@ -114,7 +114,7 @@ Download and install the QHYCCD SDK from the [official website](https://www.qhyc
 a hardware probe for a filter wheel driven through its camera (see its header for the modes)
 
 [examples/enumerate.rs](https://github.com/rusty-photon/rusty-photon/blob/main/crates/qhyccd-rs/examples/enumerate.rs) —
-lists each camera's SDK id and model without opening any, and checks none was opened
+lists each camera's SDK id and model without this crate opening any
 
 ## Two Stages: Enumerate, Then Probe
 

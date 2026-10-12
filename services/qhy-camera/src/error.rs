@@ -11,8 +11,7 @@ use thiserror::Error;
 /// Errors raised while building / binding the qhy-camera server.
 #[derive(Debug, Error)]
 pub enum QhyCameraError {
-    /// The QHYCCD SDK could not be initialized (`Sdk::new`), or could not
-    /// read an enumerated camera's model.
+    /// The QHYCCD SDK could not be initialized or enumerate (`Sdk::new`).
     #[error("QHYCCD SDK initialization failed: {0}")]
     Sdk(String),
 

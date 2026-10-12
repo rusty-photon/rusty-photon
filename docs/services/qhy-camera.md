@@ -1133,8 +1133,8 @@ which a list replaces with the declaration.
   | `QHY600M` (SDK id `QHY600M-3b1ea54688eb9f9d7`) | `1618:c601`, bus-reported description `QHY600U3G20-20230614`, no USB serial | `rig2` (Windows 11, SDK 24.01.09), 2026-10-11 |
   | `QHY5III678M` (SDK id `QHY5III678M-4a94be45b27d3aa79`) | `1618:0679`, bus-reported description `QHY678U3G20-20230106`, no USB serial | the same |
 
-  The models are what `qhyccd-rs`'s `examples/enumerate` printed, opening
-  nothing; the bus records are sysfs's on Linux and the PnP properties' on
+  The models are what `qhyccd-rs`'s `examples/enumerate` printed, with no
+  `OpenQHYCCD` before the model read; the bus records are sysfs's on Linux and the PnP properties' on
   Windows (plan D2). A simulation build also knows its fabricated
   `QHY178M-Simulated` under `f178`, a product id chosen for the simulation (U7).
 

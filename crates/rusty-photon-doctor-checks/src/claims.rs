@@ -239,31 +239,75 @@ pub fn validate_list(entries: &[EntryView<'_>]) -> Vec<ListError> {
                 format!("usb_port {port} is also usb_devices[{first}]'s"),
             ));
         }
-        if let Some(first) = earlier
-            .iter()
-            .position(|e| e.device_number == entry.device_number)
-        {
+    }
+    let numbers: Vec<Option<u32>> = entries.iter().map(|e| Some(e.device_number)).collect();
+    errors.extend(numbering_errors(&numbers, DEVICE_NUMBERS));
+    errors
+}
+
+/// A number the entries of a list that set it must keep exactly `0..N-1`:
+/// what [`numbering_errors`] names it by.
+#[derive(Debug, Clone, Copy)]
+pub struct Numbering<'a> {
+    /// The entry field that holds it (`device_number`).
+    pub field: &'a str,
+    /// The numbers, as an error names them (`device numbers`).
+    pub numbers: &'a str,
+    /// The letter the range's bound is written with (`N`).
+    pub bound: &'a str,
+    /// What a gap asks to renumber, above it (`entries`).
+    pub renumber: &'a str,
+}
+
+/// Every list's `device_number`.
+const DEVICE_NUMBERS: Numbering<'static> = Numbering {
+    field: "device_number",
+    numbers: "device numbers",
+    bound: "N",
+    renumber: "entries",
+};
+
+/// Every rule `numbers` break: each number set once, and the numbers set
+/// exactly `0..count-1`.
+///
+/// `count` is how many are set, and `numbers` holds each entry's number, in
+/// list order, `None` where an entry sets none. A gap is rejected rather than
+/// filled, so every number served is one the operator wrote and a typo cannot
+/// become a phantom device.
+#[must_use]
+pub fn numbering_errors(numbers: &[Option<u32>], numbering: Numbering<'_>) -> Vec<ListError> {
+    let mut errors = Vec::new();
+    for (index, number) in numbers.iter().enumerate() {
+        let Some(number) = number else {
+            continue;
+        };
+        let earlier = numbers.get(..index).unwrap_or_default();
+        if let Some(first) = earlier.iter().position(|n| *n == Some(*number)) {
             errors.push(ListError::entry(
                 index,
-                "device_number",
+                numbering.field,
                 format!(
-                    "device_number {} is also usb_devices[{first}]'s",
-                    entry.device_number
+                    "{} {number} is also usb_devices[{first}]'s",
+                    numbering.field
                 ),
             ));
         }
     }
-    let missing: Vec<String> = (0..entries.len())
+    let set = numbers.iter().flatten().count();
+    let missing: Vec<String> = (0..set)
         .filter_map(|n| u32::try_from(n).ok())
-        .filter(|n| !entries.iter().any(|e| e.device_number == *n))
+        .filter(|n| !numbers.contains(&Some(*n)))
         .map(|n| n.to_string())
         .collect();
     if !missing.is_empty() {
         let verb = if missing.len() == 1 { "is" } else { "are" };
         errors.push(ListError::list(format!(
-            "device numbers must run 0..N-1, and {} {verb} missing; a gap is \
-             rejected rather than filled, so renumber the entries above it",
-            missing.join(", ")
+            "{} must run 0..{}-1, and {} {verb} missing; a gap is rejected rather than \
+             filled, so renumber the {} above it",
+            numbering.numbers,
+            numbering.bound,
+            missing.join(", "),
+            numbering.renumber
         )));
     }
     errors
@@ -2360,6 +2404,37 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("serial"), "{error}");
+    }
+
+    const WHEELS: Numbering<'static> = Numbering {
+        field: "wheel",
+        numbers: "wheel numbers",
+        bound: "M",
+        renumber: "wheels",
+    };
+
+    #[test]
+    fn a_numbering_counts_only_the_entries_that_set_it() {
+        assert_eq!(
+            numbering_errors(&[None, Some(0), None, Some(1)], WHEELS),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn a_numbering_names_a_repeat_by_the_later_entry_and_a_gap_by_the_list() {
+        let errors: Vec<String> = numbering_errors(&[Some(0), None, Some(0)], WHEELS)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            errors,
+            [
+                "usb_devices[2]: wheel 0 is also usb_devices[0]'s",
+                "usb_devices: wheel numbers must run 0..M-1, and 1 is missing; a gap is \
+                 rejected rather than filled, so renumber the wheels above it",
+            ]
+        );
     }
 
     #[test]

@@ -133,6 +133,47 @@ fn cfw_probe(camera: &Camera) -> Result<bool> {
     Ok(has_filter_wheel)
 }
 
+/// `ScanQHYCCD`, then `GetQHYCCDId` for each camera it found: the cameras on
+/// the bus, none opened. Needs `InitQHYCCDResource` to have succeeded.
+#[cfg(not(feature = "simulation"))]
+fn scan_cameras() -> Result<Vec<Camera>> {
+    let num_cameras = match unsafe { ScanQHYCCD() } {
+        QHYCCD_ERROR => {
+            let error = QHYError::Sdk { op: "scan_cameras" };
+            tracing::error!(error = ?error);
+            Err(error)
+        }
+        num => Ok(num),
+    }?;
+
+    // Capacity is only a hint, so a count too large to address just
+    // means no preallocation — the scan below is bounded by that
+    // same count.
+    let hint = usize::try_from(num_cameras).unwrap_or(0);
+    let mut cameras = Vec::with_capacity(hint);
+    for index in 0..num_cameras {
+        let id = {
+            let mut c_id: [c_char; 32] = [0; 32];
+            unsafe {
+                if GetQHYCCDId(index, c_id.as_mut_ptr()) == QHYCCD_SUCCESS {
+                    let id = CStr::from_ptr(c_id.as_ptr())
+                        .to_str()
+                        .inspect_err(|error| tracing::error!(error = ?error))?;
+                    Ok(id.to_owned())
+                } else {
+                    let error = QHYError::Sdk {
+                        op: "get_camera_id",
+                    };
+                    tracing::error!(error = ?error);
+                    Err(error)
+                }
+            }
+        }?;
+        cameras.push(Camera::new(id));
+    }
+    Ok(cameras)
+}
+
 impl Sdk {
     /// Creates a new instance of the SDK and enumerates the cameras on the bus:
     /// `InitQHYCCDResource`, `ScanQHYCCD`, and `GetQHYCCDId` for each camera
@@ -142,7 +183,9 @@ impl Sdk {
     /// # Errors
     /// Returns [`QHYError::Sdk`] if SDK initialisation, the camera scan, or
     /// reading a scanned camera's id fails, or [`QHYError::InvalidUtf8`] if
-    /// an id is not UTF-8.
+    /// an id is not UTF-8. A scan or an id read that fails after the
+    /// initialisation succeeded releases it again (`ReleaseQHYCCDResource`):
+    /// no `Sdk` is returned whose drop would.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::Sdk;
@@ -156,41 +199,11 @@ impl Sdk {
             tracing::error!(error = ?error);
             return Err(error);
         }
-        let num_cameras = match unsafe { ScanQHYCCD() } {
-            QHYCCD_ERROR => {
-                let error = QHYError::Sdk { op: "scan_cameras" };
-                tracing::error!(error = ?error);
-                Err(error)
+        let cameras = scan_cameras().inspect_err(|_| {
+            if unsafe { ReleaseQHYCCDResource() } != QHYCCD_SUCCESS {
+                tracing::error!(error = ?QHYError::Sdk { op: "close_sdk" });
             }
-            num => Ok(num),
-        }?;
-
-        // Capacity is only a hint, so a count too large to address just
-        // means no preallocation — the scan below is bounded by that
-        // same count.
-        let hint = usize::try_from(num_cameras).unwrap_or(0);
-        let mut cameras = Vec::with_capacity(hint);
-        for index in 0..num_cameras {
-            let id = {
-                let mut c_id: [c_char; 32] = [0; 32];
-                unsafe {
-                    if GetQHYCCDId(index, c_id.as_mut_ptr()) == QHYCCD_SUCCESS {
-                        let id = CStr::from_ptr(c_id.as_ptr())
-                            .to_str()
-                            .inspect_err(|error| tracing::error!(error = ?error))?;
-                        Ok(id.to_owned())
-                    } else {
-                        let error = QHYError::Sdk {
-                            op: "get_camera_id",
-                        };
-                        tracing::error!(error = ?error);
-                        Err(error)
-                    }
-                }
-            }?;
-            cameras.push(Camera::new(id));
-        }
-
+        })?;
         Ok(Self {
             cameras,
             filter_wheels: Vec::new(),

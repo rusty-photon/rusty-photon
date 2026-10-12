@@ -594,7 +594,12 @@ impl HeldSdk {
         if let Some(sdk) = injected {
             return Ok(Self { sdk, _gate: None });
         }
-        let gate = SDK_GATE.acquire();
+        let gate = SDK_GATE.try_acquire().unwrap_or_else(|| {
+            // Only a failed scan's re-scan can hold it here: a try that
+            // outlived its server, still in its SDK check (U6).
+            warn!("waiting for a USB re-scan's QHY SDK check to finish before opening the SDK");
+            SDK_GATE.acquire()
+        });
         let sdk = qhyccd_rs::Sdk::new().map_err(|e| QhyCameraError::Sdk(format!("{e:#}")))?;
         Ok(Self {
             sdk,
@@ -614,6 +619,11 @@ fn probe_every_camera(sdk: &mut qhyccd_rs::Sdk) -> std::collections::HashSet<Str
     let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
     let mut unprobed = std::collections::HashSet::new();
     for (id, outcome) in sdk.probe_filter_wheels(&ids) {
+        if matches!(outcome, Ok(false)) {
+            // A wheel the plug query misses three times is not registered;
+            // a usb_devices entry declaring it is the remedy (U10).
+            debug!(camera = %id, "the CFW probe found no filter wheel on this camera");
+        }
         if let Err(error) = outcome {
             let still_open = sdk
                 .cameras()

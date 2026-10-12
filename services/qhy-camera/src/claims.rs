@@ -438,6 +438,39 @@ mod tests {
         assert_eq!(claims.placed(), vec![(1, "p1")]);
     }
 
+    /// The placeholder at the unreadable camera's listed port names the
+    /// unreadable model, not a camera the SDK does not report.
+    #[test]
+    fn an_unreadable_cameras_port_names_its_unreadable_model() {
+        let claims = claims_for(
+            vec![
+                record("c601", "QHY600U3G20", "p1"),
+                record("0679", "QHY678U3G20", "p2"),
+            ],
+            &[
+                enumerated(
+                    "QHY5III678M-1",
+                    Err(qhyccd_rs::QHYError::Sdk { op: "get_model" }),
+                ),
+                camera("QHY600M-1", "QHY600M"),
+            ],
+        );
+        let rusty_photon_doctor_checks::claims::Resolution::Placeholder(reason) =
+            claims.resolve("p2")
+        else {
+            panic!("p2 resolved to a camera");
+        };
+        assert!(
+            reason
+                .contains("a model this driver knows, but the QHY SDK reports none of that model"),
+            "{reason}"
+        );
+        assert!(
+            reason.contains("(<model unreadable: QHY5III678M-1>)"),
+            "{reason}"
+        );
+    }
+
     #[test]
     fn a_no_list_block_warns_that_the_wheel_numbers_may_not_be_the_served_ones() {
         let cameras = [camera("QHY178M-222b16468c5966524", "QHY178M")];

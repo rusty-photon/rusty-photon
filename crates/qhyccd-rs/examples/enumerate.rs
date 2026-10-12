@@ -1,10 +1,11 @@
 // Manual hardware-probe binary (requires a physical camera) — excluded from
 // coverage.
 //
-// What the SDK reports about each camera with nothing opened: its id
-// (`GetQHYCCDId`) and its model (`GetQHYCCDModel`, read from the id). Prints one
-// JSON line per camera, and fails if any camera reads open afterwards, since
-// nothing here may open one.
+// What the SDK reports about each camera without this crate opening one: its
+// id (`GetQHYCCDId`) and its model (`GetQHYCCDModel`, which takes the id, not
+// a handle, so no `OpenQHYCCD` precedes it). Prints one JSON line per camera.
+// Whether the SDK opens a device inside either call is not something this
+// probe can see: `Camera::is_open` reports this crate's handle only.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 #![cfg_attr(coverage_nightly, coverage(off))]
 // Dying loudly on a missing device or an unmet precondition is the intended
@@ -26,14 +27,6 @@ fn main() {
             Ok(model) => format!("\"model\":{model:?}"),
             Err(error) => format!("\"model_error\":{:?}", error.to_string()),
         };
-        println!(
-            "{{\"index\":{index},\"id\":{:?},{model},\"open\":{}}}",
-            camera.id(),
-            camera.is_open().expect("open state")
-        );
+        println!("{{\"index\":{index},\"id\":{:?},{model}}}", camera.id());
     }
-    assert!(
-        sdk.cameras().all(|c| !c.is_open().expect("open state")),
-        "enumeration and the model read open no camera"
-    );
 }
