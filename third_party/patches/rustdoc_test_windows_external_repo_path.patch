@@ -82,7 +82,7 @@
          .iter()
          // Remove any substrings found in the argument
          .map(|arg| {
-@@ -226,20 +261,308 @@
+@@ -226,20 +261,309 @@
                  .for_each(|substring| stripped_arg = stripped_arg.replace(substring, ""));
              stripped_arg
          })
@@ -179,12 +179,13 @@
 +
 +# Resolve a runfiles-relative DIRECTORY to its absolute target. The manifest
 +# maps files only, so match any entry beneath the directory and trim the
-+# shared suffix off its target. Used for --sysroot= alone: a directory key is
++# shared suffix off its target. Used for the toolchain's directories alone:
++# --sysroot= and the std `-L` directory inside it (RF). A directory key is
 +# genuinely ambiguous when a repo contributes both source files and generated
 +# outputs to the runfiles, since both walk up to the same repo directory while
 +# their targets live in different trees (`<output_base>/external/<repo>` vs
 +# `<output_base>/execroot/.../bazel-out/<cfg>/bin/external/<repo>`). The
-+# toolchain repo this is called for contributes only one, so the match is
++# toolchain repo both are called for contributes only one, so the match is
 +# unambiguous there; do not reuse it for dependency search paths.
 +function RFD($d) {
 +    $rel = $d -replace '\\','/'
@@ -400,7 +401,7 @@
          "".to_owned(),
      ];
  
-@@ -266,14 +589,29 @@
+@@ -266,14 +590,29 @@
  
  fn write_test_runner(
      path: &Path,
@@ -431,7 +432,7 @@
      }
  
      set_executable(path);
-@@ -287,5 +625,11 @@
+@@ -287,5 +626,11 @@
          .filter(|(key, _)| opt.env_keys.iter().any(|k| k == key))
          .collect();
  

@@ -22,10 +22,12 @@
 #     Bazel's clippy sees; Cargo's clippy only warns when the two differ, and
 #     a warning about configuration is not a lint `-D warnings` can deny.
 #
-# Then it lints `//...` plus the `manual` Rust targets `//...` skips: some are
+# Then it lints `//...` plus the `manual` Rust targets `//...` skips. Some are
 # manual only because they cannot LINK without a vendor SDK (svbony-camera's
 # binary), and `--config=clippy` builds the clippy_checks output group alone,
-# which never links. The lint runs whatever the checks found, so one run
+# which never links. The `cargo_build_script` build.rs binaries are manual
+# too: rules_rust tags them so. They are linted with clippy's defaults, since
+# they have no lint_config. The lint runs whatever the checks found, so one run
 # shows both a check miss and a real clippy finding, and the checks' findings
 # are printed after it, where the log ends.
 set -uo pipefail
@@ -87,7 +89,7 @@ if [[ -z "$cargo_msrv" || "$cargo_msrv" != "$clippy_msrv" ]]; then
 fi
 
 manual=()
-labels=$(query "attr(tags, \"\\bmanual\\b\", $rust_kinds) except $build_scripts") || exit 2
+labels=$(query "attr(tags, \"\\bmanual\\b\", $rust_kinds)") || exit 2
 if [[ -n "$labels" ]]; then
   while IFS= read -r label; do manual+=("$label"); done <<<"$labels"
 fi

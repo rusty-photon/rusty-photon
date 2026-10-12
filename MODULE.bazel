@@ -307,6 +307,7 @@ rust.toolchain(
         "rust-analyzer-1.99.0-x86_64-apple-darwin.tar.xz": "abc0d38c2771a968e09a7ae23a1e149cdedfdd72f0d47659755f4fef4ca57615",
         "rust-analyzer-1.99.0-x86_64-pc-windows-msvc.tar.xz": "308e3e6370f7f27c83e25410290b4d1bdf16963f567a3a57c7516898b508a2e5",
         "rust-analyzer-1.99.0-x86_64-unknown-linux-gnu.tar.xz": "52dfae764797c3c7f32ba2ba82d49659741a867e7a3f45bc3291b822c955d6a8",
+        "rust-src-1.99.0.tar.xz": "3f1f9b7ed48f4596fc87889b7b3c61747336a55c9c22db1ab0c697e0aadb77aa",
         "rust-std-1.99.0-aarch64-apple-darwin.tar.xz": "a7c6de8aa21e7c31163a7656295b321bb85f5dce55ed8ea95ac9ac561202bb5b",
         "rust-std-1.99.0-aarch64-unknown-linux-gnu.tar.xz": "1cf7e2ef58ed1cfa6f1adea18e155cbf254c1951f39e5f5e3376879f55fd64a4",
         "rust-std-1.99.0-x86_64-apple-darwin.tar.xz": "18ee81961a73c3ae966ecb1e8f6096438c90aeefece8856201a6ecc17f5bc850",
@@ -332,6 +333,9 @@ rust.toolchain(
     # first PR after each stable release, with `sha256s` from
     # scripts/rust-toolchain-sha256s.sh: until then the two clippies differ,
     # and a change written against the new stable fails `bazel clippy` here.
+    # After it merges, rebuild the pool runner templates
+    # (docs/skills/proxmox-runner-pool.md), which pre-fetch this toolchain.
+    # Until then, every pool PR job downloads the new one over the WAN.
     #
     # The MSRV stays in Cargo.toml, but nothing compiles with it on a PR any
     # more; what still holds it there is narrower. Both clippies know it —

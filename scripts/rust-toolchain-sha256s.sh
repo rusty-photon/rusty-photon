@@ -11,7 +11,9 @@
 # server that serves the manifest.
 #
 # Covers the seven tools rules_rust fetches for a host, for the five hosts CI
-# and the dev machines run on. Paste the output over the existing entries.
+# and the dev machines run on, plus rust-src: one archive for every host,
+# which rules_rust fetches for its rust-analyzer toolchain. Paste the output
+# over the existing entries.
 set -euo pipefail
 
 version=${1:?usage: $0 <stable version, e.g. 1.99.0>}
@@ -81,6 +83,13 @@ for package, tool in packages.items():
         if name != f"{tool}-{version}-{host}.tar.xz":
             sys.exit(f"unexpected archive name {name} for {package} on {host}")
         entries[name] = target["xz_hash"]
+target = manifest["pkg"]["rust-src"]["target"].get("*")
+if not target or not target.get("available"):
+    sys.exit(f"rust-src {version} has no build")
+name = PurePosixPath(target["xz_url"]).name
+if name != f"rust-src-{version}.tar.xz":
+    sys.exit(f"unexpected archive name {name} for rust-src")
+entries[name] = target["xz_hash"]
 for name in sorted(entries):
     print(f'        "{name}": "{entries[name]}",')
 EOF

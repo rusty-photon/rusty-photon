@@ -747,7 +747,10 @@ needs from you:
 - **`manual` targets are linted too.** `//...` skips them, but the script
   names them explicitly: `--config=clippy` builds the `clippy_checks` output
   group alone, which never links, so a target that is manual only because it
-  cannot link without a vendor SDK (svbony-camera's binary) still lints.
+  cannot link without a vendor SDK (svbony-camera's binary) still lints. So
+  do the three `cargo_build_script` build.rs binaries, which rules_rust tags
+  `manual`. They get clippy's defaults, since the macro does not pass
+  `lint_config` through.
 - **Bazel lints the feature set each target compiles**, not Cargo's two passes.
   A `rust_test` built with `crate_features = ["mock"]` is linted with `mock`,
   the production `rust_library` beside it without. The Cargo `stable / clippy`
@@ -759,7 +762,10 @@ needs from you:
   (`scripts/rust-toolchain-sha256s.sh <version>` prints them from the
   release's GPG-signed channel manifest). Until then the two clippies are on
   different releases, and code written against the new one — an `#[expect]`
-  only it fulfils — fails `bazel clippy`.
+  only it fulfils — fails `bazel clippy`. After the bump merges, rebuild the
+  pool runner templates (docs/skills/proxmox-runner-pool.md), which pre-fetch
+  the pinned toolchain. Until then, every pool PR job downloads the new one
+  over the WAN.
 - **The MSRV is held more narrowly than when Bazel compiled with it.** Both
   clippies deny `incompatible_msrv` (a std API newer than the MSRV) on every
   leg they run, Windows included. A newer *language* feature is caught only
