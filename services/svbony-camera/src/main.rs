@@ -26,12 +26,10 @@
 )]
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use clap::Parser;
 use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
-use svbony_camera::{load_effective_config, CliOverrides, Ended, ServerBuilder};
+use svbony_camera::{load_effective_config, serve_and_rebuild, CliOverrides, ServerBuilder};
 use tracing::{debug, Level};
 
 #[derive(Parser)]
@@ -131,7 +129,7 @@ fn main() -> ServiceResult {
     if let Some(Command::Doctor(doctor)) = args.command {
         if doctor.devices {
             #[cfg(feature = "simulation")]
-            let source = match svbony_camera::UsbSource::from_flag(doctor.usb_inventory) {
+            let source = match svbony_camera::claims::usb_source_from_flag(doctor.usb_inventory) {
                 Ok(source) => source,
                 Err(error) => {
                     eprintln!("doctor: {error}");
@@ -172,61 +170,35 @@ fn main() -> ServiceResult {
     #[cfg(feature = "simulation")]
     let simulation_departure_file = args.simulation_departure_file;
     #[cfg(feature = "simulation")]
-    let usb_source = svbony_camera::UsbSource::from_flag(args.usb_inventory)
+    let usb_source = svbony_camera::claims::usb_source_from_flag(args.usb_inventory)
         .map_err(svbony_camera::SvbonyCameraError::UsbInventory)?;
     debug!(config = ?config_path, "starting svbony-camera");
 
-    // `config.apply` triggers an in-process reload: each loop iteration re-reads
-    // the effective config, re-enumerates, and rebuilds the server.
+    // `config.apply` triggers an in-process reload: the loop re-reads the
+    // effective config, re-enumerates, and rebuilds the server. A failed USB
+    // scan's re-scan rebuilds it from the configuration it serves (U6).
     ServiceRunner::new("svbony-camera")
         .with_reload()
         .scm_mode(args.service)
         .run_with_reload(move |shutdown, reload| async move {
-            loop {
-                let config = load_effective_config(&config_path, &overrides)?;
-
-                let builder = ServerBuilder::new()
-                    .with_config(config)
-                    .with_config_source(config_path.clone(), overrides.clone())
-                    .with_reload_signal(reload.clone());
-
-                #[cfg(feature = "simulation")]
-                let builder = builder
-                    .with_empty(simulation_empty)
-                    .with_departure_file(simulation_departure_file.clone())
-                    .with_usb_source(usb_source.clone());
-
-                let bound = builder.build().await?;
-
-                let reloaded = Arc::new(AtomicBool::new(false));
-                let stop = {
-                    let reloaded = Arc::clone(&reloaded);
-                    let shutdown = shutdown.cancelled();
-                    let reload = reload.clone();
-                    async move {
-                        tokio::select! {
-                            () = shutdown => {}
-                            () = reload.recv() => reloaded.store(true, Ordering::SeqCst),
-                        }
-                    }
-                };
-                let ended = bound.start(stop).await?;
-
-                if reloaded.load(Ordering::SeqCst) {
-                    debug!("reload signalled; rebuilding svbony-camera from the new configuration");
-                    continue;
-                }
-                if ended == Ended::Rescanned {
-                    // A stop that landed while the rescanned server drained
-                    // had no stop future left to see it; honour it now rather
-                    // than after a whole rebuild.
-                    if shutdown.is_cancelled() {
-                        return Ok(());
-                    }
-                    debug!("a failed USB scan succeeds again; rebuilding svbony-camera");
-                    continue;
-                }
-                return Ok(());
-            }
+            serve_and_rebuild(
+                shutdown.token(),
+                reload.clone(),
+                || load_effective_config(&config_path, &overrides),
+                |config, stop| {
+                    let builder = ServerBuilder::new()
+                        .with_config(config)
+                        .with_config_source(config_path.clone(), overrides.clone())
+                        .with_reload_signal(reload.clone());
+                    #[cfg(feature = "simulation")]
+                    let builder = builder
+                        .with_empty(simulation_empty)
+                        .with_departure_file(simulation_departure_file.clone())
+                        .with_usb_source(usb_source.clone());
+                    async move { builder.build().await?.start(stop).await }
+                },
+            )
+            .await?;
+            Ok(())
         })
 }

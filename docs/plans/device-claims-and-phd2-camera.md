@@ -97,9 +97,9 @@ recorded here so the option is not lost.
 |-------|-------------|--------|-------------|
 | C0 | This plan | Merged; revised 2026-09-29 and 2026-10-01 | [#1263](https://github.com/rusty-photon/rusty-photon/pull/1263), [#1365](https://github.com/rusty-photon/rusty-photon/pull/1365) |
 | C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Landed: `port`/`serial` extraction, the failed-vs-empty inventory, the staged synthetic inventory, faults (a record that is not a working device is a fault, not a failed scan — D4.4), and the Linux port spelled by controller and USB revision instead of bus number (D2). The spike's last leg, a move to a different port, was made on a Windows VM rather than `rig2` (D2, spike item 7), and a camera plugged straight into a real controller's root port was not read, a gap the owner accepted (decision 2) | `chore/device-claims-c1-spike` ([#1306](https://github.com/rusty-photon/rusty-photon/pull/1306)), `chore/device-claims-c1-synthetic-inventory` ([#1308](https://github.com/rusty-photon/rusty-photon/pull/1308)), `fix/doctor-usb-faults-1322` ([#1365](https://github.com/rusty-photon/rusty-photon/pull/1365)), `feature/device-claims-linux-port-spelling` ([#1450](https://github.com/rusty-photon/rusty-photon/pull/1450)), `fix/device-claims-linux-fault-location` ([#1458](https://github.com/rusty-photon/rusty-photon/pull/1458)), `chore/device-claims-c1-port-move` ([#1462](https://github.com/rusty-photon/rusty-photon/pull/1462)) |
-| C2 | `usb_devices` schema + `svbony-camera` — port placement (the join), listed numbers, placeholders (their fixed connect error code, which rp treats as permanent for the pass, and their config actions), the failed-scan re-scan, each simulation backend's synthetic inventory, and `svbony-camera doctor --devices` (D5's listing and paste-ready block; the `usb-devices.*` checks stay in C5), so no driver serves the list before its paste source exists. `usb_devices` is part of `config.schema`/`config.apply` from the phase that adds it, under the ordinary `Reload` disposition (D4.1), and D3's validation rejects a bad list in `config.apply` as well as at load. The easy case; proves schema, join and placeholder behaviour | In review — [svbony-camera.md](../services/svbony-camera.md) U1-U9; the D4.8 twin hint is deferred to a collector change (D4.8) | `feature/device-claims-c2-svbony` ([#1466](https://github.com/rusty-photon/rusty-photon/pull/1466)) |
-| C3 | `usb_devices` in `zwo-camera`, with its `doctor --devices` listing; a failed identity open is a per-camera outcome (D7) | Not started | |
-| C4 | `usb_devices` in `qhy-camera`, with its `doctor --devices` listing and each entry's declared filter wheel (D4.7), whose placeholder rp already classifies (C2 taught the connect routine every kind shares the placeholder's refusal) + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup and reload entirely** (the split alone narrows the tenet-3 problem, it does not discharge it) | Not started | |
+| C2 | `usb_devices` schema + `svbony-camera` — port placement (the join), listed numbers, placeholders (their fixed connect error code, which rp treats as permanent for the pass, and their config actions), the failed-scan re-scan, each simulation backend's synthetic inventory, and `svbony-camera doctor --devices` (D5's listing and paste-ready block; the `usb-devices.*` checks stay in C5), so no driver serves the list before its paste source exists. `usb_devices` is part of `config.schema`/`config.apply` from the phase that adds it, under the ordinary `Reload` disposition (D4.1), and D3's validation rejects a bad list in `config.apply` as well as at load. The easy case; proves schema, join and placeholder behaviour | Merged — [svbony-camera.md](../services/svbony-camera.md) U1-U9; the D4.8 twin hint is deferred to a collector change (D4.8) | `feature/device-claims-c2-svbony` ([#1466](https://github.com/rusty-photon/rusty-photon/pull/1466)) |
+| C3 | `usb_devices` in `zwo-camera`, with its `doctor --devices` listing; a failed identity open is a per-camera outcome (D7) | In review — [zwo-camera.md](../services/zwo-camera.md) U1-U9; the placeholder device and the re-scan moved to `rusty-photon-driver`'s `claims` feature (D7) | `feature/device-claims-c3-zwo` ([#1476](https://github.com/rusty-photon/rusty-photon/pull/1476)) |
+| C4 | `usb_devices` in `qhy-camera`, with its `doctor --devices` listing and each entry's declared filter wheel (D4.7), whose placeholder rp already classifies (C2 taught the connect routine every kind shares the placeholder's refusal) + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup and reload entirely** (the split alone narrows the tenet-3 problem, it does not discharge it). With a third driver serving the list, the `usb_devices` entry type and its validation glue, which svbony-camera and zwo-camera each still carry, move to one shared home | Not started | |
 | C5 | `usb-devices.resolve` / `usb-devices.unlisted` / `usb-devices.implicit` checks on top of the per-driver `--devices` listings, and central doctor's `service.devices` recognising placeholders (D5); **the breaking no-list changes for all three drivers at once** — numbering by port order, unplaceable cameras refused, and the port-based `UniqueID` fallback for serial-less cameras (ZWO/SVBony; QHY's case decided here, D4.6) | Not started | |
 | C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | Not started, except the `save_image` wire-format fix (D9) | `fix/phd2-save-image-wire-format` ([#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)) |
 | C7 | rp wiring: guide camera as a train-terminal camera, capture-sweep focusing for the guiding train, doc updates. **Blocked on reconciling with [`focus-model.md`](focus-model.md) S7/D17**, which retires rp's capture-based `auto_focus` and keeps the metric sweep under that name | Not started | |
@@ -807,7 +807,7 @@ date. (`name` is display text, never a key.)
    | A listed port with no working camera found on it — nothing enumerated there, a fault located there, or a working device no SDK camera is placed on | placeholder at its number (D4.5) | — (nothing to place) |
    | A camera on an unlisted port | never opened | — |
    | Look-alikes and unrecognised models (D4.3) | placeholders at their numbers | not registered |
-   | A placed camera the driver fails to open — ZWO's identity read (D7), QHY's stage 2 while it still runs at startup (D6) — because another process holds it or it is wedged | placeholder at its number, naming the SDK error | not registered; logged at `warn!` |
+   | A placed camera the driver fails to open — ZWO's identity read (D7), QHY's stage 2 while it still runs at startup (D6) — because it is wedged, has gone since the enumeration, or another process holds it where its SDK refuses a second open (ZWO's does not, measured in C3) | placeholder at its number, naming the SDK error | not registered; logged at `warn!` |
    | **The scan failed** | **placeholders at every listed number; nothing opened** | **nothing registered** |
 
    With no list, a refused camera shifts the port-order numbers of the
@@ -836,7 +836,9 @@ date. (`name` is display text, never a key.)
    startup, then re-scans in the background — after 10 s, 20 s and
    40 s, then every 60 s — and the first successful scan fires the
    driver's own reload, which re-runs placement exactly as `config.apply`
-   does (D4.1). That is safe because the failed-scan outcome has opened
+   does (D4.1). (Settled in C3: that rebuild is built from the
+   configuration the driver is serving, not from the file, so a hand edit
+   no reload has applied cannot move or end the service.) That is safe because the failed-scan outcome has opened
    nothing, so there is no session to interrupt, and because the reload
    runs the startup path, which tenet 3 binds exactly as it binds startup
    (C4). It is not hot-plug (D8): the re-scan runs only while the scan is
@@ -1464,6 +1466,30 @@ enumeration, so one such camera stops every other number. Under this
 plan it is a placeholder at its listed number, naming the SDK error;
 with no list the camera is not registered and is logged at `warn!`
 (D4.4).
+
+**Settled in C3.** The shared homes are chosen: the placeholder Camera
+device moved to `rusty-photon-driver`, the ASCOM-driver runtime crate every
+driver already links, as a `claims` module behind a `claims` feature that
+only the camera drivers with device claims turn on (so no other driver's
+graph gains ASCOM's `Camera` trait), together with the failed scan's
+re-scan. The scan source and the `--devices` listing's block — the
+renumbering, unmatched-override and unplug notes — joined the pure half in
+`rusty-photon-doctor-checks`' `claims` module. `rusty-photon-driver` does not
+link `rusty-photon-doctor-checks`, whose `mock` twin replaces it in a
+simulation build's Bazel graph, so the placeholder takes the error code and
+`UniqueID` from its driver. ZWO's normalizer knows three observed pairs
+(the ASI1600MM-Cool, ASI178MM and ASI120MC-S, read on the dev box); the ASI
+SDK's own `ASICameraCheck(vid, pid)` is the passive check D4.2 names, a table
+lookup that keeps ZWO's EAF and EFW out of the candidates, and it recognises
+`rig2`'s ASI662MC, so elimination places that one with no table entry. And
+the open failure is narrower than this paragraph assumed: on Linux, a second
+process's `ASIOpenCamera` and serial read succeed on a camera another
+process holds open and initialised, and that process's session survives the
+close (zwo-camera.md U5). So a camera PHD2 holds does not fail its identity
+open, and the list alone keeps it out; the per-camera outcome covers a
+wedged camera, or one gone between the enumeration and the open. The no-list
+path still fails the enumeration on such a camera until C5, as the
+breaking-change note under D4 lists.
 
 **`qhy-camera` (C4)** — the enumerate/probe split above, plus placement
 and the declared filter wheels (D4.7).
@@ -2322,7 +2348,7 @@ path, the macOS `system_profiler` check before C5's no-list flip, and
 C7's focus-model reconciliation). C1's last wait, a move to a different
 port, was answered on a Windows VM on 2026-10-10 (D2, spike item 7),
 and on 2026-10-11 the owner accepted the legs no real hardware has read
-(decision 2), so nothing now blocks C2.
+(decision 2), so nothing blocks C2 or C3.
 
 - **Windows — the legs only a VM read.** A camera plugged straight into
   a real controller's root port, and a move between ports of a real

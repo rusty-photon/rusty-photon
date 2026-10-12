@@ -26,13 +26,11 @@
 )]
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use clap::Parser;
 use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 use tracing::{debug, Level};
-use zwo_camera::{load_effective_config, CliOverrides, ServerBuilder};
+use zwo_camera::{load_effective_config, serve_and_rebuild, CliOverrides, ServerBuilder};
 
 #[derive(Parser)]
 #[command(name = "zwo-camera")]
@@ -79,6 +77,21 @@ struct Args {
     #[cfg(feature = "simulation")]
     #[arg(long, hide = true, value_name = "PATH")]
     simulation_departure_file: Option<PathBuf>,
+
+    /// Test-only: every open of the simulated camera fails, to exercise a
+    /// camera that cannot be opened for its identity (U5). Only meaningful
+    /// when built with `--features simulation`.
+    #[cfg(feature = "simulation")]
+    #[arg(long, hide = true)]
+    simulation_unopenable: bool,
+
+    /// Test-only: stage the USB scan a `usb_devices` list is placed from with
+    /// the document in this file (docs/services/doctor.md "USB inventory"),
+    /// read again at every scan; without it a simulation build stages one
+    /// record per simulated camera (U7).
+    #[cfg(feature = "simulation")]
+    #[arg(long, hide = true, value_name = "PATH")]
+    usb_inventory: Option<PathBuf>,
 }
 
 /// Subcommands; running with none starts the ASCOM Alpaca driver.
@@ -87,15 +100,30 @@ enum Command {
     /// Diagnose this service's configuration and what the ASI SDK can see,
     /// without starting it (docs/services/doctor.md). Read-only; exits 1
     /// on failing checks.
-    Doctor {
-        /// Path to the JSON config file
-        #[arg(short, long)]
-        config: Option<PathBuf>,
+    Doctor(DoctorArgs),
+}
 
-        /// Print the report as JSON instead of text
-        #[arg(long)]
-        json: bool,
-    },
+#[derive(clap::Args)]
+struct DoctorArgs {
+    /// Path to the JSON config file
+    #[arg(short, long)]
+    config: Option<PathBuf>,
+
+    /// Print the report as JSON instead of text
+    #[arg(long)]
+    json: bool,
+
+    /// List this driver's cameras on the bus by USB port, and print the
+    /// `usb_devices` block to paste, instead of the report. Read-only: no
+    /// camera is opened.
+    #[arg(long, conflicts_with = "json")]
+    devices: bool,
+
+    /// Test-only: the staged USB inventory, as for the service. Only
+    /// `--devices` reads the bus, so it is refused without it.
+    #[cfg(feature = "simulation")]
+    #[arg(long, hide = true, value_name = "PATH", requires = "devices")]
+    usb_inventory: Option<PathBuf>,
 }
 
 fn parse_log_level(s: &str) -> Result<Level, String> {
@@ -106,8 +134,21 @@ fn parse_log_level(s: &str) -> Result<Level, String> {
 fn main() -> ServiceResult {
     let args = Args::parse();
 
-    if let Some(Command::Doctor { config, json }) = args.command {
-        zwo_camera::doctor::run(config, json);
+    if let Some(Command::Doctor(doctor)) = args.command {
+        if doctor.devices {
+            #[cfg(feature = "simulation")]
+            let source = match zwo_camera::claims::usb_source_from_flag(doctor.usb_inventory) {
+                Ok(source) => source,
+                Err(error) => {
+                    eprintln!("doctor: {error}");
+                    std::process::exit(2);
+                }
+            };
+            #[cfg(not(feature = "simulation"))]
+            let source = zwo_camera::UsbSource::Host;
+            zwo_camera::doctor::run_devices(doctor.config, &source);
+        }
+        zwo_camera::doctor::run(doctor.config, doctor.json);
     }
 
     // In Windows SCM service mode logs go to the rolling file under
@@ -136,48 +177,39 @@ fn main() -> ServiceResult {
     let simulation_empty = args.simulation_empty;
     #[cfg(feature = "simulation")]
     let simulation_departure_file = args.simulation_departure_file;
+    #[cfg(feature = "simulation")]
+    let simulation_unopenable = args.simulation_unopenable;
+    #[cfg(feature = "simulation")]
+    let usb_source = zwo_camera::claims::usb_source_from_flag(args.usb_inventory)
+        .map_err(zwo_camera::ZwoCameraError::UsbInventory)?;
     debug!(config = ?config_path, "starting zwo-camera");
 
-    // `config.apply` triggers an in-process reload: each loop iteration re-reads
-    // the effective config, re-enumerates, and rebuilds the server.
+    // `config.apply` triggers an in-process reload: the loop re-reads the
+    // effective config, re-enumerates, and rebuilds the server. A failed USB
+    // scan's re-scan rebuilds it from the configuration it serves (U6).
     ServiceRunner::new("zwo-camera")
         .with_reload()
         .scm_mode(args.service)
         .run_with_reload(move |shutdown, reload| async move {
-            loop {
-                let config = load_effective_config(&config_path, &overrides)?;
-
-                let builder = ServerBuilder::new()
-                    .with_config(config)
-                    .with_config_source(config_path.clone(), overrides.clone())
-                    .with_reload_signal(reload.clone());
-
-                #[cfg(feature = "simulation")]
-                let builder = builder
-                    .with_empty(simulation_empty)
-                    .with_departure_file(simulation_departure_file.clone());
-
-                let bound = builder.build().await?;
-
-                let reloaded = Arc::new(AtomicBool::new(false));
-                let stop = {
-                    let reloaded = Arc::clone(&reloaded);
-                    let shutdown = shutdown.cancelled();
-                    let reload = reload.clone();
-                    async move {
-                        tokio::select! {
-                            () = shutdown => {}
-                            () = reload.recv() => reloaded.store(true, Ordering::SeqCst),
-                        }
-                    }
-                };
-                bound.start(stop).await?;
-
-                if reloaded.load(Ordering::SeqCst) {
-                    debug!("reload signalled; rebuilding zwo-camera from the new configuration");
-                    continue;
-                }
-                return Ok(());
-            }
+            serve_and_rebuild(
+                shutdown.token(),
+                reload.clone(),
+                || load_effective_config(&config_path, &overrides),
+                |config, stop| {
+                    let builder = ServerBuilder::new()
+                        .with_config(config)
+                        .with_config_source(config_path.clone(), overrides.clone())
+                        .with_reload_signal(reload.clone());
+                    #[cfg(feature = "simulation")]
+                    let builder = builder
+                        .with_empty(simulation_empty)
+                        .with_departure_file(simulation_departure_file.clone())
+                        .with_unopenable(simulation_unopenable)
+                        .with_usb_source(usb_source.clone());
+                    async move { builder.build().await?.start(stop).await }
+                },
+            )
+            .await?;
+            Ok(())
         })
 }
