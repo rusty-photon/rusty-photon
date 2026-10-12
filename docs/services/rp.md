@@ -159,10 +159,10 @@ frame's facts from:
    `BLANK`), the one card it reads is `DOC_ID`, and only to confirm
    that a FITS file's pixels belong to the document
    ([Document Resolution](#document-resolution)): the sidecar is found
-   by the FITS file's name, so `DOC_ID` is the one check that the two
-   belong together. A FITS file with no
-   sidecar, such as one another program wrote, gives `rp` its pixels
-   and nothing else.
+   by the FITS file's name, so `DOC_ID` is the only check that can
+   confirm the two belong together. A FITS file with no sidecar, such
+   as one another program wrote, gives `rp` its pixels and nothing
+   else.
 2. **The sidecar records the exposure as it was taken.** Every fact
    about the exposure is copied into the document at capture time:
    what the devices reported, and the configuration in force, the
@@ -180,26 +180,32 @@ are not yet in line with the rules:
   longitude, and the `rp` version that wrote the frame reach the
   header (`APTDIA`, `SITELAT`, `SITELONG`, `SWCREATE`) without being
   recorded in the sidecar. `FOCRATIO` needs no field of its own once
-  `aperture_mm` is recorded: it derives from that and the focal
-  length.
+  `aperture_mm` and the focal length are both recorded; today the
+  focal length is recorded only inside `optics` (next item).
 - `optics` is all-or-nothing: when one of its inputs is unknown or
   unusable (a non-positive pixel size, say), the whole block is left
   out, while the header still writes `FOCALLEN`, `FOCRATIO` and
-  `XPIXSZ`/`YPIXSZ` from the inputs it has.
+  `XPIXSZ`/`YPIXSZ` from the inputs it has. It writes them unchecked:
+  a driver that reports a pixel size of 0 puts `XPIXSZ = 0` in the
+  header.
 - Train data the sidecar does not record at all: the filter's
   configured `wavelength_nm`, and the terminal focuser's
   `microns_per_step` (both reported by
   [`get_train_info`](#train-optics)).
 - Device state the sidecar does not record: the focuser's position,
   the rotator's angle and the mount's pier side.
-- `rp`'s own plate solves lean on the header. `center_on_target`, and
-  `plate_solve` called without `fov_hint_deg`, pass ASTAP no scale,
-  and plate solvers derive a frame's scale from `FOCALLEN` and
-  `XPIXSZ` ([FITS header](#fits-header)). The hint should come from
-  the sidecar's `optics.fov_height_deg`.
+- `rp`'s own plate solves lean on the header and on live state.
+  `center_on_target`, and `plate_solve` called without `fov_hint_deg`,
+  pass ASTAP no scale, and plate solvers derive a frame's scale from
+  `FOCALLEN` and `XPIXSZ` ([FITS header](#fits-header)). Given no
+  position, ASTAP reads the header's `RA`/`DEC` and
+  `OBJCTRA`/`OBJCTDEC` as a free hint ([plate-solver.md](plate-solver.md)).
+  And `use_mount_hints` reads where the mount points now, even for a
+  past frame whose sidecar records its `pointing`. Both hints should
+  come from the sidecar: `optics.fov_height_deg` and `pointing`.
 - [Progress derivation](#progress-derivation) takes a past frame's
-  target, filter, binning and exposure time from its file and directory
-  names, parsed through the naming patterns as configured now, rather
+  target, frame type, filter, binning and exposure time from its file
+  and directory names, parsed through the naming patterns as configured now, rather
   than from its sidecar. A frame whose name the current patterns no
   longer parse is not counted.
 
@@ -2572,10 +2578,12 @@ A `document_id` (the full UUID) resolves through this order:
    by reading the FITS header `DOC_ID` against the requested full
    UUID; if the FITS is unreadable or has no `DOC_ID`, check the
    sidecar's `id` instead. The header goes first because the sidecar
-   is found by the FITS file's name, and `DOC_ID` is the one check that
-   the pixels belong to the document
-   ([Ground rules](#ground-rules), rule 1). On match, read both files,
-   populate the cache, and return the entry.
+   is found by the FITS file's name, and `DOC_ID` is the only check
+   that can confirm the pixels belong to the document
+   ([Ground rules](#ground-rules), rule 1). A FITS file without
+   `DOC_ID`, one another program rewrote, say, is matched on its name
+   and the sidecar's `id` alone, so its pixels go unconfirmed. On
+   match, read both files, populate the cache, and return the entry.
 3. **Not found.** Return `None`. The HTTP API returns `404`.
 
 Ghost-match disambiguation runs only when multiple files in the data

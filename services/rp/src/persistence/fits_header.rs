@@ -1,10 +1,11 @@
 //! The standard FITS keywords `capture` writes into each frame's primary
 //! header — `docs/services/rp.md` §"FITS header".
 //!
-//! The header is a portable copy of the exposure document: every card
-//! below is projected from an [`ExposureDocument`] field, or from rig
-//! configuration the document does not repeat ([`HeaderContext`]). The
-//! sidecar stays the authority. A card whose source is absent is left
+//! The header is an export of the exposure document for other
+//! programs: every card below is projected from an [`ExposureDocument`]
+//! field, or from rig configuration the document does not repeat yet
+//! ([`HeaderContext`]). The sidecar is the record, and `rp` never reads
+//! a fact back from the header (rp.md §"Ground rules"). A card whose source is absent is left
 //! out, never written as a placeholder. Free text has its typographic
 //! punctuation folded to ASCII; a value `rp-fits` still refuses (`Hα`,
 //! one longer than a card) drops only that card — no header problem

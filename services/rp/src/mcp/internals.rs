@@ -1451,7 +1451,7 @@ impl McpHandler {
 
     /// Write a downloaded frame and its exposure document (rp.md
     /// § Persistence). The document is assembled first, because the FITS
-    /// header is its portable copy (§ FITS header); then the pixels go to
+    /// header is its export (§ FITS header); then the pixels go to
     /// disk under that header, then the sidecar and the cache entry.
     async fn persist_frame(
         &self,

@@ -195,15 +195,20 @@ impl From<&rp_targets::Target> for ExposureTarget {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Optics {
     /// Operator-supplied effective focal length of the optical train,
-    /// in millimetres (verbatim from `equipment.cameras[].focal_length_mm`).
+    /// in millimetres, copied at capture time from the camera's train
+    /// (`equipment.optical_trains[].focal_length_mm`).
     pub focal_length_mm: f64,
-    /// Raw Alpaca `PixelSizeX` reading at capture time, in microns.
+    /// Raw Alpaca `PixelSizeX` reading, in microns, read when the camera
+    /// session was established and cached for the connection.
     pub pixel_size_x_um: f64,
-    /// Raw Alpaca `PixelSizeY` reading at capture time, in microns.
+    /// Raw Alpaca `PixelSizeY` reading, in microns, cached like
+    /// `pixel_size_x_um`.
     pub pixel_size_y_um: f64,
-    /// Raw Alpaca `CameraXSize` reading at capture time, in pixels.
+    /// Raw Alpaca `CameraXSize` reading, in pixels, cached like
+    /// `pixel_size_x_um`.
     pub sensor_width_px: u32,
-    /// Raw Alpaca `CameraYSize` reading at capture time, in pixels.
+    /// Raw Alpaca `CameraYSize` reading, in pixels, cached like
+    /// `pixel_size_x_um`.
     pub sensor_height_px: u32,
     /// Derived: `206.265 × pixel_size_x_um / focal_length_mm`.
     pub pixel_scale_x_arcsec_per_pixel: f64,
