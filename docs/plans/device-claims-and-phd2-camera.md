@@ -1425,7 +1425,8 @@ because the split was introduced in this plan as though it did.
 learns about rusty-photon config. The service applies `usb_devices`
 between the stages.
 
-**Settled in C4 (design, 2026-10-11): option 2, and the split as built.**
+**Settled in C4 (design, 2026-10-11): option 2, and the split as built**
+(the owner approved option 2 on 2026-10-11, decision 17).
 `Sdk::new()` is now the enumeration alone — `ScanQHYCCD` + `GetQHYCCDId`,
 nothing opened — so `qhy-camera doctor`'s `hardware.sdk-devices` meets
 doctor.md's contract again. The CFW probe is a separate call,
@@ -2359,12 +2360,13 @@ review.
 | 14 | **A failed scan is retried in the background and the driver reloads itself on the first success** (D4.4) — 2026-10-01 | The Windows collector's 10 s deadline can run out on a healthy host at boot, and a failed scan is never a startup failure, so nothing else would retry it before morning. Safe because the failed-scan outcome has opened nothing; not hot-plug, because it stops at the first success. |
 | 15 | **A camera on a port's USB 2.0 twin is on a different port, and the placeholder says why** (D4.8) — 2026-10-01 | The native spelling is the key, and one socket answering to two entries would undo the list. Where a passive pairing signal exists the reason points at the cable instead of the generic one. |
 | 16 | **`usb_devices` numbers must run `0..N-1`; a gap is rejected, not filled** (D3) — 2026-10-01 | Every served number is one the operator wrote, so a typo cannot become a phantom camera. Retiring a camera below the highest number means renumbering the entries above it (and rp); a retired camera's entry is never kept to hold a number, because a listed port opens whatever is plugged in there next. |
+| 17 | **The no-list CFW probe opens the camera without `InitQHYCCD`** (D6, option 2) — 2026-10-11 | `IsQHYCCDCFWPlugged` and the slot count answered after a bare open exactly as after an init, on a QHY178M (Linux, warm and fresh from power-up) and on `rig2`'s QHY600M (Windows), and a parked wheel stayed put, so no init is reachable from startup or reload in either path. Deferring the probe to connect (option 1) stays the list path's answer, where the wheel is declared; an unsafe operator command (option 3) was not needed. A model that turns out to need the init loses its wheel on the no-list path — a missing device, logged — and a list declaring the wheel is the remedy. |
 
 Nothing in this plan is waiting on an *operator* answer. **Five** things
 are waiting on evidence or an implementation choice, each named at its
 rule — two of them block a phase outright (the macOS `system_profiler`
 check before C5's no-list flip, and C7's focus-model reconciliation). C4's
-tenet-3-safe probe path, the third, was settled in C4's design (D6),
+tenet-3-safe probe path, the third, was settled in C4's design (D6, decision 17),
 measured under Linux on a camera fresh from power-up and under Windows on
 `rig2`. C1's last wait, a move to a different
 port, was answered on a Windows VM on 2026-10-10 (D2, spike item 7),
