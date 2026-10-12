@@ -164,7 +164,8 @@ graph TD;
 - **`lib.rs`** — `ServerBuilder` that, on `build()`, opens the SDK and
   **enumerates every connected camera** (and any CFW discovered on it),
   registering each as an ASCOM device (index 0, 1, 2, …) with its serial-derived
-  UniqueID. The eager per-device connect handshake (normalize the readout
+  UniqueID — or, with a `usb_devices` list, places the cameras on their USB ports
+  and registers the list (`claims.rs`, U1-U10). The eager per-device connect handshake (normalize the readout
   geometry, then cache CCD info, effective area, valid binning modes,
   exposure/gain/offset min-max-step, the gain and offset the camera holds —
   read, never written (GO1) — and the readout-mode list) happens on
@@ -193,9 +194,14 @@ graph TD;
   implementing `Device` + `Camera` against `qhyccd-rs`. **Every blocking SDK call
   runs inside `tokio::task::spawn_blocking`** (the same blocking-bridge discipline
   the legacy serial drivers use) so the async runtime is never stalled.
-- **`filterwheel.rs`** — `QhyFilterWheelDevice` (one per discovered CFW)
-  implementing `Device` + `FilterWheel` (registered automatically on detection —
-  no opt-in toggle, the same rule as cameras).
+- **`filterwheel.rs`** — `QhyFilterWheelDevice` (one per discovered CFW, or per
+  declared one with a list) implementing `Device` + `FilterWheel` (registered
+  automatically on detection — no opt-in toggle, the same rule as cameras), and
+  the placeholder FilterWheel a declared wheel becomes when its camera cannot be
+  served (U10).
+- **`claims.rs`** — QHY's half of the device claims (U1-U10): the normalizer
+  (SDK model → product id) and the simulated scan. The rest is shared (see
+  *Device claims*).
 - **`config.rs`** — typed `Config` with parse-don't-validate newtypes.
 - **`config_actions.rs`** — `ConfigurableDriver` impl + the `dispatch` the devices
   delegate to (`config.get`/`config.apply`/`config.schema`).
@@ -326,34 +332,35 @@ The MVP boundary drives BDD scenario selection (Phase 2). Grounded in what
 
 ## Configuration
 
-The service **enumerates every connected QHY camera** (and CFW, when enabled) at
-startup and registers each as an ASCOM device (camera / filter-wheel index
-0, 1, 2, …) on the one port. The hardware is the source of truth — there is no
-per-camera *binding* in config. Each device's UniqueID comes from its SDK serial;
-config carries only optional per-serial display overrides plus a global CFW
-toggle and the port.
+With no `usb_devices` list the service **registers every QHY camera the SDK
+enumerates** (and the CFW found on each, C0) at startup, as ASCOM devices
+(camera / filter-wheel index 0, 1, 2, …) on the one port, and each device's
+UniqueID comes from its SDK id. A `usb_devices` list instead pins each USB port to
+an Alpaca device number, and the camera's filter wheel to one of its own (U1-U10);
+a camera on a port the list leaves out is never opened.
 
 ```jsonc
 {
-  // Optional per-device overrides, keyed by SDK serial. A device with no
-  // entry uses SDK-derived defaults (name from model+serial; CFW filter names
-  // "Filter0".."FilterN"). Named `devices` (not `overrides`) to avoid colliding
-  // with the config.get response's own `overrides[]` (CLI-pinned paths) field.
-  "devices": {
-    "QHY600M-0123456789": {
+  // Optional: pin each USB port to an Alpaca device number, and declare the
+  // CFW on that camera (see below and U1-U10). Absent = every camera the SDK
+  // enumerates, in SDK order, with the wheels the CFW probe finds (C0).
+  "usb_devices": [
+    { "device_number": 0,
+      "usb_port": "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)",
       "name": "Main Imaging",
-      "description": "QHY600M @ 1000mm"
-    },
-    "CFW3L-SR-9876543210": {
-      "filter_names": ["L", "R", "G", "B", "Ha", "OIII", "SII"]
-    }
-  },
+      "description": "QHY600M @ 1000mm",
+      "filter_wheel_number": 0,
+      "filter_names": ["L", "R", "G", "B", "Ha", "OIII", "SII"] }
+  ],
   "server": {
     "port": 11121,
     "bind_address": "0.0.0.0"
   }
 }
 ```
+
+That is `rig2`'s list: its QHY5III678M, on `…#USB(14)#USB(3)`, is PHD2's guide
+camera, so it is left off.
 
 The `server` block is the shared `AlpacaServerConfig` from
 `crates/rusty-photon-server-config` (see ADR-016): `port`, `bind_address`
@@ -362,17 +369,95 @@ Absent `tls`/`auth` means plain, unauthenticated HTTP.
 
 Sections:
 
-- **devices** — Optional per-device override map keyed by **SDK serial**. Lets an
-  operator give a friendly `name`/`description` to a specific camera and human
-  `filter_names` to a specific CFW. Any device without an entry uses SDK-derived
-  defaults. v0 does
+- **usb_devices** — Optional. Each entry pins the camera on one USB port to one
+  Alpaca device number, so a camera plugged into that socket is the same ASCOM
+  device every time, and a camera on any other port is never served (U1-U5).
+  That is how a camera another application owns — PHD2's guide camera — is kept
+  out of this driver: it is left off the list. The `usb_port` is the platform's
+  native spelling (udev's `ID_PATH_WITH_USB_REVISION` on Linux, the `PCIROOT(…)`
+  location path on Windows, the location id on macOS — [doctor.md](doctor.md),
+  "USB inventory"), pasted from `qhy-camera doctor --devices` (U8), never typed
+  from memory.
+  - **device_number** — the Alpaca device number this port's camera is served
+    under. Explicit rather than positional: reordering entries renumbers
+    nothing.
+  - **usb_port** — the port path, compared verbatim with the USB scan.
+  - **name** — optional display name for the camera, and for the placeholder
+    that holds its number when it cannot be served (U4).
+  - **description** — optional description for the camera. A placeholder's
+    `Description` is always its reason (U4), so it does not use this one.
+  - **filter_wheel_number** — optional: the camera has a CFW, served as a
+    FilterWheel at this Alpaca number (U10). The wheel is **declared**, not
+    discovered: an entry without it registers no wheel, whatever is plugged in,
+    and nothing at startup asks the camera whether one is.
+  - **filter_names** — optional names for the declared wheel's slots, replacing
+    `Filter0..N`. Only beside a `filter_wheel_number`.
+
+  Validated at load, before any USB or SDK work, and again by `config.apply`
+  (U9); a list that fails either is named entry by entry and nothing starts
+  from it:
+
+  - `usb_port` is non-blank, carries no leading or trailing whitespace, and is
+    unique across entries. A padded port is rejected, not trimmed: the scan
+    never carries padding, so it could only ever become a placeholder for a
+    port that holds a camera.
+  - `device_number` is unique, and the numbers are exactly `0..N-1`. A gap is
+    rejected rather than filled, so every number the driver serves is one the
+    operator wrote and a typo (`0, 2`) cannot become a phantom camera 1.
+    Retiring any camera but the highest-numbered one therefore means
+    renumbering the entries above it — and rp's `cameras[].device_number`
+    with them. A retired camera's entry is never kept just to hold its
+    number: a listed port is a positive claim, so whatever QHY camera is
+    plugged into that socket later would be served there.
+  - `filter_wheel_number` is unique across the entries that set one, and those
+    numbers are exactly `0..M-1`, for the same reason — rp binds
+    `filter_wheels[].device_number` by position among the server's wheels.
+  - `filter_names` only beside a `filter_wheel_number`, each name non-empty, as
+    `devices.<id>.filter_names` has always been checked.
+  - Unknown keys are rejected (`deny_unknown_fields`).
+  - **A non-empty `devices` map beside a list is rejected**, naming each key:
+    a listed camera's `name`/`description` and its wheel's `filter_names` live in
+    its entry, and an override that would be silently ignored is the no-op
+    config the fail-loud posture exists to prevent. Move its fields into the
+    matching entry, or delete it if that camera is unlisted.
+
+  **`"usb_devices": []` registers nothing** — legal in the file, logged at
+  `warn!` at every start, and it needs no USB scan or SDK enumeration. It is
+  how an operator hands every QHY camera to another application for a night. A
+  server with no device has nowhere for the config actions to live, so `[]` is
+  left by editing the file and reloading; `config.apply` refuses it (U9).
+
+  **No list is the default, permanently.** With no `usb_devices` key the
+  service registers every camera the SDK enumerates, in SDK order, with the
+  wheels the CFW probe finds, and makes no USB scan (C0). (The device-claims
+  plan's C5 will change what the no-list default does for all three camera
+  drivers at once — numbering by port order and refusing cameras it cannot
+  place — and will be documented here when it lands.)
+- **devices** — Optional per-device override map keyed by **SDK id**
+  (`GetQHYCCDId`, e.g. `QHY600M-0123456789`). Lets an operator give a friendly
+  `name`/`description` to a specific camera and human `filter_names` to the CFW
+  on it (the wheel shares its camera's id). Any device without an entry uses
+  SDK-derived defaults. It serves the no-list default only: beside a list it is
+  rejected (above). Named `devices` (not `overrides`) to avoid colliding with
+  the config.get response's own `overrides[]` (CLI-pinned paths) field. v0 does
   **not** carry per-camera connect-time tuning (gain/offset/target temperature) —
   with heterogeneous cameras those are per-serial concerns and clients set them
   over ASCOM; per-serial defaults are deferred (see *Future Work*).
-- **(no CFW toggle)** — discovered CFWs are registered as FilterWheel devices
-  automatically, the same way cameras are enumerated; detection (`sdk.filter_wheels()`)
-  is the source of truth. Verified on hardware: unplugging the wheel drops
-  `filter_wheels` from 1 → 0 with no phantom device, so no opt-in flag is needed.
+
+  ```jsonc
+  "devices": {
+    "QHY600M-0123456789": {
+      "name": "Main Imaging",
+      "description": "QHY600M @ 1000mm",
+      "filter_names": ["L", "R", "G", "B", "Ha", "OIII", "SII"]
+    }
+  }
+  ```
+- **(no CFW toggle)** — without a list, CFWs the probe finds are registered as
+  FilterWheel devices automatically, the same way cameras are enumerated (C0).
+  Verified on hardware: unplugging the wheel drops `filter_wheels` from 1 → 0
+  with no phantom device, so no opt-in flag is needed. With a list, a wheel is
+  registered exactly when its entry declares one (U10).
 - **server.port** — Listening port (**11121**, next free in the 1112x family;
   11111–11120 and 11131 are taken). One port hosts all enumerated devices. Hard
   read-only (self-lockout: a port change would make the BFF lose the devices).
@@ -391,13 +476,14 @@ supplies `ConfigurableDriver for QhyCameraDriver`:
   divergence from the minted-identity convention; see *Device identity*).
 - **Hard read-only fields:** `/server/port` (a port change would make the BFF
   lose the devices → restart-required, not a live apply).
-- **Editable fields:** the `devices` map (per-serial `name` / `description` /
-  `filter_names`).
+- **Editable fields:** `usb_devices` and the `devices` map (per-id `name` /
+  `description` / `filter_names`).
 - **Validation** at load (parse-don't-validate): `filter_names` entries are
-  non-empty strings; `devices` keys are free-form serial strings. Unknown keys
+  non-empty strings; `devices` keys are free-form SDK id strings. Unknown keys
   are **rejected at deserialize** (`deny_unknown_fields`, as in zwo-camera and
   the other newer services), so typos and removed keys fail loudly at load
-  instead of being silently ignored.
+  instead of being silently ignored. The `usb_devices` rules above run at load
+  and in `config.apply` alike (U9).
 
 `config.apply` persists atomically, returns `status:"applying"` when a field
 changed, and fires the in-process reload (`main.rs` runs under
@@ -421,10 +507,15 @@ camera between machines, and swapping the camera correctly yields a new id.
 Consequences: there is **no `unique_id` field in config**, an **empty
 identity-pointer list** passed to `resolve_and_init` in `main.rs` (no minting;
 the bootstrap still materializes the default config file on first start), and
-**no locked identity field** in the config-actions tiers. Because the service enumerates *all* cameras, there is
-no selector — every discovered camera and CFW is exposed, each carrying its own
-serial-derived UniqueID, so two identical-model cameras are naturally
-distinguished by their serials.
+**no locked identity field** in the config-actions tiers. Without a list there
+is no selector — every discovered camera and CFW is exposed, each carrying its
+own serial-derived UniqueID, so two identical-model cameras are naturally
+distinguished by their serials. A listed camera keeps exactly this identity —
+the list pins its number, not its identity (U5) — and its declared wheel keeps
+`CFW-<id>` (U10). A placeholder's `UniqueID` has its own fixed form,
+`placeholder:qhy-camera:{usb_port}` for a camera and
+`placeholder:qhy-camera:CFW-{usb_port}` for a wheel, which no device's can take
+(U4, U10).
 
 ---
 
@@ -440,7 +531,42 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   discovered on them) and registers each as an ASCOM device with its
   serial-derived UniqueID. Zero discovered cameras is **not** a hard failure — the
   service starts with no Camera devices, logged at `warn!`; a later reload
-  re-enumerates.
+  re-enumerates. (With a `usb_devices` list, U1-U10 decide what is registered
+  instead, and nothing is opened at startup at all.)
+
+  **Enumerating opens nothing; finding the CFW opens each camera, but never
+  initialises one.** The enumeration is `ScanQHYCCD` and `GetQHYCCDId` per
+  camera, which reads every id without an open. Without a list, each camera is
+  then asked whether a CFW is plugged into it: `OpenQHYCCD`,
+  `IsQHYCCDCFWPlugged` up to three times 200 ms apart, `CloseQHYCCD`. **No
+  `InitQHYCCD` runs at startup or on a reload** — the call QHY says may home a
+  filter wheel (C5) — so nothing on that path can move one (tenet 3). The
+  reference driver, INDI's `indi-qhy`, inits first, and this probe used to; it
+  does not need to. Measured on the dev box's QHY178M + CFW3 under Linux (SDK
+  26.06.04, 2026-10-11), in processes that ran no init before the question:
+  with the CFW's 12 V on, the plug query answered yes 3 of 3 times and the slot
+  count read 7; with it off, no 3 of 3 and the slot count failed, the same
+  answers an init would have given. A wheel settled at slot 3 read slot 3 at
+  the pace of a wheel at rest (≈255 ms a read, 13 reads) throughout the probe,
+  so the probe moved nothing. Through the service, a real-SDK start with no
+  list and the wheel settled at slot 3 registered `cameras=1 filter_wheels=1`,
+  and the wheel read slot 3 at rest afterwards. That camera had been
+  initialised by earlier processes since it last powered up; a camera fresh
+  from power-up, and the Windows SDK, are not yet measured.
+
+  A camera whose probe cannot open or close it is not registered, logged at
+  `warn!`. **The probe opens every camera the SDK enumerates, including one
+  another process holds**, and the QHY SDK does not refuse that second open.
+  Measured on the same rig: while one process held the camera open and
+  initialised, reading its wheel's status every 255 ms, another's open
+  succeeded, but its plug query answered no and its slot count failed, so that
+  camera would be registered with no wheel. And while the second process held
+  its handle, about 4.5 s, 35 of the first process's 38 status reads named slot
+  0 at the ≈100 ms pace of a wheel that does not answer: every other read while
+  the second's plug queries were 300 ms apart, and every read once it queried
+  the wheel back to back. The first recovered with the second's close, reading
+  slot 3 at rest again and keeping its session. A camera PHD2 streams is kept
+  out of this service by a list that leaves it off (U1), never by the probe.
 
   **A CFW is only found if it has power when this runs.** The wheel is fed from
   the camera's 12V, while the camera's own logic runs off USB — so a camera whose
@@ -499,7 +625,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   camera does not affect the others enumerated on the same service.
 - **C5.** No code path in this service pushes cooler state, wheel position, or
   any other actuation on startup, connect, or `config.apply` (workspace tenet
-  [*no actuation on connect*](../workspace.md#project-tenets)); cooler and CFW
+  [*no actuation on connect*](../workspace.md#project-tenets)). Startup and
+  every reload run no `InitQHYCCD` at all: the enumeration opens nothing, a list
+  opens nothing (U1), and the no-list CFW probe opens each camera only to ask
+  whether a wheel is plugged in (C0). An init runs only on a client's connect
+  and readout-mode change, which are operator actions. Cooler and CFW
   commands are issued only by explicit ASCOM setters — the one cooler command
   not sent by a cooler setter being a `ReadoutMode` write re-asserting the
   target a client engaged in the same session, once that write's switch
@@ -888,6 +1018,365 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   Where the SDK went on answering for a departed camera, the probe would find
   it present and the driver would behave as it did before this rule, so no
   worse.
+
+### Device claims (`usb_devices`)
+
+The rules for an operator's `usb_devices` list (see "Configuration"),
+following the [device-claims plan](../plans/device-claims-and-phd2-camera.md)
+Part A, of which this driver is phase C4. Nothing here applies without a list:
+the no-list default registers every camera the SDK enumerates, in SDK order,
+with the wheels the CFW probe finds, and makes no USB scan (C0).
+
+They are [`svbony-camera`](svbony-camera.md)'s U1-U9 (plan C2) and
+[`zwo-camera`](zwo-camera.md)'s (plan C3) with QHY's facts in place of theirs,
+and the vendor-neutral half is the same code: the join, the list validation,
+port order, the scan source, the placeholder's error code, `UniqueID` form and
+reason text, and the `--devices` listing and block in
+`rusty-photon-doctor-checks`' `claims` module; the placeholder Camera device and
+the failed scan's re-scan in `rusty-photon-driver`'s `claims` module (its
+`claims` feature). What is QHY's own is `claims.rs`: the normalizer and the
+simulated scan. U10 has no counterpart in either: a QHY CFW is driven through
+its camera's handle and served by this service, so a listed camera's wheel is
+declared in its entry and pinned to a number of its own (plan D4.7). Like
+SVBony's, a QHY camera's identity is read without an open, so **nothing in this
+section opens a camera at startup or on a reload** — not even the CFW probe,
+which a list replaces with the declaration.
+
+- **U1. The list is applied before anything could open a camera.** With a
+  list, `build()` takes the host's USB scan (the passive collector of
+  [doctor.md](doctor.md), "USB inventory" — sysfs, PnP properties or
+  `system_profiler`, nothing opened, claimed or reset), enumerates the SDK
+  (`ScanQHYCCD`, then `GetQHYCCDId` and `GetQHYCCDModel` per camera, pre-open),
+  places each SDK camera on a port (U2), and registers the list (U4, U10). No
+  camera is opened, listed or not: a listed camera is first opened by a client's
+  connect, and a camera on an unlisted port never is, so another application's
+  camera is never touched — where without a list every camera is opened for the
+  CFW probe (C0). An empty list makes neither the scan nor the enumeration, and
+  a failed scan stops before the enumeration (U6).
+
+  **Placement holds from one start or reload to the next; it is not watched.**
+  A registered camera's connect opens its camera by SDK id (`OpenQHYCCD(id)`,
+  C1), not by port. So a listed camera that is re-cabled onto an unlisted port
+  while the service runs is still opened at its listed number until the next
+  reload, which places it afresh: its number becomes a placeholder, and the
+  camera is left unregistered on its new port. Re-cabling is a reload's job. The
+  device-claims plan's D8 records watching placement as out of scope, and a
+  passive scan on every connect to re-confirm the port is the cost that would
+  close this. An SDK enumeration that fails after a scan that ran fails the
+  start or reload, with or without a list, as it always has (C0). Only the
+  scan, which the list adds, is made non-fatal and retried. None of these steps
+  is an open, let alone an actuation, and a reload — `config.apply`'s,
+  `SIGHUP`'s, or U6's own — runs the same path (tenet 3, C5).
+- **U2. Placing a camera on a port is a join.** No QHY SDK call reports a USB
+  location: `GetQHYCCDId` gives `<model>-<serial>` and `GetQHYCCDModel` the
+  model, read from the id without an open, never a port. The scan knows each
+  record's port, vendor and product ids, product string and, when the device
+  publishes one, USB serial. The **candidates** are the scan's working records —
+  a fault is never one — with QHY's vendor id, `1618`, that are cameras: a
+  product id the normalizer knows as a model's, or one it does not know at all.
+  The id's serial field is not offered to the join: no QHY camera has been seen
+  publishing a USB serial (the dev box's QHY178M, and `rig2`'s QHY600M and
+  QHY5III678M under Windows, plan D2), so how the bus would spell one beside the
+  SDK's is unknown, and a serial both sides carry in different spellings would
+  refuse the right camera. So QHY cameras match on **the product id** the
+  normalizer gives the camera's SDK model. The product string is not compared
+  either: under Windows it is firmware-stamped (`QHY600U3G20-20230614`), and a
+  firmware update would change it where the product id would not.
+
+  A match places a camera only when it is **one-to-one**: the camera matches
+  exactly one candidate, and that candidate matches exactly one SDK camera.
+  After the keyed matches, an SDK camera whose model the normalizer does not
+  know and the one record left over are **paired by elimination** when nothing
+  else could explain either: exactly one SDK camera and exactly one `1618`
+  candidate remain unpaired, no fault could be the camera (a `1618` fault, or
+  one whose vendor id could not be read, Windows' `0000` included), and the
+  record's product id is not one the normalizer gives any model. That keeps a
+  single camera whose model nobody has observed yet working. A known model is
+  never paired this way: its product id is known, so a leftover record under
+  another one is a different device, and its own record is missing.
+
+  The **normalizer** knows only observed pairs:
+
+  | SDK model (`GetQHYCCDModel`) | Bus record | Observed |
+  |---|---|---|
+  | `QHY178M` (SDK id `QHY178M-222b16468c5966524`) | `1618:c179`, product string `Q178-Cool`, no USB serial | dev box (Fedora 44, x86_64, SDK 26.06.04), 2026-10-11 |
+
+  A simulation build also knows its fabricated `QHY178M-Simulated` under `f178`,
+  a product id chosen for the simulation (U7). **`rig2`'s two cameras are not in
+  the table yet**: the QHY600M (`1618:c601`) and QHY5III678M (`1618:0679`) were
+  read on the bus (plan D2), but `GetQHYCCDModel` has not been asked about either.
+  Until it is — `qhyccd-rs`'s `examples/enumerate` prints it, opening nothing —
+  both are unrecognised, and two unrecognised cameras on one host defeat
+  elimination, so a list on `rig2` holds both their numbers with placeholders.
+
+  Joining on the product id alone means **two cameras of one model on one host
+  are look-alikes** (U3), whatever their serials. Variants *within* one QHY
+  sensor family very likely share a product id too — QHY loads one firmware
+  image per family, not per mono/colour variant — so a QHY268M and a QHY268C on
+  one host are look-alikes unless the normalizer learns their two product ids
+  from a host that has both.
+- **U3. A join that cannot be resolved is refused, never guessed.** A
+  **look-alike** is an SDK camera the join cannot pair one-to-one — two QHY600Ms
+  on one host, or two SDK cameras of one model beside a single working record.
+  An **unrecognised** camera is one whose model the normalizer does not know and
+  that elimination could not pair. Neither is served, whatever the list says: a
+  listed port holding such a record gets a placeholder (U4) naming the
+  collision, or the SDK model and the product id the bus shows — everything a
+  normalizer entry needs. Registering the wrong camera would be worse than
+  registering none: the first symptom would be a frame from the wrong sensor at
+  2am, or rp moving another camera's filters (U10). Look-alikes are resolved by
+  cameras of different models, or one per host; an unrecognised model by a
+  normalizer entry. Re-running `doctor --devices` with one camera unplugged
+  tells the operator which port is which, but it cannot make two look-alikes
+  servable while both are connected (U8).
+- **U4. The list is what is registered, in number order; a number whose
+  camera cannot be served is a placeholder.** The entries are registered in
+  `device_number` order, so the server's position for each is its number — the
+  position rp binds by. An entry whose port holds the camera U2 placed there is
+  that camera (U5). Every other entry is a **placeholder**, so a powered-down
+  hub costs its own cameras and moves no other number. Its reason is the first
+  that applies, as of the last start or reload — a placeholder never re-scans:
+  1. the scan failed (U6) — the collector's error;
+  2. a fault located at the port — the fault's reason and record (a Windows
+     record reported not working keeps its `PCIROOT(` path, and a Linux record
+     whose port could still be spelled carries it, doctor.md "USB inventory");
+  3. a look-alike or an unrecognised camera whose record is on the port (U3);
+  4. a working record no SDK camera is placed on — another vendor's device, or a
+     QHY one the SDK does not report: *"`<port>` holds `<product>`
+     (`<vid>:<pid>`), which the QHY SDK does not report as a camera"*. A QHY
+     camera whose firmware never loaded is one: it enumerates under its
+     loader's product id until `fxload` (Linux) or QHY's driver (Windows) loads
+     it — the dev box's QHY178M once came back from a replug as `1618:c178` at
+     full speed. When the record is a known model's and the SDK reports a model
+     this driver does not know, the reason names both possible causes: the SDK
+     does not see the device, or it names it as that model, and the normalizer
+     needs the name;
+  5. otherwise *"no working camera is enumerated on `<port>`"* — never "the
+     port is empty", because absence proves nothing (a device whose enumeration
+     failed leaves no record on Linux, and only an `ACPI(…)` chain on Windows).
+     When the scan reported faults elsewhere that could be the camera — `1618`
+     records, or ones with no vendor id that could be read (none at all, or the
+     `0000` of a Windows enumeration failure) — the message adds how many and
+     points at doctor's `hardware.usb-fault`. Another vendor's fault is that
+     vendor's device, and is not offered.
+
+  There is no reason for a camera that could not be opened, as `zwo-camera` has
+  (its identity needs an open): nothing here opens one. A placed camera that
+  cannot be opened fails its client's connect (C2), as without a list.
+
+  Every reason ends with the way back: once the camera is fixed, reload or
+  restart the service, which re-opens every camera it serves. The failed scan's
+  is the exception: the service re-scans and rebuilds on its own (U6), so it
+  says that, and sends nobody to restart anything. (The device-claims plan's
+  D4.8 hint — *a camera is on this port's USB 2.0 twin* — needs a port-pairing
+  signal the collectors do not read yet, so a camera that fell back to USB 2
+  speed is reported by the generic reasons above, and shows in `doctor
+  --devices` on its other spelling.)
+
+  A placeholder is a registered Camera that cannot connect tonight:
+
+  - `Connected` reads `false`. `Connected = true` fails with **ASCOM error
+    `0x540`** — driver code `0x40` of the `0x500`–`0xFFF` driver range, the
+    same value in every camera driver with device claims — and a message
+    naming the port and the reason. `Connected = false` succeeds; there is
+    nothing to close.
+  - `Name` is the entry's `name`, else *"QHY camera on `<port>`
+    (placeholder)"*. `Description` says it is a placeholder and carries the
+    reason, so a client, the Chooser or an operator reads it without
+    connecting — the pinned `ascom-alpaca-rs` fork runs a Platform 7
+    `Connect()` in a task of its own and logs its failure instead of returning
+    it, so `Description` is where a Platform 7 client finds why.
+  - `UniqueID` is `placeholder:qhy-camera:<usb_port>`, a form no camera's can
+    take, so a client that remembers devices by `UniqueID` never mistakes the
+    stand-in for the camera, and central doctor can recognise it in
+    `configureddevices` (plan C5).
+  - `SupportedActions` lists the config actions and `Action` serves them,
+    connected or not — an rp camera entry bound to this number is how `ui-htmx`
+    reaches the service, and a missing camera is exactly when the operator
+    needs that page to fix the list.
+  - `DriverInfo`, `DriverVersion` and `InterfaceVersion` answer as for a camera;
+    every other member answers `NOT_CONNECTED`.
+  - The service logs `warn!` at start naming the number, the port and the
+    reason. A placeholder is never a startup failure.
+  - Its entry's declared wheel, if any, is a placeholder FilterWheel with the
+    same reason (U10).
+
+  rp treats `0x540` from `Connected = true` as permanent for its pass: one
+  attempt, logged at `debug!`, and the device is picked up on the first pass
+  after a reload serves it ([rp.md](rp.md#device-session-recovery)). The routine
+  is shared by every kind rp binds, so a placeholder wheel gets the same
+  treatment. ConformU pointed at a placeholder fails its connect test —
+  acceptable, since conformance runs use the simulation build with no list.
+- **U5. A listed camera is the camera, with its entry's display names.** It is
+  the same `QhyCameraDevice` the no-list default registers — every contract in
+  this document applies — with the `UniqueID` it always had (*Device
+  identity*); the list pins its number, not its identity. Its `name` and
+  `description` come from its entry. Nothing opens it before a client connects:
+  its id, its identity and its model are all read pre-open (U1). An SDK camera
+  placed on a port no entry lists is neither opened nor registered, and is
+  logged at `debug!`.
+- **U6. A failed scan serves placeholders, and is retried until it
+  succeeds.** A scan that could not run — sysfs unreadable, `powershell.exe` or
+  `system_profiler` erroring or outrunning its 10 s deadline, output the query
+  cannot have produced — has no opinion about what is on the bus, so nothing is
+  placed: every listed number is a placeholder naming the collector's error,
+  every declared wheel a placeholder FilterWheel naming it too (U10), the SDK is
+  not enumerated, and the error is logged at `error!`. It is never a startup
+  failure — the service starts and serves its placeholders — so the service
+  manager's restart-on-failure would never retry it, and one slow
+  `powershell.exe` at boot would otherwise cost the night. (Like the SDK
+  enumeration, the scan runs before the listener binds, so a start or reload
+  with a list is unreachable for as long as the scan takes: milliseconds on
+  Linux, where it reads sysfs, and at most the collector's 10 s deadline on
+  macOS and Windows.) The service therefore re-scans in the background, after
+  waits of 10 s, 20 s and 40 s and then every 60 s, logging each repeat failure
+  at `debug!`. When a scan succeeds, it is logged at `info!` and the server it
+  belongs to stops and is rebuilt, as for a reload, which runs the start path
+  again, placement and all. That is safe because the failed-scan outcome opened
+  nothing, so there is no session to interrupt, and because the start path a
+  list takes opens nothing either (U1). The success ends that server only: it
+  is not the service-wide reload signal, so one landing after another reload
+  has already stopped the server reaches nothing, and cannot stop the next
+  server. Nobody asked for this rebuild, though, and a rebuild that cannot load
+  its config file, or whose SDK enumeration fails — with the first scan failed,
+  the rebuild is the first enumeration since the start — ends the service. So
+  each try checks the config file first, then takes the scan, then checks that
+  the SDK enumerates, and rebuilds only when all three pass. A config file or
+  SDK that blocks it is logged at `warn!` each time it starts to, and at
+  `debug!` while it persists, and the re-scan carries on, without scanning
+  while the file does not load. The re-scan stops when it rebuilds, and with the
+  server it belongs to. It is not hot-plug: a successful scan whose listed port
+  is merely empty serves a placeholder until the next reload, as at any start.
+- **U7. A simulation build stages its scan.** The `qhyccd-rs` simulation
+  fabricates a camera no host scan can see, so a `simulation` build never scans
+  the host: its scan is a staged inventory (`rusty-photon-doctor-checks`' `mock`
+  feature, doctor.md "USB inventory"). By default that is one working record per
+  fabricated camera — `1618:f178`, product string `QHY178M-Simulated`, on port
+  `simulated-usbv3-0:<n>` for the camera at SDK index `n - 1` — so a list naming
+  that port places the simulated camera, whose model is `QHY178M-Simulated`,
+  through the real join. The hidden `--usb-inventory <file>` flag, on the
+  service and on `doctor --devices` alike, replaces it with the staged document
+  in that file, for the topologies a scenario needs: a listed port empty, a
+  fault, a look-alike, a firmware loader's record, a failed scan. A file that
+  cannot be read, or describes a state no collector could produce, refuses the
+  start, naming the file; every scan reads it again, U6's re-scans included, so
+  a scenario can stage a failed scan and then repair it. The simulated camera
+  has a 7-slot CFW, so a declared wheel connects (U10); the hidden
+  `--simulation-empty` flag, with a list, empties only the SDK's side of the
+  join, so a listed port's record is one no SDK camera is placed on. None of
+  these flags exists in a release build.
+- **U8. `qhy-camera doctor --devices` lists the cameras by port, and prints
+  the list to paste.** Read-only and enumeration-only, like every per-service
+  check — it opens no camera, so it is safe to run by hand while the service
+  holds its cameras:
+
+  ```
+  $ qhy-camera doctor --devices
+
+  QHY cameras on the bus (vendor 1618), in port order:
+
+    Port                                 Model    SDK id                     USB serial  Device
+    pci-0000:c1:00.4-usbv3-0:1.3         QHY178M  QHY178M-222b16468c5966524  —           0
+
+  To pin the cameras this driver serves, paste this into qhy-camera.json.
+  Leave out any camera another application owns (PHD2's guide camera), and
+  keep the numbers running 0..N-1. --devices opens no camera, so it cannot see
+  a filter wheel: add "filter_wheel_number" to the entry of each camera that
+  has one, numbering the wheels 0..M-1:
+
+      "usb_devices": [
+        { "device_number": 0, "usb_port": "pci-0000:c1:00.4-usbv3-0:1.3" }
+      ]
+  ```
+
+  Rows are the SDK cameras U2 placed on a port, in port order (the plan's D4.7:
+  hop by hop from the root, each hop compared as the number the platform
+  writes, so `…-0:4.2` precedes `…-0:4.10`). The model and the SDK id are the
+  enumeration's, free to read before any open; the USB serial is what the bus
+  publishes, usually nothing (`—`), which says nothing about the camera's
+  identity. **Device** is the number the running configuration serves the
+  camera at — its entry's number, `not listed`, or, with no list, its SDK-order
+  number.
+
+  **The block.** With no list, it holds every placed camera numbered in port
+  order, each carrying the `name`/`description` its `devices` override gives it
+  today, matched by SDK id without opening anything. A camera whose override
+  names its wheel's slots (`filter_names`) has a wheel, so its entry declares
+  one — `filter_wheel_number`, the wheels numbered in port order, and the names.
+  Any other camera's wheel is the operator's to add, as the note above the block
+  says: finding one needs the open and the plug query of C0, which `--devices`
+  never makes — least of all on a camera another application may be streaming.
+  So pasting the block and deleting the `devices` map keeps every name. A
+  `devices` key that matches no placed camera is named, with a note to move its
+  fields by hand. Until the plan's C5 the no-list default serves SDK order, so
+  when port order differs the listing says pasting renumbers the cameras and
+  their wheels, and to check rp's `cameras[].device_number` and
+  `filter_wheels[].device_number`. With a list, the block reproduces it — every
+  entry, number and declared wheel, placeholders included — and an unlisted
+  camera appears in the table only: serving it is an ownership decision, made by
+  copying its port into an entry.
+
+  Below the table come what the join could not place — look-alikes,
+  unrecognised models with their SDK model and the product id the bus shows,
+  `1618` records no SDK camera is placed on, and `1618` faults — and, when more
+  than one camera is listed, the unplug procedure: unplug one, re-run, and the
+  port that disappears is the one just unplugged. Look-alikes are said plainly
+  to stay unservable while both are connected.
+
+  Exit codes follow the shared doctor contract: `0`; `1` when the config cannot
+  be read, the scan failed, or the SDK could not enumerate; `2` when the config
+  path cannot be resolved. A list that breaks a rule also exits `1`, but the
+  cameras are listed all the same — the ports are how the list gets fixed —
+  with the list's errors first and no block, since a block reproducing a refused
+  list would only be pasted back. Text only: `--devices` does not combine with
+  `--json`. The `usb-devices.*` checks of the plan's D5 come with C5.
+- **U9. The list over `config.apply`.** `usb_devices` is an editable field.
+  `config.apply` runs the load-time validation and answers a bad list with field
+  errors naming the entry (`usb_devices.1.usb_port`,
+  `usb_devices.0.device_number`, `usb_devices.2.filter_wheel_number`,
+  `usb_devices.0.filter_names`) or the `devices` key beside it
+  (`devices.<id>`), persisting nothing. It refuses `"usb_devices": []` with an
+  error saying why: an empty list registers no device, so none would be left to
+  serve the config actions, and no apply could undo it. A shorter list is
+  accepted: it can retire the number the apply arrived through, but its
+  remaining devices still carry the actions. A changed list applies through the
+  ordinary in-process reload, which closes and re-opens every camera on the
+  service — an operator editing the list is re-cabling or re-assigning cameras,
+  not mid-exposure — and which, with the list applied, opens none of them
+  before a client connects (U1). Placeholders carry the actions (U4), so a list
+  whose camera went missing can be fixed from `ui-htmx` through the placeholder
+  at that camera's number. (Wheels, placeholder or not, carry no config
+  actions, as no FilterWheel here ever has.)
+- **U10. A listed camera's wheel is declared, and pinned to its own number.**
+  An entry with a `filter_wheel_number` registers a FilterWheel at that number,
+  in `filter_wheel_number` order, so the server's position for each wheel is its
+  number — the position rp binds `filter_wheels[].device_number` by. Numbered in
+  camera order instead, a placeholder camera with a CFW would shift every wheel
+  after it, and rp would connect to another camera's wheel without error and
+  move its filters: the wrong-device outcome U3 rules out (plan D4.7). An entry
+  without one registers no wheel, and **a CFW that is plugged in but not
+  declared is not registered**.
+
+  A declared wheel whose camera U2 placed is the same `QhyFilterWheelDevice` a
+  probed one is (FW1-FW8), on its camera's physical connection (C8), with
+  `UniqueID` `CFW-<id>` and the entry's `filter_names` (else `Filter0..N`).
+  **Whether a CFW answers is learned on the wheel's own connect**, never at
+  startup: the connect reads the wheel's slot count, and with no CFW answering —
+  none plugged, its cable out, or its 12 V off, where the slot count read fails
+  (measured, C0) — the connect fails with `NOT_CONNECTED` and *"no filter wheel
+  answers on `<id>`: check the CFW's cable and its 12 V"*. That failure is
+  transient, unlike the no-list path's: a CFW whose 12 V comes on after the
+  start is found by the next connect, once its power-up homing is done (≈20 s,
+  C5), with no reload — where without a list a wheel that had no power at
+  startup is not registered until a reload (C0).
+
+  When its camera is a placeholder (U4), a declared wheel is a **placeholder
+  FilterWheel** with the same reason: `Connected` reads `false`, `Connected =
+  true` fails with `0x540` and the reason, `Name` is *"QHY filter wheel on
+  `<port>` (placeholder)"*, `Description` carries the reason, `UniqueID` is
+  `placeholder:qhy-camera:CFW-<usb_port>`, and every other member answers
+  `NOT_CONNECTED`, as for a placeholder camera. rp treats its `0x540` as it
+  treats a placeholder camera's (U4).
 
 ### Geometry, binning, ROI
 
@@ -1708,6 +2197,10 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
 
 ### FilterWheel (when a CFW is detected)
 
+These rules hold for a wheel the no-list CFW probe found (C0) and for one a
+`usb_devices` entry declares (U10) alike; the declared wheel differs only in how
+it is registered and in learning on its connect whether a CFW answers.
+
 - **FW1.** `Names` lists `filter_names` (or generated `Filter0..N`); `Position`
   returns the current slot, or the "moving" sentinel (`-1`/`None` → ASCOM moving)
   while target ≠ actual or the wheel reports itself moving (FW7), and an error
@@ -2151,6 +2644,13 @@ session-0 service cannot: talk to the operator and open a browser.
 - **DR5.** On `simulation` builds the installation checks do not exist
   either (the simulation backend makes no SDK calls and needs no
   `qhyccd.dll`); `hardware.sdk-devices` enumerates the simulated cameras.
+- **DR6.** `hardware.sdk-devices` **opens no camera**: it lists what
+  `ScanQHYCCD` and `GetQHYCCDId` report, the enumeration-only rule
+  [doctor.md](doctor.md) sets for every per-service probe. It used to open and
+  initialise every camera, because the SDK constructor it called ran the CFW
+  probe on each; the probe is now a separate step that only the service's
+  no-list start makes (C0). `doctor --devices` lists the cameras by USB port and
+  prints a `usb_devices` block to paste (U8).
 
 The pinned build-time SDK version constant lives in `preflight.rs`, kept in
 lockstep with the SDK pin in `crates/qhyccd-rs/libqhyccd-sys/build.rs` and the
@@ -2301,6 +2801,17 @@ Layered per [`testing.md`](../skills/testing.md).
   Windows (hypervisor detaches), for an idle camera and for one gone
   mid-exposure. The mock's blank frame from a readout its camera left is what
   the SDK was measured returning on Windows (C9).
+- **Device claims (U1-U10)** — `usb_devices.feature` drives the `simulation`
+  binary with its staged scan (U7) and the hidden `--usb-inventory <file>`
+  flag, through placement, placeholders, declared wheels, the failed scan's
+  re-scan, the list's validation and `doctor --devices`. A listed camera
+  whose camera has left the bus (`--simulation-departure-file`) is registered
+  all the same, which is how the suite shows a list opens nothing at startup;
+  without a list the same camera fails the CFW probe's open and is not
+  registered. The CFW probe's own rules — one outcome per id, only the named
+  cameras opened, never an init — are `qhyccd-rs`'s simulation tests
+  (`probe_*`). A declared wheel whose CFW does not answer (U10) is unit-tested
+  against `MockFilterWheelHandle`; the simulated camera always has its wheel.
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)
   — launches the production binary (built `--features conformu`, which pulls in
   `simulation`) via `bdd_infra::ServiceHandle::try_start` and drives the official
