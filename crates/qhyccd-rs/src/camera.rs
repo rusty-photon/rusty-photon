@@ -785,6 +785,7 @@ impl Camera {
                 return Err(error);
             }
             state.is_open = true;
+            state.cfw_plug_asks = 0;
             drop(state);
             Ok(())
         }
@@ -2381,11 +2382,13 @@ impl Camera {
         }
         #[cfg(feature = "simulation")]
         {
-            let state = self.state.read();
+            let mut state = self.state.write();
             if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
-            Ok(state.config.filter_wheel_slots > 0)
+            state.cfw_plug_asks = state.cfw_plug_asks.saturating_add(1);
+            Ok(state.config.filter_wheel_slots > 0
+                && state.cfw_plug_asks > state.config.cfw_plug_misses)
         }
     }
 

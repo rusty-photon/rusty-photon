@@ -74,13 +74,6 @@ Feature: Device claims -- the usb_devices list
     When I try to connect camera device 0
     Then the connect is rejected with ASCOM NOT_CONNECTED
 
-  Scenario: Without a list, a camera the filter-wheel probe cannot open is not registered
-    Given the configuration JSON {}
-    And the simulated camera has left the bus
-    When the qhy-camera service starts
-    Then no ASCOM camera devices are registered
-    And the service is healthy
-
   Scenario: A listed port with no camera is a placeholder, and the other numbers keep their cameras
     Given the configuration lists these USB devices:
       | device_number | usb_port            |

@@ -113,6 +113,18 @@ Download and install the QHYCCD SDK from the [official website](https://www.qhyc
 [examples/cfw_probe.rs](https://github.com/rusty-photon/rusty-photon/blob/main/crates/qhyccd-rs/examples/cfw_probe.rs) —
 a hardware probe for a filter wheel driven through its camera (see its header for the modes)
 
+[examples/enumerate.rs](https://github.com/rusty-photon/rusty-photon/blob/main/crates/qhyccd-rs/examples/enumerate.rs) —
+lists each camera's SDK id and model without opening any, and checks none was opened
+
+## Two Stages: Enumerate, Then Probe
+
+`Sdk::new()` only enumerates: it scans the bus and reads each camera's id, and
+opens no camera. A filter wheel is found by a second call,
+`Sdk::probe_filter_wheels(&ids)`, which opens each named camera, asks whether a
+CFW is plugged in, and closes it again. It never sends `InitQHYCCD`, the call
+that may home a wheel. `Sdk::filter_wheels()` is empty until the probe has run,
+so name only the cameras your program owns.
+
 ## Simulation Feature
 
 The `simulation` feature enables testing and development without physical hardware. When enabled, `Sdk::new()` automatically provides a simulated camera environment with realistic behavior.
@@ -141,23 +153,20 @@ With the simulation feature enabled, your code works identically whether using r
 use qhyccd_rs::Sdk;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Same code for both real and simulated cameras
-    let sdk = Sdk::new()?;
+    // Same code for both real and simulated cameras. Enumeration opens nothing.
+    let mut sdk = Sdk::new()?;
 
     // `cameras()` / `filter_wheels()` return iterators; collect (or use `.next()`).
-    let cameras: Vec<_> = sdk.cameras().collect();
-    println!("Found {} camera(s)", cameras.len());
+    // `id()` returns `&str`, not a `Result`.
+    let ids: Vec<String> = sdk.cameras().map(|camera| camera.id().to_string()).collect();
+    println!("Found {} camera(s): {ids:?}", ids.len());
 
-    if let Some(camera) = cameras.first() {
-        // `id()` returns `&str`, not a `Result`.
-        println!("Camera: {}", camera.id());
-
-        // Check for filter wheel
-        if let Some(fw) = sdk.filter_wheels().next() {
-            fw.open()?;
-            println!("Filter wheel with {} positions", fw.get_number_of_filters()?);
-            fw.close()?;
-        }
+    // Find the filter wheels: opens and closes each named camera, never initialises it.
+    sdk.probe_filter_wheels(&ids);
+    if let Some(fw) = sdk.filter_wheels().next() {
+        fw.open()?;
+        println!("Filter wheel with {} positions", fw.get_number_of_filters()?);
+        fw.close()?;
     }
 
     Ok(())
@@ -176,7 +185,8 @@ When using the simulation feature, `Sdk::new()` automatically provides:
   - Gain, offset, and exposure controls
 
 - **Filter Wheel**: 7-position CFW
-  - Accessible via `sdk.filter_wheels()`
+  - Found by `sdk.probe_filter_wheels(...)`, as a real camera's is, then
+    accessible via `sdk.filter_wheels()`
   - Full control API support
 
 ### Custom Simulated Cameras

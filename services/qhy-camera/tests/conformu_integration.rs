@@ -1,8 +1,9 @@
 //! `ConformU` compliance test for the qhy-camera Camera (+ `FilterWheel`) driver.
 //!
 //! Launches the production binary (built with `--features conformu`, which pulls
-//! in the `simulation` backend so `Sdk::new()` yields a QHY178M-Simulated camera
-//! + 7-position CFW) and runs the official ASCOM `ConformU` validator against it.
+//! in the `simulation` backend so `Sdk::new()` yields a QHY178M-Simulated camera,
+//! whose 7-position CFW the service's startup probe finds) and runs the official
+//! ASCOM `ConformU` validator against it.
 //!
 //! Gated behind the `conformu` feature. When `CONFORMU_PATH` is unset the run is
 //! `Skipped` (so the test passes without `ConformU` installed); CI sets it.

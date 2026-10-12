@@ -21,6 +21,8 @@ Feature: Camera enumeration and connection lifecycle
   CanPulseGuide and CanAsymmetricBin are false whatever the connection
   state, and StopExposure stays NOT_IMPLEMENTED (E11). With zero cameras discovered the
   service still starts, registering no Camera devices and logging a warning.
+  A camera the startup filter-wheel probe cannot open is not registered, and
+  the service still starts (C0).
   Against the qhyccd-rs simulation backend exactly one camera
   (QHY178M-Simulated, 3072x2048, monochrome, 16-bit) and one 7-position
   filter wheel are present.
@@ -74,5 +76,10 @@ Feature: Camera enumeration and connection lifecycle
 
   Scenario: The service starts with no Camera devices when no camera is present
     Given the qhy-camera service running with an empty simulation backend
+    Then no ASCOM camera devices are registered
+    And the service is healthy
+
+  Scenario: A camera the filter-wheel probe cannot open is not registered
+    Given the qhy-camera service running with a simulated camera that cannot be opened
     Then no ASCOM camera devices are registered
     And the service is healthy

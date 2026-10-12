@@ -125,7 +125,7 @@ impl ServerBuilder {
         self
     }
 
-    /// Open the SDK, enumerate the connected cameras (and any CFW on them),
+    /// Start the SDK, enumerate the connected cameras, probe each for a CFW,
     /// register each as an ASCOM device, and bind the listener.
     ///
     /// # Errors
@@ -137,10 +137,11 @@ impl ServerBuilder {
     pub async fn build(
         self,
     ) -> std::result::Result<BoundServer, Box<dyn std::error::Error + Send + Sync>> {
-        // Eager SDK open + enumerate: a discovered camera's per-device connect
-        // handshake happens later on `set_connected(true)`, but the device list is
-        // fixed at build (so a reload re-enumerates). Zero cameras is not a hard
-        // failure (C0).
+        // Enumerate at build, opening nothing; then the CFW probe opens and
+        // closes each camera, without `InitQHYCCD` (C0, C5). A camera's connect
+        // handshake happens later on `set_connected(true)`, but the device list
+        // is fixed at build (so a reload re-enumerates). Zero cameras is not a
+        // hard failure (C0).
         let mut sdk = match self.injected_sdk {
             Some(sdk) => sdk,
             None => qhyccd_rs::Sdk::new().map_err(|e| QhyCameraError::Sdk(format!("{e:#}")))?,
@@ -274,13 +275,26 @@ impl ServerBuilder {
 
 /// Probe every enumerated camera for a CFW. Returns the ids of the cameras the
 /// probe could not open or close, which are not registered.
+///
+/// A camera whose close failed keeps its handle, so this process holds it
+/// without serving it until the SDK is released — on reload or shutdown, when
+/// `Sdk`'s drop closes it again. `still_open` in the warning says which case it
+/// was.
 fn probe_every_camera(sdk: &mut qhyccd_rs::Sdk) -> std::collections::HashSet<String> {
     let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
-    let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
     let mut unprobed = std::collections::HashSet::new();
-    for (id, outcome) in sdk.probe_filter_wheels(&id_refs) {
+    for (id, outcome) in sdk.probe_filter_wheels(&ids) {
         if let Err(error) = outcome {
-            warn!(camera = %id, %error, "camera not registered: the CFW probe could not open or close it");
+            let still_open = sdk
+                .cameras()
+                .any(|camera| camera.id() == id && matches!(camera.is_open(), Ok(true)));
+            warn!(
+                camera = %id,
+                %error,
+                still_open,
+                "camera not registered: the CFW probe could not open or close it \
+                 (one still open is held until the service reloads or stops)"
+            );
             unprobed.insert(id);
         }
     }

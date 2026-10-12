@@ -1,9 +1,10 @@
 //! Cucumber `World` for the qhy-camera BDD suite.
 //!
 //! Each scenario spawns the qhy-camera binary (built with the `simulation`
-//! backend so `Sdk::new()` yields a QHY178M-Simulated camera + 7-position CFW)
-//! and drives it through the typed `ascom-alpaca` Camera / `FilterWheel` clients
-//! over real HTTP — mirroring the qhy-focuser / dsd-fp2 pattern.
+//! backend so `Sdk::new()` yields a QHY178M-Simulated camera, whose 7-position
+//! CFW the service's startup probe finds) and drives it through the typed
+//! `ascom-alpaca` Camera / `FilterWheel` clients over real HTTP — mirroring the
+//! qhy-focuser / dsd-fp2 pattern.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -46,6 +47,10 @@ pub struct CameraWorld {
     /// The file whose existence takes the simulated camera off the bus (C9);
     /// `None` starts a camera that never leaves.
     pub departure_file: Option<std::path::PathBuf>,
+    /// The service is expected to register no camera although the backend has
+    /// one (a camera its CFW probe cannot open, C0): startup then waits for the
+    /// device list rather than for a camera.
+    pub expect_no_camera: bool,
 
     // Result stashes ("When does, Then asserts").
     pub last_error_code: Option<u16>,
@@ -171,7 +176,7 @@ impl CameraWorld {
                         _ => {}
                     }
                 }
-                if self.empty_backend {
+                if self.empty_backend || self.expect_no_camera {
                     // Zero cameras is the expected, healthy state here (C0).
                     self.camera = camera;
                     self.filter_wheel = filter_wheel;
@@ -192,8 +197,8 @@ impl CameraWorld {
         // never-started service. (An empty backend's *healthy* state is zero
         // cameras AFTER a successful get_devices() — which returns inside the loop.)
         assert!(
-            !self.empty_backend,
-            "qhy-camera management API did not respond within 20s (empty backend)"
+            !(self.empty_backend || self.expect_no_camera),
+            "qhy-camera management API did not respond within 20s (no camera expected)"
         );
         panic!("qhy-camera did not register a Camera device within 20s");
     }

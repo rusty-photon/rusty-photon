@@ -2400,7 +2400,8 @@ pub(crate) mod mock {
 /// `FilterWheel` devices share ONE physical handle so disconnecting one does not
 /// tear down the other (the real-hardware bug fixed 2026-06-18). They exercise
 /// the refcount against the `qhyccd-rs` simulation backend (`Sdk::new()`
-/// fabricates a QHY178M-Simulated camera + CFW), so they need no hardware.
+/// enumerates a QHY178M-Simulated camera, opening nothing; its CFW is found
+/// only by `Sdk::probe_filter_wheels`), so they need no hardware.
 ///
 /// Gated on `feature = "simulation"`: `cargo test --all-features` turns it on
 /// and runs these, but the Bazel `qhy-camera_unit_test` target links the

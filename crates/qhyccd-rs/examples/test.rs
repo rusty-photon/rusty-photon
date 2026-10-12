@@ -21,7 +21,6 @@ fn main() {
     trace!(sdk_version = ?sdk_version);
 
     let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
-    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
     trace!(probe = ?sdk.probe_filter_wheels(&ids));
 
     let filter_wheel = sdk.filter_wheels().last().expect("no filter_wheel found");

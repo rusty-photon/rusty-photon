@@ -618,6 +618,116 @@ fn probing_a_camera_twice_adds_its_wheel_once() {
 }
 
 #[test]
+fn probe_of_an_open_camera_asks_on_its_handle_and_leaves_it_open() {
+    // Closing a camera its holder has open would end the holder's session.
+    let mut sdk = Sdk::new().unwrap();
+    let camera = sdk.cameras().next().unwrap().clone();
+    camera.open().unwrap();
+
+    let outcomes = sdk.probe_filter_wheels(&["SIM-QHY178M"]);
+
+    assert_eq!(outcomes, vec![("SIM-QHY178M".to_string(), Ok(true))]);
+    assert!(camera.is_open().unwrap());
+}
+
+#[test]
+fn probe_of_a_camera_that_cannot_close_is_that_cameras_error_and_it_stays_open() {
+    let close_failure = departure_file("probe_cannot_close");
+    std::fs::write(&close_failure, b"").unwrap();
+    let mut sdk = Sdk::new_simulated();
+    sdk.add_simulated_camera(
+        SimulatedCameraConfig::default()
+            .with_id("STUCK")
+            .with_filter_wheel(5)
+            .with_close_failure_file(&close_failure),
+    );
+
+    let outcomes = sdk.probe_filter_wheels(&["STUCK"]);
+
+    assert_eq!(
+        outcomes,
+        vec![(
+            "STUCK".to_string(),
+            Err(QHYError::Sdk { op: "close_camera" })
+        )]
+    );
+    // The wheel answered, but a camera the probe could not close gets none.
+    assert_eq!(sdk.filter_wheels().count(), 0);
+    // A failed close keeps the handle.
+    assert!(sdk.cameras().next().unwrap().is_open().unwrap());
+    let _ = std::fs::remove_file(&close_failure);
+}
+
+#[test]
+fn probe_asks_again_when_the_plug_query_misses_the_wheel() {
+    let mut sdk = Sdk::new_simulated();
+    sdk.add_simulated_camera(
+        SimulatedCameraConfig::default()
+            .with_id("SHY")
+            .with_filter_wheel(5)
+            .with_cfw_plug_misses(2),
+    );
+
+    let outcomes = sdk.probe_filter_wheels(&["SHY"]);
+
+    assert_eq!(outcomes, vec![("SHY".to_string(), Ok(true))]);
+    assert_eq!(sdk.filter_wheels().count(), 1);
+}
+
+#[test]
+fn probe_takes_three_misses_as_no_wheel() {
+    let mut sdk = Sdk::new_simulated();
+    sdk.add_simulated_camera(
+        SimulatedCameraConfig::default()
+            .with_id("SILENT")
+            .with_filter_wheel(5)
+            .with_cfw_plug_misses(3),
+    );
+
+    let outcomes = sdk.probe_filter_wheels(&["SILENT"]);
+
+    assert_eq!(outcomes, vec![("SILENT".to_string(), Ok(false))]);
+    assert_eq!(sdk.filter_wheels().count(), 0);
+}
+
+#[test]
+fn probe_takes_a_failed_plug_query_as_no_wheel() {
+    // A camera that leaves the bus while held open keeps its handle, and the
+    // plug query on it fails.
+    let departure = departure_file("probe_query_fails");
+    let mut sdk = Sdk::new_simulated();
+    sdk.add_simulated_camera(
+        SimulatedCameraConfig::default()
+            .with_id("LEAVING")
+            .with_filter_wheel(5)
+            .with_departure_file(&departure),
+    );
+    sdk.cameras().next().unwrap().open().unwrap();
+    std::fs::write(&departure, b"").unwrap();
+
+    let outcomes = sdk.probe_filter_wheels(&["LEAVING"]);
+
+    assert_eq!(outcomes, vec![("LEAVING".to_string(), Ok(false))]);
+    assert_eq!(sdk.filter_wheels().count(), 0);
+    let _ = std::fs::remove_file(&departure);
+}
+
+#[test]
+fn plug_misses_restart_at_every_open() {
+    let camera = Camera::new_simulated(
+        SimulatedCameraConfig::default()
+            .with_filter_wheel(5)
+            .with_cfw_plug_misses(1),
+    );
+    for _ in 0..2 {
+        camera.open().unwrap();
+        assert!(!camera.is_cfw_plugged_in().unwrap());
+        assert!(camera.is_cfw_plugged_in().unwrap());
+        camera.close().unwrap();
+    }
+}
+
+#[test]
 fn test_simulated_filter_wheel() {
     let config = SimulatedCameraConfig::default()
         .with_id("FW-TEST")

@@ -12,6 +12,18 @@ async fn service_with_a_departing_camera(world: &mut CameraWorld) {
     world.start().await;
 }
 
+#[given("the qhy-camera service running with a simulated camera that cannot be opened")]
+async fn service_with_a_camera_that_cannot_be_opened(world: &mut CameraWorld) {
+    // A camera already off the bus when the service starts: the scan lists it,
+    // and the CFW probe's open fails, as on a wedged camera or one unplugged
+    // between the scan and the probe.
+    let departure = world.scratch_dir().join("departed");
+    std::fs::write(&departure, b"").expect("write the departure file");
+    world.departure_file = Some(departure);
+    world.expect_no_camera = true;
+    world.start().await;
+}
+
 #[when(regex = r"^camera device (\d+) leaves the bus$")]
 async fn camera_leaves_the_bus(world: &mut CameraWorld, _device: u32) {
     let departure = world

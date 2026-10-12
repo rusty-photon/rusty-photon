@@ -452,8 +452,63 @@ fn detect(cam: &Camera, args: &[String]) {
     emit("\"ev\":\"done\"");
 }
 
+/// Check the mode and its arguments before the camera is opened, so a usage
+/// error panics before `main`'s init (which may home the wheel) rather than
+/// after it.
+fn check_usage(args: &[String]) {
+    let one_of = |index: usize, allowed: &[&str]| {
+        let given: String = arg(args, index, &allowed.join(", "));
+        assert!(
+            allowed.contains(&given.as_str()),
+            "usage: argument {index} is one of {}",
+            allowed.join(", ")
+        );
+    };
+    match args.get(1).map(String::as_str) {
+        Some("home" | "settle") => {
+            let _: u32 = arg(args, 2, "a slot");
+        }
+        Some("rest") => {
+            let _: u64 = arg(args, 2, "a rest in ms");
+        }
+        Some("overlap") => {
+            let _: u64 = arg(args, 2, "a delay in ms");
+        }
+        Some("during") => {
+            one_of(
+                2,
+                &[
+                    "none", "init", "readmode", "stream", "sequence", "temps", "exposure",
+                ],
+            );
+            let _: u64 = arg(args, 3, "a delay in ms");
+        }
+        Some("lost") => one_of(2, &["resend", "next"]),
+        Some("forget") => one_of(2, &["none", "reinit", "reopen"]),
+        Some("reads") => {
+            for delay in args.iter().skip(2) {
+                let _: u64 = delay.parse().expect("usage: a delay in ms");
+            }
+        }
+        Some("powercut") => {
+            let _: u32 = arg(args, 2, "a slot");
+            let _: u64 = arg(args, 3, "seconds to read for");
+            if args.len() > 4 {
+                let _: u32 = arg(args, 4, "a slot");
+                let _: f64 = arg(args, 5, "seconds after the move");
+            }
+        }
+        Some("hold") => {
+            let _: u64 = arg(args, 2, "seconds to hold");
+        }
+        Some("detect" | "zero" | "same" | "travel") => {}
+        _ => panic!("usage: cfw_probe detect|hold|home|rest|during|overlap|lost|reads|settle|zero|same|forget|travel|powercut ... (see the header)"),
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    check_usage(&args);
     let _ = ms();
     let sdk = Sdk::new().expect("SDK::new failed");
     let wanted = std::env::var("CFW_PROBE_CAMERA").ok();
@@ -498,14 +553,8 @@ fn main() {
         Some("overlap") => overlap(camera, &args),
         Some("lost") => lost(camera, &args),
         Some("reads") => reads(camera, &args),
-        Some("hold") => {
-            let secs = args
-                .get(2)
-                .and_then(|s| s.parse().ok())
-                .expect("usage: hold <s>");
-            watch(camera, secs, "hold");
-        }
-        _ => panic!("usage: cfw_probe detect|hold|home|rest|during|overlap|lost|reads|settle|zero|same|forget|travel|powercut ... (see the header)"),
+        Some("hold") => watch(camera, arg(&args, 2, "seconds to hold"), "hold"),
+        _ => panic!("usage: check_usage passed a mode main does not run"),
     }
     camera.close().expect("close");
     emit("\"ev\":\"done\"");

@@ -11,7 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `Sdk::probe_filter_wheels(&ids)`, the second stage after `Sdk::new()`'s
   enumeration (see *Changed*), and `QHYError::UnknownCameraId` for an id it is
-  given that names no enumerated camera.
+  given that names no enumerated camera. It takes any slice of string-likes
+  (`&[&str]`, `&[String]`). A camera already open is asked on its handle and
+  left open; a closed one is opened, asked up to three times and closed. A
+  camera whose close fails stays open until a later close succeeds.
+- `SimulatedCameraConfig::with_cfw_plug_misses(n)`: the first `n` CFW-plugged
+  queries after each open answer `false`, as a real plug query occasionally
+  misses a wheel. A new `cfw_plug_misses` field, with the same struct literal
+  note as `departure_file`. Simulation only.
 - `examples/enumerate.rs`, a hand-run probe that prints each camera's id and
   model with nothing opened, and fails if any camera reads open afterwards.
 - `cfw_probe` modes `detect [init]` (the wheel's plug, port and slot-count

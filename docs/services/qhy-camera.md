@@ -563,7 +563,11 @@ Values are grounded in the `qhyccd-rs`-backed implementation.
   powered up is not known.
 
   A camera whose probe cannot open or close it is not registered, logged at
-  `warn!`. **The probe opens every camera the SDK enumerates, including one
+  `warn!`. A failed close keeps the handle, as any failed close does, so the
+  service then holds that camera unserved until it reloads or stops, when the
+  SDK's release closes it again; the warning's `still_open` says which case it
+  was. A camera a caller already has open is asked on its handle and left
+  open. **The probe opens every camera the SDK enumerates, including one
   another process holds**, and the QHY SDK does not refuse that second open.
   Measured on the same rig: while one process held the camera open and
   initialised, reading its wheel's status every 255 ms, another's open
@@ -2818,8 +2822,10 @@ Layered per [`testing.md`](../skills/testing.md).
   whose camera has left the bus (`--simulation-departure-file`) is registered
   all the same, which is how the suite shows a list opens nothing at startup;
   without a list the same camera fails the CFW probe's open and is not
-  registered. The CFW probe's own rules — one outcome per id, only the named
-  cameras opened, never an init — are `qhyccd-rs`'s simulation tests
+  registered, which `enumeration_connection.feature` already runs. The CFW
+  probe's own rules — one outcome per id, only the named cameras opened, an
+  open camera left open, never an init, three asks before "no wheel", a
+  failed close keeping the handle — are `qhyccd-rs`'s simulation tests
   (`probe_*`). A declared wheel whose CFW does not answer (U10) is unit-tested
   against `MockFilterWheelHandle`; the simulated camera always has its wheel.
 - **ConformU** (`tests/conformu_integration.rs`, gated by the `conformu` feature)
