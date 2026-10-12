@@ -2038,8 +2038,10 @@ The first analysis tool to implement. Behavioral contract:
 8. For each surviving component, compute intensity-weighted centroid and
    per-star HFR (radial flux accumulation to half of total flux).
    Centroiding uses background-subtracted flux to avoid bbox-center bias.
-   Reject a component whose HFR is under **0.25 px**: its flux sits in
-   the one pixel under its centroid.
+   Reject a component with no flux above the background once its hot
+   pixels are left out: it has no centroid to weight and no HFR. Reject
+   one whose HFR is under **0.25 px**: its flux sits in the one pixel
+   under its centroid.
 9. Return aggregate HFR (median of per-star HFRs), star count,
    saturated-star count, and background.
 
@@ -2054,13 +2056,21 @@ focus. PixInsight's star detector and Hocus Focus also remove hot pixels
 before they blur, for the same reason.
 
 A structure of up to four bright pixels holds no body, so single hot
-pixels, pairs and 2×2 clusters are removed. A star with more than four
-pixels above the body level keeps every pixel: a window around its core
-holds its body, and so does a window around the core side of every pixel
-of its profile; the same holds for the edge of any extended shape, such
-as a defocused star's annulus. A star the step keeps therefore has the
-same footprint, and the same verdict at any `min_area`, as without it;
-the caveats below list the stars it does not keep. The body level sits at 2σ above the background mean,
+pixels, pairs and 2×2 clusters are removed. A star with at least five
+pixels above the body level in one 3×3 window, or six in one on every
+second row and column, keeps every pixel: a window around its core holds
+its body, and so does a window around the core side of every pixel of
+its profile. The same holds for the edge of any extended shape whose
+pixels above the body level are at least two pixels wide, such as a
+defocused star's annulus. A line of them one pixel wide, one per column
+or one per row at any angle, puts at most three in any window and is
+removed, as a line of hot pixels is. A faint, thin trail at a slant is
+wider than that near its steps from one row or column to the next,
+where windows can hold a body, so it keeps some pixels there and loses
+the rest (see the caveats). A star the step keeps whole
+therefore has the same footprint, and the same verdict at any
+`min_area`, as without it; the caveats below list the stars it does not
+keep whole. The body level sits at 2σ above the background mean,
 not at the detection threshold, because a faint star at the detection
 limit, centred on a pixel corner or undersampled, has only one to four
 pixels above the threshold, while the median of nine background pixels
@@ -2128,6 +2138,18 @@ bin 4 (2026-09-09 frames), at `threshold_sigma` 5 and 8.
   faint star, or a bright one undersampled to a FWHM under about 1 px
   and centred near a pixel corner, whose four core pixels hold nearly
   all its light. Telling those from a hot cluster needs a defect map.
+- A star trailed by a wind gust or a tracking error into a line so thin
+  and faint that only its ridge, one pixel wide, is more than 2σ above
+  the background looks like a line of hot pixels and loses pixels. In a
+  noise-free simulation at every angle, a trail whose brightest pixels
+  are 10σ above the background loses pixels only when its FWHM across is
+  at most about 1.1 px, a 20σ one at most about 0.8 px and a 50σ one at
+  most about 0.6 px. A trail along a row or a column, centred on it, is
+  then removed whole. One at an angle between those and a diagonal keeps
+  some pixels near its steps from one row or column to the next and
+  loses the rest of its ridge, so it is measured with gaps: less
+  flux, a different HFR, and where a gap cuts its smoothed footprint,
+  several detections instead of one.
 - A star seen in one colour only on a raw colour mosaic is measured at
   half the resolution, so the undersampling limits in these caveats
   double. In a noise-free
@@ -2248,8 +2270,10 @@ exposure.
 **Algorithm**: same pipeline `measure_basic` runs internally — sigma-
 clipped background → hot-pixel suppression → Gaussian smoothing (σ ≈
 1 px) → threshold at `mean + threshold_sigma × stddev` → 4-connectivity
-BFS → area / border filter → intensity-weighted centroiding → the
-0.25 px HFR floor. Saturated components are flagged, not rejected (same
+BFS → area / border filter → rejection of a component with no flux
+above the background once its hot pixels are left out →
+intensity-weighted centroiding → the 0.25 px HFR floor. Saturated
+components are flagged, not rejected (same
 rationale as `measure_basic`), and the `measure_basic` caveats apply.
 
 **Error cases**:
@@ -2289,9 +2313,9 @@ in addition to the HFR / flux that `measure_basic` aggregates.
   - `x` / `y` — flux-weighted centroid in 0-based pixel coordinates:
     `x` along the image width (FITS `NAXIS1`), `y` along the height
     (`NAXIS2`).
-  - `hfr` — empirical half-flux radius (pixels), or `null` when no
-    positive flux above background (rare; `detect_stars` already filters
-    this out).
+  - `hfr` — empirical half-flux radius (pixels). The field is nullable,
+    but the only star without an HFR is one with no positive flux above
+    the background, which `detect_stars` rejects, so it is never `null`.
   - `fwhm` — geometric-mean FWHM = 2.3548·√(σx·σy) from the Gaussian
     fit (pixels), or `null` when the fit fails.
   - `eccentricity` — √(1 − (σmin/σmax)²) from the Gaussian fit, or
