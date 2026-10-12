@@ -131,7 +131,7 @@ fn main() -> ServiceResult {
     if let Some(Command::Doctor(doctor)) = args.command {
         if doctor.devices {
             #[cfg(feature = "simulation")]
-            let source = match svbony_camera::UsbSource::from_flag(doctor.usb_inventory) {
+            let source = match svbony_camera::claims::usb_source_from_flag(doctor.usb_inventory) {
                 Ok(source) => source,
                 Err(error) => {
                     eprintln!("doctor: {error}");
@@ -172,7 +172,7 @@ fn main() -> ServiceResult {
     #[cfg(feature = "simulation")]
     let simulation_departure_file = args.simulation_departure_file;
     #[cfg(feature = "simulation")]
-    let usb_source = svbony_camera::UsbSource::from_flag(args.usb_inventory)
+    let usb_source = svbony_camera::claims::usb_source_from_flag(args.usb_inventory)
         .map_err(svbony_camera::SvbonyCameraError::UsbInventory)?;
     debug!(config = ?config_path, "starting svbony-camera");
 

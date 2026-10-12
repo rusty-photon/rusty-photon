@@ -124,6 +124,44 @@ pub use focuser::{Focuser, FocuserInfo, FocuserList};
 #[cfg(all(feature = "simulation", feature = "camera"))]
 pub const SIM_CAMERA_COUNT: usize = 1;
 
+/// The USB product id the simulated camera stands for, under ZWO's vendor id.
+///
+/// It is the one product id the simulated [`is_camera_product`] recognises,
+/// chosen for the simulation: it is not one observed on a real ASI2600MM Pro.
+#[cfg(all(feature = "simulation", feature = "camera"))]
+pub const SIM_CAMERA_PRODUCT_ID: u16 = 0x2600;
+
+/// ZWO's USB vendor id, which every ASI camera, EFW and EAF enumerates under.
+#[cfg(feature = "camera")]
+pub const ZWO_VENDOR_ID: u16 = 0x03c3;
+
+/// Whether the ASI SDK supports the USB device `vendor`:`product` as a camera
+/// (`ASICameraCheck`).
+///
+/// A lookup in the SDK's own table of camera product ids: it opens nothing and
+/// needs no camera on the bus, so it can tell a camera's USB record from a ZWO
+/// EFW's or EAF's — both enumerate under [`ZWO_VENDOR_ID`] too — before any
+/// open. Measured with SDK 1.41 on Linux: true for `03c3:1603`, `178c`, `120e`
+/// and `662b`, false for an EAF's `1f10`.
+#[cfg(all(feature = "camera", not(feature = "simulation")))]
+#[must_use]
+pub fn is_camera_product(vendor: u16, product: u16) -> bool {
+    // SAFETY: a pure lookup taking two integers; no handle, no buffer.
+    unsafe { sys::ASICameraCheck(i32::from(vendor), i32::from(product)) != 0 }
+}
+
+/// Whether the simulated ASI SDK supports the USB device `vendor`:`product`
+/// as a camera.
+///
+/// True for [`SIM_CAMERA_PRODUCT_ID`] alone, under [`ZWO_VENDOR_ID`]. The real
+/// SDK's check is a table lookup too (see the non-simulation build of this
+/// function).
+#[cfg(all(feature = "camera", feature = "simulation"))]
+#[must_use]
+pub const fn is_camera_product(vendor: u16, product: u16) -> bool {
+    vendor == ZWO_VENDOR_ID && product == SIM_CAMERA_PRODUCT_ID
+}
+
 /// Number of simulated EFW filter wheels presented when `simulation` is on.
 #[cfg(all(feature = "simulation", feature = "efw"))]
 pub const SIM_FILTER_WHEEL_COUNT: usize = 1;
@@ -283,6 +321,10 @@ pub struct Sdk {
     /// focuser are off the bus. See [`Sdk::with_departure_file`].
     #[cfg(all(feature = "simulation", any(feature = "camera", feature = "focuser")))]
     departure_file: Option<std::path::PathBuf>,
+    /// Simulation only: every open of the simulated camera fails. See
+    /// [`Sdk::with_unopenable`].
+    #[cfg(all(feature = "simulation", feature = "camera"))]
+    unopenable: bool,
     _private: (),
 }
 
@@ -337,6 +379,18 @@ impl Sdk {
     #[must_use]
     pub fn with_departure_file(mut self, path: impl Into<std::path::PathBuf>) -> Self {
         self.departure_file = Some(path.into());
+        self
+    }
+
+    /// Simulation only: the simulated camera is enumerated as usual, but every
+    /// open of it through this SDK — [`CameraList::open_uninitialised`] and
+    /// [`CameraList::open_camera`] alike — fails with
+    /// [`AsiError::GeneralError`]: a wedged camera. The real SDK's answer for
+    /// one is unmeasured; this one is chosen.
+    #[cfg(all(feature = "simulation", feature = "camera"))]
+    #[must_use]
+    pub const fn with_unopenable(mut self) -> Self {
+        self.unopenable = true;
         self
     }
 
@@ -554,6 +608,46 @@ mod tests {
         assert_eq!(cameras, SIM_CAMERA_COUNT);
         #[cfg(not(feature = "simulation"))]
         let _ = cameras;
+    }
+
+    /// No camera on the bus is needed: the SDK's table answers by itself.
+    /// The product ids are the ones SDK 1.41 was measured on.
+    #[cfg(all(feature = "camera", not(feature = "simulation")))]
+    #[test]
+    fn the_sdk_table_knows_cameras_from_a_focuser() {
+        assert!(is_camera_product(ZWO_VENDOR_ID, 0x1603));
+        assert!(!is_camera_product(ZWO_VENDOR_ID, 0x1f10));
+        assert!(!is_camera_product(0x1618, 0x1603));
+    }
+
+    #[cfg(all(feature = "camera", feature = "simulation"))]
+    #[test]
+    fn the_simulated_table_knows_the_simulated_camera_alone() {
+        assert!(is_camera_product(ZWO_VENDOR_ID, SIM_CAMERA_PRODUCT_ID));
+        assert!(!is_camera_product(ZWO_VENDOR_ID, 0x1f10));
+        assert!(!is_camera_product(0x1618, SIM_CAMERA_PRODUCT_ID));
+    }
+
+    #[cfg(all(feature = "camera", feature = "simulation"))]
+    #[test]
+    fn an_unopenable_camera_is_enumerated_but_every_open_fails() {
+        let sdk = Sdk::new().unwrap().with_unopenable();
+        assert_eq!(sdk.cameras().unwrap().len(), SIM_CAMERA_COUNT);
+        assert!(
+            matches!(
+                sdk.open_uninitialised(0),
+                Err(Error::Asi(AsiError::GeneralError))
+            ),
+            "{:?}",
+            sdk.open_uninitialised(0)
+        );
+        assert!(
+            matches!(sdk.open_camera(0), Err(Error::Asi(AsiError::GeneralError))),
+            "{:?}",
+            sdk.open_camera(0)
+        );
+        // Another SDK in the process opens it as ever.
+        Sdk::new().unwrap().open_uninitialised(0).unwrap();
     }
 
     #[cfg(feature = "efw")]

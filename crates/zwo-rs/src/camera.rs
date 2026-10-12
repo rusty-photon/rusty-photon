@@ -492,9 +492,9 @@ impl CameraList<'_> {
     ///
     /// # Errors
     /// Returns [`Error::Asi`] if the index is out of range or the SDK fails
-    /// to open the camera. A failure here should be treated as fatal by the
-    /// caller (unlike a subsequent [`UninitialisedCamera::serial`] failure,
-    /// which just means the camera has no stable identity).
+    /// to open the camera: the camera cannot be used at all, unlike after a
+    /// subsequent [`UninitialisedCamera::serial`] failure, which just means
+    /// the camera has no stable identity.
     pub fn open_uninitialised(&self, index: usize) -> Result<UninitialisedCamera> {
         #[cfg(feature = "simulation")]
         let camera = {
@@ -580,6 +580,9 @@ impl Sdk {
         });
         if index >= crate::SIM_CAMERA_COUNT || !listed {
             return Err(Error::Asi(AsiError::InvalidIndex));
+        }
+        if self.unopenable {
+            return Err(Error::Asi(AsiError::GeneralError));
         }
         Ok(())
     }

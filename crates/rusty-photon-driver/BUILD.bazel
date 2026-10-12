@@ -12,10 +12,15 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-shared-transport:rusty-photon-shared-transport",
 ]
 
+# `claims` (the placeholder Camera and the failed USB scan's re-scan) is on in
+# every Bazel build: `crate_features` is literal, one target serves every
+# driver, and `@cr`'s ascom-alpaca already carries the `camera` feature the
+# camera drivers turn on, so it adds nothing to a non-camera driver's graph.
 rust_library(
     name = "rusty-photon-driver",
     srcs = glob(["src/**/*.rs"]),
     aliases = aliases(),
+    crate_features = ["claims"],
     crate_name = "rusty_photon_driver",
     edition = "2021",
     proc_macro_deps = all_crate_deps(proc_macro = True),
@@ -31,6 +36,8 @@ rust_test(
         proc_macro_dev = True,
     ),
     crate = ":rusty-photon-driver",
+    # rust_test does not inherit `crate_features` from the `crate` it wraps.
+    crate_features = ["claims"],
     proc_macro_deps = all_crate_deps(
         proc_macro = True,
         proc_macro_dev = True,

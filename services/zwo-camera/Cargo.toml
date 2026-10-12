@@ -13,8 +13,11 @@ default = []
 # Forwards to `zwo-rs/simulation`: a hardware-free, in-Rust simulated camera/EFW
 # for development and tests. As in qhyccd-rs this removes the *camera*, NOT the
 # SDK *link* — the native ZWO SDK is still linked. See the README and
-# docs/services/zwo-camera.md "Native dependency & build gating".
-simulation = ["zwo-rs/simulation"]
+# docs/services/zwo-camera.md "Native dependency & build gating". It also
+# stages the USB scan a `usb_devices` list is placed from
+# (docs/services/zwo-camera.md U7): the fabricated camera is on no bus a host
+# scan could read.
+simulation = ["zwo-rs/simulation", "rusty-photon-doctor-checks/mock"]
 # Cross-driver alias for `simulation` (the workspace-wide test-backend name).
 mock = ["simulation"]
 # `conformu` enables `mock` so a single `--features conformu` flag builds and
@@ -37,7 +40,9 @@ rusty-photon-config = { workspace = true }
 rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-camera-core = { workspace = true }
-rusty-photon-driver = { workspace = true }
+# `claims`: the placeholder Camera and the failed USB scan's re-scan
+# (docs/services/zwo-camera.md U4, U6).
+rusty-photon-driver = { workspace = true, features = ["claims"] }
 rusty-photon-service-lifecycle = { workspace = true }
 tokio = { workspace = true }
 axum = { workspace = true }

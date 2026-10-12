@@ -1,19 +1,24 @@
 //! svbony-camera's half of the device claims (docs/services/svbony-camera.md
 //! U1-U9).
 //!
-//! Which SDK models it knows on the bus (the normalizer, U2), where its USB
-//! scan comes from (U7), and the `doctor --devices` listing (U8). The join, the
-//! list's validation, port order and the listing's layout are
-//! `rusty-photon-doctor-checks`' `claims` module, shared with the other camera
-//! drivers.
+//! Which SDK models it knows on the bus (the normalizer, U2), its simulated
+//! USB scan (U7), what `doctor --devices` can say about each camera without
+//! opening it (U8), and the placeholder it registers (U4). The join, the list's
+//! validation, port order, the scan source and the listing are
+//! `rusty-photon-doctor-checks`' `claims` module, and the placeholder device
+//! is `rusty-photon-driver`'s, shared with the other camera drivers.
 
+use std::collections::BTreeMap;
+
+pub use rusty_photon_doctor_checks::claims::UsbSource;
 use rusty_photon_doctor_checks::claims::{
-    BlockEntry, Claims, Listing, ListingRow, Normalizer, SdkCamera,
+    self, BlockEntry, CameraFacts, Claims, DisplayNames, Listing, Normalizer, SdkCamera,
 };
-use rusty_photon_doctor_checks::UsbScan;
+use rusty_photon_driver::claims::{Placeholder, PlaceholderCamera};
 use svbony_rs::CameraInfo;
 
-use crate::config::Config;
+use crate::config::{Config, UsbDeviceEntry};
+use crate::config_actions::SvbonyCameraDriver;
 
 /// The service name: the config file's stem and the placeholder `UniqueID`'s
 /// middle field.
@@ -47,12 +52,14 @@ const MODELS: &[(&str, &str)] = &[SV605CC];
 #[cfg(feature = "simulation")]
 const MODELS: &[(&str, &str)] = &[SV605CC, (SIMULATED_MODEL, "9a0a")];
 
-/// What this driver knows about `SVBony` cameras on the bus.
+/// What this driver knows about `SVBony` cameras on the bus. The `SVBony` SDK
+/// has no passive check of a product id.
 pub const NORMALIZER: Normalizer<'static> = Normalizer {
     sdk: SDK_NAME,
     vendor: VENDOR,
     models: MODELS,
     not_cameras: &[],
+    sdk_check: None,
 };
 
 /// The SDK's cameras as the join reads them.
@@ -72,77 +79,41 @@ pub fn sdk_cameras<'a>(infos: impl IntoIterator<Item = &'a CameraInfo>) -> Vec<S
         .collect()
 }
 
-/// Where this driver's USB scan comes from.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UsbSource {
-    /// The host's collector — the only source a release build has.
-    Host,
-    /// One working record per fabricated camera (U7).
-    #[cfg(feature = "simulation")]
-    Simulated,
-    /// The staged document in this file, read again at every scan (U7).
-    #[cfg(feature = "simulation")]
-    Staged(std::path::PathBuf),
+/// Where this driver's scan comes from when nothing chose otherwise: the
+/// host, the only source a release build has.
+#[cfg(not(feature = "simulation"))]
+#[must_use]
+pub const fn default_usb_source() -> UsbSource {
+    UsbSource::Host
 }
 
-impl Default for UsbSource {
-    /// The host in a release build; the fabricated cameras' records in a
-    /// simulation build, which never scans the host.
-    fn default() -> Self {
-        #[cfg(feature = "simulation")]
-        {
-            Self::Simulated
-        }
-        #[cfg(not(feature = "simulation"))]
-        {
-            Self::Host
-        }
-    }
+/// Where this driver's scan comes from when nothing chose otherwise: the
+/// fabricated cameras' records, since a simulation build never scans the host
+/// (U7).
+#[cfg(feature = "simulation")]
+#[must_use]
+pub fn default_usb_source() -> UsbSource {
+    UsbSource::Simulated(simulated_inventory())
 }
 
-impl UsbSource {
-    /// The source a simulation build's hidden `--usb-inventory` flag selects
-    /// (U7): the staged document in `path`, read now so a file that cannot be
-    /// read or stages a state no collector could produce refuses the start;
-    /// without the flag, the simulated cameras' records.
-    ///
-    /// # Errors
-    ///
-    /// Why the staged document is unusable, naming the file.
-    #[cfg(feature = "simulation")]
-    pub fn from_flag(path: Option<std::path::PathBuf>) -> Result<Self, String> {
-        let Some(path) = path else {
-            return Ok(Self::Simulated);
-        };
-        rusty_photon_doctor_checks::facts::StagedUsbInventory::load(&path)?;
-        Ok(Self::Staged(path))
-    }
-
-    /// Take the scan. Blocking: the host collector reads sysfs or shells out
-    /// under its deadline.
-    ///
-    /// # Errors
-    ///
-    /// Why the scan could not run — the collector's reason, or a staged
-    /// document that cannot be read or stages a failure.
-    pub fn scan(&self) -> Result<UsbScan, String> {
-        match self {
-            Self::Host => rusty_photon_doctor_checks::scan_usb(),
-            #[cfg(feature = "simulation")]
-            Self::Simulated => Ok(simulated_inventory()),
-            #[cfg(feature = "simulation")]
-            Self::Staged(path) => rusty_photon_doctor_checks::facts::StagedUsbInventory::load(path)
-                .and_then(rusty_photon_doctor_checks::facts::StagedUsbInventory::into_scan),
-        }
-    }
+/// The source a simulation build's hidden `--usb-inventory` flag selects
+/// (U7): the staged document in `path`, or without it the simulated cameras'
+/// records.
+///
+/// # Errors
+///
+/// Why the staged document is unusable, naming the file.
+#[cfg(feature = "simulation")]
+pub fn usb_source_from_flag(path: Option<std::path::PathBuf>) -> Result<UsbSource, String> {
+    UsbSource::from_flag(path, simulated_inventory())
 }
 
 /// One working record per camera the `svbony-rs` simulation fabricates:
 /// `f266:9a0a` on port `simulated-usbv3-0:<n>` for the camera at SDK index
 /// `n - 1`.
 #[cfg(feature = "simulation")]
-fn simulated_inventory() -> UsbScan {
-    UsbScan {
+fn simulated_inventory() -> rusty_photon_doctor_checks::UsbScan {
+    rusty_photon_doctor_checks::UsbScan {
         devices: (1..=svbony_rs::SIM_CAMERA_COUNT)
             .map(|n| rusty_photon_doctor_checks::UsbDevice {
                 vendor: VENDOR.to_string(),
@@ -154,6 +125,26 @@ fn simulated_inventory() -> UsbScan {
             .collect(),
         faults: Vec::new(),
     }
+}
+
+/// The placeholder that holds `entry`'s number for `reason` (U4).
+#[must_use]
+pub fn placeholder(
+    entry: &UsbDeviceEntry,
+    reason: String,
+) -> PlaceholderCamera<SvbonyCameraDriver> {
+    PlaceholderCamera::new(Placeholder {
+        name: entry
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("{SDK_NAME} camera on {} (placeholder)", entry.usb_port)),
+        unique_id: claims::placeholder_unique_id(SERVICE, &entry.usb_port),
+        usb_port: entry.usb_port.clone(),
+        reason,
+        driver_info: crate::camera::DRIVER_INFO.to_string(),
+        driver_version: env!("CARGO_PKG_VERSION").to_string(),
+        driver_code: claims::PLACEHOLDER_DRIVER_CODE,
+    })
 }
 
 /// The key a camera's `devices` override is read under: its `CameraSN`, or
@@ -169,127 +160,54 @@ pub fn override_key(info: &CameraInfo, index: usize) -> String {
 
 /// What `doctor --devices` prints for `config`, the join in `claims` and the
 /// SDK's cameras (U8).
+///
+/// `CameraSN` is free at enumeration, so it is the SDK id and, with
+/// `noserial-<index>` for a camera that reports none, the key each camera's
+/// `devices` override is matched by.
 #[must_use]
 pub fn listing(config: &Config, claims: &Claims<'_>, infos: &[CameraInfo]) -> Listing {
-    let placed = claims.placed();
-    let rows = placed
+    let cameras: Vec<CameraFacts> = infos
         .iter()
-        .map(|&(index, port)| {
-            let info = infos.get(index);
-            ListingRow {
-                port: port.to_string(),
-                model: info.map(|i| i.friendly_name.clone()).unwrap_or_default(),
-                sdk_id: info
-                    .filter(|i| !i.serial.is_empty())
-                    .map(|i| i.serial.clone()),
-                usb_serial: claims.record_on(port).and_then(|r| r.serial.clone()),
-                device: config.usb_devices.as_ref().map_or_else(
-                    || index.to_string(),
-                    |list| {
-                        list.iter().find(|e| e.usb_port == port).map_or_else(
-                            || "not listed".to_string(),
-                            |e| e.device_number.to_string(),
-                        )
-                    },
-                ),
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let mut notes = claims.unplaced_notes();
-    let block = match &config.usb_devices {
-        Some(list) => {
-            let mut entries: Vec<BlockEntry> = list
-                .iter()
-                .map(|e| BlockEntry {
-                    device_number: e.device_number,
-                    usb_port: e.usb_port.clone(),
-                    name: e.name.clone(),
-                    description: e.description.clone(),
-                })
-                .collect();
-            entries.sort_by_key(|e| e.device_number);
-            Some(entries)
-        }
-        None if placed.is_empty() => None,
-        None => Some(no_list_block(config, &placed, infos, &mut notes)),
-    };
-    if rows.len() > 1 {
-        notes.push(
-            "Cannot tell which row is which camera? Unplug one and run this again: the port \
-             that disappears is the one you unplugged."
-                .to_string(),
-        );
-    }
-    Listing {
-        sdk: SDK_NAME.to_string(),
-        vendor: VENDOR.to_string(),
-        service: SERVICE.to_string(),
-        rows,
-        block,
-        notes,
-    }
-}
-
-/// The block that pins what the no-list default serves: every placed camera,
-/// numbered in port order, with the names its `devices` override gives it.
-fn no_list_block(
-    config: &Config,
-    placed: &[(usize, &str)],
-    infos: &[CameraInfo],
-    notes: &mut Vec<String>,
-) -> Vec<BlockEntry> {
-    let mut matched_keys = Vec::new();
-    let block: Vec<BlockEntry> = placed
-        .iter()
-        .zip(0_u32..)
-        .map(|(&(index, port), device_number)| {
-            let key = infos.get(index).map(|info| override_key(info, index));
-            let found = key.as_ref().and_then(|k| config.devices.get(k));
-            if found.is_some() {
-                matched_keys.extend(key);
-            }
-            BlockEntry {
-                device_number,
-                usb_port: port.to_string(),
-                name: found.and_then(|o| o.name.clone()),
-                description: found.and_then(|o| o.description.clone()),
-            }
+        .enumerate()
+        .map(|(index, info)| CameraFacts {
+            model: info.friendly_name.clone(),
+            sdk_id: (!info.serial.is_empty()).then(|| info.serial.clone()),
+            override_key: Some(override_key(info, index)),
         })
         .collect();
-    if placed
+    let list: Option<Vec<BlockEntry>> = config.usb_devices.as_ref().map(|list| {
+        list.iter()
+            .map(|e| BlockEntry {
+                device_number: e.device_number,
+                usb_port: e.usb_port.clone(),
+                name: e.name.clone(),
+                description: e.description.clone(),
+            })
+            .collect()
+    });
+    let overrides: BTreeMap<String, DisplayNames> = config
+        .devices
         .iter()
-        .zip(0_usize..)
-        .any(|(&(index, _), position)| index != position)
-    {
-        notes.push(
-            "Pasting this block renumbers cameras: without a list the service serves them in \
-             SDK order, and the block numbers them in port order. Check rp's \
-             cameras[].device_number when you paste it."
-                .to_string(),
-        );
-    }
-    for key in config.devices.keys().filter(|k| !matched_keys.contains(k)) {
-        notes.push(format!(
-            "The devices override {key} matches no camera placed on a port; move its fields \
-             into the right entry by hand."
-        ));
-    }
-    if !config.devices.is_empty() {
-        notes.push(format!(
-            "Delete the devices map from {SERVICE}.json when you paste this block: the block \
-             carries its names, and a devices map beside a usb_devices list refuses the start."
-        ));
-    }
-    block
+        .map(|(key, o)| {
+            (
+                key.clone(),
+                DisplayNames {
+                    name: o.name.clone(),
+                    description: o.description.clone(),
+                },
+            )
+        })
+        .collect();
+    claims.listing(&cameras, list.as_deref(), &overrides)
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::config::{DeviceOverride, UsbDeviceEntry};
-    use rusty_photon_doctor_checks::UsbDevice;
+    use crate::config::DeviceOverride;
+    use ascom_alpaca::api::Device;
+    use rusty_photon_doctor_checks::{UsbDevice, UsbScan};
 
     fn info(name: &str, serial: &str) -> CameraInfo {
         CameraInfo {
@@ -460,9 +378,59 @@ mod tests {
         let claims = Claims::new(
             NORMALIZER,
             SERVICE,
-            UsbSource::Simulated.scan(),
+            default_usb_source().scan(),
             sdk_cameras(&infos),
         );
         assert_eq!(claims.placed(), vec![(0, "simulated-usbv3-0:1")]);
+    }
+
+    fn entry(name: Option<&str>) -> UsbDeviceEntry {
+        UsbDeviceEntry {
+            device_number: 0,
+            usb_port: "pci-0000:00:14.0-usbv3-0:4.2".to_string(),
+            name: name.map(str::to_string),
+            description: None,
+        }
+    }
+
+    #[test]
+    fn a_placeholder_answers_to_the_placeholder_unique_id_of_its_port() {
+        assert_eq!(
+            placeholder(&entry(None), String::new()).unique_id(),
+            "placeholder:svbony-camera:pci-0000:00:14.0-usbv3-0:4.2"
+        );
+    }
+
+    #[test]
+    fn a_placeholders_name_names_the_port_unless_the_entry_names_it() {
+        assert_eq!(
+            placeholder(&entry(None), String::new()).static_name(),
+            "SVBony camera on pci-0000:00:14.0-usbv3-0:4.2 (placeholder)"
+        );
+        assert_eq!(
+            placeholder(&entry(Some("Main")), String::new()).static_name(),
+            "Main"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_placeholder_refuses_a_connect_with_the_device_claims_code() {
+        let error = placeholder(&entry(None), "the USB scan failed".to_string())
+            .set_connected(true)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code.raw(), claims::PLACEHOLDER_ERROR_CODE);
+        assert!(error.message.ends_with("the USB scan failed"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_placeholder_answers_this_drivers_driver_info() {
+        assert_eq!(
+            placeholder(&entry(None), String::new())
+                .driver_info()
+                .await
+                .unwrap(),
+            crate::camera::DRIVER_INFO
+        );
     }
 }

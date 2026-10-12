@@ -6,16 +6,21 @@
 //! every camera driver lives here, beside the USB inventory it reads: the
 //! list's validation, the passive join that places each SDK camera on a port,
 //! the reason a listed number is held by a placeholder, the placeholder's
-//! fixed error code and `UniqueID` form, the order ports are listed in, the
-//! background re-scan's schedule, and the `doctor --devices` listing. What
-//! differs per driver — which SDK models it knows on the bus, how it scans,
-//! its config's entry type, its placeholder device — stays in the driver.
+//! fixed error code and `UniqueID` form, the order ports are listed in, where
+//! the scan comes from, and the `doctor --devices` listing and its block. What
+//! differs per driver — which SDK models it knows on the bus, its simulated
+//! scan, what it can say about a camera without opening it, its config's
+//! entry type — stays in the driver. The placeholder device itself and the
+//! failed scan's background re-scan are `rusty-photon-driver`'s `claims`
+//! module: they are an ASCOM device and a task, and this crate is neither
+//! ASCOM's nor async.
 //!
-//! Everything here is pure: nothing scans, opens or sleeps.
+//! Everything here but [`UsbSource::scan`] is pure: nothing scans, opens or
+//! sleeps.
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
-use std::time::Duration;
 
 use crate::facts::{UsbDevice, UsbScan};
 
@@ -207,6 +212,12 @@ pub struct Normalizer<'a> {
     /// Product ids of this vendor known not to be cameras, so they never
     /// count as a camera's record.
     pub not_cameras: &'a [&'a str],
+    /// The SDK's own passive check of one of this vendor's product ids —
+    /// whether the SDK supports it as a camera — for a product id `models`
+    /// does not assign (ZWO's `ASICameraCheck`). It must open nothing. `None`
+    /// when the SDK has no such check, and then every product id `models` and
+    /// `not_cameras` leave open could be a camera.
+    pub sdk_check: Option<fn(&str) -> bool>,
 }
 
 impl Normalizer<'_> {
@@ -221,19 +232,35 @@ impl Normalizer<'_> {
         self.models.iter().any(|(_, p)| *p == product)
     }
 
-    fn is_own_record(&self, record: &UsbDevice) -> bool {
-        record.vendor == self.vendor && !self.not_cameras.contains(&record.product.as_str())
+    /// Whether one of this vendor's product ids can be a camera's: an
+    /// observed model's, or — unless it is a known non-camera — one the SDK's
+    /// own check accepts.
+    fn is_camera_product(&self, product: &str) -> bool {
+        if self.assigns_product(product) {
+            return true;
+        }
+        !self.not_cameras.contains(&product) && self.sdk_check.is_none_or(|check| check(product))
     }
 
-    /// Whether a fault could be this driver's camera: it carries this
-    /// vendor's id, or no real one — none could be read, or it is the `0000`
-    /// Windows gives a device whose enumeration failed (doctor.md, "USB
-    /// inventory"). Another vendor's fault is that vendor's device.
+    fn is_own_record(&self, record: &UsbDevice) -> bool {
+        record.vendor == self.vendor && self.is_camera_product(&record.product)
+    }
+
+    /// Whether a fault could be this driver's camera: it carries no real
+    /// vendor id — none could be read, or it is the `0000` Windows gives a
+    /// device whose enumeration failed (doctor.md, "USB inventory") — or it
+    /// carries this vendor's, with no product id or one that can be a
+    /// camera's. Another vendor's fault is that vendor's device, and this
+    /// vendor's non-camera (a ZWO focuser) is not the camera either.
     fn could_be_camera(&self, fault: &crate::facts::UsbFault) -> bool {
-        fault
-            .vendor
-            .as_deref()
-            .is_none_or(|vendor| vendor == self.vendor || vendor == "0000")
+        match fault.vendor.as_deref() {
+            None | Some("0000") => true,
+            Some(vendor) if vendor == self.vendor => fault
+                .product
+                .as_deref()
+                .is_none_or(|product| self.is_camera_product(product)),
+            Some(_) => false,
+        }
     }
 }
 
@@ -502,11 +529,28 @@ impl<'a> Claims<'a> {
                 ));
             }
         };
-        Resolution::Placeholder(format!(
+        Resolution::Placeholder(self.with_the_way_back(&reason))
+    }
+
+    /// The reason a placeholder holds a listed port whose camera the join
+    /// placed but the driver could not open (the plan's D4.4): the SDK's
+    /// `error`, and the way back.
+    #[must_use]
+    pub fn open_failure(&self, port: &str, error: &str) -> String {
+        self.with_the_way_back(&format!(
+            "the {} SDK could not open the camera placed on {port}: {error}",
+            self.normalizer.sdk
+        ))
+    }
+
+    /// `reason`, ending with the way back every placeholder reason but a
+    /// failed scan's ends with.
+    fn with_the_way_back(&self, reason: &str) -> String {
+        format!(
             "{reason}. Once the camera is fixed, reload or restart {}, which \
              re-opens every camera it serves",
             self.service
-        ))
+        )
     }
 
     fn reason_on(&self, scan: &UsbScan, placement: &Placement, port: &str) -> String {
@@ -710,15 +754,59 @@ fn run_key(run: &str) -> (usize, String) {
     (run.len(), run.to_string())
 }
 
-// --- the re-scan ----------------------------------------------------------------
+// --- the scan source ------------------------------------------------------------
 
-/// The waits between a failed scan's re-scans (the plan's D4.4): 10 s, 20 s
-/// and 40 s, then 60 s for as long as the scan keeps failing.
-pub fn rescan_waits() -> impl Iterator<Item = Duration> {
-    [10, 20, 40]
-        .into_iter()
-        .map(Duration::from_secs)
-        .chain(std::iter::repeat(Duration::from_secs(60)))
+/// Where a driver's USB scan comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UsbSource {
+    /// The host's collector — the only source a release build has.
+    Host,
+    /// A fixed inventory: the records of the cameras a driver's simulation
+    /// fabricates, which no host scan can see.
+    #[cfg(feature = "mock")]
+    Simulated(UsbScan),
+    /// The staged document in this file, read again at every scan, so a
+    /// scenario can stage a failed scan and then repair it (doctor.md, "USB
+    /// inventory").
+    #[cfg(feature = "mock")]
+    Staged(std::path::PathBuf),
+}
+
+impl UsbSource {
+    /// The source a simulation build's hidden `--usb-inventory` flag selects:
+    /// the staged document in `path`, read now so a file that cannot be read
+    /// or stages a state no collector could produce refuses the start;
+    /// without the flag, `simulated`.
+    ///
+    /// # Errors
+    ///
+    /// Why the staged document is unusable, naming the file.
+    #[cfg(feature = "mock")]
+    pub fn from_flag(path: Option<std::path::PathBuf>, simulated: UsbScan) -> Result<Self, String> {
+        let Some(path) = path else {
+            return Ok(Self::Simulated(simulated));
+        };
+        crate::facts::StagedUsbInventory::load(&path)?;
+        Ok(Self::Staged(path))
+    }
+
+    /// Take the scan. Blocking: the host collector reads sysfs or shells out
+    /// under its deadline.
+    ///
+    /// # Errors
+    ///
+    /// Why the scan could not run — the collector's reason, or a staged
+    /// document that cannot be read or stages a failure.
+    pub fn scan(&self) -> Result<UsbScan, String> {
+        match self {
+            Self::Host => crate::facts::scan_usb(),
+            #[cfg(feature = "mock")]
+            Self::Simulated(scan) => Ok(scan.clone()),
+            #[cfg(feature = "mock")]
+            Self::Staged(path) => crate::facts::StagedUsbInventory::load(path)
+                .and_then(crate::facts::StagedUsbInventory::into_scan),
+        }
+    }
 }
 
 // --- the listing ----------------------------------------------------------------
@@ -762,6 +850,173 @@ pub struct Listing {
     /// Paragraphs printed after the table: what the join could not place,
     /// renumbering warnings, the unplug procedure.
     pub notes: Vec<String>,
+}
+
+/// What `doctor --devices` can say about one SDK camera without opening it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CameraFacts {
+    /// The SDK's model name.
+    pub model: String,
+    /// The SDK's own id for the camera, when the SDK yields one before any
+    /// open.
+    pub sdk_id: Option<String>,
+    /// The key the camera's `devices` override is read under, when that is
+    /// knowable before any open; `None` when telling needs an open (a ZWO
+    /// camera's serial), which `--devices` never makes.
+    pub override_key: Option<String>,
+}
+
+/// A `devices` override's display names.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DisplayNames {
+    pub name: Option<String>,
+    pub description: Option<String>,
+}
+
+impl Claims<'_> {
+    /// What `doctor --devices` prints (the plan's D5): a row per SDK camera
+    /// the join placed, in port order; the paste-ready block; and the notes
+    /// after the table.
+    ///
+    /// `cameras` holds the SDK's cameras in enumeration order, `list` the
+    /// configured `usb_devices` entries, and `overrides` the `devices` map.
+    /// With a list the block reproduces it; without one it pins what the
+    /// no-list default serves, numbered in port order, each camera carrying
+    /// the names its override gives it — where the override can be matched
+    /// without an open.
+    #[must_use]
+    pub fn listing(
+        &self,
+        cameras: &[CameraFacts],
+        list: Option<&[BlockEntry]>,
+        overrides: &BTreeMap<String, DisplayNames>,
+    ) -> Listing {
+        let placed = self.placed();
+        let rows = placed
+            .iter()
+            .map(|&(index, port)| {
+                let facts = cameras.get(index);
+                ListingRow {
+                    port: port.to_string(),
+                    model: facts.map(|f| f.model.clone()).unwrap_or_default(),
+                    sdk_id: facts.and_then(|f| f.sdk_id.clone()),
+                    usb_serial: self.record_on(port).and_then(|r| r.serial.clone()),
+                    device: list.map_or_else(
+                        || index.to_string(),
+                        |list| {
+                            list.iter().find(|e| e.usb_port == port).map_or_else(
+                                || "not listed".to_string(),
+                                |e| e.device_number.to_string(),
+                            )
+                        },
+                    ),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let mut notes = self.unplaced_notes();
+        let block = match list {
+            Some(list) => {
+                let mut entries = list.to_vec();
+                entries.sort_by_key(|e| e.device_number);
+                Some(entries)
+            }
+            None if placed.is_empty() => None,
+            None => Some(self.no_list_block(&placed, cameras, overrides, &mut notes)),
+        };
+        if rows.len() > 1 {
+            notes.push(
+                "Cannot tell which row is which camera? Unplug one and run this again: the port \
+                 that disappears is the one you unplugged."
+                    .to_string(),
+            );
+        }
+        Listing {
+            sdk: self.normalizer.sdk.to_string(),
+            vendor: self.normalizer.vendor.to_string(),
+            service: self.service.to_string(),
+            rows,
+            block,
+            notes,
+        }
+    }
+
+    /// The block that pins what the no-list default serves: every placed
+    /// camera, numbered in port order, with the names its `devices` override
+    /// gives it, and a note for each override that it cannot carry.
+    fn no_list_block(
+        &self,
+        placed: &[(usize, &str)],
+        cameras: &[CameraFacts],
+        overrides: &BTreeMap<String, DisplayNames>,
+        notes: &mut Vec<String>,
+    ) -> Vec<BlockEntry> {
+        let key_of = |index: usize| cameras.get(index).and_then(|f| f.override_key.as_ref());
+        let mut matched_keys = Vec::new();
+        let block: Vec<BlockEntry> = placed
+            .iter()
+            .zip(0_u32..)
+            .map(|(&(index, port), device_number)| {
+                let found = key_of(index).and_then(|key| overrides.get_key_value(key));
+                if let Some((key, _)) = found {
+                    matched_keys.push(key.as_str());
+                }
+                let names = found.map(|(_, names)| names);
+                BlockEntry {
+                    device_number,
+                    usb_port: port.to_string(),
+                    name: names.and_then(|n| n.name.clone()),
+                    description: names.and_then(|n| n.description.clone()),
+                }
+            })
+            .collect();
+        if placed
+            .iter()
+            .zip(0_usize..)
+            .any(|(&(index, _), position)| index != position)
+        {
+            notes.push(
+                "Pasting this block renumbers cameras: without a list the service serves them in \
+                 SDK order, and the block numbers them in port order. Check rp's \
+                 cameras[].device_number when you paste it."
+                    .to_string(),
+            );
+        }
+        // A key no placed camera's matched is a stale override when every
+        // placed camera's key was known; when some could not be known
+        // without an open, it may well be one of theirs.
+        let every_key_known = placed.iter().all(|&(index, _)| key_of(index).is_some());
+        for key in overrides
+            .keys()
+            .filter(|k| !matched_keys.contains(&k.as_str()))
+        {
+            notes.push(if every_key_known {
+                format!(
+                    "The devices override {key} matches no camera placed on a port; move its \
+                     fields into the right entry by hand."
+                )
+            } else {
+                format!(
+                    "The devices override {key} cannot be matched to a camera without opening \
+                     one, which doctor --devices never does; move its fields into the right \
+                     entry by hand."
+                )
+            });
+        }
+        if !overrides.is_empty() {
+            let carried = if every_key_known {
+                "the block carries its names, and "
+            } else {
+                ""
+            };
+            notes.push(format!(
+                "Delete the devices map from {}.json when you paste this block: {carried}a \
+                 devices map beside a usb_devices list refuses the start.",
+                self.service
+            ));
+        }
+        block
+    }
 }
 
 const ABSENT: &str = "—";
@@ -863,6 +1118,7 @@ mod tests {
         vendor: "f266",
         models: &[("SV605CC", "9a0a"), ("SV705C", "9a0b")],
         not_cameras: &["1001"],
+        sdk_check: None,
     };
 
     fn record(product: &str, port: &str) -> UsbDevice {
@@ -1262,6 +1518,102 @@ mod tests {
         assert_eq!(placement.cameras, vec![CameraPlace::NoRecord]);
     }
 
+    // --- the SDK's own check ---------------------------------------------------
+
+    /// The ASI SDK's table as SDK 1.41 answered it on the dev box: cameras
+    /// 1603 and 662b, and not the EAF's 1f10.
+    fn asi_check(product: &str) -> bool {
+        matches!(product, "1603" | "178c" | "662b")
+    }
+
+    const ZWO: Normalizer<'static> = Normalizer {
+        sdk: "ZWO",
+        vendor: "03c3",
+        models: &[("ZWO ASI178MM", "178c")],
+        not_cameras: &[],
+        sdk_check: Some(asi_check),
+    };
+
+    fn zwo_record(product: &str, port: &str) -> UsbDevice {
+        UsbDevice {
+            vendor: "03c3".to_string(),
+            ..record(product, port)
+        }
+    }
+
+    #[test]
+    fn a_record_the_sdk_check_rejects_is_never_a_candidate() {
+        // The EAF beside an unknown camera leaves exactly one candidate, so
+        // elimination still pairs the camera with its own record.
+        let placement = place(
+            &ZWO,
+            &[camera("ZWO ASI662MC")],
+            &scan(vec![zwo_record("1f10", "p1"), zwo_record("662b", "p2")]),
+        );
+        assert_eq!(placement.cameras, vec![port("p2")]);
+    }
+
+    #[test]
+    fn without_the_sdk_check_a_focuser_blocks_elimination() {
+        let placement = place(
+            &Normalizer {
+                sdk_check: None,
+                ..ZWO
+            },
+            &[camera("ZWO ASI662MC")],
+            &scan(vec![zwo_record("1f10", "p1"), zwo_record("662b", "p2")]),
+        );
+        assert_eq!(placement.cameras, vec![CameraPlace::Unrecognised]);
+    }
+
+    #[test]
+    fn an_observed_models_product_counts_whatever_the_sdk_check_says() {
+        let placement = place(
+            &Normalizer {
+                sdk_check: Some(|_| false),
+                ..ZWO
+            },
+            &[camera("ZWO ASI178MM")],
+            &scan(vec![zwo_record("178c", "p1")]),
+        );
+        assert_eq!(placement.cameras, vec![port("p1")]);
+    }
+
+    #[test]
+    fn a_fault_of_this_vendor_the_sdk_check_rejects_is_not_the_camera() {
+        // A faulted focuser record does not stand between the unknown camera
+        // and its record.
+        let mut bus = scan(vec![zwo_record("662b", "p2")]);
+        let mut focuser = fault(Some("03c3"), Some("p1"));
+        focuser.product = Some("1f10".to_string());
+        bus.faults.push(focuser);
+        let placement = place(&ZWO, &[camera("ZWO ASI662MC")], &bus);
+        assert_eq!(placement.cameras, vec![port("p2")]);
+    }
+
+    #[test]
+    fn a_fault_of_this_vendor_with_no_product_id_could_be_the_camera() {
+        let mut bus = scan(vec![zwo_record("662b", "p2")]);
+        bus.faults.push(fault(Some("03c3"), Some("p1")));
+        let placement = place(&ZWO, &[camera("ZWO ASI662MC")], &bus);
+        assert_eq!(placement.cameras, vec![CameraPlace::Unrecognised]);
+    }
+
+    #[test]
+    fn a_focuser_on_a_listed_port_is_a_device_the_sdk_does_not_report_as_a_camera() {
+        let mut focuser = zwo_record("1f10", "p1");
+        focuser.model = Some("ZWO EAF".to_string());
+        let claims = Claims::new(ZWO, "zwo-camera", Ok(scan(vec![focuser])), Vec::new());
+        let reason = placeholder_reason(claims.resolve("p1"));
+        assert!(
+            reason.starts_with(
+                "p1 holds ZWO EAF (03c3:1f10), which the ZWO SDK does not report as a camera."
+            ),
+            "{reason}"
+        );
+        assert_eq!(claims.unplaced_notes(), Vec::<String>::new());
+    }
+
     // --- resolving a listed port ---------------------------------------------
 
     fn claims(scan: Result<UsbScan, String>, sdk: Vec<SdkCamera>) -> Claims<'static> {
@@ -1470,6 +1822,18 @@ mod tests {
     }
 
     #[test]
+    fn an_open_failure_names_the_port_and_the_sdk_error_and_the_way_back() {
+        let claims = claims(Ok(scan(Vec::new())), Vec::new());
+        let reason = claims.open_failure("p1", "general error");
+        assert_eq!(
+            reason,
+            "the SVBony SDK could not open the camera placed on p1: general error. Once the \
+             camera is fixed, reload or restart svbony-camera, which re-opens every camera it \
+             serves"
+        );
+    }
+
+    #[test]
     fn placed_cameras_are_listed_in_port_order() {
         let claims = claims(
             Ok(scan(vec![
@@ -1582,14 +1946,6 @@ mod tests {
         assert_eq!(compare_ports("1-4", "1-4"), Ordering::Equal);
     }
 
-    // --- the re-scan ---------------------------------------------------------
-
-    #[test]
-    fn rescans_wait_10_20_40_then_60_seconds() {
-        let waits: Vec<u64> = rescan_waits().take(6).map(|w| w.as_secs()).collect();
-        assert_eq!(waits, vec![10, 20, 40, 60, 60, 60]);
-    }
-
     // --- the listing ---------------------------------------------------------
 
     fn listing(rows: Vec<ListingRow>, block: Option<Vec<BlockEntry>>) -> Listing {
@@ -1676,5 +2032,205 @@ mod tests {
     fn an_empty_block_pastes_as_an_empty_list() {
         let text = render_listing(&listing(Vec::new(), Some(Vec::new())));
         assert!(text.ends_with("    \"usb_devices\": []\n"), "{text}");
+    }
+
+    // --- building the listing ----------------------------------------------
+
+    fn facts(model: &str, sdk_id: &str, override_key: Option<&str>) -> CameraFacts {
+        CameraFacts {
+            model: model.to_string(),
+            sdk_id: Some(sdk_id.to_string()),
+            override_key: override_key.map(str::to_string),
+        }
+    }
+
+    fn named(name: &str) -> DisplayNames {
+        DisplayNames {
+            name: Some(name.to_string()),
+            description: None,
+        }
+    }
+
+    /// Two cameras of two models, placed so that port order (1-4.2 first)
+    /// reverses SDK order.
+    fn two_cameras() -> Claims<'static> {
+        claims(
+            Ok(scan(vec![
+                record("9a0a", "1-4.10"),
+                record("9a0b", "1-4.2"),
+            ])),
+            vec![camera("SV605CC"), camera("SV705C")],
+        )
+    }
+
+    fn has_note(listing: &Listing, start: &str) -> bool {
+        listing.notes.iter().any(|n| n.starts_with(start))
+    }
+
+    #[test]
+    fn with_no_list_the_block_carries_the_override_names_in_port_order() {
+        let cameras = [
+            facts("SV605CC", "A", Some("A")),
+            facts("SV705C", "B", Some("B")),
+        ];
+        let overrides = BTreeMap::from([
+            ("B".to_string(), named("Main")),
+            ("stale".to_string(), DisplayNames::default()),
+        ]);
+        let listing = two_cameras().listing(&cameras, None, &overrides);
+        let block = listing.block.clone().unwrap();
+        assert_eq!(block[0].usb_port, "1-4.2");
+        assert_eq!(block[0].name.as_deref(), Some("Main"));
+        assert_eq!(block[1].usb_port, "1-4.10");
+        assert_eq!(block[1].name, None);
+        assert_eq!(
+            listing.rows[0].device, "1",
+            "the SDK-order number it is served at"
+        );
+        assert_eq!(listing.rows[0].sdk_id.as_deref(), Some("B"));
+        assert!(
+            has_note(&listing, "Pasting this block renumbers"),
+            "{:?}",
+            listing.notes
+        );
+        assert!(
+            has_note(
+                &listing,
+                "The devices override stale matches no camera placed on a port"
+            ),
+            "{:?}",
+            listing.notes
+        );
+        assert!(
+            has_note(
+                &listing,
+                "Delete the devices map from svbony-camera.json when you paste this block: the \
+                 block carries its names"
+            ),
+            "{:?}",
+            listing.notes
+        );
+        assert!(
+            has_note(&listing, "Cannot tell which row is which camera?"),
+            "{:?}",
+            listing.notes
+        );
+    }
+
+    #[test]
+    fn with_no_list_an_override_that_needs_an_open_to_match_is_named_and_not_carried() {
+        let cameras = [CameraFacts {
+            model: "SV605CC".to_string(),
+            sdk_id: None,
+            override_key: None,
+        }];
+        let overrides = BTreeMap::from([("0a1b2c".to_string(), named("Main"))]);
+        let listing = claims(
+            Ok(scan(vec![record("9a0a", "p1")])),
+            vec![camera("SV605CC")],
+        )
+        .listing(&cameras, None, &overrides);
+        assert_eq!(listing.block.as_ref().unwrap()[0].name, None);
+        assert!(
+            has_note(
+                &listing,
+                "The devices override 0a1b2c cannot be matched to a camera without opening one"
+            ),
+            "{:?}",
+            listing.notes
+        );
+        assert!(
+            has_note(
+                &listing,
+                "Delete the devices map from svbony-camera.json when you paste this block: a \
+                 devices map beside a usb_devices list refuses the start."
+            ),
+            "{:?}",
+            listing.notes
+        );
+        assert!(
+            !has_note(&listing, "Pasting this block renumbers"),
+            "{:?}",
+            listing.notes
+        );
+    }
+
+    #[test]
+    fn with_a_list_the_block_reproduces_it_and_marks_an_unlisted_camera() {
+        let list = [entry(1, "p9", None), entry(0, "p8", Some("Guide port"))];
+        let listing = claims(
+            Ok(scan(vec![record("9a0a", "p1")])),
+            vec![camera("SV605CC")],
+        )
+        .listing(
+            &[facts("SV605CC", "SN", Some("SN"))],
+            Some(&list),
+            &BTreeMap::new(),
+        );
+        assert_eq!(listing.rows[0].device, "not listed");
+        let ports: Vec<String> = listing
+            .block
+            .unwrap()
+            .into_iter()
+            .map(|e| e.usb_port)
+            .collect();
+        assert_eq!(ports, vec!["p8", "p9"]);
+    }
+
+    #[test]
+    fn a_listed_camera_shows_its_entrys_number() {
+        let list = [entry(3, "p1", None)];
+        let listing = claims(
+            Ok(scan(vec![record("9a0a", "p1")])),
+            vec![camera("SV605CC")],
+        )
+        .listing(
+            &[facts("SV605CC", "SN", Some("SN"))],
+            Some(&list),
+            &BTreeMap::new(),
+        );
+        assert_eq!(listing.rows[0].device, "3");
+    }
+
+    #[test]
+    fn with_no_list_and_no_placed_camera_there_is_nothing_to_paste() {
+        let listing = claims(Ok(scan(Vec::new())), Vec::new()).listing(&[], None, &BTreeMap::new());
+        assert_eq!(listing.block, None);
+        assert_eq!(listing.service, "svbony-camera");
+        assert_eq!(listing.vendor, "f266");
+    }
+
+    // --- the scan source ----------------------------------------------------
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn a_simulated_source_scans_its_own_records() {
+        let records = scan(vec![record("9a0a", "simulated-usbv3-0:1")]);
+        let source = UsbSource::from_flag(None, records.clone()).unwrap();
+        assert_eq!(source, UsbSource::Simulated(records.clone()));
+        assert_eq!(source.scan().unwrap(), records);
+    }
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn a_staged_source_that_cannot_be_read_refuses_naming_the_file() {
+        let error = UsbSource::from_flag(
+            Some(std::path::PathBuf::from("/nonexistent/usb-inventory.json")),
+            scan(Vec::new()),
+        )
+        .unwrap_err();
+        assert!(error.contains("/nonexistent/usb-inventory.json"), "{error}");
+    }
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn a_staged_source_reads_its_file_again_at_every_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usb-inventory.json");
+        std::fs::write(&path, r#"{"usb_unavailable": "timed out"}"#).unwrap();
+        let source = UsbSource::from_flag(Some(path.clone()), scan(Vec::new())).unwrap();
+        assert_eq!(source.scan().unwrap_err(), "timed out");
+        std::fs::write(&path, r#"{"usb": []}"#).unwrap();
+        assert_eq!(source.scan().unwrap(), scan(Vec::new()));
     }
 }

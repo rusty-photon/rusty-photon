@@ -8,10 +8,23 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Shared ASCOM-driver runtime layer for rusty-photon: the common DriverError model, its ASCOM error-code mapping, and the generic config.get/apply/schema action dispatch"
 
+[features]
+default = []
+# Device claims (docs/plans/device-claims-and-phd2-camera.md, Part A): the
+# placeholder Camera that holds a listed device number whose camera cannot be
+# served, and the failed USB scan's background re-scan. Only the camera
+# drivers with a `usb_devices` list turn it on, so no other driver's graph
+# gains ascom-alpaca's `Camera` trait through this crate.
+claims = ["ascom-alpaca/camera", "dep:async-trait", "dep:tokio-util"]
+
 [lints]
 workspace = true
 
 [dependencies]
+async-trait = { workspace = true, optional = true }
+# `rt` for `task::AbortOnDropHandle`, which ends the re-scan with the server it
+# belongs to.
+tokio-util = { workspace = true, features = ["rt"], optional = true }
 # Only the core ASCOM error types (`ASCOMError`/`ASCOMResult`/`ASCOMErrorCode`,
 # unfeatured in `errors.rs`) are used. lib.rs `compile_error!`s unless one device
 # and one network feature are on. The device guard keys off the empty `__anydevice`
@@ -35,3 +48,6 @@ rusty-photon-shared-transport = { workspace = true }
 serde = { workspace = true }
 schemars = { workspace = true }
 tempfile = { workspace = true }
+# test-util: unlocks paused tokio time (`start_paused`), which the re-scan's
+# schedule tests run on.
+tokio = { workspace = true, features = ["test-util"] }

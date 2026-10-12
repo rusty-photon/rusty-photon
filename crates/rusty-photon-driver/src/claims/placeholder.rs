@@ -1,60 +1,69 @@
-//! `PlaceholderCamera`: the Camera that holds a listed device number whose
-//! camera cannot be served (docs/services/svbony-camera.md U4).
+//! [`PlaceholderCamera`]: the Camera that holds a listed device number whose
+//! camera cannot be served (the device-claims plan's D4.5).
 //!
 //! It reads `Connected == false`, refuses `Connected = true` with the
 //! device-claims error code and the reason, carries the same reason in its
-//! `Description`, answers to `placeholder:svbony-camera:<usb_port>`, serves the
+//! `Description`, answers to its fixed placeholder `UniqueID`, serves the
 //! config actions connected or not, and answers every camera member
 //! `NOT_CONNECTED`. It never re-scans: the reason is the one the last start or
 //! reload found, and only a reload turns the number back into a camera.
 
+use std::fmt;
 use std::time::{Duration, SystemTime};
 
 use ascom_alpaca::api::camera::{CameraState, GuideDirection, ImageArray, SensorType};
 use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
-use rusty_photon_doctor_checks::claims;
-use rusty_photon_driver::ConfigActionCtx;
+use rusty_photon_config::actions::ConfigurableDriver;
 use tracing::debug;
 
-use crate::claims::{SDK_NAME, SERVICE};
-use crate::config::UsbDeviceEntry;
-use crate::config_actions::SvbonyCameraDriver;
+use crate::ConfigActionCtx;
 
-/// The error a placeholder's `Connected = true` fails with — the same code in
-/// every camera driver with device claims.
-const PLACEHOLDER_CODE: ASCOMErrorCode =
-    ASCOMErrorCode::new_for_driver(claims::PLACEHOLDER_DRIVER_CODE);
-
-/// A registered Camera that stands in for a listed number's camera.
-#[derive(derive_more::Debug)]
-pub struct PlaceholderCamera {
-    name: String,
-    unique_id: String,
-    usb_port: String,
-    reason: String,
-    #[debug(skip)]
-    config_ctx: Option<ConfigActionCtx<SvbonyCameraDriver>>,
+/// What a placeholder says about itself.
+///
+/// The driver builds it from its own `usb_devices` entry and from
+/// `rusty-photon-doctor-checks`' `claims` module, which owns the reason text,
+/// the error code and the `UniqueID` form — this crate does not link that one,
+/// whose `mock` twin replaces it in a simulation build's graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Placeholder {
+    /// The entry's `name`, else one naming the port.
+    pub name: String,
+    /// `placeholder:<service>:<usb_port>`.
+    pub unique_id: String,
+    /// The listed port, in the platform's native spelling.
+    pub usb_port: String,
+    /// Why no camera is served at the port's number, as of the last start or
+    /// reload.
+    pub reason: String,
+    /// The driver's `DriverInfo`, which a placeholder answers as its camera
+    /// would.
+    pub driver_info: String,
+    /// The driver's `DriverVersion`.
+    pub driver_version: String,
+    /// The driver-range code (`0x500` + this) a connect is refused with.
+    pub driver_code: u16,
 }
 
-impl PlaceholderCamera {
-    /// The placeholder for `entry`, holding its number for `reason`.
+/// A registered Camera that stands in for a listed number's camera.
+pub struct PlaceholderCamera<D: ConfigurableDriver> {
+    about: Placeholder,
+    config_ctx: Option<ConfigActionCtx<D>>,
+}
+
+impl<D: ConfigurableDriver> PlaceholderCamera<D> {
+    /// The placeholder `about` describes, serving no config actions.
     #[must_use]
-    pub fn new(entry: &UsbDeviceEntry, reason: String) -> Self {
+    pub const fn new(about: Placeholder) -> Self {
         Self {
-            name: entry.name.clone().unwrap_or_else(|| {
-                format!("{SDK_NAME} camera on {} (placeholder)", entry.usb_port)
-            }),
-            unique_id: claims::placeholder_unique_id(SERVICE, &entry.usb_port),
-            usb_port: entry.usb_port.clone(),
-            reason,
+            about,
             config_ctx: None,
         }
     }
 
     /// Serve the config actions, as a camera at this number would.
     #[must_use]
-    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<SvbonyCameraDriver>) -> Self {
+    pub fn with_config_actions(mut self, ctx: ConfigActionCtx<D>) -> Self {
         self.config_ctx = Some(ctx);
         self
     }
@@ -62,23 +71,36 @@ impl PlaceholderCamera {
     /// The refusal every connect gets.
     fn refusal(&self) -> ASCOMError {
         ASCOMError::new(
-            PLACEHOLDER_CODE,
+            ASCOMErrorCode::new_for_driver(self.about.driver_code),
             format!(
                 "{} is a placeholder for USB port {}, not a camera: {}",
-                self.name, self.usb_port, self.reason
+                self.about.name, self.about.usb_port, self.about.reason
             ),
         )
     }
 }
 
+impl<D: ConfigurableDriver> fmt::Debug for PlaceholderCamera<D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PlaceholderCamera")
+            .field("about", &self.about)
+            .finish_non_exhaustive()
+    }
+}
+
 #[async_trait::async_trait]
-impl Device for PlaceholderCamera {
+impl<D> Device for PlaceholderCamera<D>
+where
+    D: ConfigurableDriver + Send + Sync + 'static,
+    D::Config: Send + Sync,
+    D::Overrides: Send + Sync,
+{
     fn static_name(&self) -> &str {
-        &self.name
+        &self.about.name
     }
 
     fn unique_id(&self) -> &str {
-        &self.unique_id
+        &self.about.unique_id
     }
 
     async fn connected(&self) -> ASCOMResult<bool> {
@@ -89,32 +111,35 @@ impl Device for PlaceholderCamera {
         if !connected {
             return Ok(());
         }
-        debug!(port = %self.usb_port, reason = %self.reason, "refusing to connect a placeholder");
+        debug!(
+            port = %self.about.usb_port,
+            reason = %self.about.reason,
+            "refusing to connect a placeholder"
+        );
         Err(self.refusal())
     }
 
     async fn description(&self) -> ASCOMResult<String> {
         Ok(format!(
             "Placeholder for USB port {}: {}",
-            self.usb_port, self.reason
+            self.about.usb_port, self.about.reason
         ))
     }
 
     async fn driver_info(&self) -> ASCOMResult<String> {
-        Ok(crate::camera::DRIVER_INFO.to_string())
+        Ok(self.about.driver_info.clone())
     }
 
     async fn driver_version(&self) -> ASCOMResult<String> {
-        Ok(env!("CARGO_PKG_VERSION").to_string())
+        Ok(self.about.driver_version.clone())
     }
 
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
+        Ok(crate::supported_actions(&self.config_ctx))
     }
 
     async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        rusty_photon_driver::dispatch::<SvbonyCameraDriver>(&self.config_ctx, action, parameters)
-            .await
+        crate::dispatch::<D>(&self.config_ctx, action, parameters).await
     }
 }
 
@@ -126,7 +151,12 @@ impl Device for PlaceholderCamera {
 macro_rules! not_connected_camera {
     ($($member:ident($($arg:ident: $ty:ty),*) -> $out:ty;)*) => {
         #[async_trait::async_trait]
-        impl Camera for PlaceholderCamera {
+        impl<D> Camera for PlaceholderCamera<D>
+        where
+            D: ConfigurableDriver + Send + Sync + 'static,
+            D::Config: Send + Sync,
+            D::Overrides: Send + Sync,
+        {
             $(
                 async fn $member(&self, $($arg: $ty),*) -> ASCOMResult<$out> {
                     Err(ASCOMError::NOT_CONNECTED)
@@ -214,41 +244,62 @@ not_connected_camera! {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use rusty_photon_config::actions::FieldError;
 
-    fn entry(name: Option<&str>) -> UsbDeviceEntry {
-        UsbDeviceEntry {
-            device_number: 0,
-            usb_port: "pci-0000:00:14.0-usbv3-0:4.2".to_string(),
-            name: name.map(str::to_string),
-            description: None,
+    /// A driver with nothing to configure, to stand the placeholder up.
+    struct NoConfig;
+
+    #[derive(serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+    struct Empty {}
+
+    impl ConfigurableDriver for NoConfig {
+        type Config = Empty;
+        type Overrides = ();
+
+        fn normalize(_config: &mut Empty) {}
+
+        fn validate(_config: &Empty) -> Vec<FieldError> {
+            Vec::new()
+        }
+
+        fn secret_pointers() -> &'static [&'static str] {
+            &[]
+        }
+
+        fn override_paths(_overrides: &()) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn apply_overrides(_config: &mut Empty, _overrides: &()) {}
+
+        fn read_only_paths() -> &'static [&'static str] {
+            &[]
         }
     }
 
-    fn placeholder() -> PlaceholderCamera {
-        PlaceholderCamera::new(&entry(None), "the USB scan failed: timeout".to_string())
+    fn placeholder() -> PlaceholderCamera<NoConfig> {
+        PlaceholderCamera::new(Placeholder {
+            name: "ZWO camera on pci-0000:00:14.0-usbv3-0:4.2 (placeholder)".to_string(),
+            unique_id: "placeholder:zwo-camera:pci-0000:00:14.0-usbv3-0:4.2".to_string(),
+            usb_port: "pci-0000:00:14.0-usbv3-0:4.2".to_string(),
+            reason: "the USB scan failed: timeout".to_string(),
+            driver_info: "rusty-photon zwo-camera".to_string(),
+            driver_version: "0.1.0".to_string(),
+            driver_code: 0x40,
+        })
     }
 
     #[test]
-    fn its_error_code_is_the_device_claims_code() {
-        assert_eq!(PLACEHOLDER_CODE.raw(), claims::PLACEHOLDER_ERROR_CODE);
-    }
-
-    #[test]
-    fn it_answers_to_the_placeholder_unique_id_of_its_port() {
+    fn it_answers_to_its_name_and_unique_id() {
+        let camera = placeholder();
         assert_eq!(
-            placeholder().unique_id(),
-            "placeholder:svbony-camera:pci-0000:00:14.0-usbv3-0:4.2"
+            camera.static_name(),
+            "ZWO camera on pci-0000:00:14.0-usbv3-0:4.2 (placeholder)"
         );
-    }
-
-    #[test]
-    fn its_name_names_the_port_unless_the_entry_names_it() {
         assert_eq!(
-            placeholder().static_name(),
-            "SVBony camera on pci-0000:00:14.0-usbv3-0:4.2 (placeholder)"
+            camera.unique_id(),
+            "placeholder:zwo-camera:pci-0000:00:14.0-usbv3-0:4.2"
         );
-        let named = PlaceholderCamera::new(&entry(Some("Main")), String::new());
-        assert_eq!(named.static_name(), "Main");
     }
 
     #[tokio::test]
@@ -257,12 +308,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_connect_is_refused_with_the_code_and_the_reason() {
+    async fn a_connect_is_refused_with_the_driver_code_and_the_reason() {
         let error = placeholder().set_connected(true).await.unwrap_err();
-        assert_eq!(error.code.raw(), claims::PLACEHOLDER_ERROR_CODE);
-        assert!(
-            error.message.contains("the USB scan failed: timeout"),
-            "{error}"
+        assert_eq!(error.code.raw(), 0x540);
+        assert_eq!(
+            error.message,
+            "ZWO camera on pci-0000:00:14.0-usbv3-0:4.2 (placeholder) is a placeholder for USB \
+             port pci-0000:00:14.0-usbv3-0:4.2, not a camera: the USB scan failed: timeout"
         );
     }
 
@@ -273,11 +325,20 @@ mod tests {
 
     #[tokio::test]
     async fn its_description_carries_the_reason() {
-        let description = placeholder().description().await.unwrap();
         assert_eq!(
-            description,
+            placeholder().description().await.unwrap(),
             "Placeholder for USB port pci-0000:00:14.0-usbv3-0:4.2: the USB scan failed: timeout"
         );
+    }
+
+    #[tokio::test]
+    async fn it_answers_driver_info_and_version_as_its_camera_would() {
+        let camera = placeholder();
+        assert_eq!(
+            camera.driver_info().await.unwrap(),
+            "rusty-photon zwo-camera"
+        );
+        assert_eq!(camera.driver_version().await.unwrap(), "0.1.0");
     }
 
     #[tokio::test]
@@ -286,6 +347,24 @@ mod tests {
             placeholder().supported_actions().await.unwrap(),
             Vec::<String>::new()
         );
+    }
+
+    #[tokio::test]
+    async fn with_a_config_source_it_offers_and_serves_the_config_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = placeholder().with_config_actions(ConfigActionCtx {
+            effective: Empty {},
+            path: dir.path().join("zwo-camera.json"),
+            overrides: (),
+            reload: rusty_photon_service_lifecycle::ReloadSignal::new(),
+        });
+        let actions = camera.supported_actions().await.unwrap();
+        assert!(actions.iter().any(|a| a == "config.get"), "{actions:?}");
+        let got = camera
+            .action("config.get".to_string(), String::new())
+            .await
+            .unwrap();
+        assert!(got.contains("\"config\""), "{got}");
     }
 
     #[tokio::test]

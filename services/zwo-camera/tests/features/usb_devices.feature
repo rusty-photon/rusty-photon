@@ -1,4 +1,4 @@
-@serial @wip
+@serial
 Feature: Device claims -- the usb_devices list
   An optional `usb_devices` list pins each USB port to an Alpaca device
   number. With a list, zwo-camera takes the host's USB scan -- passive,

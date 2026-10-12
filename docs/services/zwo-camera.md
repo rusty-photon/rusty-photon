@@ -1149,14 +1149,28 @@ on its own (U5).
 
   ZWO cameras on the bus (vendor 03c3), in port order:
 
-    Port                           Model               SDK id  USB serial  Device
+    Port                            Model               SDK id  USB serial  Device
     pci-0000:c1:00.4-usbv2-0:1.2.1  ZWO ASI178MM        —       —           2
     pci-0000:c1:00.4-usbv2-0:1.2.2  ZWO ASI120MC-S      —       —           1
     pci-0000:c1:00.4-usbv3-0:1.4    ZWO ASI1600MM-Cool  —       —           0
+
+  Pasting this block renumbers cameras: without a list the service serves them in SDK order, and the block numbers them in port order. Check rp's cameras[].device_number when you paste it.
+
+  Cannot tell which row is which camera? Unplug one and run this again: the port that disappears is the one you unplugged.
+
+  To pin the cameras this driver serves, paste this into zwo-camera.json.
+  Leave out any camera another application owns (PHD2's guide camera), and
+  keep the numbers running 0..N-1:
+
+      "usb_devices": [
+        { "device_number": 0, "usb_port": "pci-0000:c1:00.4-usbv2-0:1.2.1" },
+        { "device_number": 1, "usb_port": "pci-0000:c1:00.4-usbv2-0:1.2.2" },
+        { "device_number": 2, "usb_port": "pci-0000:c1:00.4-usbv3-0:1.4" }
+      ]
   ```
 
-  followed by the unplug procedure, the renumbering note, and the paste-ready
-  block. Rows are the SDK cameras U2 placed on a port, in port order (the
+  That is the dev box's three cameras, read with no list on 2026-10-11 (the
+  real join, the production build). Rows are the SDK cameras U2 placed on a port, in port order (the
   plan's D4.7: hop by hop from the root, each hop compared as the number the
   platform writes, so `…-0:4.2` precedes `…-0:4.10`). **The SDK id is never
   shown:** ZWO's serial needs an open (*Device identity*), which `--devices`
@@ -1207,6 +1221,19 @@ on its own (U5).
   re-assigning cameras, not mid-exposure. Placeholders carry the actions
   (U4), so a list whose camera went missing can be fixed from `ui-htmx`
   through the placeholder at that camera's number.
+
+**On hardware** (the dev box, Fedora 44, x86_64, ASI SDK 1.41, 2026-10-11;
+the production build started with `cargo run`). A list of the
+ASI1600MM-Cool's port at 0 (named `Main Imaging`), the ASI178MM's at 1, and
+an empty port at 2, with the ASI120MC-S left unlisted, registered exactly
+three Cameras: `ZWO:ZWO-ASI1600MM-Cool:noserial-0` as `Main Imaging`,
+`ZWO:ZWO-ASI178MM:1915d5081b090900` — the identities they have without a
+list — and `placeholder:zwo-camera:pci-0000:c1:00.4-usbv3-0:9`. Only the two
+listed cameras were opened for their identity, and the log named the
+ASI120MC-S's port as neither opened nor served. `Connected = true` on the
+placeholder answered error 1344 (`0x540`) with the reason, which its
+`Description` carried too, and device 1 connected the ASI178MM (its
+`SensorName` and its aligned 3072-pixel width).
 
 ### Geometry, binning, ROI
 
@@ -1880,10 +1907,10 @@ else is `debug!` (CLAUDE.md Rule 9).
 
 Layered per [`testing.md`](../skills/testing.md). Phase E landed **45 unit tests**
 and **57 BDD scenarios** (all green), plus a full **ConformU** pass; the suite
-now stands at **144 unit tests** (with `--all-features`; 125 without, since the
-`simulation` feature gates `lib.rs`'s three `simulation_tests` and the sixteen
+now stands at **181 unit tests** (with `--all-features`; 149 without, since the
+`simulation` feature gates `lib.rs`'s fourteen `simulation_tests`, the sixteen
 `backend::handle_tests` that drive the production handle against the `zwo-rs`
-simulation) and **85 BDD scenarios**.
+simulation, and two of `claims.rs`'s) and **115 BDD scenarios**.
 
 - **Unit** (`src/*.rs` `#[cfg(test)]`) — config parse/newtype validation, ROI/
   binning geometry math (including the %8 / %2 alignment rules), the `Camera`
