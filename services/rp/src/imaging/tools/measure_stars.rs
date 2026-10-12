@@ -30,9 +30,9 @@ pub const DEFAULT_STAMP_HALF_SIZE: usize = 8;
 pub struct StarMeasurement {
     pub x: f64,
     pub y: f64,
-    /// Empirical half-flux radius (pixels). `None` only when the star has
-    /// no positive flux above background, which `detect_stars` already
-    /// filters out — included for completeness.
+    /// Empirical half-flux radius (pixels). Never `None`: `detect_stars`
+    /// rejects every component without one, which is one with no
+    /// positive flux above the background.
     pub hfr: Option<f64>,
     /// Geometric-mean FWHM (pixels) from the 2D Gaussian fit. `None` when
     /// the fit failed.
