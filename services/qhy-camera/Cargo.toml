@@ -14,8 +14,10 @@ default = []
 # QHY178M-Simulated camera + 7-position CFW instead of scanning USB. It is
 # hardware-free (no physical camera/USB) but NOT SDK-free — the static `qhyccd`
 # lib is still required at link time (see docs/services/qhy-camera.md "Native
-# dependency & build gating").
-simulation = ["qhyccd-rs/simulation"]
+# dependency & build gating"). It also stages the USB scan a `usb_devices`
+# list is placed from (docs/services/qhy-camera.md U7): the fabricated camera
+# is on no bus a host scan could read.
+simulation = ["qhyccd-rs/simulation", "rusty-photon-doctor-checks/mock"]
 # `mock` is the project-wide convention name BDD/CI build with (`--features mock`
 # / `--all-features`); for this SDK-backed service it is just an alias that
 # forwards the simulation backend.
@@ -34,7 +36,9 @@ rusty-photon-config = { workspace = true }
 rusty-photon-doctor-checks = { workspace = true }
 rusty-photon-server-config = { workspace = true }
 rusty-photon-camera-core = { workspace = true }
-rusty-photon-driver = { workspace = true }
+# `claims`: the placeholder Camera and the failed USB scan's re-scan
+# (docs/services/qhy-camera.md U4, U6).
+rusty-photon-driver = { workspace = true, features = ["claims"] }
 rusty-photon-service-lifecycle = { workspace = true }
 rusty-photon-tls = { workspace = true }
 rp-auth = { workspace = true }

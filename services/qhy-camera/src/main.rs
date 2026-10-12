@@ -26,11 +26,9 @@
 )]
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
-use qhy_camera::{load_effective_config, CliOverrides, ServerBuilder};
+use qhy_camera::{load_effective_config, serve_and_rebuild, CliOverrides, ServerBuilder};
 use rusty_photon_service_lifecycle::{ServiceResult, ServiceRunner};
 use tracing::{debug, Level};
 
@@ -62,8 +60,9 @@ struct Args {
     service: bool,
 
     /// Test-only: start with an *empty* simulation backend (no cameras), to
-    /// exercise the zero-camera startup path (contract C0). Only meaningful when
-    /// built with `--features simulation`.
+    /// exercise the zero-camera startup path (contract C0) — with a
+    /// `usb_devices` list, to empty the SDK's side of the join (U7). Only
+    /// meaningful when built with `--features simulation`.
     #[cfg(feature = "simulation")]
     #[arg(long, hide = true)]
     simulation_empty: bool,
@@ -75,6 +74,14 @@ struct Args {
     #[cfg(feature = "simulation")]
     #[arg(long, hide = true, value_name = "PATH")]
     simulation_departure_file: Option<PathBuf>,
+
+    /// Test-only: stage the USB scan a `usb_devices` list is placed from with
+    /// the document in this file (docs/services/doctor.md "USB inventory"),
+    /// read again at every scan; without it a simulation build stages one
+    /// record for the simulated camera (U7).
+    #[cfg(feature = "simulation")]
+    #[arg(long, hide = true, value_name = "PATH")]
+    usb_inventory: Option<PathBuf>,
 
     /// Subcommand; running with none starts the ASCOM Alpaca driver.
     #[command(subcommand)]
@@ -89,15 +96,30 @@ enum Command {
     /// installation: qhyccd.dll resolution and the loaded SDK version vs.
     /// the pinned build-time version (see docs/services/qhy-camera.md
     /// § "Windows: qhyccd.dll resolution").
-    Doctor {
-        /// Path to configuration file
-        #[arg(short, long)]
-        config: Option<PathBuf>,
+    Doctor(DoctorArgs),
+}
 
-        /// Print the report as JSON instead of text
-        #[arg(long)]
-        json: bool,
-    },
+#[derive(clap::Args)]
+struct DoctorArgs {
+    /// Path to configuration file
+    #[arg(short, long)]
+    config: Option<PathBuf>,
+
+    /// Print the report as JSON instead of text
+    #[arg(long)]
+    json: bool,
+
+    /// List this driver's cameras on the bus by USB port, and print the
+    /// `usb_devices` block to paste, instead of the report. Read-only: no
+    /// camera is opened.
+    #[arg(long, conflicts_with = "json")]
+    devices: bool,
+
+    /// Test-only: the staged USB inventory, as for the service. Only
+    /// `--devices` reads the bus, so it is refused without it.
+    #[cfg(feature = "simulation")]
+    #[arg(long, hide = true, value_name = "PATH", requires = "devices")]
+    usb_inventory: Option<PathBuf>,
 }
 
 fn parse_log_level(s: &str) -> std::result::Result<Level, String> {
@@ -108,8 +130,21 @@ fn parse_log_level(s: &str) -> std::result::Result<Level, String> {
 fn main() -> ServiceResult {
     let args = Args::parse();
 
-    if let Some(Command::Doctor { config, json }) = args.command {
-        qhy_camera::doctor::run(config, json);
+    if let Some(Command::Doctor(doctor)) = args.command {
+        if doctor.devices {
+            #[cfg(feature = "simulation")]
+            let source = match qhy_camera::claims::usb_source_from_flag(doctor.usb_inventory) {
+                Ok(source) => source,
+                Err(error) => {
+                    eprintln!("doctor: {error}");
+                    std::process::exit(2);
+                }
+            };
+            #[cfg(not(feature = "simulation"))]
+            let source = qhy_camera::UsbSource::Host;
+            qhy_camera::doctor::run_devices(doctor.config, &source);
+        }
+        qhy_camera::doctor::run(doctor.config, doctor.json);
     }
 
     // In Windows SCM service mode logs go to the rolling file under
@@ -138,6 +173,9 @@ fn main() -> ServiceResult {
     let simulation_empty = args.simulation_empty;
     #[cfg(feature = "simulation")]
     let simulation_departure_file = args.simulation_departure_file;
+    #[cfg(feature = "simulation")]
+    let usb_source = qhy_camera::claims::usb_source_from_flag(args.usb_inventory)
+        .map_err(qhy_camera::QhyCameraError::UsbInventory)?;
 
     // Startup chatter stays at debug! per docs/AGENTS.md Rule 9; the
     // user-facing "Service started successfully on <addr>" info! lives in
@@ -147,6 +185,9 @@ fn main() -> ServiceResult {
     debug!("Using the qhyccd-rs SIMULATION backend");
     debug!("Configuration path: {}", config_path.display());
 
+    // `config.apply` triggers an in-process reload: the loop re-reads the
+    // effective config, re-enumerates, and rebuilds the server. A failed USB
+    // scan's re-scan rebuilds it from the configuration it serves (U6).
     ServiceRunner::new("qhy-camera")
         .with_reload()
         .scm_mode(args.service)
@@ -164,53 +205,42 @@ fn main() -> ServiceResult {
             // nothing ever calls into qhyccd.dll (PF5).
             #[cfg(all(windows, not(feature = "simulation")))]
             qhy_camera::preflight::ensure_qhyccd_dll()?;
-            loop {
-                let config = load_effective_config(&config_path, &overrides)?;
-                debug!(
-                    "Loaded effective configuration: server.port={}",
-                    config.server.port
-                );
-
-                let builder = ServerBuilder::new()
-                    .with_config(config)
-                    .with_config_source(config_path.clone(), overrides.clone())
-                    .with_reload_signal(reload.clone());
-
-                #[cfg(feature = "simulation")]
-                let builder = if simulation_empty {
-                    builder.with_sdk(qhyccd_rs::Sdk::new_simulated())
-                } else if let Some(departure) = &simulation_departure_file {
-                    let mut sdk = qhyccd_rs::Sdk::new_simulated();
-                    sdk.add_simulated_camera(
-                        qhyccd_rs::simulation::SimulatedCameraConfig::sdk_default()
-                            .with_departure_file(departure),
+            serve_and_rebuild(
+                shutdown.token(),
+                reload.clone(),
+                || {
+                    let config = load_effective_config(&config_path, &overrides)?;
+                    debug!(
+                        "Loaded effective configuration: server.port={}",
+                        config.server.port
                     );
-                    builder.with_sdk(sdk)
-                } else {
-                    builder
-                };
-
-                let bound = builder.build().await?;
-
-                let reloaded = Arc::new(AtomicBool::new(false));
-                let stop = {
-                    let reloaded = Arc::clone(&reloaded);
-                    let shutdown = shutdown.cancelled();
-                    let reload = reload.clone();
-                    async move {
-                        tokio::select! {
-                            () = shutdown => {}
-                            () = reload.recv() => reloaded.store(true, Ordering::SeqCst),
+                    Ok(config)
+                },
+                |config, stop| {
+                    let builder = ServerBuilder::new()
+                        .with_config(config)
+                        .with_config_source(config_path.clone(), overrides.clone())
+                        .with_reload_signal(reload.clone());
+                    #[cfg(feature = "simulation")]
+                    let builder = {
+                        let builder = builder.with_usb_source(usb_source.clone());
+                        if simulation_empty {
+                            builder.with_sdk(qhyccd_rs::Sdk::new_simulated())
+                        } else if let Some(departure) = &simulation_departure_file {
+                            let mut sdk = qhyccd_rs::Sdk::new_simulated();
+                            sdk.add_simulated_camera(
+                                qhyccd_rs::simulation::SimulatedCameraConfig::sdk_default()
+                                    .with_departure_file(departure),
+                            );
+                            builder.with_sdk(sdk)
+                        } else {
+                            builder
                         }
-                    }
-                };
-                bound.start(stop).await?;
-
-                if reloaded.load(Ordering::SeqCst) {
-                    debug!("Reload signalled; rebuilding qhy-camera from the new configuration");
-                    continue;
-                }
-                return Ok(());
-            }
+                    };
+                    async move { builder.build().await?.start(stop).await }
+                },
+            )
+            .await?;
+            Ok(())
         })
 }

@@ -11,9 +11,19 @@ use thiserror::Error;
 /// Errors raised while building / binding the qhy-camera server.
 #[derive(Debug, Error)]
 pub enum QhyCameraError {
-    /// The QHYCCD SDK could not be initialized (`Sdk::new`).
+    /// The QHYCCD SDK could not be initialized (`Sdk::new`), or could not
+    /// read an enumerated camera's model.
     #[error("QHYCCD SDK initialization failed: {0}")]
     Sdk(String),
+
+    /// The configuration breaks a rule — its `usb_devices` list, every rule
+    /// named.
+    #[error("config: {0}")]
+    Config(String),
+
+    /// The staged USB inventory a simulation build was handed cannot be used.
+    #[error("{0}")]
+    UsbInventory(String),
 
     /// Binding the Alpaca HTTP listener failed.
     #[error("server bind on port {port}: {source}")]

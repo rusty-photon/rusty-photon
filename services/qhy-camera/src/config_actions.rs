@@ -7,10 +7,11 @@
 //!   camera/CFW SDK serial (see `docs/services/qhy-camera.md` "Device identity"),
 //!   not minted into config, so there is no identity field to lock.
 //! - **Hard read-only:** `server.port` (a BFF could not follow the rebind).
-//! - **Editable:** the per-serial `devices` map (`name` / `description` /
-//!   `filter_names`).
+//! - **Editable:** `usb_devices` and the per-serial `devices` map (`name` /
+//!   `description` / `filter_names`).
 
 use rusty_photon_config::actions::{ConfigurableDriver, FieldError};
+use rusty_photon_doctor_checks::claims;
 
 use crate::config::{CliOverrides, Config};
 
@@ -25,8 +26,22 @@ impl ConfigurableDriver for QhyCameraDriver {
 
     fn normalize(_config: &mut Config) {}
 
+    /// The `usb_devices` rules the load applies (U9), plus the one only an
+    /// apply has: an empty list is refused, because it registers no device, so
+    /// none would be left to serve the config actions. Then the `devices`
+    /// overrides' filter names, each non-empty.
     fn validate(config: &Config) -> Vec<FieldError> {
-        let mut errors = Vec::new();
+        let mut list_errors = config.list_errors();
+        if config.usb_devices.as_ref().is_some_and(Vec::is_empty) {
+            list_errors.push(claims::empty_list_over_apply());
+        }
+        let mut errors: Vec<FieldError> = list_errors
+            .into_iter()
+            .map(|error| FieldError {
+                path: error.path,
+                msg: error.message,
+            })
+            .collect();
         for (serial, device) in &config.devices {
             if let Some(names) = &device.filter_names {
                 for (index, name) in names.iter().enumerate() {
@@ -100,6 +115,64 @@ mod tests {
             QhyCameraDriver::validate(&config),
             Vec::<rusty_photon_config::actions::FieldError>::new()
         );
+    }
+
+    fn entry(device_number: u32, usb_port: &str) -> crate::config::UsbDeviceEntry {
+        crate::config::UsbDeviceEntry {
+            device_number,
+            usb_port: usb_port.to_string(),
+            name: None,
+            description: None,
+            filter_wheel_number: None,
+            filter_names: None,
+        }
+    }
+
+    #[test]
+    fn an_empty_list_is_refused_over_apply() {
+        let config = Config {
+            usb_devices: Some(Vec::new()),
+            ..Config::default()
+        };
+        let errors = QhyCameraDriver::validate(&config);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].path, "usb_devices");
+        assert!(
+            errors[0]
+                .msg
+                .starts_with("an empty list registers no camera"),
+            "{}",
+            errors[0].msg
+        );
+    }
+
+    #[test]
+    fn a_list_that_breaks_a_rule_is_answered_entry_by_entry() {
+        let mut wheel = entry(1, "b");
+        wheel.filter_wheel_number = Some(0);
+        let mut twin = entry(0, "a");
+        twin.filter_wheel_number = Some(0);
+        let config = Config {
+            usb_devices: Some(vec![twin, wheel]),
+            ..Config::default()
+        };
+        let errors = QhyCameraDriver::validate(&config);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.path == "usb_devices.1.filter_wheel_number"
+                    && e.msg == "filter_wheel_number 0 is also usb_devices[0]'s"),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_valid_list_has_no_errors() {
+        let config = Config {
+            usb_devices: Some(vec![entry(0, "a")]),
+            ..Config::default()
+        };
+        assert_eq!(QhyCameraDriver::validate(&config), Vec::new());
     }
 
     #[test]

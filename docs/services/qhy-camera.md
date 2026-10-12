@@ -160,7 +160,12 @@ graph TD;
   [`service-lifecycle.md`](../skills/service-lifecycle.md). No hand-rolled signal
   handling; config bootstrap via `rusty_photon_config::resolve_and_init` with an
   **empty identity-pointer list** (identities are hardware-derived), which still
-  materializes the default config file on first start.
+  materializes the default config file on first start. Its serve loop is
+  `rusty-photon-driver`'s `claims::serve_and_rebuild`, shared with the other
+  camera drivers with device claims: after a reload it rebuilds from the config
+  file, after a failed scan's re-scan from the configuration it was serving
+  (U6). A stop always wins: one that lands with a reload ends the service
+  without building another server first.
 - **`lib.rs`** — `ServerBuilder` that, on `build()`, opens the SDK and
   **enumerates every connected camera** (and any CFW discovered on it),
   registering each as an ASCOM device (index 0, 1, 2, …) with its serial-derived
@@ -200,8 +205,13 @@ graph TD;
   the placeholder FilterWheel a declared wheel becomes when its camera cannot be
   served (U10).
 - **`claims.rs`** — QHY's half of the device claims (U1-U10): the normalizer
-  (SDK model → product id) and the simulated scan. The rest is shared (see
+  (SDK model → product id), the pre-open enumeration (each camera's SDK id and
+  model), the simulated scan, the placeholders for a camera and for its
+  declared wheel, and the `--devices` listing. The rest is shared (see
   *Device claims*).
+- **`sdk_gate.rs`** — one QHY `Sdk` alive in the process at a time (U6): a
+  server's build waits for it and holds it for as long as its `Sdk` lives, and
+  a failed scan's re-scan only tries it.
 - **`config.rs`** — typed `Config` with parse-don't-validate newtypes.
 - **`config_actions.rs`** — `ConfigurableDriver` impl + the `dispatch` the devices
   delegate to (`config.get`/`config.apply`/`config.schema`).
@@ -1074,8 +1084,10 @@ which a list replaces with the declaration.
   camera is left unregistered on its new port. Re-cabling is a reload's job. The
   device-claims plan's D8 records watching placement as out of scope, and a
   passive scan on every connect to re-confirm the port is the cost that would
-  close this. An SDK enumeration that fails after a scan that ran fails the
-  start or reload, with or without a list, as it always has (C0). Only the
+  close this. An SDK enumeration that fails after a scan that ran — a camera
+  whose model cannot be read included, since a model nobody read could only be
+  guessed at — fails the start or reload, with or without a list, as it always
+  has (C0). Only the
   scan, which the list adds, is made non-fatal and retried. None of these steps
   is an open, let alone an actuation, and a reload — `config.apply`'s,
   `SIGHUP`'s, or U6's own — runs the same path (tenet 3, C5).
@@ -1235,9 +1247,9 @@ which a list replaces with the declaration.
   cannot have produced — has no opinion about what is on the bus, so nothing is
   placed: every listed number is a placeholder naming the collector's error,
   every declared wheel a placeholder FilterWheel naming it too (U10), the SDK is
-  not enumerated, and the error is logged at `error!`. It is never a startup
-  failure — the service starts and serves its placeholders — so the service
-  manager's restart-on-failure would never retry it, and one slow
+  not opened or enumerated, and the error is logged at `error!`. It is never a
+  startup failure — the service starts and serves its placeholders — so the
+  service manager's restart-on-failure would never retry it, and one slow
   `powershell.exe` at boot would otherwise cost the night. (Like the SDK
   enumeration, the scan runs before the listener binds, so a start or reload
   with a list is unreachable for as long as the scan takes: milliseconds on
@@ -1245,29 +1257,44 @@ which a list replaces with the declaration.
   macOS and Windows.) The service therefore re-scans in the background, after
   waits of 10 s, 20 s and 40 s and then every 60 s, logging each repeat failure
   at `debug!`. When a scan succeeds, it is logged at `info!` and the server it
-  belongs to stops and is rebuilt, as for a reload, which runs the start path
-  again, placement and all. That is safe because the failed-scan outcome opened
-  nothing, so there is no session to interrupt, and because the start path a
-  list takes opens nothing either (U1). The success ends that server only: it
-  is not the service-wide reload signal, so one landing after another reload
-  has already stopped the server reaches nothing, and cannot stop the next
-  server. Nobody asked for this rebuild, though, and a rebuild that cannot load
-  its config file, or whose SDK enumeration fails — with the first scan failed,
-  the rebuild is the first enumeration since the start — ends the service. So
-  each try checks the config file first, then takes the scan, then checks that
-  the SDK enumerates, and rebuilds only when all three pass. A config file or
-  SDK that blocks it is logged at `warn!` each time it starts to, and at
-  `debug!` while it persists, and the re-scan carries on, without scanning
-  while the file does not load. The re-scan stops when it rebuilds, and with the
-  server it belongs to. It is not hot-plug: a successful scan whose listed port
-  is merely empty serves a placeholder until the next reload, as at any start.
+  belongs to stops and is rebuilt, which runs the start path again, placement
+  and all. That is safe because the failed-scan outcome opened nothing, so
+  there is no session to interrupt, and because the start path a list takes
+  opens nothing either (U1). The success ends that server only: it is not the
+  service-wide reload signal, so one landing after another reload has already
+  stopped the server reaches nothing, and cannot stop the next server. Nobody
+  asked for this rebuild, though, so it is built from the configuration the
+  stopped server was serving, not from the config file: an edit to the file
+  that no reload has applied — a list removed, a port or a certificate changed
+  — waits for the reload (`config.apply`, `SIGHUP`) or restart that applies it,
+  rather than moving or ending the service. A rebuild whose SDK enumeration
+  fails would still end it — with the first scan failed, the rebuild is the
+  first enumeration since the start — so each try takes the scan, then checks
+  that the SDK enumerates, models included, and rebuilds only when both pass.
+  An SDK that blocks it is logged at `warn!` each time it starts to, and at
+  `debug!` while it persists, and the re-scan carries on. The re-scan stops
+  when it rebuilds, and with the server it belongs to. It is not hot-plug: a
+  successful scan whose listed port is merely empty serves a placeholder until
+  the next reload, as at any start.
+
+  A try already running when its server stops is not interrupted: it runs on
+  the blocking pool, out under the scan's own deadline, and its answer goes
+  nowhere. Its SDK check is the one QHY SDK this service can make beside
+  another: `Sdk::new` runs `InitQHYCCDResource` and a scan, and an `Sdk`'s drop
+  runs `ReleaseQHYCCDResource`, whose resource is the process's — so a try's
+  SDK dropped while the next server's lives would release it under that
+  server's cameras. Every `Sdk` the service makes is therefore made under one
+  process-wide gate: a server's build waits for it and holds it as long as its
+  `Sdk` lives, and a try only tries it. A try that finds the gate held is one
+  whose server is gone, since a failed scan's server holds no SDK; a build that
+  finds it held waits out one enumeration.
 - **U7. A simulation build stages its scan.** The `qhyccd-rs` simulation
   fabricates a camera no host scan can see, so a `simulation` build never scans
   the host: its scan is a staged inventory (`rusty-photon-doctor-checks`' `mock`
-  feature, doctor.md "USB inventory"). By default that is one working record per
-  fabricated camera — `1618:f178`, product string `QHY178M-Simulated`, on port
-  `simulated-usbv3-0:<n>` for the camera at SDK index `n - 1` — so a list naming
-  that port places the simulated camera, whose model is `QHY178M-Simulated`,
+  feature, doctor.md "USB inventory"). By default that is one working record
+  for the one camera the simulation fabricates — `1618:f178`, product string
+  `QHY178M-Simulated`, on port `simulated-usbv3-0:1` — so a list naming that
+  port places the simulated camera, whose model is `QHY178M-Simulated`,
   through the real join. The hidden `--usb-inventory <file>` flag, on the
   service and on `doctor --devices` alike, replaces it with the staged document
   in that file, for the topologies a scenario needs: a listed port empty, a
@@ -1294,9 +1321,10 @@ which a list replaces with the declaration.
 
   To pin the cameras this driver serves, paste this into qhy-camera.json.
   Leave out any camera another application owns (PHD2's guide camera), and
-  keep the numbers running 0..N-1. --devices opens no camera, so it cannot see
-  a filter wheel: add "filter_wheel_number" to the entry of each camera that
-  has one, numbering the wheels 0..M-1:
+  keep the numbers running 0..N-1.
+  --devices opens no camera, so it cannot see a filter wheel:
+  add "filter_wheel_number" to the entry of each camera that has one,
+  numbering the wheels 0..M-1:
 
       "usb_devices": [
         { "device_number": 0, "usb_port": "pci-0000:c1:00.4-usbv3-0:1.3" }
@@ -2508,17 +2536,23 @@ fn main() -> ServiceResult {
     ServiceRunner::new("qhy-camera")
         .with_reload()
         .run_with_reload(|shutdown, reload| async move {
-            loop {
-                let bound = ServerBuilder::new()
-                    .with_config_source(&config_path, CliOverrides { port: args.port })
-                    .with_reload_signal(reload.clone())
-                    .build()
-                    .await?;           // eager SDK open + enumerate/register devices
-                tokio::select! {
-                    r = bound.start(shutdown.cancelled()) => return r,
-                    () = reload.recv() => continue,
-                }
-            }
+            // After a reload: rebuild from the file. After a failed USB
+            // scan's re-scan: rebuild from the configuration served (U6).
+            serve_and_rebuild(
+                shutdown.token(),
+                reload.clone(),
+                || load_effective_config(&config_path, &overrides),
+                |config, stop| {
+                    let builder = ServerBuilder::new()
+                        .with_config(config)
+                        .with_config_source(config_path.clone(), overrides.clone())
+                        .with_reload_signal(reload.clone());
+                    // register the devices (U1-U10), bind, serve until `stop`
+                    async move { builder.build().await?.start(stop).await }
+                },
+            )
+            .await?;
+            Ok(())
         })
 }
 ```
@@ -2527,11 +2561,13 @@ fn main() -> ServiceResult {
 else is `debug!` ([AGENTS.md](../AGENTS.md) Rule 9).
 
 In addition to the plain service invocation, `main.rs` exposes one subcommand:
-`rusty-photon-qhy-camera doctor [--config <file>] [--json]` — the per-service
-doctor ([doctor.md §Per-service doctors](doctor.md): own-config validation
-plus SDK enumeration), which on Windows real-SDK builds also carries the
-installation diagnostics specified in *Windows: qhyccd.dll resolution*
-below. Running with no subcommand starts the driver exactly as before.
+`rusty-photon-qhy-camera doctor [--config <file>] [--json | --devices]` — the
+per-service doctor ([doctor.md §Per-service doctors](doctor.md): own-config
+validation plus SDK enumeration), which on Windows real-SDK builds also
+carries the installation diagnostics specified in *Windows: qhyccd.dll
+resolution* below; `--devices` lists the cameras by USB port and prints the
+`usb_devices` block to paste instead (U8). Running with no subcommand starts
+the driver exactly as before.
 
 ---
 

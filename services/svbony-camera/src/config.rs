@@ -10,7 +10,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use rusty_photon_doctor_checks::claims::{self, EntryView, ListError};
+pub use rusty_photon_doctor_checks::claims::UsbDeviceEntry;
+use rusty_photon_doctor_checks::claims::{self, ListError};
 pub use rusty_photon_server_config::AlpacaServerConfig;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -58,23 +59,7 @@ impl Config {
     /// refuse a config with any.
     #[must_use]
     pub fn list_errors(&self) -> Vec<ListError> {
-        let Some(list) = &self.usb_devices else {
-            return Vec::new();
-        };
-        let views: Vec<EntryView<'_>> = list
-            .iter()
-            .map(|entry| EntryView {
-                device_number: entry.device_number,
-                usb_port: &entry.usb_port,
-            })
-            .collect();
-        let mut errors = claims::validate_list(&views);
-        errors.extend(
-            self.devices
-                .keys()
-                .map(|key| claims::override_beside_list(key)),
-        );
-        errors
+        claims::list_errors(self.usb_devices.as_deref(), self.devices.keys())
     }
 
     /// [`Self::list_errors`] as one message, every rule broken named.
@@ -82,41 +67,7 @@ impl Config {
     /// # Errors
     /// The joined message, when the list breaks any rule.
     pub fn check_list(&self) -> Result<(), String> {
-        let errors = self.list_errors();
-        if errors.is_empty() {
-            return Ok(());
-        }
-        let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
-        Err(errors.join("; "))
-    }
-}
-
-/// One `usb_devices` entry: the camera on `usb_port` is served at
-/// `device_number`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct UsbDeviceEntry {
-    /// The Alpaca device number the camera on this port is served under.
-    pub device_number: u32,
-    /// The port, in the platform's native spelling, pasted from
-    /// `svbony-camera doctor --devices`.
-    pub usb_port: String,
-    /// Display name override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    /// Description override.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-}
-
-impl UsbDeviceEntry {
-    /// The entry's display names as the override a camera is built with.
-    #[must_use]
-    pub fn display_override(&self) -> DeviceOverride {
-        DeviceOverride {
-            name: self.name.clone(),
-            description: self.description.clone(),
-        }
+        claims::check_list(&self.list_errors())
     }
 }
 
@@ -130,6 +81,16 @@ pub struct DeviceOverride {
     /// Description override.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+/// An entry's display names as the override its camera is built with.
+impl From<&UsbDeviceEntry> for DeviceOverride {
+    fn from(entry: &UsbDeviceEntry) -> Self {
+        Self {
+            name: entry.name.clone(),
+            description: entry.description.clone(),
+        }
+    }
 }
 
 /// CLI overrides layered on top of the file configuration.
@@ -278,7 +239,7 @@ mod tests {
         )
         .unwrap();
         let list = config.usb_devices.unwrap();
-        assert_eq!(list[1].display_override().name.as_deref(), Some("Main"));
+        assert_eq!(DeviceOverride::from(&list[1]).name.as_deref(), Some("Main"));
     }
 
     #[test]

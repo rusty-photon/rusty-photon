@@ -7,10 +7,12 @@
 //! list's validation, the passive join that places each SDK camera on a port,
 //! the reason a listed number is held by a placeholder, the placeholder's
 //! fixed error code and `UniqueID` form, the order ports are listed in, where
-//! the scan comes from, and the `doctor --devices` listing and its block. What
-//! differs per driver — which SDK models it knows on the bus, its simulated
-//! scan, what it can say about a camera without opening it, its config's
-//! entry type — stays in the driver. The placeholder device itself and the
+//! the scan comes from, the `doctor --devices` listing and its block, and the
+//! list entry itself ([`UsbDeviceEntry`]) with the glue that validates a list
+//! of them. What differs per driver — which SDK models it knows on the bus,
+//! its simulated scan, what it can say about a camera without opening it, and
+//! any field its entry adds (a QHY camera's declared filter wheel) — stays in
+//! the driver. The placeholder device itself and the
 //! failed scan's background re-scan are `rusty-photon-driver`'s `claims`
 //! module: they are an ASCOM device and a task, and this crate is neither
 //! ASCOM's nor async.
@@ -21,6 +23,9 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt::{self, Write as _};
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::facts::{UsbDevice, UsbScan};
 
@@ -65,11 +70,97 @@ pub fn is_placeholder_unique_id(unique_id: &str) -> bool {
 
 // --- the list -------------------------------------------------------------------
 
+/// One `usb_devices` entry: the camera on `usb_port` is served at
+/// `device_number`.
+///
+/// The entry every camera driver with device claims reads. A driver whose
+/// entry carries more — `qhy-camera`'s declared filter wheel — spells its own
+/// with these fields first and implements [`ListEntry`] for it, since a
+/// flattened struct cannot refuse unknown keys.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UsbDeviceEntry {
+    /// The Alpaca device number the camera on this port is served under.
+    pub device_number: u32,
+    /// The port, in the platform's native spelling, pasted from the driver's
+    /// `doctor --devices`.
+    pub usb_port: String,
+    /// Display name override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Description override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 /// What validation reads of one `usb_devices` entry.
 #[derive(Debug, Clone, Copy)]
 pub struct EntryView<'a> {
     pub device_number: u32,
     pub usb_port: &'a str,
+}
+
+/// A `usb_devices` entry, whichever driver's: what the shared validation and
+/// the `doctor --devices` block read of it.
+pub trait ListEntry {
+    /// The fields every list rule reads.
+    fn view(&self) -> EntryView<'_>;
+    /// The entry as the paste-ready block reproduces it.
+    fn block_entry(&self) -> BlockEntry;
+}
+
+impl ListEntry for UsbDeviceEntry {
+    fn view(&self) -> EntryView<'_> {
+        EntryView {
+            device_number: self.device_number,
+            usb_port: &self.usb_port,
+        }
+    }
+
+    fn block_entry(&self) -> BlockEntry {
+        BlockEntry {
+            device_number: self.device_number,
+            usb_port: self.usb_port.clone(),
+            name: self.name.clone(),
+            description: self.description.clone(),
+            ..BlockEntry::default()
+        }
+    }
+}
+
+/// Every rule a configured `usb_devices` list breaks; empty without a list.
+///
+/// The shared rules, then an [`override_beside_list`] error for each key of
+/// the `devices` map beside the list. A driver's load and its `config.apply`
+/// both refuse a config with any.
+#[must_use]
+pub fn list_errors<'a, E: ListEntry>(
+    list: Option<&[E]>,
+    override_keys: impl IntoIterator<Item = &'a String>,
+) -> Vec<ListError> {
+    let Some(list) = list else {
+        return Vec::new();
+    };
+    let views: Vec<EntryView<'_>> = list.iter().map(ListEntry::view).collect();
+    let mut errors = validate_list(&views);
+    errors.extend(
+        override_keys
+            .into_iter()
+            .map(|key| override_beside_list(key)),
+    );
+    errors
+}
+
+/// `errors` as one message, every rule broken named.
+///
+/// # Errors
+/// The joined message, when there is any error.
+pub fn check_list(errors: &[ListError]) -> Result<(), String> {
+    if errors.is_empty() {
+        return Ok(());
+    }
+    let errors: Vec<String> = errors.iter().map(ToString::to_string).collect();
+    Err(errors.join("; "))
 }
 
 /// A rule a list (or the config around it) breaks.
@@ -85,7 +176,9 @@ pub struct ListError {
 }
 
 impl ListError {
-    fn entry(index: usize, field: &str, message: String) -> Self {
+    /// An error in entry `index`'s `field`.
+    #[must_use]
+    pub fn entry(index: usize, field: &str, message: String) -> Self {
         Self {
             path: format!("usb_devices.{index}.{field}"),
             location: format!("usb_devices[{index}]"),
@@ -93,7 +186,9 @@ impl ListError {
         }
     }
 
-    fn list(message: String) -> Self {
+    /// An error in the list as a whole.
+    #[must_use]
+    pub fn list(message: String) -> Self {
         Self {
             path: "usb_devices".to_string(),
             location: "usb_devices".to_string(),
@@ -834,12 +929,17 @@ pub struct ListingRow {
 }
 
 /// One entry of the paste-ready `usb_devices` block.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BlockEntry {
     pub device_number: u32,
     pub usb_port: String,
     pub name: Option<String>,
     pub description: Option<String>,
+    /// The `FilterWheel` number the entry declares its camera's wheel at
+    /// (`qhy-camera` only).
+    pub filter_wheel_number: Option<u32>,
+    /// The declared wheel's slot names.
+    pub filter_names: Option<Vec<String>>,
 }
 
 /// Everything `doctor --devices` prints.
@@ -857,6 +957,10 @@ pub struct Listing {
     /// Paragraphs printed after the table: what the join could not place,
     /// renumbering warnings, the unplug procedure.
     pub notes: Vec<String>,
+    /// The driver serves a filter wheel through its camera, which an entry
+    /// declares (`qhy-camera`): the text above the block says `--devices`
+    /// cannot see one and how to declare it.
+    pub wheels: bool,
 }
 
 /// What `doctor --devices` can say about one SDK camera without opening it.
@@ -878,6 +982,10 @@ pub struct CameraFacts {
 pub struct DisplayNames {
     pub name: Option<String>,
     pub description: Option<String>,
+    /// The slot names of the camera's filter wheel (`qhy-camera`): an
+    /// override that names them says the camera has a wheel, so the no-list
+    /// block declares one.
+    pub filter_names: Option<Vec<String>>,
 }
 
 impl Claims<'_> {
@@ -945,12 +1053,15 @@ impl Claims<'_> {
             rows,
             block,
             notes,
+            wheels: false,
         }
     }
 
     /// The block that pins what the no-list default serves: every placed
     /// camera, numbered in port order, with the names its `devices` override
-    /// gives it, and a note for each override that it cannot carry.
+    /// gives it, and a note for each override that it cannot carry. A camera
+    /// whose override names its wheel's slots has a wheel, so its entry
+    /// declares one, the wheels numbered in port order too.
     fn no_list_block(
         &self,
         placed: &[(usize, &str)],
@@ -960,6 +1071,7 @@ impl Claims<'_> {
     ) -> Vec<BlockEntry> {
         let key_of = |index: usize| cameras.get(index).and_then(|f| f.override_key.as_ref());
         let mut matched_keys = Vec::new();
+        let mut wheels = 0_u32..;
         let block: Vec<BlockEntry> = placed
             .iter()
             .zip(0_u32..)
@@ -969,11 +1081,14 @@ impl Claims<'_> {
                     matched_keys.push(key.as_str());
                 }
                 let names = found.map(|(_, names)| names);
+                let filter_names = names.and_then(|n| n.filter_names.clone());
                 BlockEntry {
                     device_number,
                     usb_port: port.to_string(),
                     name: names.and_then(|n| n.name.clone()),
                     description: names.and_then(|n| n.description.clone()),
+                    filter_wheel_number: filter_names.as_ref().and_then(|_| wheels.next()),
+                    filter_names,
                 }
             })
             .collect();
@@ -983,10 +1098,17 @@ impl Claims<'_> {
             .any(|(&(index, _), position)| index != position)
         {
             notes.push(
-                "Pasting this block renumbers cameras: without a list the service serves them in \
-                 SDK order, and the block numbers them in port order. Check rp's \
-                 cameras[].device_number when you paste it."
-                    .to_string(),
+                if block.iter().any(|e| e.filter_wheel_number.is_some()) {
+                    "Pasting this block renumbers cameras and their filter wheels: without a list \
+                     the service serves them in SDK order, and the block numbers them in port \
+                     order. Check rp's cameras[].device_number and filter_wheels[].device_number \
+                     when you paste it."
+                } else {
+                    "Pasting this block renumbers cameras: without a list the service serves them \
+                     in SDK order, and the block numbers them in port order. Check rp's \
+                     cameras[].device_number when you paste it."
+                }
+                .to_string(),
             );
         }
         // A key no placed camera's matched is a stale override when every
@@ -1081,9 +1203,19 @@ pub fn render_listing(listing: &Listing) -> String {
             out,
             "\nTo pin the cameras this driver serves, paste this into {}.json.\n\
              Leave out any camera another application owns (PHD2's guide camera), and\n\
-             keep the numbers running 0..N-1:\n\n",
+             keep the numbers running 0..N-1",
             listing.service
         );
+        if listing.wheels {
+            // One line for the first sentence, so it reads whole wherever it
+            // is searched for.
+            out.push_str(
+                ".\n--devices opens no camera, so it cannot see a filter wheel:\n\
+                 add \"filter_wheel_number\" to the entry of each camera that has one,\n\
+                 numbering the wheels 0..M-1",
+            );
+        }
+        out.push_str(":\n\n");
         out.push_str(&render_block(block));
     }
     out
@@ -1173,6 +1305,13 @@ fn render_block(block: &[BlockEntry]) -> String {
             }
             if let Some(description) = &entry.description {
                 fields.push(format!("\"description\": {}", quote(description)));
+            }
+            if let Some(number) = entry.filter_wheel_number {
+                fields.push(format!("\"filter_wheel_number\": {number}"));
+            }
+            if let Some(names) = &entry.filter_names {
+                let names: Vec<String> = names.iter().map(|n| quote(n)).collect();
+                fields.push(format!("\"filter_names\": [{}]", names.join(", ")));
             }
             format!("      {{ {} }}", fields.join(", "))
         })
@@ -2037,6 +2176,7 @@ mod tests {
             rows,
             block,
             notes: Vec::new(),
+            wheels: false,
         }
     }
 
@@ -2055,7 +2195,7 @@ mod tests {
             device_number,
             usb_port: usb_port.to_string(),
             name: name.map(str::to_string),
-            description: None,
+            ..BlockEntry::default()
         }
     }
 
@@ -2115,6 +2255,122 @@ mod tests {
         assert!(text.ends_with("    \"usb_devices\": []\n"), "{text}");
     }
 
+    #[test]
+    fn a_declared_wheel_pastes_with_its_number_and_names() {
+        let mut wheel = entry(0, "p1", None);
+        wheel.filter_wheel_number = Some(0);
+        wheel.filter_names = Some(vec!["L".to_string(), "H\"a".to_string()]);
+        let text = render_listing(&listing(Vec::new(), Some(vec![wheel])));
+        let block = text
+            .split_once("    \"usb_devices\"")
+            .map(|(_, rest)| format!("{{\"usb_devices\"{rest}}}"))
+            .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&block).unwrap();
+        assert_eq!(
+            parsed["usb_devices"],
+            serde_json::json!([{
+                "device_number": 0,
+                "usb_port": "p1",
+                "filter_wheel_number": 0,
+                "filter_names": ["L", "H\"a"]
+            }])
+        );
+    }
+
+    #[test]
+    fn a_driver_with_wheels_says_above_the_block_how_to_declare_one() {
+        let mut with_wheels = listing(Vec::new(), Some(vec![entry(0, "p1", None)]));
+        with_wheels.wheels = true;
+        let text = render_listing(&with_wheels);
+        assert!(
+            text.contains("--devices opens no camera, so it cannot see a filter wheel:\n"),
+            "{text}"
+        );
+        assert!(text.contains("numbering the wheels 0..M-1:\n"), "{text}");
+        let without = render_listing(&listing(Vec::new(), Some(vec![entry(0, "p1", None)])));
+        assert!(!without.contains("filter wheel"), "{without}");
+        assert!(
+            without.contains("keep the numbers running 0..N-1:\n"),
+            "{without}"
+        );
+    }
+
+    // --- the entry and its glue ---------------------------------------------
+
+    fn usb_entry(device_number: u32, usb_port: &str) -> UsbDeviceEntry {
+        UsbDeviceEntry {
+            device_number,
+            usb_port: usb_port.to_string(),
+            name: None,
+            description: None,
+        }
+    }
+
+    #[test]
+    fn without_a_list_nothing_is_checked_and_an_override_is_fine() {
+        let keys = ["SN1".to_string()];
+        assert_eq!(list_errors::<UsbDeviceEntry>(None, &keys), Vec::new());
+    }
+
+    #[test]
+    fn a_list_is_checked_by_the_shared_rules_and_refuses_every_override_beside_it() {
+        let keys = ["SN1".to_string(), "SN2".to_string()];
+        let errors = list_errors(Some(&[usb_entry(0, "a"), usb_entry(2, "b")][..]), &keys);
+        let paths: Vec<&str> = errors.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["usb_devices", "devices.SN1", "devices.SN2"]);
+    }
+
+    #[test]
+    fn check_list_names_every_rule_broken_in_one_message() {
+        let errors = list_errors(Some(&[usb_entry(0, " a"), usb_entry(0, "b")][..]), &[]);
+        let message = check_list(&errors).unwrap_err();
+        assert!(
+            message.contains("usb_devices[0]: usb_port has leading or trailing whitespace"),
+            "{message}"
+        );
+        assert!(
+            message.contains("; usb_devices[1]: device_number 0 is also usb_devices[0]'s"),
+            "{message}"
+        );
+        assert_eq!(check_list(&[]), Ok(()));
+    }
+
+    #[test]
+    fn an_entry_reads_its_optional_names_and_refuses_an_unknown_key() {
+        let entry: UsbDeviceEntry =
+            serde_json::from_str(r#"{"device_number": 1, "usb_port": "a", "name": "Main"}"#)
+                .unwrap();
+        assert_eq!(entry.name.as_deref(), Some("Main"));
+        assert_eq!(entry.description, None);
+        let error = serde_json::from_str::<UsbDeviceEntry>(
+            r#"{"device_number": 0, "usb_port": "a", "serial": "x"}"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("serial"), "{error}");
+    }
+
+    #[test]
+    fn an_unset_name_is_left_out_of_the_entry_rather_than_written_null() {
+        let text = serde_json::to_string(&usb_entry(0, "a")).unwrap();
+        assert_eq!(text, r#"{"device_number":0,"usb_port":"a"}"#);
+    }
+
+    #[test]
+    fn an_entry_pastes_as_itself_and_declares_no_wheel() {
+        let mut entry = usb_entry(3, "p");
+        entry.description = Some("d".to_string());
+        assert_eq!(
+            entry.block_entry(),
+            BlockEntry {
+                device_number: 3,
+                usb_port: "p".to_string(),
+                description: Some("d".to_string()),
+                ..BlockEntry::default()
+            }
+        );
+    }
+
     // --- building the listing ----------------------------------------------
 
     fn facts(model: &str, sdk_id: &str, override_key: Option<&str>) -> CameraFacts {
@@ -2128,7 +2384,7 @@ mod tests {
     fn named(name: &str) -> DisplayNames {
         DisplayNames {
             name: Some(name.to_string()),
-            description: None,
+            ..DisplayNames::default()
         }
     }
 
@@ -2196,6 +2452,74 @@ mod tests {
             "{:?}",
             listing.notes
         );
+    }
+
+    #[test]
+    fn with_no_list_an_override_naming_filters_declares_a_wheel_numbered_in_port_order() {
+        let cameras = [
+            facts("SV605CC", "A", Some("A")),
+            facts("SV705C", "B", Some("B")),
+        ];
+        let wheel = |names: &[&str]| DisplayNames {
+            filter_names: Some(names.iter().map(|n| (*n).to_string()).collect()),
+            ..DisplayNames::default()
+        };
+        let overrides = BTreeMap::from([
+            ("A".to_string(), wheel(&["L", "R"])),
+            ("B".to_string(), wheel(&["Ha"])),
+        ]);
+        let listing = two_cameras().listing(&cameras, None, &overrides);
+        let block = listing.block.clone().unwrap();
+        assert_eq!(
+            (block[0].usb_port.as_str(), block[0].filter_wheel_number),
+            ("1-4.2", Some(0))
+        );
+        assert_eq!(block[0].filter_names, Some(vec!["Ha".to_string()]));
+        assert_eq!(
+            (block[1].usb_port.as_str(), block[1].filter_wheel_number),
+            ("1-4.10", Some(1))
+        );
+        assert!(
+            has_note(
+                &listing,
+                "Pasting this block renumbers cameras and their filter wheels"
+            ),
+            "{:?}",
+            listing.notes
+        );
+        assert!(
+            listing
+                .notes
+                .iter()
+                .any(|n| n.contains("filter_wheels[].device_number")),
+            "{:?}",
+            listing.notes
+        );
+    }
+
+    #[test]
+    fn with_no_list_only_a_camera_whose_override_names_filters_declares_a_wheel() {
+        let cameras = [
+            facts("SV605CC", "A", Some("A")),
+            facts("SV705C", "B", Some("B")),
+        ];
+        let overrides = BTreeMap::from([
+            ("A".to_string(), named("Main")),
+            (
+                "B".to_string(),
+                DisplayNames {
+                    filter_names: Some(vec!["L".to_string()]),
+                    ..DisplayNames::default()
+                },
+            ),
+        ]);
+        let block = two_cameras()
+            .listing(&cameras, None, &overrides)
+            .block
+            .unwrap();
+        assert_eq!(block[0].filter_wheel_number, Some(0), "B, on 1-4.2");
+        assert_eq!(block[1].filter_wheel_number, None, "A names no filters");
+        assert_eq!(block[1].filter_names, None);
     }
 
     #[test]

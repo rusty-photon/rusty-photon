@@ -1,4 +1,4 @@
-@serial @wip
+@serial
 Feature: Device claims -- the usb_devices list
   An optional `usb_devices` list pins each USB port to an Alpaca device
   number. With a list, qhy-camera takes the host's USB scan -- passive,
@@ -226,6 +226,12 @@ Feature: Device claims -- the usb_devices list
     And filterwheel device 0 reports a Description containing "no working camera is enumerated on simulated-usbv3-0:9"
     When I connect filterwheel device 1
     Then filterwheel device 1 reports Connected as true
+
+  Scenario: Wheels are numbered by their filter_wheel_number, not by their cameras' order
+    Given the configuration JSON {"usb_devices": [{"device_number": 0, "usb_port": "simulated-usbv3-0:9", "filter_wheel_number": 1}, {"device_number": 1, "usb_port": "simulated-usbv3-0:1", "filter_wheel_number": 0}]}
+    When the qhy-camera service starts
+    Then filterwheel device 0 reports the UniqueID "CFW-SIM-QHY178M"
+    And filterwheel device 1 reports the UniqueID "placeholder:qhy-camera:CFW-simulated-usbv3-0:9"
 
   Scenario: A failed USB scan holds every listed number with a placeholder naming the error
     Given the staged USB inventory:
