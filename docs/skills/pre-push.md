@@ -772,12 +772,14 @@ needs from you:
     Windows Bazel targets build with the MSRV: a std API or a language
     feature newer than it fails the build.
   - Two kinds of code meet the MSRV only later. macOS-only code meets it
-    after a merge, on the macOS leg (pushes to main and nightly). Code reached only through Cargo
-    feature combinations no Bazel target builds is compiled on a PR by
-    Cargo's floating stable alone. Check macOS-only code at the MSRV by hand
-    when you write it, in both shapes, after `rustup toolchain install <msrv>
-    --target aarch64-apple-darwin` (*Run it locally when your change adds
-    OS-gated code*, above, says why both):
+    after a merge, on the macOS leg (pushes to main and nightly). Code
+    reached only through Cargo feature combinations no Bazel target builds
+    is compiled on a PR only by Cargo's floating stable, and only on Linux:
+    Windows-only code behind such a combination is not compiled on a PR at
+    all. Check macOS-only code at the MSRV by hand when you write it, in
+    both shapes, after `rustup toolchain install <msrv> --target
+    aarch64-apple-darwin` (*Run it locally when your change adds OS-gated
+    code*, above, says why both):
 
     ```sh
     cargo +<msrv> check --target aarch64-apple-darwin -p <crate> --all-targets --all-features

@@ -311,7 +311,6 @@ rust.toolchain(
         "2026-08-15/rust-analyzer-nightly-x86_64-apple-darwin.tar.xz": "f06d2710cef8b6d26c8945911f2070c103655f0c790ed78f676ea6568e3bb669",
         "2026-08-15/rust-analyzer-nightly-x86_64-pc-windows-msvc.tar.xz": "d27d757c01754adddb47738f65c4486b576d18fd5e8e66828318bd7ffec0a798",
         "2026-08-15/rust-analyzer-nightly-x86_64-unknown-linux-gnu.tar.xz": "b4c6c32592e567ab05d0147e1501ca3b95f354bb7e2266a776e0c0c20ea7c9cd",
-        "2026-08-15/rust-src-nightly.tar.xz": "c4b39f09039b9231878152e9796c1c5cbf595a3ae4966bdf5bc3bb7aa243e095",
         "2026-08-15/rust-std-nightly-aarch64-apple-darwin.tar.xz": "a756efaca1b00da00ffe16f8efe3e56b55cc4fc812903fa5cd0eb713d759f498",
         "2026-08-15/rust-std-nightly-aarch64-unknown-linux-gnu.tar.xz": "adc8408de8d38862091e164575fa8e4eaee6345c16a7415bd74a6bf33a79e349",
         "2026-08-15/rust-std-nightly-x86_64-apple-darwin.tar.xz": "1742587a031980bdbd0759d4d6f49770972ddb02ca78433bf7939bdd3b35521f",
@@ -327,6 +326,7 @@ rust.toolchain(
         "2026-08-15/rustfmt-nightly-x86_64-apple-darwin.tar.xz": "b325f4fc3f4087216a5e885d5292ade83fd4dbc48fa4c40ebb2101ac71a4453a",
         "2026-08-15/rustfmt-nightly-x86_64-pc-windows-msvc.tar.xz": "2d91c14e8bd1efd2af8f4f016324f6dfa73750427f8634a1aa2b1d3d2017fc88",
         "2026-08-15/rustfmt-nightly-x86_64-unknown-linux-gnu.tar.xz": "02b6f65f1cd084e4b7b35de7d80488f6151f7822a8635c4bed150d085956f372",
+        "rust-src-nightly.tar.xz": "c4b39f09039b9231878152e9796c1c5cbf595a3ae4966bdf5bc3bb7aa243e095",
         "cargo-1.99.0-aarch64-apple-darwin.tar.xz": "76abff0ad79a10a3152dff640ea0d8b3c37637d9300bf55da41b95c3ddc069c1",
         "cargo-1.99.0-aarch64-unknown-linux-gnu.tar.xz": "113229fcc16cc1ba004923a4cc275fbf3281dafaaf8b97269f9c00189d497fd4",
         "cargo-1.99.0-x86_64-apple-darwin.tar.xz": "939b71952afd63ae73bc00f3517c19f0dd7ac54884b5fac16a813ee50985d14d",
@@ -378,7 +378,9 @@ rust.toolchain(
     #   Bazel targets build with the MSRV, so code newer than it (a std API
     #   or a language feature) fails the build. A Bazel target builds one
     #   feature set, so code reached only through other Cargo feature
-    #   combinations is compiled on a PR by Cargo's floating stable alone.
+    #   combinations is compiled on a PR only by Cargo's floating stable,
+    #   and only on Linux: Windows-only code behind such a combination is
+    #   not compiled on a PR at all.
     # In the first PR after each stable release, bump all of them together:
     # the pin with its `sha256s`, rust-version, clippy.toml's msrv and the
     # coverage nightly below (docs/skills/pre-push.md lists the steps). Until

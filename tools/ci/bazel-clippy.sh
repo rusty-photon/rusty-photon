@@ -143,8 +143,9 @@ else
     fi
   fi
   # The archives scripts/rust-toolchain-sha256s.sh prints for the two pins:
-  # its seven tools for each of its five hosts, plus rust-src. Keep these
-  # lists in step with the script's.
+  # its seven tools for each of its five hosts, plus rust-src, whose key has
+  # no date even for the nightly (rules_rust looks it up without one). Keep
+  # these lists and key shapes in step with the script's.
   expected=$(
     for tool in rustc cargo clippy rustfmt llvm-tools rust-std rust-analyzer; do
       for host in aarch64-apple-darwin aarch64-unknown-linux-gnu x86_64-apple-darwin \
@@ -154,7 +155,7 @@ else
       done
     done
     echo "rust-src-$bazel_pin.tar.xz"
-    echo "$nightly/rust-src-nightly.tar.xz"
+    echo "rust-src-nightly.tar.xz"
   )
   keys=$(grep -o '"[^"]*\.tar\.xz"' <<<"$toolchain" | tr -d '"')
   missing=$(comm -23 <(sort <<<"$expected") <(sort <<<"$keys"))

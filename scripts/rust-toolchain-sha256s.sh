@@ -28,7 +28,9 @@ if [[ $release =~ ^nightly/([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
   date=${BASH_REMATCH[1]}
   manifest=dist/$date/channel-rust-nightly.toml
   # rules_rust names a nightly's archives `<tool>-nightly-<host>.tar.xz` and
-  # keys them by date: `<date>/<tool>-nightly-<host>.tar.xz`.
+  # keys them by date: `<date>/<tool>-nightly-<host>.tar.xz`. All but
+  # rust-src: `load_rust_src` looks it up by `produce_tool_path`, which has
+  # no date, so its key is `rust-src-nightly.tar.xz`.
   name_version=nightly
 elif [[ $release =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   date=
@@ -112,7 +114,8 @@ if not target or not target.get("available"):
 name = PurePosixPath(target["xz_url"]).name
 if name != f"rust-src-{version}.tar.xz":
     sys.exit(f"unexpected archive name {name} for rust-src")
-entries[f"{date}/{name}" if date else name] = target["xz_hash"]
+# Undated even for a nightly: rules_rust looks rust-src up without the date.
+entries[name] = target["xz_hash"]
 # Only now, so a refused release prints an error and no line to paste.
 if date:
     print(f"        # nightly/{date} is rustc {manifest['pkg']['rustc']['version']}", file=sys.stderr)
