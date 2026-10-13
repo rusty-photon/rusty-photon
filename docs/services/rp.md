@@ -3340,17 +3340,20 @@ physical device an entry is on: the line that would have made the
 
 - **The pin is only as strong as the driver's `UniqueID`.**
   - `qhy-camera`'s `UniqueID` is the SDK id, model plus serial, so it
-    tells two cameras apart. The exception is a model whose id carries a
-    constant serial, where two such cameras collide (device-claims plan,
-    D4.6).
+    tells two cameras apart. A model whose id carries a constant serial
+    could give two cameras one id, but `qhy-camera` serves neither: two
+    cameras of one model are look-alikes its USB join refuses
+    ([qhy-camera.md](qhy-camera.md) *Device identity*).
   - `zwo-camera`'s and `svbony-camera`'s fallback for a serial-less
-    camera is `noserial-{index}`, which follows the enumeration index.
-    A pin on such a camera still catches a swap with a different model,
-    but not a swap of two serial-less cameras of the same model, and it
-    cannot name where the pinned camera went.
-  - The device-claims plan's C5 replaces that fallback with a port-based
-    one. That changes those `UniqueID`s, so after the C5 upgrade every
-    pin on a serial-less camera is refused loudly until it is re-copied.
+    camera is `noserial-{usb_port}`, built from the USB port the driver
+    placed it on. A pin on such a camera tells it from any camera on
+    another port, but it follows the socket: a serial-less camera moved
+    to another port is another device, and its pin is refused until it
+    is re-copied.
+  - Before the device-claims plan's C5 that fallback was
+    `noserial-{index}`, the enumeration index, so the C5 upgrade changed
+    those `UniqueID`s, and every pin on a serial-less camera is refused
+    loudly until it is re-copied.
 - **The check and the connect are two requests.** The listing read and
   `Connected = true` cannot be made atomic: Alpaca has no
   identity-checked connect. If a server renumbers its devices between

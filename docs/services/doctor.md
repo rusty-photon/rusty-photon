@@ -971,12 +971,28 @@ doctor's contract exactly (text by default, `--json` for the schema, exit
 0/1/2), with `mode: "service"` and the service binary's own version in
 `doctor_version`.
 
-Two checks, the second only on services that link an SDK:
+Two checks, the second only on services that link an SDK, and three more on
+the camera drivers with device claims:
 
 | Check | Services | Trigger |
 |---|---|---|
 | `config.full-shape` | all | The service's config file does not survive the service's **own typed load path** — the same parse a start would perform, `deny_unknown_fields` included, so a typo'd key anywhere in the file is named here (the detail carries serde's path and message). This is the full-config validation D2 deferred: central doctor knows only the shared blocks; the binary that owns the shape validates all of it. An absent file is `ok` — most services write their defaults on first start, config-gated ones stay inert, and either way there is nothing to validate (central doctor's inventory and `units.config-gated` checks own that judgment). |
 | `hardware.sdk-devices` | qhy-camera, zwo-camera, zwo-focuser | The SDK cannot see the hardware: enumeration (`ScanQHYCCD`, the ASI/EAF list calls) errors (`fail` — with the D4 `hardware.usb-device` check this splits "not on the bus" from "on the bus but the SDK is blind", which is the firmware/driver signature), or enumerates zero devices (`warn` — the binary cannot see unit state, so unplugged-on-purpose and unplugged-by-accident are indistinguishable here; the D4 checks carry the unit-aware severity). `ok` lists the models the SDK reports. **Enumeration only, never an open** — an open against a device the running service holds is the camera-lock class of bug, and the subcommand must stay safe to run by hand at any time. |
+
+| `usb-devices.resolve` | qhy-camera, zwo-camera, svbony-camera, with a `usb_devices` list | Each listed entry, judged from this run's own USB scan, SDK enumeration and join — what a start would serve now, not what a running instance holds, since placement is not watched ([device-claims plan](../plans/device-claims-and-phd2-camera.md) D8). `ok` once, counting the entries, when every one resolves to a camera; a `warn` per entry a placeholder would hold, with the placeholder's reason: a fault at the port, the device that is there instead, a look-alike, an unrecognised model, or no working camera on the port. `fail` when the USB scan failed — every listed number would be a placeholder — naming the collector's error. An empty list registers nothing and resolves nothing: `ok`, saying so. A camera the driver would fail to open (a ZWO camera's identity read, a QHY camera's CFW probe) is not visible here, because the run opens nothing: the driver's `warn!` and the placeholder's connect error report it. |
+| `usb-devices.unlisted` | the same, with a list | One `ok` per camera the join placed on a port no entry lists, naming its port and model, so a camera moved to another port shows here while its old number's `usb-devices.resolve` warns. Nothing when every placed camera is listed. |
+| `usb-devices.implicit` | the same, without a list | What the no-list default would serve. With more than one placed camera, one `ok` naming each camera with the number port order gives it, and the paste-ready block of exactly those cameras; nothing for one or none. Whatever the count, a `warn` for each camera the default refuses — a look-alike, naming the collision; an unrecognised model, with its SDK model and the product id the bus shows; a known model with no working record — and for each record of the driver's vendor no camera is placed on, and each fault that could be the camera. A failed USB scan is one `fail`, naming the collector's error, and no block, since a failed scan has no ports. |
+
+The three `usb-devices.*` checks follow the rule central doctor applies to
+USB (§Hardware): **a device on the bus that is not working never fails
+doctor, and a scan that could not run does.** So they fail only on a failed
+scan; a dead device, an empty listed port, a look-alike or an unrecognised
+model is information for the operator. A per-service run cannot see unit
+state, so central doctor's `fail` for an installed, enabled unit's absent
+device stays with `hardware.usb-device`. They need a configuration that
+loads, to know whether there is a list, and an SDK that enumerates, to join:
+when either is missing, `config.full-shape` or `hardware.sdk-devices` says so
+and these three are not run.
 
 Per-service checks plan no fixes in D5 — machine-applicable repair stays a
 central-doctor concern, so `--fix` semantics live in exactly one binary.
@@ -989,7 +1005,8 @@ holds to the same rules — read-only, enumeration only, never an open — and
 the same exit codes, and it is text only. `svbony-camera`, `zwo-camera` and
 `qhy-camera` have it ([svbony-camera.md](svbony-camera.md) U8,
 [zwo-camera.md](zwo-camera.md) U8, [qhy-camera.md](qhy-camera.md) U8), and
-the `usb-devices.*` checks that judge a list come with plan C5. The listing,
+prints the `usb-devices.*` checks above, all of them, after the listing. The
+listing,
 its paste-ready block, the join that places each camera, the port order it
 is printed in, and the list entry with its validation are shared code in
 `rusty-photon-doctor-checks`' `claims` module, beside the inventory they
@@ -1028,6 +1045,24 @@ installed service, and the two paths are naturally exclusive:
   tomorrow's 2am failure); an authenticated endpoint doctor holds no
   credential for is a `warn` — the answer proves liveness but not
   inventory.
+
+  **A placeholder is reported as one, not as a device.** A camera driver
+  with device claims holds a listed number it cannot serve with a
+  placeholder ([device-claims plan](../plans/device-claims-and-phd2-camera.md)
+  D4.5), which `configureddevices` lists under its entry's name like any
+  device. Its `UniqueID` has one fixed form, `placeholder:<service>:<port>`
+  (`placeholder:qhy-camera:CFW-<port>` for a declared wheel), so
+  `service.devices` leaves it out of the `ok` inventory and reports each as
+  a `warn` of its own — *Camera #1 is a placeholder for `<port>`, not a
+  camera: run `rusty-photon-<service> doctor --devices` for the reason*. A
+  placeholder never re-scans, so when doctor's own USB scan holds a working
+  device on that port — a hub powered on after the service started — the
+  detail names it and says a reload of the service would place it if it is
+  the camera. The `ok` names the other devices, and is still reported when
+  every device is a placeholder: the service answered, so it is alive. A
+  camera the no-list default refused is not registered at all, so a running
+  service cannot show it; `<service> doctor --devices`, which opens nothing,
+  names it.
 - **Unit installed but not active** → nothing holds the device, and this
   is precisely the case being debugged: doctor shells out to the unit's
   own binary — the path the service manager records (systemd `ExecStart=`,

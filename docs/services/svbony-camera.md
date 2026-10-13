@@ -46,8 +46,9 @@
 > a failed scan is retried in the background until it succeeds, when the
 > service reloads itself. `svbony-camera doctor --devices` lists every SVBony
 > camera on the bus by port and prints the list to paste. With no list —
-> the permanent default — the service behaves exactly as before. See
-> "Configuration" and "Device claims (`usb_devices`)" (U1-U9).
+> the permanent default — the service serves every camera the same scan
+> places, numbered in port order, and refuses the rest (plan C5). See
+> "Configuration" and "Device claims (`usb_devices`)" (U1-U11).
 >
 > **Follow-up landed (issue #1412): a camera that has left the bus reads
 > disconnected.** `Connected` was the driver's own flag, so a camera whose
@@ -736,8 +737,8 @@ either: both members answer from the cache and both setters only store
 - ASCOM Camera `ICameraV3` for every enumerated SVBony camera, 8/16-bit RAW
   and mono/OSC (Bayer) sensors, derived at runtime from
   `SVB_CAMERA_PROPERTY` — never hardcoded to the SV605CC's own pattern.
-- Startup enumeration registers all discovered cameras — or, with a
-  `usb_devices` list, exactly the list (U1-U9); per-device
+- Startup enumeration registers every camera the USB scan places, in port
+  order (U10) — or, with a `usb_devices` list, exactly the list (U1-U9); per-device
   connect/disconnect (real since Phase C/D); on connect, select
   `SVB_MODE_TRIG_SOFT` when `IsTriggerCam` and start video capture once.
 - Sensor geometry from cached `SVB_CAMERA_PROPERTY` (`MaxWidth`/`MaxHeight`,
@@ -826,7 +827,7 @@ either: both members answer from the cache and both setters only store
 ```jsonc
 {
   // Optional: pin each USB port to an Alpaca device number (see below and
-  // U1-U9). Absent = every camera the SDK enumerates, in SDK order.
+  // U1-U9). Absent = every camera the USB scan places, in port order (U10).
   "usb_devices": [
     { "device_number": 0,
       "usb_port": "platform-xhci-hcd.1-usbv3-0:1",
@@ -895,14 +896,14 @@ means plain, unauthenticated HTTP.
   it (U9).
 
   **No list is the default, permanently.** With no `usb_devices` key the
-  service registers every camera the SDK enumerates, in SDK order, exactly as
-  before this field existed, and makes no USB scan. (The device-claims plan's
-  C5 will change what the no-list default does for all three camera drivers at
-  once — numbering by port order and refusing cameras it cannot place — and
-  will be documented here when it lands.)
+  service registers every camera the USB scan can place, numbered in port
+  order, and refuses the rest (U10). It is the scan and join a list uses, so
+  every number it serves is tied to a socket. A single-camera rig never needs
+  the list; one with several cameras writes it when a number must survive a
+  camera being added or removed.
 - **devices** — Optional per-device override map keyed by **SDK serial**
-  (`SVB_CAMERA_INFO.CameraSN`, or `noserial-{index}` for a camera reporting
-  none). Any device without an entry uses SDK-derived defaults. It serves the
+  (`SVB_CAMERA_INFO.CameraSN`, or `noserial-{usb_port}` for a camera reporting
+  none — see *Device identity*). Any device without an entry uses SDK-derived defaults. It serves the
   no-list default only: beside a list it is rejected (above). No per-camera
   connect-time tuning (gain/offset/target temperature) in v0 — deferred (see
   *Future Work*).
@@ -946,35 +947,41 @@ directly from `Sdk::cameras()`'s output:
 SVBONY:{friendly_name with spaces → '-'}:{serial}
 ```
 
-A camera that reports an **empty** serial falls back to a stable
-position-based identity, mirroring `zwo-camera`'s `mint_identity`:
+A camera that reports an **empty** serial falls back to an identity built
+from its USB port — the native spelling the scan placed it on (U2) —
+mirroring `zwo-camera`'s `mint_identity`:
 
 ```
-SVBONY:{friendly_name}:noserial-{index}
+SVBONY:{friendly_name}:noserial-{usb_port}
 ```
 
-logged at `warn!`. Consequences (same as `zwo-camera`/`qhy-camera`): **no
+logged at `warn!`. Every camera the service registers has a port, listed
+(U4) or placed with no list (U10), so the fallback holds across bus
+reordering and replug, where an enumeration index would let two serial-less
+cameras of one model swap. It follows the socket: moved to another port, the
+camera is another device, which is what the list already asks the operator
+to edit (the device-claims plan's D4.6). Consequences (same as `zwo-camera`/`qhy-camera`): **no
 `unique_id` field in config**, an **empty identity-pointer list** passed to
 `resolve_and_init` in `main.rs`, and **no locked identity field** in the
 config-actions tiers. A listed camera keeps exactly this identity — the list
 pins its number, not its identity (U5). A placeholder's `UniqueID` has its
 own fixed form, `placeholder:svbony-camera:{usb_port}`, which no camera's can
-take (U4). (The device-claims plan's C5 replaces the `noserial-{index}`
-fallback with one built from the camera's port.)
+take (U4).
 
 ### Device registration (boundary removed at real-hardware validation)
 
-With no `usb_devices` list, `enumerate_cameras()` registers whatever
-`svbony_rs::Sdk::cameras()` reports — the Phase E "production build
-registers zero devices" boundary was removed when the physical SV605CC
-arrived (2026-07-26):
+With no `usb_devices` list, `build()` registers what
+`svbony_rs::Sdk::cameras()` reports and the USB scan places (U10) — the
+Phase E "production build registers zero devices" boundary was removed when
+the physical SV605CC arrived (2026-07-26):
 
-- **With `simulation`:** enumerates `svbony-rs`'s one fabricated
-  `SV605CC-Simulated` camera and registers it, so BDD scenarios have
-  "camera device 0" to address.
-- **Without `simulation`** (the production real-SDK build): registers the
-  physically connected cameras — verified against the real SV605CC
-  (enumeration, identity from the hardware `CameraSN`, ConformU).
+- **With `simulation`:** `svbony-rs`'s one fabricated `SV605CC-Simulated`
+  camera, placed through the real join on the simulated scan's record for
+  it (U7), so BDD scenarios have "camera device 0" to address.
+- **Without `simulation`** (the production real-SDK build): the
+  physically connected cameras the host's scan places — verified against
+  the real SV605CC (enumeration, identity from the hardware `CameraSN`,
+  ConformU).
 
 With a list, the list decides what is registered (U4): its entries, in
 device-number order, each the camera placed on its port or a placeholder.
@@ -982,13 +989,15 @@ device-number order, each the camera placed on its port or a placeholder.
 Under `cargo test` with no features, the dev-dependency's
 `svbony-rs/simulation` feature unifies into the service's `svbony-rs`
 dependency, so the *production* enumeration code path is exercised against
-the simulated camera (`production_default_tests`).
+the simulated camera (`production_default_tests`). That build's scan is the
+host's, where the simulated camera has no record, so the no-list default
+refuses it as a camera it cannot place (U10).
 
 `ServerBuilder::with_empty(bool)` additionally forces zero cameras
 regardless of the feature (mirrors `zwo-camera`'s `--simulation-empty`
 test-only path, contract C0), used by the BDD suite's empty-backend
-scenario. With a list it empties only the SDK's side of the join — the USB
-scan is untouched — so a listed port's record is one no SDK camera is placed
+scenario. It empties only the SDK's side of the join — the USB scan is
+untouched — so the simulated camera's record is one no SDK camera is placed
 on.
 
 ---
@@ -1011,11 +1020,11 @@ one core at load average 65, see "Real-hardware validation").
 ### Enumeration & connection lifecycle
 
 - **C0.** At startup `build()` enumerates connected SVBony cameras and
-  registers each as an ASCOM device with its serial-derived UniqueID — no
-  open required (see *Device identity*). Zero discovered cameras is **not**
-  a hard failure — the service starts with no Camera devices, logged at
-  `warn!`; a later reload re-enumerates. In this phase, this only happens
-  under the `simulation` feature (see *Device registration boundary*).
+  registers each the USB scan places — with no list, in port order (U10);
+  with one, at its entry's number (U4) — as an ASCOM device with its
+  serial-derived UniqueID, no open required (see *Device identity*). Zero
+  registered cameras is **not** a hard failure — the service starts with no
+  Camera devices, logged at `warn!`; a later reload re-enumerates.
 - **C1.** `set_connected(true)` opens the camera via the SDK. On success
   `Connected = true`. A second `set_connected(true)` on an already-open
   device is a no-op — including a *concurrent* duplicate: the handle's
@@ -1286,9 +1295,9 @@ one core at load average 65, see "Real-hardware validation").
 
 The rules for an operator's `usb_devices` list (see "Configuration"),
 following the [device-claims plan](../plans/device-claims-and-phd2-camera.md)
-Part A, of which this driver is phase C2. Nothing here applies without a
-list: the no-list default registers every camera the SDK enumerates, in SDK
-order, with no USB scan, as it always has.
+Part A, of which this driver is phase C2. U1-U9 are the list's rules. U10 is
+the no-list default's, which runs the same scan and join (plan C5), and U11
+is what `svbony-camera doctor` reports about both.
 
 The vendor-neutral rules live in shared code, which `zwo-camera` (plan C3,
 [zwo-camera.md](zwo-camera.md) U1-U9) takes unchanged and `qhy-camera` (C4)
@@ -1497,11 +1506,12 @@ and what `doctor --devices` can say about a camera without opening it — is
   checks`' `mock` feature, doctor.md "USB inventory"). By default that is one
   working record per fabricated camera — `f266:9a0a`, product string `SVBONY
   SV605CC-Simulated`, on port `simulated-usbv3-0:<n>` for the camera at SDK
-  index `n - 1` — so a list naming that port places the simulated camera
-  through the real join. The hidden `--usb-inventory <file>` flag, on the
-  service and on `doctor --devices` alike, replaces it with the staged
-  document in that file, for the topologies a scenario needs: a listed port
-  empty, a fault, a look-alike, a failed scan. A file that cannot be read, or
+  index `n - 1` — so the no-list default places the simulated camera through
+  the real join, and a list naming that port does too. The hidden
+  `--usb-inventory <file>` flag, on the service and on `doctor` (its report
+  and `--devices`) alike, replaces it with the staged document in that file,
+  for the topologies a scenario needs: a listed port empty, a fault, a
+  look-alike, a failed scan. A file that cannot be read, or
   describes a state no collector could produce, refuses the start, naming the
   file; every scan reads it again, U6's re-scans included, so a scenario can
   stage a failed scan and then repair it. Neither the default nor the flag
@@ -1535,17 +1545,15 @@ and what `doctor --devices` can say about a camera without opening it — is
   what the bus publishes, usually nothing (`—`), which says nothing about the
   camera's identity. **Device** is the number the running configuration
   serves the camera at — its entry's number, `not listed`, or, with no list,
-  its SDK-order number.
+  its port-order number (U10).
 
   **The block.** With no list, it holds every placed camera numbered in port
   order, each carrying the `name`/`description` its `devices` override gives
-  it today, matched by `CameraSN` (or `noserial-<index>`) without opening
-  anything, so pasting it and deleting the `devices` map keeps every name. A
-  `devices` key that matches no placed camera is named, with a note to move
-  its fields by hand. Until the plan's C5 the no-list default serves SDK
-  order, so when port order differs the listing says pasting renumbers the
-  cameras, and to check rp's `cameras[].device_number`. With a list, the
-  block reproduces it — every entry and number, placeholders included — and
+  it today, matched by `CameraSN` (or `noserial-<port>`) without opening
+  anything, so pasting it and deleting the `devices` map changes no number
+  and no name: it pins exactly what the no-list default serves. A `devices`
+  key that matches no placed camera is named, with a note to move its fields
+  by hand. With a list, the block reproduces it — every entry and number, placeholders included — and
   an unlisted camera appears in the table only: serving it is an ownership
   decision, made by copying its port into an entry.
 
@@ -1562,8 +1570,8 @@ and what `doctor --devices` can say about a camera without opening it — is
   `1`, but the cameras are listed all the same — the ports are how the list
   gets fixed — with the list's errors first and no block, since a block
   reproducing a refused list would only be pasted back. Text only:
-  `--devices` does not combine with `--json`. The `usb-devices.*` checks of
-  the plan's D5 come with C5.
+  `--devices` does not combine with `--json`. U11's checks close the
+  listing.
 - **U9. The list over `config.apply`.** `usb_devices` is an editable field.
   `config.apply` runs the load-time validation and answers a bad list with
   field errors naming the entry (`usb_devices.1.usb_port`,
@@ -1578,6 +1586,55 @@ and what `doctor --devices` can say about a camera without opening it — is
   cameras, not mid-exposure. Placeholders carry the actions (U4), so a list
   whose camera went missing can be fixed from `ui-htmx` through the
   placeholder at that camera's number.
+- **U10. Without a list, every camera the scan can place is served, in port
+  order.** With no `usb_devices` key, `build()` takes U1's steps — the host's
+  USB scan, the SDK enumeration, the join (U2) — and registers every SDK
+  camera the join placed on a port, numbered in port order (U8's order). The
+  join opens nothing, so neither does this. A camera the join cannot place is
+  **refused**: never registered, and logged at `warn!` with the reason — a
+  look-alike or an unrecognised model (U3), or a known model with no working
+  record (its record a fault, or on no port the scan could read). A refused
+  camera moves every camera after it in port order down a number; a list is
+  what stops that, by holding each number with a placeholder (U4).
+
+  **A failed scan registers no camera**, because a camera whose port cannot
+  be read cannot be numbered by it: the error is logged at `error!`, the SDK
+  is not enumerated, and the service re-scans in the background and rebuilds
+  on the first success, exactly as U6 does for a list. Until then the server
+  serves no Camera at all, so no config action is reachable over Alpaca
+  either; the re-scan needs none.
+
+  Each registered camera is the same `SvbonyCamera` a list serves, with its
+  `UniqueID` (*Device identity*, `noserial-{usb_port}` for one with no
+  serial) and the `name`/`description` its `devices` override gives it.
+
+  **Upgrading from SDK order.** Until the device-claims plan's C5 the no-list
+  default registered every camera the SDK enumerated, in SDK order, with no
+  USB scan, and gave a serial-less camera `noserial-{index}`. A rig with one
+  camera keeps its number, 0. With more than one, or a serial-less camera:
+  1. run `svbony-camera doctor --devices` and compare its **Device** column
+     (the numbers served now) with rp's `cameras[].device_number`, or paste
+     its block to pin them;
+  2. re-key any `devices` entry keyed `noserial-<index>` to the
+     `noserial-<port>` the camera now has (or move it into a `usb_devices`
+     entry);
+  3. re-copy any rp `unique_id` pin on a serial-less camera from rp's
+     bound-device log line or `GET /api/equipment`
+     ([rp.md](rp.md#device-identity-pin)): its `UniqueID` changed, and rp
+     refuses the stale pin by name.
+- **U11. `svbony-camera doctor` judges the claims.** The report runs the
+  same scan, enumeration and join a start would, opening nothing, and adds
+  the `usb-devices.*` checks of [doctor.md](doctor.md) ("The per-service
+  subcommand"): with a list, `usb-devices.resolve` (each listed number a
+  placeholder would serve, `warn`, with its reason) and
+  `usb-devices.unlisted` (each placed camera no entry lists, `ok`); without
+  one, `usb-devices.implicit` (the numbers port order gives, `ok`, when there
+  is more than one camera, and each camera U10 refuses, `warn`). A failed
+  scan fails whichever applies, naming the collector's error. They judge
+  what a start would serve now, not what a running instance holds, and they
+  print below `--devices`' listing as well. Central doctor merges them
+  when the unit is not active, and reads a running instance's placeholders
+  from `configureddevices` (`service.devices`) when it is.
 
 ### Exposure (the soft-trigger video-capture state machine)
 
@@ -2225,7 +2282,7 @@ Layered per [`testing.md`](../skills/testing.md).
 - **Unit** (`src/*.rs` `#[cfg(test)]`, 168 no-features / 199 with
   `simulation`) — config parse/newtype
   validation, identity minting (`mint_identity`'s hardware-serial and
-  `noserial-{index}`-fallback branches), config-actions editability tiers,
+  `noserial-{usb_port}`-fallback branches), config-actions editability tiers,
   the `exposure_timeout_ms` protocol-encoding pure function
   (`backend.rs::pure_fn_tests`), the readout-format negotiation's
   no-usable-format connect failure (RM3) and its `to_image_array`

@@ -100,7 +100,7 @@ recorded here so the option is not lost.
 | C2 | `usb_devices` schema + `svbony-camera` — port placement (the join), listed numbers, placeholders (their fixed connect error code, which rp treats as permanent for the pass, and their config actions), the failed-scan re-scan, each simulation backend's synthetic inventory, and `svbony-camera doctor --devices` (D5's listing and paste-ready block; the `usb-devices.*` checks stay in C5), so no driver serves the list before its paste source exists. `usb_devices` is part of `config.schema`/`config.apply` from the phase that adds it, under the ordinary `Reload` disposition (D4.1), and D3's validation rejects a bad list in `config.apply` as well as at load. The easy case; proves schema, join and placeholder behaviour | Merged — [svbony-camera.md](../services/svbony-camera.md) U1-U9; the D4.8 twin hint is deferred to a collector change (D4.8) | `feature/device-claims-c2-svbony` ([#1466](https://github.com/rusty-photon/rusty-photon/pull/1466)) |
 | C3 | `usb_devices` in `zwo-camera`, with its `doctor --devices` listing; a failed identity open is a per-camera outcome (D7) | Merged — [zwo-camera.md](../services/zwo-camera.md) U1-U9; the placeholder device and the re-scan moved to `rusty-photon-driver`'s `claims` feature (D7) | `feature/device-claims-c3-zwo` ([#1476](https://github.com/rusty-photon/rusty-photon/pull/1476)) |
 | C4 | `usb_devices` in `qhy-camera`, with its `doctor --devices` listing and each entry's declared filter wheel (D4.7), whose placeholder rp already classifies (C2 taught the connect routine every kind shares the placeholder's refusal) + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup and reload entirely** (the split alone narrows the tenet-3 problem, it does not discharge it). With a third driver serving the list, the `usb_devices` entry type and its validation glue, which svbony-camera and zwo-camera each still carry, move to one shared home | In review — [qhy-camera.md](../services/qhy-camera.md) U1-U10; D6 settled on option 2 (the no-list probe opens without `InitQHYCCD`, measured, decision 17). The `usb_devices` entry type and its validation glue moved to `rusty-photon-doctor-checks`' `claims` module, which `qhy-camera` extends with the declared wheel; the placeholder FilterWheel stays in `qhy-camera`, the only driver with one | `feature/device-claims-c4-qhy` ([#1479](https://github.com/rusty-photon/rusty-photon/pull/1479)) |
-| C5 | `usb-devices.resolve` / `usb-devices.unlisted` / `usb-devices.implicit` checks on top of the per-driver `--devices` listings, and central doctor's `service.devices` recognising placeholders (D5); **the breaking no-list changes for all three drivers at once** — numbering by port order, unplaceable cameras refused, and the port-based `UniqueID` fallback for serial-less cameras (ZWO/SVBony; QHY's case decided here, D4.6) | Not started | |
+| C5 | `usb-devices.resolve` / `usb-devices.unlisted` / `usb-devices.implicit` checks on top of the per-driver `--devices` listings, and central doctor's `service.devices` recognising placeholders (D5); **the breaking no-list changes for all three drivers at once** — numbering by port order, unplaceable cameras refused, and the port-based `UniqueID` fallback for serial-less cameras (ZWO/SVBony; QHY's case decided here, D4.6) | In progress — design: [svbony-camera.md](../services/svbony-camera.md) U10-U11, [zwo-camera.md](../services/zwo-camera.md) U10-U11, [qhy-camera.md](../services/qhy-camera.md) U11-U12, [doctor.md](../services/doctor.md) (the checks and `service.devices`). QHY keeps its raw id (decision 18). Waits on the macOS check: the report half answered by the collector fix in [#1500](https://github.com/rusty-photon/rusty-photon/pull/1500), the location-id half on the owner | `feature/device-claims-c5` |
 | C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | Not started, except the `save_image` wire-format fix (D9), merged | `fix/phd2-save-image-wire-format` ([#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)) |
 | C7 | rp wiring: guide camera as a train-terminal camera, capture-sweep focusing for the guiding train, doc updates. **Blocked on reconciling with [`focus-model.md`](focus-model.md) S7/D17**, which retires rp's capture-based `auto_focus` and keeps the metric sweep under that name | Not started | |
 | C8 | `ui-htmx` editing of `usb_devices` | Deferred | |
@@ -1165,6 +1165,21 @@ exactly those models is trivially derivable; C5 still decides whether
 QHY adopts it (with the matching `devices`-key and shared-CFW-id
 migration) or documents the collision as known. It cannot be swept under
 "same change for the other drivers".
+
+**Settled in C5: QHY keeps its raw id, because C5 makes the collision
+unreachable** (decision 18). Two cameras can share a `GetQHYCCDId` only
+by sharing its model, which `GetQHYCCDModel` reads from the id, and so
+the product id the normalizer gives that model (C4's join matches QHY on
+the product id alone, `qhy-camera.md` U2). The join then cannot pair
+either one-to-one: both are look-alikes (D4.3), refused with a list
+since C4 and without one from C5. Every camera `qhy-camera` registers is
+placed one-to-one, so no two registered cameras — nor the wheels
+registered through them, whose `CFW-<id>` follows the camera's — can
+carry one id. A port-based identity would buy nothing a client could
+observe, and would cost a `devices`-key and wheel-id migration for
+every rig whose model has a constant serial field. So nothing changes:
+the id stays the `UniqueID` and the `devices` key, and `qhy-camera.md`
+says why two cameras cannot collide on it.
 
 **The breaking changes land together in C5, now.** C2–C4 add the list
 path driver by driver and leave the no-list path as it is today (every
@@ -2388,6 +2403,7 @@ review.
 | 15 | **A camera on a port's USB 2.0 twin is on a different port, and the placeholder says why** (D4.8) — 2026-10-01 | The native spelling is the key, and one socket answering to two entries would undo the list. Where a passive pairing signal exists the reason points at the cable instead of the generic one. |
 | 16 | **`usb_devices` numbers must run `0..N-1`; a gap is rejected, not filled** (D3) — 2026-10-01 | Every served number is one the operator wrote, so a typo cannot become a phantom camera. Retiring a camera below the highest number means renumbering the entries above it (and rp); a retired camera's entry is never kept to hold a number, because a listed port opens whatever is plugged in there next. |
 | 17 | **The no-list CFW probe opens the camera without `InitQHYCCD`** (D6, option 2) — 2026-10-11 | `IsQHYCCDCFWPlugged` and the slot count answered after a bare open exactly as after an init, on a QHY178M (Linux, warm and fresh from power-up) and on `rig2`'s QHY600M (Windows), and a parked wheel stayed put, so no init is reachable from startup or reload in either path. Deferring the probe to connect (option 1) stays the list path's answer, where the wheel is declared; an unsafe operator command (option 3) was not needed. A model that turns out to need the init loses its wheel on the no-list path — a missing device, logged — and a list declaring the wheel is the remedy. |
+| 18 | **QHY keeps its raw `GetQHYCCDId` as `UniqueID` and `devices` key; no port-based identity** (D4.6, the QHY note after D4.8) — 2026-10-12 | Two cameras share an id only by sharing a model, and so the product id QHY's join matches on: they are look-alikes, refused with or without a list from C5, so no two registered cameras can carry one id. A port-based identity would change nothing a client sees and would cost a `devices`-key and wheel-id migration. |
 
 Nothing in this plan is waiting on an *operator* answer. **Five** things
 are waiting on evidence or an implementation choice, each named at its
@@ -2418,10 +2434,9 @@ and on 2026-10-11 the owner accepted the legs no real hardware has read
   the same across a replug and a reboot, changes when the camera moves
   to another port, and carries the hop when the camera is behind a hub.
   The owner accepted that gap for C2–C4 on 2026-10-11.
-- **C5 — QHY's serial-less identity policy**, waiting on a choice
-  between giving those models a port-based identity (with the matching
-  `devices`-key and shared-CFW-id migration) and documenting the existing
-  `UniqueID` collision as known (D4.6).
+- **C5 — QHY's serial-less identity policy** — settled in C5 (decision
+  18): QHY keeps its raw id, since the join refuses every pair of
+  cameras that could share one (the QHY note after D4.8).
 - **C7 — its relationship to [`focus-model.md`](focus-model.md) S7/D17**,
   which retires rp's capture-based `auto_focus`. C7 must not land before
   that is settled, or the two plans race on one contract (D12).
