@@ -1,0 +1,61 @@
+{"t": 0.0022, "kind": "event", "msg": {"Event": "Version", "Timestamp": 1791927322.281, "Host": "<rig-host>", "Inst": 1, "PHDVersion": "2.6.14", "PHDSubver": "", "OverlapSupport": true, "MsgVersion": 1}}
+{"t": 0.0024, "kind": "event", "msg": {"Event": "AppState", "Timestamp": 1791927322.281, "Host": "<rig-host>", "Inst": 1, "State": "Stopped"}}
+{"t": 1.0022, "kind": "scenario", "name": "path"}
+{"t": 1.0028, "kind": "rpc", "req": {"method": "stop_capture", "id": 1}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 1}, "sent": 1.0023}
+{"t": 1.5033, "kind": "rpc", "req": {"method": "get_connected", "id": 2}, "reply": {"jsonrpc": "2.0", "result": false, "id": 2}, "sent": 1.5029}
+{"t": 1.5456, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791927323.824, "Host": "<rig-host>", "Inst": 1}}
+{"t": 1.7357, "kind": "rpc", "req": {"method": "set_connected", "id": 3, "params": [true]}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 3}, "sent": 1.5034}
+{"t": 3.7372, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791927326.016, "Host": "<rig-host>", "Inst": 1}}
+{"t": 3.738, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 4, "params": {"exposure": 2000, "save": true, "path": "/tmp/phd2probe-wd/path-2000.fits"}}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 4}, "sent": 3.7359}
+{"t": 3.7462, "kind": "state", "state": "Looping"}
+{"t": 5.8144, "kind": "event", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927328.093, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "/tmp/phd2probe-wd/path-2000.fits", "_stat_at_event": 875520}}
+{"t": 5.8145, "kind": "event", "msg": {"Event": "LoopingExposuresStopped", "Timestamp": 1791927328.093, "Host": "<rig-host>", "Inst": 1}}
+{"t": 5.8291, "kind": "state", "state": "Stopped"}
+{"t": 6.1308, "kind": "complete", "after_request_s": 2.0785, "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927328.093, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "/tmp/phd2probe-wd/path-2000.fits", "_stat_at_event": 875520}}
+{"t": 6.131, "kind": "file", "path": "/tmp/phd2probe-wd/path-2000.fits", "size": 875520, "header": ["SIMPLE  =                    T / file does conform to FITS standard", "BITPIX  =                   16 / number of bits per data pixel", "NAXIS   =                    2 / number of data axes", "NAXIS1  =                  752 / length of data axis 1", "NAXIS2  =                  580 / length of data axis 2", "EXTEND  =                    T / FITS dataset may contain extensions", "COMMENT   FITS (Flexible Image Transport System) format is defined in 'Astronomy", "COMMENT   and Astrophysics', volume 376, page 359; bibcode: 2001A&A...376..359H", "BZERO   =                32768 / offset data range to that of unsigned short", "BSCALE  =                    1 / default scaling factor", "EXPOSURE=                   2. / Exposure time in seconds", "DATE    = '2026-10-13T21:35:28.090' / file creation time, UTC", "DATE-OBS= '2026-10-13T21:35:26.017' / Image capture start time, UTC", "CREATOR = 'PHD2 Guiding 2.6.14' / Capture software", "PHDPROFI= 'Simulator'          / PHD2 Equipment Profile", "INSTRUME= 'Simulator'          / Instrument name", "XBINNING=                    1 / Camera X Bin", "YBINNING=                    1 / Camera Y Bin", "CCDXBIN =                    1 / Camera X Bin", "CCDYBIN =                    1 / Camera Y Bin", "XPIXSZ  =                  4.6 / pixel size in microns (with binning)", "YPIXSZ  =                  4.6 / pixel size in microns (with binning)", "GAIN    =                   95 / PHD Gain Value (0-100)", "CAMBPP  =                   16 / Camera resolution, bits per pixel", "SCALE   =             5.930119 / Image scale (arcsec / pixel)", "PIXSCALE=             5.930119 / Image scale (arcsec / pixel)", "PEDESTAL=                    0 / dark subtraction bias value", "SATURATE=                65535 / Data value at which saturation occurs", "END"]}
+{"t": 6.131, "kind": "scenario", "name": "default_dir"}
+{"t": 6.1312, "kind": "rpc", "req": {"method": "stop_capture", "id": 54}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 54}, "sent": 6.131}
+{"t": 6.6316, "kind": "rpc", "req": {"method": "get_connected", "id": 55}, "reply": {"jsonrpc": "2.0", "result": true, "id": 55}, "sent": 6.6313}
+{"t": 6.6327, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791927328.911, "Host": "<rig-host>", "Inst": 1}}
+{"t": 6.6743, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 56, "params": {"exposure": 1000, "save": true}}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 56}, "sent": 6.6317}
+{"t": 6.6747, "kind": "state", "state": "Looping"}
+{"t": 7.7038, "kind": "event", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927329.982, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "<home>/.phd2/save_image_aGcCHc", "_stat_at_event": 875520}}
+{"t": 7.704, "kind": "event", "msg": {"Event": "LoopingExposuresStopped", "Timestamp": 1791927329.982, "Host": "<rig-host>", "Inst": 1}}
+{"t": 7.7225, "kind": "state", "state": "Stopped"}
+{"t": 8.0244, "kind": "complete", "after_request_s": 1.0722, "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927329.982, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "<home>/.phd2/save_image_aGcCHc", "_stat_at_event": 875520}}
+{"t": 8.0244, "kind": "file", "path": "<home>/.phd2/save_image_aGcCHc", "size": 875520}
+{"t": 8.0247, "kind": "scenario", "name": "nosave"}
+{"t": 8.0249, "kind": "rpc", "req": {"method": "stop_capture", "id": 85}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 85}, "sent": 8.0247}
+{"t": 8.5254, "kind": "rpc", "req": {"method": "get_connected", "id": 86}, "reply": {"jsonrpc": "2.0", "result": true, "id": 86}, "sent": 8.525}
+{"t": 8.5269, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791927330.805, "Host": "<rig-host>", "Inst": 1}}
+{"t": 8.5703, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 87, "params": {"exposure": 1000}}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 87}, "sent": 8.5255}
+{"t": 8.5707, "kind": "state", "state": "Looping"}
+{"t": 9.5982, "kind": "event", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927331.876, "Host": "<rig-host>", "Inst": 1, "Success": true}}
+{"t": 9.5985, "kind": "event", "msg": {"Event": "LoopingExposuresStopped", "Timestamp": 1791927331.876, "Host": "<rig-host>", "Inst": 1}}
+{"t": 9.6167, "kind": "state", "state": "Stopped"}
+{"t": 9.9187, "kind": "complete", "after_request_s": 1.0728, "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927331.876, "Host": "<rig-host>", "Inst": 1, "Success": true}}
+{"t": 9.9187, "kind": "scenario", "name": "short"}
+{"t": 9.9191, "kind": "rpc", "req": {"method": "stop_capture", "id": 116}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 116}, "sent": 9.9188}
+{"t": 10.4195, "kind": "rpc", "req": {"method": "get_connected", "id": 117}, "reply": {"jsonrpc": "2.0", "result": true, "id": 117}, "sent": 10.4192}
+{"t": 10.421, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791927332.699, "Host": "<rig-host>", "Inst": 1}}
+{"t": 10.4623, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 118, "params": {"exposure": 1, "save": true, "path": "/tmp/phd2probe-wd/short-1.fits"}}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 118}, "sent": 10.4196}
+{"t": 10.4627, "kind": "state", "state": "Looping"}
+{"t": 10.5063, "kind": "event", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927332.773, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "/tmp/phd2probe-wd/short-1.fits", "_stat_at_event": 875520}}
+{"t": 10.5065, "kind": "event", "msg": {"Event": "LoopingExposuresStopped", "Timestamp": 1791927332.773, "Host": "<rig-host>", "Inst": 1}}
+{"t": 10.5114, "kind": "state", "state": "Stopped"}
+{"t": 10.8131, "kind": "complete", "after_request_s": 0.0868, "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927332.773, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "/tmp/phd2probe-wd/short-1.fits", "_stat_at_event": 875520}}
+{"t": 10.8147, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791927333.093, "Host": "<rig-host>", "Inst": 1}}
+{"t": 10.8156, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 127, "params": {"exposure": 10, "save": true, "path": "/tmp/phd2probe-wd/short-10.fits"}}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 127}, "sent": 10.8132}
+{"t": 10.8351, "kind": "state", "state": "Looping"}
+{"t": 10.8971, "kind": "event", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927333.175, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "/tmp/phd2probe-wd/short-10.fits", "_stat_at_event": 875520}}
+{"t": 10.8972, "kind": "event", "msg": {"Event": "LoopingExposuresStopped", "Timestamp": 1791927333.175, "Host": "<rig-host>", "Inst": 1}}
+{"t": 10.9139, "kind": "state", "state": "Stopped"}
+{"t": 11.2158, "kind": "complete", "after_request_s": 0.0839, "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927333.175, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "/tmp/phd2probe-wd/short-10.fits", "_stat_at_event": 875520}}
+{"t": 11.2173, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791927333.496, "Host": "<rig-host>", "Inst": 1}}
+{"t": 11.2182, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 138, "params": {"exposure": 100, "save": true, "path": "/tmp/phd2probe-wd/short-100.fits"}}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 138}, "sent": 11.2159}
+{"t": 11.2375, "kind": "state", "state": "Looping"}
+{"t": 11.3879, "kind": "event", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927333.666, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "/tmp/phd2probe-wd/short-100.fits", "_stat_at_event": 875520}}
+{"t": 11.3882, "kind": "event", "msg": {"Event": "LoopingExposuresStopped", "Timestamp": 1791927333.666, "Host": "<rig-host>", "Inst": 1}}
+{"t": 11.4055, "kind": "state", "state": "Stopped"}
+{"t": 11.7072, "kind": "complete", "after_request_s": 0.1721, "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927333.666, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "/tmp/phd2probe-wd/short-100.fits", "_stat_at_event": 875520}}
+{"t": 11.7073, "kind": "done"}

@@ -1410,6 +1410,18 @@ ASCOM errors from the Camera:
 HTTP API: guiding operations refused while a capture is in flight return
 `camera_busy` (409), see [Error envelope](#error-envelope).
 
+### Real-hardware validation
+
+- **2026-10-13, field rig (Linux aarch64), PHD2 2.6.14 with its Simulator
+  camera:** ConformU `alpacaprotocol` and `conformance` clean. The branch
+  binary ran as the `rusty-photon` service account under the packaged
+  unit's sandbox, and the `image_dir` sharing recipe passed its acceptance
+  test. The same session made the single-frame measurement this section
+  rests on.
+  [Record](../validation/2026-10-13-phd2-guider-phd2-simulator-linux/README.md).
+  A run with a real guide camera behind PHD2 is still owed: whether
+  `stop_capture` cuts an exposure short is left to PHD2's camera driver.
+
 ### Not in this version
 
 - **Off-host access**: loopback only, see above.
@@ -1486,12 +1498,13 @@ HTTP API: guiding operations refused while a capture is in flight return
 
 ### Phase 9: Camera facade (device-claims plan C6)
 - [x] Measure PHD2's single-frame completion against a live PHD2 (2.6.14, `pier1`)
-- [ ] `SingleFrameComplete` event, `capture_single_frame_to`, and a reply reader that keeps the first of two `error` members
-- [ ] The capture slot in `GuiderOps` and `camera_busy` on the guiding endpoints
-- [ ] `Phd2Camera` on a loopback Alpaca listener, the `camera` config block, config actions
-- [ ] Files, sweep and restart marker
-- [ ] `mock_phd2`: `save`/`path` and `SingleFrameComplete`; BDD `camera_facade.feature`
-- [ ] ConformU against PHD2's simulator; the `image_dir` sharing recipe run with the packaged service account
+- [x] `SingleFrameComplete` event, `capture_single_frame_to`, and a reply reader that keeps the first of two `error` members
+- [x] The capture slot in `GuiderOps` and `camera_busy` on the guiding endpoints
+- [x] `Phd2Camera` on a loopback Alpaca listener, the `camera` config block, config actions
+- [x] Files, sweep and restart marker
+- [x] `mock_phd2`: `save`/`path` and `SingleFrameComplete`; BDD `camera_facade.feature`, `camera_exclusivity.feature`, `camera_config.feature`
+- [x] ConformU against PHD2's simulator; the `image_dir` sharing recipe run with the packaged service account
+- [ ] ConformU with a real guide camera behind PHD2
 
 ## Dependencies
 
