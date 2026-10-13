@@ -1356,6 +1356,13 @@ mod macos {
         serial: "serial_num",
     };
 
+    /// `system_profiler`, named by its path. A bare name is looked up on
+    /// `PATH`, and a process can run with one that leaves out `/usr/sbin`:
+    /// Bazel's test actions do, under `--incompatible_strict_action_env`,
+    /// where the scan would fail as a command that could not start.
+    #[cfg(target_os = "macos")]
+    const SYSTEM_PROFILER: &str = "/usr/sbin/system_profiler";
+
     /// The report the installed macOS lists. That changes only with an
     /// upgrade, which restarts every process, so it is read once per
     /// process and the scans after the first make one query, not two.
@@ -1371,10 +1378,14 @@ mod macos {
     pub fn usb_inventory() -> Result<UsbScan, String> {
         let deadline = super::bounded::DEADLINE;
         let (report, listing_took) = listed_report(deadline)?;
+        debug!(
+            report = report.data_type,
+            "querying system_profiler's USB report"
+        );
         let left = deadline.saturating_sub(listing_took.unwrap_or_default());
         let query_started = Instant::now();
         let output = super::bounded::capture(
-            Command::new("system_profiler").args(["-json", report.data_type]),
+            Command::new(SYSTEM_PROFILER).args(["-json", report.data_type]),
             left,
         )
         .map_err(|e| {
@@ -1407,7 +1418,7 @@ mod macos {
         }
         let started = Instant::now();
         let listing = super::bounded::capture(
-            Command::new("system_profiler").arg("-listDataTypes"),
+            Command::new(SYSTEM_PROFILER).arg("-listDataTypes"),
             deadline,
         )
         .map_err(|e| {
@@ -1418,6 +1429,10 @@ mod macos {
             debug!(error = %e, "system_profiler lists no USB report");
             format!("macOS USB inventory failed: {e}")
         })?;
+        debug!(
+            report = report.data_type,
+            "system_profiler lists this USB report"
+        );
         Ok((REPORT.get_or_init(|| report), Some(started.elapsed())))
     }
 
@@ -4128,15 +4143,20 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
     /// their counts need not agree on a Mac in use.
     ///
     /// It needs a device on the bus to tell an empty scan from a wrong one,
-    /// and says so rather than passing: GitHub's macOS runners carry two
-    /// virtual ones. A device node is counted by its exact class,
+    /// and fails rather than passing on a bus with none. So it is ignored by
+    /// default, which spares a Mac with no USB device, and test.yml's macOS
+    /// job runs it by name on GitHub's runners, which carry two virtual
+    /// devices. A device node is counted by its exact class,
     /// `IOUSBHostDevice`, which leaves out the root-hub nodes an Intel Mac's
     /// plane carries (`AppleUSBRootHubDevice`), which `system_profiler`
-    /// does not list as devices.
+    /// does not list as devices. `ioreg` is named by its path, as the
+    /// collector names `system_profiler`, since a test's `PATH` can leave
+    /// out `/usr/sbin`.
     #[cfg(target_os = "macos")]
     #[test]
+    #[ignore = "needs a USB device on the bus; test.yml's macOS job runs it by name"]
     fn test_the_collector_reads_a_bus_with_devices_as_one() {
-        let ioreg = std::process::Command::new("ioreg")
+        let ioreg = std::process::Command::new("/usr/sbin/ioreg")
             .args(["-p", "IOUSB", "-w0"])
             .output()
             .unwrap();

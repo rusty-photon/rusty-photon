@@ -301,7 +301,10 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   names the same socket on macOS 26. macOS 15's report names Apple's own
   vendor id (`apple_vendor_id`) instead of printing it, and the collector
   reads that as `05ac`; macOS 26's reports a serial a device does not
-  publish as `Not Provided`, which the collector reads as no serial.
+  publish as `Not Provided`, which the collector reads as no serial. It
+  runs `/usr/sbin/system_profiler` by that path rather than looking the name
+  up on `PATH`, which can leave out `/usr/sbin`: Bazel's test actions do,
+  under `--incompatible_strict_action_env`.
 
   The port path is the platform's **native spelling**, not a normalised
   invention: a config that names it names one specific host's hardware and
