@@ -26,7 +26,10 @@ old server's has been dropped and has released the process's SDK resource.
 | ConformU | **4.5.0** build 53834.49ab847 (the latest release), against `http://127.0.0.1:11121/api/v1/{camera,filterwheel}/0` |
 
 Each session switched the Quad 12V output on and started the service about 50 s later,
-past the CFW's power-up homing, which takes about 20 s (C5). Before any result counted, `lsusb`
+past the CFW's power-up homing, which takes about 20 s (qhy-camera's connect contract
+C5). The service logs in UTC and ConformU in local time (PDT, UTC−7): the gate
+exercise ran from 08:09 to 08:14 local (15:09–15:14 UTC), the ConformU session from
+08:33 to 08:36. Before any result counted, `lsusb`
 showed `1618:c179` at SuperSpeed and the service named the real camera, not
 `SIM-QHY178M`. The ConformU session took one Alpaca cycle first (below) before the
 suites ran.
@@ -42,9 +45,8 @@ suites ran.
 
 `ErrorCount` / `IssueCount` / `ConfigurationAlertCount` / `TimingIssuesCount`
 are all **0** in both results files. The 16 informational items are the set every QHY
-record carries. Five camera connects and five filter wheel connects ran during the
-suites, each on the list-registered device, and the service logged no `WARN` or
-`ERROR` of its own. Every such line in its
+record carries. Every connect in the suites was to the list-registered devices, and
+the service logged no `WARN` or `ERROR` of its own. Every such line in its
 log comes from `ascom_alpaca` answering ConformU's deliberately malformed and
 out-of-range requests.
 
@@ -69,8 +71,8 @@ Every cycle passed.
 | 4 | Reload by `config.apply` (a `devices` name for the camera) | `status: applying`, `reload: [devices.QHY178M-222b16468c5966524]`; rebuilt 0.703 s after the apply, and the camera's `Name` then read the new name |
 | 5 | Stop by SIGINT | the process exited 0.052 s after the signal, status 0 |
 | 6 | `doctor --devices` | one row, `pci-0000:c1:00.4-usbv3-0:1.3  QHY178M  QHY178M-222b16468c5966524  —  0`, and the block the ConformU config above was pasted from |
-| 7 | Start with the list | `a listed port holds a QHY camera`, `a declared filter wheel is served on its camera's connection`; `cameras=1 filter_wheels=1 placeholders=0`; no `OpenQHYCCD` or `IsQHYCCDCFWPlugged` before the first connect |
-| 8 | Reload by SIGHUP, on the list | rebuilt 0.050 s after the signal. The list opens nothing to build, where the no-list default probes each camera for a CFW |
+| 7 | Start with the list | `a listed port holds a QHY camera`, `a declared filter wheel is served on its camera's connection`; `cameras=1 filter_wheels=1 placeholders=0` |
+| 8 | Reload by SIGHUP, on the list | rebuilt 0.050 s after the signal. By design the list opens nothing to build (U10), where the no-list default opens each camera to probe it for a CFW |
 | 9 | Stop by SIGINT | exited 0.052 s after the signal, status 0 |
 | 10 | `qhyccd-rs` `examples/enumerate`, service stopped | exit 0 after 1.12 s, `{"index":0,"id":"QHY178M-222b16468c5966524","model":"QHY178M"}` |
 
@@ -78,19 +80,32 @@ The ConformU session, on the list, then started (step 7 again) and passed one cy
 before the suites ran. After them it stopped by SIGINT and exited 0.052 s after the
 signal.
 
-**What this shows of the gate.** A build tries `Sdk::try_new` first. Had an old
-server's `Sdk` still been alive, that try would have answered `SdkInUse`, and the build
-would have logged `waiting for a USB re-scan's QHY SDK check to finish before opening
-the SDK` before waiting in `Sdk::new` for a claim nobody was left to release. No
-session logged that line, or any `WARN` or `ERROR` of the service's own. Every reload
-rebuilt within 1.6 s, including the reload with an open camera, the case where the old
-`Sdk`'s drop has the most to close.
+**What this shows of the gate.** A server drops its `Sdk` when it stops serving, before
+the next build begins (`BoundServer::start`). So at the next build an old `Sdk` can
+still hold the process's claim only if its drop never released it. Had that happened,
+the build's `Sdk::try_new` would have answered `SdkInUse`, and the build would have
+logged `waiting for a USB re-scan's QHY SDK check to finish before opening the SDK`
+and then waited in `Sdk::new` for good. No session logged that line, or any `WARN` or
+`ERROR` of the service's own, and every reload rebuilt within 1.6 s. So a real-SDK
+drop finishes (`ReleaseQHYCCDResource`, after closing any open camera) and releases
+the claim. That includes the reload with an open camera, where the drop has the most
+to close.
 
-**Not exercised:** the wait itself. A build waits only while a failed scan's re-scan
-is still inside its SDK check, which a healthy bus does not produce. The unit tests
-cover it (`qhyccd-rs` `sdk_gate`).
+**Not exercised:** the build's wait itself. A build meets a live `Sdk` only when a
+failed scan's re-scan is still inside its SDK check, which a healthy bus does not
+produce. `qhy-camera`'s
+`take_sdk_tests::a_build_waits_for_a_live_sdk_to_drop_before_opening_its_own` covers
+it, over `qhyccd-rs`'s `sdk_gate` tests.
 
-Log excerpt, step 3:
+**Not shown either:** that the list start opens no camera. The SDK's own trace prints
+only its initialisation, and the service logs no open below a connect, so neither log
+tells an open from none. Even the no-list start's CFW probe, which does open the
+camera, leaves no line. That the list path opens nothing rests on U10 and on the
+BDD scenario *A listed camera is not opened before a client connects it*. There the
+simulated camera has left the bus before the start, so any open would fail, and the
+list registers it all the same.
+
+Log excerpt, step 3 (UTC):
 
 ```
 15:10:53.265329Z DEBUG qhy_camera::camera: camera connected camera=QHY178M-222b16468c5966524
@@ -105,6 +120,7 @@ Log excerpt, step 3:
 ## After the run
 
 Both services were stopped and the Quad 12V output turned off again, the box's
-between-sessions state. The camera was still on the bus at the same device number,
-so nothing had wedged. The operator's own `qhy-camera.json` was untouched: every
+between-sessions state. The camera was still on the bus at the same USB device number
+(`Bus 002 Device 025` in `lsusb`), so it had not re-enumerated, and nothing had
+wedged. The operator's own `qhy-camera.json` was untouched: every
 session ran on a scratch copy, which `config.apply` wrote to (`persisted_to`).

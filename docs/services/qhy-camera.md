@@ -1307,8 +1307,11 @@ which a list replaces with the declaration.
   is one whose server is gone, since a failed scan's server holds no SDK; a
   build that has to wait logs it at `warn!` and waits out one enumeration.
   On a QHY178M + CFW at C4's merge, four reloads, one of them with the camera
-  and wheel connected, each rebuilt within 1.6 s with no wait logged
+  and wheel connected, each found the old server's `Sdk` released and rebuilt
+  within 1.6 s
   ([record](../validation/2026-10-13-qhy-camera-qhy178m-cfw-linux-sdk-gate/README.md)).
+  None of them could meet the wait, which needs a re-scan's try alive when a
+  build starts.
 - **U7. A simulation build stages its scan.** The `qhyccd-rs` simulation
   fabricates a camera no host scan can see, so a `simulation` build never scans
   the host: its scan is a staged inventory (`rusty-photon-doctor-checks`' `mock`
