@@ -281,9 +281,30 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   beside it; the port path is built from sysfs too, below);
   `Get-PnpDevice` plus
   `DEVPKEY_Device_LocationPaths` and `DEVPKEY_Device_BusReportedDeviceDesc`
-  on Windows; `system_profiler -json SPUSBDataType` with `location_id` on
+  on Windows; `system_profiler`'s USB report with its location id on
   macOS. All of it is cached by the kernel at enumeration, so nothing is
   opened, claimed or reset.
+
+  macOS has two USB reports, and each release lists one of them in
+  `system_profiler -listDataTypes`: macOS 15 `SPUSBDataType`, macOS 26
+  `SPUSBHostDataType`. A query for the report a release does not list
+  succeeds with an empty list — measured both ways on GitHub's runners
+  (macOS 15.7.9 and 26.6.2, 2026-10-12), where the unlisted report came back
+  empty beside the listed one's devices — so reading `SPUSBDataType` on
+  macOS 26 would be an empty bus that is not one. The collector therefore
+  reads the listing first and queries the report it names (`SPUSBHostDataType`
+  if a release ever lists both). The listing changes only with an upgrade,
+  which restarts every process, so a process reads it once and its later
+  scans make the one query. The two spell their fields differently
+  (`location_id` / `USBKeyLocationID`, `vendor_id` / `USBDeviceKeyVendorID`,
+  …) but give one device the same location id, so a port written on macOS 15
+  names the same socket on macOS 26. macOS 15's report names Apple's own
+  vendor id (`apple_vendor_id`) instead of printing it, and the collector
+  reads that as `05ac`; macOS 26's reports a serial a device does not
+  publish as `Not Provided`, which the collector reads as no serial. It
+  runs `/usr/sbin/system_profiler` by that path rather than looking the name
+  up on `PATH`, which can leave out `/usr/sbin`: Bazel's test actions do,
+  under `--incompatible_strict_action_env`.
 
   The port path is the platform's **native spelling**, not a normalised
   invention: a config that names it names one specific host's hardware and
@@ -391,8 +412,11 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
       one whose sysfs name is not valid UTF-8, so its port cannot be
       named. A device whose enumeration fails never gets a sysfs entry at
       all, so Linux cannot report one; the kernel log is the only trace.
-    - **macOS** — a device with a vendor and product id but no usable
-      `location_id`. As on Linux, a failed enumeration leaves no node.
+    - **macOS** — a device record (one carrying the report's vendor id
+      key) whose vendor id, product id or location id cannot be read:
+      missing, or not the hex the report prints. It keeps its location
+      when that could be read. As on Linux, a failed enumeration leaves no
+      node.
 
     A device on Windows ARM hosts or behind a USB-over-IP client may
     publish no `PCIROOT(` path while working normally; such hosts are
@@ -411,12 +435,10 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
     device or its driver supplies (the bus-reported description and the
     friendly name) with spaces, so a tab or line break in a product
     string cannot add a field or a line and fail the listing. On macOS it
-    is a report that is not JSON or has no `SPUSBDataType` list — the
-    shape expected from a `system_profiler` that no longer answers for
-    the data type (reported for macOS 26, unverified; an empty list
-    instead would still read as an empty bus). Reading either as a bus
-    with fewer devices would turn a collector failure into absence and
-    cable diagnoses. Every collector used to
+    is a data type listing that names neither USB report, or a report
+    that is not JSON or has no list under the data type it was asked for.
+    Reading either as a bus with fewer devices would turn a collector
+    failure into absence and cable diagnoses. Every collector used to
     fold this into an empty `Vec`, which reads as "no devices" —
     indistinguishable from a genuinely idle bus, and the wrong answer for
     any consumer deciding what hardware it may touch. So the scan reports
@@ -441,7 +463,8 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   `system_profiler` and `powershell.exe`, and an invocation that never
   returns is a third state that no failed-vs-empty distinction helps with —
   a wedged child would hang startup rather than produce a result at all.
-  Both are run under a 10 s deadline through
+  Both are run under a 10 s deadline — on macOS one deadline for the listing
+  and the report together — through
   [`rusty-photon-process`](../crates/rusty-photon-process.md), which drains
   the child's output while it runs (so a large report cannot wedge a healthy
   `system_profiler` on a full pipe), stops the child and anything it started

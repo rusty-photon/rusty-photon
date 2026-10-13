@@ -131,6 +131,15 @@ jobs:
         run: cargo build --locked --workspace --all-features --all-targets
       - name: cargo nextest run
         run: cargo nextest run --locked --workspace --all-features --all-targets
+      # The macOS USB collector's live test is ignored by default: it needs a
+      # device on the bus, which a contributor's Mac may lack and these
+      # runners have (two virtual ones). It runs here by name, and a filter
+      # that matches no test fails the step, so a rename cannot skip it.
+      - name: macOS USB collector against the runner's bus
+        run: >-
+          cargo nextest run --locked --workspace --all-features --all-targets
+          --run-ignored only --no-tests fail
+          -E 'package(rusty-photon-doctor-checks) & test(=facts::tests::test_the_collector_reads_a_bus_with_devices_as_one)'
       - name: cargo test --test bdd (sharded)
         uses: ./.github/actions/bdd-sharded
       - name: Upload OmniSim logs (on failure)
