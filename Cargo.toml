@@ -340,7 +340,7 @@ fluent-syntax = "0.12"
 # `rust-embed-utils` are transitive, so this `=` cannot hold them; they are
 # held in `Cargo.lock` instead — see "Holding a transitive dependency back" in
 # docs/workspace.md. Revisit once `argon2`/`blake2` ship on `digest 0.11`.
-rust-embed = { version = "=8.11.0", features = ["debug-embed"] }
+rust-embed = { version = "=8.13.0", features = ["debug-embed"] }
 # Pinned to 0.13 until the rest of the Fluent stack moves off `unic-langid`.
 # 0.14.0 swapped `LanguageIdentifier` from `unic-langid` to `icu-locid`, but
 # `i18n-embed` 0.16, `i18n-embed-fl` 0.10, and `fluent-bundle` 0.16 still
