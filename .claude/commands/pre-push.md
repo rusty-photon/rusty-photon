@@ -60,8 +60,7 @@ Replace `{PREFIX}` with the worktree name from the Context section above:
 
 | Agent label         | Command                                                                                  |
 |---------------------|------------------------------------------------------------------------------------------|
-| fmt                 | `act --container-name-prefix={PREFIX}- -W .github/workflows/check.yml -j fmt`            |
-| clippy              | `act --container-name-prefix={PREFIX}- -W .github/workflows/check.yml -j clippy`         |
+| clippy (fmt first)  | `act --container-name-prefix={PREFIX}- -W .github/workflows/check.yml -j clippy`         |
 | hack                | `act --container-name-prefix={PREFIX}- -W .github/workflows/check.yml -j hack`           |
 | msrv                | `act --container-name-prefix={PREFIX}- -W .github/workflows/check.yml -j discover-msrv -j msrv` |
 | required            | `act --container-name-prefix={PREFIX}- -W .github/workflows/test.yml -j required`        |
@@ -143,8 +142,8 @@ Print a summary table:
 ```
 | Job          | Result | Category | Error Summary          |
 |--------------|--------|----------|------------------------|
-| fmt          | PASS   | —        | —                      |
 | clippy       | FAIL   | CODE     | unused import in foo.rs|
+| hack         | PASS   | —        | —                      |
 | ...          | ...    | ...      | ...                    |
 
 Total: X passed, Y failed, Z skipped

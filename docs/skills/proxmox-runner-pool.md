@@ -229,8 +229,9 @@ Components:
   start without the file** — a pool with no slots would otherwise sit green
   while every job queued forever. Slots sharing a
   label set are interchangeable — that is how the Linux slots keep
-  `bazel.yml`, `bazel-coverage.yml` and (on dependabot PRs) `repin-bazel.yml`,
-  which fire on the same PR event, from queueing behind each other, and how
+  `bazel.yml`, `bazel-coverage.yml`, check.yml's `stable / clippy` and (on
+  dependabot PRs) `repin-bazel.yml`, which fire on the same PR event, from
+  queueing behind each other, and how
   a second PR event's Linux legs land while the first is still running. How
   many slots there are is host state, not repo state: the slot tables
   declare it (seven Linux slots on the EPYC host since the 2026-09-09

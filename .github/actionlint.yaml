@@ -13,9 +13,10 @@ self-hosted-runner:
     # Pi 5 field rig, ARM64 — the nightly `pi-nightly.yml` runner.
     - raspberry-pi
     # Proxmox ephemeral runner pool (LXC, one VM per job, destroyed after).
-    # Linux venue for `bazel.yml`, `bazel-coverage.yml`, and
-    # `proxmox-runner-test.yml`; reached only on trusted events, see the
-    # `runs-on` expression comments in bazel.yml.
+    # Linux venue for `bazel.yml`, `bazel-coverage.yml`, check.yml's
+    # `stable / clippy`, `repin-bazel.yml`, and `proxmox-runner-test.yml`;
+    # reached only on trusted events, see the `runs-on` expression comments
+    # in bazel.yml.
     - proxmox-ephemeral
     # Windows venue of the same pool.
     - proxmox-ephemeral-windows

@@ -6,14 +6,15 @@
 # nightly beta leg going red every time a group gains a lint.
 #
 # PR-gating (every pull_request + push to main). The per-PR Bazel gate
-# (bazel.yml) runs clippy too (its `bazel clippy` step), but on each target's
-# Bazel feature set rather than Cargo's two passes below. rustfmt has no job
-# here: `cargo fmt --check` is the first step of bazel.yml's Linux leg.
+# (bazel.yml) runs no rustfmt; it does run clippy (its `bazel clippy` step),
+# but on each target's Bazel feature set rather than Cargo's two passes below:
 #   - clippy: stable clippy, `-D warnings`,   (required check: `stable / clippy`)
 #             two passes: `--all-features --all-targets`, then default-features
 #             `--lib --bins` (see the job comment for why that exact shape).
-#             Runs on the self-hosted Linux pool for push-to-main and same-repo
-#             PRs, like bazel.yml's Linux leg (see the job's `runs-on`).
+#             It checks formatting first (`cargo fmt --check`), so rustfmt has
+#             no job of its own. Runs on the self-hosted Linux pool for
+#             push-to-main and same-repo PRs, like bazel.yml's Linux leg (see
+#             the job's `runs-on`).
 #
 # Nightly schedule + workflow_dispatch only:
 #   - clippy-beta: report-only beta clippy (`--cap-lints warn`), one tracking
@@ -36,10 +37,10 @@
 # clippy-os most likely means an OS-cfg'd lint violation landed on main.
 permissions:
   contents: read
-# fmt + clippy run on every PR and on push to main. `clippy-os`, `hack`, and
-# `msrv` run on push to main plus the schedule and manual dispatch;
-# `clippy-beta` runs on the schedule and manual dispatch alone. Each is
-# guarded by its own `if:` below.
+# clippy (with its fmt step) and shellcheck run on every PR and on push to
+# main. `clippy-os`, `hack`, and `msrv` run on push to main plus the schedule
+# and manual dispatch; `clippy-beta` runs on the schedule and manual dispatch
+# alone. Each is guarded by its own `if:` below.
 on:
   push:
     branches: [main]
@@ -62,8 +63,8 @@ concurrency:
 name: check
 jobs:
   shellcheck:
-    # Required PR gate, for the same reason fmt and clippy are: no other check
-    # lints shell. The runner-pool orchestrator is ~1200 lines of bash that
+    # Required PR gate, for the same reason the fmt and clippy checks are: no
+    # other check lints shell. The runner-pool orchestrator is ~1200 lines of bash that
     # deletes storage on a CI host, and several of its worst defects were
     # shell-specific footguns of exactly the kind shellcheck names — a pipeline
     # status read through `!`, an assignment in a `local` reading an outer
@@ -134,6 +135,13 @@ jobs:
     # stable — which is in turn what makes every finding in clippy-beta below
     # new on the beta channel by construction, with no set-differencing needed.
     #
+    # It is also the formatting gate: Bazel runs no rustfmt, so `cargo fmt
+    # --check` runs here, first, on the stable toolchain this job installs for
+    # clippy anyway. Not in bazel.yml's Linux leg: the pool template has no
+    # rustup, so there the check would download a toolchain over the WAN on
+    # every clone, and a formatting slip on main would stop the Bazel run
+    # that writes the LAN cache.
+    #
     # Two passes, because one feature point cannot lint everything (#988):
     # `--all-features` turns `mock` / `simulation` ON, cfg'ing OUT the
     # real-hardware production slices behind `not(feature = "mock")` /
@@ -201,11 +209,27 @@ jobs:
             echo "::add-mask::$RP_LAN_CACHE_URL"
           fi
       - uses: actions/checkout@v7
+      # Two cucumber defaults let a BDD suite exit 0 having proved nothing:
+      # an unmatched step is "skipped", which passes, and the bare `run` /
+      # `filter_run` runners return the summary instead of exiting on it.
+      # Neither is visible in a passing run's output, so a suite that lost
+      # its assertions just stays green. Asserted here over every entry
+      # point at once (docs/skills/testing.md sections 2.7 and 2.9).
+      # Stdlib-only and sub-second, so it runs before the toolchain install.
+      - name: BDD runners fail on skipped steps
+        run: python3 tools/ci/check_bdd_runners.py
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --check
+      # Hosted runners only. The pool's clones would fetch the entry from
+      # GitHub over the operator's WAN, at about the cost of the cold compile
+      # it saves. Today they find nothing (the key's environment hash differs
+      # on the pool, and this job never saves), but that is incidental.
       - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
         with:
           shared-key: linux-stable
           save-if: false
