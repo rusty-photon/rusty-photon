@@ -169,7 +169,7 @@ pub fn placeholder(entry: &UsbDeviceEntry, reason: String) -> PlaceholderCamera<
 ///
 /// Without an open there is no SDK id to show, and no telling which camera a
 /// `devices` override names: its key is the camera's serial, or
-/// `noserial-<index>` when it has none, and both need an open.
+/// `noserial-<port>` when it has none, and telling which needs an open.
 #[must_use]
 pub fn listing(config: &Config, claims: &Claims<'_>, infos: &[CameraInfo]) -> Listing {
     let cameras: Vec<CameraFacts> = infos

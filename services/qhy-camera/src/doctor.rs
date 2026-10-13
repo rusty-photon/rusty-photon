@@ -19,7 +19,9 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
-use rusty_photon_doctor_checks::claims::devices_report;
+use rusty_photon_doctor_checks::claims::{
+    devices_report, usb_devices_checks, BlockEntry, ListEntry,
+};
 use rusty_photon_doctor_checks::report::Check;
 #[cfg(any(windows, test))]
 use rusty_photon_doctor_checks::report::Status;
@@ -114,11 +116,12 @@ fn devices(
     source: &UsbSource,
 ) -> Result<(String, i32), Box<dyn std::error::Error + Send + Sync>> {
     let config = read_effective_config(config_path, &CliOverrides::default())?;
+    let list = configured_list(&config);
     Ok(devices_report(
         NORMALIZER,
         SERVICE,
         config_path,
-        config.check_list(),
+        config.check_list().map(|()| list.as_deref()),
         source.scan(),
         || {
             let cameras = enumerated()?;
@@ -138,22 +141,56 @@ fn enumerated() -> Result<Vec<claims::Enumerated>, String> {
     Ok(claims::enumerate(&sdk))
 }
 
-pub fn run(config: Option<PathBuf>, json: bool) -> ! {
-    let config_path = match rusty_photon_config::resolve_config_path("qhy-camera", config) {
+/// The `usb_devices` entries `config` lists, as the block reproduces them;
+/// `None` without a list.
+fn configured_list(config: &crate::Config) -> Option<Vec<BlockEntry>> {
+    config
+        .usb_devices
+        .as_ref()
+        .map(|list| list.iter().map(ListEntry::block_entry).collect())
+}
+
+/// The `usb-devices.*` checks (U12): the claims a start would make from
+/// `source`'s scan, with no CFW probe, so nothing is opened. None when the
+/// config does not load, which `config.full-shape` reports.
+fn claims_checks(config_path: &Path, source: &UsbSource) -> Vec<Check> {
+    let Ok(config) = load_effective_config(config_path, &CliOverrides::default()) else {
+        return Vec::new();
+    };
+    let list = configured_list(&config);
+    usb_devices_checks(
+        NORMALIZER,
+        SERVICE,
+        list.as_deref(),
+        source.scan(),
+        || {
+            let cameras = enumerated()?;
+            Ok((claims::sdk_cameras(&cameras), cameras))
+        },
+        |claims, cameras| listing(&config, claims, cameras),
+    )
+}
+
+/// The report: `config.full-shape`, `hardware.sdk-devices` and the Windows
+/// installation checks, and the `usb-devices.*` checks of the claims a start
+/// would make from `source`'s scan (U12).
+pub fn run(config: Option<PathBuf>, json: bool, source: &UsbSource) -> ! {
+    let config_path = match rusty_photon_config::resolve_config_path(SERVICE, config) {
         Ok(path) => path,
         Err(error) => {
             eprintln!("doctor: {error}");
             exit(2);
         }
     };
-    let checks = assemble(&config_path, probe());
+    let mut checks = assemble(&config_path, probe());
+    checks.extend(claims_checks(&config_path, source));
     // DR2: offer the download page only in operator-facing text mode, and
     // only when the Windows SDK installation needs attention. JSON mode is
     // machine mode (central doctor's shell-out) and must never prompt.
     #[cfg(windows)]
     let offer_download = !json && needs_operator_attention(&checks);
     let (output, code) = service::emit(
-        "qhy-camera",
+        SERVICE,
         env!("CARGO_PKG_VERSION"),
         &config_path,
         checks,

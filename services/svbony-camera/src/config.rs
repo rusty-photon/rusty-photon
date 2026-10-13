@@ -31,7 +31,7 @@ pub const DEFAULT_PORT: u16 = 11125;
 pub struct Config {
     /// Optional: pins each USB port to an Alpaca device number
     /// (docs/services/svbony-camera.md U1-U9). Absent registers every camera
-    /// the SDK enumerates, in SDK order; `[]` registers none.
+    /// the USB scan places, in port order (U10); `[]` registers none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usb_devices: Option<Vec<UsbDeviceEntry>>,
     /// Optional per-device overrides keyed by SDK serial. Read only with no

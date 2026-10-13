@@ -225,7 +225,7 @@ pub fn placeholder_wheel(entry: &UsbDeviceEntry, reason: String) -> PlaceholderF
             "{SDK_NAME} filter wheel on {} (placeholder)",
             entry.usb_port
         ),
-        claims::placeholder_unique_id(SERVICE, &format!("CFW-{}", entry.usb_port)),
+        claims::placeholder_wheel_unique_id(SERVICE, &entry.usb_port),
         reason,
     ))
 }
@@ -268,23 +268,17 @@ pub fn listing(config: &Config, claims: &Claims<'_>, cameras: &[Enumerated]) -> 
         .collect();
     let mut listing = claims.listing(&facts, list.as_deref(), &overrides);
     listing.wheels = true;
-    // The shared note on a block that renumbers cameras and their wheels
-    // already says to check the wheels' numbers; the text above the block says
-    // why `--devices` cannot see a wheel.
-    let wheel_numbers_noted = listing
-        .notes
-        .iter()
-        .any(|note| note.contains("filter_wheels[].device_number"));
-    if list.is_none() && listing.block.is_some() && !wheel_numbers_noted {
+    if list.is_none() && listing.block.is_some() {
         // A camera whose override names no filters may still have a wheel the
         // service serves now, which the block cannot declare, so the wheel
-        // numbers the block gives may not be the served ones even when no
-        // camera moves.
+        // numbers the block gives may not be the served ones even though no
+        // camera moves. The text above the block says why `--devices` cannot
+        // see a wheel.
         listing.notes.push(
             "Check rp's filter_wheels[].device_number when you paste this block: without a \
-             list the service numbers the wheels its probe finds in SDK order, and --devices \
-             cannot see which cameras have one, so the wheel numbers you declare may not be \
-             the ones it serves now."
+             list the service numbers the wheels its probe finds in their cameras' port \
+             order, and --devices cannot see which cameras have one, so the wheel numbers you \
+             declare may not be the ones it serves now."
                 .to_string(),
         );
     }
@@ -500,10 +494,10 @@ mod tests {
     }
 
     /// `rig2`'s cameras, whose SDK order is not their port order, with the
-    /// QHY600M's filters named: pasting renumbers a camera and its wheel, which
-    /// one note says, not two.
+    /// QHY600M's filters named: one note says to check the wheels, and none
+    /// says the block renumbers, since the no-list default serves port order.
     #[test]
-    fn a_block_that_renumbers_the_wheels_says_to_check_them_once() {
+    fn a_no_list_block_says_to_check_the_wheels_once() {
         let cameras = [
             camera("QHY5III678M-4a94be45b27d3aa79", "QHY5III678M"),
             camera("QHY600M-3b1ea54688eb9f9d7", "QHY600M"),
@@ -533,9 +527,14 @@ mod tests {
             .collect();
         assert_eq!(wheel_notes.len(), 1, "{:#?}", listing.notes);
         assert!(
-            wheel_notes[0].starts_with("Pasting this block renumbers cameras and their filter"),
+            wheel_notes[0].starts_with("Check rp's filter_wheels[].device_number"),
             "{}",
             wheel_notes[0]
+        );
+        assert!(
+            !listing.notes.iter().any(|n| n.contains("renumber")),
+            "{:#?}",
+            listing.notes
         );
     }
 

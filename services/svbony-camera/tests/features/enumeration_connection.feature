@@ -1,11 +1,12 @@
 @serial
 Feature: Camera enumeration and connection lifecycle
   svbony-camera enumerates connected SVBony cameras at startup and registers
-  each as an ASCOM device, index 0, 1, 2, ..., on one port (C0). Unlike ZWO,
+  each the USB scan places as an ASCOM device, index 0, 1, 2, ... in port
+  order, on one port (C0, U10). Unlike ZWO,
   each device's serial (`SVB_CAMERA_INFO.CameraSN`) arrives at enumeration
   time -- no camera needs to be opened first -- so the UniqueID is minted
   directly from enumeration (`SVBONY:{name}:{serial}`, falling back to
-  `SVBONY:{name}:noserial-{index}` for a camera that reports an empty
+  `SVBONY:{name}:noserial-{usb_port}` for a camera that reports an empty
   serial). Connecting a device (C1) opens it via the SDK; a `Connected`
   device that receives another `set_connected(true)` is a no-op (C1b). An
   open failure leaves the device not connected (C2). Disconnecting (C3)

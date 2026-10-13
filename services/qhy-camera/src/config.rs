@@ -29,8 +29,8 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     /// Optional: pins each USB port to an Alpaca device number and declares
     /// the camera's filter wheel (docs/services/qhy-camera.md U1-U10). Absent
-    /// registers every camera the SDK enumerates, in SDK order, with the wheels
-    /// the CFW probe finds; `[]` registers none.
+    /// registers every camera the USB scan places, in port order, with the
+    /// wheels the CFW probe finds (U11); `[]` registers none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usb_devices: Option<Vec<UsbDeviceEntry>>,
     /// Optional per-device overrides keyed by **SDK serial**. A device with no

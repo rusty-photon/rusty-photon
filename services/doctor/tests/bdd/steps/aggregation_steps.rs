@@ -40,6 +40,9 @@ enum StubBehavior {
     /// One Telescope device reporting this `UniqueID` — the fake-mount
     /// probe's subject (`joins.fake-mount`, aggregate.rs).
     UniqueId(String),
+    /// A camera driver serving one camera, and a device-claims placeholder
+    /// for a listed port holding none: this port.
+    CameraAndPlaceholder(String),
 }
 
 async fn management_response(behavior: StubBehavior, headers: HeaderMap) -> (StatusCode, String) {
@@ -65,6 +68,15 @@ async fn management_response(behavior: StubBehavior, headers: HeaderMap) -> (Sta
             serde_json::json!({ "Value": [ {
                 "DeviceName": "Stub Telescope", "DeviceType": "Telescope",
                 "DeviceNumber": 0, "UniqueID": unique_id } ] })
+            .to_string(),
+        ),
+        StubBehavior::CameraAndPlaceholder(port) => (
+            StatusCode::OK,
+            serde_json::json!({ "Value": [
+                { "DeviceName": "Main Imaging", "DeviceType": "Camera",
+                  "DeviceNumber": 0, "UniqueID": "QHY600M-3b1ea54688eb9f9d7" },
+                { "DeviceName": "Guide port", "DeviceType": "Camera",
+                  "DeviceNumber": 1, "UniqueID": format!("placeholder:qhy-camera:{port}") } ] })
             .to_string(),
         ),
     }
@@ -115,6 +127,11 @@ async fn stub_endpoint_authenticated(world: &mut DoctorWorld) {
 #[given(expr = "a stub management endpoint serving a device with UniqueID {string}")]
 async fn stub_endpoint_unique_id(world: &mut DoctorWorld, unique_id: String) {
     start_http_stub(world, StubBehavior::UniqueId(unique_id)).await;
+}
+
+#[given(expr = "a stub management endpoint serving a camera and a placeholder for port {string}")]
+async fn stub_endpoint_placeholder(world: &mut DoctorWorld, port: String) {
+    start_http_stub(world, StubBehavior::CameraAndPlaceholder(port)).await;
 }
 
 /// rp's mount wired at the stub — the fake-mount probe's subject. The

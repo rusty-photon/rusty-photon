@@ -111,10 +111,10 @@ struct DoctorArgs {
     #[arg(long, conflicts_with = "json")]
     devices: bool,
 
-    /// Test-only: the staged USB inventory, as for the service. Only
-    /// `--devices` reads the bus, so it is refused without it.
+    /// Test-only: the staged USB inventory, as for the service — read by the
+    /// report's `usb-devices.*` checks and by `--devices` alike.
     #[cfg(feature = "simulation")]
-    #[arg(long, hide = true, value_name = "PATH", requires = "devices")]
+    #[arg(long, hide = true, value_name = "PATH")]
     usb_inventory: Option<PathBuf>,
 }
 
@@ -127,20 +127,20 @@ fn main() -> ServiceResult {
     let args = Args::parse();
 
     if let Some(Command::Doctor(doctor)) = args.command {
+        #[cfg(feature = "simulation")]
+        let source = match svbony_camera::claims::usb_source_from_flag(doctor.usb_inventory) {
+            Ok(source) => source,
+            Err(error) => {
+                eprintln!("doctor: {error}");
+                std::process::exit(2);
+            }
+        };
+        #[cfg(not(feature = "simulation"))]
+        let source = svbony_camera::UsbSource::Host;
         if doctor.devices {
-            #[cfg(feature = "simulation")]
-            let source = match svbony_camera::claims::usb_source_from_flag(doctor.usb_inventory) {
-                Ok(source) => source,
-                Err(error) => {
-                    eprintln!("doctor: {error}");
-                    std::process::exit(2);
-                }
-            };
-            #[cfg(not(feature = "simulation"))]
-            let source = svbony_camera::UsbSource::Host;
             svbony_camera::doctor::run_devices(doctor.config, &source);
         }
-        svbony_camera::doctor::run(doctor.config, doctor.json);
+        svbony_camera::doctor::run(doctor.config, doctor.json, &source);
     }
 
     // In Windows SCM service mode logs go to the rolling file under

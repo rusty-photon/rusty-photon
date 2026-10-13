@@ -183,8 +183,8 @@ impl ServerBuilder {
     /// [`QhyCameraError::Sdk`] if the SDK cannot be initialized or enumerate,
     /// [`QhyCameraError::Bind`] if the listener cannot be bound or its address
     /// read, and the responder's bind error if the config opts into discovery
-    /// and that port is taken. A failed USB scan is not an error: it is served
-    /// as placeholders and retried (U6).
+    /// and that port is taken. A failed USB scan is not an error: it registers
+    /// placeholders, or no camera without a list, and is retried (U6, U11).
     pub async fn build(mut self) -> std::result::Result<BoundServer, BoxError> {
         // The load refuses a list that breaks a rule; checked again here
         // because registration depends on it — numbers 0..N-1 are what make
@@ -264,22 +264,57 @@ impl ServerBuilder {
         })
     }
 
-    /// The no-list default: open the SDK, probe every enumerated camera for a
-    /// CFW, and register each camera the probe could open, in SDK order, with
-    /// the wheel the probe found on it.
+    /// The no-list default (U11): take the USB scan, open the SDK and
+    /// enumerate it — each camera's id and model, before any open — place each
+    /// SDK camera on a port, probe the placed cameras, and only those, for a
+    /// CFW, and register them in port order, each with the wheel the probe
+    /// found on it. A camera the join cannot place is never opened, and one
+    /// the probe cannot open or close is not registered; both are logged. A
+    /// failed scan opens no SDK and registers nothing; it returns the re-scan
+    /// to run instead (U6).
     async fn register_enumerated(
         &self,
         server: &mut Server,
         injected: Option<qhyccd_rs::Sdk>,
     ) -> std::result::Result<(Registered, Option<qhyccd_rs::Sdk>), BoxError> {
-        // The open and the probe are SDK calls, a USB round trip each, so they
-        // run on the blocking pool.
+        let (scan, sdk, cameras) = self.scan_and_enumerate(injected).await?;
+        let claims = Claims::new(
+            claims::NORMALIZER,
+            claims::SERVICE,
+            scan,
+            claims::sdk_cameras(&cameras),
+        );
+        let mut registered = Registered::default();
+        let Some(mut sdk) = sdk.filter(|_| claims.scan_error().is_none()) else {
+            error!(
+                error = claims.scan_error().unwrap_or_default(),
+                "the USB scan failed; no QHY camera is registered until a re-scan succeeds"
+            );
+            registered.rescan = Some(self.rescan());
+            return Ok((registered, None));
+        };
+        for note in claims.unplaced_notes() {
+            warn!(%note, "without a usb_devices list, a camera the USB scan cannot place is not served");
+        }
+        // The join places only what the SDK enumerated, so every index is in
+        // `cameras`; their ids, in port order, are the cameras to probe.
+        let placed: Vec<String> = claims
+            .placed()
+            .into_iter()
+            .filter_map(|(index, port)| {
+                let camera = cameras.get(index)?;
+                debug!(camera = %camera.id, port, "a QHY camera is placed on a port");
+                Some(camera.id.clone())
+            })
+            .collect();
+        // The probe is SDK calls, a USB round trip each, so it runs on the
+        // blocking pool.
+        let probed = placed.clone();
         let (sdk, unprobed) = tokio::task::spawn_blocking(move || {
-            let mut sdk = take_sdk(injected)?;
-            let unprobed = probe_every_camera(&mut sdk);
-            Ok::<_, QhyCameraError>((sdk, unprobed))
+            let unprobed = probe_cameras(&mut sdk, &probed);
+            (sdk, unprobed)
         })
-        .await??;
+        .await?;
 
         // Ids of cameras that report a filter wheel (each CFW wraps a Camera with
         // the same SDK id). Every discovered CFW is registered — detection is the
@@ -289,12 +324,11 @@ impl ServerBuilder {
         // handle (see SharedCameraConnection).
         let cfw_ids: std::collections::HashSet<String> =
             sdk.filter_wheels().map(|w| w.id().to_string()).collect();
-        let cameras: Vec<qhyccd_rs::Camera> = sdk
-            .cameras()
-            .filter(|camera| !unprobed.contains(camera.id()))
-            .cloned()
+        let cameras: Vec<qhyccd_rs::Camera> = placed
+            .iter()
+            .filter(|id| !unprobed.contains(*id))
+            .filter_map(|id| sdk.cameras().find(|camera| camera.id() == id).cloned())
             .collect();
-        let mut registered = Registered::default();
         for camera in cameras {
             let id = camera.id().to_string();
             let conn = self.register_camera(server, camera, self.config.devices.get(&id));
@@ -313,11 +347,11 @@ impl ServerBuilder {
             }
         }
         if registered.cameras == 0 && unprobed.is_empty() {
-            warn!("no QHY cameras discovered; starting with no Camera devices");
+            warn!("no QHY cameras registered; starting with no Camera devices");
         } else if registered.cameras == 0 {
             warn!(
-                enumerated = unprobed.len(),
-                "every QHY camera the SDK enumerated failed its CFW probe (see the warnings \
+                placed = unprobed.len(),
+                "every QHY camera the USB scan placed failed its CFW probe (see the warnings \
                  above); starting with no Camera devices"
             );
         }
@@ -347,6 +381,13 @@ impl ServerBuilder {
             return Ok((Registered::default(), None));
         }
         let (scan, sdk, cameras) = self.scan_and_enumerate(injected).await?;
+        if let Err(error) = &scan {
+            error!(
+                %error,
+                "the USB scan failed; every listed number is a placeholder until a re-scan \
+                 succeeds"
+            );
+        }
         let claims = Claims::new(
             claims::NORMALIZER,
             claims::SERVICE,
@@ -428,7 +469,7 @@ impl ServerBuilder {
         Ok((registered, sdk))
     }
 
-    /// A list's USB scan, and — only once the scan runs (U6) — the SDK,
+    /// This build's USB scan, and — only once the scan runs (U6) — the SDK,
     /// opened, and its cameras' ids and models, read before any open (U1).
     async fn scan_and_enumerate(
         &self,
@@ -436,16 +477,11 @@ impl ServerBuilder {
     ) -> std::result::Result<Scanned, BoxError> {
         let source = self.usb_source();
         // A collector that panics has failed to scan, like one that errors:
-        // placeholders and a re-scan, never a failed start (U6).
+        // a re-scan, never a failed start (U6).
         let scan = tokio::task::spawn_blocking(move || source.scan())
             .await
             .unwrap_or_else(|error| Err(format!("the USB scan did not finish: {error}")));
-        if let Err(error) = &scan {
-            error!(
-                %error,
-                "the USB scan failed; every listed number is a placeholder until a re-scan \
-                 succeeds"
-            );
+        if scan.is_err() {
             return Ok((scan, None, Vec::new()));
         }
         let (sdk, cameras) = tokio::task::spawn_blocking(move || {
@@ -495,8 +531,8 @@ impl ServerBuilder {
     /// this build's scan and, once that runs, checks the SDK enumerates; on
     /// the first try both pass,
     /// it ends its own server, which the caller rebuilds from the
-    /// configuration it was serving ([`Ended::Rescanned`]), placing the listed
-    /// cameras afresh.
+    /// configuration it was serving ([`Ended::Rescanned`]), placing the
+    /// cameras afresh, listed or not.
     fn rescan(&self) -> Rescan {
         let source = self.usb_source();
         Rescan::new(
@@ -550,7 +586,7 @@ fn resolve_list(
         .collect()
 }
 
-/// A list's USB scan, the SDK it opened when the scan ran, and the cameras
+/// A build's USB scan, the SDK it opened when the scan ran, and the cameras
 /// that SDK enumerated.
 type Scanned = (
     std::result::Result<rusty_photon_doctor_checks::UsbScan, String>,
@@ -588,17 +624,17 @@ fn take_sdk(
     sdk.map_err(|e| QhyCameraError::Sdk(format!("{e:#}")))
 }
 
-/// Probe every enumerated camera for a CFW. Returns the ids of the cameras the
-/// probe could not open or close, which are not registered.
+/// Probe the cameras `ids` names — the ones the join placed — for a CFW, and
+/// no other. Returns the ids of the cameras the probe could not open or close,
+/// which are not registered.
 ///
 /// A camera whose close failed keeps its handle, so this process holds it
 /// without serving it until the SDK is released — on reload or shutdown, when
 /// `Sdk`'s drop closes it again. `still_open` in the warning says which case it
 /// was.
-fn probe_every_camera(sdk: &mut qhyccd_rs::Sdk) -> std::collections::HashSet<String> {
-    let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
+fn probe_cameras(sdk: &mut qhyccd_rs::Sdk, ids: &[String]) -> std::collections::HashSet<String> {
     let mut unprobed = std::collections::HashSet::new();
-    for (id, outcome) in sdk.probe_filter_wheels(&ids) {
+    for (id, outcome) in sdk.probe_filter_wheels(ids) {
         if matches!(outcome, Ok(false)) {
             // A wheel the plug query misses three times is not registered;
             // a usb_devices entry declaring it is the remedy (U10).

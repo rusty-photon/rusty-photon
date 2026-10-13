@@ -41,7 +41,12 @@ Feature: Device claims -- the usb_devices list
   no list, every placed camera numbered in port order, carrying its devices
   override's names and declaring the wheel of a camera whose override names
   its filters; with a list, the list itself (U8). It opens nothing, so it
-  cannot see a filter wheel, and says so.
+  cannot see a filter wheel, and says so. `qhy-camera doctor` judges a list
+  from its own scan (U12): usb-devices.resolve is ok when every listed port
+  resolves, warns for each number a placeholder would hold, and fails if the
+  scan failed; usb-devices.unlisted names each placed camera no entry lists.
+  --devices prints the same checks after the listing. Without a list, see
+  usb_devices_no_list.feature.
 
   The simulation build never scans the host (U7). By default its scan holds
   one working record for the simulated camera, 1618:f178 on port
@@ -381,3 +386,42 @@ Feature: Device claims -- the usb_devices list
     When doctor --devices runs
     Then the doctor exits with code 1
     And the doctor output says "the USB scan failed: powershell.exe did not answer within 10 s"
+
+  Scenario: doctor finds every listed port resolving to a camera
+    Given the configuration lists these USB devices:
+      | device_number | usb_port            |
+      | 0             | simulated-usbv3-0:1 |
+    When the doctor subcommand runs on the configuration
+    Then the doctor exits with code 0
+    And the doctor's usb-devices.resolve check is ok saying "1 listed port resolves, no placeholders"
+    And the doctor reports no usb-devices.unlisted check
+
+  Scenario: doctor warns of a listed number a placeholder would hold, and names the camera left out
+    Given the configuration lists these USB devices:
+      | device_number | usb_port            |
+      | 0             | simulated-usbv3-0:9 |
+    When the doctor subcommand runs on the configuration
+    Then the doctor exits with code 0
+    And the doctor's usb-devices.resolve check warns saying "device 0 (simulated-usbv3-0:9) would be a placeholder: no working camera is enumerated on simulated-usbv3-0:9"
+    And the doctor's usb-devices.unlisted check is ok saying "simulated-usbv3-0:1 (QHY178M-Simulated) is on the bus and not listed"
+
+  Scenario: doctor fails usb-devices.resolve when the USB scan failed
+    Given the staged USB inventory:
+      """
+      { "usb_unavailable": "powershell.exe did not answer within 10 s" }
+      """
+    And the configuration lists these USB devices:
+      | device_number | usb_port            |
+      | 0             | simulated-usbv3-0:1 |
+    When the doctor subcommand runs on the configuration
+    Then the doctor exits with code 1
+    And the doctor's usb-devices.resolve check fails saying "the USB scan failed: powershell.exe did not answer within 10 s"
+
+  Scenario: doctor --devices closes the listing with the checks
+    Given the configuration lists these USB devices:
+      | device_number | usb_port            |
+      | 0             | simulated-usbv3-0:9 |
+    When doctor --devices runs
+    Then the doctor exits with code 0
+    And the doctor output says "warn usb-devices.resolve: device 0 (simulated-usbv3-0:9) would be a placeholder"
+    And the doctor output says "ok   usb-devices.unlisted: simulated-usbv3-0:1 (QHY178M-Simulated) is on the bus and not listed"

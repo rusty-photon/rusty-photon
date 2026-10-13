@@ -1,5 +1,5 @@
 //! svbony-camera's half of the device claims (docs/services/svbony-camera.md
-//! U1-U9).
+//! U1-U11).
 //!
 //! Which SDK models it knows on the bus (the normalizer, U2), its simulated
 //! USB scan (U7), what `doctor --devices` can say about each camera without
@@ -147,12 +147,13 @@ pub fn placeholder(
     })
 }
 
-/// The key a camera's `devices` override is read under: its `CameraSN`, or
-/// `noserial-<index>` for a camera that reports none.
+/// The key a camera's `devices` override is read under, and the last field of
+/// its `UniqueID`: its `CameraSN`, or `noserial-<port>` for a camera that
+/// reports none, `port` being the one the join placed it on.
 #[must_use]
-pub fn override_key(info: &CameraInfo, index: usize) -> String {
+pub fn override_key(info: &CameraInfo, port: &str) -> String {
     if info.serial.is_empty() {
-        format!("noserial-{index}")
+        format!("noserial-{port}")
     } else {
         info.serial.clone()
     }
@@ -162,17 +163,18 @@ pub fn override_key(info: &CameraInfo, index: usize) -> String {
 /// SDK's cameras (U8).
 ///
 /// `CameraSN` is free at enumeration, so it is the SDK id and, with
-/// `noserial-<index>` for a camera that reports none, the key each camera's
-/// `devices` override is matched by.
+/// `noserial-<port>` for a camera that reports none, the key each placed
+/// camera's `devices` override is matched by.
 #[must_use]
 pub fn listing(config: &Config, claims: &Claims<'_>, infos: &[CameraInfo]) -> Listing {
+    let ports: BTreeMap<usize, &str> = claims.placed().into_iter().collect();
     let cameras: Vec<CameraFacts> = infos
         .iter()
         .enumerate()
         .map(|(index, info)| CameraFacts {
             model: info.friendly_name.clone(),
             sdk_id: (!info.serial.is_empty()).then(|| info.serial.clone()),
-            override_key: Some(override_key(info, index)),
+            override_key: ports.get(&index).map(|port| override_key(info, port)),
         })
         .collect();
     let list: Option<Vec<BlockEntry>> = config
@@ -255,9 +257,15 @@ mod tests {
     }
 
     #[test]
-    fn a_camera_without_a_serial_is_keyed_by_its_index() {
-        assert_eq!(override_key(&info("SV605CC", ""), 2), "noserial-2");
-        assert_eq!(override_key(&info("SV605CC", "SN"), 2), "SN");
+    fn a_camera_without_a_serial_is_keyed_by_its_port() {
+        assert_eq!(
+            override_key(&info("SV605CC", ""), "simulated-usbv3-0:2"),
+            "noserial-simulated-usbv3-0:2"
+        );
+        assert_eq!(
+            override_key(&info("SV605CC", "SN"), "simulated-usbv3-0:2"),
+            "SN"
+        );
     }
 
     #[test]
@@ -296,15 +304,12 @@ mod tests {
         assert_eq!(block[1].usb_port, "1-4.10");
         assert_eq!(block[1].name, None);
         assert_eq!(
-            listing.rows[0].device, "1",
-            "the SDK-order number it is served at"
+            listing.rows[0].device, "0",
+            "without a list it is served at its place in port order"
         );
         assert!(
-            listing
-                .notes
-                .iter()
-                .any(|n| n.starts_with("Pasting this block renumbers")),
-            "{:?}",
+            !listing.notes.iter().any(|n| n.contains("renumber")),
+            "the block pins the numbers served now: {:?}",
             listing.notes
         );
         assert!(

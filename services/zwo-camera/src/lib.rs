@@ -95,14 +95,14 @@ use zwo_rs::CameraInfo;
 
 use crate::backend::{CameraHandle, HeldCameras, ZwoCameraHandle};
 
-/// One camera discovered at enumeration: its index, [`CameraInfo`], the bare
-/// SDK `serial` (the key for `devices` config overrides), and the
-/// serial-derived ASCOM `UniqueID`.
+/// One camera placed on a port and opened for its identity: its index,
+/// [`CameraInfo`], the bare SDK `serial` (the key for `devices` config
+/// overrides), and the serial-derived ASCOM `UniqueID`.
 #[derive(Debug, Clone)]
 struct EnumeratedCamera {
     index: usize,
     info: CameraInfo,
-    /// The hardware serial, or the `noserial-{index}` stand-in; the key the
+    /// The hardware serial, or the `noserial-{port}` stand-in; the key the
     /// `devices` overrides use.
     serial: String,
     /// The hardware serial alone, which an open matches its camera by (C6).
@@ -239,9 +239,10 @@ impl ServerBuilder {
     ///
     /// # Errors
     /// Returns [`ZwoCameraError`] when the list breaks a rule, SDK
-    /// enumeration fails — or, with no list, a camera cannot be opened for its
-    /// serial — or the listener cannot bind the configured port. A failed USB
-    /// scan is not an error: it is served as placeholders and retried (U6).
+    /// enumeration fails, or the listener cannot bind the configured port. A
+    /// camera that cannot be opened for its serial costs only itself (U5,
+    /// U10), and a failed USB scan is not an error: it registers placeholders,
+    /// or no camera without a list, and is retried (U6, U10).
     pub async fn build(self) -> Result<BoundServer, ZwoCameraError> {
         // The load refuses a list that breaks a rule; checked again here
         // because registration depends on it — numbers 0..N-1 are what make
@@ -251,11 +252,7 @@ impl ServerBuilder {
         let mut server = Server::new(CargoServerInfo!());
         let held = HeldCameras::default();
         let registered = match &self.config.usb_devices {
-            None => Registered {
-                cameras: self.register_enumerated(&mut server, &held).await?,
-                placeholders: 0,
-                rescan: None,
-            },
+            None => self.register_enumerated(&mut server, &held).await?,
             Some(list) => self.register_list(&mut server, &held, list).await?,
         };
 
@@ -328,32 +325,71 @@ impl ServerBuilder {
         })
     }
 
-    /// The no-list default: every camera the SDK enumerates, in SDK order,
-    /// each opened briefly for its serial. Returns how many were registered.
+    /// The no-list default (U10): take the USB scan, enumerate the SDK, place
+    /// each SDK camera on a port, open each placed camera — uninitialised, for
+    /// its serial — and register them in port order. A camera the join cannot
+    /// place is never opened, and one whose open fails is not registered; both
+    /// are logged. A failed scan registers no camera; it returns the re-scan to
+    /// run instead (U6).
     async fn register_enumerated(
         &self,
         server: &mut Server,
         held: &HeldCameras,
-    ) -> Result<usize, ZwoCameraError> {
-        let cameras = if self.force_empty {
-            Vec::new()
-        } else {
-            let sdk = zwo_rs::Sdk::new()?;
-            #[cfg(feature = "simulation")]
-            let sdk = self.simulated(sdk);
-            enumerate_cameras(sdk).await?
-        };
-        if cameras.is_empty() {
-            warn!("no ASI cameras discovered; starting with no Camera devices");
+    ) -> Result<Registered, ZwoCameraError> {
+        let scan = self.scan().await;
+        let sdk = zwo_rs::Sdk::new()?;
+        #[cfg(feature = "simulation")]
+        let sdk = self.simulated(sdk);
+        let force_empty = self.force_empty;
+        let placed = tokio::task::spawn_blocking(move || place_enumerated(&sdk, scan, force_empty))
+            .await??;
+
+        let mut registered = Registered::default();
+        if let Some(error) = &placed.scan_error {
+            error!(
+                %error,
+                "the USB scan failed; no ASI camera is registered until a re-scan succeeds"
+            );
+            registered.rescan = Some(self.rescan());
+            return Ok(registered);
         }
-        for cam in &cameras {
-            // `devices` overrides are keyed by the bare SDK serial (matching the
-            // config-actions `devices.{serial}` paths), NOT the prefixed
-            // `ZWO:{name}:{serial}` UniqueID — looking up by UniqueID would never
-            // match a user's serial-keyed entry.
-            self.register_camera(server, held, cam, self.config.devices.get(&cam.serial))?;
+        for note in &placed.unplaced {
+            warn!(%note, "without a usb_devices list, a camera the USB scan cannot place is not served");
         }
-        Ok(cameras.len())
+        for (port, outcome) in &placed.cameras {
+            match outcome {
+                // `devices` overrides are keyed by the bare SDK serial (matching
+                // the config-actions `devices.{serial}` paths), NOT the prefixed
+                // `ZWO:{name}:{serial}` UniqueID — looking up by UniqueID would
+                // never match a user's serial-keyed entry.
+                Ok(cam) => {
+                    debug!(
+                        camera = cam.index,
+                        port, "an ASI camera is placed on a port"
+                    );
+                    self.register_camera(server, held, cam, self.config.devices.get(&cam.serial))?;
+                    registered.cameras = registered.cameras.saturating_add(1);
+                }
+                Err(error) => warn!(
+                    port,
+                    %error,
+                    "an ASI camera that cannot be opened for its serial is not served"
+                ),
+            }
+        }
+        if registered.cameras == 0 {
+            warn!("no ASI cameras registered; starting with no Camera devices");
+        }
+        Ok(registered)
+    }
+
+    /// This build's USB scan. A collector that panics has failed to scan, like
+    /// one that errors: a re-scan, never a failed start (U6).
+    async fn scan(&self) -> Result<UsbScan, String> {
+        let source = self.usb_source();
+        tokio::task::spawn_blocking(move || source.scan())
+            .await
+            .unwrap_or_else(|error| Err(format!("the USB scan did not finish: {error}")))
     }
 
     /// A `usb_devices` list: take the USB scan, enumerate the SDK, place each
@@ -376,12 +412,7 @@ impl ServerBuilder {
             );
             return Ok(Registered::default());
         }
-        let source = self.usb_source();
-        // A collector that panics has failed to scan, like one that errors:
-        // placeholders and a re-scan, never a failed start (U6).
-        let scan = tokio::task::spawn_blocking(move || source.scan())
-            .await
-            .unwrap_or_else(|error| Err(format!("the USB scan did not finish: {error}")));
+        let scan = self.scan().await;
         if let Err(error) = &scan {
             error!(
                 %error,
@@ -483,7 +514,7 @@ impl ServerBuilder {
     /// this build's scan and, once that runs, enumerates the SDK; on the first
     /// try both pass, it ends its own server, which the caller rebuilds from
     /// the configuration it was serving ([`Ended::Rescanned`]) — placing the
-    /// listed cameras afresh.
+    /// cameras afresh, listed or not.
     fn rescan(&self) -> Rescan {
         let source = self.usb_source();
         Rescan::new(
@@ -542,8 +573,8 @@ fn place_list(
         scan,
         claims::sdk_cameras(&infos),
     );
-    let resolved = resolve_list(&claims, &infos, entries, |index, info| {
-        identity(&camera_list, index, info)
+    let resolved = resolve_list(&claims, &infos, entries, |index, info, port| {
+        identity(&camera_list, index, info, port)
     });
     drop(camera_list);
     let unlisted = claims
@@ -567,7 +598,7 @@ fn resolve_list(
     claims: &Claims<'_>,
     infos: &[CameraInfo],
     entries: Vec<UsbDeviceEntry>,
-    mut open: impl FnMut(usize, &CameraInfo) -> Result<EnumeratedCamera, zwo_rs::Error>,
+    mut open: impl FnMut(usize, &CameraInfo, &str) -> Result<EnumeratedCamera, zwo_rs::Error>,
 ) -> Vec<(UsbDeviceEntry, Result<EnumeratedCamera, String>)> {
     entries
         .into_iter()
@@ -580,7 +611,7 @@ fn resolve_list(
                         ))
                     },
                     |info| {
-                        open(index, info).map_err(|error| {
+                        open(index, info, &entry.usb_port).map_err(|error| {
                             claims.open_failure(&entry.usb_port, &error.to_string())
                         })
                     },
@@ -588,6 +619,71 @@ fn resolve_list(
                 Resolution::Placeholder(reason) => Err(reason),
             };
             (entry, outcome)
+        })
+        .collect()
+}
+
+/// What the no-list default found at one start or reload (U10).
+struct PlacedDefault {
+    /// Each camera the join placed, in port order, with its port: opened for
+    /// its identity, or the SDK's error.
+    cameras: Vec<(String, Result<EnumeratedCamera, String>)>,
+    /// What the join could not place, one line each, for the log.
+    unplaced: Vec<String>,
+    /// Why the USB scan could not run, when it could not.
+    scan_error: Option<String>,
+}
+
+/// Enumerate the SDK, place each camera on a port, and open each placed camera
+/// for its identity — all under one hold of the SDK's camera list, so no
+/// rescan can renumber it between the index the join chose and the camera
+/// opened (U10). A failed scan enumerates nothing; so does `force_empty`.
+/// Blocking.
+fn place_enumerated(
+    sdk: &zwo_rs::Sdk,
+    scan: Result<UsbScan, String>,
+    force_empty: bool,
+) -> Result<PlacedDefault, zwo_rs::Error> {
+    let camera_list = sdk.camera_list();
+    let infos = if scan.is_err() || force_empty {
+        Vec::new()
+    } else {
+        camera_list.rescan()?
+    };
+    let claims = Claims::new(
+        claims::NORMALIZER,
+        claims::SERVICE,
+        scan,
+        claims::sdk_cameras(&infos),
+    );
+    let cameras = open_placed(&claims, &infos, |index, info, port| {
+        identity(&camera_list, index, info, port)
+    });
+    drop(camera_list);
+    Ok(PlacedDefault {
+        cameras,
+        unplaced: claims.unplaced_notes(),
+        scan_error: claims.scan_error().map(str::to_string),
+    })
+}
+
+/// Each camera the join placed, in port order, opened through `open` for its
+/// identity — or the SDK's error, that camera's alone (U10). `open` is called
+/// for the placed cameras and no other.
+fn open_placed(
+    claims: &Claims<'_>,
+    infos: &[CameraInfo],
+    mut open: impl FnMut(usize, &CameraInfo, &str) -> Result<EnumeratedCamera, zwo_rs::Error>,
+) -> Vec<(String, Result<EnumeratedCamera, String>)> {
+    claims
+        .placed()
+        .into_iter()
+        .filter_map(|(index, port)| {
+            let info = infos.get(index)?;
+            Some((
+                port.to_string(),
+                open(index, info, port).map_err(|error| error.to_string()),
+            ))
         })
         .collect()
 }
@@ -654,54 +750,23 @@ impl BoundServer {
     }
 }
 
-/// Enumerate connected ASI cameras on the blocking thread pool, minting each
-/// device's serial-derived `UniqueID` — the no-list default (C0).
-///
-/// `ASIGetSerialNumber` requires an *open* camera, so each is opened briefly via
-/// [`zwo_rs::CameraList::open_uninitialised`] to read its serial and then closed —
-/// that call deliberately never runs `ASIInitCamera` (which resets controls, e.g.
-/// the cooler, to SDK defaults), so this passive path touches no camera state (the
-/// per-device connect handshake, which does initialise, happens later on
-/// `set_connected(true)`; see contract C5). The ASI SDK is blocking C FFI, so
-/// every SDK call funnels through [`tokio::task::spawn_blocking`] (design doc
-/// "Concurrency"), and the enumeration and the opens are one hold of the SDK's
-/// camera list, so no rescan renumbers it in between.
-///
-/// A camera that cannot even be *opened* (`open_uninitialised` itself fails —
-/// e.g. removed, or wedged) fails this whole enumeration via `?`; with a
-/// `usb_devices` list the same failure costs only that camera's number (U5).
-/// Only a post-open [`serial`](zwo_rs::UninitialisedCamera::serial) failure (no
-/// serial, no flash id) is downgraded here, to the position-based fallback.
-async fn enumerate_cameras(sdk: zwo_rs::Sdk) -> Result<Vec<EnumeratedCamera>, ZwoCameraError> {
-    let cameras =
-        tokio::task::spawn_blocking(move || -> Result<Vec<EnumeratedCamera>, zwo_rs::Error> {
-            let list = sdk.camera_list();
-            let infos = list.rescan()?;
-            let cameras = infos
-                .iter()
-                .enumerate()
-                .map(|(index, info)| identity(&list, index, info))
-                .collect();
-            drop(list);
-            cameras
-        })
-        .await??;
-    debug!(count = cameras.len(), "enumerated ASI cameras");
-    Ok(cameras)
-}
-
 /// Open the camera at `index` in `list` briefly, uninitialised, to mint its
 /// identity (C0, C5): the camera is closed again when the read is done.
-/// Blocking.
+/// `ASIGetSerialNumber` requires an *open* camera, and
+/// [`zwo_rs::CameraList::open_uninitialised`] deliberately never runs
+/// `ASIInitCamera` (which resets controls, e.g. the cooler, to SDK defaults),
+/// so this passive path touches no camera state. Blocking.
 ///
 /// # Errors
 /// The SDK's error when the camera cannot be opened at all. A camera that
 /// opens but exposes no serial or flash id is not an error: it takes the
-/// position-based fallback, logged at `warn!`.
+/// fallback built from `port`, the one the join placed it on, logged at
+/// `warn!`.
 fn identity(
     list: &zwo_rs::CameraList<'_>,
     index: usize,
     info: &CameraInfo,
+    port: &str,
 ) -> Result<EnumeratedCamera, zwo_rs::Error> {
     // The camera drops at the end of the block → `ASICloseCamera`.
     let serial_result = {
@@ -710,12 +775,13 @@ fn identity(
     };
     if let Err(ref e) = serial_result {
         warn!(
-            camera = %info.name, error = %e,
-            "camera exposes no hardware serial or flash ID; using a position-based identity"
+            camera = %info.name, port, error = %e,
+            "camera exposes no hardware serial or flash ID; using an identity built from its \
+             USB port"
         );
     }
     let hardware_serial = serial_result.as_ref().ok().cloned();
-    let (serial, unique_id) = mint_identity(serial_result, &info.name, index);
+    let (serial, unique_id) = mint_identity(serial_result, &info.name, port);
     Ok(EnumeratedCamera {
         index,
         info: info.clone(),
@@ -729,18 +795,18 @@ fn identity(
 ///
 /// The serial is the camera's hardware serial (`ASIGetSerialNumber`) or, failing
 /// that, its programmed flash ID (`ASIGetID`). Older ASI models (e.g. the
-/// ASI1600) expose **neither** and fail the read. Rather than make the whole
-/// service unstartable for such a camera, fall back to a stable position-based
-/// identity (`noserial-{index}`): unique per enumeration slot and stable across
-/// reconnects for the common single-camera case. The only ambiguity is two
-/// serial-less cameras of the same model reordered on the bus, which could swap
-/// identities — an acceptable trade for the camera working at all.
+/// ASI1600) expose **neither** and fail the read. Rather than make the service
+/// unable to serve such a camera, fall back to an identity built from `port`,
+/// the one the join placed it on (`noserial-{port}`): every camera this service
+/// registers has one, and it holds across bus reordering and replug. It follows
+/// the socket, so the camera moved to another port is another device — what a
+/// `usb_devices` list asks the operator to edit anyway.
 fn mint_identity(
     serial: Result<String, zwo_rs::Error>,
     name: &str,
-    index: usize,
+    port: &str,
 ) -> (String, String) {
-    let serial = serial.unwrap_or_else(|_| format!("noserial-{index}"));
+    let serial = serial.unwrap_or_else(|_| format!("noserial-{port}"));
     let unique_id = format!("ZWO:{}:{}", name.replace(' ', "-"), serial);
     (serial, unique_id)
 }
@@ -752,18 +818,22 @@ mod identity_tests {
     #[test]
     fn mint_identity_uses_hardware_serial_when_present() {
         let (serial, unique_id) =
-            mint_identity(Ok("1915d5081b090900".to_owned()), "ZWO ASI178MM", 0);
+            mint_identity(Ok("1915d5081b090900".to_owned()), "ZWO ASI178MM", "1-4.2");
         assert_eq!(serial, "1915d5081b090900");
         assert_eq!(unique_id, "ZWO:ZWO-ASI178MM:1915d5081b090900");
     }
 
     #[test]
-    fn mint_identity_falls_back_to_position_when_no_serial() {
+    fn mint_identity_falls_back_to_the_port_when_no_serial() {
         // Older models (e.g. the ASI1600) report neither a serial nor a flash ID.
         let err = Err(zwo_rs::Error::Asi(zwo_rs::AsiError::GeneralError));
-        let (serial, unique_id) = mint_identity(err, "ZWO ASI1600MM-Cool", 0);
-        assert_eq!(serial, "noserial-0");
-        assert_eq!(unique_id, "ZWO:ZWO-ASI1600MM-Cool:noserial-0");
+        let (serial, unique_id) =
+            mint_identity(err, "ZWO ASI1600MM-Cool", "pci-0000:c1:00.4-usbv3-0:1.4");
+        assert_eq!(serial, "noserial-pci-0000:c1:00.4-usbv3-0:1.4");
+        assert_eq!(
+            unique_id,
+            "ZWO:ZWO-ASI1600MM-Cool:noserial-pci-0000:c1:00.4-usbv3-0:1.4"
+        );
     }
 }
 
@@ -843,7 +913,7 @@ mod list_tests {
     fn only_the_cameras_on_listed_ports_are_opened() {
         let (claims, infos) = two_cameras();
         let mut opened = Vec::new();
-        let resolved = resolve_list(&claims, &infos, vec![entry(0, "p2")], |index, info| {
+        let resolved = resolve_list(&claims, &infos, vec![entry(0, "p2")], |index, info, _| {
             opened.push(index);
             Ok(opened_as(index, info))
         });
@@ -857,7 +927,7 @@ mod list_tests {
     fn a_port_with_no_camera_is_never_opened() {
         let (claims, infos) = two_cameras();
         let mut opened = Vec::new();
-        let resolved = resolve_list(&claims, &infos, vec![entry(0, "p9")], |index, info| {
+        let resolved = resolve_list(&claims, &infos, vec![entry(0, "p9")], |index, info, _| {
             opened.push(index);
             Ok(opened_as(index, info))
         });
@@ -876,7 +946,7 @@ mod list_tests {
             &claims,
             &infos,
             vec![entry(0, "p1"), entry(1, "p2")],
-            |index, info| {
+            |index, info, _| {
                 if index == 0 {
                     Err(zwo_rs::Error::Asi(zwo_rs::AsiError::GeneralError))
                 } else {
@@ -906,7 +976,7 @@ mod list_tests {
             claims::sdk_cameras(&infos),
         );
         let mut opened = Vec::new();
-        let resolved = resolve_list(&claims, &infos, vec![entry(0, "p1")], |index, info| {
+        let resolved = resolve_list(&claims, &infos, vec![entry(0, "p1")], |index, info, _| {
             opened.push(index);
             Ok(opened_as(index, info))
         });
@@ -916,6 +986,96 @@ mod list_tests {
             reason.starts_with("the USB scan failed: powershell.exe timed out."),
             "{reason}"
         );
+    }
+
+    /// The dev box's three cameras as `zwo-camera doctor --devices` read them:
+    /// SDK order ASI1600MM-Cool, ASI120MC-S, ASI178MM; port order the reverse.
+    fn three_cameras() -> (Claims<'static>, Vec<CameraInfo>) {
+        let infos = vec![
+            info("ZWO ASI1600MM-Cool"),
+            info("ZWO ASI120MC-S"),
+            info("ZWO ASI178MM"),
+        ];
+        let claims = Claims::new(
+            claims::NORMALIZER,
+            claims::SERVICE,
+            Ok(UsbScan {
+                devices: vec![
+                    record("1603", "pci-0000:c1:00.4-usbv3-0:1.4"),
+                    record("120e", "pci-0000:c1:00.4-usbv2-0:1.2.2"),
+                    record("178c", "pci-0000:c1:00.4-usbv2-0:1.2.1"),
+                ],
+                faults: Vec::new(),
+            }),
+            claims::sdk_cameras(&infos),
+        );
+        (claims, infos)
+    }
+
+    #[test]
+    fn without_a_list_the_placed_cameras_are_opened_in_port_order() {
+        let (claims, infos) = three_cameras();
+        let mut opened = Vec::new();
+        let placed = open_placed(&claims, &infos, |index, info, port| {
+            opened.push((index, port.to_string()));
+            Ok(opened_as(index, info))
+        });
+        assert_eq!(
+            opened,
+            vec![
+                (2, "pci-0000:c1:00.4-usbv2-0:1.2.1".to_string()),
+                (1, "pci-0000:c1:00.4-usbv2-0:1.2.2".to_string()),
+                (0, "pci-0000:c1:00.4-usbv3-0:1.4".to_string()),
+            ],
+            "each opened once, with the port its identity is built from"
+        );
+        let indices: Vec<usize> = placed
+            .iter()
+            .map(|(_, cam)| cam.as_ref().unwrap().index)
+            .collect();
+        assert_eq!(indices, vec![2, 1, 0], "registered in port order");
+    }
+
+    #[test]
+    fn without_a_list_a_camera_the_join_cannot_place_is_never_opened() {
+        let infos = vec![info("ZWO ASI1600MM-Cool")];
+        let claims = Claims::new(
+            claims::NORMALIZER,
+            claims::SERVICE,
+            Ok(UsbScan::default()),
+            claims::sdk_cameras(&infos),
+        );
+        let mut opened = Vec::new();
+        let placed = open_placed(&claims, &infos, |index, info, _| {
+            opened.push(index);
+            Ok(opened_as(index, info))
+        });
+        assert_eq!(opened, Vec::<usize>::new());
+        assert!(placed.is_empty());
+    }
+
+    #[test]
+    fn without_a_list_a_camera_that_cannot_be_opened_costs_only_itself() {
+        let (claims, infos) = three_cameras();
+        let placed = open_placed(&claims, &infos, |index, info, _| {
+            if index == 1 {
+                Err(zwo_rs::Error::Asi(zwo_rs::AsiError::GeneralError))
+            } else {
+                Ok(opened_as(index, info))
+            }
+        });
+        assert_eq!(placed.len(), 3);
+        assert!(
+            placed[1]
+                .1
+                .as_ref()
+                .unwrap_err()
+                .starts_with("ASI camera SDK error: general error"),
+            "{:?}",
+            placed[1]
+        );
+        assert_eq!(placed[0].1.as_ref().unwrap().index, 2);
+        assert_eq!(placed[2].1.as_ref().unwrap().index, 0);
     }
 }
 
@@ -942,11 +1102,15 @@ mod simulation_tests {
     /// `devices` overrides are keyed by the bare SDK serial, not the prefixed
     /// `ZWO:{name}:{serial}` `UniqueID`. The simulated camera's serial resolves an
     /// override entry; the `UniqueID` does not.
-    #[tokio::test]
-    async fn device_overrides_are_keyed_by_serial_not_unique_id() {
-        let cam = &enumerate_cameras(zwo_rs::Sdk::new().unwrap())
-            .await
-            .unwrap()[0];
+    #[test]
+    fn device_overrides_are_keyed_by_serial_not_unique_id() {
+        let placed = place_enumerated(
+            &zwo_rs::Sdk::new().unwrap(),
+            claims::default_usb_source().scan(),
+            false,
+        )
+        .unwrap();
+        let cam = placed.cameras[0].1.as_ref().unwrap();
         assert!(
             cam.serial != cam.unique_id && cam.unique_id.ends_with(&cam.serial),
             "UniqueID should be the prefixed serial, serial the bare key"
@@ -1100,18 +1264,49 @@ mod simulation_tests {
         assert_eq!(ids, vec!["placeholder:zwo-camera:simulated-usbv3-0:9"]);
     }
 
+    /// Register what the no-list default serves and read back each Camera's
+    /// `UniqueID`, in device number order, with what the build says it
+    /// registered.
+    async fn register_default(
+        builder: &ServerBuilder,
+    ) -> Result<(Vec<String>, Registered), ZwoCameraError> {
+        let mut server = Server::new(CargoServerInfo!());
+        let registered = builder
+            .register_enumerated(&mut server, &HeldCameras::default())
+            .await?;
+        let ids: Vec<String> = server
+            .devices
+            .iter::<dyn ascom_alpaca::api::Camera>()
+            .map(|camera| camera.unique_id().to_string())
+            .collect();
+        assert_eq!(ids.len(), registered.cameras);
+        Ok((ids, registered))
+    }
+
     #[tokio::test]
-    async fn without_a_list_a_camera_that_cannot_be_opened_fails_the_build() {
-        let config: Config = serde_json::from_str(r#"{"server":{"port":0}}"#).unwrap();
-        let error = ServerBuilder::new()
-            .with_config(config)
-            .with_unopenable(true)
-            .build()
-            .await
-            .err()
-            .unwrap()
-            .to_string();
-        assert!(error.contains("general error"), "{error}");
+    async fn without_a_list_the_placed_camera_is_registered() {
+        let (ids, registered) = register_default(&ServerBuilder::new()).await.unwrap();
+        assert_eq!(ids, vec!["ZWO:ASI2600MM-Pro-Simulated:0a1b2c3d4e5f6071"]);
+        assert!(registered.rescan.is_none());
+    }
+
+    #[tokio::test]
+    async fn without_a_list_a_camera_that_cannot_be_opened_is_not_registered() {
+        let builder = ServerBuilder::new().with_unopenable(true);
+        let (ids, registered) = register_default(&builder).await.unwrap();
+        assert_eq!(ids, Vec::<String>::new());
+        assert!(registered.rescan.is_none(), "the scan ran");
+    }
+
+    #[tokio::test]
+    async fn without_a_list_a_failed_scan_registers_nothing_and_is_retried() {
+        let (_dir, source) = staged(FAILED_SCAN).unwrap();
+        let builder = ServerBuilder::new().with_usb_source(source);
+        let (ids, registered) = register_default(&builder).await.unwrap();
+        assert_eq!(ids, Vec::<String>::new());
+        registered
+            .rescan
+            .expect("a failed scan schedules a re-scan");
     }
 
     #[tokio::test]

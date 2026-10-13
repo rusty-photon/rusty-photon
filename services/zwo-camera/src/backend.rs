@@ -382,7 +382,7 @@ pub struct ZwoCameraHandle {
     info: CameraInfo,
     unique_id: String,
     /// The hardware serial read at enumeration; `None` for a camera that
-    /// exposes none (`noserial-{index}`), which an open finds by name.
+    /// exposes none (`noserial-{port}`), which an open finds by name.
     serial: Option<String>,
     held: HeldCameras,
     camera: Mutex<Option<zwo_rs::Camera>>,

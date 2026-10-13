@@ -7,6 +7,12 @@ Feature: Aggregation over the per-service doctors
   "doctor --json" and its checks merge into the report. Staged units
   without a run state have no aggregation story and are skipped.
 
+  A camera driver with device claims holds a listed number it cannot serve
+  with a placeholder, whose UniqueID has the fixed form
+  placeholder:<service>:<usb_port>. service.devices leaves each placeholder
+  out of the ok inventory and reports it as a warning of its own, naming the
+  port and the driver's doctor --devices.
+
   The HTTP probe dials a service by name, not by address: "localhost" on
   a self-signed install, the service's public name on an ACME one. A name
   can resolve into either address family, so an endpoint a scenario
@@ -21,6 +27,18 @@ Feature: Aggregation over the per-service doctors
     Then the report contains an "ok" check named "service.devices" for service "ppba-driver"
     And that check's detail mentions "2 configured device(s)"
     And that check's detail mentions "Stub Camera"
+
+  Scenario: a camera driver's placeholder is reported as one, not as a device
+    Given a stub management endpoint serving a camera and a placeholder for port "pci-0000:00:14.0-usbv3-0:4.2"
+    And a config file "qhy-camera.json" pointing at the stub endpoint
+    And platform facts where unit "rusty-photon-qhy-camera" is installed and active
+    When I run doctor with --json
+    Then the report contains an "ok" check named "service.devices" for service "qhy-camera"
+    And that check's detail mentions "the service reports 1 configured device(s)"
+    And that check's detail mentions "Main Imaging"
+    And that check's detail mentions "and 1 placeholder(s), reported below"
+    And the report contains a "warn" check named "service.devices" for service "qhy-camera"
+    And that check's detail mentions "Camera #1 is a placeholder for pci-0000:00:14.0-usbv3-0:4.2, not a camera: run `rusty-photon-qhy-camera doctor --devices` for the reason"
 
   Scenario: the probe reaches the stub itself, in whichever address family localhost resolves to
     Given a stub management endpoint serving two configured devices

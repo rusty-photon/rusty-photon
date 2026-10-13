@@ -95,12 +95,6 @@ async fn service_is_started(world: &mut CameraWorld) {
     world.try_start().await;
 }
 
-#[when("the zwo-camera service is started with a simulated camera that cannot be opened")]
-async fn service_is_started_unopenable(world: &mut CameraWorld) {
-    world.unopenable = true;
-    world.try_start().await;
-}
-
 /// The start must have exited without binding, and for the reason the
 /// scenario names. The harness forwards a child's stderr rather than keeping
 /// it, so once the start is known to exit, the same command line runs again
@@ -315,6 +309,53 @@ async fn full_shape_fails_saying(world: &mut CameraWorld, expected: String) {
     assert!(
         detail.contains(&expected),
         "config.full-shape's detail {detail:?} does not say {expected:?}"
+    );
+}
+
+/// The JSON report's checks named `name`.
+fn doctor_checks(world: &CameraWorld, name: &str) -> Vec<serde_json::Value> {
+    let stdout = doctor_stdout(world);
+    let report: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("doctor stdout is not a JSON report: {e}\n{stdout}"));
+    report["checks"]
+        .as_array()
+        .expect("the report has a checks array")
+        .iter()
+        .filter(|c| c["name"] == name)
+        .cloned()
+        .collect()
+}
+
+#[then(
+    regex = r#"^the doctor's (usb-devices\.[a-z]+) check (is ok|warns|fails) saying "([^"]+)"$"#
+)]
+async fn usb_devices_check_says(
+    world: &mut CameraWorld,
+    name: String,
+    verdict: String,
+    expected: String,
+) {
+    let status = match verdict.as_str() {
+        "is ok" => "ok",
+        "warns" => "warn",
+        _ => "fail",
+    };
+    let checks = doctor_checks(world, &name);
+    assert!(
+        checks.iter().any(|c| c["status"] == status
+            && c["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.contains(&expected))),
+        "no {status} {name} check saying {expected:?}: {checks:?}"
+    );
+}
+
+#[then(regex = r"^the doctor reports no (usb-devices\.[a-z]+) check$")]
+async fn no_usb_devices_check(world: &mut CameraWorld, name: String) {
+    let checks = doctor_checks(world, &name);
+    assert!(
+        checks.is_empty(),
+        "the report has {name} checks: {checks:?}"
     );
 }
 
