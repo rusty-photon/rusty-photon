@@ -95,6 +95,7 @@ first in their columns.
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Not started |
 | J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Not started |
 | J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
+| J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Not started |
 | R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Not started |
 | R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` | F2, R1 | Not started |
 | R3  | Bazel/Cargo target parity | — | — | Moved in review: now J11 |
@@ -104,11 +105,13 @@ first in their columns.
 | R7  | ConformU runner | `scripts/test-conformance.sh` | F2 | Not started |
 | R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
 | S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | Not started |
+| T1  | The Linux pool template carries rustup and stable | nothing (the toolchain step stops downloading) | — | Not started |
 
 A suggested order, if nothing else decides it: F1, then J1 (the cache that
-started this) and J7 (ten copies, small); F2, then R6 (small, and it
+started this), J14 and J7 (ten copies, small); F2, then R6 (small, and it
 closes a gap on a security boundary); then J2–J6, J12, and R1 before R2.
-R8 and J13 are the largest and go last.
+R8 and J13 are the largest and go last. T1 is template work and fits
+any template rebuild.
 
 ## Foundations
 
@@ -187,8 +190,8 @@ gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
 
 - **Scope: the compile.** On the pool the job's cold clippy passes take
   about 110 s of its 2m13s. Installing the toolchain takes about 10 s more,
-  over the WAN, because the pool template has no rustup; that stays until
-  the template carries one, which is template work outside this plan.
+  over the WAN, because the pool template has no rustup; T1 puts it in the
+  template. Downloading the crates is J14's.
 - **Store:** an S3-compatible object store on the operator's NAS, serving
   anonymous reads of one bucket over plain HTTP and accepting writes
   signed with AWS Signature Version 4. The owner chose this on 2026-10-13,
@@ -234,7 +237,8 @@ gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
   also means the archive holds only what the current lockfile needs.
 - **What is cached:** `target/`, with the workspace members' own outputs
   removed (every run re-lints them anyway), plus `$CARGO_HOME/registry`'s
-  `index`, `cache` and `src`. Archived with the system `tar`. Whether to
+  `index`, `cache` and `src`, minus `cache` (the `.crate` files) once J14
+  serves those. Archived with the system `tar`. Whether to
   compress (system `zstd`, if present) or send it raw over the LAN is
   measured in the item; Node 24's built-in zstd is still marked
   experimental.
@@ -485,6 +489,58 @@ under the publishing rule: tests against a fake store first, then a
 watched nightly. `tools/rusty-photon-packages-r2/README.md` points to the
 push script's header for the upload order, and changes with it.
 
+### J14 — Crates from the LAN bazel-remote
+
+The pool `stable / clippy` downloads every crate it compiles from
+crates.io, over the operator's WAN. The LAN bazel-remote can serve them:
+its HTTP CAS keeps a blob under its SHA-256, which for a crate is the
+`checksum` that `Cargo.lock` records, and anyone on the runner network
+can read it. The owner chose this over a new caching service on
+2026-10-13; T1 does the same for the toolchain.
+
+- **Today the CAS holds few of them.** Bazel stores a crate there only
+  when it fetches the crate through the Remote Asset API, which only
+  authorized runs do, and only for crates the template's repository cache
+  lacks ([proxmox-runner-pool.md](../skills/proxmox-runner-pool.md)). On
+  2026-10-13 it held 60 of the 583 crates.io packages in `Cargo.lock`, and
+  it was full, evicting the least recently used. So this action fills it
+  as well as reading it.
+- **The action** (`runs.using: node24`) runs before any Cargo step. For
+  every crates.io package in `Cargo.lock` it reads `/cas/<checksum>`,
+  fetches the crate from crates.io on a miss, checks the SHA-256 against
+  `Cargo.lock` either way, and puts the file where Cargo looks for
+  downloaded crates. A cache that is down or slow is a miss, never a
+  failed job.
+- **Integrity:** every crate is checked against `Cargo.lock`, the repo's
+  own pin, whoever served it. Unlike J1's archive, the restore is
+  therefore safe in the push-to-main run too.
+- **Filling the CAS:** on push to main only, the action uploads each crate
+  it had to fetch, with the LAN cache's write credential
+  (`BAZEL_LAN_CACHE_WRITE_AUTH`, a full `Authorization` value), passed as
+  an input with bazel.yml's push-only expression. The uploads finish
+  before any Cargo step starts, so no build script runs while the job
+  holds the credential. bazel-remote checks an uploaded CAS blob's
+  SHA-256 against its key (`sha256verifier` in its `cache/disk/disk.go`,
+  for uncompressed storage); confirm it does with the store's settings.
+  Reading the crates on every run keeps them from being evicted.
+- **Where Cargo looks:** `$CARGO_HOME/registry/cache/<index dir>/` holds
+  `<name>-<version>.crate`, under a directory name Cargo derives (today
+  `index.crates.io-1949cf8c6b5b557f`) that has changed between Cargo
+  releases. Either the action finds that name rather than hard-coding it,
+  or it unpacks the crates into a `directory` source that replaces
+  crates.io, which also spares Cargo the index requests. Decide in the
+  item.
+- **Endpoint:** `RP_LAN_CACHE_URL`, which the runner provides and the job
+  already masks; no endpoint (hosted runners, fork PRs) means the action
+  does nothing.
+- **What the PR cannot prove:** the upload runs only on push to main.
+  Tests against a fake CAS cover it before merge; after merge, watch the
+  first push to main fill the CAS and the next PR read every crate from
+  it.
+- **Done when** a pool `stable / clippy` run on a PR whose lockfile main
+  has already built downloads no crate from crates.io, and the job still
+  passes with the cache stopped.
+
 ## Rust items
 
 ### R1 — Toolchain checksums
@@ -616,6 +672,33 @@ PRs, in any order:
 
 The "Mask runner-provided cache endpoint" steps stay in YAML for the
 reason J10 gives.
+
+## T1 — The Linux pool template carries rustup and stable
+
+The pool `stable / clippy` installs rustup and the stable toolchain over
+the WAN on every run, because the Linux template has neither. The owner
+chose on 2026-10-13 to put them in the template rather than run a caching
+proxy; J14 serves the crates.
+
+- **What the template carries:** rustup for the `ci` user, with the
+  stable toolchain and the components the job's `dtolnay/rust-toolchain`
+  step asks for (`clippy`, `rustfmt`), and `~/.cargo/bin` on the PATH the
+  runner gives its jobs. The step installs rustup only when it finds none,
+  and `rustup toolchain install stable` then finds nothing new to
+  download while the template's stable is current.
+- **When stable moves**, every six weeks, each run downloads the new
+  release until the next rebuild. Each template rebuild therefore runs
+  `rustup update stable`, and a rebuild after a Rust release keeps the
+  step from downloading.
+- **The doc:** proxmox-runner-pool.md's components list and its rebuild
+  steps say what the template carries and how to check it before capture,
+  as they do for the `diff-cover` pin: as `ci`, the step's own install
+  command reports the toolchain unchanged.
+- **The work is the operator's:** the rebuild happens outside the repo,
+  and the item's PR is the doc change, merged once the template is rolled.
+  Hosted runners are unaffected; they carry their own rustup.
+- **Done when** a pool `stable / clippy` run's toolchain step installs no
+  rustup and downloads no toolchain.
 
 ## Not in this plan
 
