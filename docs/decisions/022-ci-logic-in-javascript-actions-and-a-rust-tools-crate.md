@@ -116,10 +116,10 @@ Three kinds of code are outside this decision:
   PowerShell twins, and the logic can be tested before it reaches CI.
 - The repo gains a Node toolchain in `MODULE.bazel`, for tests only;
   actions still run on the runner's own Node.
-- `.github` has been in `.bazelignore` since Bazel arrived (#82), so Bazel
-  cannot see tests or data there today. The plan's first JavaScript item
-  settles whether it comes out of the ignore list or the tested code lives
-  elsewhere.
+- `.github` had been in `.bazelignore` since Bazel arrived (#82). The
+  plan's F1 took it out: the helper module and every action's tests live
+  under `.github/actions`, in one Bazel package
+  ([ci-logic.md](../skills/ci-logic.md)).
 - JavaScript here has no formatter or linter: both would be npm
   dependencies. Its gate is the tests and a Bazel test that runs
   `node --check` over every action file, so a syntax error in a file no

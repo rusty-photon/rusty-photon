@@ -87,7 +87,7 @@ first in their columns.
 
 | ID  | Item | Replaces | Needs | Status |
 | --- | ---- | -------- | ----- | ------ |
-| F1  | JavaScript foundation: helper module, Node test rule, conventions | — | — | Not started |
+| F1  | JavaScript foundation: helper module, Node test rule, conventions | — | — | Done (#NNNN) |
 | F2  | Rust tools crate, with its first tool (`repin-bazel-lock`) | `scripts/repin-bazel-lock.sh` | — | Not started |
 | J1  | Cargo cache on the LAN object store | nothing (adds a cache to the pool `stable / clippy`; rust-cache stays for its hosted runs) | F1 | Not started |
 | J2  | Shared download-verify-extract module, first used by `install-omnisim` | `install-omnisim` | F1 | Not started |
@@ -400,7 +400,8 @@ only the exact title tells check.yml's tracking issue from them.
 
 Those jobs check nothing out today, and declare only `issues: write`, so
 `contents` is none. The action needs a sparse checkout of itself and of
-wherever F1 put the helper, so each job also gets `contents: read`.
+`.github/actions/lib`, where F1 put the helper, so each job also gets
+`contents: read`.
 `refresh-astap-shas.yml`'s rotation issue and `clippy-beta`'s per-lint
 census are different and stay out unless they fit without special
 cases.
@@ -633,8 +634,8 @@ and the pool labels, without the matrix prefix or the fallback) and
 asserts each equals the reviewed clause for that OS, held in the test
 itself. A PR that changes one copy fails `bazel test //...`, and a PR
 that changes them all has to change the test too, in the same diff the
-reviewer reads. The test reads files under `.github`, so it needs F1's
-answer on `.bazelignore`. Raised by the review of #1505.
+reviewer reads. The test reads files under `.github`, which F1 took out
+of `.bazelignore`. Raised by the review of #1505.
 
 ### R7 — ConformU runner
 
