@@ -11,8 +11,8 @@
 # serve several queued jobs at once. Slots are declared in the host-local
 # table at SLOTS_FILE (see below); two
 # slots sharing a label set are interchangeable, which is how the Linux pool
-# serves bazel.yml and bazel-coverage.yml (both fire on the same PR event)
-# without one queueing behind the other.
+# serves bazel.yml, bazel-coverage.yml and check.yml's stable / clippy (all
+# fire on the same PR event) without one queueing behind another.
 #
 # While a slot waits for its clone to finish, it also watches that clone's
 # runner through the GitHub API, so a guest that wedges is reclaimed rather
