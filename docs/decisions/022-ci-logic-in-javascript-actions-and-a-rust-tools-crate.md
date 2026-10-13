@@ -81,12 +81,17 @@ Each piece of CI logic goes to exactly one of three homes.
      repo pins to the same major version as `runs.using`, so they run on the
      Linux and Windows PR legs like every other test.
 
-3. **Rust, in one tools crate**, for tools a developer also runs, and for
-   logic that needs the workspace's own knowledge:
+3. **Rust, in one tools crate**, for tools a developer also runs:
    - a workspace binary crate with one subcommand per tool, built and
      tested by Bazel and Cargo like any crate, under the workspace lints;
    - the shell entry points it replaces are deleted, not wrapped, and the
      docs that name them (AGENTS.md included) change in the same PR.
+
+**When both homes fit, who runs it decides.** Logic that only CI runs is
+JavaScript, even when it reads the workspace: `cargo metadata` and
+`bazel query` print JSON and text that JavaScript reads as well as Rust
+does, and a CI job then compiles nothing first. A tool a developer also
+runs is Rust.
 
 Three kinds of code are outside this decision:
 

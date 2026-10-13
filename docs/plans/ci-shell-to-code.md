@@ -27,11 +27,16 @@ first in their columns.
   nightly or scheduled workflow, dispatch it on the branch
   (`gh workflow run <file> --ref <branch>`) and link the run, **except**:
   - a workflow that publishes or pushes is never dispatched on a branch
-    unless a dry-run input stops it first. `nightly-packages.yml` has one,
-    but its dry run skips the publish job, which is the code J9 moves.
-    `release.yml` runs only on a `v*` tag. Every job in
+    unless a dry-run input stops it first. `nightly-packages.yml` has one:
+    with `dry_run=true` its `plan` and `msi` jobs run and only `publish`
+    is skipped. `release.yml` runs only on a `v*` tag. Every job in
     `refresh-astap-shas.yml` checks out `main`, so a branch dispatch runs
     main's files, and it opens a real PR;
+  - **the Pi cannot run a branch.** `pi-nightly.yml`'s job is gated on
+    `github.ref == 'refs/heads/main'` and checks out `main`, so a dispatch
+    on a branch skips it. An item that changes code the Pi runs (the
+    install actions) proves the arm64 Linux path with the module's tests
+    for that platform and watches the first nightly after merge;
   - code that runs only on an event a PR cannot produce — a failed
     scheduled run, a push to main — never runs from a dispatch.
 
@@ -78,10 +83,11 @@ first in their columns.
 | J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | Not started |
 | J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Not started |
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Not started |
+| J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Not started |
 | R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Not started |
 | R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` | F2 | Not started |
 | R3  | Bazel/Cargo target parity | — | — | Moved in review: now J11 |
-| R4  | Sharded BDD runner | `bdd-sharded`'s bash | F2 | Not started |
+| R4  | Sharded BDD runner | — | — | Moved in review: now J12 |
 | R5  | Workspace discovery and the MSRV check | — | — | Dropped in review: stays YAML (see R5) |
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Not started |
 | R7  | ConformU runner | `scripts/test-conformance.sh` | F2 | Not started |
@@ -90,7 +96,7 @@ first in their columns.
 
 A suggested order, if nothing else decides it: F1, then J1 (the cache that
 started this) and J7 (ten copies, small); F2, then R6 (small, and it
-closes a gap on a security boundary); then J2–J6 and R2. R8 is the
+closes a gap on a security boundary); then J2–J6, J12 and R2. R8 is the
 largest and goes last.
 
 ## Foundations
@@ -105,12 +111,13 @@ largest and goes last.
   launcher cannot be a shell script.
 - **Where the tests live.** `.github` is in `.bazelignore` (since #82, with
   no reason recorded), so a BUILD file under `.github/actions` is never
-  loaded. Either take `.github` out of the ignore list, checking that
-  nothing else under it then reaches `//...`, or keep the tested modules
-  elsewhere and have the actions import them; decide here, and amend
-  ADR-022's "one helper module inside `.github/actions/`" if the answer
-  is elsewhere. R6 needs the same answer for the workflow files it reads,
-  and J7's sparse checkout must include wherever the helper lives.
+  loaded, and no Bazel test can read a workflow file. R6 must read the
+  workflows, so `.github` has to leave the ignore list whatever else is
+  decided; the plain answer is that F1 takes it out, checking that
+  nothing else under it then reaches `//...`, and the helper and its
+  tests live beside the actions. If F1 still keeps the helper elsewhere,
+  it records where in ADR-022's "placed where Bazel can test it", and
+  J7's sparse checkout must include that place.
 - **The helper module**, which every action imports:
   reading inputs (`INPUT_*`); writing to the files `GITHUB_OUTPUT`,
   `GITHUB_ENV` and `GITHUB_PATH` name (multi-line values in the delimiter
@@ -187,10 +194,14 @@ gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
   new runner `.env` entry (a template rebuild) or derived from
   `RP_LAN_CACHE_URL`'s host, as the Remote Asset API's endpoint is.
   Decide in the item.
-- **Write key:** a GitHub secret attached only on push to main, the way
-  bazel.yml attaches `BAZEL_LAN_CACHE_WRITE_AUTH`
+- **Write key:** a GitHub secret, passed only on push to main with the
+  expression bazel.yml uses for `BAZEL_LAN_CACHE_WRITE_AUTH`
   (`github.event_name == 'push' && secrets.… || ''`). It never lives on
-  the runner VM, so a PR can read the cache but never write it.
+  the runner VM, so a PR can read the cache but never write it. Unlike
+  bazel.yml's, it goes to the action as an input (`with:`), never into
+  the job's `env:`: in a Cargo job every build script and proc macro of
+  the cold build would otherwise see it, and one compromised dependency
+  could poison the archive every PR restores.
 - **Writers never restore.** A push-to-main run builds cold and saves; only
   PR runs restore. The archive holds build-script and proc-macro binaries
   that the job runs, and an anonymous plain-HTTP read has no integrity
@@ -203,10 +214,18 @@ gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
   compress (system `zstd`, if present) or send it raw over the LAN is
   measured in the item; Node 24's built-in zstd is still marked
   experimental.
-- **Key and retention:** one object per Rust version, overwritten by each
-  push to main from its cold build, so it never accumulates the
-  dependencies of older lockfiles. Objects for older Rust versions must
-  not pile up either; decide how they go.
+- **Key and retention:** one object per Rust version and pool template,
+  overwritten by each push to main from its cold build, so it never
+  accumulates the dependencies of older lockfiles. The template is in the
+  key because `target/` holds build-script outputs (pkg-config probes,
+  bindgen output) that Cargo does not rebuild when the template's system
+  libraries change; the item finds an identity the runner can read, such
+  as a version in its `.env`. Objects for older Rust versions and
+  templates must not pile up either; decide how they go.
+- **Order between writers:** two pushes to main close together run
+  concurrently, and the older commit can finish last. The save first
+  checks that the run's commit is still the head of `main`, and skips
+  if `main` has moved on.
 - **Signing:** SigV4 with `node:crypto`, tested against AWS's published
   Signature Version 4 examples, and **over the payload**: the request
   carries the archive's SHA-256, so the store can refuse a body changed on
@@ -258,8 +277,10 @@ gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
 - `install-omnisim` (179 lines, used by six workflows) becomes a composite
   wrapper: its `actions/cache` step, then the JavaScript action.
 - **Done when** `install-omnisim`'s bash is gone, every workflow that uses
-  it is green on each of its venues, and the module's tests cover asset
-  choice, a checksum mismatch and a truncated download.
+  it is green on each venue a branch can reach, and the module's tests
+  cover asset choice (arm64 Linux included), a checksum mismatch and a
+  truncated download. The Pi's first nightly after merge is watched, since
+  no branch run reaches it.
 
 ### J3–J6 — The other install actions
 
@@ -297,11 +318,19 @@ Ten workflows (check, conformu, install-astap, native, nightly-packages,
 pi-nightly, plate-solver-smoke, safety, scheduled, ui-browser-nightly)
 each carry a `github-script` block that opens a tracking issue for a
 failed scheduled run, or comments on the open one. One action with
-`title`, `label` and `body` inputs replaces them. Those jobs check nothing
-out today; a local action needs a sparse checkout of the action and of
-wherever F1 put the helper. `refresh-astap-shas.yml`'s rotation issue and
-`clippy-beta`'s per-lint census are different and stay out unless they
-fit without special cases.
+`title`, `labels` and `body` inputs replaces them. `labels` is a list:
+every block today searches by its own `<name>-nightly` label and creates
+with that label and `ci-flake`, and triage relies on both. Each workflow
+keeps its exact title and labels, because others read them:
+`refresh-astap-shas.yml` finds install-astap's tracking issue by its
+title and its `install-astap-nightly` label to link a rotation PR to it.
+
+Those jobs check nothing out today, and declare only `issues: write`, so
+`contents` is none. The action needs a sparse checkout of itself and of
+wherever F1 put the helper, so each job also gets `contents: read`.
+`refresh-astap-shas.yml`'s rotation issue and `clippy-beta`'s per-lint
+census are different and stay out unless they fit without special
+cases.
 
 The action runs only after a scheduled run fails, which no dispatch
 produces. Its tests run the open-or-comment logic against a fake GitHub
@@ -328,15 +357,18 @@ the tap push, the previous MSI fetch) and `release.yml` (the tag-version
 check, the formula commit and push). Split it per workflow if the PR gets
 large.
 
-None of the publishing code can run from a branch safely: a branch
-dispatch of `nightly-packages.yml` without `dry_run=true` publishes the
-branch as the public nightly, its dry run skips the publish job, and
-`release.yml` runs only on a `v*` tag. So the logic is tested against a
-fake GitHub API and a temporary tap checkout. A first PR may add a dry
-run that goes as far as computing what it would publish and printing it.
-The PR names what stays unproven, and someone watches the next nightly
-after merge. The release half's first live run is a real release; plan
-it for one that someone is watching.
+A dispatch of `nightly-packages.yml` on the branch with `dry_run=true`
+proves the `plan` job (the version dialects, the skip when the nightly
+already has this SHA) and the `msi` job's fetch of the previous MSI,
+which all run in a dry run. Without `dry_run=true` the dispatch publishes
+the branch as the public nightly, so never run it that way. The `publish`
+job (the prerelease, the rpm asset names, the tap push) is skipped by the
+dry run, and `release.yml` runs only on a `v*` tag. That code is tested
+against a fake GitHub API and a temporary tap checkout. A first PR may
+add a dry run that goes as far as computing what it would publish and
+printing it. The PR names what stays unproven, and someone watches the
+next nightly after merge. The release half's first live run is a real
+release; plan it for one that someone is watching.
 
 ### J10 — Bazel remote-cache flags
 
@@ -350,23 +382,40 @@ after their job, ADR-020; hosted runners likewise), so the real exposure
 of a file is to the later steps of the same push-to-main job. An action
 that writes the venue's flags to a bazelrc file the workspace `.bazelrc`
 imports with `try-import` would remove the sourcing from every Bazel step.
-Decide on that real exposure: keep the credential out of the file (a
-credential helper that reads it from the step's environment is the first
-to check), or show the file cannot outlive the steps that need it; and
-correct the script's header either way. If neither works, drop this item
-and keep the script. The mask step stays inline in the YAML either way:
+There is a second exposure: `.bazelrc` sets `build:ci --announce_rc`, so
+every Bazel step prints the options it read from rc files, and a
+`--remote_header=Authorization=…` in an imported file would be printed in
+every push-to-main step, behind nothing but GitHub's secret masking. So
+the credential cannot go in the file at all: keep it out (a credential
+helper that reads it from the step's environment is the first to check),
+and correct the script's header either way. If no such way works, drop
+this item and keep the script. The mask step stays inline in the YAML either way:
 it runs before checkout, and a local action cannot.
 
 ### J11 — Bazel/Cargo target parity
 
-`scripts/check-bazel-cargo-parity.sh` (82 lines), run nightly by
-`parity.yml` only, compares the targets `cargo metadata` lists with the
-ones `bazel query` finds. It was R3 until the plan's second review: it is
-CI-only, so ADR-022 puts it in JavaScript, and a Rust port would compile
-the tools crate cold in a job that has no Rust cache. The action runs the
-two commands and compares their output. It is tested against fixture
-outputs, and a dispatched `parity.yml` run on the branch proves it (that
-workflow publishes nothing).
+`scripts/check-bazel-cargo-parity.sh` (82 lines), run by `parity.yml`
+alone (on push to main, nightly and on dispatch), compares the targets
+`cargo metadata` lists with the ones `bazel query` finds. It was R3 until
+the plan's second review: only CI runs it, so ADR-022's tiebreak puts it
+in JavaScript, and a Rust port would compile the tools crate cold in a
+job that has no Rust cache. The action runs the two commands and compares
+their output. It is tested against fixture outputs, and a dispatched
+`parity.yml` run on the branch proves it (that workflow publishes
+nothing); after merge, the push-to-main run is the first to watch.
+
+### J12 — Sharded BDD runner
+
+The `bdd-sharded` composite action (157 lines of bash) runs the BDD
+suites as parallel shard processes for the Cargo safety net (`test.yml`
+three times, `scheduled.yml` three times): it starts the processes, sets
+the shard variables only on the suites that honour them, and collects
+their exit codes and logs. Only CI runs it, so under ADR-022's tiebreak
+it becomes a JavaScript action; it was R4 until the plan's third review.
+Its tests cover which suites get shard variables and that one failing
+shard fails the step. Neither workflow runs on a PR, and neither
+publishes, so dispatched `test.yml` and `scheduled.yml` runs on the
+branch prove it.
 
 ## Rust items
 
@@ -400,12 +449,9 @@ assume it.
 
 Now J11.
 
-### R4 — Sharded BDD runner
+### R4 — Moved: sharded BDD runner
 
-The `bdd-sharded` composite action (157 lines of bash) runs the BDD
-suites as parallel shard processes for the Cargo safety net (`test.yml`
-three times, `scheduled.yml` three times). Which suites can shard is
-workspace knowledge. The action shrinks to one command.
+Now J12.
 
 ### R5 — Dropped: workspace discovery and the MSRV check
 
