@@ -127,8 +127,10 @@ Three kinds of code are outside this decision:
 - A Rust tool costs a compile on first local use, where a script ran at
   once. In the Bazel legs it comes from the remote cache.
 - Some tools that drive Bazel (`bazel-clippy.sh`) run inside the Bazel
-  legs, and the pool's templates have no Cargo. The plan item that moves
-  such a tool settles how it is launched there, and verifies it.
+  legs, where Cargo may not be on the job's PATH: the Linux pool template
+  has none until the plan's T1 adds it, and the Windows template has not
+  been checked. The plan item that moves such a tool settles how it is
+  launched there, and verifies it.
 - `stable / shellcheck` lints less over time. It stays for the shell this
   decision leaves in place.
 - Shell is no longer the default for new CI logic: a reviewer may ask for

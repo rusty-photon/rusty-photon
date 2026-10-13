@@ -9,6 +9,13 @@ Actions, and **one Rust tools crate** for tools a developer also runs. A
 step that runs one command, or a short fixed sequence with no control
 flow, stays in the workflow YAML.
 
+It also carries the three items that cut the pool `stable / clippy`'s WAN
+traffic (J1, J14, T1), because the cache J1 adds is where this plan
+started, and J1 and J14 are JavaScript actions that need F1. They add
+caches rather than replace shell, so "The shell goes in the same PR" does
+not apply to them, and T1 is template work with no code to test; a pool
+run proves it.
+
 The plan is a menu, not a sequence. Each item below is one pull request
 that can be picked up on its own once the items in its **Needs** column
 have merged. Two foundation items, F1 (JavaScript) and F2 (Rust), come
@@ -165,7 +172,8 @@ any template rebuild.
   `MODULE.bazel.lock`, and AGENTS.md rule 10 and the pre-commit hook send
   developers to it. It touches no CI step, so it proves the crate without
   risking one. `repin-bazel.yml`'s "Repin crate index" step runs the same
-  sequence on dependabot PRs, on the pool, which has no Cargo. That step is
+  sequence on dependabot PRs, on the Linux pool, which has no Cargo until
+  T1. That step is
   a fixed sequence of three commands with no control flow, which ADR-022
   leaves in YAML; its "keep the two in step" comment points at the new
   tool.
@@ -221,14 +229,19 @@ gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
   (`github.event_name == 'push' && secrets.… || ''`). It never lives on
   the runner VM, so a PR can read the cache but never write it. Unlike
   bazel.yml's, it goes to the action as an input (`with:`), never into
-  the job's `env:`, where every build script and proc macro of the cold
-  build could read it. That keeps the key itself from a compromised
-  dependency, which could otherwise overwrite any object the key can
-  write. It does not stop that dependency's build script from writing
-  into `target/`, which the save then uploads for every PR to restore.
-  That is no worse than the dependency itself, which those PRs compile
-  anyway, and the next push to main replaces the archive with a cold
-  build.
+  the job's `env:`, so no build step's environment carries it. That is
+  all an input does. The save is a `post:` step that runs after the cold
+  build, from the action's script and the helper in the checkout, which
+  a compromised build script, running as the same user, can rewrite
+  first. So a dependency compromised on main can take the key, and write
+  any object the key can write. It can also poison `target/`, which the
+  save uploads for every PR to restore; that much is no worse than the
+  dependency itself, which those PRs compile anyway, and the next push to
+  main replaces the archive with a cold build. To keep the key out of the
+  build's reach, a job that builds nothing could hold it and hand the
+  build job a short-lived pre-signed URL for the one object instead; the
+  item weighs that against signing over the payload (below), which a URL
+  minted before the archive exists cannot do.
 - **Writers never restore.** A push-to-main run builds cold and saves; only
   PR runs restore. The archive holds build-script and proc-macro binaries
   that the job runs, and an anonymous plain-HTTP read has no integrity
@@ -237,8 +250,12 @@ gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
   also means the archive holds only what the current lockfile needs.
 - **What is cached:** `target/`, with the workspace members' own outputs
   removed (every run re-lints them anyway), plus `$CARGO_HOME/registry`'s
-  `index`, `cache` and `src`, minus `cache` (the `.crate` files) once J14
-  serves those. Archived with the system `tar`. Whether to
+  `index` and `cache` (the `.crate` files, until J14 serves those) and
+  `$CARGO_HOME/git`, for the workspace's git dependency. Not
+  `registry/src`: Cargo recreates it from the `.crate` files, which
+  rust-cache's README gives as quicker than caching it, and it is the
+  source Cargo compiles, so a restored copy would bypass the check J14
+  makes of each `.crate` file. Archived with the system `tar`. Whether to
   compress (system `zstd`, if present) or send it raw over the LAN is
   measured in the item; Node 24's built-in zstd is still marked
   experimental.
@@ -513,7 +530,15 @@ can read it. The owner chose this over a new caching service on
   failed job.
 - **Integrity:** every crate is checked against `Cargo.lock`, the repo's
   own pin, whoever served it. Unlike J1's archive, the restore is
-  therefore safe in the push-to-main run too.
+  therefore safe in the push-to-main run too. (On a PR run, the
+  `target/` that J1 restores is unchecked either way; J1 keeps
+  `registry/src` out of its archive so the sources at least come from
+  these checked files.)
+- **Git dependencies are not crates.** The workspace's one git
+  dependency, ascom-alpaca pinned to a commit on the org fork, has no
+  crates.io checksum, so the action leaves it alone and Cargo clones it
+  from GitHub. J1's archive carries `$CARGO_HOME/git` for PR runs; a
+  push-to-main run still clones it.
 - **Filling the CAS:** on push to main only, the action uploads each crate
   it had to fetch, with the LAN cache's write credential
   (`BAZEL_LAN_CACHE_WRITE_AUTH`, a full `Authorization` value), passed as
@@ -539,7 +564,8 @@ can read it. The owner chose this over a new caching service on
   it.
 - **Done when** a pool `stable / clippy` run on a PR whose lockfile main
   has already built downloads no crate from crates.io, and the job still
-  passes with the cache stopped.
+  passes with the cache stopped. The git dependency is outside this
+  check; its clone is J1's to cache.
 
 ## Rust items
 
@@ -564,8 +590,11 @@ keeping a second copy.
 `//...` and checks the toolchain pins agree. It is in AGENTS.md rule 4's
 local gate and in bazel.yml's `bazel clippy` step. It needs R1 first, and
 reads R1's archive list rather than porting the script's own copy.
-**Open question:** the pool's templates have no Cargo, so in the Bazel
-legs the tool cannot start through the alias. `bazel run` would make the
+**Open question:** the tool may not start through the alias in the Bazel
+legs. The Linux pool template has no Cargo until T1, and whether the
+Windows template, whose variables include `CARGO_HOME` and `RUSTUP_HOME`
+([proxmox-runner-pool.md](../skills/proxmox-runner-pool.md)), puts Cargo
+on a job's PATH is unchecked. `bazel run` would make the
 tool start Bazel from inside a `bazel run`; building it first and running
 it from `bazel-bin` avoids that. Verify the choice on the Linux and
 Windows PR legs; don't assume it. bazel.yml's macOS leg runs the step
@@ -696,7 +725,14 @@ proxy; J14 serves the crates.
   command reports the toolchain unchanged.
 - **The work is the operator's:** the rebuild happens outside the repo,
   and the item's PR is the doc change, merged once the template is rolled.
-  Hosted runners are unaffected; they carry their own rustup.
+  Hosted runners are unaffected; they carry their own rustup, so the
+  Linux Bazel legs already run with Cargo on the PATH there, and the
+  pool's will too.
+- **Every mention moves with it.** These say the Linux pool has no Cargo
+  or rustup, or that the job downloads its toolchain, and change in the
+  same PR: ADR-022's Consequences, F2's note on `repin-bazel.yml`, R2's
+  open question, J1's scope bullet, and the comment above check.yml's
+  `stable / clippy` job.
 - **Done when** a pool `stable / clippy` run's toolchain step installs no
   rustup and downloads no toolchain.
 
