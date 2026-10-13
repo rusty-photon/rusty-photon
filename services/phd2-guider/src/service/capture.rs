@@ -46,7 +46,7 @@ pub const MAX_EXPOSURE: Duration = Duration::from_secs(600);
 /// How long each request the facade sends PHD2 while it holds the
 /// guiding lock may take: the capture's two, and an abort's
 /// `stop_capture`. PHD2 answers each in milliseconds.
-const LOCKED_RPC_TIMEOUT: Duration = Duration::from_secs(5);
+pub const LOCKED_RPC_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Why a capture could not start. Each maps to an ASCOM error in
 /// `camera.rs`.
@@ -434,19 +434,27 @@ impl CaptureEngine {
 
     /// Delete files left by frames the facade gave up on, whenever PHD2
     /// reports one late, and release a restart marker's frame when PHD2
-    /// reports it. Runs until the event stream closes.
+    /// reports it. The task holds the engine only while it handles a
+    /// report, so it does not keep the engine (and with it the event
+    /// stream) alive: it ends at the first report after the engine is
+    /// dropped, or when the stream closes.
     pub fn spawn_late_file_cleaner(self: &Arc<Self>) {
-        let engine = Arc::clone(self);
-        let mut frames = engine.ops.subscribe_frames();
+        let engine = Arc::downgrade(self);
+        let mut frames = self.ops.subscribe_frames();
         tokio::spawn(async move {
             loop {
-                match frames.recv().await {
-                    Ok(report) => engine.on_late_report(&report).await,
+                let report = match frames.recv().await {
+                    Ok(report) => report,
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         debug!("late-file cleaner lagged, skipped {n} reports");
+                        continue;
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
-                }
+                };
+                let Some(engine) = engine.upgrade() else {
+                    break;
+                };
+                engine.on_late_report(&report).await;
             }
         });
     }
@@ -637,35 +645,28 @@ impl CaptureEngine {
 /// Check that `image_dir` is an existing directory the service can
 /// create and remove files in, by creating and removing [`PROBE_NAME`].
 ///
+/// Startup runs it, and so does `config.apply`, inside the service, so
+/// both test the permissions the service has.
+///
 /// # Errors
 ///
-/// Returns a message naming `camera.image_dir` and the failure.
+/// Returns a message naming the directory and the failure; the caller
+/// names the field.
 pub fn check_image_dir(image_dir: &Path) -> Result<(), String> {
-    let meta = std::fs::metadata(image_dir).map_err(|e| {
-        format!(
-            "camera.image_dir {} cannot be used: {e}",
-            image_dir.display()
-        )
-    })?;
+    let meta = std::fs::metadata(image_dir)
+        .map_err(|e| format!("{} cannot be used: {e}", image_dir.display()))?;
     if !meta.is_dir() {
-        return Err(format!(
-            "camera.image_dir {} is not a directory",
-            image_dir.display()
-        ));
+        return Err(format!("{} is not a directory", image_dir.display()));
     }
     let probe = image_dir.join(PROBE_NAME);
     std::fs::write(&probe, b"").map_err(|e| {
         format!(
-            "camera.image_dir {} is not writable by this service: {e}",
+            "{} is not writable by this service: {e}",
             image_dir.display()
         )
     })?;
-    std::fs::remove_file(&probe).map_err(|e| {
-        format!(
-            "camera.image_dir {}: cannot remove {PROBE_NAME}: {e}",
-            image_dir.display()
-        )
-    })?;
+    std::fs::remove_file(&probe)
+        .map_err(|e| format!("{}: cannot remove {PROBE_NAME}: {e}", image_dir.display()))?;
     Ok(())
 }
 
@@ -673,11 +674,14 @@ fn report_names(report: &FrameReport, path: &Path) -> bool {
     report.path.as_deref().map(Path::new) == Some(path)
 }
 
-/// `phd2-guider-` + 32 lowercase hex digits + `.fits`.
+/// `phd2-guider-` + 32 lowercase hex digits + `.fits`: exactly the names
+/// `start` makes, so the sweep deletes nothing else.
 fn is_frame_name(name: &str) -> bool {
     name.strip_prefix(FILE_PREFIX)
         .and_then(|rest| rest.strip_suffix(FILE_SUFFIX))
-        .is_some_and(|hex| hex.len() == 32 && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .is_some_and(|hex| {
+            hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        })
 }
 
 /// Delete every facade frame file in `image_dir` except `keep`, looking
@@ -1274,6 +1278,10 @@ mod tests {
         assert!(!is_frame_name(
             "phd2-guider-0123456789abcdef0123456789abcdeg.fits"
         ));
+        // `start` never writes uppercase, so the sweep leaves such a file.
+        assert!(!is_frame_name(
+            "phd2-guider-0123456789ABCDEF0123456789ABCDEF.fits"
+        ));
     }
 
     #[test]
@@ -1354,13 +1362,13 @@ mod tests {
     }
 
     #[test]
-    fn the_image_dir_check_names_the_field() {
+    fn the_image_dir_check_names_the_directory_and_leaves_no_probe() {
         let dir = tempfile::tempdir().unwrap();
         check_image_dir(dir.path()).unwrap();
         assert!(!dir.path().join(PROBE_NAME).exists());
         let missing = dir.path().join("missing");
         let err = check_image_dir(&missing).unwrap_err();
-        assert!(err.contains("camera.image_dir"), "{err}");
+        assert!(err.contains("missing"), "{err}");
     }
 
     #[test]

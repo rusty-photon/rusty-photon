@@ -198,7 +198,8 @@ async fn bind_camera(
             image_dir.display()
         )));
     }
-    capture::check_image_dir(&image_dir).map_err(std::io::Error::other)?;
+    capture::check_image_dir(&image_dir)
+        .map_err(|e| std::io::Error::other(format!("camera.image_dir {e}")))?;
 
     let engine = Arc::new(CaptureEngine::new(
         Arc::clone(ops),

@@ -10,6 +10,7 @@
 use rusty_photon_config::actions::{ApplyDisposition, ConfigurableDriver, FieldError};
 
 use crate::config::{camera_rule_violations, Config};
+use crate::service::capture::check_image_dir;
 
 /// Driver marker wiring phd2-guider's `Config` into the generic protocol.
 pub struct Phd2GuiderDriver;
@@ -22,10 +23,12 @@ impl ConfigurableDriver for Phd2GuiderDriver {
 
     fn normalize(_config: &mut Config) {}
 
-    /// The load-time rules, plus `image_dir` existing as a directory:
+    /// The load-time rules, plus the startup check of `image_dir` (an
+    /// existing directory this service can create and remove files in):
     /// with the `Restart` disposition an applied change is only tried at
-    /// the next start, and a directory that is not there would stop the
-    /// whole guider then.
+    /// the next start, and a directory that fails the check would stop
+    /// the whole guider then. This runs inside the service, so the probe
+    /// file tests the service's own permissions.
     fn validate(config: &Config) -> Vec<FieldError> {
         let mut errors: Vec<FieldError> = camera_rule_violations(config)
             .into_iter()
@@ -33,10 +36,10 @@ impl ConfigurableDriver for Phd2GuiderDriver {
             .collect();
         if config.camera.enabled {
             if let Some(dir) = config.camera.image_dir.as_ref().filter(|d| d.is_absolute()) {
-                if !dir.is_dir() {
+                if let Err(msg) = check_image_dir(dir) {
                     errors.push(FieldError {
                         path: "camera.image_dir".to_string(),
-                        msg: format!("{} is not an existing directory", dir.display()),
+                        msg,
                     });
                 }
             }
@@ -128,6 +131,25 @@ mod tests {
         let file = dir.path().join("plain");
         std::fs::write(&file, b"x").unwrap();
         assert_eq!(paths(&enabled_on(&file)), ["camera.image_dir"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_applied_image_dir_this_service_cannot_write_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root writes through the mode bits, so there is nothing to test.
+        if std::fs::write(locked.join("root-check"), b"").is_ok() {
+            return;
+        }
+        let errors = Phd2GuiderDriver::validate(&enabled_on(&locked));
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].path, "camera.image_dir");
+        assert!(errors[0].msg.contains("not writable"), "{errors:?}");
     }
 
     #[test]

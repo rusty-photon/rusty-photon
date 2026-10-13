@@ -1187,6 +1187,7 @@ return an earlier frame.
 | `LastExposureDuration` | the rounded duration PHD2 was asked for |
 | `LastExposureStartTime` | when PHD2 accepted the request |
 | `CanAbortExposure` / `CanStopExposure` | `true` / `false` |
+| `PercentCompleted` | while exposing, the share of `LastExposureDuration` elapsed since `LastExposureStartTime`, capped at 99; 100 once the image is ready; 0 otherwise |
 | `HasShutter` | `false` |
 | `MaxADU` | 65535 |
 | `MaxBinX` / `MaxBinY`, `BinX` / `BinY` | 1; setting any other bin → `InvalidValue` |
@@ -1229,11 +1230,20 @@ the fixed values in the table answer at any time.
 `AbortExposure` takes the guider's operation lock and, if this facade's
 exposure still holds the capture slot, sends PHD2 `stop_capture` (a
 stop-class command, inside a session the client started). It then waits
-up to 2 s for PHD2's event and returns. The frame is discarded either
-way. If PHD2's camera driver ignores the interrupt, the frame runs to its
-end. `CameraState` reads `Exposing` until PHD2's event arrives, and the
-slot is held that long too. With no exposure in flight, `AbortExposure`
-does nothing and succeeds. `StopExposure` is not implemented: PHD2
+up to 2 s for PHD2's event. Once the event has come, it also waits for
+the exposure to leave the camera, so a `StartExposure` sent right after
+it finds the camera idle. An exposure still starting (PHD2 not yet
+asked, or not yet answered) is stopped as soon as PHD2 accepts it, and
+the abort waits for that too. All of this waits at most 17 s: three
+5 s requests to PHD2 and the 2 s for its event. PHD2 answers each in
+milliseconds. The frame is discarded either way. If PHD2's camera driver
+ignores the interrupt, the frame runs to its end. `CameraState` reads
+`Exposing` until PHD2's event arrives, and the slot is held that long
+too. With no exposure in flight, `AbortExposure` does nothing and
+succeeds. A `StartExposure` that an abort overtook while PHD2 was being
+asked still succeeds, and the abort then ends the frame. One that a
+disconnect overtook fails with `NotConnected`. Either way it answers
+before the frame is stopped. `StopExposure` is not implemented: PHD2
 cannot end an exposure early and keep its frame.
 
 ### Exclusivity: the capture slot
@@ -1402,9 +1412,11 @@ as `rp`'s config does. `server.port`, `camera.enabled`,
 `camera.server.port` and `camera.server.bind_address` are read-only,
 because changing them would cut the client off the endpoint it is editing
 through. `camera.unique_id` is locked. Since an applied change is tried
-only at the next start, `config.apply` also refuses an enabled facade
-whose `image_dir` is not an existing directory, rather than persist a
-config that would stop the service. The two auth password hashes
+only at the next start, `config.apply` also runs startup's check of an
+enabled facade's `image_dir`, creating and removing `.phd2-guider-probe`
+there, and refuses a directory that fails it rather than persist a
+config that would stop the service. It runs inside the service, so it
+tests the service's own permissions. The two auth password hashes
 (`server.auth` and `camera.server.auth`) are redacted secrets.
 
 ### Loopback only

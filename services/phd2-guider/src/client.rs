@@ -30,6 +30,35 @@ use crate::types::{
     StarImage,
 };
 
+/// The pending requests, by RPC id.
+type PendingMap = tokio::sync::Mutex<std::collections::HashMap<u64, PendingRequest>>;
+
+/// Takes a request's entry out of the pending set when the request ends:
+/// on a timeout, a write error, or a caller that drops the request (an
+/// outer timeout), none of which ever sees a reply. A reply has already
+/// taken the entry, and this then finds nothing.
+struct PendingEntry {
+    pending: Arc<PendingMap>,
+    id: u64,
+}
+
+impl Drop for PendingEntry {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.pending.try_lock() {
+            pending.remove(&self.id);
+            return;
+        }
+        // The reader holds the set only briefly: remove it once it lets go.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let pending = Arc::clone(&self.pending);
+            let id = self.id;
+            runtime.spawn(async move {
+                pending.lock().await.remove(&id);
+            });
+        }
+    }
+}
+
 /// PHD2 client for communicating with PHD2 via JSON RPC
 pub struct Phd2Client {
     config: Phd2Config,
@@ -268,6 +297,10 @@ impl Phd2Client {
             let mut pending = self.shared.pending_requests.lock().await;
             pending.insert(id, PendingRequest { sender });
         }
+        let _entry = PendingEntry {
+            pending: Arc::clone(&self.shared.pending_requests),
+            id,
+        };
 
         // Send the request using the MessageWriter trait
         {
@@ -2930,5 +2963,40 @@ mod mock_tests {
 
         client.set_auto_reconnect_enabled(true);
         assert!(client.is_auto_reconnect_enabled());
+    }
+
+    fn pending_with(id: u64) -> Arc<PendingMap> {
+        let (sender, _receiver) = tokio::sync::oneshot::channel();
+        let pending = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        pending
+            .try_lock()
+            .unwrap()
+            .insert(id, PendingRequest { sender });
+        pending
+    }
+
+    #[tokio::test]
+    async fn a_request_that_ends_without_a_reply_leaves_no_pending_entry() {
+        let pending = pending_with(7);
+        drop(PendingEntry {
+            pending: Arc::clone(&pending),
+            id: 7,
+        });
+        assert!(pending.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_pending_entry_is_removed_once_the_busy_set_is_free() {
+        let pending = pending_with(7);
+        let held = pending.lock().await;
+        drop(PendingEntry {
+            pending: Arc::clone(&pending),
+            id: 7,
+        });
+        assert_eq!(held.len(), 1);
+        drop(held);
+        // On this one-thread runtime the removal task runs at this yield.
+        tokio::task::yield_now().await;
+        assert!(pending.lock().await.is_empty());
     }
 }

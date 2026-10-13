@@ -20,44 +20,54 @@ const TEST_UNIQUE_ID: &str = "phd2-guider-facade-test-001";
 
 #[given(regex = r"^a mock PHD2 (\d+\.\d+\.\d+) with an? (\d+) x (\d+) camera$")]
 async fn mock_with_camera(world: &mut GuiderWorld, version: String, width: u32, height: u32) {
-    start_camera_mock(world, &version, width, height, "completes");
+    start_camera_mock(world, &version, width, height, "completes").await;
 }
 
 #[given(regex = r"^a mock PHD2 (\d+\.\d+\.\d+) with an? (\d+) x (\d+) camera whose frames fail$")]
 async fn mock_failing_frames(world: &mut GuiderWorld, version: String, width: u32, height: u32) {
-    start_camera_mock(world, &version, width, height, "fails");
+    start_camera_mock(world, &version, width, height, "fails").await;
 }
 
 #[given(
     regex = r"^a mock PHD2 (\d+\.\d+\.\d+) with an? (\d+) x (\d+) camera whose frames are never reported$"
 )]
 async fn mock_unreported_frames(world: &mut GuiderWorld, version: String, width: u32, height: u32) {
-    start_camera_mock(world, &version, width, height, "never_reports");
+    start_camera_mock(world, &version, width, height, "never_reports").await;
 }
 
-fn start_camera_mock(world: &mut GuiderWorld, version: &str, width: u32, height: u32, mode: &str) {
+async fn start_camera_mock(
+    world: &mut GuiderWorld,
+    version: &str,
+    width: u32,
+    height: u32,
+    mode: &str,
+) {
     let size = format!("{width}x{height}");
-    world.start_mock_env(
-        "settle_ok",
-        "stops",
-        &[
-            ("MOCK_PHD2_VERSION", version),
-            ("MOCK_PHD2_FRAME_SIZE", size.as_str()),
-            ("MOCK_PHD2_CAPTURE_MODE", mode),
-        ],
-    );
+    world
+        .start_mock_env(
+            "settle_ok",
+            "stops",
+            &[
+                ("MOCK_PHD2_VERSION", version),
+                ("MOCK_PHD2_FRAME_SIZE", size.as_str()),
+                ("MOCK_PHD2_CAPTURE_MODE", mode),
+            ],
+        )
+        .await;
 }
 
 #[given(regex = r"^a mock PHD2 (\d+\.\d+\.\d+) whose camera is disconnected$")]
 async fn mock_with_disconnected_camera(world: &mut GuiderWorld, version: String) {
-    world.start_mock_env(
-        "settle_ok",
-        "stops",
-        &[
-            ("MOCK_PHD2_VERSION", version.as_str()),
-            ("MOCK_PHD2_CAMERA", "disconnected"),
-        ],
-    );
+    world
+        .start_mock_env(
+            "settle_ok",
+            "stops",
+            &[
+                ("MOCK_PHD2_VERSION", version.as_str()),
+                ("MOCK_PHD2_CAMERA", "disconnected"),
+            ],
+        )
+        .await;
 }
 
 /// The `camera` block the suite runs the facade with.

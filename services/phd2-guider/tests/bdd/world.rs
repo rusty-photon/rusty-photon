@@ -130,13 +130,48 @@ pub struct HttpResponse {
 #[derive(Debug)]
 pub struct MockPhd2Handle {
     pub port: u16,
-    child: Child,
+    /// Taken out once, to be killed and reaped.
+    child: Option<Child>,
 }
 
 impl Drop for MockPhd2Handle {
+    /// Kill the mock and reap it on a thread of its own: the world is
+    /// dropped on a runtime worker, and a blocking wait there would stall
+    /// every other scenario in flight.
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+    }
+}
+
+/// Spawn `cmd` (`mock_phd2`) and wait for the port it announces. A
+/// wedged child fails the scenario within 10 s (and is reaped) rather
+/// than hanging the suite on an endless stdout read. Blocking: run it on
+/// the blocking pool.
+fn spawn_mock(mut cmd: Command) -> (u16, Child) {
+    let mut child = cmd.spawn().expect("spawn mock_phd2");
+    let stdout = child.stdout.take().expect("mock_phd2 stdout piped");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let port = BufReader::new(stdout).lines().find_map(|line| {
+            line.ok().and_then(|l| {
+                l.strip_prefix("MOCK_PHD2_PORT:")
+                    .and_then(|p| p.parse::<u16>().ok())
+            })
+        });
+        let _ = tx.send(port);
+    });
+    match rx.recv_timeout(Duration::from_secs(10)) {
+        Ok(Some(port)) => (port, child),
+        outcome => {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("mock_phd2 announced no port within 10s (read outcome: {outcome:?})");
+        }
     }
 }
 
@@ -191,14 +226,19 @@ impl GuiderWorld {
 
     /// Spawn `mock_phd2` with an auto-assigned port and the given
     /// settle/stop behavior, parsing the bound port from its stdout.
-    pub fn start_mock(&mut self, settle_mode: &str, stop_mode: &str) {
-        self.start_mock_env(settle_mode, stop_mode, &[]);
+    pub async fn start_mock(&mut self, settle_mode: &str, stop_mode: &str) {
+        self.start_mock_env(settle_mode, stop_mode, &[]).await;
     }
 
     /// [`Self::start_mock`] with additional mock environment knobs
     /// (e.g. `MOCK_PHD2_ROTATOR=connected` for the equipment
     /// passthrough scenarios).
-    pub fn start_mock_env(&mut self, settle_mode: &str, stop_mode: &str, extra: &[(&str, &str)]) {
+    pub async fn start_mock_env(
+        &mut self,
+        settle_mode: &str,
+        stop_mode: &str,
+        extra: &[(&str, &str)],
+    ) {
         let dir = self.temp_dir_path();
         let rpc_log = dir.join("rpc_log.jsonl");
         self.rpc_log_path = Some(rpc_log.clone());
@@ -217,32 +257,18 @@ impl GuiderWorld {
             // scenarios (same policy as tests/test_integration.rs).
             .stderr(Stdio::null());
         apply_child_coverage_profile(&mut cmd);
-        let mut child = cmd.spawn().expect("spawn mock_phd2");
-
-        // Bounded wait for the port announcement: a wedged child must
-        // fail the scenario within 10 s (and be reaped) rather than
-        // hanging the suite on an endless stdout read.
-        let stdout = child.stdout.take().expect("mock_phd2 stdout piped");
-        let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let port = BufReader::new(stdout).lines().find_map(|line| {
-                line.ok().and_then(|l| {
-                    l.strip_prefix("MOCK_PHD2_PORT:")
-                        .and_then(|p| p.parse::<u16>().ok())
-                })
-            });
-            let _ = tx.send(port);
+        // The spawn and the wait for the port run on the blocking pool:
+        // spawning is slow on a loaded Windows runner, and a step that
+        // blocks a runtime worker stalls every other scenario in flight
+        // (see `bdd_infra::run_once_async`).
+        // A panic in `spawn_mock` fails the step with its own message.
+        let (port, child) = tokio::task::spawn_blocking(move || spawn_mock(cmd))
+            .await
+            .unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
+        self.mock = Some(MockPhd2Handle {
+            port,
+            child: Some(child),
         });
-        let port = match rx.recv_timeout(Duration::from_secs(10)) {
-            Ok(Some(port)) => port,
-            outcome => {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("mock_phd2 announced no port within 10s (read outcome: {outcome:?})");
-            }
-        };
-
-        self.mock = Some(MockPhd2Handle { port, child });
     }
 
     /// Write a config pointing at the given PHD2 port and start

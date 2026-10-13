@@ -25,7 +25,15 @@ use crate::client::Phd2Client;
 use crate::config_actions::Phd2GuiderDriver;
 use crate::error::Phd2Error;
 
-use super::capture::{CaptureEngine, Frame, FrameEnd, StartError, ABORT_WAIT, MAX_EXPOSURE};
+use super::capture::{
+    CaptureEngine, Frame, FrameEnd, StartError, ABORT_WAIT, LOCKED_RPC_TIMEOUT, MAX_EXPOSURE,
+};
+
+/// How long an abort or a disconnect waits for its exposure to leave the
+/// session: a start's two requests and the stop, each bounded by
+/// [`LOCKED_RPC_TIMEOUT`], then [`ABORT_WAIT`] for PHD2's report.
+const ABORT_SETTLE: Duration =
+    Duration::from_secs(3 * LOCKED_RPC_TIMEOUT.as_secs() + ABORT_WAIT.as_secs());
 
 /// 0x500: ASCOM's driver-specific catch-all.
 const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
@@ -117,6 +125,17 @@ struct Inner {
     /// Serialises `Connected` writes: a connect awaits PHD2, and a
     /// disconnect must not land inside it.
     lifecycle: tokio::sync::Mutex<()>,
+    /// Fires each time an exposure leaves the session: committed,
+    /// cancelled, or ended with the session.
+    exposure_ended: tokio::sync::Notify,
+}
+
+/// An exposure [`Phd2Camera::begin_abort`] marked as aborted.
+#[derive(Debug, PartialEq, Eq)]
+struct Aborted {
+    generation: u64,
+    /// PHD2's frame file, once PHD2 has accepted the frame.
+    path: Option<std::path::PathBuf>,
 }
 
 #[derive(Clone, derive_more::Debug)]
@@ -156,6 +175,7 @@ impl Phd2Camera {
                     last_duration: None,
                 }),
                 lifecycle: tokio::sync::Mutex::new(()),
+                exposure_ended: tokio::sync::Notify::new(),
             }),
             config_ctx: None,
         }
@@ -228,20 +248,87 @@ impl Phd2Camera {
         })
     }
 
-    /// Mark the exposure in flight as aborted and return the frame file
-    /// to stop in PHD2, if PHD2 has accepted it.
-    fn begin_abort(&self) -> Option<std::path::PathBuf> {
+    /// Mark the exposure in flight as aborted and return it, with the
+    /// frame file to stop in PHD2 if PHD2 has accepted the frame. `None`
+    /// when no exposure is in flight.
+    fn begin_abort(&self) -> Option<Aborted> {
         let mut session = self.session();
         match &mut session.exposure {
-            Exposure::Starting { aborting, .. } | Exposure::Reading { aborting, .. } => {
-                *aborting = true;
-                None
+            Exposure::Starting {
+                generation,
+                aborting,
             }
-            Exposure::InFlight { path, aborting, .. } => {
+            | Exposure::Reading {
+                generation,
+                aborting,
+            } => {
                 *aborting = true;
-                Some(path.clone())
+                Some(Aborted {
+                    generation: *generation,
+                    path: None,
+                })
+            }
+            Exposure::InFlight {
+                generation,
+                path,
+                aborting,
+            } => {
+                *aborting = true;
+                Some(Aborted {
+                    generation: *generation,
+                    path: Some(path.clone()),
+                })
             }
             Exposure::Idle | Exposure::Ready(_) | Exposure::Failed(_) => None,
+        }
+    }
+
+    /// End an exposure [`Self::begin_abort`] marked: stop PHD2's frame if
+    /// PHD2 has accepted it, then wait until the exposure has left the
+    /// session, so a client's next call finds the camera idle. One still
+    /// starting is stopped by its capture task once PHD2 answers, and
+    /// this waits for that too. Bounded by [`ABORT_SETTLE`].
+    async fn finish_abort(&self, aborted: Aborted) {
+        if let Some(path) = &aborted.path {
+            if !self.inner.engine.abort(path, ABORT_WAIT).await {
+                debug!("PHD2 has not reported the aborted frame yet");
+                return;
+            }
+        }
+        if !self
+            .wait_exposure_left(aborted.generation, ABORT_SETTLE)
+            .await
+        {
+            debug!("the aborted exposure has not ended yet");
+        }
+    }
+
+    /// Wait until no exposure of `generation` is in the session, or
+    /// `limit` passes. Returns whether it left.
+    async fn wait_exposure_left(&self, generation: u64, limit: Duration) -> bool {
+        let deadline = tokio::time::Instant::now().checked_add(limit);
+        loop {
+            let ended = self.inner.exposure_ended.notified();
+            let mut ended = std::pin::pin!(ended);
+            // Register before checking, so an end between the check and
+            // the wait is not missed.
+            ended.as_mut().enable();
+            let in_flight = match self.session().exposure {
+                Exposure::Starting { generation: g, .. }
+                | Exposure::InFlight { generation: g, .. }
+                | Exposure::Reading { generation: g, .. } => g == generation,
+                Exposure::Idle | Exposure::Ready(_) | Exposure::Failed(_) => false,
+            };
+            if !in_flight {
+                return true;
+            }
+            let Some(deadline) = deadline else {
+                ended.await;
+                continue;
+            };
+            if tokio::time::timeout_at(deadline, ended).await.is_err() {
+                return false;
+            }
         }
     }
 
@@ -266,7 +353,9 @@ impl Phd2Camera {
             }
         };
 
-        let abort_now = {
+        // `Some(aborting)` while the session is still the one the
+        // exposure started in; `None` once a disconnect replaced it.
+        let accepted = {
             let mut session = self.session();
             match session.exposure {
                 Exposure::Starting {
@@ -280,21 +369,29 @@ impl Phd2Camera {
                     };
                     session.last_start = Some(SystemTime::now());
                     session.last_duration = Some(Duration::from_millis(u64::from(exposure_ms)));
-                    aborting
+                    drop(session);
+                    Some(aborting)
                 }
-                // A disconnect or a newer session took over while PHD2
-                // accepted the frame: end it.
-                _ => true,
+                _ => None,
             }
         };
-        if abort_now {
+        if accepted != Some(false) {
+            // Aborted, or disconnected, while PHD2 was being asked: answer
+            // first, then end the frame PHD2 accepted. The capture still
+            // waits for its report, which releases the slot.
+            let _ = started.send(if accepted.is_some() {
+                Ok(())
+            } else {
+                Err(not_connected(
+                    "the camera was disconnected while PHD2 started the frame",
+                ))
+            });
             let path = inflight.path.clone();
             tokio::spawn(
                 self.clone()
                     .run_capture(generation, inflight, geometry, subframe),
             );
             self.inner.engine.abort(&path, ABORT_WAIT).await;
-            let _ = started.send(Ok(()));
             return;
         }
         let _ = started.send(Ok(()));
@@ -413,6 +510,8 @@ impl Phd2Camera {
                 }
             }
         };
+        drop(session);
+        self.inner.exposure_ended.notify_waiters();
     }
 
     /// Start a session on what a connect read from PHD2: the full frame
@@ -437,6 +536,8 @@ impl Phd2Camera {
         session.exposure = Exposure::Idle;
         session.last_start = None;
         session.last_duration = None;
+        drop(session);
+        self.inner.exposure_ended.notify_waiters();
     }
 
     /// Undo a start PHD2 refused, if nothing has replaced it since.
@@ -444,6 +545,8 @@ impl Phd2Camera {
         let mut session = self.session();
         if matches!(session.exposure, Exposure::Starting { generation: g, .. } if g == generation) {
             session.exposure = Exposure::Idle;
+            drop(session);
+            self.inner.exposure_ended.notify_waiters();
         }
     }
 }
@@ -481,9 +584,9 @@ impl Device for Phd2Camera {
             self.begin_session(geometry);
             return Ok(());
         }
-        if let Some(path) = self.begin_abort() {
-            debug!("disconnect ends the facade's frame in flight");
-            self.inner.engine.abort(&path, ABORT_WAIT).await;
+        if let Some(aborted) = self.begin_abort() {
+            debug!("disconnect ends the facade's exposure in flight");
+            self.finish_abort(aborted).await;
         }
         self.end_session();
         Ok(())
@@ -679,14 +782,13 @@ impl Camera for Phd2Camera {
         Ok(false)
     }
 
-    /// Ends PHD2's frame (`stop_capture`) and discards it. Idle, it does
-    /// nothing and succeeds.
+    /// Ends PHD2's frame (`stop_capture`) and discards it, returning once
+    /// the camera is idle again (bounded, see [`Self::finish_abort`]).
+    /// Idle, it does nothing and succeeds.
     async fn abort_exposure(&self) -> ASCOMResult<()> {
         self.ensure_connected()?;
-        if let Some(path) = self.begin_abort() {
-            if !self.inner.engine.abort(&path, ABORT_WAIT).await {
-                debug!("PHD2 has not reported the aborted frame yet");
-            }
+        if let Some(aborted) = self.begin_abort() {
+            self.finish_abort(aborted).await;
         }
         Ok(())
     }
@@ -729,8 +831,16 @@ impl Camera for Phd2Camera {
     }
 
     async fn percent_completed(&self) -> ASCOMResult<u8> {
-        Ok(match self.connected_session()?.exposure {
+        let session = self.connected_session()?;
+        Ok(match session.exposure {
             Exposure::Ready(_) => 100,
+            Exposure::InFlight { .. } => match (session.last_start, session.last_duration) {
+                (Some(start), Some(total)) => rusty_photon_camera_core::progress_percent(
+                    SystemTime::now().duration_since(start).unwrap_or_default(),
+                    total,
+                ),
+                _ => 0,
+            },
             _ => 0,
         })
     }
@@ -1236,10 +1346,57 @@ mod tests {
         set_exposure(&camera, in_flight(4));
         assert_eq!(
             camera.begin_abort(),
-            Some(std::path::PathBuf::from("/images/phd2-guider-a.fits"))
+            Some(Aborted {
+                generation: 4,
+                path: Some(std::path::PathBuf::from("/images/phd2-guider-a.fits")),
+            })
         );
         camera.commit(4, Err("camera error -- see debug log".to_string()));
         assert!(matches!(camera.session().exposure, Exposure::Idle));
+    }
+
+    #[tokio::test]
+    async fn an_abort_returns_once_its_exposure_has_left_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        set_exposure(&camera, in_flight(4));
+        camera.begin_abort();
+        let waiter = tokio::spawn({
+            let camera = camera.clone();
+            async move { camera.wait_exposure_left(4, Duration::from_secs(30)).await }
+        });
+        // Whether the waiter has registered yet or not, it must see the
+        // commit: it registers before it checks the session.
+        camera.commit(4, Err("aborted".to_string()));
+        assert!(waiter.await.unwrap());
+        assert!(matches!(camera.session().exposure, Exposure::Idle));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_abort_waits_for_its_exposure_no_longer_than_its_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        set_exposure(&camera, in_flight(4));
+        assert!(
+            !camera.wait_exposure_left(4, Duration::from_secs(2)).await,
+            "an exposure still in flight read as ended"
+        );
+        // Another exposure's generation is not the one waited for.
+        assert!(camera.wait_exposure_left(3, Duration::from_secs(2)).await);
+    }
+
+    #[tokio::test]
+    async fn the_percent_completed_follows_the_exposure() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        set_exposure(&camera, in_flight(4));
+        {
+            let mut session = camera.session();
+            session.last_start = Some(SystemTime::now() - Duration::from_secs(30));
+            session.last_duration = Some(Duration::from_secs(60));
+        }
+        let percent = camera.percent_completed().await.unwrap();
+        assert!((49..=51).contains(&percent), "{percent}");
     }
 
     #[test]
@@ -1253,7 +1410,13 @@ mod tests {
                 aborting: false,
             },
         );
-        assert_eq!(camera.begin_abort(), None);
+        assert_eq!(
+            camera.begin_abort(),
+            Some(Aborted {
+                generation: 1,
+                path: None
+            })
+        );
         assert!(matches!(
             camera.session().exposure,
             Exposure::Starting { aborting: true, .. }
@@ -1265,7 +1428,13 @@ mod tests {
                 aborting: false,
             },
         );
-        assert_eq!(camera.begin_abort(), None);
+        assert_eq!(
+            camera.begin_abort(),
+            Some(Aborted {
+                generation: 1,
+                path: None
+            })
+        );
         assert!(matches!(
             camera.session().exposure,
             Exposure::Reading { aborting: true, .. }
