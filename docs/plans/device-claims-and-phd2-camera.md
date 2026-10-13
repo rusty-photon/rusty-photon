@@ -121,11 +121,13 @@ Windows legs read only on a VM and the unread macOS key, as C1's close,
 to be read on real hardware later (waiting list). C2 → C3 → C4 then land per
 driver, each on its own, adding the list path and leaving the no-list
 path as it is today. C5 lands after all three: it flips the no-list
-default in every driver at once (D4), so it waited on the macOS check in
-the waiting list, which found macOS 26's USB report moved and the
-collector reading an empty bus there, and is answered by the collector
-reading the report the host lists (C4's tenet-3 blocker, which C5 also
-inherited, was settled in C4's design, D6). C6 needs nothing from
+default in every driver at once (D4), so it waits on the macOS check in
+the waiting list. Its report half is answered — macOS 26 had moved its
+USB report, which left the collector reading an empty bus there, and the
+collector now reads the report the host lists — and its location-id
+half, which no real Mac has read, holds C5 unless the owner accepts it
+for C5 as for C2–C4 (C4's tenet-3 blocker, which C5 also inherited, was
+settled in C4's design, D6). C6 needs nothing from
 Part A but is only *operationally* safe after C4. C7 needs C6.
 
 Each phase follows
@@ -2397,12 +2399,14 @@ review.
 | 16 | **`usb_devices` numbers must run `0..N-1`; a gap is rejected, not filled** (D3) — 2026-10-01 | Every served number is one the operator wrote, so a typo cannot become a phantom camera. Retiring a camera below the highest number means renumbering the entries above it (and rp); a retired camera's entry is never kept to hold a number, because a listed port opens whatever is plugged in there next. |
 | 17 | **The no-list CFW probe opens the camera without `InitQHYCCD`** (D6, option 2) — 2026-10-11 | `IsQHYCCDCFWPlugged` and the slot count answered after a bare open exactly as after an init, on a QHY178M (Linux, warm and fresh from power-up) and on `rig2`'s QHY600M (Windows), and a parked wheel stayed put, so no init is reachable from startup or reload in either path. Deferring the probe to connect (option 1) stays the list path's answer, where the wheel is declared; an unsafe operator command (option 3) was not needed. A model that turns out to need the init loses its wheel on the no-list path — a missing device, logged — and a list declaring the wheel is the remedy. |
 
-Nothing in this plan is waiting on an *operator* answer. **Five** things
+One thing in this plan waits on an *operator* answer: whether the macOS
+gap below, accepted for C2–C4, is accepted for C5 too. **Five** things
 are waiting on evidence or an implementation choice, each named at its
-rule — one of them blocks a phase outright (C7's focus-model
-reconciliation); the macOS `system_profiler` check that blocked C5's
-no-list flip was answered on 2026-10-12, below. C4's
-tenet-3-safe probe path, the third, was settled in C4's design (D6, decision 17),
+rule — two of them block a phase outright: the macOS check before C5's
+no-list flip, whose report half was answered on 2026-10-12 and whose
+location-id half no real Mac has read, and C7's focus-model
+reconciliation. C4's tenet-3-safe probe path, which held C4 the same
+way, was settled in C4's design (D6, decision 17),
 measured under Linux on a camera fresh from power-up and under Windows on
 `rig2`. C1's last wait, a move to a different
 port, was answered on a Windows VM on 2026-10-10 (D2, spike item 7),
@@ -2433,7 +2437,10 @@ and on 2026-10-11 the owner accepted the legs no real hardware has read
   Mac with one: that a camera's location id stays the same across a
   replug and a reboot, changes when the camera moves to another port,
   and carries the hop when the camera is behind a hub. The owner
-  accepted that gap for C2–C4 on 2026-10-11.
+  accepted that gap for C2–C4 on 2026-10-11. C5 makes port order the
+  no-list numbering, so a location id that moved on a replug would
+  renumber a Mac's cameras: the gap holds C5 until a Mac reads it, or
+  the owner accepts it for C5 too.
 - **C5 — QHY's serial-less identity policy**, waiting on a choice
   between giving those models a port-based identity (with the matching
   `devices`-key and shared-CFW-id migration) and documenting the existing

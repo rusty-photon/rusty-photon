@@ -293,7 +293,9 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
   empty beside the listed one's devices — so reading `SPUSBDataType` on
   macOS 26 would be an empty bus that is not one. The collector therefore
   reads the listing first and queries the report it names (`SPUSBHostDataType`
-  if a release ever lists both). The two spell their fields differently
+  if a release ever lists both). The listing changes only with an upgrade,
+  which restarts every process, so a process reads it once and its later
+  scans make the one query. The two spell their fields differently
   (`location_id` / `USBKeyLocationID`, `vendor_id` / `USBDeviceKeyVendorID`,
   …) but give one device the same location id, so a port written on macOS 15
   names the same socket on macOS 26. macOS 15's report names Apple's own
@@ -407,8 +409,11 @@ firmware artifacts — and the crate gathers `HardwareFacts`, read-only:
       one whose sysfs name is not valid UTF-8, so its port cannot be
       named. A device whose enumeration fails never gets a sysfs entry at
       all, so Linux cannot report one; the kernel log is the only trace.
-    - **macOS** — a device with a vendor and product id but no usable
-      location id. As on Linux, a failed enumeration leaves no node.
+    - **macOS** — a device record (one carrying the report's vendor id
+      key) whose vendor id, product id or location id cannot be read:
+      missing, or not the hex the report prints. It keeps its location
+      when that could be read. As on Linux, a failed enumeration leaves no
+      node.
 
     A device on Windows ARM hosts or behind a USB-over-IP client may
     publish no `PCIROOT(` path while working normally; such hosts are
