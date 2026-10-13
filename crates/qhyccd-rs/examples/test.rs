@@ -16,9 +16,12 @@ fn main() {
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    let sdk = Sdk::new().expect("SDK::new failed");
+    let mut sdk = Sdk::new().expect("SDK::new failed");
     let sdk_version = sdk.version().expect("get_sdk_version failed");
     trace!(sdk_version = ?sdk_version);
+
+    let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
+    trace!(probe = ?sdk.probe_filter_wheels(&ids));
 
     let filter_wheel = sdk.filter_wheels().last().expect("no filter_wheel found");
     trace!(filter_wheel = ?filter_wheel);

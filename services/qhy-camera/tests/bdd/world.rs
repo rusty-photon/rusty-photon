@@ -1,11 +1,13 @@
 //! Cucumber `World` for the qhy-camera BDD suite.
 //!
 //! Each scenario spawns the qhy-camera binary (built with the `simulation`
-//! backend so `Sdk::new()` yields a QHY178M-Simulated camera + 7-position CFW)
-//! and drives it through the typed `ascom-alpaca` Camera / `FilterWheel` clients
-//! over real HTTP — mirroring the qhy-focuser / dsd-fp2 pattern.
+//! backend so `Sdk::new()` yields a QHY178M-Simulated camera, whose 7-position
+//! CFW the service's startup probe finds, or a `usb_devices` entry declares)
+//! and drives it through the typed `ascom-alpaca` Camera / `FilterWheel`
+//! clients over real HTTP — mirroring the qhy-focuser / dsd-fp2 pattern.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -36,8 +38,12 @@ const IMAGE_READY_BUDGET: Duration = Duration::from_secs(20);
 #[derive(Debug, Default, World)]
 pub struct CameraWorld {
     pub handle: Option<ServiceHandle>,
+    /// Camera device 0, the one most scenarios address.
     pub camera: Option<Arc<dyn Camera>>,
-    pub filter_wheel: Option<Arc<dyn FilterWheel>>,
+    /// Every registered Camera device, indexed by its device number.
+    pub cameras: Vec<Arc<dyn Camera>>,
+    /// Every registered `FilterWheel` device, indexed by its device number.
+    pub filter_wheels: Vec<Arc<dyn FilterWheel>>,
     pub temp_dir: Option<TempDir>,
 
     // Config knobs set by Given steps before the service starts.
@@ -46,11 +52,31 @@ pub struct CameraWorld {
     /// The file whose existence takes the simulated camera off the bus (C9);
     /// `None` starts a camera that never leaves.
     pub departure_file: Option<std::path::PathBuf>,
+    /// The service is expected to register no camera although the backend has
+    /// one (a camera its CFW probe cannot open, C0): startup then waits for the
+    /// device list rather than for a camera.
+    pub expect_no_camera: bool,
+    /// The configuration the next start writes, minus its `server` block;
+    /// `None` writes the default (no `usb_devices` list), with
+    /// [`Self::filter_names`] as the simulated camera's override.
+    pub config_json: Option<serde_json::Value>,
+    /// The staged USB inventory handed over with `--usb-inventory` (U7);
+    /// `None` leaves the simulation build its default inventory.
+    pub usb_inventory: Option<PathBuf>,
 
     // Result stashes ("When does, Then asserts").
     pub last_error_code: Option<u16>,
+    pub last_error_message: Option<String>,
     pub last_response: Option<serde_json::Value>,
     pub last_actions: Option<Vec<String>>,
+    /// How the last start that was expected to fail went: `Err` with the
+    /// harness's account of the refusal, or `Ok` when the service came up.
+    pub start_refusal: Option<Result<(), String>>,
+    /// The port a list configuration is written with, reserved once per
+    /// scenario so every rewrite of the file names the same one.
+    pub config_port: Option<u16>,
+    /// The last `doctor` run's output (`doctor --json` or `doctor --devices`).
+    pub doctor_output: Option<std::process::Output>,
 
     /// State for the shared TLS + auth smoke steps (`auth.feature`).
     pub tls_auth: TlsAuthState,
@@ -92,20 +118,37 @@ impl TlsAuthSmokeWorld for CameraWorld {
 }
 
 impl CameraWorld {
-    fn write_config(&mut self) -> String {
-        let mut devices = serde_json::Map::new();
-        if let Some(names) = &self.filter_names {
-            devices.insert(
-                SIM_SERIAL.to_string(),
-                serde_json::json!({ "filter_names": names }),
-            );
-        }
-        let config = serde_json::json!({
-            "devices": devices,
-            // Port 0 → OS-assigned; the real port is read from the `bound_addr=`
-            // line on stdout by ServiceHandle.
-            "server": { "port": 0 },
+    /// Write the scenario's configuration and return its path.
+    ///
+    /// Port 0 (OS-assigned) by default; the real port is read from the
+    /// `bound_addr=` line on stdout by `ServiceHandle`. A configuration with a
+    /// `usb_devices` list takes a reserved port instead, because a list is the
+    /// one configuration whose service rebuilds itself (U6): a rebuild rebinds
+    /// the configured port, and port 0 would move the service to a port the
+    /// harness never learns. The port is reserved once per scenario, so a
+    /// later rewrite keeps the port a rebuild of the running service rebinds.
+    pub fn write_config(&mut self) -> String {
+        let mut config = self.config_json.clone().unwrap_or_else(|| {
+            let mut devices = serde_json::Map::new();
+            if let Some(names) = &self.filter_names {
+                devices.insert(
+                    SIM_SERIAL.to_string(),
+                    serde_json::json!({ "filter_names": names }),
+                );
+            }
+            serde_json::json!({ "devices": devices })
         });
+        let port = if config.get("usb_devices").is_some() {
+            *self
+                .config_port
+                .get_or_insert_with(bdd_infra::reserved_test_port)
+        } else {
+            0
+        };
+        config
+            .as_object_mut()
+            .expect("the scenario's configuration is a JSON object")
+            .insert("server".to_string(), serde_json::json!({ "port": port }));
         let path = self.scratch_dir().join("qhy-camera.json");
         std::fs::write(
             &path,
@@ -127,73 +170,82 @@ impl CameraWorld {
             .to_path_buf()
     }
 
+    /// The service's command line for this scenario.
+    pub fn start_args(&mut self) -> Vec<String> {
+        let config_path = self.write_config();
+        let mut args = vec!["--config".to_string(), config_path];
+        if self.empty_backend {
+            args.push("--simulation-empty".to_string());
+        } else if let Some(departure) = &self.departure_file {
+            args.push("--simulation-departure-file".to_string());
+            args.push(departure.to_str().expect("utf8 departure path").to_string());
+        }
+        if let Some(inventory) = &self.usb_inventory {
+            args.push("--usb-inventory".to_string());
+            args.push(inventory.to_str().expect("utf8 inventory path").to_string());
+        }
+        args
+    }
+
     /// Spawn the service binary and acquire the typed device clients.
     pub async fn start(&mut self) {
-        let config_path = self.write_config();
-        let handle = if self.empty_backend {
-            ServiceHandle::start_with_args(
-                env!("CARGO_PKG_NAME"),
-                &["--config", &config_path, "--simulation-empty"],
-            )
-            .await
-        } else if let Some(departure) = &self.departure_file {
-            let departure = departure.to_str().expect("utf8 departure path");
-            ServiceHandle::start_with_args(
-                env!("CARGO_PKG_NAME"),
-                &[
-                    "--config",
-                    &config_path,
-                    "--simulation-departure-file",
-                    departure,
-                ],
-            )
-            .await
-        } else {
-            ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await
-        };
+        let args = self.start_args();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let handle = ServiceHandle::start_with_args(env!("CARGO_PKG_NAME"), &args).await;
         self.handle = Some(handle);
         self.acquire().await;
     }
 
+    /// Start the service when the scenario expects it to refuse, recording
+    /// how it went in [`Self::start_refusal`].
+    pub async fn try_start(&mut self) {
+        let args = self.start_args();
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        match ServiceHandle::try_start_with_args(env!("CARGO_PKG_NAME"), &args).await {
+            Ok(handle) => {
+                self.handle = Some(handle);
+                self.start_refusal = Some(Ok(()));
+            }
+            Err(why) => self.start_refusal = Some(Err(why)),
+        }
+    }
+
+    /// Whether this scenario's service should register at least one Camera:
+    /// a list registers exactly its entries, whatever the SDK sees (U4), and
+    /// no list registers what the SDK enumerates and the CFW probe can open
+    /// (C0).
+    fn expects_a_camera(&self) -> bool {
+        match self.config_json.as_ref().and_then(|c| c.get("usb_devices")) {
+            Some(list) => list.as_array().is_some_and(|l| !l.is_empty()),
+            None => !(self.empty_backend || self.expect_no_camera),
+        }
+    }
+
     async fn acquire(&mut self) {
-        let port = self.handle.as_ref().expect("service handle").port;
-        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        let port = self.port();
+        let expects_a_camera = self.expects_a_camera();
         for _ in 0..80 {
-            let client = AlpacaClient::new_from_addr(addr);
-            if let Ok(devices) = client.get_devices().await {
-                let mut camera = None;
-                let mut filter_wheel = None;
-                for device in devices {
-                    match device {
-                        TypedDevice::Camera(c) => camera = Some(c),
-                        TypedDevice::FilterWheel(f) => filter_wheel = Some(f),
-                        #[allow(unreachable_patterns)]
-                        _ => {}
-                    }
-                }
-                if self.empty_backend {
-                    // Zero cameras is the expected, healthy state here (C0).
-                    self.camera = camera;
-                    self.filter_wheel = filter_wheel;
-                    return;
-                }
-                if camera.is_some() {
-                    self.camera = camera;
-                    self.filter_wheel = filter_wheel;
+            if let Some((cameras, filter_wheels)) = registered_devices(port).await {
+                // Zero cameras is the expected, healthy state for an empty
+                // backend, an empty list, or a camera the probe cannot open
+                // (C0).
+                if !cameras.is_empty() || !expects_a_camera {
+                    self.camera = cameras.first().cloned();
+                    self.cameras = cameras;
+                    self.filter_wheels = filter_wheels;
                     return;
                 }
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        // Reaching here means the loop never took its success `return`: either the
-        // management API never responded (both modes) or no Camera registered
-        // (non-empty backend). Fail loudly in both cases so a scenario stops with
+        // Reaching here means the loop never took its success `return`: either
+        // the management API never responded, or no Camera registered where
+        // one was expected. Fail loudly in both cases so a scenario stops with
         // an actionable error instead of proceeding against an unhealthy or
-        // never-started service. (An empty backend's *healthy* state is zero
-        // cameras AFTER a successful get_devices() — which returns inside the loop.)
+        // never-started service.
         assert!(
-            !self.empty_backend,
-            "qhy-camera management API did not respond within 20s (empty backend)"
+            expects_a_camera,
+            "qhy-camera management API did not respond within 20s (no camera expected)"
         );
         panic!("qhy-camera did not register a Camera device within 20s");
     }
@@ -202,12 +254,31 @@ impl CameraWorld {
         Arc::clone(self.camera.as_ref().expect("camera not acquired"))
     }
 
-    pub fn filter_wheel(&self) -> Arc<dyn FilterWheel> {
-        Arc::clone(
-            self.filter_wheel
-                .as_ref()
-                .expect("filter wheel not acquired"),
-        )
+    /// The Camera registered at `device_number`.
+    pub fn device(&self, device_number: u32) -> Arc<dyn Camera> {
+        let index = usize::try_from(device_number).expect("device number fits usize");
+        Arc::clone(self.cameras.get(index).unwrap_or_else(|| {
+            panic!(
+                "no camera device {device_number}; {} registered",
+                self.cameras.len()
+            )
+        }))
+    }
+
+    /// The `FilterWheel` registered at `device_number`.
+    pub fn wheel(&self, device_number: u32) -> Arc<dyn FilterWheel> {
+        let index = usize::try_from(device_number).expect("device number fits usize");
+        Arc::clone(self.filter_wheels.get(index).unwrap_or_else(|| {
+            panic!(
+                "no filterwheel device {device_number}; {} registered",
+                self.filter_wheels.len()
+            )
+        }))
+    }
+
+    /// The port the running service listens on.
+    pub const fn port(&self) -> u16 {
+        self.handle.as_ref().expect("service handle").port
     }
 
     pub fn base_url(&self) -> String {
@@ -352,6 +423,26 @@ impl CameraWorld {
             .and_then(|r| r.get("config").cloned())
             .expect("config.get response missing `config`")
     }
+}
+
+/// The Camera and `FilterWheel` devices a server at `port` registers, each in
+/// device-number order, or `None` when its management API does not answer.
+pub async fn registered_devices(
+    port: u16,
+) -> Option<(Vec<Arc<dyn Camera>>, Vec<Arc<dyn FilterWheel>>)> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let devices = AlpacaClient::new_from_addr(addr).get_devices().await.ok()?;
+    let mut cameras = Vec::new();
+    let mut filter_wheels = Vec::new();
+    for device in devices {
+        match device {
+            TypedDevice::Camera(camera) => cameras.push(camera),
+            TypedDevice::FilterWheel(wheel) => filter_wheels.push(wheel),
+            #[allow(unreachable_patterns)]
+            _ => {}
+        }
+    }
+    Some((cameras, filter_wheels))
 }
 
 /// Map an ASCOM error-code *name* (as written in the feature files) to its raw

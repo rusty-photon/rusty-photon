@@ -11,8 +11,10 @@ pub struct FilterWheel {
 
 /// Filter wheels are directly connected to the QHY camera and can be controlled through the camera
 impl FilterWheel {
-    /// Creates a new instance of the filter wheel. The Sdk automatically finds all filter wheels and provides them in its `filter_wheels()` iterator. Creating
-    /// a filter wheel manually should only be needed for rare cases.
+    /// Creates a new instance of the filter wheel. [`Sdk::probe_filter_wheels`](crate::Sdk::probe_filter_wheels)
+    /// finds the wheels on the cameras it is given and lists them in
+    /// [`Sdk::filter_wheels`](crate::Sdk::filter_wheels). Creating a filter wheel
+    /// manually should only be needed for rare cases.
     ///
     /// The wheel must be built from a camera the SDK handed out: it shares that
     /// camera's backend, so both act on the same device.
@@ -33,7 +35,9 @@ impl FilterWheel {
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};
-    /// let sdk = Sdk::new().expect("SDK::new failed");
+    /// let mut sdk = Sdk::new().expect("SDK::new failed");
+    /// let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
+    /// sdk.probe_filter_wheels(&ids);
     /// let fw = sdk.filter_wheels().last().expect("no filter wheel found");
     /// println!("Filter wheel id: {}", fw.id());
     /// ```
@@ -50,7 +54,9 @@ impl FilterWheel {
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};
-    /// let sdk = Sdk::new().expect("SDK::new failed");
+    /// let mut sdk = Sdk::new().expect("SDK::new failed");
+    /// let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
+    /// sdk.probe_filter_wheels(&ids);
     /// let fw = sdk.filter_wheels().last().expect("no filter wheel found");
     /// fw.open().expect("open failed");
     /// ```
@@ -65,7 +71,9 @@ impl FilterWheel {
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};
-    /// let sdk = Sdk::new().expect("SDK::new failed");
+    /// let mut sdk = Sdk::new().expect("SDK::new failed");
+    /// let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
+    /// sdk.probe_filter_wheels(&ids);
     /// let fw = sdk.filter_wheels().last().expect("no filter wheel found");
     /// fw.open().expect("open failed");
     /// let is_open = fw.is_open();
@@ -82,7 +90,9 @@ impl FilterWheel {
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};
-    /// let sdk = Sdk::new().expect("SDK::new failed");
+    /// let mut sdk = Sdk::new().expect("SDK::new failed");
+    /// let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
+    /// sdk.probe_filter_wheels(&ids);
     /// let fw = sdk.filter_wheels().last().expect("no filter wheel found");
     /// fw.open().expect("open failed");
     /// let is_cfw_plugged_in = fw.is_cfw_plugged_in().expect("is_cfw_plugged_in failed");
@@ -98,7 +108,9 @@ impl FilterWheel {
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};
-    /// let sdk = Sdk::new().expect("SDK::new failed");
+    /// let mut sdk = Sdk::new().expect("SDK::new failed");
+    /// let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
+    /// sdk.probe_filter_wheels(&ids);
     /// let fw = sdk.filter_wheels().last().expect("no filter wheel found");
     /// fw.open().expect("open failed");
     /// fw.close().expect("close failed");
@@ -115,7 +127,9 @@ impl FilterWheel {
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};
-    /// let sdk = Sdk::new().expect("SDK::new failed");
+    /// let mut sdk = Sdk::new().expect("SDK::new failed");
+    /// let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
+    /// sdk.probe_filter_wheels(&ids);
     /// let fw = sdk.filter_wheels().last().expect("no filter wheel found");
     /// fw.open().expect("open failed");
     /// let number_of_filters = fw.get_number_of_filters().expect("get_number_of_filters failed");
@@ -148,7 +162,9 @@ impl FilterWheel {
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};
-    /// let sdk = Sdk::new().expect("SDK::new failed");
+    /// let mut sdk = Sdk::new().expect("SDK::new failed");
+    /// let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
+    /// sdk.probe_filter_wheels(&ids);
     /// let fw = sdk.filter_wheels().last().expect("no filter wheel found");
     /// fw.open().expect("open failed");
     /// let current_position = fw.get_fw_position().expect("get_fw_position failed");
@@ -180,7 +196,9 @@ impl FilterWheel {
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,FilterWheel};
-    /// let sdk = Sdk::new().expect("SDK::new failed");
+    /// let mut sdk = Sdk::new().expect("SDK::new failed");
+    /// let ids: Vec<String> = sdk.cameras().map(|c| c.id().to_string()).collect();
+    /// sdk.probe_filter_wheels(&ids);
     /// let fw = sdk.filter_wheels().last().expect("no filter wheel found");
     /// fw.open().expect("open failed");
     /// fw.set_fw_position(1).expect("set_fw_position failed");

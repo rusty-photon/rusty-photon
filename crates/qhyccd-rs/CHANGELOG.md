@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Sdk::try_new()`, which answers the new `QHYError::SdkInUse` while another
+  `Sdk` lives in this process instead of waiting for it (see *Changed*).
+- `Sdk::probe_filter_wheels(&ids)`, the second stage after `Sdk::new()`'s
+  enumeration (see *Changed*), and `QHYError::UnknownCameraId` for an id it is
+  given that names no enumerated camera. It takes any slice of string-likes
+  (`&[&str]`, `&[String]`). A camera already open is asked on its handle and
+  left open; a closed one is opened, asked up to three times and closed. A
+  camera whose close fails stays open until a later close succeeds. A camera
+  another thread opens while its probe runs shares the probe's handle and is
+  closed with it, so probe before handing cameras to other threads.
+- `SimulatedCameraConfig::with_cfw_plug_misses(n)`: the first `n` CFW-plugged
+  queries after each open answer `false`, as a real plug query occasionally
+  misses a wheel. A new `cfw_plug_misses` field, with the same struct literal
+  note as `departure_file`. Simulation only.
+- `examples/enumerate.rs`, a hand-run probe that prints each camera's id and
+  model without opening one (`GetQHYCCDModel` takes the id, so no
+  `OpenQHYCCD` precedes it).
+- `cfw_probe` modes `detect [init]` (the wheel's plug, port and slot-count
+  queries on a handle no init has run on, then, with `init`, after one) and
+  `hold <s>` (hold the camera open and initialised, reading the wheel's status,
+  while another process runs `detect`).
 - A simulated camera can leave the bus and come back:
   `SimulatedCameraConfig::with_departure_file(path)` takes it away whenever
   `path` exists. A departed camera keeps its handle, as a real one whose power
@@ -44,6 +65,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** one `Sdk` at a time in a process is now enforced, not only
+  documented. `Sdk::new()` waits while another `Sdk` lives in the process, so
+  a thread that holds one and calls it again waits forever. The SDK's resource
+  is the process's and not counted, so a second `Sdk`'s drop released it under
+  the first's cameras. An `Sdk` keeps its claim until its drop has run
+  `ReleaseQHYCCDResource`. The simulated `Sdk::new()` keeps the same rule;
+  `Sdk::new_simulated()` claims nothing. `Sdk` is no longer `Clone` (a clone's
+  drop released the resource too) or `PartialEq`.
+- **Breaking:** `Sdk::new()` enumerates and opens nothing: `ScanQHYCCD` and
+  `GetQHYCCDId` per camera. It used to open, initialise (`InitQHYCCD`), probe and
+  close every camera to find its filter wheel, before a caller could choose
+  which cameras it may touch. Finding the wheels is now a second call,
+  `Sdk::probe_filter_wheels(&ids)`, made for the ids the caller names, which
+  opens each and asks `IsQHYCCDCFWPlugged` but **never initialises it** — QHY
+  documents the init as one that may home a wheel. `Sdk::filter_wheels()` lists
+  nothing until the probe has run, and a camera whose probe cannot open or close
+  it stays in `Sdk::cameras()`, its error in the probe's outcome, where it used to
+  be dropped silently. The simulated SDK follows: `add_simulated_camera` adds the
+  camera, and the probe finds its wheel.
+- `Camera::get_model` no longer needs the camera open (see *Fixed*); under
+  `simulation` it answers on a closed camera too.
 - **Breaking:** `Camera::cfw_position` and `FilterWheel::get_fw_position`
   return a `CfwStatus` rather than a `u32`, so the CFW's `'N'` reads as the
   wheel moving. It used to reach the caller as slot 30, through the decode's
@@ -90,6 +132,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `Sdk::new()` releases the SDK's resource (`ReleaseQHYCCDResource`) when the
+  scan or an id read fails after `InitQHYCCDResource` succeeded. It returned
+  the error with the initialisation still held, and no `Sdk` whose drop would
+  release it, so every failed call left one unreleased.
+- `GetQHYCCDModel` takes the camera's id, as the SDK header declares
+  (`GetQHYCCDModel(char *id, char *model)`), not its handle. `libqhyccd-sys`
+  declared it with the handle, so `Camera::get_model` passed an open handle where
+  the SDK reads a C string. It now passes the id, and reads the model without
+  opening the camera (`QHY178M` for `QHY178M-222b16468c5966524`, on hardware).
 - Closing a camera can no longer free the handle out from under an SDK call in
   flight on another thread. The handle used to be copied out of its `RwLock` and
   the guard released *before* the FFI call, so `Camera::close` could run

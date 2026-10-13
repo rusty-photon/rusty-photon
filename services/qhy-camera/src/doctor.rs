@@ -19,15 +19,17 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
+use rusty_photon_doctor_checks::claims::devices_report;
 use rusty_photon_doctor_checks::report::Check;
 #[cfg(any(windows, test))]
 use rusty_photon_doctor_checks::report::Status;
 use rusty_photon_doctor_checks::service::{self, SdkOutcome};
 
+use crate::claims::{self, listing, UsbSource, NORMALIZER, SERVICE};
 #[cfg(any(all(windows, not(feature = "simulation")), test))]
 use crate::preflight::PINNED_SDK_VERSION;
 use crate::preflight::{PinnedSdkVersion, QHY_ALL_IN_ONE_URL};
-use crate::{load_effective_config, CliOverrides};
+use crate::{load_effective_config, read_effective_config, CliOverrides};
 
 /// The SDK version reported by the loaded DLL (`GetQHYCCDSDKVersion`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +75,67 @@ impl SdkVersionFinding {
 struct Probe {
     sdk: Option<SdkOutcome>,
     extras: Vec<Check>,
+}
+
+/// `doctor --devices`: the QHY cameras on the bus by USB port, and the
+/// `usb_devices` block to paste (docs/services/qhy-camera.md U8).
+///
+/// Read-only and enumeration-only — each camera's id and model are read
+/// without opening it, so no CFW probe runs and no wheel can be seen. Its
+/// `Sdk::new` still starts the SDK and scans in this process, beside any
+/// service holding the cameras, which is unmeasured. Exits 0; 1 when the
+/// config cannot be read, its list breaks a rule (the ports are listed all the
+/// same — they are how the list gets fixed), the scan failed, or the SDK could
+/// not enumerate; 2 when the config path cannot be resolved.
+pub fn run_devices(config: Option<PathBuf>, source: &UsbSource) -> ! {
+    let config_path = match rusty_photon_config::resolve_config_path(SERVICE, config) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("doctor: {error}");
+            exit(2);
+        }
+    };
+    match devices(&config_path, source) {
+        Ok((output, code)) => {
+            print!("{output}");
+            exit(code);
+        }
+        Err(error) => {
+            eprintln!("doctor: {error}");
+            exit(1);
+        }
+    }
+}
+
+/// The listing [`run_devices`] prints, and its exit code; `Err` when the
+/// config cannot be read at all, which goes to stderr as the path error does.
+fn devices(
+    config_path: &Path,
+    source: &UsbSource,
+) -> Result<(String, i32), Box<dyn std::error::Error + Send + Sync>> {
+    let config = read_effective_config(config_path, &CliOverrides::default())?;
+    Ok(devices_report(
+        NORMALIZER,
+        SERVICE,
+        config_path,
+        config.check_list(),
+        source.scan(),
+        || {
+            let cameras = enumerated()?;
+            Ok((claims::sdk_cameras(&cameras), cameras))
+        },
+        |claims, cameras| listing(&config, claims, cameras),
+    ))
+}
+
+/// What the SDK enumerates, ids and models, before any open. A Windows
+/// real-SDK build resolves the delay-loaded `qhyccd.dll` first: an SDK call
+/// without it faults instead of returning an error.
+fn enumerated() -> Result<Vec<claims::Enumerated>, String> {
+    #[cfg(all(windows, not(feature = "simulation")))]
+    crate::preflight::ensure_qhyccd_dll().map_err(|error| error.to_string())?;
+    let sdk = qhyccd_rs::Sdk::new().map_err(|error| error.to_string())?;
+    Ok(claims::enumerate(&sdk))
 }
 
 pub fn run(config: Option<PathBuf>, json: bool) -> ! {

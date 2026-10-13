@@ -986,12 +986,12 @@ of the report, a listing of every camera of its SDK on the bus by USB port,
 and a paste-ready `usb_devices` block
 ([device-claims plan](../plans/device-claims-and-phd2-camera.md) D5). It
 holds to the same rules — read-only, enumeration only, never an open — and
-the same exit codes, and it is text only. `svbony-camera` and `zwo-camera`
-have it today ([svbony-camera.md](svbony-camera.md) U8,
-[zwo-camera.md](zwo-camera.md) U8); `qhy-camera` gains it with its own list
-(plan C4), and the `usb-devices.*` checks that judge a list come with plan
-C5. The listing, its paste-ready block, the join that places each camera and
-the port order it is printed in are shared code in
+the same exit codes, and it is text only. `svbony-camera`, `zwo-camera` and
+`qhy-camera` have it ([svbony-camera.md](svbony-camera.md) U8,
+[zwo-camera.md](zwo-camera.md) U8, [qhy-camera.md](qhy-camera.md) U8), and
+the `usb-devices.*` checks that judge a list come with plan C5. The listing,
+its paste-ready block, the join that places each camera, the port order it
+is printed in, and the list entry with its validation are shared code in
 `rusty-photon-doctor-checks`' `claims` module, beside the inventory they
 read.
 

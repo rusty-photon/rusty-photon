@@ -383,7 +383,7 @@ impl ServerBuilder {
                         port = %entry.usb_port,
                         "a listed port holds an SVBony camera"
                     );
-                    self.register_camera(server, cam, Some(&entry.display_override()))?;
+                    self.register_camera(server, cam, Some(&DeviceOverride::from(entry)))?;
                     registered.cameras = registered.cameras.saturating_add(1);
                 }
                 Err(reason) => {

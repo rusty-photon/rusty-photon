@@ -13,9 +13,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ascom_alpaca::api::{Device, FilterWheel};
-use ascom_alpaca::{ASCOMError, ASCOMResult};
+use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use parking_lot::Mutex;
 use qhyccd_rs::CfwStatus;
+use rusty_photon_driver::claims::Placeholder;
 use tracing::{debug, warn};
 
 use crate::backend::{BackendError, FilterWheelHandle, Verdict};
@@ -485,10 +486,24 @@ impl QhyFilterWheelDevice {
         // it sends is not cleared beside it, and none starts until this
         // connection's view of the wheel is in place (FW2, FW8).
         let mut last_sent = self.state.last_sent.lock();
-        let count = self
-            .handle
-            .get_number_of_filters()
-            .map_err(|_| ASCOMError::NOT_CONNECTED)?;
+        // The slot count is where a wheel that is not there shows: with no CFW
+        // plugged in, its cable out or its 12 V off, the read fails (C0). That
+        // is how a declared wheel learns whether a CFW answers (U10). A wheel
+        // still moving fails it too (FW8), so the message names both, and the
+        // failure is transient either way: the next connect finds a CFW that
+        // has since powered up or stopped.
+        let count = self.handle.get_number_of_filters().map_err(|e| {
+            debug!(filter_wheel = %self.unique_id, error = %e, "the slot count read failed");
+            ASCOMError::new(
+                ASCOMErrorCode::NOT_CONNECTED,
+                format!(
+                    "the filter wheel on {} did not report its slot count, which a CFW that is \
+                     unplugged, has no 12 V or is still moving does not: check its cable and its \
+                     12 V, or connect again once it has stopped",
+                    self.handle.id()
+                ),
+            )
+        })?;
         // Initial target = the current physical slot. This is also the one place
         // an idle wheel reads the SDK: from here on the slot only changes when
         // this driver commands it, so `position` serves the settled value from
@@ -625,7 +640,7 @@ impl Device for QhyFilterWheelDevice {
     }
 
     async fn driver_info(&self) -> ASCOMResult<String> {
-        Ok("rusty-photon qhy-camera".to_string())
+        Ok(crate::DRIVER_INFO.to_string())
     }
 
     async fn driver_version(&self) -> ASCOMResult<String> {
@@ -732,12 +747,99 @@ impl FilterWheel for QhyFilterWheelDevice {
     }
 }
 
+/// The `FilterWheel` that holds a declared wheel's number when its camera cannot
+/// be served (U10).
+///
+/// It is the placeholder Camera's twin, with the same reason: it reads
+/// `Connected == false`, refuses `Connected = true` with the device-claims
+/// error code and the reason, carries the reason in its `Description`,
+/// answers to its fixed placeholder `UniqueID`, and answers every wheel member
+/// `NOT_CONNECTED`. Like every wheel here it serves no config actions.
+#[derive(Debug, Clone)]
+pub struct PlaceholderFilterWheel {
+    about: Placeholder,
+}
+
+impl PlaceholderFilterWheel {
+    /// The placeholder `about` describes.
+    #[must_use]
+    pub const fn new(about: Placeholder) -> Self {
+        Self { about }
+    }
+}
+
+#[async_trait::async_trait]
+impl Device for PlaceholderFilterWheel {
+    fn static_name(&self) -> &str {
+        &self.about.name
+    }
+
+    fn unique_id(&self) -> &str {
+        &self.about.unique_id
+    }
+
+    async fn connected(&self) -> ASCOMResult<bool> {
+        Ok(false)
+    }
+
+    async fn set_connected(&self, connected: bool) -> ASCOMResult<()> {
+        if !connected {
+            return Ok(());
+        }
+        debug!(
+            port = %self.about.usb_port,
+            reason = %self.about.reason,
+            "refusing to connect a placeholder filter wheel"
+        );
+        Err(ASCOMError::new(
+            ASCOMErrorCode::new_for_driver(self.about.driver_code),
+            format!(
+                "{} is a placeholder for the filter wheel on USB port {}, not a filter wheel: {}",
+                self.about.name, self.about.usb_port, self.about.reason
+            ),
+        ))
+    }
+
+    async fn description(&self) -> ASCOMResult<String> {
+        Ok(format!(
+            "Placeholder for the filter wheel on USB port {}: {}",
+            self.about.usb_port, self.about.reason
+        ))
+    }
+
+    async fn driver_info(&self) -> ASCOMResult<String> {
+        Ok(self.about.driver_info.clone())
+    }
+
+    async fn driver_version(&self) -> ASCOMResult<String> {
+        Ok(self.about.driver_version.clone())
+    }
+}
+
+#[async_trait::async_trait]
+impl FilterWheel for PlaceholderFilterWheel {
+    async fn names(&self) -> ASCOMResult<Vec<String>> {
+        Err(ASCOMError::NOT_CONNECTED)
+    }
+
+    async fn focus_offsets(&self) -> ASCOMResult<Vec<i32>> {
+        Err(ASCOMError::NOT_CONNECTED)
+    }
+
+    async fn position(&self) -> ASCOMResult<Option<usize>> {
+        Err(ASCOMError::NOT_CONNECTED)
+    }
+
+    async fn set_position(&self, _position: usize) -> ASCOMResult<()> {
+        Err(ASCOMError::NOT_CONNECTED)
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::backend::mock::{drop_once_parked, MockFilterWheelHandle};
-    use ascom_alpaca::ASCOMErrorCode;
     use std::sync::atomic::Ordering;
 
     /// C8 under cancellation: the wheel's transition is spawned too, so a
@@ -991,6 +1093,91 @@ mod tests {
             !handle.is_open().unwrap(),
             "handle must be closed after a failed connect handshake"
         );
+    }
+
+    /// U10: a declared wheel learns on its connect whether a CFW answers, and
+    /// one that does not says so, naming the camera and what to check.
+    #[tokio::test]
+    async fn a_wheel_with_no_cfw_answering_says_so_on_connect() {
+        let handle = Arc::new(MockFilterWheelHandle::new("QHY600M-01", 7));
+        handle.fail_handshake.store(true, Ordering::SeqCst);
+        let device = QhyFilterWheelDevice::new(handle, None, None);
+
+        let err = device.set_connected(true).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert_eq!(
+            err.message,
+            "the filter wheel on QHY600M-01 did not report its slot count, which a CFW that \
+             is unplugged, has no 12 V or is still moving does not: check its cable and its \
+             12 V, or connect again once it has stopped"
+        );
+        assert!(!device.connected().await.unwrap());
+    }
+
+    /// U10: the failure is the connect's, not the wheel's for good — a CFW
+    /// that answers by the next connect is connected.
+    #[tokio::test]
+    async fn a_wheel_whose_cfw_answers_later_connects_then() {
+        let handle = Arc::new(MockFilterWheelHandle::new("QHY600M-01", 7));
+        handle.fail_handshake.store(true, Ordering::SeqCst);
+        let device =
+            QhyFilterWheelDevice::new(Arc::<MockFilterWheelHandle>::clone(&handle), None, None);
+        device.set_connected(true).await.unwrap_err();
+
+        handle.fail_handshake.store(false, Ordering::SeqCst);
+        device.set_connected(true).await.unwrap();
+        assert!(device.connected().await.unwrap());
+        assert_eq!(device.names().await.unwrap().len(), 7);
+    }
+
+    fn placeholder() -> PlaceholderFilterWheel {
+        PlaceholderFilterWheel::new(Placeholder {
+            name: "QHY filter wheel on p1 (placeholder)".to_string(),
+            unique_id: "placeholder:qhy-camera:CFW-p1".to_string(),
+            usb_port: "p1".to_string(),
+            reason: "no working camera is enumerated on p1".to_string(),
+            driver_info: crate::DRIVER_INFO.to_string(),
+            driver_version: "1.2.3".to_string(),
+            driver_code: 0x40,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_placeholder_wheel_refuses_a_connect_with_its_code_and_reason() {
+        let wheel = placeholder();
+        let err = wheel.set_connected(true).await.unwrap_err();
+        assert_eq!(err.code.raw(), 0x540);
+        assert_eq!(
+            err.message,
+            "QHY filter wheel on p1 (placeholder) is a placeholder for the filter wheel on USB \
+             port p1, not a filter wheel: no working camera is enumerated on p1"
+        );
+        assert!(!wheel.connected().await.unwrap());
+        wheel.set_connected(false).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_placeholder_wheel_says_why_in_its_description_and_answers_as_its_driver() {
+        let wheel = placeholder();
+        assert_eq!(
+            wheel.description().await.unwrap(),
+            "Placeholder for the filter wheel on USB port p1: no working camera is enumerated \
+             on p1"
+        );
+        assert_eq!(wheel.static_name(), "QHY filter wheel on p1 (placeholder)");
+        assert_eq!(wheel.unique_id(), "placeholder:qhy-camera:CFW-p1");
+        assert_eq!(wheel.driver_info().await.unwrap(), crate::DRIVER_INFO);
+        assert_eq!(wheel.driver_version().await.unwrap(), "1.2.3");
+    }
+
+    #[tokio::test]
+    async fn a_placeholder_wheel_answers_every_wheel_member_not_connected() {
+        let wheel = placeholder();
+        let not_connected = ASCOMErrorCode::NOT_CONNECTED;
+        assert_eq!(wheel.names().await.unwrap_err().code, not_connected);
+        assert_eq!(wheel.focus_offsets().await.unwrap_err().code, not_connected);
+        assert_eq!(wheel.position().await.unwrap_err().code, not_connected);
+        assert_eq!(wheel.set_position(0).await.unwrap_err().code, not_connected);
     }
 
     #[tokio::test]

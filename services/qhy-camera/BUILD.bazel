@@ -39,15 +39,28 @@ exports_files(
 # rule depends on — not by a crate_universe feature nudge. See
 # docs/services/qhy-camera.md "Native dependency & build gating".
 
-_INTRA_WORKSPACE_DEPS = [
+_COMMON_INTRA_WORKSPACE_DEPS = [
     "//crates/rusty-photon-camera-core:rusty-photon-camera-core",
     "//crates/rusty-photon-config:rusty-photon-config",
-    "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
     "//crates/rusty-photon-driver:rusty-photon-driver",
     "//crates/rusty-photon-server-config:rusty-photon-server-config",
     "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
     "//crates/rp-auth:rp-auth",
     "//crates/rusty-photon-tls:rusty-photon-tls",
+]
+
+_INTRA_WORKSPACE_DEPS = _COMMON_INTRA_WORKSPACE_DEPS + [
+    "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
+]
+
+# The simulation targets stage the USB scan a `usb_devices` list is placed
+# from (docs/services/qhy-camera.md U7), which exists only under
+# rusty-photon-doctor-checks' `mock` feature — Cargo's `simulation` feature
+# turns it on, and here that is the crate's `_mock` twin. It replaces the plain
+# crate rather than joining it: both are `rusty_photon_doctor_checks`, and one
+# graph holding two crates of one name cannot name either.
+_SIM_INTRA_WORKSPACE_DEPS = _COMMON_INTRA_WORKSPACE_DEPS + [
+    "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks_mock",
 ]
 
 # The real-SDK qhyccd-rs library (prod targets) and its simulated counterpart
@@ -131,7 +144,7 @@ rust_test(
         proc_macro = True,
         proc_macro_dev = True,
     ),
-    deps = _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    deps = _SIM_INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -156,7 +169,7 @@ rust_library(
     edition = "2021",
     lint_config = ":lints",
     proc_macro_deps = all_crate_deps(proc_macro = True),
-    deps = [_QHYCCD_SIM] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    deps = [_QHYCCD_SIM] + _SIM_INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_binary(
@@ -174,7 +187,7 @@ rust_binary(
     deps = [
         ":qhy-camera_lib_sim",
         _QHYCCD_SIM,
-    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
+    ] + _SIM_INTRA_WORKSPACE_DEPS + all_crate_deps(normal = True),
 )
 
 rust_test(
@@ -207,7 +220,7 @@ rust_test(
         ":qhy-camera_lib_sim",
         _QHYCCD_SIM,
         "//crates/bdd-infra:bdd-infra_conformu",
-    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    ] + _SIM_INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),
@@ -251,7 +264,7 @@ rust_test(
         ":qhy-camera_lib_sim",
         _QHYCCD_SIM,
         "//crates/bdd-infra:bdd-infra_tls_auth",
-    ] + _INTRA_WORKSPACE_DEPS + all_crate_deps(
+    ] + _SIM_INTRA_WORKSPACE_DEPS + all_crate_deps(
         normal = True,
         normal_dev = True,
     ),

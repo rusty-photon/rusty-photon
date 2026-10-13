@@ -93,6 +93,11 @@ pub struct SimulatedCameraConfig {
     /// **default `None`**, a close always succeeds. Set with
     /// [`with_close_failure_file`](SimulatedCameraConfig::with_close_failure_file).
     pub close_failure_file: Option<PathBuf>,
+    /// How many of the CFW-plugged queries after each open answer "no wheel"
+    /// before the wheel is reported — **default `0`**, a configured wheel
+    /// answers the first query. Set with
+    /// [`with_cfw_plug_misses`](SimulatedCameraConfig::with_cfw_plug_misses).
+    pub cfw_plug_misses: u32,
 }
 
 impl Default for SimulatedCameraConfig {
@@ -173,6 +178,7 @@ impl Default for SimulatedCameraConfig {
             even_extent_readout: true,
             departure_file: None,
             close_failure_file: None,
+            cfw_plug_misses: 0,
         }
     }
 }
@@ -356,6 +362,16 @@ impl SimulatedCameraConfig {
         self.close_failure_file = Some(path.into());
         self
     }
+
+    /// Makes the first `misses` [`is_cfw_plugged_in`](crate::Camera::is_cfw_plugged_in)
+    /// queries after each open answer `false` on a camera that has a wheel, the
+    /// way a real plug query occasionally misses one. A query that is asked
+    /// again finds it. The count restarts at every open.
+    #[must_use]
+    pub const fn with_cfw_plug_misses(mut self, misses: u32) -> Self {
+        self.cfw_plug_misses = misses;
+        self
+    }
 }
 
 // ===== Runtime state for a simulated camera =====
@@ -419,6 +435,9 @@ pub(crate) struct SimulatedCameraState {
     /// Reads remaining before the filter wheel reaches `filter_wheel_target`
     /// (advance-on-poll settle, so a poll-to-arrival loop is exercised).
     pub filter_wheel_settle_polls: u32,
+    /// CFW-plugged queries asked since the last open (see
+    /// [`with_cfw_plug_misses`](SimulatedCameraConfig::with_cfw_plug_misses)).
+    pub cfw_plug_asks: u32,
 }
 
 /// Ambient (cooler-off) sensor temperature the simulated camera settles at, °C.
@@ -491,6 +510,7 @@ impl SimulatedCameraState {
             debayer_enabled: false,
             filter_wheel_target: 0,
             filter_wheel_settle_polls: 0,
+            cfw_plug_asks: 0,
         }
     }
 

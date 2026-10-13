@@ -785,6 +785,7 @@ impl Camera {
                 return Err(error);
             }
             state.is_open = true;
+            state.cfw_plug_asks = 0;
             drop(state);
             Ok(())
         }
@@ -1200,27 +1201,28 @@ impl Camera {
 
 // --- device info: model / firmware / type / chip info / overscan / effective area
 impl Camera {
-    /// Returns the model of the camera
+    /// Returns the model of the camera, which the SDK reads from the camera's
+    /// id (`GetQHYCCDModel(id, …)`): the camera need not be open, so this is
+    /// safe to call on one this process has only enumerated.
     /// # Errors
-    /// Returns [`QHYError::CameraNotOpen`] if the camera is not open,
-    /// [`QHYError::Sdk`] if the SDK call fails or returns an unterminated
-    /// string, or [`QHYError::InvalidUtf8`] if the model name is not UTF-8.
+    /// Returns [`QHYError::InvalidCameraId`] if the id contains an interior
+    /// NUL byte, [`QHYError::Sdk`] if the SDK call fails or returns an
+    /// unterminated string, or [`QHYError::InvalidUtf8`] if the model name is
+    /// not UTF-8.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::{Sdk,Camera};
     /// let sdk = Sdk::new().expect("SDK::new failed");
     /// let camera = sdk.cameras().last().expect("no camera found");
-    /// camera.open().expect("open failed");
     /// let model = camera.get_model().expect("get_model failed");
     /// println!("Camera model: {}", model);
     /// ```
     pub fn get_model(&self) -> Result<String> {
         #[cfg(not(feature = "simulation"))]
         {
+            let c_id = std::ffi::CString::new(self.id.clone())?;
             let mut model: [c_char; 128] = [0; 128];
-            let status = self
-                .handle
-                .with_handle(|handle| unsafe { GetQHYCCDModel(handle, model.as_mut_ptr()) })?;
+            let status = unsafe { GetQHYCCDModel(c_id.as_ptr(), model.as_mut_ptr()) };
             if status == QHYCCD_SUCCESS {
                 // Bounded decode: the SDK documents no maximum length and no NUL
                 // guarantee, so scan for the terminator WITHIN the fixed 128-byte
@@ -1243,11 +1245,7 @@ impl Camera {
         }
         #[cfg(feature = "simulation")]
         {
-            let state = self.state.read();
-            if !state.answers() {
-                return Err(QHYError::CameraNotOpen);
-            }
-            Ok(state.config.model.clone())
+            Ok(self.state.read().config.model.clone())
         }
     }
 
@@ -2384,11 +2382,13 @@ impl Camera {
         }
         #[cfg(feature = "simulation")]
         {
-            let state = self.state.read();
+            let mut state = self.state.write();
             if !state.answers() {
                 return Err(QHYError::CameraNotOpen);
             }
-            Ok(state.config.filter_wheel_slots > 0)
+            state.cfw_plug_asks = state.cfw_plug_asks.saturating_add(1);
+            Ok(state.config.filter_wheel_slots > 0
+                && state.cfw_plug_asks > state.config.cfw_plug_misses)
         }
     }
 

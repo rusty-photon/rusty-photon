@@ -2746,7 +2746,7 @@ impl Device for QhyCameraDevice {
     }
 
     async fn driver_info(&self) -> ASCOMResult<String> {
-        Ok("rusty-photon qhy-camera".to_string())
+        Ok(crate::DRIVER_INFO.to_string())
     }
 
     async fn driver_version(&self) -> ASCOMResult<String> {

@@ -23,7 +23,6 @@ fn main() {
     let sdk_version = sdk.version().expect("get_sdk_version failed");
     trace!(sdk_version = ?sdk_version);
     trace!(cameras = ?sdk.cameras().count());
-    trace!(filter_wheels = ?sdk.filter_wheels().count());
 
     let camera = sdk.cameras().last().expect("no camera found");
     trace!(camera = ?camera);

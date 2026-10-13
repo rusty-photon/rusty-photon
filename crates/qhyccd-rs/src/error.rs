@@ -14,8 +14,9 @@ use crate::ControlType;
 /// [`check`]. The remaining variants capture the genuinely-distinct conditions
 /// the wrapper detects itself: a closed camera, the three control-scoped
 /// parameter failures (where the [`ControlType`] is real information), an
-/// argument outside the range the SDK can address, and the two FFI
-/// string-conversion errors.
+/// argument outside the range the SDK can address, the two FFI
+/// string-conversion errors, an id that names no enumerated camera, and a
+/// second `Sdk` refused while one is alive.
 ///
 /// This mirrors the flat shape of the sibling crates' error enums (`zwo-rs`'s
 /// `Error`, `svbony-rs`'s `Error`); it carries no per-call-site variant. The
@@ -85,6 +86,18 @@ pub enum QHYError {
     /// SDK as a C string.
     #[error("camera id contains an interior NUL byte: {0}")]
     InvalidCameraId(#[from] std::ffi::NulError),
+    /// [`Sdk::probe_filter_wheels`](crate::Sdk::probe_filter_wheels) was asked
+    /// about an id that names no camera the SDK enumerated.
+    #[error("no camera with id '{id}' was enumerated")]
+    UnknownCameraId {
+        /// The id that matched no enumerated camera.
+        id: String,
+    },
+    /// [`Sdk::try_new`](crate::Sdk::try_new) found another
+    /// [`Sdk`](crate::Sdk) alive in this process. The SDK's resource is the
+    /// process's and is not counted, so one `Sdk` at a time holds it.
+    #[error("another QHYCCD SDK instance is alive in this process")]
+    SdkInUse,
 }
 
 /// Convenience alias for fallible QHYCCD SDK operations: `Result<T, QHYError>`.
@@ -184,6 +197,14 @@ mod tests {
     #[test]
     fn camera_not_open_displays_without_a_code() {
         assert_eq!(QHYError::CameraNotOpen.to_string(), "camera is not open");
+    }
+
+    #[test]
+    fn sdk_in_use_says_another_sdk_is_alive_here() {
+        assert_eq!(
+            QHYError::SdkInUse.to_string(),
+            "another QHYCCD SDK instance is alive in this process"
+        );
     }
 
     #[test]

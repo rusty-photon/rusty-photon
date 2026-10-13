@@ -4727,6 +4727,7 @@ name = "rusty-photon-doctor-checks"
 version = "0.1.0"
 dependencies = [
  "rusty-photon-process",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",

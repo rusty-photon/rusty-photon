@@ -48,7 +48,8 @@
 //!   - Full control API (gain, offset, exposure, etc.)
 //!
 //! - **Filter Wheel**: 7-position CFW
-//!   - Accessible via [`Sdk::filter_wheels()`]
+//!   - Found by [`Sdk::probe_filter_wheels()`], as a real camera's is, then
+//!     accessible via [`Sdk::filter_wheels()`]
 //!   - Complete control API support
 //!
 //! ## Custom Simulated Cameras
@@ -116,6 +117,7 @@ mod error;
 mod filter_wheel;
 mod quantize;
 mod sdk;
+mod sdk_gate;
 mod types;
 
 #[cfg(feature = "simulation")]

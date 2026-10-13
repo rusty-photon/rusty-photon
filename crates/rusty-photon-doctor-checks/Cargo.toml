@@ -23,6 +23,9 @@ workspace = true
 # The macOS and Windows USB collectors shell out under a deadline. The crate is
 # runtime-free, so this stays a synchronous, tokio-free crate.
 rusty-photon-process = { workspace = true }
+# The `usb_devices` entry every camera driver with device claims reads is part
+# of each driver's `config.schema`.
+schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

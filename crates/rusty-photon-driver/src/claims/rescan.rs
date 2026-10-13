@@ -192,7 +192,9 @@ impl StopCause {
 /// is not stopped by the abort: it runs to its end, which the scan's own
 /// deadline bounds, and its answer goes nowhere. Its enumeration cannot
 /// renumber the SDK's camera list under a rebuild's placement: `zwo-rs` and
-/// `svbony-rs` serialise every enumeration on a process-wide lock.
+/// `svbony-rs` serialise every enumeration on a process-wide lock, and
+/// `qhyccd-rs` makes one QHY SDK at a time in a process, which a try only tries
+/// for, since a QHY SDK's drop releases the process's SDK resource.
 ///
 /// Call it from within the runtime the server runs on: it spawns the re-scan.
 pub fn stop_or_rescanned(

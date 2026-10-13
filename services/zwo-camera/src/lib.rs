@@ -408,7 +408,7 @@ impl ServerBuilder {
                         port = %entry.usb_port,
                         "a listed port holds an ASI camera"
                     );
-                    self.register_camera(server, held, cam, Some(&entry.display_override()))?;
+                    self.register_camera(server, held, cam, Some(&DeviceOverride::from(entry)))?;
                     registered.cameras = registered.cameras.saturating_add(1);
                 }
                 Err(reason) => {
