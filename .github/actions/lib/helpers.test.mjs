@@ -277,7 +277,7 @@ test('setOutput writes an entry the runner reads back whole, line breaks and loo
 test('setOutput refuses a name the runner would split, and writes nothing', async () => {
   const file = emptyFile();
   await withEnv({ GITHUB_OUTPUT: file }, () => {
-    for (const name of ['', 'a=b', 'a<<b', 'a\nb', 'a\rb']) {
+    for (const name of ['', 'a=b', 'a<<b', 'a\nb', 'a\rb', 'a<']) {
       assert.throws(() => setOutput(name, 'x'), /cannot be a name/, JSON.stringify(name));
     }
   });
@@ -352,8 +352,6 @@ test('isTransient retries what may pass on a second try, and nothing else', () =
   const answer = (status, retryAfterMs) => new HttpError('GET', url, status, '', { retryAfterMs });
   for (const status of [408, 429, 500, 502, 503, 504]) assert.equal(isTransient(answer(status)), true, status);
   for (const status of [400, 401, 403, 404, 409, 422, 501, 505]) assert.equal(isTransient(answer(status)), false, status);
-  assert.equal(isTransient(answer(429, 120_000)), true, 'Retry-After of two minutes');
-  assert.equal(isTransient(answer(429, 120_001)), false, 'Retry-After beyond two minutes');
   assert.equal(isTransient(new DOMException('timed out', 'TimeoutError')), true);
   assert.equal(isTransient(networkFailure()), true);
   assert.equal(isTransient(networkFailure('UND_ERR_SOCKET')), true);
@@ -442,8 +440,9 @@ test('retry throws an error that is not transient at once', async () => {
   assert.equal(stdout, '');
 });
 
-test('retry stops once its signal aborts, ending a wait under way', async () => {
+test('retry stops once its signal aborts, ending a wait under way, and says what it was retrying', async () => {
   const controller = new AbortController();
+  const failure = networkFailure();
   let calls = 0;
   const started = Date.now();
   await capture(() =>
@@ -452,15 +451,38 @@ test('retry stops once its signal aborts, ending a wait under way', async () => 
         async () => {
           calls += 1;
           setTimeout(() => controller.abort(), 20);
-          throw networkFailure();
+          throw failure;
         },
-        { attempts: 3, delayMs: 5_000, signal: controller.signal },
+        { attempts: 3, delayMs: 5_000, signal: controller.signal, label: 'GET x' },
       ),
-      { name: 'AbortError' },
+      (err) => {
+        assert.equal(err.name, 'AbortError');
+        assert.match(err.message, /^GET x: stopped while waiting to retry/);
+        assert.equal(err.cause, failure);
+        return true;
+      },
     ),
   );
   assert.equal(calls, 1);
   assert.ok(Date.now() - started < 2_500, 'the 5 s wait ran to its end');
+});
+
+test('retry does not wait out a Retry-After over two minutes, whatever isRetryable says', async () => {
+  let calls = 0;
+  const { stdout } = await capture(() =>
+    assert.rejects(
+      retry(
+        async () => {
+          calls += 1;
+          throw Object.assign(new Error('rate limited'), { retryAfterMs: 120_001 });
+        },
+        { isRetryable: () => true, delayMs: 1 },
+      ),
+      /rate limited/,
+    ),
+  );
+  assert.equal(calls, 1);
+  assert.equal(stdout, '');
 });
 
 // --- HTTP ---------------------------------------------------------------------
@@ -645,10 +667,27 @@ test("fetchWithRetry honours the caller's own abort signal, without retrying it"
   const server = await serve(() => {});
   t.after(server.close);
   const controller = new AbortController();
-  const pending = fetchWithRetry(`${server.url}/x`, { signal: controller.signal, delayMs: 1 });
-  controller.abort();
-  await assert.rejects(pending, { name: 'AbortError' });
+  const { stdout } = await capture(() => {
+    const pending = fetchWithRetry(`${server.url}/x`, { signal: controller.signal, delayMs: 1 });
+    controller.abort();
+    return assert.rejects(pending, { name: 'AbortError' });
+  });
+  assert.equal(stdout, '', 'a retry was attempted');
   assert.ok(server.requests.length <= 1);
+});
+
+test('fetchWithRetry keeps a URL with credentials out of its error, logged stack included', async (t) => {
+  const server = await serve((req, res) => res.end());
+  t.after(server.close);
+  const port = new URL(server.url).port;
+  for (const url of [`http://user:pa55@127.0.0.1:${port}/x?X-Amz-Signature=s3cr3t`, 'https://exa mple.invalid/x?X-Amz-Signature=s3cr3t']) {
+    await assert.rejects(fetchWithRetry(url), (err) => {
+      assert.ok(err instanceof TypeError, err.name);
+      assert.doesNotMatch(inspect(err), /s3cr3t|pa55/);
+      return true;
+    });
+  }
+  assert.equal(server.requests.length, 0);
 });
 
 test("fetchWithRetry does not retry the caller's own timeout", async (t) => {

@@ -157,10 +157,12 @@ function commandFile(variable) {
 // The runner reads an entry's first line as NAME=VALUE when its first `=`
 // comes before any `<<`, and as NAME<<DELIMITER otherwise. A name holding
 // either, or a line break, would end the entry early and turn the lines of
-// its value into entries of their own.
+// its value into entries of their own. One ending in `<` would join the
+// `<<` after it, and the runner, splitting at the first `<<`, would look
+// for a delimiter that never comes and refuse the whole file.
 function checkName(variable, name) {
-  if (name === '' || /[=\r\n]|<</.test(name)) {
-    throw new Error(`${variable}: ${JSON.stringify(name)} cannot be a name (empty, or holds '=', '<<' or a line break)`);
+  if (name === '' || /[=\r\n]|<<|<$/.test(name)) {
+    throw new Error(`${variable}: ${JSON.stringify(name)} cannot be a name (empty, holds '=', '<<' or a line break, or ends in '<')`);
   }
 }
 
@@ -213,7 +215,29 @@ export function addPath(dir) {
 // A URL as it may appear in a log: no query string, which is where a
 // pre-signed URL carries its credentials, and no user or password.
 function forLog(url) {
-  return `${url.origin}${url.pathname}`;
+  try {
+    const { origin, pathname } = new URL(url);
+    return `${origin}${pathname}`;
+  } catch {
+    return '(a URL that does not parse)';
+  }
+}
+
+// The URL a request goes to. The errors Node gives for one that does not
+// parse, or for one with a user or password, carry the whole URL (the
+// first in an `input` property, which `run` logs), so neither is let
+// through: the query string can be a pre-signed URL's signature.
+function requestUrl(method, url) {
+  let target;
+  try {
+    target = new URL(url);
+  } catch {
+    throw new TypeError(`${method}: the URL does not parse (it is not shown, as it may hold credentials)`);
+  }
+  if (target.username || target.password) {
+    throw new TypeError(`${method} ${forLog(target)}: a URL cannot carry a user or password; send them in a header`);
+  }
+  return target;
 }
 
 // How much of an error response's body an HttpError keeps.
@@ -232,7 +256,7 @@ const ERROR_BODY_LIMIT = 4096;
  */
 export class HttpError extends Error {
   constructor(method, url, status, statusText, { body = '', retryAfterMs } = {}) {
-    super(`${method} ${forLog(new URL(url))}: ${status} ${statusText}`);
+    super(`${method} ${forLog(url)}: ${status} ${statusText}`);
     this.name = 'HttpError';
     this.status = status;
     this.retryAfterMs = retryAfterMs;
@@ -275,7 +299,7 @@ async function errorBody(response) {
 // say the server cannot do it at all, and are not here.
 const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 
-// A server that asks for a longer wait than this is not waited for.
+// A wait longer than this, asked for by a Retry-After, is not waited out.
 const MAX_RETRY_AFTER_MS = 120_000;
 
 // The codes of a request that got no answer: the connection was refused,
@@ -302,8 +326,7 @@ const NO_ANSWER_CODES = new Set([
 
 /**
  * Whether a failed attempt is worth repeating: an answer in
- * TRANSIENT_STATUSES (unless its Retry-After is longer than two minutes),
- * a timeout, or a request that got no answer. fetch reports that last one
+ * TRANSIENT_STATUSES, a timeout, or a request that got no answer. fetch reports that last one
  * as `TypeError('fetch failed')`, with the network's error as its cause,
  * whose code is in NO_ANSWER_CODES. Its other TypeErrors are requests it
  * refused to send, such as a GET with a body, and a TypeError from the
@@ -311,7 +334,7 @@ const NO_ANSWER_CODES = new Set([
  */
 export function isTransient(err) {
   if (err instanceof HttpError) {
-    return TRANSIENT_STATUSES.has(err.status) && !(err.retryAfterMs > MAX_RETRY_AFTER_MS);
+    return TRANSIENT_STATUSES.has(err.status);
   }
   if (err?.name === 'TimeoutError') return true;
   return err instanceof TypeError && NO_ANSWER_CODES.has(err.cause?.code);
@@ -321,19 +344,28 @@ export function isTransient(err) {
  * Calls `fn(attempt)` until it returns, up to `attempts` times, waiting
  * `delayMs`, then twice that, and so on, between attempts, or longer when
  * the error carries a `retryAfterMs`. An error that `isRetryable` rejects,
- * or the last attempt's error, is thrown. Once `signal` aborts, nothing is
- * retried and a wait under way ends. `label` names the operation in the
- * warning each retry logs.
+ * one whose `retryAfterMs` is over two minutes, or the last attempt's error
+ * is thrown. Once `signal` aborts, nothing is retried, and a wait under way
+ * ends with an AbortError whose cause is the error it was waiting to retry.
+ * `label` names the operation in the warning each retry logs.
  */
 export async function retry(fn, { attempts = 3, delayMs = 1000, isRetryable = isTransient, label = 'operation', signal } = {}) {
   for (let attempt = 1; ; attempt++) {
     try {
       return await fn(attempt);
     } catch (err) {
-      if (attempt >= attempts || signal?.aborted || !isRetryable(err)) throw err;
+      if (attempt >= attempts || signal?.aborted || !isRetryable(err) || err?.retryAfterMs > MAX_RETRY_AFTER_MS) {
+        throw err;
+      }
       const wait = Math.max(delayMs * 2 ** (attempt - 1), err?.retryAfterMs ?? 0);
       warning(`${label}: attempt ${attempt} of ${attempts} failed (${describe(err)}); retrying in ${wait} ms`);
-      await sleep(wait, undefined, { signal });
+      try {
+        await sleep(wait, undefined, { signal });
+      } catch (abort) {
+        const stopped = new Error(`${label}: stopped while waiting to retry (${describe(abort)})`, { cause: err });
+        stopped.name = 'AbortError';
+        throw stopped;
+      }
     }
   }
 }
@@ -374,10 +406,10 @@ const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']);
  * Every other option goes to fetch.
  */
 export async function fetchWithRetry(url, { attempts, delayMs = 1000, timeoutMs = 30_000, ...init } = {}) {
-  const target = new URL(url);
   // Upper-cased for fetch too, which sends any method but the six the
   // Fetch standard normalises (PATCH is not one) exactly as written.
   const method = (init.method ?? 'GET').toUpperCase();
+  const target = requestUrl(method, url);
   const tries = attempts ?? (IDEMPOTENT_METHODS.has(method) ? 3 : 1);
   if (tries > 1 && !isReusableBody(init.body)) {
     throw new TypeError(`${method} ${forLog(target)}: a stream body is spent by the first attempt; pass attempts: 1`);
