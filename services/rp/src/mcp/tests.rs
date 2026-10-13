@@ -6777,7 +6777,7 @@ async fn plate_solve_per_call_search_radius_overrides_config_default() {
 }
 
 #[tokio::test]
-async fn plate_solve_no_hints_produces_blind_request() {
+async fn plate_solve_no_hints_produces_hintless_request() {
     let handler = handler_with_plate_solver(
         empty_registry(),
         |mock| {

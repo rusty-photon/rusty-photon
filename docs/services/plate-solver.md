@@ -255,11 +255,12 @@ Optional pointing and FOV hints map directly to ASTAP CLI flags:
 | `fov_hint_deg` | `-fov <degrees>` | Pass-through (image height, per ASTAP CLI documentation). |
 | `search_radius_deg` | `-r <degrees>` | Pass-through. Defaults to ASTAP's own default when omitted. |
 
-Omitted fields produce no flag. ASTAP then reads its hints from the
-FITS header where it can (the header's `RA`/`DEC` or
-`OBJCTRA`/`OBJCTDEC` for position, see the timings below) and
-searches blind only without them; `docs/services/rp.md` §"Ground
-rules" lists `rp`'s reliance on the header as a gap.
+Omitted fields produce no flag. A solve without hints is not
+necessarily blind: ASTAP then reads its hints from the FITS header
+where it can (the header's `RA`/`DEC` or `OBJCTRA`/`OBJCTDEC` for
+position, see the timings below) and searches blind only without
+them. `docs/services/rp.md` §"Ground rules" lists `rp`'s reliance on
+the header as a gap.
 The wrapper does not synthesize hints; it never invents data the
 caller did not provide.
 
@@ -292,11 +293,9 @@ chain is:
      surfaced rather than silently dropping the hint).
 
    The two modes are mutually exclusive — supplying both is a
-   caller error. Neither supplied ⇒ no position hint is passed, and
-   ASTAP falls back to the header's coordinates, or a blind search
-   without them (see the table above). (MCP directionality: clients
-   call rp; rp calls the
-   wrapper.) See `docs/services/rp.md` §"`plate_solve` Contract"
+   caller error. Neither supplied ⇒ no position hint is passed
+   ([Hint Mapping](#hint-mapping) says what ASTAP does then). (MCP
+   directionality: clients call rp; rp calls the wrapper.) See `docs/services/rp.md` §"`plate_solve` Contract"
    for the full input shape and validation rules.
 2. **`fov_hint_deg`** comes from the caller as an MCP parameter.
    Its right source is the frame's own sidecar:
@@ -322,7 +321,7 @@ rig:
 | Synced to a recent solve, GoTo mount with pointing model | 1°–2° |
 | Synced, no model | 2°–5° |
 | Unsynced cold start | 5°–10° |
-| No reliable mount input (manual pointing) | omit hint — ASTAP seeds from the header's coordinates if the frame has any, and searches blind otherwise |
+| No reliable mount input (manual pointing) | omit hint ([Hint Mapping](#hint-mapping) says what ASTAP does without one) |
 
 Smaller radius means faster solve. ASTAP's documented sweet spot is
 ~3° for typical amateur GoTo setups.

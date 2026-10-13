@@ -45,9 +45,9 @@ pub struct CenterOnTargetToolParams {
     #[serde(default)]
     pub max_attempts: Option<usize>,
     /// Binning for every iteration's frame, `"AxB"`. Default `"1x1"`.
-    /// A binned frame is the usual input to a blind solve: it costs
-    /// angular resolution the solver has to spare and saves readout on
-    /// every iteration.
+    /// A binned frame suits centering's solves: it costs angular
+    /// resolution the solver has to spare and saves readout on every
+    /// iteration.
     #[serde(default)]
     pub binning: Option<rp_vocabulary::Binning>,
 }

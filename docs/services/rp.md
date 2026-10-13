@@ -177,7 +177,8 @@ frame's facts from:
    frame's facts through them against the live config.
 
 So the header should never carry a fact the sidecar lacks, and
-`rp`'s own work should never depend on a fact the header carries: the
+`rp`'s own work should never depend on a fact the header carries:
+beyond the structural cards that describe the pixel array, the
 `DOC_ID` check is the one read rule 1 allows. These are not yet in
 line with the rules, each tracked by its own issue:
 
@@ -237,8 +238,8 @@ line with the rules, each tracked by its own issue:
   `center_on_target`, and `plate_solve` called without `fov_hint_deg`,
   pass ASTAP no scale, and plate solvers derive a frame's scale from
   `FOCALLEN` and `XPIXSZ` ([FITS header](#fits-header)). Given no
-  position, ASTAP reads the header's `RA`/`DEC` and
-  `OBJCTRA`/`OBJCTDEC` as a free hint ([plate-solver.md](plate-solver.md)).
+  position, ASTAP takes one from the header
+  ([plate-solver.md § Hint Mapping](plate-solver.md#hint-mapping)).
   And `use_mount_hints` reads where the mount points now, even for a
   past frame whose sidecar records its `pointing`. Both hints should
   come from the sidecar: `optics.fov_height_deg` and `pointing`
@@ -462,10 +463,12 @@ The block is omitted (serializes as absent, not `null`) when any of
 its inputs is unavailable: the camera terminates no optical train (or
 its train omits `focal_length_mm`), the camera's `pixel_size_*` read
 failed at connect time, or the camera's `camera_*_size` read failed at
-connect time. Each missing input is logged at `debug!` (at connect
+connect time. It is also omitted when an input or a derived value is
+unusable: not a positive, finite number (a driver reporting a pixel
+size of 0, say). Each missing input is logged at `debug!` (at connect
 time for the cached fields; at capture time for the missing focal
-length). Capture continues — `optics` is auxiliary metadata, not
-gating.
+length), and so is a derivation declined at capture. Capture
+continues — `optics` is auxiliary metadata, not gating.
 
 The block describes the **light path and the unbinned sensor**, never
 the frame. `pixel_size_*_um`, `sensor_*_px` and the derived
@@ -716,10 +719,12 @@ Rules the table does not show:
   is the pixel size *after* binning, and plate solvers derive the
   frame's pixel scale from `XPIXSZ` and `FOCALLEN`. The sidecar's
   `optics` block is unbinned by design (§ Core Fields), so the two
-  differ by the binning factor on a binned frame. `XPIXSZ`,
+  differ by the binning factor on a binned frame. Today `XPIXSZ`,
   `FOCALLEN` and `APTDIA` are each written whenever their own input
-  exists — the header does not drop them just because the sidecar's
-  all-or-nothing `optics` block is missing a different input.
+  exists, even when the sidecar's all-or-nothing `optics` block is
+  left out, and `APTDIA` has no sidecar field at all. Both put a fact
+  in the header that the sidecar lacks, and
+  [Ground rules](#ground-rules) lists them as gaps.
 - **`RA`/`DEC` are pointing; `OBJCTRA`/`OBJCTDEC` are the object.**
   The first pair is the mount's live read (`pointing`), the second the
   target store's catalog coordinates. No `EQUINOX`/`RADESYS` card is
@@ -2620,9 +2625,9 @@ A `document_id` (the full UUID) resolves through this order:
    `directory_pattern` stay reachable too. For each candidate,
    confirm the pixels by the FITS header's `DOC_ID` and the record by
    the sidecar's `id`: both must equal the requested full UUID. A
-   candidate whose `DOC_ID` is missing or cannot be read, or whose
-   sidecar's `id` differs, is refused ([Ground rules](#ground-rules),
-   rule 1). Today's check is weaker; Ground rules lists the gap. On
+   candidate whose `DOC_ID` is missing or cannot be read, whose
+   sidecar is missing or does not parse, or whose sidecar's `id`
+   differs, is refused ([Ground rules](#ground-rules), rule 1). Today's check is weaker; Ground rules lists the gap. On
    match, read both files, populate the cache, and return the entry.
 3. **Not found.** Return `None`. The HTTP API returns `404`.
 
@@ -5131,10 +5136,10 @@ own contract.
   outer timeout (the connection-side backstop per Tenet 1).
 
 When neither `pointing_hint` nor `use_mount_hints` is supplied, no
-position hint is passed. ASTAP then reads the FITS header's
-coordinates where it can, and searches blind only without them
-([plate-solver.md](plate-solver.md)); [Ground rules](#ground-rules)
-lists that reliance on the header as a gap.
+position hint is passed;
+[plate-solver.md § Hint Mapping](plate-solver.md#hint-mapping) says
+what ASTAP does then, and [Ground rules](#ground-rules) lists `rp`'s
+reliance on it as a gap.
 
 **Output** (matches the wrapper's `SolveResponseBody` field-for-field):
 - `ra_center` (f64) — image-center right ascension in decimal
@@ -5263,10 +5268,10 @@ implement its own centering loop.
 
 - `binning` — optional, `"AxB"`, default `"1x1"`. The binning each
   iteration's frame is captured at, applied by the same `capture` path
-  (§ Capture Tool Details, "Binning"). A binned frame is the usual
-  input to a blind solve: it costs the solver angular resolution it
-  has to spare and saves readout and download on every iteration of a
-  loop that may run several. Validated against the resolved camera
+  (§ Capture Tool Details, "Binning"). A binned frame suits these
+  solves: it costs the solver angular resolution it has to spare and
+  saves readout and download on every iteration of a loop that may
+  run several. Validated against the resolved camera
   before `centering_started` is emitted, so a binning the camera
   cannot do is a parameter error before any motion, like
   `max_attempts` above it.
