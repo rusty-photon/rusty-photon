@@ -127,8 +127,8 @@ pub struct ExposureDocument {
     /// derived pixel scale and FOV, so a consumer, such as a caller
     /// passing `plate_solve`'s `fov_hint_deg`, need not re-derive them
     /// from the FITS header.
-    /// Omitted when any input was missing — see `docs/services/rp.md`
-    /// §"Core Fields".
+    /// Omitted when any input was missing or unusable (a pixel size of
+    /// 0, say) — see `docs/services/rp.md` §"Core Fields".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optics: Option<Optics>,
     /// The sky target this frame belongs to (Decision 11), resolved by

@@ -161,9 +161,11 @@ frame's facts from:
    ([Document Resolution](#document-resolution)). The sidecar is found
    by the FITS file's name, so it needs a check of its own: its `id`
    confirms the record, as `DOC_ID` confirms the pixels. A FITS file
-   without `DOC_ID` cannot have its pixels confirmed, so `rp` refuses
-   it as a document's frame. A FITS file with no sidecar, such as one
-   another program wrote, gives `rp` its pixels and nothing else.
+   whose `DOC_ID` is missing or cannot be read (the file is
+   unreadable, or the card is not a string) cannot have its pixels
+   confirmed, so `rp` refuses it as a document's frame. A FITS file
+   with no sidecar, such as one another program wrote, gives `rp` its
+   pixels and nothing else.
 2. **The sidecar records the exposure as it was taken.** It carries
    everything `rp` knows about the image as it was taken and about the
    system at the time: what the devices reported, the state of the
@@ -186,14 +188,21 @@ line with the rules, each tracked by its own issue:
     sidecar found beside the FITS file without comparing its `id`. A
     sidecar from another frame, left there by a rename or by two
     frames sharing a file stem, is served as this frame's record. A
-    FITS file without `DOC_ID` is served, not refused.
+    FITS file whose `DOC_ID` is missing or cannot be read is served
+    on the sidecar's `id` alone, not refused.
   - A lookup by path (`plate_solve`'s `image_path`) reads no
     `DOC_ID`. It checks only that the sidecar's recorded `file_path`
-    has the requested file's name.
-  - After a lookup, `plate_solve` and `put_section`'s disk fallback
-    use the sidecar's recorded `file_path`, not the files found. A
-    frame whose night directory has moved is solved, and its sections
-    written, at its old location.
+    has the requested file's name. The solve's `wcs` is then written
+    by looking the document up again by its `id`, so it can land in
+    another pair's sidecar, and for a file outside `data_directory`
+    it is dropped.
+  - After a lookup, its consumers use the sidecar's recorded
+    `file_path`, not the files found: `plate_solve`, the imaging
+    tools called with a `document_id` when the cache cannot hold the
+    frame, `put_section`'s disk fallback, and the image-info route's
+    `fits_path`. A frame whose pairs were copied to a new directory is
+    solved, measured and written at its old copy; one whose pairs were
+    moved fails, although the lookup found it.
 - The train's `aperture_mm`, the configured site's latitude and
   longitude, and the `rp` version that wrote the frame reach the
   header (`APTDIA`, `SITELAT`, `SITELONG`, `SWCREATE`) without being
@@ -1776,7 +1785,10 @@ scanning the target frame's directory for existing files sharing the
 same `(filter, binning, exposure_duration)` sub-spec via
 `CompiledTemplate::parse` and using `count + 1` — nothing is stored,
 consistent with the "derive progress from disk" design (rp-targets.md
-§ Progress derivation). A render failure (a missing field, a filter
+§ Progress derivation). Counting earlier frames by their names rather
+than their sidecars is a gap [Ground rules](#ground-rules) lists:
+after a pattern edit, the numbering starts again at 001. A render
+failure (a missing field, a filter
 name outside its token shape, a failed sensor-temperature read when
 the pattern references `{sensor_temp}`) fails the whole `capture`
 call — after the exposure has already completed, since
@@ -2605,17 +2617,13 @@ A `document_id` (the full UUID) resolves through this order:
    Persistence). Every level, not just the last, because a
    `frame_type`-less capture writes a flat `<uuid8>.fits` beside the
    templated tree, and frames from an earlier, shallower
-   `directory_pattern` stay reachable too. For each candidate, verify
-   by reading the FITS header `DOC_ID` against the requested full
-   UUID; if the FITS is unreadable or has no `DOC_ID`, check the
-   sidecar's `id` instead. `DOC_ID` confirms the pixels and the
-   sidecar's `id` the record, and rule 1 refuses a FITS file without
-   `DOC_ID` ([Ground rules](#ground-rules)). Today a matching
-   `DOC_ID` is the whole check, and a FITS file without `DOC_ID`,
-   one another program rewrote, say, is matched on its name and the
-   sidecar's `id` alone and served with its pixels unconfirmed; Ground
-   rules lists both as a gap. On match, read both files, populate the
-   cache, and return the entry.
+   `directory_pattern` stay reachable too. For each candidate,
+   confirm the pixels by the FITS header's `DOC_ID` and the record by
+   the sidecar's `id`: both must equal the requested full UUID. A
+   candidate whose `DOC_ID` is missing or cannot be read, or whose
+   sidecar's `id` differs, is refused ([Ground rules](#ground-rules),
+   rule 1). Today's check is weaker; Ground rules lists the gap. On
+   match, read both files, populate the cache, and return the entry.
 3. **Not found.** Return `None`. The HTTP API returns `404`.
 
 Ghost-match disambiguation runs only when multiple files in the data
@@ -2630,7 +2638,10 @@ under the old directory become unreachable by id even though their
 files remain on disk. This is intentional — the data directory is a
 contract, not an indexed pool. Operators wanting to bring old captures
 back into reach copy or move the relevant FITS+sidecar pairs into the
-current `<data_directory>`.
+current `<data_directory>`. Until the disk-lookup gap in
+[Ground rules](#ground-rules) is closed, the tools still work on the
+path each sidecar recorded at capture: on the old copy when the pairs
+were copied, and on no file at all when they were moved.
 
 #### Storage Type Selection (u16 vs i32)
 
@@ -5103,7 +5114,7 @@ own contract.
   - Requires a configured and connected mount. Mount absent / not
     connected / Alpaca read failure ⇒ error to caller (the caller
     explicitly opted in, so failures are surfaced rather than
-    silently dropping to blind solve).
+    silently dropping the hint).
 - `fov_hint_deg` — optional `f64`. Forwarded verbatim to the
   wrapper's `fov_hint_deg`; absent ⇒ omitted from the wrapper
   request. [Ground rules](#ground-rules) names the document's
@@ -5119,8 +5130,11 @@ own contract.
   `plate_solver.timeout` in rp config, which is the rp HTTP-client
   outer timeout (the connection-side backstop per Tenet 1).
 
-When neither `pointing_hint` nor `use_mount_hints` is supplied, the
-wrapper falls back to a blind solve.
+When neither `pointing_hint` nor `use_mount_hints` is supplied, no
+position hint is passed. ASTAP then reads the FITS header's
+coordinates where it can, and searches blind only without them
+([plate-solver.md](plate-solver.md)); [Ground rules](#ground-rules)
+lists that reliance on the header as a gap.
 
 **Output** (matches the wrapper's `SolveResponseBody` field-for-field):
 - `ra_center` (f64) — image-center right ascension in decimal
@@ -5986,6 +6000,11 @@ one entry per `AcquisitionGoal` — superseding the filter-only
 `get_session_progress` used to return, which could not distinguish two
 goals that share a filter (e.g. `Ha` at two different exposure
 lengths).
+
+Taking a past frame's target, frame type and sub-spec from its file
+and directory names, rather than from its sidecar, is a gap
+[Ground rules](#ground-rules) lists: a frame whose name the current
+patterns no longer parse is not counted.
 
 **When derivation is inert.** The whole scan is predicated on a
 configured `session.file_naming_pattern`: without one `capture` still

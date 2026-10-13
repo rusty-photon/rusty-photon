@@ -196,7 +196,7 @@ pub struct ImageCache {
     /// Root directory to scan when an in-memory lookup misses. The
     /// disk-fallback resolver matches by the UUID-8 suffix every frame
     /// carries and verifies via FITS `DOC_ID`, or the sidecar's `id`
-    /// when the FITS has none.
+    /// when the FITS is unreadable or has no `DOC_ID`.
     data_directory: PathBuf,
     /// How many directory levels below `data_directory` that scan
     /// descends — `directory_pattern`'s component count under a naming

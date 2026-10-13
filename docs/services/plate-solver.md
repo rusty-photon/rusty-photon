@@ -289,7 +289,7 @@ chain is:
        through unchanged.
      Mount absent / not connected / Alpaca read failure ⇒ error to
      the caller (the caller explicitly opted in, so failures are
-     surfaced rather than silently dropping to blind solve).
+     surfaced rather than silently dropping the hint).
 
    The two modes are mutually exclusive — supplying both is a
    caller error. Neither supplied ⇒ no position hint is passed, and
@@ -322,7 +322,7 @@ rig:
 | Synced to a recent solve, GoTo mount with pointing model | 1°–2° |
 | Synced, no model | 2°–5° |
 | Unsynced cold start | 5°–10° |
-| No reliable mount input (manual pointing) | omit hint — blind solve |
+| No reliable mount input (manual pointing) | omit hint — ASTAP seeds from the header's coordinates if the frame has any, and searches blind otherwise |
 
 Smaller radius means faster solve. ASTAP's documented sweet spot is
 ~3° for typical amateur GoTo setups.
