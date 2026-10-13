@@ -125,6 +125,13 @@ CFW is plugged in, and closes it again. It never sends `InitQHYCCD`, the call
 that may home a wheel. `Sdk::filter_wheels()` is empty until the probe has run,
 so name only the cameras your program owns.
 
+## One `Sdk` at a Time
+
+The SDK's resource belongs to the process, so one `Sdk` lives in a process at a
+time. `Sdk::new()` waits while another lives; `Sdk::try_new()` returns
+`QHYError::SdkInUse` instead. Hold one `Sdk` for as long as your program uses
+the cameras.
+
 ## Simulation Feature
 
 The `simulation` feature enables testing and development without physical hardware. When enabled, `Sdk::new()` automatically provides a simulated camera environment with realistic behavior.

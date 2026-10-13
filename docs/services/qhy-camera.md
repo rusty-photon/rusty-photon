@@ -209,9 +209,6 @@ graph TD;
   model), the simulated scan, the placeholders for a camera and for its
   declared wheel, and the `--devices` listing. The rest is shared (see
   *Device claims*).
-- **`sdk_gate.rs`** — one QHY `Sdk` alive in the process at a time (U6): a
-  server's build waits for it and holds it for as long as its `Sdk` lives, and
-  a failed scan's re-scan only tries it.
 - **`config.rs`** — typed `Config` with parse-don't-validate newtypes.
 - **`config_actions.rs`** — `ConfigurableDriver` impl + the `dispatch` the devices
   delegate to (`config.get`/`config.apply`/`config.schema`).
@@ -1289,11 +1286,12 @@ which a list replaces with the declaration.
   another: `Sdk::new` runs `InitQHYCCDResource` and a scan, and an `Sdk`'s drop
   runs `ReleaseQHYCCDResource`, whose resource is the process's — so a try's
   SDK dropped while the next server's lives would release it under that
-  server's cameras. Every `Sdk` the service makes is therefore made under one
-  process-wide gate: a server's build waits for it and holds it as long as its
-  `Sdk` lives, and a try only tries it. A try that finds the gate held is one
-  whose server is gone, since a failed scan's server holds no SDK; a build that
-  finds it held waits out one enumeration.
+  server's cameras. `qhyccd-rs` therefore makes one `Sdk` at a time in a
+  process: `Sdk::new` waits while another lives, and `Sdk::try_new` answers
+  `SdkInUse` instead. A server's build makes its `Sdk` with `new` and keeps it
+  as long as it serves, and a try makes its own with `try_new`. A try refused
+  is one whose server is gone, since a failed scan's server holds no SDK; a
+  build that has to wait logs it at `warn!` and waits out one enumeration.
 - **U7. A simulation build stages its scan.** The `qhyccd-rs` simulation
   fabricates a camera no host scan can see, so a `simulation` build never scans
   the host: its scan is a staged inventory (`rusty-photon-doctor-checks`' `mock`
@@ -1314,8 +1312,10 @@ which a list replaces with the declaration.
   these flags exists in a release build.
 - **U8. `qhy-camera doctor --devices` lists the cameras by port, and prints
   the list to paste.** Read-only and enumeration-only, like every per-service
-  check — it opens no camera, so it is safe to run by hand while the service
-  holds its cameras:
+  check — it opens no camera. It does start the SDK and scan the bus in its own
+  process (`Sdk::new`, as the plain `doctor`'s `hardware.sdk-devices` check
+  does), and what that does to a camera the running service holds is
+  unmeasured, so prefer to run it while no exposure is under way:
 
   ```
   $ qhy-camera doctor --devices

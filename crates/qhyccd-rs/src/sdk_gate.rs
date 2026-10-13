@@ -1,20 +1,16 @@
-//! One QHY SDK at a time in this process (docs/services/qhy-camera.md U6).
+//! One [`Sdk`](crate::Sdk) at a time in this process.
 //!
-//! `qhyccd-rs`'s `Sdk::new` runs `InitQHYCCDResource` and a scan, and an
-//! `Sdk`'s drop runs `ReleaseQHYCCDResource`. That resource is the process's,
-//! not the `Sdk`'s, so an `Sdk` dropped while another lives would release it
-//! under the other's cameras. Every `Sdk` this service makes on the SDK is
-//! made under [`SDK_GATE`]: a server's build waits for the gate and keeps it
-//! for as long as its `Sdk` lives, and a failed USB scan's re-scan only tries
-//! it. The re-scan's try is the one `Sdk` that can outlive its server — it
-//! runs on the blocking pool, where stopping the server does not reach it — so
-//! a try that finds the gate held belongs to a server already gone, and its
-//! answer goes nowhere. A server's build waits for such a try to finish
-//! instead, which takes as long as one enumeration.
+//! `InitQHYCCDResource` and `ReleaseQHYCCDResource` act on the process, not on
+//! the `Sdk` that calls them, and the SDK does not count them: an `Sdk` dropped
+//! while another lives would release the resource under the other's cameras.
+//! So [`Sdk::new`](crate::Sdk::new) and [`Sdk::try_new`](crate::Sdk::try_new)
+//! take [`SDK_GATE`] before the init, and the `Sdk` keeps it until its drop has
+//! run the release. The simulated build takes it too, so a host's simulation
+//! tests meet the rule its hardware does.
 
 use parking_lot::{Condvar, Mutex};
 
-/// The gate every `Sdk` this service makes on the SDK is made under.
+/// The gate every `Sdk` made by `new` or `try_new` is made under.
 pub static SDK_GATE: SdkGate = SdkGate::new();
 
 /// Whether an `Sdk` is alive, and the wait for it to go.
@@ -24,8 +20,7 @@ pub struct SdkGate {
     freed: Condvar,
 }
 
-/// The gate, held: released when this drops, after the `Sdk` it was taken
-/// for.
+/// The gate, held: released when this drops.
 #[derive(Debug)]
 #[must_use = "the gate is released as soon as the guard is dropped"]
 pub struct SdkGuard(&'static SdkGate);

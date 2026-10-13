@@ -1,3 +1,4 @@
+use crate::sdk_gate::{SdkGuard, SDK_GATE};
 use crate::Result;
 use crate::{Camera, FilterWheel, QHYError, SDKVersion};
 
@@ -18,7 +19,7 @@ use crate::sys::{
 };
 
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 /// The representation of the SDK. It automatically allocates the SDK when constructed
 /// and automatically frees resource when deconstructed.
 ///
@@ -36,11 +37,18 @@ use crate::sys::{
 ///
 /// # Lifetime
 ///
-/// Construct **at most one `Sdk` at a time**. `Sdk::new` calls the process-global
-/// `InitQHYCCDResource` and [`Drop`] calls `ReleaseQHYCCDResource`; these are NOT
-/// reference-counted, so a second live `Sdk` re-inits the global resource and
-/// dropping either releases it for both. Hold a single `Sdk` for the program's
-/// lifetime.
+/// **One `Sdk` at a time in a process**, and this crate enforces it. `Sdk::new`
+/// calls the process-global `InitQHYCCDResource` and [`Drop`] calls
+/// `ReleaseQHYCCDResource`; these are NOT reference-counted, so a second live
+/// `Sdk` would re-init the global resource and dropping either would release it
+/// for both. So [`Sdk::new`] waits while another `Sdk` lives in this process,
+/// and [`Sdk::try_new`] answers [`QHYError::SdkInUse`] instead of waiting; an
+/// `Sdk` holds its claim until its drop has run the release. A thread that
+/// holds an `Sdk` and calls [`Sdk::new`] waits forever. The simulated build
+/// keeps the same rule, so a host's simulation tests meet it, except for
+/// [`Sdk::new_simulated`], which stands for no SDK resource and claims
+/// nothing. `Sdk` is not `Clone`: a clone's drop would release the resource
+/// too. Hold a single `Sdk` for the program's lifetime.
 ///
 /// # Example
 /// ```no_run
@@ -58,6 +66,10 @@ use crate::sys::{
 pub struct Sdk {
     cameras: Vec<Camera>,
     filter_wheels: Vec<FilterWheel>,
+    /// This process's claim on the SDK, released after [`Drop`] has run
+    /// `ReleaseQHYCCDResource`: fields drop after `drop` returns. `None` for
+    /// [`Sdk::new_simulated`].
+    _claim: Option<SdkGuard>,
 }
 
 /// How many times the CFW-plugged probe is asked before a camera is taken to
@@ -174,76 +186,108 @@ fn scan_cameras() -> Result<Vec<Camera>> {
     Ok(cameras)
 }
 
+/// `InitQHYCCDResource`, then [`scan_cameras`]. A scan that fails releases
+/// the initialisation again (`ReleaseQHYCCDResource`), so no `Sdk` is needed
+/// whose drop would. Call it under the process's claim on the SDK.
+#[cfg(not(feature = "simulation"))]
+fn init_and_scan() -> Result<Vec<Camera>> {
+    if unsafe { InitQHYCCDResource() } != QHYCCD_SUCCESS {
+        let error = QHYError::Sdk { op: "init_sdk" };
+        tracing::error!(error = ?error);
+        return Err(error);
+    }
+    scan_cameras().inspect_err(|_| {
+        if unsafe { ReleaseQHYCCDResource() } != QHYCCD_SUCCESS {
+            tracing::error!(error = ?QHYError::Sdk { op: "close_sdk" });
+        }
+    })
+}
+
+/// The one camera [`Sdk::new`] finds in the simulated build.
+#[cfg(feature = "simulation")]
+fn default_simulated_cameras() -> Vec<Camera> {
+    vec![Camera::new_simulated(
+        simulation::SimulatedCameraConfig::sdk_default(),
+    )]
+}
+
 impl Sdk {
     /// Creates a new instance of the SDK and enumerates the cameras on the bus:
     /// `InitQHYCCDResource`, `ScanQHYCCD`, and `GetQHYCCDId` for each camera
     /// found. **No camera is opened.** [`Sdk::cameras`] lists every camera the
     /// scan found; [`Sdk::filter_wheels`] is empty until
     /// [`Sdk::probe_filter_wheels`] runs.
+    ///
+    /// **Waits while another `Sdk` lives in this process** (see *Lifetime*
+    /// on [`Sdk`]); [`Sdk::try_new`] answers instead of waiting.
+    ///
+    /// Under the `simulation` feature no SDK is called: the `Sdk` holds one
+    /// default simulated camera (QHY178M-Simulated) with cooler support and a
+    /// 7-position filter wheel, which [`Sdk::probe_filter_wheels`] finds as on
+    /// real hardware, so the same code runs in both builds, the wait included.
+    /// For other simulated cameras, use [`Sdk::new_simulated`] and
+    /// [`Sdk::add_simulated_camera`].
     /// # Errors
     /// Returns [`QHYError::Sdk`] if SDK initialisation, the camera scan, or
     /// reading a scanned camera's id fails, or [`QHYError::InvalidUtf8`] if
     /// an id is not UTF-8. A scan or an id read that fails after the
     /// initialisation succeeded releases it again (`ReleaseQHYCCDResource`):
-    /// no `Sdk` is returned whose drop would.
+    /// no `Sdk` is returned whose drop would. Infallible in the simulated
+    /// build.
     /// # Example
     /// ```no_run
     /// use qhyccd_rs::Sdk;
-    /// let sdk = Sdk::new();
-    /// assert!(sdk.is_ok());
+    /// let sdk = Sdk::new().expect("SDK::new failed");
+    /// println!("Found {} camera(s)", sdk.cameras().count());
     /// ```
-    #[cfg(not(feature = "simulation"))]
     pub fn new() -> Result<Self> {
-        if unsafe { InitQHYCCDResource() } != QHYCCD_SUCCESS {
-            let error = QHYError::Sdk { op: "init_sdk" };
-            tracing::error!(error = ?error);
-            return Err(error);
-        }
-        let cameras = scan_cameras().inspect_err(|_| {
-            if unsafe { ReleaseQHYCCDResource() } != QHYCCD_SUCCESS {
-                tracing::error!(error = ?QHYError::Sdk { op: "close_sdk" });
-            }
-        })?;
-        Ok(Self {
-            cameras,
-            filter_wheels: Vec::new(),
-        })
+        let claim = SDK_GATE.acquire();
+        #[cfg(not(feature = "simulation"))]
+        let cameras = init_and_scan()?;
+        #[cfg(feature = "simulation")]
+        let cameras = default_simulated_cameras();
+        Ok(Self::claimed(cameras, claim))
     }
 
-    /// Creates a new SDK instance with automatic simulation when the feature is enabled
-    ///
-    /// When compiled with the `simulation` feature, this automatically returns a simulated
-    /// SDK with a default camera (QHY178M-Simulated) that has a 7-position filter wheel
-    /// and cooler support. As on real hardware, the wheel is found by
-    /// [`Sdk::probe_filter_wheels`], not by this call. This allows the same code to work
-    /// seamlessly in both real and simulated environments.
-    ///
-    /// For custom simulated camera configurations, use `new_simulated()` and
-    /// `add_simulated_camera()` instead.
-    ///
+    /// [`Sdk::new`], unless another `Sdk` lives in this process: then it
+    /// answers [`QHYError::SdkInUse`] at once rather than wait for that one to
+    /// drop.
     /// # Errors
-    /// Infallible in the simulated build — the `Result` keeps the real
-    /// constructor's signature.
+    /// Returns [`QHYError::SdkInUse`] while another `Sdk` lives in this
+    /// process, and otherwise the errors of [`Sdk::new`].
     /// # Example
     /// ```no_run
-    /// use qhyccd_rs::Sdk;
-    ///
-    /// // Same code works with or without simulation feature
-    /// let sdk = Sdk::new().expect("Failed to initialize SDK");
-    /// let cameras = sdk.cameras();
-    /// println!("Found {} camera(s)", cameras.count());
+    /// use qhyccd_rs::{QHYError, Sdk};
+    /// match Sdk::try_new() {
+    ///     Ok(sdk) => println!("Found {} camera(s)", sdk.cameras().count()),
+    ///     Err(QHYError::SdkInUse) => println!("another Sdk is alive here"),
+    ///     Err(error) => println!("the SDK failed: {error}"),
+    /// }
     /// ```
-    #[cfg(feature = "simulation")]
-    pub fn new() -> Result<Self> {
-        let mut sdk = Self::new_simulated();
-        sdk.add_simulated_camera(simulation::SimulatedCameraConfig::sdk_default());
-        Ok(sdk)
+    pub fn try_new() -> Result<Self> {
+        let claim = SDK_GATE.try_acquire().ok_or(QHYError::SdkInUse)?;
+        #[cfg(not(feature = "simulation"))]
+        let cameras = init_and_scan()?;
+        #[cfg(feature = "simulation")]
+        let cameras = default_simulated_cameras();
+        Ok(Self::claimed(cameras, claim))
+    }
+
+    /// An `Sdk` of `cameras`, holding `claim` for as long as it lives.
+    const fn claimed(cameras: Vec<Camera>, claim: SdkGuard) -> Self {
+        Self {
+            cameras,
+            filter_wheels: Vec::new(),
+            _claim: Some(claim),
+        }
     }
 
     /// Creates a new SDK instance for simulation without scanning for real hardware
     ///
     /// This creates an empty SDK that can be populated with simulated cameras
-    /// using `add_simulated_camera()`.
+    /// using `add_simulated_camera()`. It claims nothing (see *Lifetime* on
+    /// [`Sdk`]): it stands for no SDK resource, so several may live at once,
+    /// beside one from [`Sdk::new`].
     ///
     /// # Example
     /// ```no_run
@@ -262,6 +306,7 @@ impl Sdk {
         Self {
             cameras: Vec::new(),
             filter_wheels: Vec::new(),
+            _claim: None,
         }
     }
 
@@ -437,7 +482,8 @@ impl Drop for Sdk {
     fn drop(&mut self) {
         // Real-SDK cleanup only. Under `simulation` no QHYCCD SDK is linked (every
         // such SDK is simulated), so this whole body is compiled out and `drop` is
-        // a no-op.
+        // a no-op. In both builds the claim on the SDK is a field, so it is
+        // released after this body has run.
         #[cfg(not(feature = "simulation"))]
         {
             // Close every still-open camera handle BEFORE releasing the SDK. The

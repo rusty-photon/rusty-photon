@@ -1331,8 +1331,8 @@ If the host's own USB scan now holds a working device on that port (a
 hub powered on after start), the detail adds that a reload would pick
 it up. A running service cannot show look-alikes or cameras the no-list
 default refused, because they are not registered at all;
-`<svc> doctor --devices`, safe to run by hand at any time, is where they
-are named.
+`<svc> doctor --devices`, which opens no camera, is where they are
+named.
 
 An automated *drift* check ("this port used to hold a QHY268M") is
 deliberately **not** in scope: the list pins a port, not a model, so

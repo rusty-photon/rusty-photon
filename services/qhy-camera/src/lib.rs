@@ -58,7 +58,6 @@ pub mod doctor;
 pub mod error;
 pub mod filterwheel;
 pub mod preflight;
-mod sdk_gate;
 
 pub use camera::QhyCameraDevice;
 pub use claims::UsbSource;
@@ -88,7 +87,6 @@ use tracing::{debug, error, info, warn};
 use crate::backend::{
     CameraHandle, FilterWheelHandle, QhyCameraHandle, QhyFilterWheelHandle, SharedCameraConnection,
 };
-use crate::sdk_gate::{SdkGuard, SDK_GATE};
 
 /// What every device this service registers answers for `DriverInfo`,
 /// placeholders included.
@@ -273,13 +271,13 @@ impl ServerBuilder {
         &self,
         server: &mut Server,
         injected: Option<qhyccd_rs::Sdk>,
-    ) -> std::result::Result<(Registered, Option<HeldSdk>), BoxError> {
+    ) -> std::result::Result<(Registered, Option<qhyccd_rs::Sdk>), BoxError> {
         // The open and the probe are SDK calls, a USB round trip each, so they
         // run on the blocking pool.
-        let (held, unprobed) = tokio::task::spawn_blocking(move || {
-            let mut held = HeldSdk::take(injected)?;
-            let unprobed = probe_every_camera(&mut held.sdk);
-            Ok::<_, QhyCameraError>((held, unprobed))
+        let (sdk, unprobed) = tokio::task::spawn_blocking(move || {
+            let mut sdk = take_sdk(injected)?;
+            let unprobed = probe_every_camera(&mut sdk);
+            Ok::<_, QhyCameraError>((sdk, unprobed))
         })
         .await??;
 
@@ -289,13 +287,9 @@ impl ServerBuilder {
         // a camera with its CFW so both ASCOM devices share ONE physical
         // connection — disconnecting either device must not tear down the other's
         // handle (see SharedCameraConnection).
-        let cfw_ids: std::collections::HashSet<String> = held
-            .sdk
-            .filter_wheels()
-            .map(|w| w.id().to_string())
-            .collect();
-        let cameras: Vec<qhyccd_rs::Camera> = held
-            .sdk
+        let cfw_ids: std::collections::HashSet<String> =
+            sdk.filter_wheels().map(|w| w.id().to_string()).collect();
+        let cameras: Vec<qhyccd_rs::Camera> = sdk
             .cameras()
             .filter(|camera| !unprobed.contains(camera.id()))
             .cloned()
@@ -327,7 +321,7 @@ impl ServerBuilder {
                  above); starting with no Camera devices"
             );
         }
-        Ok((registered, Some(held)))
+        Ok((registered, Some(sdk)))
     }
 
     /// A `usb_devices` list: take the USB scan, enumerate the SDK — each
@@ -344,7 +338,7 @@ impl ServerBuilder {
         server: &mut Server,
         list: &[UsbDeviceEntry],
         injected: Option<qhyccd_rs::Sdk>,
-    ) -> std::result::Result<(Registered, Option<HeldSdk>), BoxError> {
+    ) -> std::result::Result<(Registered, Option<qhyccd_rs::Sdk>), BoxError> {
         if list.is_empty() {
             warn!(
                 "usb_devices is an empty list: no QHY camera is registered, every one is left \
@@ -352,7 +346,7 @@ impl ServerBuilder {
             );
             return Ok((Registered::default(), None));
         }
-        let (scan, held, cameras) = self.scan_and_enumerate(injected).await?;
+        let (scan, sdk, cameras) = self.scan_and_enumerate(injected).await?;
         let claims = Claims::new(
             claims::NORMALIZER,
             claims::SERVICE,
@@ -372,8 +366,8 @@ impl ServerBuilder {
         let mut wheels = Vec::new();
         for (entry, outcome) in resolve_list(&claims, list) {
             let camera = outcome.and_then(|index| {
-                held.as_ref()
-                    .and_then(|h| h.sdk.cameras().nth(index).cloned())
+                sdk.as_ref()
+                    .and_then(|sdk| sdk.cameras().nth(index).cloned())
                     .ok_or_else(|| {
                         format!("the join placed SDK camera {index}, which is not enumerated")
                     })
@@ -431,7 +425,7 @@ impl ServerBuilder {
         if claims.scan_error().is_some() {
             registered.rescan = Some(self.rescan());
         }
-        Ok((registered, held))
+        Ok((registered, sdk))
     }
 
     /// A list's USB scan, and — only once the scan runs (U6) — the SDK,
@@ -454,13 +448,13 @@ impl ServerBuilder {
             );
             return Ok((scan, None, Vec::new()));
         }
-        let (held, cameras) = tokio::task::spawn_blocking(move || {
-            let held = HeldSdk::take(injected)?;
-            let cameras = claims::enumerate(&held.sdk);
-            Ok::<_, QhyCameraError>((held, cameras))
+        let (sdk, cameras) = tokio::task::spawn_blocking(move || {
+            let sdk = take_sdk(injected)?;
+            let cameras = claims::enumerate(&sdk);
+            Ok::<_, QhyCameraError>((sdk, cameras))
         })
         .await??;
-        Ok((scan, Some(held), cameras))
+        Ok((scan, Some(sdk), cameras))
     }
 
     /// Register `camera` with its display overrides, and return the physical
@@ -509,17 +503,12 @@ impl ServerBuilder {
             claims::SDK_NAME,
             move || source.scan().map(drop),
             || {
-                // A failed scan's server holds no SDK, so a held gate means
-                // this try outlived its server and the next one is serving.
-                let Some(gate) = SDK_GATE.try_acquire() else {
-                    return Err("another server holds the QHY SDK".to_string());
-                };
-                // The SDK is released, by `drop`, before the gate is.
-                let enumerated = qhyccd_rs::Sdk::new()
+                // A failed scan's server holds no SDK, so another `Sdk` alive
+                // in this process means this try outlived its server and the
+                // next one is serving: `try_new` answers rather than waits.
+                qhyccd_rs::Sdk::try_new()
                     .map(drop)
-                    .map_err(|e| format!("{e:#}"));
-                drop(gate);
-                enumerated
+                    .map_err(|e| format!("{e:#}"))
             },
         )
     }
@@ -565,7 +554,7 @@ fn resolve_list(
 /// that SDK enumerated.
 type Scanned = (
     std::result::Result<rusty_photon_doctor_checks::UsbScan, String>,
-    Option<HeldSdk>,
+    Option<qhyccd_rs::Sdk>,
     Vec<claims::Enumerated>,
 );
 
@@ -578,34 +567,25 @@ struct Registered {
     rescan: Option<Rescan>,
 }
 
-/// The SDK a server's devices run on, with this process's claim on it.
-struct HeldSdk {
-    sdk: qhyccd_rs::Sdk,
-    /// Released after `sdk`, whose drop releases the SDK's resource: fields
-    /// drop in declaration order. `None` for an injected simulation SDK, whose
-    /// drop releases nothing.
-    _gate: Option<SdkGuard>,
-}
-
-impl HeldSdk {
-    /// `injected`, or the SDK opened under [`SDK_GATE`] — waiting, if a
-    /// re-scan's try holds the gate, for that try to finish. Blocking.
-    fn take(injected: Option<qhyccd_rs::Sdk>) -> std::result::Result<Self, QhyCameraError> {
-        if let Some(sdk) = injected {
-            return Ok(Self { sdk, _gate: None });
-        }
-        let gate = SDK_GATE.try_acquire().unwrap_or_else(|| {
+/// The SDK a server's devices run on: `injected`, or the SDK opened —
+/// waiting, if a re-scan's try has one alive (`qhyccd-rs` makes one `Sdk` at a
+/// time in a process), for that try to finish. Blocking.
+fn take_sdk(
+    injected: Option<qhyccd_rs::Sdk>,
+) -> std::result::Result<qhyccd_rs::Sdk, QhyCameraError> {
+    if let Some(sdk) = injected {
+        return Ok(sdk);
+    }
+    let sdk = match qhyccd_rs::Sdk::try_new() {
+        Err(qhyccd_rs::QHYError::SdkInUse) => {
             // Only a failed scan's re-scan can hold it here: a try that
             // outlived its server, still in its SDK check (U6).
             warn!("waiting for a USB re-scan's QHY SDK check to finish before opening the SDK");
-            SDK_GATE.acquire()
-        });
-        let sdk = qhyccd_rs::Sdk::new().map_err(|e| QhyCameraError::Sdk(format!("{e:#}")))?;
-        Ok(Self {
-            sdk,
-            _gate: Some(gate),
-        })
-    }
+            qhyccd_rs::Sdk::new()
+        }
+        tried => tried,
+    };
+    sdk.map_err(|e| QhyCameraError::Sdk(format!("{e:#}")))
 }
 
 /// Probe every enumerated camera for a CFW. Returns the ids of the cameras the
@@ -656,7 +636,7 @@ pub struct BoundServer {
     /// Held so the SDK is released (its `Drop` calls `ReleaseQHYCCDResource` on
     /// real hardware) only after the HTTP server stops — on shutdown *and*
     /// reload. `None` when a list's failed scan, or an empty list, opened none.
-    sdk: Option<HeldSdk>,
+    sdk: Option<qhyccd_rs::Sdk>,
 }
 
 impl BoundServer {

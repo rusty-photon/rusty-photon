@@ -81,8 +81,9 @@ struct Probe {
 /// `usb_devices` block to paste (docs/services/qhy-camera.md U8).
 ///
 /// Read-only and enumeration-only — each camera's id and model are read
-/// without opening it, so no CFW probe runs and no wheel can be seen — so it
-/// is safe to run while the service holds its cameras. Exits 0; 1 when the
+/// without opening it, so no CFW probe runs and no wheel can be seen. Its
+/// `Sdk::new` still starts the SDK and scans in this process, beside any
+/// service holding the cameras, which is unmeasured. Exits 0; 1 when the
 /// config cannot be read, its list breaks a rule (the ports are listed all the
 /// same — they are how the list gets fixed), the scan failed, or the SDK could
 /// not enumerate; 2 when the config path cannot be resolved.

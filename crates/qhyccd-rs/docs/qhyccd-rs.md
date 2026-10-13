@@ -174,6 +174,8 @@ The `Sdk::new()` behavior changes based on the `simulation` feature flag:
 
 The `Drop` implementation ensures `ReleaseQHYCCDResource()` is called when the SDK is destroyed, preventing resource leaks.
 
+**One `Sdk` at a time in a process.** `InitQHYCCDResource()` and `ReleaseQHYCCDResource()` act on the process and are not reference-counted, so a second live `Sdk` would re-initialise the resource and dropping either would release it under the other's cameras. The crate enforces the rule with a process-wide gate (`sdk_gate.rs`): `Sdk::new()` waits while another `Sdk` lives, and `Sdk::try_new()` returns `QHYError::SdkInUse` instead of waiting. The `Sdk` holds its claim as a field, so it is released only after `Drop` has run the release. The simulated build keeps the same rule, so a host's simulation tests meet it, except for `Sdk::new_simulated()`, which stands for no SDK resource and claims nothing. `Sdk` is not `Clone`, since a clone's drop would release the resource too. A thread that holds an `Sdk` and calls `Sdk::new()` waits forever.
+
 #### 2. Camera - Device Control
 
 The `Camera` struct represents a single camera device and provides all control functionality.
@@ -1192,8 +1194,8 @@ convention-alignment plan).
 ### Resource Acquisition Is Initialization (RAII)
 
 The `Sdk` struct follows RAII principles:
-- Constructor (`new()`) calls `InitQHYCCDResource()`
-- Destructor (`Drop`) calls `ReleaseQHYCCDResource()`
+- Constructor (`new()` / `try_new()`) takes the process's one-`Sdk` claim, then calls `InitQHYCCDResource()`
+- Destructor (`Drop`) calls `ReleaseQHYCCDResource()`, then releases the claim
 - Ensures proper cleanup even during panics
 - Prevents resource leaks
 

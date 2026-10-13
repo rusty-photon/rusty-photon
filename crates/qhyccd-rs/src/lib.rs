@@ -117,6 +117,7 @@ mod error;
 mod filter_wheel;
 mod quantize;
 mod sdk;
+mod sdk_gate;
 mod types;
 
 #[cfg(feature = "simulation")]

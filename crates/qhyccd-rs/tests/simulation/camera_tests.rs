@@ -481,6 +481,34 @@ fn test_simulated_sdk_add_camera_with_filter_wheel() {
 }
 
 #[test]
+fn try_new_refuses_while_an_sdk_lives_here() {
+    let _held = Sdk::new().unwrap();
+    assert_eq!(Sdk::try_new().unwrap_err(), QHYError::SdkInUse);
+}
+
+#[test]
+fn new_waits_for_the_live_sdk_to_drop() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let held = Sdk::new().unwrap();
+    let (made_tx, made) = mpsc::channel();
+    let maker = std::thread::spawn(move || {
+        let sdk = Sdk::new().unwrap();
+        made_tx.send(()).unwrap();
+        drop(sdk);
+    });
+    assert_eq!(
+        made.recv_timeout(Duration::from_millis(100)),
+        Err(mpsc::RecvTimeoutError::Timeout),
+        "a second Sdk was made while the first lived"
+    );
+    drop(held);
+    made.recv_timeout(Duration::from_secs(30)).unwrap();
+    maker.join().unwrap();
+}
+
+#[test]
 fn enumeration_opens_no_camera() {
     let sdk = Sdk::new().unwrap();
     let camera = sdk.cameras().next().unwrap();

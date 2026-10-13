@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Sdk::try_new()`, which answers the new `QHYError::SdkInUse` while another
+  `Sdk` lives in this process instead of waiting for it (see *Changed*).
 - `Sdk::probe_filter_wheels(&ids)`, the second stage after `Sdk::new()`'s
   enumeration (see *Changed*), and `QHYError::UnknownCameraId` for an id it is
   given that names no enumerated camera. It takes any slice of string-likes
@@ -63,6 +65,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** one `Sdk` at a time in a process is now enforced, not only
+  documented. `Sdk::new()` waits while another `Sdk` lives in the process, so
+  a thread that holds one and calls it again waits forever. The SDK's resource
+  is the process's and not counted, so a second `Sdk`'s drop released it under
+  the first's cameras. An `Sdk` keeps its claim until its drop has run
+  `ReleaseQHYCCDResource`. The simulated `Sdk::new()` keeps the same rule;
+  `Sdk::new_simulated()` claims nothing. `Sdk` is no longer `Clone` (a clone's
+  drop released the resource too) or `PartialEq`.
 - **Breaking:** `Sdk::new()` enumerates and opens nothing: `ScanQHYCCD` and
   `GetQHYCCDId` per camera. It used to open, initialise (`InitQHYCCD`), probe and
   close every camera to find its filter wheel, before a caller could choose
