@@ -1371,17 +1371,21 @@ mod macos {
     pub fn usb_inventory() -> Result<UsbScan, String> {
         let deadline = super::bounded::DEADLINE;
         let (report, listing_took) = listed_report(deadline)?;
+        let left = deadline.saturating_sub(listing_took.unwrap_or_default());
+        let query_started = Instant::now();
         let output = super::bounded::capture(
             Command::new("system_profiler").args(["-json", report.data_type]),
-            deadline.saturating_sub(listing_took.unwrap_or_default()),
+            left,
         )
         .map_err(|e| {
             debug!(error = %e, "system_profiler query failed");
             // A query that ran out of time after the listing ran out of what
             // the listing left it, not of the whole deadline.
-            let after_listing = listing_took.map_or_default(|took| {
-                format!(" (the data type listing took {took:?} of the scan's {deadline:?})")
-            });
+            let after_listing = listing_took
+                .filter(|_| query_started.elapsed() >= left)
+                .map_or_default(|took| {
+                    format!(" (the data type listing took {took:?} of the scan's {deadline:?})")
+                });
             format!("macOS USB inventory failed: {e}{after_listing}")
         })?;
         let value = serde_json::from_slice::<serde_json::Value>(&output).map_err(|e| {
@@ -1477,13 +1481,17 @@ mod macos {
                     serial: item.get(report.serial).and_then(serial_field),
                 }),
                 (vendor, product, port) => {
-                    let reason = if vendor.is_none() {
-                        format!(
+                    // Every field that cannot be read is named, so one look
+                    // at the fault says all that is wrong with the record.
+                    let mut problems = Vec::new();
+                    if vendor.is_none() {
+                        problems.push(format!(
                             "its {} reads {raw_vendor}, which is not a USB vendor id",
                             report.vendor
-                        )
-                    } else if product.is_none() {
-                        raw_product.map_or_else(
+                        ));
+                    }
+                    if product.is_none() {
+                        problems.push(raw_product.map_or_else(
                             || format!("it reports no {}", report.product),
                             |raw| {
                                 format!(
@@ -1491,13 +1499,15 @@ mod macos {
                                     report.product
                                 )
                             },
-                        )
-                    } else {
-                        format!(
+                        ));
+                    }
+                    if port.is_none() {
+                        problems.push(format!(
                             "it reports no usable {}, so its port cannot be named",
                             report.location
-                        )
-                    };
+                        ));
+                    }
+                    let reason = problems.join("; ");
                     let record = model.clone().unwrap_or_else(|| {
                         format!(
                             "{}:{}",
@@ -4072,6 +4082,21 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
         );
     }
 
+    /// A record with more than one field that cannot be read names each.
+    #[test]
+    fn test_a_fault_names_every_field_it_cannot_read() {
+        let scan = system_profiler(
+            r#"{ "SPUSBDataType": [ { "_name": "Mystery Camera",
+                   "vendor_id": "some_vendor_id", "product_id": "0x662b" } ] }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            scan.faults[0].reason,
+            "its vendor_id reads \"some_vendor_id\", which is not a USB vendor id; it reports \
+             no usable location_id, so its port cannot be named"
+        );
+    }
+
     /// So is a device record with no product id, or one that is not four
     /// hex digits.
     #[test]
@@ -4101,28 +4126,35 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
     /// Only that much is asserted: the I/O Registry and `system_profiler`
     /// are two reads of a bus a device can join or leave between them, so
     /// their counts need not agree on a Mac in use.
+    ///
+    /// It needs a device on the bus to tell an empty scan from a wrong one,
+    /// and says so rather than passing: GitHub's macOS runners carry two
+    /// virtual ones. A device node is counted by its exact class,
+    /// `IOUSBHostDevice`, which leaves out the root-hub nodes an Intel Mac's
+    /// plane carries (`AppleUSBRootHubDevice`), which `system_profiler`
+    /// does not list as devices.
     #[cfg(target_os = "macos")]
     #[test]
     fn test_the_collector_reads_a_bus_with_devices_as_one() {
         let ioreg = std::process::Command::new("ioreg")
-            .args(["-p", "IOUSB", "-l", "-w0"])
+            .args(["-p", "IOUSB", "-w0"])
             .output()
             .unwrap();
         assert!(ioreg.status.success(), "ioreg failed: {ioreg:?}");
-        // Every device node carries idVendor, whatever its class; the
-        // controllers at the plane's root do not.
-        let shown = String::from_utf8_lossy(&ioreg.stdout)
-            .matches("\"idVendor\" = ")
-            .count();
+        let plane = String::from_utf8_lossy(&ioreg.stdout);
+        let shown = plane.matches("<class IOUSBHostDevice,").count();
+        assert!(
+            shown > 0,
+            "the I/O Registry's USB plane shows no device, so this test cannot tell an empty \
+             scan from a wrong one: plug a USB device in\n{plane}"
+        );
 
         let scan = super::macos::usb_inventory().unwrap();
 
-        if shown > 0 {
-            assert!(
-                !scan.devices.is_empty(),
-                "ioreg's USB plane shows {shown} device(s), the scan places none: {scan:?}"
-            );
-        }
+        assert!(
+            !scan.devices.is_empty(),
+            "the USB plane shows {shown} device(s), the scan places none: {scan:?}\n{plane}"
+        );
     }
 
     /// A report without the `SPUSBDataType` list fails the scan instead of
