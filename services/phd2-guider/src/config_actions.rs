@@ -22,11 +22,26 @@ impl ConfigurableDriver for Phd2GuiderDriver {
 
     fn normalize(_config: &mut Config) {}
 
+    /// The load-time rules, plus `image_dir` existing as a directory:
+    /// with the `Restart` disposition an applied change is only tried at
+    /// the next start, and a directory that is not there would stop the
+    /// whole guider then.
     fn validate(config: &Config) -> Vec<FieldError> {
-        camera_rule_violations(config)
+        let mut errors: Vec<FieldError> = camera_rule_violations(config)
             .into_iter()
             .map(|(path, msg)| FieldError { path, msg })
-            .collect()
+            .collect();
+        if config.camera.enabled {
+            if let Some(dir) = config.camera.image_dir.as_ref().filter(|d| d.is_absolute()) {
+                if !dir.is_dir() {
+                    errors.push(FieldError {
+                        path: "camera.image_dir".to_string(),
+                        msg: format!("{} is not an existing directory", dir.display()),
+                    });
+                }
+            }
+        }
+        errors
     }
 
     fn secret_pointers() -> &'static [&'static str] {
@@ -82,6 +97,37 @@ mod tests {
                 "camera.image_dir"
             ]
         );
+    }
+
+    fn enabled_on(image_dir: &std::path::Path) -> Config {
+        serde_json::from_value(serde_json::json!({
+            "camera": {
+                "enabled": true,
+                "pixel_size_x_um": 2.9,
+                "pixel_size_y_um": 2.9,
+                "image_dir": image_dir,
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_applied_image_dir_must_exist_as_a_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = |config: &Config| -> Vec<String> {
+            Phd2GuiderDriver::validate(config)
+                .into_iter()
+                .map(|e| e.path)
+                .collect()
+        };
+        assert_eq!(paths(&enabled_on(dir.path())), Vec::<String>::new());
+        assert_eq!(
+            paths(&enabled_on(&dir.path().join("missing"))),
+            ["camera.image_dir"]
+        );
+        let file = dir.path().join("plain");
+        std::fs::write(&file, b"x").unwrap();
+        assert_eq!(paths(&enabled_on(&file)), ["camera.image_dir"]);
     }
 
     #[test]

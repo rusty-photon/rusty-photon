@@ -2392,7 +2392,9 @@ frame away and leaves PHD2 unable to capture until it restarts. As built:
   crash leaves a marker, `phd2-guider-capture.json` in `image_dir`,
   written before `capture_single_frame` and removed on release. It holds
   the frame's path and its deadline in wall-clock time. At startup a
-  marker holds the slot until its file appears or its deadline passes.
+  marker holds the slot until PHD2 reports the frame (to every client, so
+  the restarted service hears it) or its deadline passes. Its file
+  appearing proves nothing, since PHD2 creates it before writing it.
   That is never longer after the original request than the running process
   would have held it, and it needs no state query. A deadline further ahead
   than the longest exposure plus the longest grace (660 s) is cut to that,

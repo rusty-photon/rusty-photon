@@ -14,7 +14,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::client::Phd2Client;
 use crate::config::MAX_CAPTURE_GRACE;
@@ -39,12 +39,13 @@ const SWEEP_ENTRY_BUDGET: usize = 4096;
 /// one; the cap only has to stop an oversized file being read.
 const HEADER_BLOCKS_ALLOWED: u64 = 8;
 const FITS_BLOCK: u64 = 2880;
-/// How often a restart marker's frame file is looked for.
-const RECOVERY_POLL: Duration = Duration::from_millis(500);
 /// How long an abort waits for PHD2 to report the frame ended.
 pub const ABORT_WAIT: Duration = Duration::from_secs(2);
 /// PHD2's longest single frame (`capture_single_frame` refuses more).
 pub const MAX_EXPOSURE: Duration = Duration::from_secs(600);
+/// How long each of a capture's two requests to PHD2 may take while the
+/// guiding lock is held. PHD2 answers both in milliseconds.
+const START_RPC_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Why a capture could not start. Each maps to an ASCOM error in
 /// `camera.rs`.
@@ -71,7 +72,8 @@ pub enum StartError {
     /// The request may have reached PHD2, but no answer came back. The
     /// slot stays held until the frame is reported or its deadline.
     #[error(
-        "PHD2 did not answer the capture request ({0}); guiding stays refused until the frame          is reported or its deadline passes"
+        "PHD2 did not answer the capture request ({0}); guiding stays refused until the frame \
+         is reported or its deadline passes"
     )]
     Unconfirmed(String),
 }
@@ -173,7 +175,7 @@ impl CaptureEngine {
     pub async fn start(self: &Arc<Self>, exposure_ms: u32) -> Result<InFlight, StartError> {
         let Ok(op) = self.ops.op_lock().try_lock() else {
             return Err(StartError::Busy(
-                "a guiding operation is in progress".to_string(),
+                "the guider is busy: a guiding request, or the end of an earlier frame".to_string(),
             ));
         };
         if let Some(claim) = self.ops.capture_claim() {
@@ -183,7 +185,10 @@ impl CaptureEngine {
                 humantime::format_rfc3339_seconds(claim.deadline)
             )));
         }
-        let state = self.client.get_app_state().await.map_err(map_rpc_error)?;
+        let state = tokio::time::timeout(START_RPC_TIMEOUT, self.client.get_app_state())
+            .await
+            .map_err(|_| StartError::Unreachable("PHD2 did not answer get_app_state".to_string()))?
+            .map_err(map_rpc_error)?;
         if state != AppState::Stopped {
             return Err(StartError::NotStopped(state));
         }
@@ -228,36 +233,17 @@ impl CaptureEngine {
             deadline,
             frames,
         };
-        match self
-            .client
-            .capture_single_frame_to(exposure_ms, &path_text)
-            .await
-        {
-            Ok(()) => {}
-            // PHD2 answered, or the request never left: nothing started.
-            Err(e @ (Phd2Error::RpcError { .. } | Phd2Error::NotConnected)) => {
-                remove_marker_naming(&marker_path, &path);
-                self.ops.release_capture(&path);
-                return Err(map_rpc_error(e));
-            }
-            // The request may have reached PHD2: hold the slot as for a
-            // frame it accepted.
-            Err(e) => {
-                drop(op);
-                warn!(
-                    path = %path.display(),
-                    "PHD2 did not answer the capture request ({e}); guiding stays refused until \
-                     the frame is reported or its deadline passes"
-                );
-                let engine = Arc::clone(self);
-                tokio::spawn(async move {
-                    if engine.wait(inflight).await == FrameEnd::Saved {
-                        engine.discard(&path);
-                    }
-                });
-                return Err(StartError::Unconfirmed(e.to_string()));
-            }
-        }
+        let request = tokio::time::timeout(
+            START_RPC_TIMEOUT,
+            self.client.capture_single_frame_to(exposure_ms, &path_text),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(Phd2Error::Timeout(
+                "capture_single_frame got no answer".to_string(),
+            ))
+        });
+        let inflight = self.settle_request(request, inflight)?;
         drop(op);
         debug!(path = %path.display(), exposure_ms, "PHD2 accepted the facade's frame");
 
@@ -270,6 +256,46 @@ impl CaptureEngine {
             debug!("swept {removed} orphaned frame file(s) as the capture started");
         }
         Ok(inflight)
+    }
+
+    /// What PHD2's answer to `capture_single_frame` means for the frame
+    /// `inflight` claims. Called with the guiding lock held.
+    ///
+    /// # Errors
+    ///
+    /// A refusal, or a request never sent, releases the slot and removes
+    /// the marker: nothing started. Any other failure means the request
+    /// may have reached PHD2, so the slot and the marker stay, held by a
+    /// background wait as for a frame PHD2 accepted
+    /// ([`StartError::Unconfirmed`]).
+    fn settle_request(
+        self: &Arc<Self>,
+        request: crate::error::Result<()>,
+        inflight: InFlight,
+    ) -> Result<InFlight, StartError> {
+        let path = inflight.path.clone();
+        match request {
+            Ok(()) => Ok(inflight),
+            Err(e @ (Phd2Error::RpcError { .. } | Phd2Error::NotConnected)) => {
+                remove_marker_naming(&self.marker_path(), &path);
+                self.ops.release_capture(&path);
+                Err(map_rpc_error(e))
+            }
+            Err(e) => {
+                warn!(
+                    path = %path.display(),
+                    "PHD2 did not answer the capture request ({e}); guiding stays refused until \
+                     the frame is reported or its deadline passes"
+                );
+                let engine = Arc::clone(self);
+                tokio::spawn(async move {
+                    if engine.wait(inflight).await == FrameEnd::Saved {
+                        engine.discard(&path);
+                    }
+                });
+                Err(StartError::Unconfirmed(e.to_string()))
+            }
+        }
     }
 
     /// Wait for PHD2 to report `inflight`'s frame, or for its deadline,
@@ -336,7 +362,8 @@ impl CaptureEngine {
     /// given up on (`given_up`), remove the marker if it still names this
     /// frame, and release the slot.
     async fn finish_claim(&self, path: &Path, given_up: bool) {
-        let _op = self.ops.op_lock().lock().await;
+        // Before the lock: a late report that lands while this waits for
+        // it must already find the frame given up on.
         if given_up {
             let mut abandoned = self.abandoned();
             if abandoned.len() == ABANDONED_REMEMBERED {
@@ -344,6 +371,7 @@ impl CaptureEngine {
             }
             abandoned.push_back(path.to_path_buf());
         }
+        let _op = self.ops.op_lock().lock().await;
         remove_marker_naming(&self.marker_path(), path);
         self.ops.release_capture(path);
     }
@@ -366,10 +394,8 @@ impl CaptureEngine {
 
     /// Delete a frame file. A failure is logged, never returned.
     pub fn discard(&self, path: &Path) {
-        match std::fs::remove_file(path) {
-            Ok(()) => debug!(path = %path.display(), "deleted the facade's frame file"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => warn!(path = %path.display(), "cannot delete the facade's frame file: {e}"),
+        if remove_quietly(path) {
+            debug!(path = %path.display(), "deleted the facade's frame file");
         }
     }
 
@@ -507,7 +533,7 @@ impl CaptureEngine {
             .await
             .unwrap_or_default();
         if removed > 0 {
-            info!("removed {removed} orphaned camera-facade frame file(s) at startup");
+            debug!("removed {removed} orphaned camera-facade frame file(s) at startup");
         }
         let Some((path, deadline)) = in_flight else {
             return;
@@ -534,28 +560,19 @@ impl CaptureEngine {
         tokio::spawn(async move { engine.watch_recovered(path, deadline).await });
     }
 
+    /// Hold the restart marker's frame until PHD2 reports it (the late
+    /// cleaner then releases it) or its deadline passes. The frame's file
+    /// existing proves nothing: PHD2 creates it before it has written it.
     async fn watch_recovered(&self, path: PathBuf, deadline: SystemTime) {
-        loop {
-            if self
-                .ops
-                .capture_claim()
-                .is_none_or(|claim| claim.path != path)
-            {
-                return; // PHD2 reported it; the cleaner released it.
-            }
-            let landed = path.exists();
-            if landed || SystemTime::now() >= deadline {
-                debug!(
-                    path = %path.display(),
-                    landed,
-                    "the restart marker's frame has ended or its deadline passed"
-                );
-                self.discard(&path);
-                self.finish_claim(&path, false).await;
-                return;
-            }
-            tokio::time::sleep(RECOVERY_POLL).await;
+        let left = deadline
+            .duration_since(SystemTime::now())
+            .unwrap_or_default();
+        if self.ops.wait_capture_released(&path, left).await {
+            return; // PHD2 reported it; the cleaner released it.
         }
+        debug!(path = %path.display(), "the restart marker's frame reached its deadline");
+        self.discard(&path);
+        self.finish_claim(&path, false).await;
     }
 
     /// At shutdown: end the facade's frame in flight, if any, and wait
@@ -782,11 +799,16 @@ fn remove_marker_naming(marker_path: &Path, path: &Path) {
     }
 }
 
-fn remove_quietly(path: &Path) {
+/// Remove a file the facade owns: one already gone is fine, any other
+/// failure is logged. Returns whether a file was removed.
+fn remove_quietly(path: &Path) -> bool {
     match std::fs::remove_file(path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => warn!(path = %path.display(), "cannot remove {}: {e}", path.display()),
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => {
+            warn!(path = %path.display(), "cannot remove {}: {e}", path.display());
+            false
+        }
     }
 }
 
@@ -1051,7 +1073,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_live_marker_holds_the_slot_until_its_frame_lands() {
+    async fn a_live_marker_holds_the_slot_until_phd2_reports_its_frame() {
         let dir = tempfile::tempdir().unwrap();
         let engine = engine(dir.path());
         let path = dir.path().join(FRAME);
@@ -1062,16 +1084,59 @@ mod tests {
             .capture_claim()
             .expect("the marker's frame holds the slot");
         assert!(claim.recovered);
+        // The file existing is not the frame's end: PHD2 creates it
+        // before it has written it.
         std::fs::write(&path, b"frame").unwrap();
+        assert!(
+            !engine
+                .ops
+                .wait_capture_released(&path, Duration::from_millis(200))
+                .await,
+            "the slot was released on the file alone"
+        );
+        engine
+            .on_late_report(&FrameReport {
+                success: true,
+                error: None,
+                path: Some(path.to_str().unwrap().to_string()),
+            })
+            .await;
+        assert!(engine.ops.capture_claim().is_none());
+        assert!(!path.exists());
+        assert!(!engine.marker_path().exists());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_live_marker_holds_the_slot_no_longer_than_its_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine(dir.path());
+        let path = dir.path().join(FRAME);
+        stage_marker(&engine, &path, SystemTime::now() + Duration::from_secs(60));
+        engine.recover().await;
+        assert!(engine.ops.capture_claim().is_some());
         assert!(
             engine
                 .ops
-                .wait_capture_released(&path, Duration::from_secs(10))
+                .wait_capture_released(&path, Duration::from_secs(120))
                 .await,
-            "the slot was not released when the frame landed"
+            "the slot outlived the marker's deadline"
         );
-        assert!(!path.exists());
         assert!(!engine.marker_path().exists());
+    }
+
+    #[tokio::test]
+    async fn a_marker_deadline_beyond_any_frame_is_cut_to_the_longest_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine(dir.path());
+        let path = dir.path().join(FRAME);
+        stage_marker(&engine, &path, SystemTime::now() + Duration::from_hours(24));
+        engine.recover().await;
+        let claim = engine
+            .ops
+            .capture_claim()
+            .expect("the marker holds the slot");
+        let longest = SystemTime::now() + MAX_EXPOSURE + MAX_CAPTURE_GRACE;
+        assert!(claim.deadline <= longest, "{:?}", claim.deadline);
     }
 
     #[tokio::test]

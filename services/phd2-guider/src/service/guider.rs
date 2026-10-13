@@ -240,10 +240,14 @@ impl GuiderOps {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The frame holding the capture slot, if any.
+    /// The frame holding the capture slot, if any. A claim whose deadline
+    /// has passed holds nothing, so the documented bound holds even if
+    /// the task that should release it never runs.
     #[must_use]
     pub fn capture_claim(&self) -> Option<CaptureClaim> {
-        self.capture_slot().clone()
+        self.capture_slot()
+            .clone()
+            .filter(|claim| claim.deadline > SystemTime::now())
     }
 
     /// Claim the capture slot for a facade frame. The caller holds the
@@ -576,8 +580,10 @@ impl GuiderOps {
             .get_app_state()
             .await
             .map_err(ServiceError::from)?;
-        // A facade frame of this process is always stopped: PHD2's state
-        // during one is not to be trusted to read anything but Stopped.
+        // A facade frame of this process is always stopped, whatever the
+        // state reads. During every measured frame PHD2 answered Looping,
+        // but its source reports Stopped for a capture-active guider in
+        // some guider states, so Stopped does not prove no frame is running.
         let frame_in_flight = self.capture_claim().is_some_and(|claim| !claim.recovered);
         if state == AppState::Stopped && !frame_in_flight {
             debug!("stop requested while already stopped");

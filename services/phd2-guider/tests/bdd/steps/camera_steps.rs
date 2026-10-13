@@ -271,22 +271,46 @@ async fn when_image_ready(world: &mut GuiderWorld, seconds: u64) {
     image_becomes_ready(world, seconds).await;
 }
 
-#[when("the capture marker's frame file lands")]
-async fn marker_frame_lands(world: &mut GuiderWorld) {
+#[when("PHD2 reports the capture marker's frame")]
+async fn phd2_reports_marker_frame(world: &mut GuiderWorld) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
     let frame = world
         .marker_frame
         .clone()
         .expect("no capture marker staged");
-    std::fs::write(&frame, b"PHD2's late frame").expect("land the marker's frame");
-    // The service looks for the frame every 500 ms. It removes the
-    // marker and releases the slot together, under the guiding lock, so
-    // a request sent once the marker is gone finds the slot released.
+    std::fs::write(&frame, b"PHD2's frame").expect("land the marker's frame");
+    // A second client of the mock asks it to report the frame to every
+    // client, the guider service included, as PHD2 does.
+    let port = world.mock.as_ref().expect("mock PHD2 not started").port;
+    let stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("connect to the mock PHD2");
+    let (read, mut write) = stream.into_split();
+    let request = serde_json::json!({
+        "method": "mock_report_frame",
+        "params": { "path": frame },
+        "id": 1,
+    });
+    write
+        .write_all(format!("{request}\r\n").as_bytes())
+        .await
+        .expect("send mock_report_frame");
+    let mut lines = BufReader::new(read).lines();
+    while let Some(line) = lines.next_line().await.expect("read the mock's reply") {
+        if line.contains("\"id\":1") {
+            break;
+        }
+    }
+    // The service removes the marker and releases the slot together,
+    // under the guiding lock, so a request sent once the marker is gone
+    // finds the slot released.
     let marker = world.image_dir().join("phd2-guider-capture.json");
     let give_up = tokio::time::Instant::now() + Duration::from_secs(10);
     while marker.exists() {
         assert!(
             tokio::time::Instant::now() < give_up,
-            "the capture marker was not removed after its frame landed"
+            "the capture marker was not removed after PHD2 reported its frame"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

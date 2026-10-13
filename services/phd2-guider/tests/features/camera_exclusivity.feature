@@ -16,8 +16,10 @@ Feature: The camera facade and guiding never share the guide camera
   After a crash the facade leaves a marker, phd2-guider-capture.json in
   image_dir, naming the frame in flight and its deadline. A service that
   starts on a marker whose deadline is still ahead keeps guiding refused
-  until that frame's file appears or the deadline passes, then removes
-  the marker. One whose deadline already passed is removed at startup.
+  until PHD2 reports that frame or the deadline passes, then removes the
+  marker. The frame's file appearing is not enough: PHD2 creates the
+  file before it has written it. A marker whose deadline already passed
+  is removed at startup.
 
   Scenario Outline: A guiding operation during a facade frame is refused with camera_busy
     Given a mock PHD2 2.6.14 with an 8 x 6 camera
@@ -69,14 +71,14 @@ Feature: The camera facade and guiding never share the guide camera
     Then the facade call should fail with ASCOM error 0x40B mentioning "Guiding"
     And the mock PHD2 should not have received a "capture_single_frame" request
 
-  Scenario: A crash marker keeps guiding refused until its frame's file lands
+  Scenario: A crash marker keeps guiding refused until PHD2 reports its frame
     Given a mock PHD2 2.6.14 with an 8 x 6 camera
     And image_dir holds a capture marker whose deadline is 60 s away
     And the guider service is running with the camera facade enabled
     When the client starts guiding
     Then the response status should be 409
     And the response error should be "camera_busy"
-    When the capture marker's frame file lands
+    When PHD2 reports the capture marker's frame
     And the client starts guiding
     Then the response status should be 200
     And image_dir should hold no capture marker

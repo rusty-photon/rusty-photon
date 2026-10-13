@@ -55,6 +55,11 @@
 //!     - "`never_reports`": no file and no event; the capture ends
 //!       silently (drives the facade's deadline)
 //!
+//! As in PHD2, `SingleFrameComplete` goes to every connected client.
+//! One test hook is not a PHD2 method: `mock_report_frame {"path"}`
+//! sends every client a successful `SingleFrameComplete` for `path`, a
+//! frame PHD2 finished on its own (one a crashed guider started).
+//!
 //! Command line argument takes precedence over environment variable for port.
 //! Default port is 4400 (same as PHD2).
 //!
@@ -105,6 +110,19 @@ type AppState = Arc<Mutex<String>>;
 /// frame at a time across every connection. Setting the flag asks the
 /// frame's thread to end it early, as `stop_capture` does in PHD2.
 static FRAME_IN_FLIGHT: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+
+/// Every connected client's writer. PHD2 sends `SingleFrameComplete` to
+/// every event-server client, not only the one that asked for the frame.
+static CLIENTS: Mutex<Vec<Arc<Mutex<TcpStream>>>> = Mutex::new(Vec::new());
+
+/// Write one line to every connected client; a client gone away is
+/// skipped.
+fn broadcast(line: &str) {
+    let clients = CLIENTS.lock().unwrap().clone();
+    for writer in &clients {
+        let _ = write_line(writer, line);
+    }
+}
 
 fn main() {
     // Get operating mode from environment
@@ -400,6 +418,21 @@ fn save_image() -> Result<String, String> {
     Ok(filename)
 }
 
+/// Test hook, not a PHD2 method: report a frame PHD2 finished on its
+/// own (one a crashed guider started), to every client.
+fn report_frame(params: &serde_json::Value) -> serde_json::Value {
+    let path = params.get("path").cloned().unwrap_or_default();
+    broadcast(
+        &serde_json::json!({
+            "Event": "SingleFrameComplete",
+            "Success": true,
+            "Path": path,
+        })
+        .to_string(),
+    );
+    serde_json::json!(0)
+}
+
 /// `MOCK_PHD2_CAMERA=disconnected`.
 fn camera_disconnected() -> bool {
     std::env::var("MOCK_PHD2_CAMERA").as_deref() == Ok("disconnected")
@@ -449,14 +482,13 @@ impl Refusal {
 /// running, and then exposed for `exposure` milliseconds on its own
 /// thread. The thread ends the frame per `MOCK_PHD2_CAPTURE_MODE`, or
 /// early when `stop_capture` arrives, and reports it with
-/// `SingleFrameComplete` on the requesting connection. A completed
+/// `SingleFrameComplete` to every connected client. A completed
 /// frame is the `MOCK_PHD2_FRAME_SIZE` ramp (pixel `i` is `i × 1365 mod
 /// 65536`, row-major) written at `path` before the event is sent, as
 /// PHD2 writes it first.
 fn capture_single_frame(
     params: &serde_json::Value,
     app_state: &AppState,
-    writer: &Arc<Mutex<TcpStream>>,
 ) -> Result<serde_json::Value, Refusal> {
     if camera_disconnected() {
         return Err(Refusal::CameraDisconnected);
@@ -520,21 +552,14 @@ fn capture_single_frame(
     drop(in_flight);
     *app_state.lock().unwrap() = "Looping".to_string();
     let app_state = Arc::clone(app_state);
-    let writer = Arc::clone(writer);
-    std::thread::spawn(move || expose_frame(exposure_ms, path, &stop, &app_state, &writer));
+    std::thread::spawn(move || expose_frame(exposure_ms, path, &stop, &app_state));
     Ok(serde_json::json!(0))
 }
 
 /// One accepted frame's thread: expose until `exposure_ms` passes or
 /// `stop` is set, end the frame per `MOCK_PHD2_CAPTURE_MODE`, and report
-/// it on `writer`.
-fn expose_frame(
-    exposure_ms: u64,
-    path: Option<String>,
-    stop: &AtomicBool,
-    app_state: &AppState,
-    writer: &Arc<Mutex<TcpStream>>,
-) {
+/// it to every client, as PHD2 does.
+fn expose_frame(exposure_ms: u64, path: Option<String>, stop: &AtomicBool, app_state: &AppState) {
     let mode = std::env::var("MOCK_PHD2_CAPTURE_MODE").unwrap_or_else(|_| "completes".to_string());
     let deadline = std::time::Instant::now()
         .checked_add(Duration::from_millis(exposure_ms))
@@ -573,8 +598,8 @@ fn expose_frame(
     if let Some(path) = path {
         event.insert("Path".to_string(), path.into());
     }
-    let _ = write_line(writer, &serde_json::Value::Object(event).to_string());
-    let _ = write_line(writer, r#"{"Event":"LoopingExposuresStopped"}"#);
+    broadcast(&serde_json::Value::Object(event).to_string());
+    broadcast(r#"{"Event":"LoopingExposuresStopped"}"#);
 }
 
 /// Write the camera's frame at `path`, refusing a name that exists.
@@ -605,6 +630,7 @@ fn handle_client(
 
     let reader = BufReader::new(stream.try_clone().unwrap());
     let writer = Arc::new(Mutex::new(stream));
+    CLIENTS.lock().unwrap().push(Arc::clone(&writer));
 
     // Send Version event on connect
     let version = std::env::var("MOCK_PHD2_VERSION").unwrap_or_else(|_| "2.6.11-mock".to_string());
@@ -730,6 +756,7 @@ fn handle_request(
             }
             serde_json::json!(0)
         }
+        "mock_report_frame" => report_frame(&params),
         "get_camera_frame_size" => {
             if camera_disconnected() {
                 return format!(
@@ -739,7 +766,7 @@ fn handle_request(
             let (width, height) = frame_size();
             serde_json::json!([width, height])
         }
-        "capture_single_frame" => match capture_single_frame(&params, app_state, writer) {
+        "capture_single_frame" => match capture_single_frame(&params, app_state) {
             Ok(result) => result,
             Err(refusal) => return refusal.reply(&id),
         },

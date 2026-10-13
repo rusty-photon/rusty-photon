@@ -1252,7 +1252,8 @@ the lock is held. The frame's end clears it.
 - A **capture** takes the lock with `try_lock`, so it never queues behind
   a guiding operation. A guiding operation in progress refuses the
   capture with `InvalidOperation`. The capture holds the lock only for
-  steps 2–3 above, a few milliseconds.
+  steps 2–3 above: a few milliseconds while PHD2 answers, and never more
+  than 5 s for each of its two requests when PHD2 does not.
 - **`guiding/start`, `pause`, `resume`, `dither`, `calibration/clear` and
   `star/reselect`** still queue on the lock as before. Once they hold it
   they check the slot, and a capture in flight refuses them with
@@ -1266,7 +1267,8 @@ the lock is held. The frame's end clears it.
   event arrives, and stop confirms `Stopped` as it always has.
 - **The slot is released** when PHD2's event for the frame arrives, or
   when `exposure + capture_grace` has passed since the request, whichever
-  comes first. A connection lost mid-frame can cost the event, and then
+  comes first. A claim whose deadline has passed holds nothing, even
+  before the task that ends it has run. A connection lost mid-frame can cost the event, and then
   the deadline releases. A released slot never waits on PHD2. If PHD2 is
   running the frame later than the deadline, a request PHD2 then receives
   meets PHD2's own rules: a capture is refused, and a guide starts after
@@ -1326,8 +1328,10 @@ take the lock and are never refused.
   time. At startup, a marker whose deadline is still ahead holds the
   capture slot. Guiding operations through this service are refused with
   `camera_busy`, naming the deadline. The slot is held until the frame's
-  file appears, its `SingleFrameComplete` arrives, or the deadline passes,
-  and then the file and the marker are deleted. That is never longer
+  `SingleFrameComplete` arrives (PHD2 sends it to every client, so a
+  reconnected service hears it) or the deadline passes, and then the file
+  and the marker are deleted. The frame's file appearing proves nothing:
+  PHD2 creates it before it has written it. That is never longer
   after the original request than the running process would have held
   the slot. A deadline further ahead than 660 s from startup (the longest
   exposure plus the longest grace) is cut to that, so a marker written
@@ -1384,7 +1388,10 @@ reports it in `restart_required[]`. It takes effect at the next start,
 as `rp`'s config does. `server.port`, `camera.enabled`,
 `camera.server.port` and `camera.server.bind_address` are read-only,
 because changing them would cut the client off the endpoint it is editing
-through. `camera.unique_id` is locked. The two auth password hashes
+through. `camera.unique_id` is locked. Since an applied change is tried
+only at the next start, `config.apply` also refuses an enabled facade
+whose `image_dir` is not an existing directory, rather than persist a
+config that would stop the service. The two auth password hashes
 (`server.auth` and `camera.server.auth`) are redacted secrets.
 
 ### Loopback only

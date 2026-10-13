@@ -85,7 +85,7 @@ enum Exposure {
         generation: u64,
         aborting: bool,
     },
-    Ready(Arc<Image>),
+    Ready(ImageArray),
     Failed(String),
 }
 
@@ -244,6 +244,84 @@ impl Phd2Camera {
         }
     }
 
+    /// Everything after `StartExposure`'s own checks, in a task the
+    /// request cannot cancel: ask PHD2 for the frame, send `StartExposure`
+    /// its answer through `started`, and run the capture.
+    async fn begin_capture(
+        self,
+        generation: u64,
+        exposure_ms: u32,
+        geometry: Geometry,
+        subframe: Subframe,
+        started: tokio::sync::oneshot::Sender<ASCOMResult<()>>,
+    ) {
+        let inflight = match self.inner.engine.start(exposure_ms).await {
+            Ok(inflight) => inflight,
+            Err(e) => {
+                self.cancel_start(generation);
+                debug!("facade exposure refused: {e}");
+                let _ = started.send(Err(start_error_to_ascom(&e)));
+                return;
+            }
+        };
+
+        let abort_now = {
+            let mut session = self.session();
+            match session.exposure {
+                Exposure::Starting {
+                    generation: g,
+                    aborting,
+                } if g == generation => {
+                    session.exposure = Exposure::InFlight {
+                        generation,
+                        path: inflight.path.clone(),
+                        aborting,
+                    };
+                    session.last_start = Some(SystemTime::now());
+                    session.last_duration = Some(Duration::from_millis(u64::from(exposure_ms)));
+                    aborting
+                }
+                // A disconnect or a newer session took over while PHD2
+                // accepted the frame: end it.
+                _ => true,
+            }
+        };
+        if abort_now {
+            let path = inflight.path.clone();
+            tokio::spawn(
+                self.clone()
+                    .run_capture(generation, inflight, geometry, subframe),
+            );
+            self.inner.engine.abort(&path, ABORT_WAIT).await;
+            let _ = started.send(Ok(()));
+            return;
+        }
+        let _ = started.send(Ok(()));
+        self.run_capture(generation, inflight, geometry, subframe)
+            .await;
+    }
+
+    /// Whether the capture of `generation` still wants its frame: the
+    /// session is the one it started in and nobody aborted it. If so, it
+    /// moves to Reading.
+    fn start_reading(&self, generation: u64) -> bool {
+        let mut session = self.session();
+        match session.exposure {
+            Exposure::InFlight {
+                generation: current,
+                aborting: false,
+                ..
+            } if current == generation => {
+                session.exposure = Exposure::Reading {
+                    generation,
+                    aborting: false,
+                };
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The capture behind one accepted `StartExposure`: wait for PHD2's
     /// report, read the frame, delete the file, and commit the outcome
     /// if the session is still the one it started in.
@@ -259,37 +337,26 @@ impl Phd2Camera {
         let end = engine.wait(inflight).await;
         let outcome = match end {
             FrameEnd::Saved => {
-                {
-                    let mut session = self.session();
-                    if let Exposure::InFlight {
-                        generation: current,
-                        aborting,
-                        ..
-                    } = session.exposure
-                    {
-                        if current == generation {
-                            session.exposure = Exposure::Reading {
-                                generation,
-                                aborting,
-                            };
-                        }
-                    }
-                }
-                // Bounded by the grace that covers PHD2's own download
-                // and save: a read that stalls fails the exposure rather
-                // than leaving the camera downloading for good.
-                let read = tokio::time::timeout(
-                    engine.grace(),
-                    engine.read(&path, geometry.width, geometry.height),
-                )
-                .await
-                .unwrap_or_else(|_| {
-                    Err(format!(
-                        "PHD2's frame {} could not be read within {}",
-                        path.display(),
-                        humantime::format_duration(engine.grace())
-                    ))
-                });
+                // Aborted, or its session is gone: the frame is not read.
+                let read = if self.start_reading(generation) {
+                    // Bounded by the grace that covers PHD2's own
+                    // download and save: a read that stalls fails the
+                    // exposure rather than leaving the camera downloading.
+                    tokio::time::timeout(
+                        engine.grace(),
+                        engine.read(&path, geometry.width, geometry.height),
+                    )
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(format!(
+                            "PHD2's frame {} could not be read within {}",
+                            path.display(),
+                            humantime::format_duration(engine.grace())
+                        ))
+                    })
+                } else {
+                    Err("the frame is no longer wanted".to_string())
+                };
                 engine.discard(&path);
                 read.and_then(|frame| crop(&frame, subframe))
             }
@@ -332,14 +399,10 @@ impl Phd2Camera {
             debug!("aborted exposure ended");
             Exposure::Idle
         } else {
-            match outcome {
+            match outcome.and_then(image_array_of) {
                 Ok(image) => {
-                    debug!(
-                        width = image.width,
-                        height = image.height,
-                        "facade image ready"
-                    );
-                    Exposure::Ready(Arc::new(image))
+                    debug!(shape = ?image.shape(), "facade image ready");
+                    Exposure::Ready(image)
                 }
                 Err(message) => {
                     warn!("facade exposure failed: {message}");
@@ -585,45 +648,24 @@ impl Camera for Phd2Camera {
             (generation, exposure_ms, geometry, session.subframe)
         };
 
-        let inflight = match self.inner.engine.start(exposure_ms).await {
-            Ok(inflight) => inflight,
-            Err(e) => {
-                self.cancel_start(generation);
-                debug!("facade exposure refused: {e}");
-                return Err(start_error_to_ascom(&e));
-            }
-        };
-
-        let abort_now = {
-            let mut session = self.session();
-            match session.exposure {
-                Exposure::Starting {
-                    generation: g,
-                    aborting,
-                } if g == generation => {
-                    session.exposure = Exposure::InFlight {
-                        generation,
-                        path: inflight.path.clone(),
-                        aborting,
-                    };
-                    session.last_start = Some(SystemTime::now());
-                    session.last_duration = Some(Duration::from_millis(u64::from(exposure_ms)));
-                    aborting
-                }
-                // A disconnect or a newer session took over while PHD2
-                // accepted the frame: end it.
-                _ => true,
-            }
-        };
-        let path = inflight.path.clone();
-        tokio::spawn(
-            self.clone()
-                .run_capture(generation, inflight, geometry, subframe),
-        );
-        if abort_now {
-            self.inner.engine.abort(&path, ABORT_WAIT).await;
-        }
-        Ok(())
+        // The rest runs in a task of its own. Axum drops a handler's
+        // future when the client's connection closes, and a drop between
+        // claiming the slot and handing PHD2's frame to a waiter would
+        // leave the slot held and the camera Starting for good.
+        let (started, outcome) = tokio::sync::oneshot::channel();
+        tokio::spawn(self.clone().begin_capture(
+            generation,
+            exposure_ms,
+            geometry,
+            subframe,
+            started,
+        ));
+        outcome.await.unwrap_or_else(|_| {
+            Err(ASCOMError::new(
+                UNSPECIFIED_ERROR,
+                "the capture task ended before PHD2 answered",
+            ))
+        })
     }
 
     async fn can_abort_exposure(&self) -> ASCOMResult<bool> {
@@ -665,20 +707,13 @@ impl Camera for Phd2Camera {
             .ok_or_else(|| ASCOMError::invalid_operation("no exposure has started yet"))
     }
 
+    /// The image built at commit; an `ImageArray` clone shares its data.
     async fn image_array(&self) -> ASCOMResult<ImageArray> {
-        let image = match &self.connected_session()?.exposure {
-            Exposure::Ready(image) => Arc::clone(image),
-            Exposure::Failed(message) => {
-                return Err(ASCOMError::new(UNSPECIFIED_ERROR, message.clone()));
-            }
-            _ => return Err(ASCOMError::invalid_operation("no image is ready")),
-        };
-        // ASCOM's ImageArray is indexed [x][y]; the image is row-major,
-        // so build (height, width) and swap the axes without a copy.
-        let array = Array2::from_shape_vec((image.height, image.width), image.pixels.clone())
-            .map_err(|e| ASCOMError::new(UNSPECIFIED_ERROR, format!("image shape: {e}")))?
-            .reversed_axes();
-        Ok(ImageArray::from(array))
+        match &self.connected_session()?.exposure {
+            Exposure::Ready(image) => Ok(image.clone()),
+            Exposure::Failed(message) => Err(ASCOMError::new(UNSPECIFIED_ERROR, message.clone())),
+            _ => Err(ASCOMError::invalid_operation("no image is ready")),
+        }
     }
 
     async fn camera_state(&self) -> ASCOMResult<CameraState> {
@@ -806,6 +841,15 @@ fn check_subframe(subframe: Subframe, geometry: &Geometry) -> ASCOMResult<()> {
         )));
     }
     Ok(())
+}
+
+/// The ASCOM `ImageArray` for a row-major image. ASCOM's array is
+/// indexed `[x][y]`, so build `(height, width)` and swap the axes
+/// without a copy.
+fn image_array_of(image: Image) -> Result<ImageArray, String> {
+    Array2::from_shape_vec((image.height, image.width), image.pixels)
+        .map(|array| ImageArray::from(array.reversed_axes()))
+        .map_err(|e| format!("image shape: {e}"))
 }
 
 /// Cut `subframe` out of a full frame.
@@ -1147,11 +1191,14 @@ mod tests {
         let camera = connected_camera(dir.path());
         set_exposure(
             &camera,
-            Exposure::Ready(Arc::new(Image {
-                width: 3,
-                height: 2,
-                pixels: vec![0, 1, 2, 10, 11, 12],
-            })),
+            Exposure::Ready(
+                image_array_of(Image {
+                    width: 3,
+                    height: 2,
+                    pixels: vec![0, 1, 2, 10, 11, 12],
+                })
+                .unwrap(),
+            ),
         );
         assert!(camera.image_ready().await.unwrap());
         assert_eq!(camera.percent_completed().await.unwrap(), 100);
