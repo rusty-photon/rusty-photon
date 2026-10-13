@@ -60,9 +60,9 @@ struct Args {
     service: bool,
 
     /// Test-only: start with an *empty* simulation backend (no cameras), to
-    /// exercise the zero-camera startup path (contract C0) — with a
-    /// `usb_devices` list, to empty the SDK's side of the join (U7). Only
-    /// meaningful when built with `--features simulation`.
+    /// exercise the zero-camera startup path (contract C0): it empties the
+    /// SDK's side of the join, with a `usb_devices` list or without (U7).
+    /// Only meaningful when built with `--features simulation`.
     #[cfg(feature = "simulation")]
     #[arg(long, hide = true)]
     simulation_empty: bool,
@@ -75,7 +75,8 @@ struct Args {
     #[arg(long, hide = true, value_name = "PATH")]
     simulation_departure_file: Option<PathBuf>,
 
-    /// Test-only: stage the USB scan a `usb_devices` list is placed from with
+    /// Test-only: stage the USB scan cameras are placed from, with a
+    /// `usb_devices` list or without, with
     /// the document in this file (docs/services/doctor.md "USB inventory"),
     /// read again at every scan; without it a simulation build stages one
     /// record for the simulated camera (U7).

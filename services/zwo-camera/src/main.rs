@@ -85,7 +85,8 @@ struct Args {
     #[arg(long, hide = true)]
     simulation_unopenable: bool,
 
-    /// Test-only: stage the USB scan a `usb_devices` list is placed from with
+    /// Test-only: stage the USB scan cameras are placed from, with a
+    /// `usb_devices` list or without, with
     /// the document in this file (docs/services/doctor.md "USB inventory"),
     /// read again at every scan; without it a simulation build stages one
     /// record per simulated camera (U7).

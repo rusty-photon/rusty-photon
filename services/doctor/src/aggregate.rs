@@ -317,14 +317,31 @@ fn client_build_warn(service: Option<String>, had_ca: bool, e: &impl std::fmt::D
 /// ([`inventory_checks`]), or why they could not be read.
 async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&str>) -> Vec<Check> {
     match fetch_devices(ctx, scan, acme_domain).await {
-        // The packaged binary is named as its unit is.
-        Ok(devices) => inventory_checks(
-            scan.entry.name,
-            &scan.entry.unit_name(),
-            &devices,
-            ctx.hardware.as_ref(),
-        ),
+        Ok(devices) => {
+            let unit = scan.entry.unit_name();
+            let recorded = ctx
+                .facts
+                .unit(&unit)
+                .and_then(|facts| facts.binary_path.as_deref());
+            inventory_checks(
+                scan.entry.name,
+                &binary_command(unit.clone(), recorded),
+                &devices,
+                ctx.hardware.as_ref(),
+            )
+        }
         Err(check) => vec![*check],
+    }
+}
+
+/// How to run a service binary by hand: the path its service manager
+/// `recorded`, which needs no `PATH` entry (the MSI adds none), quoted when it
+/// holds a space; else `unit_name`, which the packaged binary shares.
+fn binary_command(unit_name: String, recorded: Option<&std::path::Path>) -> String {
+    match recorded.map(|path| path.display().to_string()) {
+        Some(path) if path.contains(' ') => format!("\"{path}\""),
+        Some(path) => path,
+        None => unit_name,
     }
 }
 
@@ -1013,6 +1030,28 @@ mod tests {
             !checks[1].detail.contains("now finds"),
             "a failed scan names nothing on the port: {}",
             checks[1].detail
+        );
+    }
+
+    #[test]
+    fn test_the_binary_to_run_is_the_recorded_one_quoted_when_spaced() {
+        let unit = || "rusty-photon-qhy-camera".to_string();
+        assert_eq!(binary_command(unit(), None), "rusty-photon-qhy-camera");
+        assert_eq!(
+            binary_command(
+                unit(),
+                Some(std::path::Path::new("/usr/bin/rusty-photon-qhy-camera"))
+            ),
+            "/usr/bin/rusty-photon-qhy-camera"
+        );
+        assert_eq!(
+            binary_command(
+                unit(),
+                Some(std::path::Path::new(
+                    r"C:\Program Files\rusty-photon\rusty-photon-qhy-camera.exe"
+                ))
+            ),
+            r#""C:\Program Files\rusty-photon\rusty-photon-qhy-camera.exe""#
         );
     }
 

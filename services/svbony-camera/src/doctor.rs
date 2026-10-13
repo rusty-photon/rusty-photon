@@ -119,8 +119,8 @@ fn claims_checks(
         SERVICE,
         list.as_deref(),
         source.scan(),
-        || Ok((sdk_cameras(&infos), infos)),
-        |claims, infos| listing(&config, claims, infos),
+        sdk_cameras(&infos),
+        |claims| listing(&config, claims, &infos),
     )
 }
 

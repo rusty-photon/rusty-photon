@@ -1130,11 +1130,7 @@ impl Claims<'_> {
             None => Some(self.no_list_block(&placed, cameras, overrides, &mut notes)),
         };
         if rows.len() > 1 {
-            notes.push(
-                "Cannot tell which row is which camera? Unplug one and run this again: the port \
-                 that disappears is the one you unplugged."
-                    .to_string(),
-            );
+            notes.push(UNPLUG_NOTE.to_string());
         }
         Listing {
             sdk: self.normalizer.sdk.to_string(),
@@ -1221,6 +1217,10 @@ impl Claims<'_> {
 
 // --- the doctor checks ----------------------------------------------------------
 
+/// The listing's note for an operator who cannot tell its rows apart.
+const UNPLUG_NOTE: &str = "Cannot tell which row is which camera? Unplug one and run this \
+                           again: the port that disappears is the one you unplugged.";
+
 const RESOLVE: &str = "usb-devices.resolve";
 const UNLISTED: &str = "usb-devices.unlisted";
 const IMPLICIT: &str = "usb-devices.implicit";
@@ -1241,20 +1241,21 @@ impl Claims<'_> {
     ///
     /// With `list`, `usb-devices.resolve` and `usb-devices.unlisted`; without
     /// one, `usb-devices.implicit`, whose `ok` names the numbers port order
-    /// gives and, given `block`, the block that pins them. Only a failed scan
-    /// fails: a dead device, an empty listed port, a look-alike or an
-    /// unrecognised model only warns.
+    /// gives and, given the no-list `listing`, the block that pins them with
+    /// the notes that go with pasting it. Only a failed scan fails: a dead
+    /// device, an empty listed port, a look-alike or an unrecognised model
+    /// only warns.
     #[must_use]
-    pub fn checks(&self, list: Option<&[BlockEntry]>, block: Option<&[BlockEntry]>) -> Vec<Check> {
+    pub fn checks(&self, list: Option<&[BlockEntry]>, listing: Option<&Listing>) -> Vec<Check> {
         list.map_or_else(
-            || self.implicit_checks(block),
+            || self.implicit_checks(listing),
             |list| self.list_checks(list),
         )
     }
 
     fn list_checks(&self, list: &[BlockEntry]) -> Vec<Check> {
         let mut checks = self.resolve_checks(list);
-        if self.scan_error().is_some() || list.is_empty() {
+        if self.scan_error().is_some() {
             return checks;
         }
         for (index, port) in self.placed() {
@@ -1324,7 +1325,7 @@ impl Claims<'_> {
         checks
     }
 
-    fn implicit_checks(&self, block: Option<&[BlockEntry]>) -> Vec<Check> {
+    fn implicit_checks(&self, listing: Option<&Listing>) -> Vec<Check> {
         if let Some(error) = self.scan_error() {
             return vec![Check::fail(
                 IMPLICIT,
@@ -1351,13 +1352,28 @@ impl Claims<'_> {
                 placed.len(),
                 served.join(", ")
             );
-            if let Some(block) = block {
-                let _ = write!(
-                    detail,
-                    ". To pin them, paste this into {}.json:\n{}",
-                    self.service,
-                    render_block(block)
-                );
+            if let Some(listing) = listing {
+                if let Some(block) = &listing.block {
+                    let _ = write!(
+                        detail,
+                        ". To pin them, paste this into {}.json:\n{}",
+                        self.service,
+                        render_block(block)
+                    );
+                    // What the listing says about pasting it — delete the
+                    // devices map, check the wheels — goes with the block.
+                    // The notes on what the join could not place are this
+                    // check's warnings, below, and the unplug note is about
+                    // the listing's rows, which a check has none of.
+                    let unplaced = self.unplaced_notes();
+                    for note in listing
+                        .notes
+                        .iter()
+                        .filter(|note| !unplaced.contains(note) && note.as_str() != UNPLUG_NOTE)
+                    {
+                        let _ = write!(detail, "\n{note}");
+                    }
+                }
             }
             checks.push(Check::ok(IMPLICIT, None, detail));
         }
@@ -1375,38 +1391,35 @@ impl Claims<'_> {
     }
 }
 
-/// The `usb-devices.*` checks a camera driver's `doctor` report carries:
-/// `scan` and `enumerate` joined as a start would join them, and
-/// [`Claims::checks`] over the result, with the block `listing` builds.
+/// The `usb-devices.*` checks a camera driver's `doctor` report carries.
 ///
-/// `enumerate` runs only once the scan has; an SDK that cannot enumerate gives
-/// no checks, since nothing can be joined and `hardware.sdk-devices` already
-/// fails. A caller whose configuration does not load, or whose list breaks a
-/// rule, makes none either: `config.full-shape` says so.
-pub fn usb_devices_checks<I>(
+/// `scan` and the SDK's `cameras` are joined as a start would join them, and
+/// [`Claims::checks`] judges the result, with the no-list block and notes
+/// `listing` builds.
+///
+/// The report enumerates the SDK once, for `hardware.sdk-devices` and these
+/// alike, so `cameras` arrives enumerated. A caller whose configuration does
+/// not load, or whose SDK does not enumerate, makes none of these:
+/// `config.full-shape` or `hardware.sdk-devices` says so.
+pub fn usb_devices_checks(
     normalizer: Normalizer<'_>,
     service: &str,
     list: Option<&[BlockEntry]>,
     scan: Result<UsbScan, String>,
-    enumerate: impl FnOnce() -> Result<(Vec<SdkCamera>, I), String>,
-    listing: impl FnOnce(&Claims<'_>, &I) -> Listing,
+    cameras: Vec<SdkCamera>,
+    listing: impl FnOnce(&Claims<'_>) -> Listing,
 ) -> Vec<Check> {
-    if scan.is_err() {
-        return Claims::new(normalizer, service, scan, Vec::new()).checks(list, None);
-    }
-    let Ok((cameras, facts)) = enumerate() else {
-        return Vec::new();
-    };
     let claims = Claims::new(normalizer, service, scan, cameras);
-    let block = match list {
-        Some(_) => None,
-        None => listing(&claims, &facts).block,
-    };
-    claims.checks(list, block.as_deref())
+    let listing = list
+        .is_none()
+        .then(|| claims.placement().map(|_| listing(&claims)))
+        .flatten();
+    claims.checks(list, listing.as_ref())
 }
 
 /// `checks` as the lines that close `doctor --devices`: one per check, its
-/// status first, as `--json` spells it.
+/// status first, lowercase. A status this build does not know, which it never
+/// emits, reads as a failure, as the text report reads it.
 fn render_checks(checks: &[Check]) -> String {
     let mut out = String::new();
     for check in checks {
@@ -3140,11 +3153,24 @@ mod tests {
         let checks = two_cameras().checks(Some(&[]), None);
         assert_eq!(
             verdicts(&checks),
-            [(
-                RESOLVE,
-                Status::Ok,
-                "the list is empty: no camera is registered"
-            )]
+            [
+                (
+                    RESOLVE,
+                    Status::Ok,
+                    "the list is empty: no camera is registered"
+                ),
+                (
+                    UNLISTED,
+                    Status::Ok,
+                    "1-4.2 (SV705C) is on the bus and not listed"
+                ),
+                (
+                    UNLISTED,
+                    Status::Ok,
+                    "1-4.10 (SV605CC) is on the bus and not listed"
+                ),
+            ],
+            "every camera on the bus is one no entry lists"
         );
         // An empty list needs no scan, so a failed one is no fault of it.
         let failed = claims(Err("timed out".to_string()), vec![camera("SV605CC")]);
@@ -3200,8 +3226,19 @@ mod tests {
 
     #[test]
     fn without_a_list_several_cameras_are_named_with_their_numbers_and_the_block() {
-        let block = [entry(0, "1-4.2", None), entry(1, "1-4.10", None)];
-        let checks = two_cameras().checks(None, Some(&block));
+        let claims = two_cameras();
+        // A devices key no camera matches, so the listing says to delete
+        // the map when pasting; the block must carry that with it.
+        let overrides = BTreeMap::from([("stale".to_string(), DisplayNames::default())]);
+        let listing = claims.listing(
+            &[
+                facts("SV605CC", "A", Some("A")),
+                facts("SV705C", "B", Some("B")),
+            ],
+            None,
+            &overrides,
+        );
+        let checks = claims.checks(None, Some(&listing));
         assert_eq!(checks.len(), 1, "{checks:?}");
         assert_eq!(
             (checks[0].name.as_str(), checks[0].status),
@@ -3221,6 +3258,18 @@ mod tests {
                 .detail
                 .contains(r#"{ "device_number": 1, "usb_port": "1-4.10" }"#),
             "{}",
+            checks[0].detail
+        );
+        assert!(
+            checks[0]
+                .detail
+                .contains("Delete the devices map from svbony-camera.json when you paste"),
+            "the block goes with what pasting it needs: {}",
+            checks[0].detail
+        );
+        assert!(
+            !checks[0].detail.contains(UNPLUG_NOTE),
+            "the unplug note is about the listing's rows: {}",
             checks[0].detail
         );
     }
@@ -3245,28 +3294,19 @@ mod tests {
     }
 
     #[test]
-    fn the_report_checks_ask_no_sdk_after_a_failed_scan_and_judge_none_without_one() {
+    fn the_report_checks_fail_on_a_failed_scan_and_list_nothing() {
         let failed = usb_devices_checks(
             SVB,
             "svbony-camera",
             None,
             Err("timed out".to_string()),
-            || -> Result<(Vec<SdkCamera>, ()), String> { panic!("the SDK was asked") },
-            |_, ()| panic!("nothing to list"),
+            vec![camera("SV605CC")],
+            |_| panic!("a failed scan has no ports to list"),
         );
         assert_eq!(
             failed.iter().map(|c| c.status).collect::<Vec<_>>(),
             [Status::Fail]
         );
-        let blind = usb_devices_checks(
-            SVB,
-            "svbony-camera",
-            None,
-            Ok(one_camera()),
-            || -> Result<(Vec<SdkCamera>, ()), String> { Err("the SDK broke".to_string()) },
-            |_, ()| panic!("nothing to list"),
-        );
-        assert!(blind.is_empty(), "{blind:?}");
     }
 
     #[test]
@@ -3279,8 +3319,8 @@ mod tests {
                 record("9a0a", "1-4.10"),
                 record("9a0b", "1-4.2"),
             ])),
-            || Ok((vec![camera("SV605CC"), camera("SV705C")], ())),
-            |claims, ()| {
+            vec![camera("SV605CC"), camera("SV705C")],
+            |claims| {
                 claims.listing(
                     &[
                         facts("SV605CC", "A", Some("A")),

@@ -161,8 +161,8 @@ fn claims_checks(
         SERVICE,
         list.as_deref(),
         source.scan(),
-        || Ok((claims::sdk_cameras(&cameras), cameras)),
-        |claims, cameras| listing(&config, claims, cameras),
+        claims::sdk_cameras(&cameras),
+        |claims| listing(&config, claims, &cameras),
     )
 }
 
