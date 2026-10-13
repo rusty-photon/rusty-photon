@@ -336,7 +336,19 @@ impl ServerBuilder {
         server: &mut Server,
         held: &HeldCameras,
     ) -> Result<Registered, ZwoCameraError> {
-        let scan = self.scan().await;
+        let mut registered = Registered::default();
+        // A failed scan stops before the SDK is touched at all (U6).
+        let scan = match self.scan().await {
+            Ok(scan) => scan,
+            Err(error) => {
+                error!(
+                    %error,
+                    "the USB scan failed; no ASI camera is registered until a re-scan succeeds"
+                );
+                registered.rescan = Some(self.rescan());
+                return Ok(registered);
+            }
+        };
         let sdk = zwo_rs::Sdk::new()?;
         #[cfg(feature = "simulation")]
         let sdk = self.simulated(sdk);
@@ -344,15 +356,6 @@ impl ServerBuilder {
         let placed = tokio::task::spawn_blocking(move || place_enumerated(&sdk, scan, force_empty))
             .await??;
 
-        let mut registered = Registered::default();
-        if let Some(error) = &placed.scan_error {
-            error!(
-                %error,
-                "the USB scan failed; no ASI camera is registered until a re-scan succeeds"
-            );
-            registered.rescan = Some(self.rescan());
-            return Ok(registered);
-        }
         for note in &placed.unplaced {
             warn!(%note, "without a usb_devices list, a camera the USB scan cannot place is not served");
         }
@@ -644,22 +647,19 @@ struct PlacedDefault {
     cameras: Vec<(String, Result<EnumeratedCamera, String>)>,
     /// What the join could not place, one line each, for the log.
     unplaced: Vec<String>,
-    /// Why the USB scan could not run, when it could not.
-    scan_error: Option<String>,
 }
 
 /// Enumerate the SDK, place each camera on a port, and open each placed camera
 /// for its identity — all under one hold of the SDK's camera list, so no
 /// rescan can renumber it between the index the join chose and the camera
-/// opened (U10). A failed scan enumerates nothing; so does `force_empty`.
-/// Blocking.
+/// opened (U10). `force_empty` enumerates nothing. Blocking.
 fn place_enumerated(
     sdk: &zwo_rs::Sdk,
-    scan: Result<UsbScan, String>,
+    scan: UsbScan,
     force_empty: bool,
 ) -> Result<PlacedDefault, zwo_rs::Error> {
     let camera_list = sdk.camera_list();
-    let (infos, claims) = join(&camera_list, scan, force_empty)?;
+    let (infos, claims) = join(&camera_list, Ok(scan), force_empty)?;
     let cameras = open_placed(&claims, &infos, |index, info, port| {
         identity(&camera_list, index, info, port)
     });
@@ -667,7 +667,6 @@ fn place_enumerated(
     Ok(PlacedDefault {
         cameras,
         unplaced: claims.unplaced_notes(),
-        scan_error: claims.scan_error().map(str::to_string),
     })
 }
 
@@ -1110,7 +1109,7 @@ mod simulation_tests {
     fn device_overrides_are_keyed_by_serial_not_unique_id() {
         let placed = place_enumerated(
             &zwo_rs::Sdk::new().unwrap(),
-            claims::default_usb_source().scan(),
+            claims::default_usb_source().scan().unwrap(),
             false,
         )
         .unwrap();

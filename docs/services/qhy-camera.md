@@ -1359,7 +1359,10 @@ which a list replaces with the declaration.
   publishes, usually nothing (`—`), which says nothing about the camera's
   identity. **Device** is the number the running configuration serves the
   camera at — its entry's number, `not listed`, or, with no list, its
-  port-order number (U11).
+  port-order number (U11). That number assumes every placed camera passes
+  its CFW probe: `--devices` probes none, so it cannot see one that would
+  not, which the service then leaves out, moving each camera after it down a
+  number (the service's `warn!` names it).
 
   **The block.** With no list, it holds every placed camera numbered in port
   order, each carrying the `name`/`description` its `devices` override gives it

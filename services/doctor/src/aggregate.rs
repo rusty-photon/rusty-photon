@@ -332,10 +332,11 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
 /// naming its devices, and a `warn` for each device-claims placeholder among
 /// them, which stands in for a listed camera (or its wheel) and is not one.
 /// A placeholder never re-scans, so when `hardware`'s USB scan now holds a
-/// working device on its port, the warning names it as what a reload of the
-/// service would place — unless the service's own scan failed, when it
-/// re-scans and rebuilds by itself, which the warning says too. `binary` is
-/// the service's packaged binary, whose `doctor --devices` gives the reason.
+/// working device on its port, the warning names it, and leaves whether a
+/// reload would place it to the driver's `doctor --devices`: a placeholder's
+/// reason (a look-alike, an unknown model, a failed scan the service re-scans
+/// by itself) is not in `configureddevices`, and only the driver's join knows
+/// it. `binary` is the service's packaged binary.
 fn inventory_checks(
     service: &str,
     binary: &str,
@@ -377,9 +378,8 @@ fn inventory_checks(
         if let Some(device) = on_the_port {
             let _ = write!(
                 detail,
-                "; the host's USB scan now finds {} ({}:{}) on {port}, which a reload of \
-                 {service} would place if it is the camera (if {service}'s own USB scan \
-                 failed, it re-scans and places it without one)",
+                "; the host's USB scan now finds {} ({}:{}) on {port}: `{binary} doctor \
+                 --devices` says whether a reload of {service} would place it",
                 device.model.as_deref().unwrap_or("a device"),
                 device.vendor,
                 device.product
@@ -992,8 +992,8 @@ mod tests {
         assert!(
             checks[1].detail.ends_with(&format!(
                 "; the host's USB scan now finds QHY678U3G20-20230106 (1618:0679) on \
-                 {GUIDE_PORT}, which a reload of qhy-camera would place if it is the camera \
-                 (if qhy-camera's own USB scan failed, it re-scans and places it without one)"
+                 {GUIDE_PORT}: `rusty-photon-qhy-camera doctor --devices` says whether a \
+                 reload of qhy-camera would place it"
             )),
             "{}",
             checks[1].detail

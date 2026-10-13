@@ -144,15 +144,15 @@ fn enumerated() -> Result<Vec<claims::Enumerated>, String> {
 
 /// The `usb-devices.*` checks (U12): the claims a start would make from
 /// `source`'s scan and the `cameras` the report's probe enumerated, with no
-/// CFW probe, so nothing is opened. None when the config does not load, which
-/// `config.full-shape` reports, or when the SDK did not enumerate, which
-/// `hardware.sdk-devices` (or `hardware.sdk-dll`) reports.
+/// CFW probe, so nothing is opened. None — and no scan taken — when the
+/// config did not load, which `config.full-shape` reports, or the SDK did not
+/// enumerate, which `hardware.sdk-devices` (or `hardware.sdk-dll`) reports.
 fn claims_checks(
-    config_path: &Path,
+    config: Option<crate::Config>,
     source: &UsbSource,
     cameras: Option<Vec<claims::Enumerated>>,
 ) -> Vec<Check> {
-    let Ok(config) = load_effective_config(config_path, &CliOverrides::default()) else {
+    let (Some(config), Some(cameras)) = (config, cameras) else {
         return Vec::new();
     };
     let list = config.usb_devices.as_deref().map(block_entries);
@@ -161,10 +161,7 @@ fn claims_checks(
         SERVICE,
         list.as_deref(),
         source.scan(),
-        || {
-            let cameras = cameras.ok_or_else(|| "the SDK did not enumerate".to_string())?;
-            Ok((claims::sdk_cameras(&cameras), cameras))
-        },
+        || Ok((claims::sdk_cameras(&cameras), cameras)),
         |claims, cameras| listing(&config, claims, cameras),
     )
 }
@@ -180,11 +177,13 @@ pub fn run(config: Option<PathBuf>, json: bool, source: &UsbSource) -> ! {
             exit(2);
         }
     };
-    // One SDK enumeration serves both `hardware.sdk-devices` and the claims.
+    // One config load and one SDK enumeration serve every check, so all of
+    // them judge the same file and the same cameras.
+    let loaded = load_effective_config(&config_path, &CliOverrides::default());
     let mut probe = probe();
     let cameras = probe.cameras.take();
-    let mut checks = assemble(&config_path, probe);
-    checks.extend(claims_checks(&config_path, source, cameras));
+    let mut checks = assemble(&config_path, &loaded, probe);
+    checks.extend(claims_checks(loaded.ok(), source, cameras));
     // DR2: offer the download page only in operator-facing text mode, and
     // only when the Windows SDK installation needs attention. JSON mode is
     // machine mode (central doctor's shell-out) and must never prompt.
@@ -215,11 +214,13 @@ pub fn run(config: Option<PathBuf>, json: bool, source: &UsbSource) -> ! {
 
 /// The full check list: the standard pair (config shape, SDK enumeration)
 /// plus whatever installation checks the probe produced.
-fn assemble(config_path: &Path, probe: Probe) -> Vec<Check> {
-    let mut checks = vec![service::full_shape_check(config_path, |path| {
-        load_effective_config(path, &CliOverrides::default())
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+fn assemble<E: std::fmt::Display>(
+    config_path: &Path,
+    loaded: &Result<crate::Config, E>,
+    probe: Probe,
+) -> Vec<Check> {
+    let mut checks = vec![service::full_shape_check(config_path, |_| {
+        loaded.as_ref().map(|_| ()).map_err(ToString::to_string)
     })];
     if let Some(outcome) = probe.sdk {
         checks.push(service::sdk_devices_check(outcome));
@@ -598,7 +599,8 @@ mod tests {
             cameras: None,
             extras: vec![Check::ok("hardware.sdk-dll", None, "found")],
         };
-        let checks = assemble(&config_path, probe);
+        let loaded = load_effective_config(&config_path, &CliOverrides::default());
+        let checks = assemble(&config_path, &loaded, probe);
         let names: Vec<&str> = checks.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
             names,
@@ -620,7 +622,8 @@ mod tests {
             cameras: None,
             extras: vec![dll_missing_check(&[], &[], &[])],
         };
-        let names: Vec<String> = assemble(&config_path, probe)
+        let loaded = load_effective_config(&config_path, &CliOverrides::default());
+        let names: Vec<String> = assemble(&config_path, &loaded, probe)
             .into_iter()
             .map(|c| c.name)
             .collect();

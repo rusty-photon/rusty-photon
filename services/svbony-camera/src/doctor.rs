@@ -100,14 +100,17 @@ pub fn run(config: Option<PathBuf>, json: bool, source: &UsbSource) -> ! {
 }
 
 /// The `usb-devices.*` checks (U11) over the loaded `config` and the SDK's
-/// `infos`; none when the config does not load, which `config.full-shape`
-/// reports.
+/// `infos`; none when the config does not load or the SDK does not
+/// enumerate.
 fn claims_checks(
     config: Option<Config>,
     source: &UsbSource,
     infos: Result<Vec<CameraInfo>, svbony_rs::Error>,
 ) -> Vec<Check> {
-    let Some(config) = config else {
+    // Without a config or an enumeration there is nothing to join, so not
+    // even the scan is taken: `config.full-shape` or `hardware.sdk-devices`
+    // already says what failed.
+    let (Some(config), Ok(infos)) = (config, infos) else {
         return Vec::new();
     };
     let list = config.usb_devices.as_deref().map(block_entries);
@@ -116,10 +119,7 @@ fn claims_checks(
         SERVICE,
         list.as_deref(),
         source.scan(),
-        || {
-            let infos = infos.map_err(|error| error.to_string())?;
-            Ok((sdk_cameras(&infos), infos))
-        },
+        || Ok((sdk_cameras(&infos), infos)),
         |claims, infos| listing(&config, claims, infos),
     )
 }

@@ -1253,6 +1253,36 @@ impl Claims<'_> {
     }
 
     fn list_checks(&self, list: &[BlockEntry]) -> Vec<Check> {
+        let mut checks = self.resolve_checks(list);
+        if self.scan_error().is_some() || list.is_empty() {
+            return checks;
+        }
+        for (index, port) in self.placed() {
+            if !list.iter().any(|e| e.usb_port == port) {
+                checks.push(Check::ok(
+                    UNLISTED,
+                    None,
+                    format!(
+                        "{port} ({}) is on the bus and not listed",
+                        self.model_of(index)
+                    ),
+                ));
+            }
+        }
+        checks
+    }
+
+    /// `usb-devices.resolve` over `list`: an empty list first, since it
+    /// registers nothing and needs no scan, then a failed scan, then each
+    /// entry's port.
+    fn resolve_checks(&self, list: &[BlockEntry]) -> Vec<Check> {
+        if list.is_empty() {
+            return vec![Check::ok(
+                RESOLVE,
+                None,
+                "the list is empty: no camera is registered",
+            )];
+        }
         if let Some(error) = self.scan_error() {
             return vec![Check::fail(
                 RESOLVE,
@@ -1262,13 +1292,6 @@ impl Claims<'_> {
                      until a scan succeeds"
                 ),
                 Some(failed_scan_suggestion(self.service)),
-            )];
-        }
-        if list.is_empty() {
-            return vec![Check::ok(
-                RESOLVE,
-                None,
-                "the list is empty: no camera is registered",
             )];
         }
         let mut entries: Vec<&BlockEntry> = list.iter().collect();
@@ -1297,18 +1320,6 @@ impl Claims<'_> {
                     n => format!("{n} listed ports resolve, no placeholders"),
                 },
             ));
-        }
-        for (index, port) in self.placed() {
-            if !list.iter().any(|e| e.usb_port == port) {
-                checks.push(Check::ok(
-                    UNLISTED,
-                    None,
-                    format!(
-                        "{port} ({}) is on the bus and not listed",
-                        self.model_of(index)
-                    ),
-                ));
-            }
         }
         checks
     }
@@ -1484,10 +1495,10 @@ pub fn render_listing(listing: &Listing) -> String {
 
 /// What `<service> doctor --devices` prints, and its exit code.
 ///
-/// The cameras by port, the block to paste and, closing it, the
-/// `usb-devices.*` checks of the configured list ([`Claims::checks`]), exit
-/// 0 (1 when a check fails) — or why there is no listing, exit 1: the scan
-/// failed, or the SDK could not enumerate. `list` is the configured
+/// The cameras by port, the block to paste and, closing it with a list,
+/// `usb-devices.resolve`'s verdicts on the configured entries, exit 0 — or why
+/// there is no listing, exit 1: the scan failed, or the SDK could not
+/// enumerate. `list` is the configured
 /// `usb_devices` (`None` without one), or the rule it breaks. A list in
 /// `config_path` that breaks a rule is said first whatever else fails, so a
 /// host fault fixed first does not hide it; with one the block and the checks
@@ -1550,11 +1561,8 @@ pub fn devices_report<I>(
         // close it. A failed scan, the one thing that fails them, returned
         // above.
         let resolve: Vec<Check> = list
-            .map(|list| claims.list_checks(list))
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|check| check.name == RESOLVE)
-            .collect();
+            .map(|list| claims.resolve_checks(list))
+            .unwrap_or_default();
         if resolve.is_empty() {
             return (render_listing(&listing), 0);
         }
@@ -3132,6 +3140,16 @@ mod tests {
         let checks = two_cameras().checks(Some(&[]), None);
         assert_eq!(
             verdicts(&checks),
+            [(
+                RESOLVE,
+                Status::Ok,
+                "the list is empty: no camera is registered"
+            )]
+        );
+        // An empty list needs no scan, so a failed one is no fault of it.
+        let failed = claims(Err("timed out".to_string()), vec![camera("SV605CC")]);
+        assert_eq!(
+            verdicts(&failed.checks(Some(&[]), None)),
             [(
                 RESOLVE,
                 Status::Ok,

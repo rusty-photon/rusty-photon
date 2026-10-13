@@ -1200,7 +1200,11 @@ on its own (U5).
   streaming. The USB serial is what the bus publishes, usually nothing (`—`),
   which says nothing about the camera's identity. **Device** is the number the
   running configuration serves the camera at — its entry's number, `not
-  listed`, or, with no list, its port-order number (U10).
+  listed`, or, with no list, its port-order number (U10). That number
+  assumes every placed camera opens for its serial: `--devices` opens none,
+  so it cannot see one that would not, which the service then leaves out,
+  moving each camera after it down a number (the service's `warn!` names
+  it).
 
   **The block.** With no list, it holds every placed camera numbered in port
   order, so pasting it changes no number: it pins exactly what the no-list
