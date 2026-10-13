@@ -584,6 +584,12 @@ is rejected. Unknown tokens are rejected with the offending token named.
    a goal met on `good`, not `total`, so rejected frames keep a target
    in the rotation instead of retiring it.
 
+Step 1 takes each frame's target and sub-spec from its file and
+directory names, not from its sidecar, which is the frame's record.
+[rp.md § Ground rules](../services/rp.md#ground-rules) lists that as a
+gap: a frame whose name the current patterns no longer parse is not
+counted.
+
 **Night-date rollover.** `{night_date}` is the date the *observing night*
 began — it rolls at local noon, so a frame captured at 01:30 belongs to
 the night that started the previous evening. `rp` computes

@@ -154,7 +154,7 @@ Feature: Plate solve MCP tool
     Then the tool call should return an error
     And the error message should contain "pointing_hint"
 
-  Scenario: No hints produces a blind solve request
+  Scenario: No hints produces a solve request with no hint fields
     Given a running Alpaca simulator
     And a stub plate solver returning a canned WCS
     And rp is running with a camera on the simulator

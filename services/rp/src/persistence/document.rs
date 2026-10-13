@@ -124,10 +124,11 @@ pub struct ExposureDocument {
     pub pointing: Option<MountPointing>,
     /// Optical-train geometry resolved at capture time. Carries both the raw
     /// Alpaca camera readings (`pixel_size_*_um`, `sensor_*_px`) and the
-    /// derived pixel scale and FOV that consumers like `plate_solve` and
-    /// annotation tools want without re-deriving from the FITS header.
-    /// Omitted when any input was missing — see `docs/services/rp.md`
-    /// §"Core Fields".
+    /// derived pixel scale and FOV, so a consumer, such as a caller
+    /// passing `plate_solve`'s `fov_hint_deg`, need not re-derive them
+    /// from the FITS header.
+    /// Omitted when any input was missing or unusable (a pixel size of
+    /// 0, say) — see `docs/services/rp.md` §"Core Fields".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub optics: Option<Optics>,
     /// The sky target this frame belongs to (Decision 11), resolved by
@@ -195,15 +196,20 @@ impl From<&rp_targets::Target> for ExposureTarget {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Optics {
     /// Operator-supplied effective focal length of the optical train,
-    /// in millimetres (verbatim from `equipment.cameras[].focal_length_mm`).
+    /// in millimetres, copied at capture time from the camera's train
+    /// (`equipment.optical_trains[].focal_length_mm`).
     pub focal_length_mm: f64,
-    /// Raw Alpaca `PixelSizeX` reading at capture time, in microns.
+    /// Raw Alpaca `PixelSizeX` reading, in microns, read when the camera
+    /// session was established and cached for the connection.
     pub pixel_size_x_um: f64,
-    /// Raw Alpaca `PixelSizeY` reading at capture time, in microns.
+    /// Raw Alpaca `PixelSizeY` reading, in microns, cached like
+    /// `pixel_size_x_um`.
     pub pixel_size_y_um: f64,
-    /// Raw Alpaca `CameraXSize` reading at capture time, in pixels.
+    /// Raw Alpaca `CameraXSize` reading, in pixels, cached like
+    /// `pixel_size_x_um`.
     pub sensor_width_px: u32,
-    /// Raw Alpaca `CameraYSize` reading at capture time, in pixels.
+    /// Raw Alpaca `CameraYSize` reading, in pixels, cached like
+    /// `pixel_size_x_um`.
     pub sensor_height_px: u32,
     /// Derived: `206.265 × pixel_size_x_um / focal_length_mm`.
     pub pixel_scale_x_arcsec_per_pixel: f64,
@@ -212,8 +218,9 @@ pub struct Optics {
     /// Derived: `pixel_scale_x_arcsec_per_pixel × sensor_width_px / 3600`.
     pub fov_width_deg: f64,
     /// Derived: `pixel_scale_y_arcsec_per_pixel × sensor_height_px / 3600`.
-    /// Matches ASTAP's `-fov` semantics ("image height in degrees"); used
-    /// as the `plate_solve` `fov_hint_deg` default in `document_id` mode.
+    /// Matches ASTAP's `-fov` semantics ("image height in degrees"), so
+    /// it is the source rp.md §"Ground rules" names for `plate_solve`'s
+    /// `fov_hint_deg`.
     pub fov_height_deg: f64,
 }
 

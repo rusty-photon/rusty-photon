@@ -195,8 +195,8 @@ pub struct ImageCache {
     max_images: usize,
     /// Root directory to scan when an in-memory lookup misses. The
     /// disk-fallback resolver matches by the UUID-8 suffix every frame
-    /// carries and verifies via FITS `DOC_ID` (sidecar `id` as fallback
-    /// authority).
+    /// carries and verifies via FITS `DOC_ID`, or the sidecar's `id`
+    /// when the FITS is unreadable or has no `DOC_ID`.
     data_directory: PathBuf,
     /// How many directory levels below `data_directory` that scan
     /// descends — `directory_pattern`'s component count under a naming
@@ -643,9 +643,13 @@ fn find_candidates_by_suffix(dir: &Path, depth: usize, full_uuid: &str) -> Vec<P
 }
 
 /// Confirm that `fits_path` and its sidecar resolve to the requested
-/// `full_uuid`. FITS `DOC_ID` is the preferred authority; sidecar `id`
-/// is the fallback when the FITS is unreadable. Returns the sidecar
-/// path on match.
+/// `full_uuid`. FITS `DOC_ID` goes first, and confirms the pixels.
+/// When it matches, the sidecar found by the FITS file's name is
+/// returned without its `id` being checked. The sidecar's `id` is
+/// checked only when the FITS is unreadable or has no `DOC_ID`, and
+/// then the pixels go unconfirmed where rule 1 would refuse the file.
+/// rp.md §"Ground rules" lists both as a gap. Returns the sidecar path
+/// on match.
 fn confirm_candidate(fits_path: &Path, full_uuid: &str) -> Option<PathBuf> {
     if let Ok(Some(doc_id)) = super::fits::read_fits_doc_id(fits_path) {
         if doc_id == full_uuid {
