@@ -99,7 +99,7 @@ recorded here so the option is not lost.
 | C1 | **Hardware spike + passive USB identity**: confirm the Windows port spelling on the real box (direct and behind a hub, across replug and reboot), then implement `port` + `serial` extraction on all three collectors (new work on each — none extracts either today) and make inventory failure distinguishable from an empty bus | Landed: `port`/`serial` extraction, the failed-vs-empty inventory, the staged synthetic inventory, faults (a record that is not a working device is a fault, not a failed scan — D4.4), and the Linux port spelled by controller and USB revision instead of bus number (D2). The spike's last leg, a move to a different port, was made on a Windows VM rather than `rig2` (D2, spike item 7), and a camera plugged straight into a real controller's root port was not read, a gap the owner accepted (decision 2) | `chore/device-claims-c1-spike` ([#1306](https://github.com/rusty-photon/rusty-photon/pull/1306)), `chore/device-claims-c1-synthetic-inventory` ([#1308](https://github.com/rusty-photon/rusty-photon/pull/1308)), `fix/doctor-usb-faults-1322` ([#1365](https://github.com/rusty-photon/rusty-photon/pull/1365)), `feature/device-claims-linux-port-spelling` ([#1450](https://github.com/rusty-photon/rusty-photon/pull/1450)), `fix/device-claims-linux-fault-location` ([#1458](https://github.com/rusty-photon/rusty-photon/pull/1458)), `chore/device-claims-c1-port-move` ([#1462](https://github.com/rusty-photon/rusty-photon/pull/1462)) |
 | C2 | `usb_devices` schema + `svbony-camera` — port placement (the join), listed numbers, placeholders (their fixed connect error code, which rp treats as permanent for the pass, and their config actions), the failed-scan re-scan, each simulation backend's synthetic inventory, and `svbony-camera doctor --devices` (D5's listing and paste-ready block; the `usb-devices.*` checks stay in C5), so no driver serves the list before its paste source exists. `usb_devices` is part of `config.schema`/`config.apply` from the phase that adds it, under the ordinary `Reload` disposition (D4.1), and D3's validation rejects a bad list in `config.apply` as well as at load. The easy case; proves schema, join and placeholder behaviour | Merged — [svbony-camera.md](../services/svbony-camera.md) U1-U9; the D4.8 twin hint is deferred to a collector change (D4.8) | `feature/device-claims-c2-svbony` ([#1466](https://github.com/rusty-photon/rusty-photon/pull/1466)) |
 | C3 | `usb_devices` in `zwo-camera`, with its `doctor --devices` listing; a failed identity open is a per-camera outcome (D7) | Merged — [zwo-camera.md](../services/zwo-camera.md) U1-U9; the placeholder device and the re-scan moved to `rusty-photon-driver`'s `claims` feature (D7) | `feature/device-claims-c3-zwo` ([#1476](https://github.com/rusty-photon/rusty-photon/pull/1476)) |
-| C4 | `usb_devices` in `qhy-camera`, with its `doctor --devices` listing and each entry's declared filter wheel (D4.7), whose placeholder rp already classifies (C2 taught the connect routine every kind shares the placeholder's refusal) + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup and reload entirely** (the split alone narrows the tenet-3 problem, it does not discharge it). With a third driver serving the list, the `usb_devices` entry type and its validation glue, which svbony-camera and zwo-camera each still carry, move to one shared home | In review — [qhy-camera.md](../services/qhy-camera.md) U1-U10; D6 settled on option 2 (the no-list probe opens without `InitQHYCCD`, measured, decision 17). The `usb_devices` entry type and its validation glue moved to `rusty-photon-doctor-checks`' `claims` module, which `qhy-camera` extends with the declared wheel; the placeholder FilterWheel stays in `qhy-camera`, the only driver with one | `feature/device-claims-c4-qhy` ([#1479](https://github.com/rusty-photon/rusty-photon/pull/1479)) |
+| C4 | `usb_devices` in `qhy-camera`, with its `doctor --devices` listing and each entry's declared filter wheel (D4.7), whose placeholder rp already classifies (C2 taught the connect routine every kind shares the placeholder's refusal) + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup and reload entirely** (the split alone narrows the tenet-3 problem, it does not discharge it). With a third driver serving the list, the `usb_devices` entry type and its validation glue, which svbony-camera and zwo-camera each still carry, move to one shared home | Merged — [qhy-camera.md](../services/qhy-camera.md) U1-U10; D6 settled on option 2 (the no-list probe opens without `InitQHYCCD`, measured, decision 17). The `usb_devices` entry type and its validation glue moved to `rusty-photon-doctor-checks`' `claims` module, which `qhy-camera` extends with the declared wheel; the placeholder FilterWheel stays in `qhy-camera`, the only driver with one | `feature/device-claims-c4-qhy` ([#1479](https://github.com/rusty-photon/rusty-photon/pull/1479)) |
 | C5 | `usb-devices.resolve` / `usb-devices.unlisted` / `usb-devices.implicit` checks on top of the per-driver `--devices` listings, and central doctor's `service.devices` recognising placeholders (D5); **the breaking no-list changes for all three drivers at once** — numbering by port order, unplaceable cameras refused, and the port-based `UniqueID` fallback for serial-less cameras (ZWO/SVBony; QHY's case decided here, D4.6) | Not started | |
 | C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | Not started, except the `save_image` wire-format fix (D9), merged | `fix/phd2-save-image-wire-format` ([#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)) |
 | C7 | rp wiring: guide camera as a train-terminal camera, capture-sweep focusing for the guiding train, doc updates. **Blocked on reconciling with [`focus-model.md`](focus-model.md) S7/D17**, which retires rp's capture-based `auto_focus` and keeps the metric sweep under that name | Not started | |
@@ -121,9 +121,11 @@ Windows legs read only on a VM and the unread macOS key, as C1's close,
 to be read on real hardware later (waiting list). C2 → C3 → C4 then land per
 driver, each on its own, adding the list path and leaving the no-list
 path as it is today. C5 lands after all three: it flips the no-list
-default in every driver at once (D4), so it waits on the macOS check in
-the waiting list (C4's tenet-3 blocker, which it also inherited, was
-settled in C4's design, D6). C6 needs nothing from
+default in every driver at once (D4), so it waited on the macOS check in
+the waiting list, which found macOS 26's USB report moved and the
+collector reading an empty bus there, and is answered by the collector
+reading the report the host lists (C4's tenet-3 blocker, which C5 also
+inherited, was settled in C4's design, D6). C6 needs nothing from
 Part A but is only *operationally* safe after C4. C7 needs C6.
 
 Each phase follows
@@ -260,8 +262,12 @@ passively and cross-platform for the D4 `hardware.usb-device` check, with
   could still be spelled (the collision, or a record whose `idProduct`
   could not be read) carries the spelling as its `location`, which is
   what D4.5's match of a fault to a listed port needs.
-- **macOS** — `system_profiler -json SPUSBDataType`, which carries
-  `location_id` (a hex encoding of the port chain) per device.
+- **macOS** — `system_profiler`'s USB report, which carries a location
+  id (a hex encoding of the port chain) per device: `SPUSBDataType`
+  through macOS 15, `SPUSBHostDataType` from macOS 26, which no longer
+  lists the first and answers it with an empty list. The collector reads
+  whichever the host lists ([doctor.md](../services/doctor.md), "USB
+  inventory").
 - **Windows** — `Get-PnpDevice` + `Get-PnpDeviceProperty`. Today it reads
   the instance id and `DEVPKEY_Device_BusReportedDeviceDesc`; the port
   chain needs one more property. Candidates are
@@ -775,8 +781,9 @@ date. (`name` is display text, never a key.)
      unparsable — output the query cannot have produced, such as a
      Windows line that is not a five-field `USB\VID_` record (the query
      replaces control characters in device-supplied text, so a device's
-     own strings cannot produce one), or a macOS report with no
-     `SPUSBDataType` list. That is the collector's failure, not a
+     own strings cannot produce one), a macOS listing that names neither
+     USB report, or a macOS report with no list under its data type. That
+     is the collector's failure, not a
      device's, and reading it as a thinner bus would hide it.
 
    **Not every entry is a candidate device record.** The collectors
@@ -868,12 +875,13 @@ date. (`name` is display text, never a key.)
    - **Hosts whose scan cannot place devices register no cameras.** That
      includes Windows on ARM and USB-over-IP clients (their devices
      publish no `PCIROOT(` path, so they are faults — deferred, outside
-     the supported deployment), and macOS if `system_profiler` stops
-     providing `SPUSBDataType` (reported for macOS 26, unverified). A
-     report without that list is a failed scan, not an empty bus, so the
-     cause would at least be named — but it would still mean "no
-     cameras on macOS", so it is checked before C5 flips the no-list
-     default (see the waiting list) rather than discovered in the field.
+     the supported deployment). macOS was the third risk, and checking
+     it before C5 found it real and quieter than feared: macOS 26 no
+     longer lists `SPUSBDataType` and answers a query for it with an
+     empty list, not a missing one, so the collector read an empty bus —
+     no cameras and no failure named. It now reads the report the host
+     lists (`SPUSBHostDataType` on macOS 26), and a host that lists
+     neither fails the scan by name (see the waiting list).
 
    **A collector that never returns is a fourth state.** The macOS and
    Windows collectors shell out; C1 bounds both invocations with a
@@ -2391,8 +2399,9 @@ review.
 
 Nothing in this plan is waiting on an *operator* answer. **Five** things
 are waiting on evidence or an implementation choice, each named at its
-rule — two of them block a phase outright (the macOS `system_profiler`
-check before C5's no-list flip, and C7's focus-model reconciliation). C4's
+rule — one of them blocks a phase outright (C7's focus-model
+reconciliation); the macOS `system_profiler` check that blocked C5's
+no-list flip was answered on 2026-10-12, below. C4's
 tenet-3-safe probe path, the third, was settled in C4's design (D6, decision 17),
 measured under Linux on a camera fresh from power-up and under Windows on
 `rig2`. C1's last wait, a move to a different
@@ -2410,14 +2419,21 @@ and on 2026-10-11 the owner accepted the legs no real hardware has read
 - **C6 — the capture completion watermark**, waiting on one measurement
   against a live PHD2 (D9). Until it exists the facade cannot tell a
   finished exposure from the frame before it.
-- **macOS — whether `system_profiler -json SPUSBDataType` still works on
-  macOS 26.** Reported removed there, unverified. Since a failed scan
-  leaves a no-list rig with no cameras (D4.4), this needs checking on a
-  current Mac before C5 flips the no-list default. The same Mac answers
-  what C1 did not measure on macOS: that a camera's `location_id` stays
-  the same across a replug and a reboot, changes when the camera moves
-  to another port, and carries the hop when the camera is behind a hub.
-  The owner accepted that gap for C2–C4 on 2026-10-11.
+- **macOS — the report answered, the location id still unread on a real
+  Mac.** Whether `system_profiler -json SPUSBDataType` still works on
+  macOS 26 was answered on GitHub's runners on 2026-10-12: it does not.
+  macOS 26.6.2 lists only `SPUSBHostDataType` and answers
+  `SPUSBDataType` with an empty list, where macOS 15.7.9 lists only
+  `SPUSBDataType` and answers the other empty — so the collector read
+  an empty bus on macOS 26, and now reads the report the host lists
+  ([doctor.md](../services/doctor.md), "USB inventory"). Both runners
+  gave their two virtual devices the same location ids, so a port
+  written on macOS 15 names the same socket on macOS 26. A runner has no
+  camera to move, so what C1 did not measure on macOS still needs a
+  Mac with one: that a camera's location id stays the same across a
+  replug and a reboot, changes when the camera moves to another port,
+  and carries the hop when the camera is behind a hub. The owner
+  accepted that gap for C2–C4 on 2026-10-11.
 - **C5 — QHY's serial-less identity policy**, waiting on a choice
   between giving those models a port-based identity (with the matching
   `devices`-key and shared-CFW-id migration) and documenting the existing
