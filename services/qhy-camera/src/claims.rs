@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 pub use rusty_photon_doctor_checks::claims::UsbSource;
 use rusty_photon_doctor_checks::claims::{
-    self, CameraFacts, Claims, DisplayNames, ListEntry, Listing, Normalizer, SdkCamera,
+    self, CameraFacts, Claims, DisplayNames, Listing, Normalizer, SdkCamera,
 };
 use rusty_photon_driver::claims::{Placeholder, PlaceholderCamera};
 
@@ -248,10 +248,7 @@ pub fn listing(config: &Config, claims: &Claims<'_>, cameras: &[Enumerated]) -> 
             override_key: Some(camera.id.clone()),
         })
         .collect();
-    let list: Option<Vec<_>> = config
-        .usb_devices
-        .as_ref()
-        .map(|list| list.iter().map(ListEntry::block_entry).collect());
+    let list = config.usb_devices.as_deref().map(claims::block_entries);
     let overrides: BTreeMap<String, DisplayNames> = config
         .devices
         .iter()

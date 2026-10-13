@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 pub use rusty_photon_doctor_checks::claims::UsbSource;
 use rusty_photon_doctor_checks::claims::{
-    self, BlockEntry, CameraFacts, Claims, DisplayNames, ListEntry, Listing, Normalizer, SdkCamera,
+    self, CameraFacts, Claims, DisplayNames, Listing, Normalizer, SdkCamera,
 };
 use rusty_photon_driver::claims::{Placeholder, PlaceholderCamera};
 use svbony_rs::CameraInfo;
@@ -177,10 +177,7 @@ pub fn listing(config: &Config, claims: &Claims<'_>, infos: &[CameraInfo]) -> Li
             override_key: ports.get(&index).map(|port| override_key(info, port)),
         })
         .collect();
-    let list: Option<Vec<BlockEntry>> = config
-        .usb_devices
-        .as_ref()
-        .map(|list| list.iter().map(ListEntry::block_entry).collect());
+    let list = config.usb_devices.as_deref().map(claims::block_entries);
     let overrides: BTreeMap<String, DisplayNames> = config
         .devices
         .iter()

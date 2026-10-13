@@ -153,6 +153,12 @@ impl ListEntry for UsbDeviceEntry {
     }
 }
 
+/// `list`'s entries as the paste-ready block reproduces them.
+#[must_use]
+pub fn block_entries<E: ListEntry>(list: &[E]) -> Vec<BlockEntry> {
+    list.iter().map(ListEntry::block_entry).collect()
+}
+
 /// Every rule a configured `usb_devices` list breaks; empty without a list.
 ///
 /// The shared rules, then an [`override_beside_list`] error for each key of
@@ -1389,7 +1395,7 @@ pub fn usb_devices_checks<I>(
 }
 
 /// `checks` as the lines that close `doctor --devices`: one per check, its
-/// status first.
+/// status first, as `--json` spells it.
 fn render_checks(checks: &[Check]) -> String {
     let mut out = String::new();
     for check in checks {
@@ -1538,12 +1544,23 @@ pub fn devices_report<I>(
     let claims = Claims::new(normalizer, service, scan, cameras);
     let mut listing = listing(&claims, &facts);
     let Some(note) = list_note else {
-        // `--devices` has printed the block, so the checks need not repeat it.
-        let checks = claims.checks(list, None);
-        let code = i32::from(checks.iter().any(|c| c.status == Status::Fail));
+        // The listing shows the placed cameras, the block, and what the join
+        // could not place. What it does not show is which listed numbers a
+        // placeholder would hold: `usb-devices.resolve`'s verdicts, which
+        // close it. A failed scan, the one thing that fails them, returned
+        // above.
+        let resolve: Vec<Check> = list
+            .map(|list| claims.list_checks(list))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|check| check.name == RESOLVE)
+            .collect();
+        if resolve.is_empty() {
+            return (render_listing(&listing), 0);
+        }
         return (
-            format!("{}\n{}", render_listing(&listing), render_checks(&checks)),
-            code,
+            format!("{}\n{}", render_listing(&listing), render_checks(&resolve)),
+            0,
         );
     };
     // A block reproducing a list the service refuses would only be pasted
@@ -3291,10 +3308,29 @@ mod tests {
             "{output}"
         );
         assert!(
-            output.contains(
-                "\nok   usb-devices.unlisted: 1-4.2 (SV605CC) is on the bus and not listed\n"
-            ),
-            "{output}"
+            !output.contains("usb-devices.unlisted"),
+            "the listing's rows already say the camera is not listed: {output}"
+        );
+    }
+
+    #[test]
+    fn devices_without_a_list_adds_no_check_to_the_listing() {
+        let (output, code) = report(Ok(()), Ok(one_camera()), Ok(()));
+        assert_eq!(code, 0);
+        assert!(!output.contains("usb-devices."), "{output}");
+    }
+
+    /// Each status is spelled as `--json` spells it.
+    #[test]
+    fn a_check_line_leads_with_its_status() {
+        let checks = [
+            Check::ok(RESOLVE, None, "a"),
+            Check::warn(RESOLVE, None, "b", None),
+            Check::fail(RESOLVE, None, "c", None),
+        ];
+        assert_eq!(
+            render_checks(&checks),
+            "ok   usb-devices.resolve: a\nwarn usb-devices.resolve: b\nfail usb-devices.resolve: c\n"
         );
     }
 }

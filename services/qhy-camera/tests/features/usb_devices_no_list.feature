@@ -23,8 +23,9 @@ Feature: Device claims -- without a usb_devices list
   QHY178M-Simulated, with a 7-slot CFW. By default its scan holds one working
   record for it, 1618:f178 on port simulated-usbv3-0:1; the hidden
   --usb-inventory flag replaces it with a staged document (U7). Port order
-  across several cameras is pinned in the join's unit tests, since the
-  simulation fabricates one.
+  across several cameras, and that a camera the join cannot place is never
+  probed, are pinned in unit tests, since the simulation fabricates one camera
+  and probing it leaves no trace a scenario can read.
 
   Scenario: The camera the scan places is served at number 0 with the wheel its probe finds
     Given the configuration JSON {}
@@ -34,7 +35,7 @@ Feature: Device claims -- without a usb_devices list
     And the server registers 1 FilterWheel device
     And filterwheel device 0 reports the UniqueID "CFW-SIM-QHY178M"
 
-  Scenario: A camera the scan finds no record for is neither opened nor registered
+  Scenario: A camera the scan finds no record for is not registered
     Given the staged USB inventory:
       """
       { "usb": [] }

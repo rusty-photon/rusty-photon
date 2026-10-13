@@ -277,22 +277,24 @@ impl ServerBuilder {
         server: &mut Server,
         injected: Option<qhyccd_rs::Sdk>,
     ) -> std::result::Result<(Registered, Option<qhyccd_rs::Sdk>), BoxError> {
-        let (scan, sdk, cameras) = self.scan_and_enumerate(injected).await?;
+        let mut registered = Registered::default();
+        let (scan, mut sdk, cameras) = match self.scan_and_enumerate(injected).await? {
+            Ok(scanned) => scanned,
+            Err(error) => {
+                error!(
+                    %error,
+                    "the USB scan failed; no QHY camera is registered until a re-scan succeeds"
+                );
+                registered.rescan = Some(self.rescan());
+                return Ok((registered, None));
+            }
+        };
         let claims = Claims::new(
             claims::NORMALIZER,
             claims::SERVICE,
-            scan,
+            Ok(scan),
             claims::sdk_cameras(&cameras),
         );
-        let mut registered = Registered::default();
-        let Some(mut sdk) = sdk.filter(|_| claims.scan_error().is_none()) else {
-            error!(
-                error = claims.scan_error().unwrap_or_default(),
-                "the USB scan failed; no QHY camera is registered until a re-scan succeeds"
-            );
-            registered.rescan = Some(self.rescan());
-            return Ok((registered, None));
-        };
         for note in claims.unplaced_notes() {
             warn!(%note, "without a usb_devices list, a camera the USB scan cannot place is not served");
         }
@@ -380,14 +382,17 @@ impl ServerBuilder {
             );
             return Ok((Registered::default(), None));
         }
-        let (scan, sdk, cameras) = self.scan_and_enumerate(injected).await?;
-        if let Err(error) = &scan {
-            error!(
-                %error,
-                "the USB scan failed; every listed number is a placeholder until a re-scan \
-                 succeeds"
-            );
-        }
+        let (scan, sdk, cameras) = match self.scan_and_enumerate(injected).await? {
+            Ok((scan, sdk, cameras)) => (Ok(scan), Some(sdk), cameras),
+            Err(error) => {
+                error!(
+                    %error,
+                    "the USB scan failed; every listed number is a placeholder until a re-scan \
+                     succeeds"
+                );
+                (Err(error), None, Vec::new())
+            }
+        };
         let claims = Claims::new(
             claims::NORMALIZER,
             claims::SERVICE,
@@ -481,16 +486,17 @@ impl ServerBuilder {
         let scan = tokio::task::spawn_blocking(move || source.scan())
             .await
             .unwrap_or_else(|error| Err(format!("the USB scan did not finish: {error}")));
-        if scan.is_err() {
-            return Ok((scan, None, Vec::new()));
-        }
+        let scan = match scan {
+            Ok(scan) => scan,
+            Err(error) => return Ok(Err(error)),
+        };
         let (sdk, cameras) = tokio::task::spawn_blocking(move || {
             let sdk = take_sdk(injected)?;
             let cameras = claims::enumerate(&sdk);
             Ok::<_, QhyCameraError>((sdk, cameras))
         })
         .await??;
-        Ok((scan, Some(sdk), cameras))
+        Ok(Ok((scan, sdk, cameras)))
     }
 
     /// Register `camera` with its display overrides, and return the physical
@@ -586,13 +592,17 @@ fn resolve_list(
         .collect()
 }
 
-/// A build's USB scan, the SDK it opened when the scan ran, and the cameras
-/// that SDK enumerated.
-type Scanned = (
-    std::result::Result<rusty_photon_doctor_checks::UsbScan, String>,
-    Option<qhyccd_rs::Sdk>,
-    Vec<claims::Enumerated>,
-);
+/// A build's USB scan with the SDK it opened and the cameras that SDK
+/// enumerated, or why the scan could not run — in which case no SDK was
+/// opened.
+type Scanned = std::result::Result<
+    (
+        rusty_photon_doctor_checks::UsbScan,
+        qhyccd_rs::Sdk,
+        Vec<claims::Enumerated>,
+    ),
+    String,
+>;
 
 /// What a build registered, and the re-scan to run when the USB scan failed.
 #[derive(Default)]
@@ -857,5 +867,86 @@ mod take_sdk_tests {
         let sdk = take_sdk(Some(injected)).unwrap();
         let ids: Vec<&str> = sdk.cameras().map(qhyccd_rs::Camera::id).collect();
         assert_eq!(ids, ["INJECTED"]);
+    }
+}
+
+#[cfg(all(test, feature = "simulation"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod no_list_tests {
+    use super::*;
+    use qhyccd_rs::simulation::SimulatedCameraConfig;
+    use rusty_photon_doctor_checks::{UsbDevice, UsbScan};
+
+    /// The simulated camera's record, on the port the default scan gives it.
+    fn record() -> UsbDevice {
+        UsbDevice {
+            vendor: "1618".to_string(),
+            product: "f178".to_string(),
+            model: Some("QHY178M-Simulated".to_string()),
+            port: Some("simulated-usbv3-0:1".to_string()),
+            serial: None,
+        }
+    }
+
+    /// Without a list, only the cameras the join placed are probed (U11): a
+    /// QHY600M with no record on the bus is never opened. Its close always
+    /// fails, so a probe that opened it would have left it open.
+    #[tokio::test]
+    async fn a_camera_the_join_cannot_place_is_never_probed() {
+        let closes = tempfile::tempdir().unwrap();
+        let close_failure = closes.path().join("close-fails");
+        std::fs::write(&close_failure, "").unwrap();
+        let mut sdk = qhyccd_rs::Sdk::new_simulated();
+        sdk.add_simulated_camera(
+            SimulatedCameraConfig::default()
+                .with_id("PLACED")
+                .with_model("QHY178M-Simulated"),
+        );
+        sdk.add_simulated_camera(
+            SimulatedCameraConfig::default()
+                .with_id("UNPLACED")
+                .with_model("QHY600M")
+                .with_close_failure_file(&close_failure),
+        );
+        let builder = ServerBuilder::new().with_usb_source(UsbSource::Simulated(UsbScan {
+            devices: vec![record()],
+            faults: Vec::new(),
+        }));
+        let mut server = Server::new(CargoServerInfo!());
+
+        let (registered, sdk) = builder
+            .register_enumerated(&mut server, Some(sdk))
+            .await
+            .unwrap();
+
+        assert_eq!(registered.cameras, 1, "only the placed camera is served");
+        let sdk = sdk.expect("a scan that ran keeps its SDK");
+        let unplaced = sdk.cameras().find(|c| c.id() == "UNPLACED").unwrap();
+        assert!(
+            !unplaced.is_open().unwrap(),
+            "the probe opened the camera the join could not place"
+        );
+    }
+
+    /// Without a list, a failed scan opens no SDK and registers nothing; it
+    /// schedules the re-scan (U6).
+    #[tokio::test]
+    async fn a_failed_scan_opens_nothing_and_is_retried() {
+        let staged = tempfile::tempdir().unwrap();
+        let path = staged.path().join("usb-inventory.json");
+        std::fs::write(&path, r#"{"usb_unavailable": "powershell.exe timed out"}"#).unwrap();
+        let builder = ServerBuilder::new().with_usb_source(UsbSource::Staged(path));
+        let mut server = Server::new(CargoServerInfo!());
+
+        let (registered, sdk) = builder
+            .register_enumerated(&mut server, None)
+            .await
+            .unwrap();
+
+        assert_eq!(registered.cameras, 0);
+        assert!(sdk.is_none(), "a failed scan opens no SDK");
+        registered
+            .rescan
+            .expect("a failed scan schedules a re-scan");
     }
 }

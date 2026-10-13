@@ -317,7 +317,13 @@ fn client_build_warn(service: Option<String>, had_ca: bool, e: &impl std::fmt::D
 /// ([`inventory_checks`]), or why they could not be read.
 async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&str>) -> Vec<Check> {
     match fetch_devices(ctx, scan, acme_domain).await {
-        Ok(devices) => inventory_checks(scan.entry.name, &devices, ctx.hardware.as_ref()),
+        // The packaged binary is named as its unit is.
+        Ok(devices) => inventory_checks(
+            scan.entry.name,
+            &scan.entry.unit_name(),
+            &devices,
+            ctx.hardware.as_ref(),
+        ),
         Err(check) => vec![*check],
     }
 }
@@ -327,9 +333,12 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
 /// them, which stands in for a listed camera (or its wheel) and is not one.
 /// A placeholder never re-scans, so when `hardware`'s USB scan now holds a
 /// working device on its port, the warning names it as what a reload of the
-/// service would place.
+/// service would place — unless the service's own scan failed, when it
+/// re-scans and rebuilds by itself, which the warning says too. `binary` is
+/// the service's packaged binary, whose `doctor --devices` gives the reason.
 fn inventory_checks(
     service: &str,
+    binary: &str,
     devices: &[ConfiguredDevice],
     hardware: Option<&HardwareFacts>,
 ) -> Vec<Check> {
@@ -358,8 +367,8 @@ fn inventory_checks(
             other => other.to_lowercase(),
         };
         let mut detail = format!(
-            "{} #{} is a placeholder for {port}, not a {kind}: run `rusty-photon-{service} \
-             doctor --devices` for the reason",
+            "{} #{} is a placeholder for {port}, not a {kind}: run `{binary} doctor --devices` \
+             for the reason",
             placeholder.device_type, placeholder.number
         );
         let on_the_port = hardware
@@ -369,7 +378,8 @@ fn inventory_checks(
             let _ = write!(
                 detail,
                 "; the host's USB scan now finds {} ({}:{}) on {port}, which a reload of \
-                 {service} would place if it is the camera",
+                 {service} would place if it is the camera (if {service}'s own USB scan \
+                 failed, it re-scans and places it without one)",
                 device.model.as_deref().unwrap_or("a device"),
                 device.vendor,
                 device.product
@@ -380,8 +390,8 @@ fn inventory_checks(
             Some(service.to_string()),
             detail,
             Some(format!(
-                "run `rusty-photon-{service} doctor --devices`; once the camera is fixed, reload \
-                 or restart {service}"
+                "run `{binary} doctor --devices`; once the camera is fixed, reload or restart \
+                 {service}"
             )),
         ));
     }
@@ -921,7 +931,7 @@ mod tests {
                 &format!("placeholder:qhy-camera:CFW-{GUIDE_PORT}"),
             ),
         ];
-        let checks = inventory_checks("qhy-camera", &devices, None);
+        let checks = inventory_checks("qhy-camera", "rusty-photon-qhy-camera", &devices, None);
         assert_eq!(checks.len(), 3, "{checks:?}");
         assert_eq!(checks[0].status, Status::Ok);
         assert!(
@@ -973,11 +983,17 @@ mod tests {
             usb: vec![on_the_port],
             ..HardwareFacts::default()
         };
-        let checks = inventory_checks("qhy-camera", &devices, Some(&hardware));
+        let checks = inventory_checks(
+            "qhy-camera",
+            "rusty-photon-qhy-camera",
+            &devices,
+            Some(&hardware),
+        );
         assert!(
             checks[1].detail.ends_with(&format!(
                 "; the host's USB scan now finds QHY678U3G20-20230106 (1618:0679) on \
-                 {GUIDE_PORT}, which a reload of qhy-camera would place if it is the camera"
+                 {GUIDE_PORT}, which a reload of qhy-camera would place if it is the camera \
+                 (if qhy-camera's own USB scan failed, it re-scans and places it without one)"
             )),
             "{}",
             checks[1].detail
@@ -987,7 +1003,12 @@ mod tests {
             usb_unavailable: Some("powershell.exe timed out".to_string()),
             ..HardwareFacts::default()
         };
-        let checks = inventory_checks("qhy-camera", &devices, Some(&failed));
+        let checks = inventory_checks(
+            "qhy-camera",
+            "rusty-photon-qhy-camera",
+            &devices,
+            Some(&failed),
+        );
         assert!(
             !checks[1].detail.contains("now finds"),
             "a failed scan names nothing on the port: {}",
@@ -998,7 +1019,7 @@ mod tests {
     #[test]
     fn test_an_inventory_of_devices_alone_is_one_ok() {
         let devices = [device("QHY178M", "Camera", 0, "qhy-uid")];
-        let checks = inventory_checks("qhy-camera", &devices, None);
+        let checks = inventory_checks("qhy-camera", "rusty-photon-qhy-camera", &devices, None);
         assert_eq!(checks.len(), 1);
         assert_eq!(
             checks[0].detail,

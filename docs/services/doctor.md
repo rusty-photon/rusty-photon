@@ -1005,8 +1005,9 @@ holds to the same rules — read-only, enumeration only, never an open — and
 the same exit codes, and it is text only. `svbony-camera`, `zwo-camera` and
 `qhy-camera` have it ([svbony-camera.md](svbony-camera.md) U8,
 [zwo-camera.md](zwo-camera.md) U8, [qhy-camera.md](qhy-camera.md) U8), and
-prints the `usb-devices.*` checks above, all of them, after the listing. The
-listing,
+closes its listing with `usb-devices.resolve`'s verdicts, the one thing the
+listing does not already show: its rows and notes say what the other checks
+say. The listing,
 its paste-ready block, the join that places each camera, the port order it
 is printed in, and the list entry with its validation are shared code in
 `rusty-photon-doctor-checks`' `claims` module, beside the inventory they
@@ -1058,7 +1059,9 @@ installed service, and the two paths are naturally exclusive:
   placeholder never re-scans, so when doctor's own USB scan holds a working
   device on that port — a hub powered on after the service started — the
   detail names it and says a reload of the service would place it if it is
-  the camera. The `ok` names the other devices, and is still reported when
+  the camera — unless the service's own USB scan failed, when it re-scans and
+  places it without one (the detail says that too, since `configureddevices`
+  does not carry a placeholder's reason). The `ok` names the other devices, and is still reported when
   every device is a placeholder: the service answered, so it is alive. A
   camera the no-list default refused is not registered at all, so a running
   service cannot show it; `<service> doctor --devices`, which opens nothing,

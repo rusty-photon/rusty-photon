@@ -1248,9 +1248,12 @@ the numbers running 0..N-1:
       { "device_number": 0, "usb_port": "1-4.2" }
     ]
 
-  ok    usb-devices.resolve    1 listed port resolves, no placeholders
-  ok    usb-devices.unlisted   1-4.3 (QHY5III715C) is on the bus and not listed
+ok   usb-devices.resolve: 1 listed port resolves, no placeholders
 ```
+
+(As built in C5, `--devices` closes with `usb-devices.resolve` alone; the
+listing's rows already say which cameras are not listed, which
+`usb-devices.unlisted` reports in the doctor report.)
 
 Model and SDK id are shown so the operator can tell which row is which
 camera; neither is something they ever type. Rows are SDK cameras placed

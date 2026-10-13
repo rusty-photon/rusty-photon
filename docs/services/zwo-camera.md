@@ -1293,7 +1293,8 @@ on its own (U5).
   order gives, `ok`, when there is more than one camera, and each camera U10
   refuses, `warn`). A failed scan fails whichever applies, naming the
   collector's error. They judge what a start would serve now, not what a
-  running instance holds, and they print below `--devices`' listing as well.
+  running instance holds. `--devices` closes its listing with
+  `usb-devices.resolve`'s verdicts, the one thing the listing does not show.
   Central doctor merges them when the unit is not active, and reads a running
   instance's placeholders from `configureddevices` (`service.devices`) when
   it is.

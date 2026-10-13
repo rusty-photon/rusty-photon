@@ -39,7 +39,8 @@ Feature: Device claims -- the usb_devices list
   scan (U11): usb-devices.resolve is ok when every listed port resolves,
   warns for each number a placeholder would hold, and fails if the scan
   failed; usb-devices.unlisted names each placed camera no entry lists.
-  --devices prints the same checks after the listing. Without a list, see
+  --devices closes its listing with usb-devices.resolve, the one verdict
+  the listing does not show. Without a list, see
   usb_devices_no_list.feature.
 
   The simulation build never scans the host (U7). By default its scan holds
@@ -423,11 +424,10 @@ Feature: Device claims -- the usb_devices list
     Then the doctor exits with code 1
     And the doctor's usb-devices.resolve check fails saying "the USB scan failed: powershell.exe did not answer within 10 s"
 
-  Scenario: doctor --devices closes the listing with the checks
+  Scenario: doctor --devices closes the listing with usb-devices.resolve
     Given the configuration lists these USB devices:
       | device_number | usb_port            |
       | 0             | simulated-usbv3-0:9 |
     When doctor --devices runs
     Then the doctor exits with code 0
     And the doctor output says "warn usb-devices.resolve: device 0 (simulated-usbv3-0:9) would be a placeholder"
-    And the doctor output says "ok   usb-devices.unlisted: simulated-usbv3-0:1 (ASI2600MM-Pro-Simulated) is on the bus and not listed"

@@ -23,8 +23,9 @@ Feature: Device claims -- without a usb_devices list
   03c3:2600 on port simulated-usbv3-0:1; the hidden --usb-inventory flag
   replaces it with a staged document, and the hidden --simulation-unopenable
   flag makes every open of the camera fail with the SDK's general error (U7).
-  Port order across several cameras is pinned in the join's unit tests, since
-  the simulation fabricates one.
+  Port order across several cameras, and that a camera the join cannot place
+  is never opened, are pinned in unit tests, since the simulation fabricates
+  one camera and opening it leaves no trace a scenario can read.
 
   Scenario: The camera the scan places is served at number 0
     Given the configuration JSON {}
@@ -32,13 +33,13 @@ Feature: Device claims -- without a usb_devices list
     Then the server registers 1 Camera device
     And camera device 0 reports the UniqueID "ZWO:ASI2600MM-Pro-Simulated:0a1b2c3d4e5f6071"
 
-  Scenario: A camera the scan finds no record for is neither opened nor registered
+  Scenario: A camera the scan finds no record for is not registered
     Given the staged USB inventory:
       """
       { "usb": [] }
       """
     And the configuration JSON {}
-    When the zwo-camera service starts with a simulated camera that cannot be opened
+    When the zwo-camera service starts
     Then no ASCOM camera devices are registered
     And the service is healthy
 

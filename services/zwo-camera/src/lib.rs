@@ -562,17 +562,7 @@ fn place_list(
     force_empty: bool,
 ) -> Result<PlacedList, zwo_rs::Error> {
     let camera_list = sdk.camera_list();
-    let infos = if scan.is_err() || force_empty {
-        Vec::new()
-    } else {
-        camera_list.rescan()?
-    };
-    let claims = Claims::new(
-        claims::NORMALIZER,
-        claims::SERVICE,
-        scan,
-        claims::sdk_cameras(&infos),
-    );
+    let (infos, claims) = join(&camera_list, scan, force_empty)?;
     let resolved = resolve_list(&claims, &infos, entries, |index, info, port| {
         identity(&camera_list, index, info, port)
     });
@@ -588,6 +578,30 @@ fn place_list(
         scan_failed: claims.scan_error().is_some(),
         entries: resolved,
     })
+}
+
+/// Enumerate the SDK on `camera_list` and join what it reports with `scan`:
+/// the SDK's cameras, and where the join put each. A failed scan enumerates
+/// nothing; so does `force_empty`. The caller holds `camera_list` on through
+/// its identity opens, so no rescan can renumber the list between the index
+/// the join chose and the camera opened. Blocking.
+fn join(
+    camera_list: &zwo_rs::CameraList<'_>,
+    scan: Result<UsbScan, String>,
+    force_empty: bool,
+) -> Result<(Vec<CameraInfo>, Claims<'static>), zwo_rs::Error> {
+    let infos = if scan.is_err() || force_empty {
+        Vec::new()
+    } else {
+        camera_list.rescan()?
+    };
+    let claims = Claims::new(
+        claims::NORMALIZER,
+        claims::SERVICE,
+        scan,
+        claims::sdk_cameras(&infos),
+    );
+    Ok((infos, claims))
 }
 
 /// Resolve each entry against the join: the camera placed on its port, opened
@@ -645,17 +659,7 @@ fn place_enumerated(
     force_empty: bool,
 ) -> Result<PlacedDefault, zwo_rs::Error> {
     let camera_list = sdk.camera_list();
-    let infos = if scan.is_err() || force_empty {
-        Vec::new()
-    } else {
-        camera_list.rescan()?
-    };
-    let claims = Claims::new(
-        claims::NORMALIZER,
-        claims::SERVICE,
-        scan,
-        claims::sdk_cameras(&infos),
-    );
+    let (infos, claims) = join(&camera_list, scan, force_empty)?;
     let cameras = open_placed(&claims, &infos, |index, info, port| {
         identity(&camera_list, index, info, port)
     });
