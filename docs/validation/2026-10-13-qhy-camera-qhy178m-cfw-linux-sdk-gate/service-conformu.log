@@ -1,0 +1,392 @@
+   Compiling crypto-common v0.1.7
+   Compiling zerovec v0.11.6
+   Compiling ascom-alpaca v1.0.0-beta.10 (https://github.com/rusty-photon/ascom-alpaca-rs.git?branch=fix%2Fconnecting-counts-in-flight-operations#6f9fa597)
+   Compiling digest v0.10.7
+   Compiling blake2 v0.10.6
+   Compiling argon2 v0.5.3
+   Compiling tinystr v0.8.3
+   Compiling potential_utf v0.1.5
+   Compiling icu_collections v2.2.0
+   Compiling icu_locale_core v2.2.0
+   Compiling rp-auth v0.1.0 (<worktree>/crates/rp-auth)
+   Compiling icu_provider v2.2.0
+   Compiling icu_properties v2.2.0
+   Compiling icu_normalizer v2.2.0
+   Compiling rusty-photon-camera-core v0.1.0 (<worktree>/crates/rusty-photon-camera-core)
+   Compiling rusty-photon-driver v0.1.0 (<worktree>/crates/rusty-photon-driver)
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling url v2.5.8
+   Compiling tower-http v0.6.11
+   Compiling reqwest v0.13.5
+   Compiling rusty-photon-tls v0.1.0 (<worktree>/crates/rusty-photon-tls)
+   Compiling rusty-photon-server-config v0.1.0 (<worktree>/crates/rusty-photon-server-config)
+   Compiling qhy-camera v0.1.0 (<worktree>/services/qhy-camera)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.81s
+     Running `target/debug/qhy-camera --config <scratch>/hw-c4-qhy.json`
+2026-10-13T15:33:51.163305Z DEBUG qhy_camera: Starting QHY camera driver
+2026-10-13T15:33:51.163316Z DEBUG qhy_camera: Configuration path: <scratch>/hw-c4-qhy.json
+2026-10-13T15:33:51.166630Z DEBUG qhy_camera: Loaded effective configuration: server.port=11121
+QHYCCD|QHYCOMMON.CPP|UpdateMainProgramName|start
+QHYCCD|QHYCOMMON.CPP|UpdateMainProgramName|main program=qhy-camera
+QHYCCD|QHYCCD.CPP|InitQHYCCDResource|main program name=qhy-camera
+-- qhyccd.cpp param
+QHYCCD|QHYCCD.CPP|InitQHYCCDResource()|START
+QHYCCD|QHYCCD.CPP|InitQHYCCDResource|auto_detect_camera:false,call InitQHYCCDResourceInside
+QHYCCD|QHYCCD.CPP|InitQHYCCDResourceInside|START
+QHYCCD|QHYCCD.CPP|libusb_version 1.0.30.12037
+QHYCCD|QHYCCD.CPP|libusb_init(libqhyccd_context) called...
+QHYCCD|QHYCCD.CPP|InitQHYCCDResourceInside|numdev set to 0
+QHYCCD|QHYCCD.CPP|InitQHYCCDResourceInside|END
+************************** config file path  26.6.4.16 svn: 17228  ************************************
+QHYCCD|QHYCCD.CPP|InitQHYCCDResource|Load ini filePath = <worktree>  fileName = qhyccd.ini
+2026-10-13T15:33:52.198882Z DEBUG qhy_camera: a listed port holds a QHY camera device=0 port=pci-0000:c1:00.4-usbv3-0:1.3 camera=QHY178M-222b16468c5966524
+2026-10-13T15:33:52.198955Z DEBUG qhy_camera: registered Camera device camera=QHY178M-222b16468c5966524
+2026-10-13T15:33:52.198966Z DEBUG qhy_camera: a declared filter wheel is served on its camera's connection filter_wheel=0 port=pci-0000:c1:00.4-usbv3-0:1.3
+2026-10-13T15:33:52.198982Z DEBUG qhy_camera: registered FilterWheel device filter_wheel=QHY178M-222b16468c5966524
+Bound Alpaca server bound_addr=0.0.0.0:11121
+2026-10-13T15:33:52.199172Z  INFO qhy_camera: Service started successfully on 0.0.0.0:11121 cameras=1 filter_wheels=1 placeholders=0
+2026-10-13T15:33:52.199188Z DEBUG qhy_camera: serving plain HTTP
+2026-10-13T15:34:01.749913Z DEBUG qhy_camera::camera: sensor geometry image_width_px=3056 image_height_px=2048 bits_per_pixel=16 effective_x_px=0 effective_y_px=0 effective_width_px=3056 effective_height_px=2048
+2026-10-13T15:34:01.749938Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin3x3mode }
+2026-10-13T15:34:01.749943Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin4x4mode }
+2026-10-13T15:34:01.749945Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin6x6mode }
+2026-10-13T15:34:01.749947Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin8x8mode }
+2026-10-13T15:34:01.749974Z DEBUG qhy_camera::camera: cached control range and armed value control="gain" min=0 max=51 value=Some(30)
+2026-10-13T15:34:01.749979Z DEBUG qhy_camera::camera: cached control range and armed value control="offset" min=0 max=1023 value=Some(0)
+2026-10-13T15:34:01.749985Z DEBUG qhy_camera::camera: camera connected camera=QHY178M-222b16468c5966524
+2026-10-13T15:34:02.765687Z DEBUG qhy_camera::filterwheel: filter wheel connected filter_wheel=CFW-QHY178M-222b16468c5966524 slots=7
+2026-10-13T15:34:02.773735Z DEBUG qhy_camera::camera: ROI armed roi=CCDChipArea { start_x: 0, start_y: 0, width: 3056, height: 2048 }
+2026-10-13T15:34:02.792345Z DEBUG qhy_camera::camera: gain and offset armed gain=Some(30) offset=Some(0)
+2026-10-13T15:34:05.791067Z DEBUG qhy_camera::camera: frame read width=3056 height=2048 bits_per_pixel=16 channels=1 buffer_bytes=27116352
+2026-10-13T15:34:05.987004Z DEBUG qhy_camera::filterwheel: sending the wheel to the slot it stands on first, so its status cannot name the move's own slot in transit slot=0
+2026-10-13T15:34:06.489512Z DEBUG qhy_camera::filterwheel: the wheel's status was just read; resting before the move rest=249.993941ms slot=2
+2026-10-13T15:34:09.668039Z DEBUG qhy_camera::filterwheel: the wheel's status was just read; resting before the move rest=248.909054ms slot=0
+2026-10-13T15:34:13.734422Z DEBUG qhy_camera::camera: camera disconnected camera=QHY178M-222b16468c5966524
+2026-10-13T15:34:17.327544Z DEBUG qhy_camera::camera: sensor geometry image_width_px=3056 image_height_px=2048 bits_per_pixel=16 effective_x_px=0 effective_y_px=0 effective_width_px=3056 effective_height_px=2048
+2026-10-13T15:34:17.327567Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin3x3mode }
+2026-10-13T15:34:17.327572Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin4x4mode }
+2026-10-13T15:34:17.327583Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin6x6mode }
+2026-10-13T15:34:17.327585Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin8x8mode }
+2026-10-13T15:34:17.327611Z DEBUG qhy_camera::camera: cached control range and armed value control="gain" min=0 max=51 value=Some(30)
+2026-10-13T15:34:17.327617Z DEBUG qhy_camera::camera: cached control range and armed value control="offset" min=0 max=1023 value=Some(0)
+2026-10-13T15:34:17.327622Z DEBUG qhy_camera::camera: camera connected camera=QHY178M-222b16468c5966524
+2026-10-13T15:34:18.310762Z DEBUG qhy_camera::camera: camera disconnected camera=QHY178M-222b16468c5966524
+2026-10-13T15:34:18.613863Z DEBUG qhy_camera::camera: sensor geometry image_width_px=3056 image_height_px=2048 bits_per_pixel=16 effective_x_px=0 effective_y_px=0 effective_width_px=3056 effective_height_px=2048
+2026-10-13T15:34:18.613884Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin3x3mode }
+2026-10-13T15:34:18.613888Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin4x4mode }
+2026-10-13T15:34:18.613890Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin6x6mode }
+2026-10-13T15:34:18.613892Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin8x8mode }
+2026-10-13T15:34:18.613919Z DEBUG qhy_camera::camera: cached control range and armed value control="gain" min=0 max=51 value=Some(30)
+2026-10-13T15:34:18.613925Z DEBUG qhy_camera::camera: cached control range and armed value control="offset" min=0 max=1023 value=Some(0)
+2026-10-13T15:34:18.613931Z DEBUG qhy_camera::camera: camera connected camera=QHY178M-222b16468c5966524
+2026-10-13T15:34:18.626774Z  WARN handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=123456 client_transaction_id=67890 server_transaction_id=71}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:18.629375Z  WARN handle_alpaca_request{path="/api/v1/camera/0/description" client_id=123456 client_transaction_id=67890 server_transaction_id=78}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:18.630516Z  WARN handle_alpaca_request{path="/api/v1/camera/0/driverinfo" client_id=123456 client_transaction_id=67890 server_transaction_id=82}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:18.631564Z  WARN handle_alpaca_request{path="/api/v1/camera/0/driverversion" client_id=123456 client_transaction_id=67890 server_transaction_id=86}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:18.632556Z  WARN handle_alpaca_request{path="/api/v1/camera/0/interfaceversion" client_id=123456 client_transaction_id=67890 server_transaction_id=90}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:18.633531Z  WARN handle_alpaca_request{path="/api/v1/camera/0/name" client_id=123456 client_transaction_id=67890 server_transaction_id=94}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:18.637481Z  WARN handle_alpaca_request{path="/api/v1/camera/0/supportedactions" client_id=123456 client_transaction_id=67890 server_transaction_id=98}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:18.644076Z  WARN handle_alpaca_request{path="/api/v1/camera/0/devicestate" client_id=123456 client_transaction_id=67890 server_transaction_id=103}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:19.596776Z DEBUG qhy_camera::camera: camera disconnected camera=QHY178M-222b16468c5966524
+2026-10-13T15:34:19.975439Z DEBUG qhy_camera::camera: sensor geometry image_width_px=3056 image_height_px=2048 bits_per_pixel=16 effective_x_px=0 effective_y_px=0 effective_width_px=3056 effective_height_px=2048
+2026-10-13T15:34:19.975467Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin3x3mode }
+2026-10-13T15:34:19.975471Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin4x4mode }
+2026-10-13T15:34:19.975473Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin6x6mode }
+2026-10-13T15:34:19.975475Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin8x8mode }
+2026-10-13T15:34:19.975501Z DEBUG qhy_camera::camera: cached control range and armed value control="gain" min=0 max=51 value=Some(30)
+2026-10-13T15:34:19.975506Z DEBUG qhy_camera::camera: cached control range and armed value control="offset" min=0 max=1023 value=Some(0)
+2026-10-13T15:34:19.975512Z DEBUG qhy_camera::camera: camera connected camera=QHY178M-222b16468c5966524
+2026-10-13T15:34:20.176953Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamIsColor }
+2026-10-13T15:34:20.176998Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.177220Z  WARN handle_alpaca_request{path="/api/v1/camera/0/bayeroffsetx" client_id=123456 client_transaction_id=67890 server_transaction_id=127}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.177402Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamIsColor }
+2026-10-13T15:34:20.177502Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.177663Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamIsColor }
+2026-10-13T15:34:20.177678Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.177808Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamIsColor }
+2026-10-13T15:34:20.177840Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.178370Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamIsColor }
+2026-10-13T15:34:20.178388Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.178478Z  WARN handle_alpaca_request{path="/api/v1/camera/0/bayeroffsety" client_id=123456 client_transaction_id=67890 server_transaction_id=131}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.178509Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamIsColor }
+2026-10-13T15:34:20.178533Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.178621Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamIsColor }
+2026-10-13T15:34:20.178636Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.178727Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamIsColor }
+2026-10-13T15:34:20.178750Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.179348Z  WARN handle_alpaca_request{path="/api/v1/camera/0/binx" client_id=123456 client_transaction_id=67890 server_transaction_id=135}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.181131Z  WARN handle_alpaca_request{path="/api/v1/camera/0/binx" client_id=123456 client_transaction_id=67890 server_transaction_id=140}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.181512Z  WARN handle_alpaca_request{path="/api/v1/camera/0/binx" client_transaction_id=67890 server_transaction_id=143}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.181599Z  WARN handle_alpaca_request{path="/api/v1/camera/0/binx" client_id=123456 server_transaction_id=144}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.182196Z  WARN handle_alpaca_request{path="/api/v1/camera/0/biny" client_id=123456 client_transaction_id=67890 server_transaction_id=146}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.183032Z  WARN handle_alpaca_request{path="/api/v1/camera/0/biny" client_id=123456 client_transaction_id=67890 server_transaction_id=151}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.183291Z  WARN handle_alpaca_request{path="/api/v1/camera/0/biny" client_transaction_id=67890 server_transaction_id=154}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.183381Z  WARN handle_alpaca_request{path="/api/v1/camera/0/biny" client_id=123456 server_transaction_id=155}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.183919Z  WARN handle_alpaca_request{path="/api/v1/camera/0/camerastate" client_id=123456 client_transaction_id=67890 server_transaction_id=157}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.184562Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cameraxsize" client_id=123456 client_transaction_id=67890 server_transaction_id=161}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.185149Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cameraysize" client_id=123456 client_transaction_id=67890 server_transaction_id=165}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.185767Z  WARN handle_alpaca_request{path="/api/v1/camera/0/canabortexposure" client_id=123456 client_transaction_id=67890 server_transaction_id=169}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.186371Z  WARN handle_alpaca_request{path="/api/v1/camera/0/canasymmetricbin" client_id=123456 client_transaction_id=67890 server_transaction_id=173}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.186961Z  WARN handle_alpaca_request{path="/api/v1/camera/0/canfastreadout" client_id=123456 client_transaction_id=67890 server_transaction_id=177}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.187599Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cangetcoolerpower" client_id=123456 client_transaction_id=67890 server_transaction_id=181}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.188384Z  WARN handle_alpaca_request{path="/api/v1/camera/0/canpulseguide" client_id=123456 client_transaction_id=67890 server_transaction_id=185}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.189010Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cansetccdtemperature" client_id=123456 client_transaction_id=67890 server_transaction_id=189}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.192236Z  WARN handle_alpaca_request{path="/api/v1/camera/0/canstopexposure" client_id=123456 client_transaction_id=67890 server_transaction_id=193}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.193033Z  WARN handle_alpaca_request{path="/api/v1/camera/0/ccdtemperature" client_id=123456 client_transaction_id=67890 server_transaction_id=197}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.194246Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cooleron" client_id=123456 client_transaction_id=67890 server_transaction_id=201}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.195487Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cooleron" client_id=123456 client_transaction_id=67890 server_transaction_id=206}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.196360Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cooleron" client_transaction_id=67890 server_transaction_id=209}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.196953Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cooleron" client_id=123456 server_transaction_id=210}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.198277Z  WARN handle_alpaca_request{path="/api/v1/camera/0/coolerpower" client_id=123456 client_transaction_id=67890 server_transaction_id=212}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.198999Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.199076Z  WARN handle_alpaca_request{path="/api/v1/camera/0/electronsperadu" client_id=123456 client_transaction_id=67890 server_transaction_id=216}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.199084Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.199155Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.199216Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.199672Z  WARN handle_alpaca_request{path="/api/v1/camera/0/exposuremax" client_id=123456 client_transaction_id=67890 server_transaction_id=220}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.200290Z  WARN handle_alpaca_request{path="/api/v1/camera/0/exposuremin" client_id=123456 client_transaction_id=67890 server_transaction_id=224}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.200865Z  WARN handle_alpaca_request{path="/api/v1/camera/0/exposureresolution" client_id=123456 client_transaction_id=67890 server_transaction_id=228}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.201378Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.201438Z  WARN handle_alpaca_request{path="/api/v1/camera/0/fastreadout" client_id=123456 client_transaction_id=67890 server_transaction_id=232}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.201445Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.201506Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.201563Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.202032Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.207943Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.208076Z  WARN handle_alpaca_request{path="/api/v1/camera/0/fastreadout" client_id=123456 client_transaction_id=67890 server_transaction_id=237}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.208087Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.208383Z  WARN handle_alpaca_request{path="/api/v1/camera/0/fastreadout" client_transaction_id=67890 server_transaction_id=240}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.208396Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.208498Z  WARN handle_alpaca_request{path="/api/v1/camera/0/fastreadout" client_id=123456 server_transaction_id=241}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.208507Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.209042Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.209118Z  WARN handle_alpaca_request{path="/api/v1/camera/0/fullwellcapacity" client_id=123456 client_transaction_id=67890 server_transaction_id=243}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.209126Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.209192Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.209265Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.209717Z  WARN handle_alpaca_request{path="/api/v1/camera/0/gain" client_id=123456 client_transaction_id=67890 server_transaction_id=247}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.210446Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/gain" client_id=123456 client_transaction_id=67890 server_transaction_id=251}: qhy_camera::camera: cached for the next exposure control="gain" value=30
+2026-10-13T15:34:20.210536Z  WARN handle_alpaca_request{path="/api/v1/camera/0/gain" client_id=123456 client_transaction_id=67890 server_transaction_id=252}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.210543Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/gain" client_id=123456 client_transaction_id=67890 server_transaction_id=252}: qhy_camera::camera: cached for the next exposure control="gain" value=30
+2026-10-13T15:34:20.210740Z  WARN handle_alpaca_request{path="/api/v1/camera/0/gain" client_transaction_id=67890 server_transaction_id=255}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.210749Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/gain" client_transaction_id=67890 server_transaction_id=255}: qhy_camera::camera: cached for the next exposure control="gain" value=30
+2026-10-13T15:34:20.210827Z  WARN handle_alpaca_request{path="/api/v1/camera/0/gain" client_id=123456 server_transaction_id=256}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.210834Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/gain" client_id=123456 server_transaction_id=256}: qhy_camera::camera: cached for the next exposure control="gain" value=30
+2026-10-13T15:34:20.211364Z  WARN handle_alpaca_request{path="/api/v1/camera/0/gainmax" client_id=123456 client_transaction_id=67890 server_transaction_id=258}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.211876Z  WARN handle_alpaca_request{path="/api/v1/camera/0/gainmin" client_id=123456 client_transaction_id=67890 server_transaction_id=262}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.212324Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.212380Z  WARN handle_alpaca_request{path="/api/v1/camera/0/gains" client_id=123456 client_transaction_id=67890 server_transaction_id=266}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.212386Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.212442Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.212499Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.212914Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamMechanicalShutter }
+2026-10-13T15:34:20.213016Z  WARN handle_alpaca_request{path="/api/v1/camera/0/hasshutter" client_id=123456 client_transaction_id=67890 server_transaction_id=270}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.213033Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamMechanicalShutter }
+2026-10-13T15:34:20.213161Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamMechanicalShutter }
+2026-10-13T15:34:20.213266Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamMechanicalShutter }
+2026-10-13T15:34:20.213731Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.213792Z  WARN handle_alpaca_request{path="/api/v1/camera/0/heatsinktemperature" client_id=123456 client_transaction_id=67890 server_transaction_id=274}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.213799Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.213864Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.213922Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.214395Z  WARN handle_alpaca_request{path="/api/v1/camera/0/imageready" client_id=123456 client_transaction_id=67890 server_transaction_id=278}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.214905Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.214966Z  WARN handle_alpaca_request{path="/api/v1/camera/0/ispulseguiding" client_id=123456 client_transaction_id=67890 server_transaction_id=282}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.214972Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.215033Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.215097Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.215522Z  WARN handle_alpaca_request{path="/api/v1/camera/0/maxadu" client_id=123456 client_transaction_id=67890 server_transaction_id=286}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.216017Z  WARN handle_alpaca_request{path="/api/v1/camera/0/maxbinx" client_id=123456 client_transaction_id=67890 server_transaction_id=290}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.217325Z  WARN handle_alpaca_request{path="/api/v1/camera/0/maxbiny" client_id=123456 client_transaction_id=67890 server_transaction_id=294}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.217962Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numx" client_id=123456 client_transaction_id=67890 server_transaction_id=298}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.226556Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numx" client_id=123456 client_transaction_id=67890 server_transaction_id=304}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.226813Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numx" client_transaction_id=67890 server_transaction_id=307}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.226897Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numx" client_id=123456 server_transaction_id=308}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.227472Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numy" client_id=123456 client_transaction_id=67890 server_transaction_id=310}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.228285Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numy" client_id=123456 client_transaction_id=67890 server_transaction_id=316}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.228463Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numy" client_transaction_id=67890 server_transaction_id=319}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.228531Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numy" client_id=123456 server_transaction_id=320}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.229041Z  WARN handle_alpaca_request{path="/api/v1/camera/0/offset" client_id=123456 client_transaction_id=67890 server_transaction_id=322}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.229763Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/offset" client_id=123456 client_transaction_id=67890 server_transaction_id=326}: qhy_camera::camera: cached for the next exposure control="offset" value=0
+2026-10-13T15:34:20.229858Z  WARN handle_alpaca_request{path="/api/v1/camera/0/offset" client_id=123456 client_transaction_id=67890 server_transaction_id=327}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.229865Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/offset" client_id=123456 client_transaction_id=67890 server_transaction_id=327}: qhy_camera::camera: cached for the next exposure control="offset" value=0
+2026-10-13T15:34:20.230073Z  WARN handle_alpaca_request{path="/api/v1/camera/0/offset" client_transaction_id=67890 server_transaction_id=330}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.230081Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/offset" client_transaction_id=67890 server_transaction_id=330}: qhy_camera::camera: cached for the next exposure control="offset" value=0
+2026-10-13T15:34:20.230159Z  WARN handle_alpaca_request{path="/api/v1/camera/0/offset" client_id=123456 server_transaction_id=331}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.230166Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/offset" client_id=123456 server_transaction_id=331}: qhy_camera::camera: cached for the next exposure control="offset" value=0
+2026-10-13T15:34:20.230678Z  WARN handle_alpaca_request{path="/api/v1/camera/0/offsetmax" client_id=123456 client_transaction_id=67890 server_transaction_id=333}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.231314Z  WARN handle_alpaca_request{path="/api/v1/camera/0/offsetmin" client_id=123456 client_transaction_id=67890 server_transaction_id=337}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.231785Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.231839Z  WARN handle_alpaca_request{path="/api/v1/camera/0/offsets" client_id=123456 client_transaction_id=67890 server_transaction_id=341}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.231845Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.231897Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.231952Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.232355Z  WARN handle_alpaca_request{path="/api/v1/camera/0/percentcompleted" client_id=123456 client_transaction_id=67890 server_transaction_id=345}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.232847Z  WARN handle_alpaca_request{path="/api/v1/camera/0/pixelsizex" client_id=123456 client_transaction_id=67890 server_transaction_id=349}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.233346Z  WARN handle_alpaca_request{path="/api/v1/camera/0/pixelsizey" client_id=123456 client_transaction_id=67890 server_transaction_id=353}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.233842Z  WARN handle_alpaca_request{path="/api/v1/camera/0/readoutmode" client_id=123456 client_transaction_id=67890 server_transaction_id=357}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.234630Z  WARN handle_alpaca_request{path="/api/v1/camera/0/readoutmode" client_id=123456 client_transaction_id=67890 server_transaction_id=362}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.234922Z  WARN handle_alpaca_request{path="/api/v1/camera/0/readoutmode" client_transaction_id=67890 server_transaction_id=365}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.235051Z  WARN handle_alpaca_request{path="/api/v1/camera/0/readoutmode" client_id=123456 server_transaction_id=366}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.235699Z  WARN handle_alpaca_request{path="/api/v1/camera/0/readoutmodes" client_id=123456 client_transaction_id=67890 server_transaction_id=368}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.236306Z  WARN handle_alpaca_request{path="/api/v1/camera/0/sensorname" client_id=123456 client_transaction_id=67890 server_transaction_id=372}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.236807Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamIsColor }
+2026-10-13T15:34:20.236908Z  WARN handle_alpaca_request{path="/api/v1/camera/0/sensortype" client_id=123456 client_transaction_id=67890 server_transaction_id=376}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.236924Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamIsColor }
+2026-10-13T15:34:20.237032Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamIsColor }
+2026-10-13T15:34:20.237134Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamIsColor }
+2026-10-13T15:34:20.237797Z  WARN handle_alpaca_request{path="/api/v1/camera/0/setccdtemperature" client_id=123456 client_transaction_id=67890 server_transaction_id=380}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.247978Z  WARN handle_alpaca_request{path="/api/v1/camera/0/setccdtemperature" client_id=123456 client_transaction_id=67890 server_transaction_id=385}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.248402Z  WARN handle_alpaca_request{path="/api/v1/camera/0/setccdtemperature" client_transaction_id=67890 server_transaction_id=388}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.248595Z  WARN handle_alpaca_request{path="/api/v1/camera/0/setccdtemperature" client_id=123456 server_transaction_id=389}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.249202Z  WARN handle_alpaca_request{path="/api/v1/camera/0/startx" client_id=123456 client_transaction_id=67890 server_transaction_id=391}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.250033Z  WARN handle_alpaca_request{path="/api/v1/camera/0/startx" client_id=123456 client_transaction_id=67890 server_transaction_id=396}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.250279Z  WARN handle_alpaca_request{path="/api/v1/camera/0/startx" client_transaction_id=67890 server_transaction_id=399}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.250359Z  WARN handle_alpaca_request{path="/api/v1/camera/0/startx" client_id=123456 server_transaction_id=400}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.251698Z  WARN handle_alpaca_request{path="/api/v1/camera/0/starty" client_id=123456 client_transaction_id=67890 server_transaction_id=402}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.252464Z  WARN handle_alpaca_request{path="/api/v1/camera/0/starty" client_id=123456 client_transaction_id=67890 server_transaction_id=407}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.252649Z  WARN handle_alpaca_request{path="/api/v1/camera/0/starty" client_transaction_id=67890 server_transaction_id=410}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.252722Z  WARN handle_alpaca_request{path="/api/v1/camera/0/starty" client_id=123456 server_transaction_id=411}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.253145Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.253204Z  WARN handle_alpaca_request{path="/api/v1/camera/0/subexposureduration" client_id=123456 client_transaction_id=67890 server_transaction_id=413}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.253210Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.253266Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.253319Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.253766Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.253998Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.254107Z  WARN handle_alpaca_request{path="/api/v1/camera/0/subexposureduration" client_id=123456 client_transaction_id=67890 server_transaction_id=418}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.254117Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.254324Z  WARN handle_alpaca_request{path="/api/v1/camera/0/subexposureduration" client_transaction_id=67890 server_transaction_id=421}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.254331Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.254399Z  WARN handle_alpaca_request{path="/api/v1/camera/0/subexposureduration" client_id=123456 server_transaction_id=422}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.254405Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.254936Z  WARN handle_alpaca_request{path="/api/v1/camera/0/abortexposure" client_id=123456 client_transaction_id=67890 server_transaction_id=424}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.255064Z  WARN handle_alpaca_request{path="/api/v1/camera/0/abortexposure" client_transaction_id=67890 server_transaction_id=425}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.255173Z  WARN handle_alpaca_request{path="/api/v1/camera/0/abortexposure" client_id=123456 server_transaction_id=426}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.256533Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.256652Z  WARN handle_alpaca_request{path="/api/v1/camera/0/pulseguide" client_id=123456 client_transaction_id=67890 server_transaction_id=428}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.256659Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.256962Z  WARN handle_alpaca_request{path="/api/v1/camera/0/pulseguide" client_transaction_id=67890 server_transaction_id=433}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.256969Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.257036Z  WARN handle_alpaca_request{path="/api/v1/camera/0/pulseguide" client_id=123456 server_transaction_id=434}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.257046Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.257563Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.264597Z  WARN handle_alpaca_request{path="/api/v1/camera/0/startexposure" client_id=123456 client_transaction_id=67890 server_transaction_id=437}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.264609Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.265328Z  WARN handle_alpaca_request{path="/api/v1/camera/0/startexposure" client_transaction_id=67890 server_transaction_id=445}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.265337Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.265496Z  WARN handle_alpaca_request{path="/api/v1/camera/0/startexposure" client_id=123456 server_transaction_id=447}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.265504Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.266159Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.266570Z  WARN handle_alpaca_request{path="/api/v1/camera/0/stopexposure" client_id=123456 client_transaction_id=67890 server_transaction_id=453}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.266579Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.266929Z  WARN handle_alpaca_request{path="/api/v1/camera/0/stopexposure" client_transaction_id=67890 server_transaction_id=456}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:20.266939Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.267278Z  WARN handle_alpaca_request{path="/api/v1/camera/0/stopexposure" client_id=123456 server_transaction_id=459}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:20.267286Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:20.270991Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error VALUE_NOT_SET: A value has not been set.
+2026-10-13T15:34:20.271097Z  WARN handle_alpaca_request{path="/api/v1/camera/0/lastexposureduration" client_id=123456 client_transaction_id=67890 server_transaction_id=473}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.271106Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error VALUE_NOT_SET: A value has not been set.
+2026-10-13T15:34:20.271200Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error VALUE_NOT_SET: A value has not been set.
+2026-10-13T15:34:20.271283Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error VALUE_NOT_SET: A value has not been set.
+2026-10-13T15:34:20.271703Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error VALUE_NOT_SET: A value has not been set.
+2026-10-13T15:34:20.271798Z  WARN handle_alpaca_request{path="/api/v1/camera/0/lastexposurestarttime" client_id=123456 client_transaction_id=67890 server_transaction_id=477}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:20.271806Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error VALUE_NOT_SET: A value has not been set.
+2026-10-13T15:34:20.271890Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error VALUE_NOT_SET: A value has not been set.
+2026-10-13T15:34:20.271968Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error VALUE_NOT_SET: A value has not been set.
+2026-10-13T15:34:20.958296Z DEBUG qhy_camera::camera: camera disconnected camera=QHY178M-222b16468c5966524
+2026-10-13T15:34:22.505072Z DEBUG qhy_camera::camera: sensor geometry image_width_px=3056 image_height_px=2048 bits_per_pixel=16 effective_x_px=0 effective_y_px=0 effective_width_px=3056 effective_height_px=2048
+2026-10-13T15:34:22.505094Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin3x3mode }
+2026-10-13T15:34:22.505098Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin4x4mode }
+2026-10-13T15:34:22.505100Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin6x6mode }
+2026-10-13T15:34:22.505102Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin8x8mode }
+2026-10-13T15:34:22.505128Z DEBUG qhy_camera::camera: cached control range and armed value control="gain" min=0 max=51 value=Some(30)
+2026-10-13T15:34:22.505134Z DEBUG qhy_camera::camera: cached control range and armed value control="offset" min=0 max=1023 value=Some(0)
+2026-10-13T15:34:22.505139Z DEBUG qhy_camera::camera: camera connected camera=QHY178M-222b16468c5966524
+2026-10-13T15:34:23.488216Z DEBUG qhy_camera::camera: camera disconnected camera=QHY178M-222b16468c5966524
+2026-10-13T15:34:23.792406Z DEBUG qhy_camera::camera: sensor geometry image_width_px=3056 image_height_px=2048 bits_per_pixel=16 effective_x_px=0 effective_y_px=0 effective_width_px=3056 effective_height_px=2048
+2026-10-13T15:34:23.792430Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin3x3mode }
+2026-10-13T15:34:23.792435Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin4x4mode }
+2026-10-13T15:34:23.792446Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin6x6mode }
+2026-10-13T15:34:23.792448Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin8x8mode }
+2026-10-13T15:34:23.792475Z DEBUG qhy_camera::camera: cached control range and armed value control="gain" min=0 max=51 value=Some(30)
+2026-10-13T15:34:23.792480Z DEBUG qhy_camera::camera: cached control range and armed value control="offset" min=0 max=1023 value=Some(0)
+2026-10-13T15:34:23.792486Z DEBUG qhy_camera::camera: camera connected camera=QHY178M-222b16468c5966524
+2026-10-13T15:34:24.029449Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error VALUE_NOT_SET: A value has not been set.
+2026-10-13T15:34:24.035212Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error VALUE_NOT_SET: A value has not been set.
+2026-10-13T15:34:24.041281Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: bin 0 is not a supported binning mode
+2026-10-13T15:34:24.041706Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: bin 3 is not a supported binning mode
+2026-10-13T15:34:24.042050Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: bin 0 is not a supported binning mode
+2026-10-13T15:34:24.042336Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: bin 3 is not a supported binning mode
+2026-10-13T15:34:24.062895Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:24.065255Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:24.065681Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamMechanicalShutter }
+2026-10-13T15:34:24.066023Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:24.078186Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:24.106340Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: target temperature -273.25 outside [-273.15, 80]
+2026-10-13T15:34:24.113015Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: target temperature 85 outside [-273.15, 80]
+2026-10-13T15:34:24.130041Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamIsColor }
+2026-10-13T15:34:24.130646Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamIsColor }
+2026-10-13T15:34:24.130679Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:24.131112Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamIsColor }
+2026-10-13T15:34:24.131144Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:24.132305Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:24.132611Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:24.133665Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:24.134468Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/gain" client_id=1 client_transaction_id=161 server_transaction_id=648}: qhy_camera::camera: cached for the next exposure control="gain" value=0
+2026-10-13T15:34:24.134662Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/gain" client_id=1 client_transaction_id=162 server_transaction_id=649}: qhy_camera::camera: cached for the next exposure control="gain" value=51
+2026-10-13T15:34:24.134821Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: gain -1 outside [0, 51]
+2026-10-13T15:34:24.135266Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: gain 52 outside [0, 51]
+2026-10-13T15:34:24.137903Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:24.138490Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/offset" client_id=1 client_transaction_id=173 server_transaction_id=660}: qhy_camera::camera: cached for the next exposure control="offset" value=0
+2026-10-13T15:34:24.138671Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/offset" client_id=1 client_transaction_id=174 server_transaction_id=661}: qhy_camera::camera: cached for the next exposure control="offset" value=1023
+2026-10-13T15:34:24.138823Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: offset -1 outside [0, 1023]
+2026-10-13T15:34:24.139005Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: offset 1024 outside [0, 1023]
+2026-10-13T15:34:24.139253Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:24.139583Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:24.142211Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:24.142606Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:24.153489Z DEBUG qhy_camera::camera: ROI armed roi=CCDChipArea { start_x: 0, start_y: 0, width: 3056, height: 2048 }
+2026-10-13T15:34:24.172110Z DEBUG qhy_camera::camera: gain and offset armed gain=Some(51) offset=Some(1023)
+2026-10-13T15:34:28.171991Z DEBUG qhy_camera::camera: frame read width=3056 height=2048 bits_per_pixel=16 channels=1 buffer_bytes=27116352
+2026-10-13T15:34:29.129304Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:29.140047Z DEBUG qhy_camera::camera: ROI armed roi=CCDChipArea { start_x: 0, start_y: 0, width: 1528, height: 1024 }
+2026-10-13T15:34:29.158643Z DEBUG qhy_camera::camera: gain and offset armed gain=Some(51) offset=Some(1023)
+2026-10-13T15:34:33.153587Z DEBUG qhy_camera::camera: frame read width=1528 height=1024 bits_per_pixel=16 channels=1 buffer_bytes=27116352
+2026-10-13T15:34:33.837153Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-13T15:34:33.841135Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: Parameter "Duration": cannot convert float seconds to Duration: value is negative
+2026-10-13T15:34:33.842682Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: NumX must be a multiple of 2 and NumY a multiple of 2
+2026-10-13T15:34:33.843928Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: NumX must be a multiple of 2 and NumY a multiple of 2
+2026-10-13T15:34:33.844879Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: StartX + NumX exceeds CameraXSize / BinX
+2026-10-13T15:34:33.845835Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: StartY + NumY exceeds CameraYSize / BinY
+2026-10-13T15:34:33.846852Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: NumX must be a multiple of 2 and NumY a multiple of 2
+2026-10-13T15:34:33.847912Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: NumX must be a multiple of 2 and NumY a multiple of 2
+2026-10-13T15:34:33.848892Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: StartX + NumX exceeds CameraXSize / BinX
+2026-10-13T15:34:33.849943Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: StartY + NumY exceeds CameraYSize / BinY
+2026-10-13T15:34:34.776760Z DEBUG qhy_camera::camera: camera disconnected camera=QHY178M-222b16468c5966524
+2026-10-13T15:34:36.079451Z DEBUG qhy_camera::filterwheel: filter wheel connected filter_wheel=CFW-QHY178M-222b16468c5966524 slots=7
+2026-10-13T15:34:37.212489Z DEBUG qhy_camera::filterwheel: filter wheel connected filter_wheel=CFW-QHY178M-222b16468c5966524 slots=7
+2026-10-13T15:34:37.225911Z  WARN handle_alpaca_request{path="/api/v1/filterwheel/0/connected" client_id=123456 client_transaction_id=67890 server_transaction_id=872}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:37.228508Z  WARN handle_alpaca_request{path="/api/v1/filterwheel/0/description" client_id=123456 client_transaction_id=67890 server_transaction_id=879}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:37.229627Z  WARN handle_alpaca_request{path="/api/v1/filterwheel/0/driverinfo" client_id=123456 client_transaction_id=67890 server_transaction_id=883}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:37.230683Z  WARN handle_alpaca_request{path="/api/v1/filterwheel/0/driverversion" client_id=123456 client_transaction_id=67890 server_transaction_id=887}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:37.231736Z  WARN handle_alpaca_request{path="/api/v1/filterwheel/0/interfaceversion" client_id=123456 client_transaction_id=67890 server_transaction_id=891}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:37.232794Z  WARN handle_alpaca_request{path="/api/v1/filterwheel/0/name" client_id=123456 client_transaction_id=67890 server_transaction_id=895}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:37.236572Z  WARN handle_alpaca_request{path="/api/v1/filterwheel/0/supportedactions" client_id=123456 client_transaction_id=67890 server_transaction_id=899}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:37.244442Z  WARN handle_alpaca_request{path="/api/v1/filterwheel/0/devicestate" client_id=123456 client_transaction_id=67890 server_transaction_id=904}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:38.787136Z DEBUG qhy_camera::filterwheel: filter wheel connected filter_wheel=CFW-QHY178M-222b16468c5966524 slots=7
+2026-10-13T15:34:39.277615Z  WARN handle_alpaca_request{path="/api/v1/filterwheel/0/focusoffsets" client_id=123456 client_transaction_id=67890 server_transaction_id=929}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:39.278452Z  WARN handle_alpaca_request{path="/api/v1/filterwheel/0/names" client_id=123456 client_transaction_id=67890 server_transaction_id=933}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:39.279128Z  WARN handle_alpaca_request{path="/api/v1/filterwheel/0/position" client_id=123456 client_transaction_id=67890 server_transaction_id=937}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:39.281862Z  WARN handle_alpaca_request{path="/api/v1/filterwheel/0/position" client_id=123456 client_transaction_id=67890 server_transaction_id=943}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-13T15:34:39.282725Z  WARN handle_alpaca_request{path="/api/v1/filterwheel/0/position" client_transaction_id=67890 server_transaction_id=948}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-13T15:34:39.283030Z  WARN handle_alpaca_request{path="/api/v1/filterwheel/0/position" client_id=123456 server_transaction_id=950}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-13T15:34:41.640285Z DEBUG qhy_camera::filterwheel: filter wheel connected filter_wheel=CFW-QHY178M-222b16468c5966524 slots=7
+2026-10-13T15:34:43.260648Z DEBUG qhy_camera::filterwheel: filter wheel connected filter_wheel=CFW-QHY178M-222b16468c5966524 slots=7
+2026-10-13T15:34:46.280700Z DEBUG qhy_camera::filterwheel: sending the wheel to the slot it stands on first, so its status cannot name the move's own slot in transit slot=0
+2026-10-13T15:34:46.783154Z DEBUG qhy_camera::filterwheel: the wheel's status was just read; resting before the move rest=249.993841ms slot=1
+2026-10-13T15:35:40.772560Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: Parameter "Position": invalid value: integer `-1`, expected usize
+2026-10-13T15:35:40.779169Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: filter position 7 out of range (0..7)
+2026-10-13T15:36:02.207241Z  INFO rusty_photon_service_lifecycle::runner: qhy-camera: shutdown signal received, terminating
+2026-10-13T15:36:02.207496Z DEBUG qhy_camera: qhy-camera shut down

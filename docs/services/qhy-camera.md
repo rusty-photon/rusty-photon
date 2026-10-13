@@ -1302,10 +1302,22 @@ which a list replaces with the declaration.
   SDK dropped while the next server's lives would release it under that
   server's cameras. `qhyccd-rs` therefore makes one `Sdk` at a time in a
   process: `Sdk::new` waits while another lives, and `Sdk::try_new` answers
-  `SdkInUse` instead. A server's build makes its `Sdk` with `new` and keeps it
-  as long as it serves, and a try makes its own with `try_new`. A try refused
-  is one whose server is gone, since a failed scan's server holds no SDK; a
-  build that has to wait logs it at `warn!` and waits out one enumeration.
+  `SdkInUse` instead. A server's build tries `try_new` first; only when a
+  re-scan's try holds the SDK does it log that at `warn!` and wait in `new`
+  for that try's SDK check to finish, then run its own. It keeps its `Sdk` as
+  long as it serves. A try makes its own with `try_new`, and is refused while
+  another `Sdk` lives. When that is a serving server's, the try's own server
+  is gone, since a failed scan's server holds no SDK. When it is another try's,
+  one that outlived its server, the refused try's server may be serving: two
+  failed scans' servers in a row each re-scan. That re-scan logs the SDK that
+  blocks it, as above, and tries again after its next wait.
+  On a QHY178M + CFW at C4's merge, four reloads, one of them with the camera
+  and wheel connected, each saw the old server's `Sdk` drop return within
+  0.91 s with no error logged, and the next build open the SDK again and serve
+  the camera
+  ([record](../validation/2026-10-13-qhy-camera-qhy178m-cfw-linux-sdk-gate/README.md)).
+  None of them could meet the wait, which needs a re-scan's try alive when a
+  build starts.
 - **U7. A simulation build stages its scan.** The `qhyccd-rs` simulation
   fabricates a camera no host scan can see, so a `simulation` build never scans
   the host: its scan is a staged inventory (`rusty-photon-doctor-checks`' `mock`
