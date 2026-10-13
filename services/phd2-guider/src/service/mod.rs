@@ -191,6 +191,13 @@ async fn bind_camera(
                  start with camera.enabled, so start the service with its config file",
             )
         })?;
+    // PHD2 takes the frame's path as a JSON string.
+    if image_dir.to_str().is_none() {
+        return Err(std::io::Error::other(format!(
+            "camera.image_dir {} is not valid UTF-8",
+            image_dir.display()
+        )));
+    }
     capture::check_image_dir(&image_dir).map_err(std::io::Error::other)?;
 
     let engine = Arc::new(CaptureEngine::new(
@@ -231,9 +238,11 @@ async fn bind_camera(
         }
         None => router,
     };
-    let listener = TcpListener::bind(addr).await.map_err(|e| {
-        std::io::Error::new(e.kind(), format!("camera facade cannot bind {addr}: {e}"))
-    })?;
+    // The bind every other Alpaca listener uses (SO_REUSEADDR on Unix, so
+    // a restart rebinds at once).
+    let listener = rusty_photon_tls::server::bind_dual_stack_tokio(addr)
+        .await
+        .map_err(|e| std::io::Error::other(format!("camera facade cannot bind {addr}: {e}")))?;
     let local_addr = listener.local_addr()?;
     Ok(BoundCamera {
         listener,
@@ -343,5 +352,94 @@ async fn serve(
                 .with_graceful_shutdown(shutdown)
                 .await
         }
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    /// A config serving both listeners on OS-picked loopback ports, with
+    /// the facade enabled on `image_dir`.
+    fn camera_config(image_dir: &std::path::Path, unique_id: Option<&str>) -> Config {
+        let mut camera = serde_json::json!({
+            "enabled": true,
+            "pixel_size_x_um": 2.9,
+            "pixel_size_y_um": 2.9,
+            "image_dir": image_dir,
+            "server": { "port": 0 }
+        });
+        if let Some(id) = unique_id {
+            camera["unique_id"] = id.into();
+        }
+        serde_json::from_value(serde_json::json!({
+            "server": { "port": 0, "bind_address": "127.0.0.1" },
+            "camera": camera,
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_enabled_facade_binds_its_own_loopback_listener() {
+        let dir = tempfile::tempdir().unwrap();
+        let bound = ServerBuilder::new()
+            .with_config(camera_config(dir.path(), Some("facade-test")))
+            .with_config_path(dir.path().join("phd2-guider.json"))
+            .build()
+            .await
+            .unwrap();
+        let camera = bound.camera_addr().expect("the facade is bound");
+        assert!(camera.ip().is_loopback(), "{camera}");
+        assert_ne!(camera.port(), bound.listen_addr().port());
+    }
+
+    #[tokio::test]
+    async fn a_disabled_facade_binds_nothing_more() {
+        let config: Config =
+            serde_json::from_value(serde_json::json!({ "server": { "port": 0 } })).unwrap();
+        let bound = ServerBuilder::new()
+            .with_config(config)
+            .build()
+            .await
+            .unwrap();
+        assert!(bound.camera_addr().is_none());
+    }
+
+    #[tokio::test]
+    async fn an_enabled_facade_without_a_unique_id_fails_the_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = ServerBuilder::new()
+            .with_config(camera_config(dir.path(), None))
+            .build()
+            .await
+            .err()
+            .expect("the build succeeded without a unique_id");
+        assert!(err.to_string().contains("camera.unique_id"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_enabled_facade_on_a_missing_image_dir_fails_the_build() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = ServerBuilder::new()
+            .with_config(camera_config(
+                &dir.path().join("missing"),
+                Some("facade-test"),
+            ))
+            .build()
+            .await
+            .err()
+            .expect("the build succeeded on a missing image_dir");
+        assert!(err.to_string().contains("camera.image_dir"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_build_without_a_config_fails() {
+        let err = ServerBuilder::default()
+            .build()
+            .await
+            .err()
+            .expect("the build succeeded without a config");
+        assert!(err.to_string().contains("config is required"), "{err}");
     }
 }

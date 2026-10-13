@@ -369,7 +369,7 @@ impl GuiderOps {
     /// it are already in the window, so the snapshot a guide response
     /// carries can never under-report the steps PHD2 sent before it
     /// settled.
-    fn ingest(&self, event: Phd2Event) {
+    pub(crate) fn ingest(&self, event: Phd2Event) {
         match event {
             Phd2Event::GuideStep(step) => {
                 {

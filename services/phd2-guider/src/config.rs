@@ -50,14 +50,15 @@ impl Default for Config {
 /// `docs/services/phd2-guider.md` § "Camera facade".
 ///
 /// Each field's own range is enforced by its type when the file is
-/// parsed. The rules that span fields — what `enabled` requires, and
-/// that PHD2 is local — are [`camera_rule_violations`], which
+/// parsed, whether or not `enabled` is true: a field that is present
+/// must be valid. The rules that span fields — what `enabled` requires,
+/// and that PHD2 is local — are [`camera_rule_violations`], which
 /// [`load_config`] and `config.apply` both run.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CameraConfig {
     /// Serve the facade. With `false` it does not exist, and the other
-    /// fields are not required.
+    /// fields are not required (one that is present is still checked).
     #[serde(default)]
     pub enabled: bool,
     /// The device's ASCOM `UniqueID`, minted into the file on the first
@@ -491,6 +492,98 @@ pub fn load_config(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    fn enabled(extra: &str) -> Config {
+        serde_json::from_str(&format!(
+            r#"{{"camera": {{"enabled": true, "pixel_size_x_um": 2.9, "pixel_size_y_um": 2.9, "image_dir": "/var/lib/rusty-photon/phd2-images"{extra}}}}}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_default_camera_block_is_left_out_of_the_file() {
+        assert!(CameraConfig::default().is_unset());
+        let persisted = serde_json::to_value(Config::default()).unwrap();
+        assert!(persisted.get("camera").is_none(), "{persisted}");
+        assert!(!enabled("").camera.is_unset());
+    }
+
+    #[test]
+    fn an_enabled_camera_with_its_fields_and_a_local_phd2_is_valid() {
+        assert_eq!(camera_rule_violations(&enabled("")), Vec::new());
+        let mut config = enabled("");
+        for host in ["localhost", "127.0.0.1", "::1", "[::1]"] {
+            config.phd2.host = host.to_string();
+            assert_eq!(camera_rule_violations(&config), Vec::new(), "{host}");
+        }
+    }
+
+    #[test]
+    fn an_enabled_camera_needs_a_local_phd2() {
+        let mut config = enabled("");
+        config.phd2.host = "192.0.2.10".to_string();
+        let violations = camera_rule_violations(&config);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert_eq!(violations[0].0, "phd2.host");
+    }
+
+    #[test]
+    fn an_enabled_camera_needs_an_absolute_image_dir() {
+        let mut config = enabled("");
+        config.camera.image_dir = Some(PathBuf::from("phd2-images"));
+        let violations = camera_rule_violations(&config);
+        assert_eq!(violations.len(), 1, "{violations:?}");
+        assert_eq!(violations[0].0, "camera.image_dir");
+        assert!(violations[0].1.contains("absolute"), "{violations:?}");
+    }
+
+    #[test]
+    fn a_camera_field_out_of_range_fails_the_parse_naming_it() {
+        let cases = [
+            (r#", "capture_grace": "0s""#, "camera.capture_grace"),
+            (r#", "capture_grace": "61s""#, "camera.capture_grace"),
+            (r#", "capture_grace": "soon""#, "camera.capture_grace"),
+            (r#", "server": {"bind_address": "0.0.0.0"}"#, "loopback"),
+        ];
+        for (extra, needle) in cases {
+            let json = format!(
+                r#"{{"camera": {{"enabled": true, "pixel_size_x_um": 2.9, "pixel_size_y_um": 2.9, "image_dir": "/d"{extra}}}}}"#
+            );
+            let err = serde_json::from_str::<Config>(&json).unwrap_err();
+            assert!(err.to_string().contains(needle), "{extra}: {err}");
+        }
+        let err =
+            serde_json::from_str::<Config>(r#"{"camera": {"pixel_size_y_um": -1.0}}"#).unwrap_err();
+        assert!(err.to_string().contains("camera.pixel_size_y_um"), "{err}");
+    }
+
+    #[test]
+    fn the_capture_grace_round_trips_as_humantime() {
+        let config = enabled(r#", "capture_grace": "1m""#);
+        assert_eq!(
+            config.camera.capture_grace.duration(),
+            Duration::from_mins(1)
+        );
+        let persisted = serde_json::to_value(&config).unwrap();
+        assert_eq!(persisted["camera"]["capture_grace"], "1m");
+    }
+
+    #[test]
+    fn the_camera_listener_defaults_to_loopback_11128() {
+        let server = CameraServerConfig::default();
+        assert_eq!(server.socket_addr().to_string(), "127.0.0.1:11128");
+    }
+
+    #[test]
+    fn a_broken_camera_block_fails_the_load_naming_each_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("phd2-guider.json");
+        std::fs::write(&path, r#"{"camera": {"enabled": true}}"#).unwrap();
+        let err = load_config(&path).unwrap_err().to_string();
+        assert!(err.contains("camera.pixel_size_x_um is required"), "{err}");
+        assert!(err.contains("camera.pixel_size_y_um is required"), "{err}");
+        assert!(err.contains("camera.image_dir is required"), "{err}");
+    }
 
     #[test]
     fn default_scaffold_round_trips_through_load() {

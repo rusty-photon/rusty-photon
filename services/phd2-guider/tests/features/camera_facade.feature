@@ -131,12 +131,12 @@ Feature: Camera facade — PHD2's guide frames as an ASCOM Alpaca Camera
     And the facade image should not be ready
     And image_dir should hold no phd2-guider file
 
-  Scenario: An orphaned facade file is swept before a capture, and other files are left alone
+  Scenario: An orphaned facade file is swept as a capture starts, and other files are left alone
     Given a mock PHD2 2.6.14 with an 8 x 6 camera
-    And image_dir holds a file named "phd2-guider-0123456789abcdef0123456789abcdef.fits"
-    And image_dir holds a file named "save_image_abc123"
     And the guider service is running with the camera facade enabled
     And the facade camera is connected
+    And image_dir holds a file named "phd2-guider-0123456789abcdef0123456789abcdef.fits"
+    And image_dir holds a file named "save_image_abc123"
     When the client starts a 0.1 s light exposure
     Then the facade image should become ready within 10 s
     And image_dir should hold no phd2-guider file

@@ -123,19 +123,30 @@ fn image_dir_holds(world: &mut GuiderWorld, name: String) {
     std::fs::write(&path, b"left behind").expect("stage file in image_dir");
 }
 
-#[given(expr = "image_dir holds a capture marker whose deadline is {int} s away")]
-fn image_dir_holds_marker(world: &mut GuiderWorld, seconds: u64) {
+/// Stage the restart marker a crashed facade leaves, its deadline at
+/// `deadline`.
+fn stage_marker(world: &mut GuiderWorld, deadline: SystemTime) {
     let dir = world.image_dir();
-    let deadline = SystemTime::now() + Duration::from_secs(seconds);
+    let frame = dir.join("phd2-guider-00000000000000000000000000000001.fits");
     let marker = serde_json::json!({
-        "path": dir.join("phd2-guider-00000000000000000000000000000001.fits"),
+        "path": frame,
         "deadline_unix_ms": u64::try_from(
             deadline.duration_since(UNIX_EPOCH).unwrap().as_millis()
         ).unwrap(),
     });
     std::fs::write(dir.join("phd2-guider-capture.json"), marker.to_string())
         .expect("stage capture marker");
-    world.marker_deadline = Some(deadline);
+    world.marker_frame = Some(frame);
+}
+
+#[given(expr = "image_dir holds a capture marker whose deadline is {int} s away")]
+fn image_dir_holds_marker(world: &mut GuiderWorld, seconds: u64) {
+    stage_marker(world, SystemTime::now() + Duration::from_secs(seconds));
+}
+
+#[given(expr = "image_dir holds a capture marker whose deadline passed {int} s ago")]
+fn image_dir_holds_stale_marker(world: &mut GuiderWorld, seconds: u64) {
+    stage_marker(world, SystemTime::now() - Duration::from_secs(seconds));
 }
 
 #[given(regex = r"^this service's config with the camera block (\{.*\}) staged for doctor$")]
@@ -260,19 +271,22 @@ async fn when_image_ready(world: &mut GuiderWorld, seconds: u64) {
     image_becomes_ready(world, seconds).await;
 }
 
-#[when("the capture marker's deadline has passed")]
-async fn marker_deadline_passed(world: &mut GuiderWorld) {
-    let deadline = world.marker_deadline.expect("no capture marker staged");
-    if let Ok(left) = deadline.duration_since(SystemTime::now()) {
-        tokio::time::sleep(left).await;
-    }
-    // The service looks for the marker's end every 500 ms.
+#[when("the capture marker's frame file lands")]
+async fn marker_frame_lands(world: &mut GuiderWorld) {
+    let frame = world
+        .marker_frame
+        .clone()
+        .expect("no capture marker staged");
+    std::fs::write(&frame, b"PHD2's late frame").expect("land the marker's frame");
+    // The service looks for the frame every 500 ms. It removes the
+    // marker and releases the slot together, under the guiding lock, so
+    // a request sent once the marker is gone finds the slot released.
     let marker = world.image_dir().join("phd2-guider-capture.json");
-    let give_up = tokio::time::Instant::now() + Duration::from_secs(5);
+    let give_up = tokio::time::Instant::now() + Duration::from_secs(10);
     while marker.exists() {
         assert!(
             tokio::time::Instant::now() < give_up,
-            "the capture marker was not released after its deadline"
+            "the capture marker was not removed after its frame landed"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }

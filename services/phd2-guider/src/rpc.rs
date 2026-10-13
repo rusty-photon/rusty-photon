@@ -150,6 +150,14 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_member_is_skipped() {
+        let json = r#"{"jsonrpc":"2.0","result":0,"extra":{"nested":[1,2]},"id":9}"#;
+        let response: RpcResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(response.id, 9);
+        assert_eq!(response.result, Some(serde_json::json!(0)));
+    }
+
+    #[test]
     fn an_event_line_is_not_a_reply() {
         let json = r#"{"Event":"AppState","State":"Stopped"}"#;
         let err = serde_json::from_str::<RpcResponse>(json).unwrap_err();

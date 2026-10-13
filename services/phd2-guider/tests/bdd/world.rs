@@ -50,8 +50,8 @@ pub struct GuiderWorld {
     /// `(error number, message)`.
     pub last_ascom_error: Option<(u16, String)>,
 
-    /// The deadline a staged capture marker carries.
-    pub marker_deadline: Option<std::time::SystemTime>,
+    /// The frame a staged capture marker names.
+    pub marker_frame: Option<PathBuf>,
 
     /// The most recent `config.schema` / `config.apply` answer.
     pub config_action_reply: Option<serde_json::Value>,

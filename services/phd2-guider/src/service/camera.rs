@@ -24,14 +24,14 @@ use crate::client::Phd2Client;
 use crate::config_actions::Phd2GuiderDriver;
 use crate::error::Phd2Error;
 
-use super::capture::{CaptureEngine, Frame, FrameEnd, StartError, ABORT_WAIT};
+use super::capture::{CaptureEngine, Frame, FrameEnd, StartError, ABORT_WAIT, MAX_EXPOSURE};
 
 /// 0x500: ASCOM's driver-specific catch-all.
 const UNSPECIFIED_ERROR: ASCOMErrorCode = ASCOMErrorCode::new_for_driver(0);
 
 /// PHD2's own bounds for a single frame.
 const EXPOSURE_MIN: Duration = Duration::from_millis(1);
-const EXPOSURE_MAX: Duration = Duration::from_secs(600);
+const EXPOSURE_MAX: Duration = MAX_EXPOSURE;
 const EXPOSURE_RESOLUTION: Duration = Duration::from_millis(1);
 
 /// The first PHD2 release whose `capture_single_frame` saves to a named
@@ -275,7 +275,21 @@ impl Phd2Camera {
                         }
                     }
                 }
-                let read = engine.read(&path, geometry.width, geometry.height).await;
+                // Bounded by the grace that covers PHD2's own download
+                // and save: a read that stalls fails the exposure rather
+                // than leaving the camera downloading for good.
+                let read = tokio::time::timeout(
+                    engine.grace(),
+                    engine.read(&path, geometry.width, geometry.height),
+                )
+                .await
+                .unwrap_or_else(|_| {
+                    Err(format!(
+                        "PHD2's frame {} could not be read within {}",
+                        path.display(),
+                        humantime::format_duration(engine.grace())
+                    ))
+                });
                 engine.discard(&path);
                 read.and_then(|frame| crop(&frame, subframe))
             }
@@ -841,7 +855,7 @@ fn start_error_to_ascom(e: &StartError) -> ASCOMError {
             ASCOMError::invalid_operation(e.to_string())
         }
         StartError::Unreachable(_) => not_connected(e.to_string()),
-        StartError::Phd2Refused(_) | StartError::Marker(..) => {
+        StartError::Phd2Refused(_) | StartError::Marker(..) | StartError::Unconfirmed(_) => {
             ASCOMError::new(UNSPECIFIED_ERROR, e.to_string())
         }
     }
@@ -851,6 +865,478 @@ fn start_error_to_ascom(e: &StartError) -> ASCOMError {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    use crate::config::{Phd2Config, SettleParams};
+    use crate::service::guider::GuiderOps;
+
+    fn test_camera(image_dir: &std::path::Path) -> Phd2Camera {
+        let client = Arc::new(Phd2Client::new(Phd2Config::default()));
+        let ops = Arc::new(GuiderOps::new(
+            Arc::clone(&client),
+            SettleParams::default(),
+            Duration::from_secs(10),
+        ));
+        let engine = Arc::new(CaptureEngine::new(
+            ops,
+            Arc::clone(&client),
+            image_dir.to_path_buf(),
+            Duration::from_secs(10),
+        ));
+        Phd2Camera::new(
+            client,
+            engine,
+            "facade-test-id".to_string(),
+            PixelSize {
+                x_um: 2.9,
+                y_um: 3.1,
+            },
+        )
+    }
+
+    /// A camera with a session open on an 8 x 6 sensor, as a connect
+    /// leaves it.
+    fn connected_camera(image_dir: &std::path::Path) -> Phd2Camera {
+        let camera = test_camera(image_dir);
+        camera.begin_session(Geometry {
+            width: 8,
+            height: 6,
+            sensor_name: "Mock Camera".to_string(),
+        });
+        camera
+    }
+
+    fn set_exposure(camera: &Phd2Camera, exposure: Exposure) {
+        camera.session().exposure = exposure;
+    }
+
+    fn in_flight(generation: u64) -> Exposure {
+        Exposure::InFlight {
+            generation,
+            path: std::path::PathBuf::from("/images/phd2-guider-a.fits"),
+            aborting: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn the_fixed_surface_answers_without_a_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = test_camera(dir.path());
+        assert_eq!(camera.static_name(), "PHD2 Guide Camera");
+        assert_eq!(camera.unique_id(), "facade-test-id");
+        assert!(!camera.connected().await.unwrap());
+        assert!(camera.description().await.unwrap().contains("PHD2"));
+        assert!(camera.driver_info().await.unwrap().contains("phd2-guider"));
+        assert_eq!(
+            camera.driver_version().await.unwrap(),
+            env!("CARGO_PKG_VERSION")
+        );
+        assert_eq!(
+            camera.supported_actions().await.unwrap(),
+            Vec::<String>::new()
+        );
+        assert!((camera.pixel_size_x().await.unwrap() - 2.9).abs() < f64::EPSILON);
+        assert!((camera.pixel_size_y().await.unwrap() - 3.1).abs() < f64::EPSILON);
+        assert_eq!(
+            camera.exposure_min().await.unwrap(),
+            Duration::from_millis(1)
+        );
+        assert_eq!(
+            camera.exposure_max().await.unwrap(),
+            Duration::from_secs(600)
+        );
+        assert_eq!(
+            camera.exposure_resolution().await.unwrap(),
+            Duration::from_millis(1)
+        );
+        assert!(!camera.has_shutter().await.unwrap());
+        assert_eq!(camera.max_adu().await.unwrap(), 65535);
+        assert_eq!(camera.max_bin_x().await.unwrap(), 1);
+        assert_eq!(camera.max_bin_y().await.unwrap(), 1);
+        assert!(camera.can_abort_exposure().await.unwrap());
+        assert!(!camera.can_stop_exposure().await.unwrap());
+        assert_eq!(camera.sensor_type().await.unwrap(), SensorType::Monochrome);
+        assert_eq!(camera.readout_modes().await.unwrap(), ["Default"]);
+        assert_eq!(camera.readout_mode().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn the_session_surface_refuses_without_a_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = test_camera(dir.path());
+        let not_connected = |e: ASCOMError| assert_eq!(e.code, ASCOMErrorCode::NOT_CONNECTED);
+        not_connected(camera.camera_x_size().await.unwrap_err());
+        not_connected(camera.camera_y_size().await.unwrap_err());
+        not_connected(camera.sensor_name().await.unwrap_err());
+        not_connected(camera.bin_x().await.unwrap_err());
+        not_connected(camera.set_bin_y(1).await.unwrap_err());
+        not_connected(camera.num_x().await.unwrap_err());
+        not_connected(camera.set_num_y(3).await.unwrap_err());
+        not_connected(camera.start_x().await.unwrap_err());
+        not_connected(camera.set_start_y(1).await.unwrap_err());
+        not_connected(camera.image_ready().await.unwrap_err());
+        not_connected(camera.image_array().await.unwrap_err());
+        not_connected(camera.camera_state().await.unwrap_err());
+        not_connected(camera.percent_completed().await.unwrap_err());
+        not_connected(camera.last_exposure_duration().await.unwrap_err());
+        not_connected(camera.last_exposure_start_time().await.unwrap_err());
+        not_connected(camera.abort_exposure().await.unwrap_err());
+        not_connected(camera.set_readout_mode(0).await.unwrap_err());
+        not_connected(
+            camera
+                .start_exposure(Duration::from_secs(1), true)
+                .await
+                .unwrap_err(),
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_starts_on_the_full_frame_at_bin_1() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        assert!(camera.connected().await.unwrap());
+        assert_eq!(camera.camera_x_size().await.unwrap(), 8);
+        assert_eq!(camera.camera_y_size().await.unwrap(), 6);
+        assert_eq!(camera.sensor_name().await.unwrap(), "Mock Camera");
+        assert_eq!(camera.start_x().await.unwrap(), 0);
+        assert_eq!(camera.start_y().await.unwrap(), 0);
+        assert_eq!(camera.num_x().await.unwrap(), 8);
+        assert_eq!(camera.num_y().await.unwrap(), 6);
+        assert_eq!(camera.bin_x().await.unwrap(), 1);
+        assert_eq!(camera.bin_y().await.unwrap(), 1);
+        assert_eq!(camera.camera_state().await.unwrap(), CameraState::Idle);
+        assert_eq!(camera.percent_completed().await.unwrap(), 0);
+        assert!(!camera.image_ready().await.unwrap());
+        assert_eq!(
+            camera.image_array().await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+        assert_eq!(
+            camera.last_exposure_duration().await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+        assert_eq!(
+            camera.last_exposure_start_time().await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+    }
+
+    #[tokio::test]
+    async fn only_bin_1_and_readout_mode_0_are_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        camera.set_bin_x(1).await.unwrap();
+        camera.set_bin_y(1).await.unwrap();
+        assert_eq!(
+            camera.set_bin_x(2).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+        camera.set_readout_mode(0).await.unwrap();
+        assert_eq!(
+            camera.set_readout_mode(1).await.unwrap_err().code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+    }
+
+    #[tokio::test]
+    async fn the_subframe_setters_take_any_value_until_an_exposure() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        camera.set_start_x(7).await.unwrap();
+        camera.set_start_y(5).await.unwrap();
+        camera.set_num_x(4).await.unwrap();
+        camera.set_num_y(3).await.unwrap();
+        assert_eq!(camera.start_x().await.unwrap(), 7);
+        assert_eq!(camera.start_y().await.unwrap(), 5);
+        assert_eq!(camera.num_x().await.unwrap(), 4);
+        assert_eq!(camera.num_y().await.unwrap(), 3);
+        assert_eq!(
+            camera
+                .start_exposure(Duration::from_secs(1), true)
+                .await
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dark_frame_or_a_duration_outside_the_range_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        assert_eq!(
+            camera
+                .start_exposure(Duration::from_secs(1), false)
+                .await
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+        assert_eq!(
+            camera
+                .start_exposure(Duration::from_secs(601), true)
+                .await
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::INVALID_VALUE
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_exposure_is_refused_while_one_is_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        set_exposure(&camera, in_flight(1));
+        assert_eq!(
+            camera
+                .start_exposure(Duration::from_secs(1), true)
+                .await
+                .unwrap_err()
+                .code,
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_phd2_refuses_the_exposure_and_leaves_the_camera_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        let err = camera
+            .start_exposure(Duration::from_secs(1), true)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED, "{err}");
+        assert_eq!(camera.camera_state().await.unwrap(), CameraState::Idle);
+    }
+
+    #[tokio::test]
+    async fn the_exposure_state_maps_to_camera_state_and_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        set_exposure(
+            &camera,
+            Exposure::Starting {
+                generation: 1,
+                aborting: false,
+            },
+        );
+        assert_eq!(camera.camera_state().await.unwrap(), CameraState::Exposing);
+        set_exposure(&camera, in_flight(1));
+        assert_eq!(camera.camera_state().await.unwrap(), CameraState::Exposing);
+        set_exposure(
+            &camera,
+            Exposure::Reading {
+                generation: 1,
+                aborting: false,
+            },
+        );
+        assert_eq!(camera.camera_state().await.unwrap(), CameraState::Download);
+        set_exposure(
+            &camera,
+            Exposure::Failed("PHD2 failed the frame".to_string()),
+        );
+        assert_eq!(camera.camera_state().await.unwrap(), CameraState::Error);
+        let err = camera.image_array().await.unwrap_err();
+        assert_eq!(err.code, UNSPECIFIED_ERROR);
+        assert_eq!(err.message, "PHD2 failed the frame");
+        assert_eq!(camera.percent_completed().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_ready_image_is_served_indexed_x_then_y() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        set_exposure(
+            &camera,
+            Exposure::Ready(Arc::new(Image {
+                width: 3,
+                height: 2,
+                pixels: vec![0, 1, 2, 10, 11, 12],
+            })),
+        );
+        assert!(camera.image_ready().await.unwrap());
+        assert_eq!(camera.percent_completed().await.unwrap(), 100);
+        assert_eq!(camera.camera_state().await.unwrap(), CameraState::Idle);
+        let image = camera.image_array().await.unwrap();
+        assert_eq!(&image.shape()[..2], &[3, 2]);
+        assert_eq!(image[[2, 0, 0]], 2);
+        assert_eq!(image[[0, 1, 0]], 10);
+    }
+
+    #[tokio::test]
+    async fn a_capture_commits_only_into_its_own_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        let image = || {
+            Ok(Image {
+                width: 1,
+                height: 1,
+                pixels: vec![7],
+            })
+        };
+        set_exposure(&camera, in_flight(2));
+        camera.commit(1, image());
+        assert!(matches!(
+            camera.session().exposure,
+            Exposure::InFlight { .. }
+        ));
+        camera.commit(2, image());
+        assert!(matches!(camera.session().exposure, Exposure::Ready(_)));
+        set_exposure(&camera, in_flight(3));
+        camera.commit(3, Err("PHD2 did not report the frame".to_string()));
+        assert!(matches!(camera.session().exposure, Exposure::Failed(_)));
+        // A commit with nothing in flight changes nothing.
+        camera.commit(3, image());
+        assert!(matches!(camera.session().exposure, Exposure::Failed(_)));
+    }
+
+    #[tokio::test]
+    async fn an_aborted_capture_ends_idle_whatever_its_outcome() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        set_exposure(&camera, in_flight(4));
+        assert_eq!(
+            camera.begin_abort(),
+            Some(std::path::PathBuf::from("/images/phd2-guider-a.fits"))
+        );
+        camera.commit(4, Err("camera error -- see debug log".to_string()));
+        assert!(matches!(camera.session().exposure, Exposure::Idle));
+    }
+
+    #[test]
+    fn an_abort_names_a_frame_only_once_phd2_has_accepted_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        set_exposure(
+            &camera,
+            Exposure::Starting {
+                generation: 1,
+                aborting: false,
+            },
+        );
+        assert_eq!(camera.begin_abort(), None);
+        assert!(matches!(
+            camera.session().exposure,
+            Exposure::Starting { aborting: true, .. }
+        ));
+        set_exposure(
+            &camera,
+            Exposure::Reading {
+                generation: 1,
+                aborting: false,
+            },
+        );
+        assert_eq!(camera.begin_abort(), None);
+        assert!(matches!(
+            camera.session().exposure,
+            Exposure::Reading { aborting: true, .. }
+        ));
+        set_exposure(&camera, Exposure::Idle);
+        assert_eq!(camera.begin_abort(), None);
+    }
+
+    #[test]
+    fn a_refused_start_is_undone_only_if_nothing_replaced_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        set_exposure(
+            &camera,
+            Exposure::Starting {
+                generation: 5,
+                aborting: false,
+            },
+        );
+        camera.cancel_start(4);
+        assert!(matches!(
+            camera.session().exposure,
+            Exposure::Starting { .. }
+        ));
+        camera.cancel_start(5);
+        assert!(matches!(camera.session().exposure, Exposure::Idle));
+    }
+
+    #[tokio::test]
+    async fn a_disconnect_ends_the_session_and_its_exposure_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        {
+            let mut session = camera.session();
+            session.last_start = Some(SystemTime::now());
+            session.last_duration = Some(Duration::from_secs(1));
+            session.exposure = Exposure::Failed("old".to_string());
+        }
+        camera.set_connected(false).await.unwrap();
+        assert!(!camera.connected().await.unwrap());
+        let session = camera.session();
+        assert!(matches!(session.exposure, Exposure::Idle));
+        assert!(session.last_start.is_none());
+        assert!(session.last_duration.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_connect_without_phd2_is_not_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = test_camera(dir.path());
+        let err = camera.set_connected(true).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(err.message.contains("not reachable"), "{err}");
+        assert!(!camera.connected().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn connecting_again_keeps_the_running_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        camera.set_num_x(4).await.unwrap();
+        camera.set_connected(true).await.unwrap();
+        assert_eq!(camera.num_x().await.unwrap(), 4);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_version_that_never_arrives_is_not_connected() {
+        let client = Phd2Client::new(Phd2Config::default());
+        let err = phd2_version(&client).await.unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED);
+        assert!(
+            err.message.contains("has not reported its version"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_refused_start_maps_to_its_ascom_error() {
+        let code = |e: StartError| start_error_to_ascom(&e).code;
+        assert_eq!(
+            code(StartError::Busy("x".into())),
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+        assert_eq!(
+            code(StartError::NotStopped(crate::events::AppState::Guiding)),
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+        assert_eq!(
+            code(StartError::Phd2Busy("x".into())),
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+        assert_eq!(
+            code(StartError::Unreachable("x".into())),
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(code(StartError::Phd2Refused("x".into())), UNSPECIFIED_ERROR);
+        assert_eq!(
+            code(StartError::Marker("/m".into(), "x".into())),
+            UNSPECIFIED_ERROR
+        );
+    }
+
+    #[test]
+    fn phd2s_own_text_is_used_for_an_rpc_error() {
+        let rpc = Phd2Error::RpcError {
+            code: 1,
+            message: "camera not connected".into(),
+        };
+        assert_eq!(phd2_text(&rpc), "camera not connected");
+        assert!(phd2_text(&Phd2Error::NotConnected).contains("ot connected"));
+    }
 
     #[test]
     fn an_exposure_is_rounded_to_the_nearest_millisecond() {

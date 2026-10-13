@@ -1135,15 +1135,22 @@ a client polls `ImageReady` as with any camera.
    `get_app_state` must answer `Stopped`, or the request is refused with
    `InvalidOperation` naming the state. `Stopped` is an allowlist: a
    `Paused` PHD2 that is still looping must not get a capture.
-3. **Sweep orphans** in `image_dir` (see [Files](#files)), write the
-   restart marker, set the slot, and send
+3. **Write the restart marker, set the slot, and send**
    `capture_single_frame {"exposure": <ms>, "save": true, "path":
    "<image_dir>/phd2-guider-<32 hex digits>.fits"}`. The name is random
-   and new for each capture. PHD2 refusing it releases the slot and
-   removes the marker. Its `capture is currently active` refusal maps to
-   `InvalidOperation`, and any other refusal to `UnspecifiedError` with
-   PHD2's text. A lost PHD2 connection maps to `NotConnected`.
-4. **Let the lock go and return.** The exposure holds no lock.
+   and new for each capture.
+   - PHD2 refusing it releases the slot and removes the marker. Its
+     `capture is currently active` refusal maps to `InvalidOperation`,
+     and any other refusal to `UnspecifiedError` with PHD2's text.
+   - With no PHD2 connection the request is never sent: `NotConnected`,
+     with the same release.
+   - A request that may have reached PHD2 but got no answer (a timeout,
+     or a connection dropped mid-request) keeps the slot and the marker,
+     exactly as for a frame PHD2 accepted, until PHD2 reports the frame
+     or its deadline passes. `StartExposure` fails with `UnspecifiedError`
+     saying so.
+4. **Let the lock go, sweep orphans, and return.** The exposure holds no
+   lock, and neither does the sweep (see [Files](#files)).
 
 In the background the facade waits for the `SingleFrameComplete` event
 whose `Path` is the one it sent, bounded by `exposure + capture_grace`
@@ -1151,6 +1158,8 @@ from the request:
 
 - `Success: true` → read and decode the file (bounded, below), crop it to
   the subframe, and publish it: `ImageReady` becomes true.
+- A report that has arrived by the deadline counts, even when the
+  deadline is reached at the same moment.
 - `Success: false` → the exposure fails with PHD2's `Error` text, or with
   "aborted" when this facade's own abort or a `guiding/stop` caused it.
 - Nothing by the deadline → the exposure fails with "PHD2 did not report
@@ -1279,9 +1288,13 @@ take the lock and are never refused.
   16-bit pixels plus eight 2880-byte header blocks. A larger file is
   refused unread. A frame whose `NAXIS1`/`NAXIS2` differ from the size
   read on connect fails with "PHD2's frame size changed; reconnect the
-  camera". The read and the decode run inside the capture's deadline.
+  camera". The read and the decode are bounded by `capture_grace`: one
+  that takes longer fails the exposure, so a stalled read cannot leave
+  the camera downloading for good.
 - **Deleting.** The file is deleted on every exit from the capture:
-  success, failure, abort, deadline and shutdown. A failed deletion is
+  success, failure, abort and shutdown. A frame given up on at its
+  deadline has no file yet. If PHD2 saves it late, the file is deleted
+  when PHD2's report lands, or by the next sweep. A failed deletion is
   logged as a warning and never fails the capture. The delete resolves
   the name a second time, so a peer that swaps the file between the read
   and the delete gets the swapped file deleted. That is accepted under a
@@ -1291,8 +1304,9 @@ take the lock and are never refused.
 - **Sweeping.** Any `phd2-guider-*.fits` in `image_dir` other than the
   capture in flight is an orphan. One appears when PHD2 saved a frame the
   facade had already given up on. The facade deletes orphans at startup
-  and before each capture, looking at no more than 4096 directory entries
-  per sweep and logging what it removed. When a late
+  and as each capture starts, once the guiding lock is let go, looking at
+  no more than 4096 directory entries per sweep and logging what it
+  removed. When a late
   `SingleFrameComplete` names a frame whose deadline already passed, the
   facade deletes that file at once. It remembers the last 64 frames it
   gave up on for this, and the sweep catches any it misses.
@@ -1315,8 +1329,15 @@ take the lock and are never refused.
   file appears, its `SingleFrameComplete` arrives, or the deadline passes,
   and then the file and the marker are deleted. That is never longer
   after the original request than the running process would have held
-  the slot. A marker whose deadline passed while the service was down is
-  removed at once. The marker is read only when `camera.enabled` is true.
+  the slot. A deadline further ahead than 660 s from startup (the longest
+  exposure plus the longest grace) is cut to that, so a marker written
+  under a wrong clock cannot hold the slot longer than any frame could.
+  A marker whose deadline passed while the service was down is removed
+  at once. The marker is read only when `camera.enabled` is true.
+- **The marker and the slot change together.** The facade removes the
+  marker and releases the slot under the guiding lock, so no new capture
+  writes its marker in between, and it removes the marker only if it
+  still names the frame being released.
 
 ### Configuration
 
@@ -1337,18 +1358,21 @@ take the lock and are never refused.
 | `enabled` | `false` | With `false` the facade does not exist: no listener, no marker, and the remaining fields are not required |
 | `unique_id` | minted | The device's ASCOM `UniqueID`, minted into the config file on the first start with `enabled: true` and never changed after. Not derived from PHD2's profile or camera, which change when the operator reconfigures PHD2 |
 | `pixel_size_x_um` / `pixel_size_y_um` | — | **Required when enabled.** Finite and greater than 0. Entered from the guide camera's datasheet. They are two fields because a sensor's pixels need not be square, and rp reads each axis separately. PHD2 does not report them in a usable form: its pixel scale needs the focal length |
-| `image_dir` | — | **Required when enabled.** An absolute path to an existing directory that this service can create and remove files in. Startup checks it by creating and removing `.phd2-guider-probe` there |
+| `image_dir` | — | **Required when enabled.** An absolute, UTF-8 path to an existing directory that this service can create and remove files in. Startup checks it by creating and removing `.phd2-guider-probe` there |
 | `capture_grace` | `"10s"` | Greater than 0 and at most `"60s"`. It covers PHD2's download and save of one frame; a grace longer than that is a misconfiguration |
 | `server.port` | `11128` | The Alpaca listener's port |
 | `server.bind_address` | `"127.0.0.1"` | **Must be a loopback address.** See [Loopback only](#loopback-only) |
 | `server.tls` / `server.auth` | absent | The shared TLS and Basic Auth blocks, as on any driver |
 
 With `enabled: true`, `phd2.host` must be `localhost` or a loopback
-address. Every rule except `image_dir`'s check is enforced when the file
-is parsed, so `phd2-guider doctor` reports them too. A broken `camera`
-block fails startup only when `enabled` is true, and the message names
-the field. A facade listener that cannot bind fails startup the same
-way.
+address. A field's own range (the pixel sizes, `capture_grace`, the
+loopback `bind_address`) is checked whenever the field is present,
+enabled or not. The rules that depend on `enabled` (the required fields,
+a local PHD2) apply only when it is true. All of these are checked when
+the file is parsed, so `phd2-guider doctor` reports them too, and a
+broken block stops the service with a message naming the field.
+`image_dir`'s directory check, and a facade listener that cannot bind,
+fail startup only when `enabled` is true.
 
 ### Config actions
 

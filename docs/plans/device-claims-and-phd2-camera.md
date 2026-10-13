@@ -1742,7 +1742,9 @@ frame never sets. Both shape D11 below.
 The duplicate `error` reply also exposed a client defect. `phd2-guider`'s
 reply type rejected the second member as a duplicate field, so the reader
 dropped the whole line and the request waited out its 30 s command
-timeout. C6 makes the reader keep the first `error` member.
+timeout. C6 makes the reader keep the first `error` member, and fail a
+request at once when its reply, named by its `id`, cannot be read at
+all.
 
 ### D10. Shape of the facade
 
@@ -2153,7 +2155,8 @@ rule D9's measurement overtook. The rest stand as written.
   claiming the window closed. The sweep keys on the facade's own prefix,
   never on PHD2's temporary names. Any such file other than the capture in
   flight is an orphan, so the sweep needs no age cutoff. It runs at
-  startup and at each capture start, within an entry budget. When a late
+  startup and as each capture starts, outside the guiding lock, within an
+  entry budget. When a late
   event names a frame the facade gave up on at its deadline, that file is
   deleted when the event lands.
 - **The exposure range is continuous.** `capture_single_frame` takes any
@@ -2391,8 +2394,17 @@ frame away and leaves PHD2 unable to capture until it restarts. As built:
   the frame's path and its deadline in wall-clock time. At startup a
   marker holds the slot until its file appears or its deadline passes.
   That is never longer after the original request than the running process
-  would have held it, and it needs no state query. A marker whose deadline
-  passed while the service was down releases at once.
+  would have held it, and it needs no state query. A deadline further ahead
+  than the longest exposure plus the longest grace (660 s) is cut to that,
+  so a marker written under a wrong clock cannot hold the slot longer than
+  any frame could. A marker whose deadline passed while the service was
+  down releases at once.
+- **A start PHD2 may have accepted holds the slot.** When
+  `capture_single_frame` gets no answer (a timeout, or a connection
+  dropped mid-request), PHD2 may be exposing. The slot and the marker
+  stay, exactly as for an accepted frame, until the frame is reported or
+  its deadline passes. Only a request PHD2 refused, or one never sent,
+  releases at once.
 - **The sweep lease is an ASCOM `Action` pair on the facade device**
   (D12's first option), built in C7 with its only consumer. The facade is
   the one Alpaca device rp already talks to, and an `Action` can refuse a

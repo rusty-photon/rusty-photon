@@ -246,6 +246,16 @@ pub fn spawn_reconnect_task(
     })
 }
 
+/// The pending request a line this client could not parse answers, if
+/// the line carries the `id` of one: taken out of the pending set.
+async fn pending_for(shared: &SharedConnectionState, line: &str) -> Option<PendingRequest> {
+    let id = serde_json::from_str::<serde_json::Value>(line)
+        .ok()?
+        .get("id")?
+        .as_u64()?;
+    shared.pending_requests.lock().await.remove(&id)
+}
+
 /// Spawn a reader task that reads messages from PHD2
 pub fn spawn_reader_task(
     mut reader: Box<dyn LineReader>,
@@ -307,6 +317,12 @@ pub fn spawn_reader_task(
 
                         // Broadcast event to subscribers
                         let _ = shared.event_sender.send(event);
+                    } else if let Some(request) = pending_for(&shared, &line).await {
+                        // A reply this client cannot read still names its
+                        // request: fail it now, not at the command timeout.
+                        let _ = request.sender.send(Err(Phd2Error::InvalidState(format!(
+                            "PHD2 sent a reply this client cannot read: {line}"
+                        ))));
                     } else {
                         debug!("Failed to parse PHD2 message: {}", line);
                     }

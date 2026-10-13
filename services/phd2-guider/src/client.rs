@@ -2562,6 +2562,23 @@ mod mock_tests {
     }
 
     #[tokio::test]
+    async fn a_reply_the_client_cannot_read_fails_its_request_at_once() {
+        // `error` is not an object, so the reply does not parse; it still
+        // names request 1, which fails now instead of at the timeout.
+        let (client, _sent) = create_test_client_with_responses(vec![
+            Some(version_event()),
+            Some(r#"{"jsonrpc":"2.0","error":"oops","id":1}"#.to_string()),
+        ]);
+
+        client.connect().await.unwrap();
+        let err = client.get_app_state().await.unwrap_err();
+        assert!(
+            matches!(&err, Phd2Error::InvalidState(text) if text.contains("cannot read")),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_capture_single_frame_with_exposure() {
         let (client, sent) = create_test_client_with_responses(vec![
             Some(version_event()),
