@@ -1370,33 +1370,19 @@ mod macos {
     #[cfg(target_os = "macos")]
     pub fn usb_inventory() -> Result<UsbScan, String> {
         let deadline = super::bounded::DEADLINE;
-        let started = Instant::now();
-        let listing_runs = REPORT.get().is_none();
-        let report = listed_report(deadline)?;
-        let listing_took = listing_runs.then(|| started.elapsed());
-        let left = deadline.saturating_sub(started.elapsed());
-        // Said whenever the listing ran: a report query that runs out of
-        // time ran out of what the listing left it, not of the full deadline.
-        let after_listing = |took: Duration| {
-            format!(" (the data type listing took {took:?} of the scan's {deadline:?})")
-        };
-        if left.is_zero() {
-            return Err(format!(
-                "macOS USB inventory failed: no time was left to query {}{}",
-                report.data_type,
-                listing_took.map(after_listing).unwrap_or_default()
-            ));
-        }
+        let (report, listing_took) = listed_report(deadline)?;
         let output = super::bounded::capture(
             Command::new("system_profiler").args(["-json", report.data_type]),
-            left,
+            deadline.saturating_sub(listing_took.unwrap_or_default()),
         )
         .map_err(|e| {
             debug!(error = %e, "system_profiler query failed");
-            format!(
-                "macOS USB inventory failed: {e}{}",
-                listing_took.map(after_listing).unwrap_or_default()
-            )
+            // A query that ran out of time after the listing ran out of what
+            // the listing left it, not of the whole deadline.
+            let after_listing = listing_took.map_or_default(|took| {
+                format!(" (the data type listing took {took:?} of the scan's {deadline:?})")
+            });
+            format!("macOS USB inventory failed: {e}{after_listing}")
         })?;
         let value = serde_json::from_slice::<serde_json::Value>(&output).map_err(|e| {
             debug!(error = %e, "system_profiler output is not valid JSON");
@@ -1409,12 +1395,13 @@ mod macos {
     }
 
     /// The report this host lists: [`REPORT`], or the listing's answer under
-    /// `deadline`, kept there.
+    /// `deadline`, kept there — with how long the listing took when it ran.
     #[cfg(target_os = "macos")]
-    fn listed_report(deadline: Duration) -> Result<&'static UsbReport, String> {
+    fn listed_report(deadline: Duration) -> Result<(&'static UsbReport, Option<Duration>), String> {
         if let Some(report) = REPORT.get() {
-            return Ok(report);
+            return Ok((report, None));
         }
+        let started = Instant::now();
         let listing = super::bounded::capture(
             Command::new("system_profiler").arg("-listDataTypes"),
             deadline,
@@ -1427,7 +1414,7 @@ mod macos {
             debug!(error = %e, "system_profiler lists no USB report");
             format!("macOS USB inventory failed: {e}")
         })?;
-        Ok(REPORT.get_or_init(|| report))
+        Ok((REPORT.get_or_init(|| report), Some(started.elapsed())))
     }
 
     /// Which USB report `system_profiler -listDataTypes` lists, one data
@@ -1569,8 +1556,8 @@ mod macos {
 
     /// The vendor id renders as `0x0403` or `0x0403  (Vendor Name)` — and,
     /// through macOS 15, as `apple_vendor_id` for Apple's own devices, which
-    /// is Apple's `05ac`. Read as no vendor id, it left every Apple device,
-    /// its hubs included, out of the inventory without a fault.
+    /// is Apple's `05ac`, so those devices, Apple's hubs included, are
+    /// inventoried rather than reported as faults.
     fn vendor_field(value: &serde_json::Value) -> Option<String> {
         if value.as_str()? == "apple_vendor_id" {
             Some("05ac".to_string())
@@ -3978,6 +3965,11 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
         );
     }
 
+    /// The key is the one the macOS 26 capture carries; that capture shows
+    /// only its value for a device publishing no serial, so a published
+    /// serial's spelling under it is assumed, not yet seen. Nothing but
+    /// `doctor --devices`' USB serial column reads it while no driver
+    /// offers the join an SDK serial (claims.rs, `keyed_match`).
     #[test]
     fn test_usb_host_report_keeps_a_published_serial() {
         let scan = usb_report(
@@ -4102,9 +4094,10 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
         assert_eq!(scan.faults[0].record, "03c3:????");
     }
 
-    /// The real collector, on the Mac running the tests, reads a bus with a
-    /// device on it as one. On macOS 26 the report the collector used to
-    /// read answered with an empty list, and this is the test that tells.
+    /// The real collector, on the Mac running the tests, places a device
+    /// when the I/O Registry's USB plane shows one. On macOS 26
+    /// `SPUSBDataType` answers with an empty list, and a report whose keys
+    /// the collector misread would leave only faults: either fails here.
     /// Only that much is asserted: the I/O Registry and `system_profiler`
     /// are two reads of a bus a device can join or leave between them, so
     /// their counts need not agree on a Mac in use.
@@ -4126,8 +4119,8 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
 
         if shown > 0 {
             assert!(
-                !scan.devices.is_empty() || !scan.faults.is_empty(),
-                "ioreg's USB plane shows {shown} device(s), the scan none: {scan:?}"
+                !scan.devices.is_empty(),
+                "ioreg's USB plane shows {shown} device(s), the scan places none: {scan:?}"
             );
         }
     }
