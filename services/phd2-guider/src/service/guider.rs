@@ -949,6 +949,112 @@ mod tests {
         );
     }
 
+    fn claim(path: &str) -> CaptureClaim {
+        CaptureClaim {
+            path: PathBuf::from(path),
+            deadline: SystemTime::now() + Duration::from_secs(60),
+            stop_requested: false,
+            recovered: false,
+        }
+    }
+
+    async fn claim_slot(ops: &Arc<GuiderOps>, path: &str) {
+        let op = ops.op_lock().lock().await;
+        ops.claim_capture(&op, claim(path));
+    }
+
+    #[tokio::test]
+    async fn a_guiding_mutation_is_refused_while_a_frame_holds_the_slot() {
+        let ops = test_ops();
+        claim_slot(&ops, "/images/phd2-guider-a.fits").await;
+        // Refused before any RPC: the test client is not even connected.
+        let err = ops.pause(false).await.unwrap_err();
+        assert!(
+            matches!(&err, ServiceError::CameraBusy(text) if text.contains("capturing a frame")),
+            "unexpected error: {err:?}"
+        );
+        let err = ops
+            .clear_calibration(crate::types::CalibrationTarget::Mount)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ServiceError::CameraBusy(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_recovered_frame_is_named_as_one_from_before_the_restart() {
+        let ops = test_ops();
+        {
+            let op = ops.op_lock().lock().await;
+            ops.claim_capture(
+                &op,
+                CaptureClaim {
+                    recovered: true,
+                    ..claim("/images/phd2-guider-a.fits")
+                },
+            );
+        }
+        let err = ops.resume().await.unwrap_err();
+        assert!(
+            matches!(&err, ServiceError::CameraBusy(text) if text.contains("before this service restarted")),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_slot_is_released_only_for_its_own_frame() {
+        let ops = test_ops();
+        claim_slot(&ops, "/images/phd2-guider-a.fits").await;
+        assert!(!ops.release_capture(Path::new("/images/phd2-guider-b.fits")));
+        assert!(ops.capture_claim().is_some());
+        assert!(ops.release_capture(Path::new("/images/phd2-guider-a.fits")));
+        assert!(ops.capture_claim().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_stop_marks_the_frame_in_the_slot_as_stopped() {
+        let ops = test_ops();
+        claim_slot(&ops, "/images/phd2-guider-a.fits").await;
+        ops.mark_capture_stopped();
+        assert!(ops.capture_claim().unwrap().stop_requested);
+    }
+
+    #[tokio::test]
+    async fn a_wait_for_the_slot_returns_once_it_is_released() {
+        let ops = test_ops();
+        claim_slot(&ops, "/images/phd2-guider-a.fits").await;
+        let waiter = tokio::spawn({
+            let ops = Arc::clone(&ops);
+            async move {
+                ops.wait_capture_released(
+                    Path::new("/images/phd2-guider-a.fits"),
+                    Duration::from_secs(30),
+                )
+                .await
+            }
+        });
+        // Whether the waiter has registered yet or not, it must see the
+        // release: it registers before it checks the slot.
+        ops.release_capture(Path::new("/images/phd2-guider-a.fits"));
+        assert!(waiter.await.unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_wait_for_the_slot_gives_up_at_its_limit() {
+        let ops = test_ops();
+        claim_slot(&ops, "/images/phd2-guider-a.fits").await;
+        let released = ops
+            .wait_capture_released(
+                Path::new("/images/phd2-guider-a.fits"),
+                Duration::from_secs(2),
+            )
+            .await;
+        assert!(!released);
+        assert!(ops.capture_claim().is_some());
+    }
+
     #[test]
     fn settle_overrides_merge_field_by_field_onto_the_defaults() {
         let client = Arc::new(Phd2Client::new(crate::config::Phd2Config::default()));
