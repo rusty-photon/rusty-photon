@@ -351,8 +351,10 @@ python3 tools/ci/beta_clippy_census.py --root "$PWD" --summary /tmp/census.md \
 `--all-targets` compiles each source file once per target, so the script
 deduplicates sites on (lint, file, line, column); the raw JSON over-counts.
 
-The workspace uses a single MSRV (currently 1.98.1) declared in the root
-`Cargo.toml` via `[workspace.package]`. Every member inherits it with
+The workspace uses a single MSRV, declared in the root
+`Cargo.toml` via `[workspace.package]`. It equals Bazel's stable Rust pin and
+moves with it, so every PR compiles with it (*Clippy under Bazel* says why
+and how to bump). Every member inherits it with
 `rust-version.workspace = true`, the six dual-homed FFI crates included, and
 the **msrv** job (`check.yml`) runs `cargo msrv verify` on each member against
 the shared lockfile.
@@ -708,7 +710,7 @@ printing it. That is what makes a warning firing on only one target OS a gate:
 the *required* `cargo clippy -D warnings` runs on ubuntu only, and CI builds all
 three platforms. (Clippy's own OS gap is covered on PRs by the `bazel clippy`
 step on the Windows leg. macOS-only code is linted only after a merge, by the
-macOS leg on pushes to main and off-PR by check.yml's `macos / clippy`, which
+macOS leg on pushes to main and nightly, and by check.yml's `macos / clippy`, which
 runs beside `windows / clippy`; see the check.yml section above.)
 A plain local `bazel build //...` does *not* deny — the pre-commit hook already
 runs `cargo clippy -- -D warnings` (a superset of rustc's lints) for your host
@@ -755,30 +757,74 @@ needs from you:
   A `rust_test` built with `crate_features = ["mock"]` is linted with `mock`,
   the production `rust_library` beside it without. The Cargo `stable / clippy`
   job covers the two Cargo shapes, so a finding can appear on one side only.
-- **Bazel's Rust pin tracks current stable**, not the MSRV (`MODULE.bazel`,
-  `rust.toolchain`): this step runs that toolchain's clippy, and the tree's
-  lint attributes track stable clippy (see *Keep stable current* above). Bump
-  it in the first PR after each stable release, together with its `sha256s`
-  (`scripts/rust-toolchain-sha256s.sh <version>` prints them from the
-  release's GPG-signed channel manifest). Until then the two clippies are on
-  different releases, and code written against the new one — an `#[expect]`
-  only it fulfils — fails `bazel clippy`. After the bump merges, rebuild the
-  pool runner templates (docs/skills/proxmox-runner-pool.md), which pre-fetch
-  the pinned toolchain. Until then, every pool PR job downloads the new one
-  over the WAN.
-- **The MSRV is held more narrowly than when Bazel compiled with it.** Both
-  clippies deny `incompatible_msrv` (a std API newer than the MSRV) on every
-  leg they run, Windows included. A newer *language* feature is caught only
-  in Linux-compiled code: the coverage nightly sits in the MSRV's nightly
-  cycle and fails `bazel coverage` with E0658, and check.yml's nightly `msrv`
-  job builds with the MSRV itself — both on Linux. A newer language feature
-  in `#[cfg(windows)]` or macOS-only code reaches main unflagged, so check it
-  by hand when you write such code (`cargo +1.98.1 check --target …`, as
-  under *Run it locally when your change adds OS-gated code* above). Bazel's
-  clippy learns the MSRV from `clippy.toml`'s `msrv` key — rules_rust sets no
-  `CARGO_PKG_RUST_VERSION` — so that key must equal the root Cargo.toml's
-  `rust-version`; `cargo clippy` only warns when they differ, so
-  `tools/ci/bazel-clippy.sh` fails on it.
+- **Bazel never checks cfg names.** `unexpected_cfgs` is the one workspace
+  lint Bazel can't enforce. `extract_cargo_lints` drops its `check-cfg`, and
+  rules_rust passes rustc no `--check-cfg`, so a misspelled
+  `#[cfg(feature = "...")]` fails only Cargo's clippy. On a PR that means
+  only in code Linux compiles, so check OS-gated cfgs with the local
+  `cargo clippy --target …` recipe above.
+- **Bazel's Rust pin tracks current stable, and it is the MSRV's release**
+  (`MODULE.bazel`, `rust.toolchain`).
+  - Current stable, because this step runs that toolchain's clippy, and the
+    tree's lint attributes track stable clippy (see *Keep stable current*
+    above).
+  - The MSRV's release, because then every PR compiles what its Linux and
+    Windows Bazel targets build with the MSRV: a std API or a language
+    feature newer than it fails the build.
+  - Two kinds of code meet the MSRV only later. macOS-only code meets it
+    after a merge, on the macOS leg (pushes to main and nightly). Code
+    reached only through Cargo feature combinations no Bazel target builds
+    is compiled on a PR only by Cargo's floating stable, and only on Linux:
+    Windows-only code behind such a combination is not compiled on a PR at
+    all. Check macOS-only code at the MSRV by hand when you write it, in
+    both shapes, after `rustup toolchain install <msrv> --target
+    aarch64-apple-darwin` (*Run it locally when your change adds OS-gated
+    code*, above, says why both):
+
+    ```sh
+    cargo +<msrv> check --target aarch64-apple-darwin -p <crate> --all-targets --all-features
+    cargo +<msrv> check --target aarch64-apple-darwin -p <crate> --lib --bins
+    ```
+  - A point release of the pin (1.99.1) needs no MSRV bump.
+- **Bump them together in the first PR after each stable release**:
+  - the pin, with its `sha256s` (`scripts/rust-toolchain-sha256s.sh <version>`
+    prints them from the release's GPG-signed channel manifest);
+  - the root Cargo.toml's `rust-version` and `clippy.toml`'s `msrv`, then
+    `scripts/repin-bazel-lock.sh`;
+  - the coverage nightly, to the last nightly of the new MSRV's cycle
+    (`MODULE.bazel` says why), with its hashes from
+    `scripts/rust-toolchain-sha256s.sh nightly/<date>`. On stderr the script
+    prints a comment line with the date's rustc version: paste it, as printed,
+    directly above the nightly entry.
+    If the script refuses the date because a component is missing on a
+    host, take the latest earlier date it accepts;
+  - the places that state the MSRV for readers. Nothing checks these, so
+    update each by hand:
+    - README.md's *Prerequisites*;
+    - `crates/qhyccd-rs/README.md`;
+    - the `qhyccd-rs`, `svbony-rs` and `zwo-rs` CHANGELOGs. Amend the
+      *Unreleased* MSRV entry, or add one if the last raise has been
+      released;
+  - expect MSRV-gated clippy lints to start firing in that PR. Raising the
+    MSRV unlocks lints that suggest newer APIs, and the `beta / clippy` census
+    runs at the old MSRV, so it cannot list them ahead. The raise to 1.99.0
+    unlocked none.
+
+  After it merges, rebuild the pool runner templates
+  (docs/skills/proxmox-runner-pool.md): they pre-fetch the pinned toolchains,
+  the coverage nightly included.
+  Until then, every pool PR job downloads the new ones over the WAN; a cold
+  coverage nightly costs ~12 minutes.
+
+  Until the bump lands, the two clippies are on different releases, and code
+  written against the new one (an `#[expect]` only it fulfils) fails
+  `bazel clippy`.
+- **Bazel's clippy learns the MSRV from `clippy.toml`'s `msrv` key**, because
+  rules_rust sets no `CARGO_PKG_RUST_VERSION`. That key must equal the root
+  Cargo.toml's `rust-version` (`cargo clippy` only warns when they differ),
+  and MODULE.bazel's pins and hashes must agree with them.
+  `tools/ci/bazel-clippy.sh` enforces all of it; its header is the list of
+  what it checks.
 
 ### Refreshing MODULE.bazel.lock
 

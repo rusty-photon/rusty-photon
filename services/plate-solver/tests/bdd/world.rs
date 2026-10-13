@@ -37,8 +37,9 @@ pub struct PlateSolverWorld {
     /// `MOCK_ASTAP_ARGV_OUT` is set on its env.
     pub argv_out_path: Option<PathBuf>,
 
-    /// Directory that each `mock_astap` child writes a per-PID spawn-time
-    /// file into when `MOCK_ASTAP_SPAWN_DIR` is set on its env. The
+    /// Directory in which each `mock_astap` child creates an empty file
+    /// named for its spawn time and PID (`<nanos>-<pid>`) when
+    /// `MOCK_ASTAP_SPAWN_DIR` is set on its env. The
     /// single-flight scenario reads it to observe server-side spawn
     /// ordering directly.
     pub spawn_dir_path: Option<PathBuf>,

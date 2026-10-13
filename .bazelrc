@@ -122,9 +122,15 @@ build --@rules_rust//rust/toolchain/channel=stable
 #
 # The deny set comes from each target's `lint_config` — an
 # `extract_cargo_lints` reading the crate's Cargo.toml `[lints]`, so Cargo and
-# Bazel enforce one list. A target without one is linted with clippy's
-# defaults only, and that includes the three `cargo_build_script` build.rs
-# binaries: the macro does not pass `lint_config` through.
+# Bazel enforce one list. A target without a `lint_config` is linted with
+# clippy's defaults only, and that includes the three `cargo_build_script`
+# build.rs binaries: the macro does not pass `lint_config` through.
+#
+# The one exception to the shared list is `unexpected_cfgs`.
+# `extract_cargo_lints` drops its `check-cfg`, and rules_rust passes rustc no
+# `--check-cfg` (only a hand-written `rust_lint_config` can), so Bazel's rustc
+# and clippy never check cfg names. A misspelled `#[cfg(feature = "...")]`
+# fails Cargo's clippy, and only where Cargo compiles it: on a PR, Linux.
 #
 # Each target is linted with the feature set its BUILD rule compiles, not
 # Cargo's two passes (check.yml's `stable / clippy`): a test target built with

@@ -342,7 +342,14 @@ sentinel/src/
 ## MSRV
 
 The minimum supported Rust version is pinned in `[workspace.package]` of the
-root `Cargo.toml` (`rust-version = "1.98.1"`). Every member listed in
+root `Cargo.toml` (`rust-version`), and again in `clippy.toml`'s
+`msrv`, the only MSRV Bazel's clippy sees. It is the release of Bazel's
+stable Rust pin (`MODULE.bazel`), which tracks current stable. The three
+move together, with the coverage nightly, in the first PR after each stable
+release, so every PR compiles what its Linux and Windows Bazel targets build
+with the MSRV.
+`tools/ci/bazel-clippy.sh` fails when they disagree; the bump steps are in
+[pre-push.md](skills/pre-push.md), *Clippy under Bazel*. Every member listed in
 `[workspace].members` inherits it via `rust-version.workspace = true` —
 including the six dual-homed FFI crates (`qhyccd-rs`, `libqhyccd-sys`,
 `zwo-rs`, `libzwo-sys`, `svbony-rs`, `libsvbony-sys`), whose crates.io
@@ -816,7 +823,7 @@ remain the single source of truth for dependency versions, and Bazel's
 `bazel test //...` runs every target except those tagged `requires-cargo` or
 `conformu`, the BDD suites included. The required PR
 checks are `bazel / <os>` (build + clippy + test on Linux and Windows; the
-macOS leg runs on pushes to main only), `bazel coverage`, plus the Cargo `stable / fmt` and `stable / clippy` lint jobs (Bazel
+macOS leg runs on pushes to main and nightly, not on PRs), `bazel coverage`, plus the Cargo `stable / fmt` and `stable / clippy` lint jobs (Bazel
 runs no rustfmt, and its clippy step lints each target's Bazel feature set
 rather than Cargo's two passes). `bazel/cargo target parity` and the Cargo
 build/test jobs run nightly as a safety net (coverage is Bazel-only), as do the
