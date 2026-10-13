@@ -113,6 +113,13 @@ Components:
   config file, runs **exactly one job**, and powers the VM off. The
   template's machine-id and cloud-init state are wiped so every clone boots
   with a fresh identity.
+  check.yml's `stable / clippy` runs here too, as a cold Cargo build, so
+  the template must also carry what that build needs: the C toolchain and
+  libraries the `-sys` crates' build scripts use, libclang for the bindgen
+  ones, and python3 for its BDD-runner check. A green Bazel leg does not
+  prove all of those, so a rebuilt template is proven by running that job
+  too. The template
+  has no rustup, so the job installs stable itself on every run.
   The template also carries the coverage job's annotation tooling:
   `python3-pip`, `diff-cover==10.5.1` pre-installed for the `ci` user
   (matching the pin in `bazel-coverage.yml`'s annotate step), and

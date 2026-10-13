@@ -827,7 +827,9 @@ macOS leg runs on pushes to main and nightly, not on PRs), `bazel coverage`,
 plus the Cargo `stable / clippy` lint job, which runs `cargo fmt --check` first
 (Bazel runs no rustfmt, and its clippy step lints each target's Bazel feature
 set rather than Cargo's two passes). `stable / clippy` runs on the self-hosted
-Linux pool, like the Linux Bazel leg. `bazel/cargo target parity` and the Cargo
+Linux pool for same-repo PRs and pushes to main, like the Linux Bazel leg;
+fork PRs, the nightly run, manual dispatch and the `RP_POOL_LINUX` kill
+switch send it to hosted runners. `bazel/cargo target parity` and the Cargo
 build/test jobs run nightly as a safety net (coverage is Bazel-only), as do the
 `windows / clippy` + `macos / clippy` legs that enforce the clippy deny set on
 OS-cfg'd code in Cargo's feature shapes. `bazel build //... && bazel test //...` is
