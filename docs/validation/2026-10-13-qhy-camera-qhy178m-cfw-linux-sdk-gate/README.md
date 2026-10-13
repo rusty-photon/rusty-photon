@@ -19,7 +19,7 @@ old server's has been dropped and has released the process's SDK resource.
 |---|---|
 | Commit | [`570dd5a0`](https://github.com/rusty-photon/rusty-photon/commit/570dd5a0) (`main`, device claims C4, PR #1479), built from a detached worktree for each session |
 | Service | `qhy-camera`, **real-SDK** build (default features), `cargo run -p qhy-camera -- --config <scratch copy>` (dev profile) with `RUST_LOG=qhy_camera=debug,qhyccd_rs=debug,info`; rustc 1.99.0 (b940084d7 2026-09-28) |
-| SDK | QHYCCD SDK **26.06.04**: `/usr/local/lib/libqhyccd.so` → `libqhyccd.so.26.6.4.16`, sha256 `f51b92f9189fae7707e98ad334cf52d3c1493a6485f33394b39a18a3f4d5c738` (byte-identical to every earlier QHY record) |
+| SDK | QHYCCD SDK **26.06.04**: `/usr/local/lib/libqhyccd.so` → `libqhyccd.so.26.6.4.16`, sha256 `f51b92f9189fae7707e98ad334cf52d3c1493a6485f33394b39a18a3f4d5c738` (byte-identical to every earlier Linux QHY record) |
 | Platform | Fedora Linux 44 (Workstation Edition) x86_64, kernel 7.2.8-200.fc44 |
 | Camera | QHY178M-Cool (USB `1618:c179`, SuperSpeed), SDK id `QHY178M-222b16468c5966524`, with its 7-slot CFW (`CFW-QHY178M-222b16468c5966524`). It sits on USB3 port 3 of the Pegasus PPBA Gen2's embedded hub (`pci-0000:c1:00.4-usbv3-0:1.3`), and its 12 V comes from the PPBA's Quad 12V output, driven through `ppba-driver` (`cargo run -p ppba-driver`) |
 | Config (ConformU) | `usb_devices: [{ device_number: 0, usb_port: "pci-0000:c1:00.4-usbv3-0:1.3", name: "C4 hw test", filter_wheel_number: 0 }]`, the block `doctor --devices` printed, pasted with the wheel declared and the `devices` map deleted |
@@ -52,10 +52,10 @@ out-of-range requests.
 
 ## The one-`Sdk` gate
 
-Every Alpaca cycle below did the same thing. It connected camera 0 and filter wheel 0,
-took a 1 s light exposure, downloaded `ImageArray` as ImageBytes, moved the wheel to
-slot 2 and back to 0 (polling until `Position` was not −1), and disconnected. Every
-cycle gave the same numbers to within a few milliseconds:
+After each start and each reload below, one Alpaca cycle ran. It connected camera 0
+and filter wheel 0, took a 1 s light exposure, downloaded `ImageArray` as ImageBytes,
+moved the wheel to slot 2 and back to 0 (polling until `Position` was not −1), and
+disconnected. Every cycle gave the same numbers to within a few milliseconds:
 
 - camera connect 0.30 s, wheel connect 1.01 s;
 - `ImageReady` 3.13 s after `StartExposure`, then 12,517,420 bytes in 0.04–0.05 s;
@@ -67,12 +67,12 @@ Every cycle passed.
 |---|---|---|
 | 1 | Start with no list | `cameras=1 filter_wheels=1 placeholders=0`, ready 1.64 s after start, no re-scan warning |
 | 2 | Reload by SIGHUP | rebuilt 0.654 s after the signal |
-| 3 | Reload by SIGHUP, **with the camera and wheel connected** | rebuilt 1.559 s after the signal; about 0.9 s of it was closing the open camera |
+| 3 | Reload by SIGHUP, **with the camera and wheel connected**: after step 2's cycle, a bare connect of both (no exposure, no disconnect), then the signal | rebuilt 1.559 s after the signal; 0.907 s of it lay between `qhy-camera shut down` and the next config load, the old `Sdk`'s drop closing the open camera |
 | 4 | Reload by `config.apply` (a `devices` name for the camera) | `status: applying`, `reload: [devices.QHY178M-222b16468c5966524]`; rebuilt 0.703 s after the apply, and the camera's `Name` then read the new name |
 | 5 | Stop by SIGINT | the process exited 0.052 s after the signal, status 0 |
 | 6 | `doctor --devices` | one row, `pci-0000:c1:00.4-usbv3-0:1.3  QHY178M  QHY178M-222b16468c5966524  —  0`, and the block the ConformU config above was pasted from |
 | 7 | Start with the list | `a listed port holds a QHY camera`, `a declared filter wheel is served on its camera's connection`; `cameras=1 filter_wheels=1 placeholders=0` |
-| 8 | Reload by SIGHUP, on the list | rebuilt 0.050 s after the signal. By design the list opens nothing to build (U10), where the no-list default opens each camera to probe it for a CFW |
+| 8 | Reload by SIGHUP, on the list | rebuilt 0.050 s after the signal. By design the list opens nothing to build (U1), where the no-list default opens each camera to probe it for a CFW |
 | 9 | Stop by SIGINT | exited 0.052 s after the signal, status 0 |
 | 10 | `qhyccd-rs` `examples/enumerate`, service stopped | exit 0 after 1.12 s, `{"index":0,"id":"QHY178M-222b16468c5966524","model":"QHY178M"}` |
 
@@ -81,15 +81,20 @@ before the suites ran. After them it stopped by SIGINT and exited 0.052 s after 
 signal.
 
 **What this shows of the gate.** A server drops its `Sdk` when it stops serving, before
-the next build begins (`BoundServer::start`). So at the next build an old `Sdk` can
-still hold the process's claim only if its drop never released it. Had that happened,
-the build's `Sdk::try_new` would have answered `SdkInUse`, and the build would have
-logged `waiting for a USB re-scan's QHY SDK check to finish before opening the SDK`
-and then waited in `Sdk::new` for good. No session logged that line, or any `WARN` or
-`ERROR` of the service's own, and every reload rebuilt within 1.6 s. So a real-SDK
-drop finishes (`ReleaseQHYCCDResource`, after closing any open camera) and releases
-the claim. That includes the reload with an open camera, where the drop has the most
-to close.
+the next build begins (`BoundServer::start`). The drop closes any open camera and runs
+`ReleaseQHYCCDResource`, and the claim the next build's `Sdk::try_new` needs is a field
+of the dropped `Sdk`, freed when the drop returns. So a reload cannot meet a held
+claim, and the absence of the build's `SdkInUse` warning shows nothing on its own.
+What the reloads do show is three things about the real SDK's teardown:
+
+- **The drop returns.** From `qhy-camera shut down` to the next build's config load
+  took 0.1 ms or less on the reloads with nothing open, and 0.907 s on step 3's, with
+  the camera and wheel connected.
+- **It reports no failure.** The gate exercise ran with `qhyccd_rs=debug`, and its logs
+  hold no `WARN` or `ERROR` line from any target. That includes the `error!` lines a
+  failed camera close or `ReleaseQHYCCDResource` would log during the drop.
+- **The SDK comes back after it.** Each next build initialised the SDK again, found the
+  camera, and served it through a full cycle.
 
 **Not exercised:** the build's wait itself. A build meets a live `Sdk` only when a
 failed scan's re-scan is still inside its SDK check, which a healthy bus does not
@@ -100,7 +105,7 @@ it, over `qhyccd-rs`'s `sdk_gate` tests.
 **Not shown either:** that the list start opens no camera. The SDK's own trace prints
 only its initialisation, and the service logs no open below a connect, so neither log
 tells an open from none. Even the no-list start's CFW probe, which does open the
-camera, leaves no line. That the list path opens nothing rests on U10 and on the
+camera, leaves no line. That the list path opens nothing rests on U1 and on the
 BDD scenario *A listed camera is not opened before a client connects it*. There the
 simulated camera has left the bus before the start, so any open would fail, and the
 list registers it all the same.

@@ -1307,8 +1307,9 @@ which a list replaces with the declaration.
   is one whose server is gone, since a failed scan's server holds no SDK; a
   build that has to wait logs it at `warn!` and waits out one enumeration.
   On a QHY178M + CFW at C4's merge, four reloads, one of them with the camera
-  and wheel connected, each found the old server's `Sdk` released and rebuilt
-  within 1.6 s
+  and wheel connected, each saw the old server's `Sdk` drop return within
+  0.91 s with no error logged, and the next build open the SDK again and serve
+  the camera
   ([record](../validation/2026-10-13-qhy-camera-qhy178m-cfw-linux-sdk-gate/README.md)).
   None of them could meet the wait, which needs a re-scan's try alive when a
   build starts.
