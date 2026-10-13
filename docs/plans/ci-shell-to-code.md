@@ -28,15 +28,25 @@ first in their columns.
   (`gh workflow run <file> --ref <branch>`) and link the run, **except**:
   - a workflow that publishes or pushes is never dispatched on a branch
     unless a dry-run input stops it first. `nightly-packages.yml` has one:
-    with `dry_run=true` its `plan` and `msi` jobs run and only `publish`
-    is skipped. `release.yml` runs only on a `v*` tag. Every job in
-    `refresh-astap-shas.yml` checks out `main`, so a branch dispatch runs
-    main's files, and it opens a real PR;
+    with `dry_run=true` every job but `publish` runs (`plan`, `linux`,
+    `msi`, `macos`, `repo`). `release.yml` runs only on a `v*` tag. Every
+    job in `refresh-astap-shas.yml` checks out `main`, so a branch
+    dispatch runs main's files, and it opens a real PR;
   - **the Pi cannot run a branch.** `pi-nightly.yml`'s job is gated on
     `github.ref == 'refs/heads/main'` and checks out `main`, so a dispatch
     on a branch skips it. An item that changes code the Pi runs (the
     install actions) proves the arm64 Linux path with the module's tests
     for that platform and watches the first nightly after merge;
+  - **nor can bazel.yml's macOS leg.** bazel.yml has no
+    `workflow_dispatch`, and macOS joins its matrix only on push to main
+    and the schedule. The install actions also reach hosted macOS from a
+    dispatched `test.yml` (OmniSim, Pebble) or `native.yml` (the ZWO SDK),
+    so J2, J3 and J5 prove macOS there. What only that leg runs (J10's
+    remote flags, R2's clippy) is proven by tests. Every item that changes
+    code the leg runs watches its first push-to-main run. Adding
+    `workflow_dispatch` to bazel.yml would change the matrix and routing
+    expressions ADR-020 reviews, so an item does that only with the
+    owner's say;
   - code that runs only on an event a PR cannot produce — a failed
     scheduled run, a push to main — never runs from a dispatch.
 
@@ -84,20 +94,21 @@ first in their columns.
 | J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Not started |
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Not started |
 | J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Not started |
+| J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
 | R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Not started |
-| R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` | F2 | Not started |
+| R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` | F2, R1 | Not started |
 | R3  | Bazel/Cargo target parity | — | — | Moved in review: now J11 |
 | R4  | Sharded BDD runner | — | — | Moved in review: now J12 |
-| R5  | Workspace discovery and the MSRV check | — | — | Dropped in review: stays YAML (see R5) |
+| R5  | Workspace discovery and the MSRV check | — | — | Moved in review: now in S1, as JavaScript |
 | R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Not started |
 | R7  | ConformU runner | `scripts/test-conformance.sh` | F2 | Not started |
-| R8  | Packaging scripts, one PR each | 12 scripts in `scripts/` | F2 | Not started |
-| S1  | Sweep of the remaining inline blocks | the rest | F1 or F2 | Not started |
+| R8  | Packaging scripts a developer runs, one PR each | 8 scripts in `scripts/` | F2 | Not started |
+| S1  | Sweep of the remaining inline blocks | the rest (listed in S1) | F1 or F2 | Not started |
 
 A suggested order, if nothing else decides it: F1, then J1 (the cache that
 started this) and J7 (ten copies, small); F2, then R6 (small, and it
-closes a gap on a security boundary); then J2–J6, J12 and R2. R8 is the
-largest and goes last.
+closes a gap on a security boundary); then J2–J6, J12, and R1 before R2.
+R8 and J13 are the largest and go last.
 
 ## Foundations
 
@@ -123,12 +134,20 @@ largest and goes last.
   `GITHUB_ENV` and `GITHUB_PATH` name (multi-line values in the delimiter
   form); masking (`::add-mask::`); log groups; failing the step; HTTP with
   timeouts and bounded retries over `fetch`; SHA-256 of a stream.
+- **A syntax check of every action file.** Tests catch a syntax error only
+  in a file they import, and an action's entry file is usually not
+  imported, because it runs on load. A broken entry file would then pass
+  every PR check and fail only where the action runs, which for J7 is
+  after a scheduled failure and for J1's save after a push to main. F1
+  adds a Bazel test that runs `node --check` over every `.js` file under
+  the actions and the helper, so an action added later is covered too.
 - **Conventions** in a new skill doc that F2 extends, linked from AGENTS.md
   rule 1: where actions live, Node built-ins only, how to test, how to
-  wrap an action that needs `actions/cache`.
+  wrap an action that needs `actions/cache` (the order ADR-022 gives:
+  resolve, then the cache, then install).
 - **Done when** a test of the helper module runs in `bazel test //...` on
   the Linux and Windows PR legs, and a deliberately broken helper turns
-  both legs red.
+  both legs red, as does a syntax error in an entry file no test imports.
 
 ### F2 — Rust tools crate
 
@@ -199,9 +218,14 @@ gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
   (`github.event_name == 'push' && secrets.… || ''`). It never lives on
   the runner VM, so a PR can read the cache but never write it. Unlike
   bazel.yml's, it goes to the action as an input (`with:`), never into
-  the job's `env:`: in a Cargo job every build script and proc macro of
-  the cold build would otherwise see it, and one compromised dependency
-  could poison the archive every PR restores.
+  the job's `env:`, where every build script and proc macro of the cold
+  build could read it. That keeps the key itself from a compromised
+  dependency, which could otherwise overwrite any object the key can
+  write. It does not stop that dependency's build script from writing
+  into `target/`, which the save then uploads for every PR to restore.
+  That is no worse than the dependency itself, which those PRs compile
+  anyway, and the next push to main replaces the archive with a cold
+  build.
 - **Writers never restore.** A push-to-main run builds cold and saves; only
   PR runs restore. The archive holds build-script and proc-macro binaries
   that the job runs, and an anonymous plain-HTTP read has no integrity
@@ -270,17 +294,28 @@ gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
   vendor CDN fails.
 - **Unpacking:** the assets are `.tar.gz`, `.tar.xz` and `.zip`. Node's
   built-ins read none of these archive formats and have no xz decoder, so
-  the module runs the platform's `tar`; macOS's and Windows' `tar` read
-  zip too. Linux's GNU tar does not: today's shell uses `unzip`. Decide
-  between that and a small zip reader on `zlib`'s raw inflate, and test
-  whichever it is.
-- `install-omnisim` (179 lines, used by six workflows) becomes a composite
-  wrapper: its `actions/cache` step, then the JavaScript action.
+  the module runs a system `tar`. macOS's is bsdtar, which reads zip. On
+  Windows the module runs `%SystemRoot%\System32\tar.exe`, also bsdtar,
+  by its full path and never as a bare `tar`: Windows runners also carry
+  Git for Windows' GNU tar, which can come first on `PATH` and does not
+  read zip. Linux's GNU tar does not read zip either, and today's shell
+  uses `unzip` there; decide between that and a small zip reader on
+  `zlib`'s raw inflate. Test each OS's choice, and unpack a zip on the
+  Windows leg.
+- **The wrapper runs in three steps.** `install-omnisim` (179 lines, used
+  by six workflows) becomes a composite wrapper: the JavaScript action
+  first resolves the asset and its pin and outputs the cache key, which
+  carries the pin so that a pin bump misses the old cache; then
+  `actions/cache` restores with that key; then the JavaScript action runs
+  again, downloading, verifying and unpacking on a miss and exporting the
+  paths either way. `install-astap` and the ZWO SDK's Linux and macOS
+  path have the same shape.
 - **Done when** `install-omnisim`'s bash is gone, every workflow that uses
   it is green on each venue a branch can reach, and the module's tests
   cover asset choice (arm64 Linux included), a checksum mismatch and a
-  truncated download. The Pi's first nightly after merge is watched, since
-  no branch run reaches it.
+  truncated download. The Pi's first nightly and bazel.yml's first
+  push-to-main macOS leg after merge are watched, since no branch run
+  reaches them.
 
 ### J3–J6 — The other install actions
 
@@ -314,16 +349,33 @@ not:
 
 ### J7 — Nightly tracking-issue action
 
-Ten workflows (check, conformu, install-astap, native, nightly-packages,
-pi-nightly, plate-solver-smoke, safety, scheduled, ui-browser-nightly)
-each carry a `github-script` block that opens a tracking issue for a
-failed scheduled run, or comments on the open one. One action with
-`title`, `labels` and `body` inputs replaces them. `labels` is a list:
-every block today searches by its own `<name>-nightly` label and creates
-with that label and `ci-flake`, and triage relies on both. Each workflow
-keeps its exact title and labels, because others read them:
-`refresh-astap-shas.yml` finds install-astap's tracking issue by its
-title and its `install-astap-nightly` label to link a rotation PR to it.
+Ten workflows each carry a `github-script` block that opens a tracking
+issue when a scheduled run fails (safety.yml and scheduled.yml also when
+it is cancelled), or comments on the open one. One action with `title`,
+`labels` and `body` inputs replaces them. Each block lists the open
+issues carrying its own label, picks the one with its exact title, and
+creates with that label and `ci-flake`; triage relies on both. The labels
+follow no pattern, so the action derives nothing from a workflow's name,
+and each workflow passes the label it uses today:
+
+| Workflow | Label |
+| -------- | ----- |
+| check.yml | `check-nightly` |
+| conformu.yml | `conformu-nightly` |
+| install-astap.yml | `install-astap-nightly` |
+| native.yml | `native-nightly` |
+| nightly-packages.yml | `nightly-packages` |
+| pi-nightly.yml | `pi-nightly` |
+| plate-solver-smoke.yml | `plate-solver-nightly` |
+| safety.yml | `safety-nightly` |
+| scheduled.yml | `rolling-nightly` |
+| ui-browser-nightly.yml | `browser-nightly` |
+
+Each workflow keeps its exact title and label too, because others read
+them. `refresh-astap-shas.yml` finds install-astap's tracking issue by
+its title and its `install-astap-nightly` label to link a rotation PR to
+it. `clippy-beta`'s per-lint census issues also carry `check-nightly`, so
+only the exact title tells check.yml's tracking issue from them.
 
 Those jobs check nothing out today, and declare only `issues: write`, so
 `contents` is none. The action needs a sparse checkout of itself and of
@@ -332,8 +384,8 @@ wherever F1 put the helper, so each job also gets `contents: read`.
 census are different and stay out unless they fit without special
 cases.
 
-The action runs only after a scheduled run fails, which no dispatch
-produces. Its tests run the open-or-comment logic against a fake GitHub
+The action runs only after a scheduled run fails or is cancelled, and a
+dispatched run is never a scheduled one. Its tests run the open-or-comment logic against a fake GitHub
 API, and the PR proves it live with a temporary dispatchable workflow
 that calls the action against a throwaway title and label, then closes
 what it opened; the temporary workflow is deleted before merge. After
@@ -390,7 +442,9 @@ the credential cannot go in the file at all: keep it out (a credential
 helper that reads it from the step's environment is the first to check),
 and correct the script's header either way. If no such way works, drop
 this item and keep the script. The mask step stays inline in the YAML either way:
-it runs before checkout, and a local action cannot.
+it runs before checkout, and a local action cannot. The macOS venue's
+flags run only in bazel.yml's macOS leg, which no branch reaches, so
+tests prove them and the first push to main is watched.
 
 ### J11 — Bazel/Cargo target parity
 
@@ -417,6 +471,20 @@ shard fails the step. Neither workflow runs on a PR, and neither
 publishes, so dispatched `test.yml` and `scheduled.yml` runs on the
 branch prove it.
 
+### J13 — Package-repository scripts
+
+`build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh` and
+`push-packages-repo.sh` (725 lines) build, check and upload the apt
+and yum repositories. Only `nightly-packages.yml` runs them, and no doc
+sends a developer to them, so under ADR-022's tiebreak they are
+JavaScript; the other packaging scripts are R8's. One PR, or two (the
+builders and their verifier, then the push). The first three run in the
+`repo` job, which a `dry_run=true` dispatch runs, so that dispatch
+proves them. `push-packages-repo.sh` runs only in `publish`, so it falls
+under the publishing rule: tests against a fake store first, then a
+watched nightly. `tools/rusty-photon-packages-r2/README.md` points to the
+push script's header for the upload order, and changes with it.
+
 ## Rust items
 
 ### R1 — Toolchain checksums
@@ -438,12 +506,15 @@ keeping a second copy.
 
 `tools/ci/bazel-clippy.sh` (184 lines): runs the clippy aspect over
 `//...` and checks the toolchain pins agree. It is in AGENTS.md rule 4's
-local gate and in bazel.yml's `bazel clippy` step. **Open question:** the
-pool's templates have no Cargo, so in the Bazel legs the tool cannot
-start through the alias. `bazel run` would make the tool start Bazel from
-inside a `bazel run`; building it first and running it from `bazel-bin`
-avoids that. Verify the choice on the Linux and Windows legs; don't
-assume it.
+local gate and in bazel.yml's `bazel clippy` step. It needs R1 first, and
+reads R1's archive list rather than porting the script's own copy.
+**Open question:** the pool's templates have no Cargo, so in the Bazel
+legs the tool cannot start through the alias. `bazel run` would make the
+tool start Bazel from inside a `bazel run`; building it first and running
+it from `bazel-bin` avoids that. Verify the choice on the Linux and
+Windows PR legs; don't assume it. bazel.yml's macOS leg runs the step
+too, but never on a branch, so the launch there is proven by the first
+push to main (see the proving rule).
 
 ### R3 — Moved: Bazel/Cargo target parity
 
@@ -453,14 +524,15 @@ Now J11.
 
 Now J12.
 
-### R5 — Dropped: workspace discovery and the MSRV check
+### R5 — Moved: workspace discovery and the MSRV check
 
-check.yml's "Verify workspace MSRV", scheduled.yml's "Find Miri services"
-and conformu.yml's "Discover ConformU services" are each a
-`cargo metadata | jq` pipeline with a few lines around it: close enough
-to one command that moving them buys little, and a Rust subcommand would
-put a compile of the tools crate in front of jobs that have no Rust
-cache. They stay YAML. This was an item until the plan's first review.
+check.yml's "Verify workspace MSRV" (a `while read` loop),
+scheduled.yml's "Find Miri services" and conformu.yml's "Discover
+ConformU services" (each an `if`/`else` on a count, writing several
+outputs) read `cargo metadata | jq`. They have control flow, so ADR-022
+does not leave them in YAML, and only CI runs them, so they are
+JavaScript under its tiebreak, which also spares those jobs a compile of
+the tools crate. They are in S1's list.
 
 ### R6 — Pool routing copies stay identical
 
@@ -487,33 +559,63 @@ and pre-push.md send developers to. conformu.yml's "Run ConformU tests
 
 ### R8 — Packaging scripts
 
-About 4,500 lines in 12 files: `build-packages.sh`, `build-tarballs.sh`,
-`build-apt-repo.sh`, `build-yum-repo.sh`, `push-packages-repo.sh`,
-`generate-brew-formulas.sh`, `verify-packages.sh`,
-`verify-packages-repo.sh`, `verify-brew.sh`, `check-pkg-assets.sh`,
-`build-msi.ps1` and `verify-msi.ps1`. One PR per script, or per tight
-pair (a builder and its verifier). A builder or verifier is proven before
-its shell is deleted, by a `nightly-packages.yml` dispatch with
-`dry_run=true` (which builds and verifies every leg and publishes
-nothing) or by `msi.yml`. A script that only the publish job or
-`release.yml` runs falls under the publishing rule in "Working an item":
-tests first, then a watched first run on main. ADRs 012 to 018 and the
-packaging docs name these scripts and change with them.
+The packaging scripts a developer also runs, so Rust under ADR-022's
+tiebreak: about 3,750 lines in 8 files. The packaging docs send
+developers to `build-packages.sh` and `verify-packages.sh`
+(packaging.md), `build-tarballs.sh` and `verify-brew.sh`
+(packaging-macos.md), `build-msi.ps1` and `verify-msi.ps1`
+(packaging-windows.md, installer/README.md) and `check-pkg-assets.sh`
+(packaging/README.md); `verify-brew.sh` runs
+`generate-brew-formulas.sh`. The apt and yum repository scripts, which
+only CI runs, are J13.
+
+One PR per script, or per tight pair (a builder and its verifier). A
+builder or verifier is proven before its shell is deleted, by a
+`nightly-packages.yml` dispatch with `dry_run=true` (which builds and
+verifies every leg and publishes nothing) or by `msi.yml`. A script that
+only the publish job or `release.yml` runs falls under the publishing
+rule in "Working an item": tests first, then a watched first run on main.
+The `verify-msi.ps1` PR also takes nightly-packages.yml's "Verify the MSI
+lifecycle" step, whose only logic is whether to pass `-UpgradeFrom`.
+ADRs 012 to 018 and the packaging docs name these scripts and change
+with them.
 
 ## S1 — Sweep of the remaining inline blocks
 
-What is left after the items above, each moved by the rule in ADR-022 or
-left in place when it is really one command. Small PRs, in any order:
+Every workflow block with logic (control flow, or more than five lines)
+that no item above takes and that "Not in this plan" does not leave out,
+as of 2026-10-13. Only CI runs these, so each moves to JavaScript under
+ADR-022's tiebreak, or stays in YAML when it is really one command, or
+when a matrix value or an expression can replace its control flow. Small
+PRs, in any order:
 
-- bazel-coverage.yml: "Annotate uncovered diff lines", "Capture bazel
-  test logs", "Split combined lcov per package";
+- bazel.yml: the Windows profile flags chosen in `bazel build`,
+  `bazel clippy`, `bazel test (fast)` and `bazel test (BDD)`, once J10
+  has taken their sourcing;
+- bazel-coverage.yml: "bazel coverage" (its timeout and exit-status
+  handling), "Annotate uncovered diff lines", "Capture bazel test logs",
+  "Split combined lcov per package";
+- check.yml: "Verify workspace MSRV" (from R5); shellcheck's "Install
+  pinned shellcheck" and its script list; `clippy-beta`'s report and
+  aggregation blocks, and its per-lint census `github-script` if J7
+  leaves it out;
+- conformu.yml: "Discover ConformU services" (from R5); the two "Export
+  CONFORMU_PATH" blocks; "Run ConformU tests (parallel)", unless R7
+  takes it;
+- install-astap.yml: "Smoke test (Linux/macOS)" and "Smoke test
+  (Windows)", a bash and PowerShell pair;
+- parity.yml: the two "Guard - rules_rust …" steps, which J11 leaves;
+- pi-nightly.yml: "Symlink libusb for the QHYCCD static link";
 - plate-solver-smoke.yml: "Assert solve-time budget", "Log per-scenario
   timing";
-- pi-nightly.yml: "Symlink libusb for the QHYCCD static link";
+- release.yml: "Strip binary";
 - repin-bazel.yml: "Skip if already in sync", "Commit and push repin";
-- safety.yml: "Enable opt-level 1 for sanitizers";
-- check.yml: shellcheck's "Install pinned shellcheck" and its script list,
-  and `clippy-beta`'s report and aggregation blocks.
+- safety.yml: "Enable opt-level 1 for sanitizers", and "cargo test"'s
+  flags per sanitizer;
+- scheduled.yml: "Find Miri services" (from R5).
+
+The "Mask runner-provided cache endpoint" steps stay in YAML for the
+reason J10 gives.
 
 ## Not in this plan
 

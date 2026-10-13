@@ -75,8 +75,10 @@ Each piece of CI logic goes to exactly one of three homes.
      lines may stay in the workflow, and anything longer, or repeated,
      becomes a local action;
    - an action that needs another action (`actions/cache`) is a thin
-     composite wrapper around the JavaScript action, since a JavaScript
-     action cannot call one;
+     composite wrapper, since a JavaScript action cannot call one. The
+     JavaScript runs first to compute what the other action needs (a
+     cache key that carries the pin), then the other action runs, then
+     the JavaScript runs again with its result (whether the cache hit);
    - tests run with `node --test` under `bazel test //...`, on a Node the
      repo pins to the same major version as `runs.using`, so they run on the
      Linux and Windows PR legs like every other test.
@@ -119,8 +121,9 @@ Three kinds of code are outside this decision:
   settles whether it comes out of the ignore list or the tested code lives
   elsewhere.
 - JavaScript here has no formatter or linter: both would be npm
-  dependencies. `node --check` and the tests are its gate; adding a linter
-  is a later decision.
+  dependencies. Its gate is the tests and a Bazel test that runs
+  `node --check` over every action file, so a syntax error in a file no
+  test imports still fails the PR; adding a linter is a later decision.
 - A Rust tool costs a compile on first local use, where a script ran at
   once. In the Bazel legs it comes from the remote cache.
 - Some tools that drive Bazel (`bazel-clippy.sh`) run inside the Bazel
