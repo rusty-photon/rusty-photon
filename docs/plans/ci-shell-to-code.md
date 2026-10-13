@@ -30,6 +30,13 @@ first in their columns.
   shown to fail when the behaviour is broken (docs/skills/testing.md).
 - **Docs move with it.** A PR that renames a command updates every doc
   that names it, AGENTS.md included (rule 2).
+- **Find every reader of what moves.** Pins and URLs are parsed out of
+  the files that hold them today: `refresh-astap-shas.yml` reads
+  install-astap's SHA table from its `action.yml`, and
+  `scripts/check-pkg-assets.sh` reads the ZWO and SVBony `ref` defaults
+  and the ZWO Windows URLs from theirs, to check the packages link what CI
+  links. An item that moves a pin updates its readers in the same PR, or
+  leaves the pin where they read it.
 
 ## Items
 
@@ -51,16 +58,16 @@ first in their columns.
 | R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` | F2 | Not started |
 | R3  | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F2 | Not started |
 | R4  | Sharded BDD runner | `bdd-sharded`'s bash | F2 | Not started |
-| R5  | Workspace discovery and the MSRV check | three discovery/check blocks | F2 | Not started |
-| R6  | Pool routing copies stay identical | nothing (a new guard) | F2 | Not started |
+| R5  | Workspace discovery and the MSRV check | — | — | Dropped in review: stays YAML (see R5) |
+| R6  | Pool routing copies stay identical | nothing (a new guard) | F1, F2 | Not started |
 | R7  | ConformU runner | `scripts/test-conformance.sh` | F2 | Not started |
 | R8  | Packaging scripts, one PR each | 12 scripts in `scripts/` | F2 | Not started |
 | S1  | Sweep of the remaining inline blocks | the rest | F1 or F2 | Not started |
 
 A suggested order, if nothing else decides it: F1, then J1 (the cache that
-started this) and J7 (ten copies, small); F2 with R6 (small, and it closes
-a gap on a security boundary); then J2–J6 and R2. R8 is the largest and
-goes last.
+started this) and J7 (ten copies, small); F2, then R6 (small, and it
+closes a gap on a security boundary); then J2–J6 and R2. R8 is the
+largest and goes last.
 
 ## Foundations
 
@@ -72,6 +79,12 @@ goes last.
 - **A test rule** that runs `node --test` over an action's test files, as
   an ordinary Bazel test, on Linux, Windows and macOS. On Windows the
   launcher cannot be a shell script.
+- **Where the tests live.** `.github` is in `.bazelignore` (since #82, with
+  no reason recorded), so a BUILD file under `.github/actions` is never
+  loaded. Either take `.github` out of the ignore list, checking that
+  nothing else under it then reaches `//...`, or keep the tested modules
+  elsewhere and have the actions import them; decide here. R6 needs the
+  same answer for the workflow files it reads.
 - **The helper module** in `.github/actions/`, which every action imports:
   reading inputs (`INPUT_*`); writing to the files `GITHUB_OUTPUT`,
   `GITHUB_ENV` and `GITHUB_PATH` name (multi-line values in the delimiter
@@ -97,6 +110,10 @@ goes last.
   `MODULE.bazel.lock`, and AGENTS.md rule 10 and the pre-commit hook send
   developers to it. It touches no CI step, so it proves the crate without
   risking one. The hook stays shell (ADR-022) and names the new command.
+  `repin-bazel.yml`'s "Repin crate index" step runs the same sequence on
+  dependabot PRs, on the pool, which has no Cargo; its three commands are
+  plain one-command steps and stay YAML, and its "keep the two in step"
+  comment points at the new tool.
 - **Done when** the shell script is gone, rule 10, pre-push.md and the
   hook name the new command, and its report of unstaged Cargo files is
   unit-tested.
@@ -105,13 +122,26 @@ goes last.
 
 ### J1 — Cargo cache on the LAN object store
 
-The `stable / clippy` job moved to the pool in #1505, where
-Swatinem/rust-cache cannot help: its cache lives in GitHub, across the
-operator's WAN. This item gives that job a cache on the LAN.
+#1505 (open; J1 needs it merged) moves the `stable / clippy` job to the
+pool, where Swatinem/rust-cache cannot help: its cache lives in GitHub,
+across the operator's WAN. This item gives that job a cache on the LAN.
 
+- **Scope: the compile.** On the pool the job's cold clippy passes take
+  about 110 s of its 2m13s. Installing the toolchain takes about 10 s more,
+  over the WAN, because the pool template has no rustup; that stays until
+  the template carries one, which is template work outside this plan.
 - **Store:** an S3-compatible object store on the operator's NAS, serving
   anonymous reads of one bucket over plain HTTP and accepting writes
-  signed with AWS Signature Version 4. The spike below used Garage.
+  signed with AWS Signature Version 4. The owner chose this on 2026-10-13,
+  and the spike below used Garage.
+- **An alternative to weigh first:** the LAN bazel-remote already splits
+  anonymous reads from authenticated writes, and its HTTP CAS is content
+  addressed, so a restore would be checked for free, with no new store,
+  secret or SigV4 code. The catch is the pointer from a Rust version to
+  the newest archive's digest: it needs an AC entry, which bazel-remote
+  validates as a Bazel `ActionResult` unless that validation is turned
+  off. Record the comparison in the PR; changing the store needs the
+  owner's say.
 - **The action:** `.github/actions/cargo-cache/`, `runs.using: node24`.
   Its main step restores; its `post:` step saves. No endpoint means it
   does nothing, which covers hosted runners and fork PRs.
@@ -125,6 +155,12 @@ operator's WAN. This item gives that job a cache on the LAN.
   bazel.yml attaches `BAZEL_LAN_CACHE_WRITE_AUTH`
   (`github.event_name == 'push' && secrets.… || ''`). It never lives on
   the runner VM, so a PR can read the cache but never write it.
+- **Writers never restore.** A push-to-main run builds cold and saves; only
+  PR runs restore. The archive holds build-script and proc-macro binaries
+  that the job runs, and an anonymous plain-HTTP read has no integrity
+  check, so a tampered restore must never run in a job that holds the
+  write key, or be saved back for every later PR. A cold build on main
+  also means the archive holds only what the current lockfile needs.
 - **What is cached:** `target/`, with the workspace members' own outputs
   removed (every run re-lints them anyway), plus `$CARGO_HOME/registry`'s
   `index`, `cache` and `src`. Archived with the system `tar`. Whether to
@@ -132,8 +168,9 @@ operator's WAN. This item gives that job a cache on the LAN.
   measured in the item; Node 24's built-in zstd is still marked
   experimental.
 - **Key and retention:** one object per Rust version, overwritten by each
-  push to main. Objects for older Rust versions must not pile up; decide
-  how they go.
+  push to main from its cold build, so it never accumulates the
+  dependencies of older lockfiles. Objects for older Rust versions must
+  not pile up either; decide how they go.
 - **Signing:** SigV4 with `node:crypto`, tested against AWS's published
   Signature Version 4 examples. The unsigned-payload form lets the upload
   stream without hashing the archive first.
@@ -149,14 +186,21 @@ operator's WAN. This item gives that job a cache on the LAN.
   bucket and allow anonymous website reads of it; create a key that can
   write that bucket; add the key as a repository secret.
 - **Done when** a pool `stable / clippy` run on a PR restores the cache
-  and runs warm, a push to main saves it, and the job still passes with
-  the store stopped.
+  and runs warm, a push to main builds cold and saves it, and the job
+  still passes with the store stopped.
 
 ### J2 — Shared download-verify-extract module, first used by `install-omnisim`
 
-- One module for what all five `install-*` actions do: choose the asset
-  for the OS and architecture from a pinned table, download it with
-  retries and a stall timeout, verify its SHA-256, unpack it, export paths.
+- One module for what all five `install-*` actions do: choose what to
+  fetch for the OS and architecture, download it with retries and a stall
+  timeout, check it against its pin, unpack or stage it, export paths.
+- **Three kinds of pin**, which the module must all carry from the start:
+  a SHA-256 per asset (OmniSim, Pebble, ASTAP, SVBony on Windows); a git
+  ref, for the ZWO and SVBony blobs fetched from the INDI repository on
+  Linux and macOS, which have no hash of their own; and none at all for
+  ZWO on Windows, whose vendor URLs are rolling "latest" links cached per
+  ISO week, with the previous week's download as the fallback when the
+  vendor CDN fails.
 - **Unpacking:** the assets are `.tar.gz`, `.tar.xz` and `.zip`. Node's
   built-ins read none of these archive formats and have no xz decoder, so
   the module runs the platform's `tar`; macOS's and Windows' `tar` read
@@ -180,13 +224,20 @@ not:
 - **J4 `install-astap`** (283 lines). The D05 star database as a second
   asset, and SourceForge mirrors: today's curl flags re-roll a stalled
   mirror (the step's comments explain the numbers), which the module's
-  stall timeout must reproduce.
+  stall timeout must reproduce. `refresh-astap-shas.yml` extracts the
+  current pins from this `action.yml` with awk and fails when the table
+  changes shape, so J4 points that extraction at the new table in the
+  same PR; J8 then replaces the rest of that workflow.
 - **J5 `install-zwo-sdk`** (442 lines, bash and PowerShell). A sudo and a
   sudo-free Linux path, a macOS path and a Windows path; the cache restore
-  and save are separate steps.
+  and save are separate steps; the Windows download is the unpinned,
+  weekly-cached one. `check-pkg-assets.sh` reads this action's `ref`
+  default and Windows URLs, so they stay where it reads them or it
+  changes in the same PR.
 - **J6 `install-svbony-sdk`** (367 lines, bash and PowerShell). Windows
-  downloads from the project's private mirror; Linux and macOS from the
-  INDI packaging.
+  downloads from the project's private mirror, against a SHA-256; Linux
+  and macOS from the INDI repository, against a git ref.
+  `check-pkg-assets.sh` reads the `ref` default here too.
 
 ### J7 — Nightly tracking-issue action
 
@@ -206,7 +257,7 @@ special cases.
 lines): it detects an upstream rotation per platform, checks a new binary
 solves M101, rewrites the pins and opens or updates a PR. After J4 the
 pins live in J4's table, which this item edits instead of rewriting
-`action.yml` with text substitution.
+`action.yml` with text substitution (J4 has already moved the read side).
 
 ### J9 — Release and nightly publishing glue
 
@@ -219,11 +270,18 @@ large. Prove it with a dispatched nightly run.
 ### J10 — Bazel remote-cache flags
 
 `tools/ci/bazel-remote-flags.sh` is `source`d by bazel.yml and
-bazel-coverage.yml to build a `REMOTE_FLAGS` array per venue. An action
-that writes the same flags to a bazelrc file the workspace `.bazelrc`
-imports with `try-import` removes the sourcing from every Bazel step. The
-mask step stays inline in the YAML: it runs before checkout, and a local
-action cannot.
+bazel-coverage.yml to build a `REMOTE_FLAGS` array per venue. It is
+sourced on purpose: the array can carry the cache write credential, and
+sourcing keeps it in the step's own shell, never on the runner's disk,
+which the next job on a pool VM or on the Pi could read. An action that
+writes the venue's flags to a bazelrc file the workspace `.bazelrc`
+imports with `try-import` would remove the sourcing from every Bazel step,
+but only the non-secret flags may go in that file. The credential has to
+reach Bazel without touching disk; find a way that does (a credential
+helper that reads it from the step's environment is the first to check),
+and verify it on the pool. If there is none, drop this item and keep the
+script. The mask step stays inline in the YAML either way: it runs before
+checkout, and a local action cannot.
 
 ## Rust items
 
@@ -243,9 +301,10 @@ against a saved manifest.
 `//...` and checks the toolchain pins agree. It is in AGENTS.md rule 4's
 local gate and in bazel.yml's `bazel clippy` step. **Open question:** the
 pool's templates have no Cargo, so in the Bazel legs the tool cannot
-start through the alias. `bazel run` would make the tool start Bazel from inside a
-`bazel run`; building it first and running it from `bazel-bin` avoids
-that. Verify the choice on the Linux and Windows legs; don't assume it.
+start through the alias. `bazel run` would make the tool start Bazel from
+inside a `bazel run`; building it first and running it from `bazel-bin`
+avoids that. Verify the choice on the Linux and Windows legs; don't
+assume it.
 
 ### R3 — Bazel/Cargo target parity
 
@@ -259,12 +318,14 @@ suites as parallel shard processes for the Cargo safety net (`test.yml`
 three times, `scheduled.yml` three times). Which suites can shard is
 workspace knowledge. The action shrinks to one command.
 
-### R5 — Workspace discovery and the MSRV check
+### R5 — Dropped: workspace discovery and the MSRV check
 
 check.yml's "Verify workspace MSRV", scheduled.yml's "Find Miri services"
-and conformu.yml's "Discover ConformU services" each read the workspace
-with text tools. Each becomes a subcommand that prints what its workflow
-consumes (a JSON matrix, or a pass/fail).
+and conformu.yml's "Discover ConformU services" are each a
+`cargo metadata | jq` pipeline with a few lines around it. A Rust
+subcommand would put a compile of the tools crate in front of jobs that
+have no Rust cache, to replace one pipeline, so they stay YAML. This was
+an item until the plan's first review.
 
 ### R6 — Pool routing copies stay identical
 
@@ -272,8 +333,11 @@ The pool's `runs-on` routing expression is copied into bazel.yml,
 bazel-coverage.yml and repin-bazel.yml, and #1505 adds a copy to
 check.yml. ADR-020 makes it a security boundary, and only a comment keeps
 the copies in step. A test in the tools crate reads the workflows and
-asserts that the copies for each OS agree, so `bazel test //...` catches a
-widened copy on the PR that widens it. Raised by the review of #1505.
+asserts that every copy equals the reviewed expression for its OS, held in
+the test itself. A PR that changes one copy fails `bazel test //...`, and
+a PR that changes them all has to change the test too, in the same diff
+the reviewer reads. The test reads files under `.github`, so it needs F1's
+answer on `.bazelignore`. Raised by the review of #1505.
 
 ### R7 — ConformU runner
 

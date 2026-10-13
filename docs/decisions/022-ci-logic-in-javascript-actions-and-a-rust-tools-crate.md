@@ -18,14 +18,17 @@ PowerShell, not counting the runner pool's test harness.
 Shell has cost this repo in four ways:
 
 - **Copies.** The five `install-*` actions (OmniSim, Pebble, ASTAP, the
-  ZWO and SVBony SDKs) each do one job — pick the asset for the OS,
-  download it, check its SHA-256, unpack it, export a path — about 1,400
-  lines in all, written five times over. Two of them do it twice, in bash
-  and again in PowerShell for Windows. A fix lands in one copy and not
-  the others.
-- **No tests.** The one shell program with a test harness is the runner
-  pool orchestrator (`tools/ci/tests/`). Nothing else is exercised before
-  it runs in CI, and a workflow step can only be tried by pushing it.
+  ZWO and SVBony SDKs) each do the same kind of job — choose what to fetch
+  for the OS, download it with retries, check it against a pin, unpack or
+  stage it, export paths — in about 1,400 lines, written five times over.
+  The pins differ (a SHA-256, a git ref, a rolling vendor URL), the
+  retry and unpack code does not. Two of them do it twice, in bash and
+  again in PowerShell for Windows. A fix lands in one copy and not the
+  others.
+- **No tests.** The only shell with a test harness is the runner pool's
+  host tooling, the orchestrator and the EDAC check (`tools/ci/tests/`).
+  Nothing else is exercised before it runs in CI, and a workflow step can
+  only be tried by pushing it.
 - **Defects of the language.** Quoting, word splitting, a pipeline's exit
   status read through `!`, a `local` that shadows an outer variable:
   [code-review.md](../skills/code-review.md#what-the-record-shows) records
@@ -98,6 +101,10 @@ Three kinds of code are outside this decision:
   PowerShell twins, and the logic can be tested before it reaches CI.
 - The repo gains a Node toolchain in `MODULE.bazel`, for tests only;
   actions still run on the runner's own Node.
+- `.github` has been in `.bazelignore` since Bazel arrived (#82), so Bazel
+  cannot see tests or data there today. The plan's first JavaScript item
+  settles whether it comes out of the ignore list or the tested code lives
+  elsewhere.
 - JavaScript here has no formatter or linter: both would be npm
   dependencies. `node --check` and the tests are its gate; adding a linter
   is a later decision.
