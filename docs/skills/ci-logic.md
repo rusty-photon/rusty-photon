@@ -32,9 +32,9 @@ ask for a new shell block of more than a few lines to move.
 
 ```
 .github/actions/
-  BUILD.bazel              the tests of every action, and the syntax check
-  node_test.bzl            node_test and node_syntax_test
-  syntax.test.mjs          node --check over every JavaScript file here
+  BUILD.bazel              the tests of every action, and the link check
+  node_test.bzl            node_test and node_link_test
+  link.test.mjs            parses and links every JavaScript file here
   lib/helpers.mjs          the helper module every action imports
   lib/helpers.test.mjs
   <action>/action.yml      runs.using: node24, runs.main: index.mjs
@@ -76,12 +76,13 @@ parsers, which its comments name.
 | Export | Use |
 | --- | --- |
 | `getInput`, `getBooleanInput` | Read an input. A boolean accepts `true`/`True`/`TRUE` and the three `false` spellings; anything else, empty included, throws, so give it a default in `action.yml`. |
-| `setOutput`, `exportVariable`, `addPath` | Write `GITHUB_OUTPUT`, `GITHUB_ENV`, `GITHUB_PATH`. Values always go in the multi-line form, under a random delimiter. A name the runner would split (`=`, `<<`, a line break) throws. |
+| `setOutput`, `exportVariable`, `addPath` | Write `GITHUB_OUTPUT`, `GITHUB_ENV`, `GITHUB_PATH`. Values always go in the multi-line form, under a random delimiter. A name the runner would split (`=`, `<<`, a line break) throws, and so does `NODE_OPTIONS`, which the runner refuses to pass to later steps. |
 | `setSecret` | Mask a value in the rest of the job's log. Call it before anything can print the value. |
 | `warning`, `group`, `fail` | A warning annotation; a collapsible log group that closes however its function ends; an error annotation that fails the step on exit. |
 | `run` | Every entry file's wrapper: a throw becomes an error annotation and a failed step, with the stack in the log. |
-| `fetchWithRetry` | `fetch` with a timeout per attempt and bounded retries of 408, 429, 5xx, timeouts and network errors. Anything else outside 2xx throws an `HttpError`. The timeout covers reading the body too, so size it for the download. A stream body needs `attempts: 1`, since a retry would send it again. Errors drop the URL's query string, where a pre-signed URL carries its signature. |
-| `retry` | The same bounded retry for any other step that can fail transiently, such as a download and its checksum as one unit. |
+| `fetchWithRetry` | `fetch` with a timeout per attempt and bounded retries of 408, 429, 500, 502, 503, 504, timeouts and requests that got no answer, waiting as long as a Retry-After asks (a wait over two minutes is not retried). Anything else outside 2xx throws an `HttpError`. Only idempotent methods are retried by default: a POST or PATCH gets one attempt unless the caller sets `attempts`, knowing a repeat is harmless. The timeout covers reading the body too, so size it for the download. A stream body needs `attempts: 1`, since a retry would send it again. A caller's own `signal` aborts the request and ends the retries. |
+| `HttpError` | Its message holds the method, the URL without its query string (where a pre-signed URL carries its signature) and the status. `body` holds the start of the response's body, where an API says why it refused. That stays out of the message and the logged stack, since a server may echo credentials there; add it to an error of your own when you trust the server. |
+| `retry` | The same bounded retry for any other step that can fail transiently, such as a download and its checksum as one unit. The default `isRetryable` is `isTransient`, which retries no bug in the callback. |
 | `sha256` | The hash of a stream: a file's (`fs.createReadStream`) or a response body's. |
 | `io` | Where the helpers write. Tests swap it out (below). |
 
@@ -109,9 +110,15 @@ it stays in the action.
   `data` lists every file the test imports or reads. The launcher starts
   Node with `--preserve-symlinks`, so an import missing from `data` fails
   on Linux the way it would on Windows, where the runfiles are copies.
-- **No BUILD file below `.github/actions`.** `syntax_test` checks the
-  files its glob sees, and a glob stops at a package boundary, so
-  `node_syntax_test` refuses a nested BUILD file rather than lose sight of
+- **`link_test` checks every file.** It parses each one as an ES module
+  and links it without running it: every import must be a `node:`
+  built-in or a relative `.mjs` file that exists, and every name imported
+  must be exported there. So a misspelt import in an entry file, which no
+  test imports, fails the PR instead of the runner, and so does an npm
+  package or a `.js` file.
+- **No BUILD file below `.github/actions`.** `link_test` checks the files
+  its glob sees, and a glob stops at a package boundary, so
+  `node_link_test` refuses a nested BUILD file rather than lose sight of
   the files under it.
 - `bazel test //.github/actions/...` runs them. They are part of
   `bazel test //...`, so they run on the Linux and Windows PR legs, on

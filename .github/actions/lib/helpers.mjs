@@ -175,8 +175,16 @@ export function setOutput(name, value) {
   appendEntry('GITHUB_OUTPUT', name, value);
 }
 
-/** Sets environment variable `name` for the job's later steps, and for this process. */
+/**
+ * Sets environment variable `name` for the job's later steps, and for this
+ * process. NODE_OPTIONS is refused: the runner drops it from GITHUB_ENV
+ * with an error of its own (FileCommandManager.cs, `_setEnvBlockList`), so
+ * later steps would never see it.
+ */
 export function exportVariable(name, value) {
+  if (name.toUpperCase() === 'NODE_OPTIONS') {
+    throw new Error('GITHUB_ENV: the runner does not let a step set NODE_OPTIONS for later steps');
+  }
   appendEntry('GITHUB_ENV', name, value);
   process.env[name] = String(value);
 }
@@ -198,41 +206,91 @@ function forLog(url) {
   return `${url.origin}${url.pathname}`;
 }
 
-/** A response outside 200–299. `status` is the HTTP status. */
+// How much of an error response's body an HttpError keeps.
+const ERROR_BODY_LIMIT = 4096;
+
+/**
+ * A response outside 200–299. `status` is the HTTP status, and
+ * `retryAfterMs` the wait its Retry-After header asked for, if it had one.
+ *
+ * `body` holds the start of the response's body, which is where an API says
+ * why it refused. It stays out of the message, and out of what `inspect`
+ * prints, because a server may echo the request's credentials there: S3's
+ * SignatureDoesNotMatch answer carries the signature it was sent. A caller
+ * that trusts what its server returns, such as the GitHub API's error JSON,
+ * can put it in an error of its own.
+ */
 export class HttpError extends Error {
-  constructor(method, url, status, statusText) {
+  constructor(method, url, status, statusText, { body = '', retryAfterMs } = {}) {
     super(`${method} ${forLog(url)}: ${status} ${statusText}`);
     this.name = 'HttpError';
     this.status = status;
+    this.retryAfterMs = retryAfterMs;
+    Object.defineProperty(this, 'body', { value: body, enumerable: false });
   }
 }
 
+// Retry-After holds seconds or an HTTP date (RFC 9110, section 10.2.3).
+function parseRetryAfter(header) {
+  if (header === null) return undefined;
+  const text = header.trim();
+  if (/^\d+$/.test(text)) return Number(text) * 1000;
+  const date = Date.parse(text);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+}
+
+// The start of an error response's body, or '' if it cannot be read.
+async function errorBody(response) {
+  try {
+    return (await response.text()).slice(0, ERROR_BODY_LIMIT);
+  } catch {
+    return '';
+  }
+}
+
+// Answers that a later attempt may not get: a request timeout, a rate
+// limit, and the server's or a gateway's failure or overload. 501 and 505
+// say the server cannot do it at all, and are not here.
+const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+
+// A server that asks for a longer wait than this is not waited for.
+const MAX_RETRY_AFTER_MS = 120_000;
+
 /**
- * Whether a failed attempt is worth repeating: the server answered 408, 429
- * or 5xx, the attempt timed out, or the request never got an answer (fetch
- * rejects with a TypeError). A URL that does not parse is a TypeError too,
- * which is why fetchWithRetry parses it before the first attempt.
+ * Whether a failed attempt is worth repeating: an answer in
+ * TRANSIENT_STATUSES (unless its Retry-After is longer than two minutes),
+ * a timeout, or a request that never got an answer. fetch reports that last
+ * one as `TypeError('fetch failed')`, with the network's error as its cause,
+ * which carries a code (ECONNRESET, UND_ERR_SOCKET, ...). Its other
+ * TypeErrors are requests it refused to send, such as a GET with a body, and
+ * a TypeError from the caller's own code is a bug: neither passes on a
+ * second try.
  */
 export function isTransient(err) {
-  if (err instanceof HttpError) return err.status === 408 || err.status === 429 || err.status >= 500;
-  return err?.name === 'TimeoutError' || err instanceof TypeError;
+  if (err instanceof HttpError) {
+    return TRANSIENT_STATUSES.has(err.status) && !(err.retryAfterMs > MAX_RETRY_AFTER_MS);
+  }
+  if (err?.name === 'TimeoutError') return true;
+  return err instanceof TypeError && typeof err.cause?.code === 'string';
 }
 
 /**
  * Calls `fn(attempt)` until it returns, up to `attempts` times, waiting
- * `delayMs`, then twice that, and so on, between attempts. An error that
- * `isRetryable` rejects, or the last attempt's error, is thrown. `label`
- * names the operation in the warning each retry logs.
+ * `delayMs`, then twice that, and so on, between attempts, or longer when
+ * the error carries a `retryAfterMs`. An error that `isRetryable` rejects,
+ * or the last attempt's error, is thrown. Once `signal` aborts, nothing is
+ * retried and a wait under way ends. `label` names the operation in the
+ * warning each retry logs.
  */
-export async function retry(fn, { attempts = 3, delayMs = 1000, isRetryable = isTransient, label = 'operation' } = {}) {
+export async function retry(fn, { attempts = 3, delayMs = 1000, isRetryable = isTransient, label = 'operation', signal } = {}) {
   for (let attempt = 1; ; attempt++) {
     try {
       return await fn(attempt);
     } catch (err) {
-      if (attempt >= attempts || !isRetryable(err)) throw err;
-      const wait = delayMs * 2 ** (attempt - 1);
+      if (attempt >= attempts || signal?.aborted || !isRetryable(err)) throw err;
+      const wait = Math.max(delayMs * 2 ** (attempt - 1), err?.retryAfterMs ?? 0);
       warning(`${label}: attempt ${attempt} of ${attempts} failed (${describe(err)}); retrying in ${wait} ms`);
-      await sleep(wait);
+      await sleep(wait, undefined, { signal });
     }
   }
 }
@@ -252,19 +310,31 @@ function isReusableBody(body) {
   );
 }
 
+// The methods RFC 9110 (section 9.2.2) calls idempotent: sending one twice
+// has the effect of sending it once, so repeating one whose answer was lost
+// is safe. A POST or PATCH the server already acted on would act twice.
+const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']);
+
 /**
  * `fetch`, with a timeout on each attempt and bounded retries of transient
  * failures (isTransient). Resolves to a Response with a 2xx status; any
- * other status throws an HttpError. `timeoutMs` covers the whole exchange,
- * reading the body included, since the timeout's signal stays attached to
- * the body: size it for the download. Every other option goes to fetch; a
- * `signal` of the caller's aborts the request as well, and is not retried.
- * A retry sends the body again, so a stream body needs `attempts: 1`.
+ * other status throws an HttpError.
+ *
+ * - `attempts` defaults to 3 for an idempotent method and to 1 for POST and
+ *   PATCH. Pass more for one of those only when a repeat is harmless.
+ * - `timeoutMs` covers the whole exchange, reading the body included, since
+ *   the timeout's signal stays attached to the body: size it for the
+ *   download.
+ * - A `signal` of the caller's aborts the request, and ends the retries.
+ * - A retry sends the body again, so a stream body needs `attempts: 1`.
+ *
+ * Every other option goes to fetch.
  */
-export async function fetchWithRetry(url, { attempts = 3, delayMs = 1000, timeoutMs = 30_000, ...init } = {}) {
+export async function fetchWithRetry(url, { attempts, delayMs = 1000, timeoutMs = 30_000, ...init } = {}) {
   const target = new URL(url);
   const method = (init.method ?? 'GET').toUpperCase();
-  if (attempts > 1 && !isReusableBody(init.body)) {
+  const tries = attempts ?? (IDEMPOTENT_METHODS.has(method) ? 3 : 1);
+  if (tries > 1 && !isReusableBody(init.body)) {
     throw new TypeError(`${method} ${forLog(target)}: a stream body is spent by the first attempt; pass attempts: 1`);
   }
   return retry(
@@ -273,12 +343,14 @@ export async function fetchWithRetry(url, { attempts = 3, delayMs = 1000, timeou
       const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
       const response = await fetch(target, { ...init, signal });
       if (!response.ok) {
-        await response.body?.cancel();
-        throw new HttpError(method, target, response.status, response.statusText);
+        throw new HttpError(method, target, response.status, response.statusText, {
+          body: await errorBody(response),
+          retryAfterMs: parseRetryAfter(response.headers.get('retry-after')),
+        });
       }
       return response;
     },
-    { attempts, delayMs, label: `${method} ${forLog(target)}` },
+    { attempts: tries, delayMs, label: `${method} ${forLog(target)}`, signal: init.signal },
   );
 }
 

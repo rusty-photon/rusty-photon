@@ -121,9 +121,10 @@ Three kinds of code are outside this decision:
   under `.github/actions`, in one Bazel package
   ([ci-logic.md](../skills/ci-logic.md)).
 - JavaScript here has no formatter or linter: both would be npm
-  dependencies. Its gate is the tests and a Bazel test that runs
-  `node --check` over every action file, so a syntax error in a file no
-  test imports still fails the PR; adding a linter is a later decision.
+  dependencies. Its gate is the tests and a Bazel test that parses and
+  links every action file without running it, so a syntax error or a
+  wrong import in a file no test imports still fails the PR; adding a
+  linter is a later decision.
 - A Rust tool costs a compile on first local use, where a script ran at
   once. In the Bazel legs it comes from the remote cache.
 - Some tools that drive Bazel (`bazel-clippy.sh`) run inside the Bazel

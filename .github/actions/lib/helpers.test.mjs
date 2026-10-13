@@ -5,6 +5,7 @@ import { EOL, tmpdir } from 'node:os';
 import { delimiter as PATH_DELIMITER, join } from 'node:path';
 import { Readable } from 'node:stream';
 import test from 'node:test';
+import { inspect } from 'node:util';
 
 import {
   addPath,
@@ -291,6 +292,18 @@ test('exportVariable writes GITHUB_ENV and sets the variable for this process to
   assert.deepEqual(parseCommandFile(readFileSync(file, 'utf8')), [['HELPERS_TEST_VAR', 'one\ntwo']]);
 });
 
+test('exportVariable refuses NODE_OPTIONS, which the runner would drop', async () => {
+  const file = emptyFile();
+  const before = process.env.NODE_OPTIONS;
+  await withEnv({ GITHUB_ENV: file }, () => {
+    for (const name of ['NODE_OPTIONS', 'node_options']) {
+      assert.throws(() => exportVariable(name, '--max-old-space-size=4096'), /NODE_OPTIONS/);
+    }
+  });
+  assert.equal(process.env.NODE_OPTIONS, before);
+  assert.equal(readFileSync(file, 'utf8'), '');
+});
+
 test('addPath appends a line to GITHUB_PATH and puts the directory first on PATH', async () => {
   const file = emptyFile();
   const dir = join('opt', 'tool', 'bin');
@@ -312,12 +325,24 @@ test('addPath refuses a directory with a line break, which would add a second en
 
 // --- Retries ------------------------------------------------------------------
 
+// What fetch rejects with when a request gets no answer: the network's error,
+// with its code, is the cause.
+function networkFailure(code = 'ECONNRESET') {
+  return new TypeError('fetch failed', { cause: Object.assign(new Error(`read ${code}`), { code }) });
+}
+
 test('isTransient retries what may pass on a second try, and nothing else', () => {
   const url = new URL('https://example.invalid/x');
-  for (const status of [408, 429, 500, 502, 503]) assert.equal(isTransient(new HttpError('GET', url, status, '')), true, status);
-  for (const status of [400, 401, 403, 404, 409]) assert.equal(isTransient(new HttpError('GET', url, status, '')), false, status);
+  const answer = (status, retryAfterMs) => new HttpError('GET', url, status, '', { retryAfterMs });
+  for (const status of [408, 429, 500, 502, 503, 504]) assert.equal(isTransient(answer(status)), true, status);
+  for (const status of [400, 401, 403, 404, 409, 422, 501, 505]) assert.equal(isTransient(answer(status)), false, status);
+  assert.equal(isTransient(answer(429, 120_000)), true, 'Retry-After of two minutes');
+  assert.equal(isTransient(answer(429, 120_001)), false, 'Retry-After beyond two minutes');
   assert.equal(isTransient(new DOMException('timed out', 'TimeoutError')), true);
-  assert.equal(isTransient(new TypeError('fetch failed')), true);
+  assert.equal(isTransient(networkFailure()), true);
+  assert.equal(isTransient(new TypeError('fetch failed')), false, 'no cause: not from the network');
+  assert.equal(isTransient(new TypeError('Request with GET/HEAD method cannot have body.')), false);
+  assert.equal(isTransient(new TypeError("Cannot read properties of undefined (reading 'x')")), false);
   assert.equal(isTransient(new DOMException('aborted', 'AbortError')), false);
   assert.equal(isTransient(new Error('pin mismatch')), false);
 });
@@ -328,7 +353,7 @@ test('retry repeats a transient failure, doubling the wait, until a call returns
     retry(
       async (attempt) => {
         calls.push(attempt);
-        if (attempt < 3) throw new TypeError('fetch failed');
+        if (attempt < 3) throw networkFailure();
         return 'done';
       },
       { attempts: 3, delayMs: 1, label: 'GET x' },
@@ -338,9 +363,22 @@ test('retry repeats a transient failure, doubling the wait, until a call returns
   assert.deepEqual(calls, [1, 2, 3]);
   assert.equal(
     stdout,
-    '::warning::GET x: attempt 1 of 3 failed (fetch failed); retrying in 1 ms\n' +
-      '::warning::GET x: attempt 2 of 3 failed (fetch failed); retrying in 2 ms\n',
+    '::warning::GET x: attempt 1 of 3 failed (fetch failed: read ECONNRESET); retrying in 1 ms\n' +
+      '::warning::GET x: attempt 2 of 3 failed (fetch failed: read ECONNRESET); retrying in 2 ms\n',
   );
+});
+
+test('retry waits as long as an error asks, when that is longer', async () => {
+  const { stdout } = await capture(() =>
+    retry(
+      async (attempt) => {
+        if (attempt === 1) throw Object.assign(networkFailure(), { retryAfterMs: 5 });
+        return 'done';
+      },
+      { delayMs: 1 },
+    ),
+  );
+  assert.match(stdout, /retrying in 5 ms\n$/);
 });
 
 test('retry gives up after the last attempt and throws its error', async () => {
@@ -350,11 +388,14 @@ test('retry gives up after the last attempt and throws its error', async () => {
       retry(
         async () => {
           calls += 1;
-          throw new TypeError(`failure ${calls}`);
+          throw networkFailure(`E${calls}`);
         },
         { attempts: 2, delayMs: 1 },
       ),
-      /^TypeError: failure 2$/,
+      (err) => {
+        assert.equal(err.cause.code, 'E2');
+        return true;
+      },
     ),
   );
   assert.equal(calls, 2);
@@ -378,6 +419,27 @@ test('retry throws an error that is not transient at once', async () => {
   assert.equal(stdout, '');
 });
 
+test('retry stops once its signal aborts, ending a wait under way', async () => {
+  const controller = new AbortController();
+  let calls = 0;
+  const started = Date.now();
+  await capture(() =>
+    assert.rejects(
+      retry(
+        async () => {
+          calls += 1;
+          setTimeout(() => controller.abort(), 20);
+          throw networkFailure();
+        },
+        { attempts: 3, delayMs: 5_000, signal: controller.signal },
+      ),
+      { name: 'AbortError' },
+    ),
+  );
+  assert.equal(calls, 1);
+  assert.ok(Date.now() - started < 2_500, 'the 5 s wait ran to its end');
+});
+
 // --- HTTP ---------------------------------------------------------------------
 
 test('fetchWithRetry retries 5xx answers and returns the first 2xx', async (t) => {
@@ -391,17 +453,31 @@ test('fetchWithRetry retries 5xx answers and returns the first 2xx', async (t) =
   assert.equal(server.requests.length, 3);
 });
 
-test('fetchWithRetry throws a 4xx answer at once', async (t) => {
+test('fetchWithRetry throws a 4xx answer at once, with its body kept out of the message and the log', async (t) => {
+  const reason = '{"message":"Validation Failed"}';
   const server = await serve((req, res) => {
-    res.statusCode = 404;
+    res.statusCode = 422;
+    res.end(reason);
+  });
+  t.after(server.close);
+  await assert.rejects(fetchWithRetry(`${server.url}/issues`, { delayMs: 1 }), (err) => {
+    assert.ok(err instanceof HttpError);
+    assert.equal(err.status, 422);
+    assert.equal(err.body, reason);
+    assert.equal(err.message, `GET ${server.url}/issues: 422 Unprocessable Entity`);
+    assert.doesNotMatch(inspect(err), /Validation Failed/);
+    return true;
+  });
+  assert.equal(server.requests.length, 1);
+});
+
+test('fetchWithRetry does not retry a 501, which no later attempt can pass', async (t) => {
+  const server = await serve((req, res) => {
+    res.statusCode = 501;
     res.end();
   });
   t.after(server.close);
-  await assert.rejects(fetchWithRetry(`${server.url}/missing`, { delayMs: 1 }), (err) => {
-    assert.ok(err instanceof HttpError);
-    assert.equal(err.status, 404);
-    return true;
-  });
+  await assert.rejects(fetchWithRetry(`${server.url}/x`, { delayMs: 1 }), { name: 'HttpError', status: 501 });
   assert.equal(server.requests.length, 1);
 });
 
@@ -415,12 +491,59 @@ test('fetchWithRetry stops after its attempts and throws the last answer', async
   assert.equal(server.requests.length, 2);
 });
 
-test('fetchWithRetry retries a request that gets no answer', async () => {
-  const server = await serve(() => {});
-  const { url } = server;
-  await server.close();
-  const { stdout } = await capture(() => assert.rejects(fetchWithRetry(`${url}/x`, { attempts: 2, delayMs: 1 }), TypeError));
-  assert.match(stdout, /^::warning::GET http:\/\/127\.0\.0\.1:\d+\/x: attempt 1 of 2 failed \(fetch failed: .*ECONNREFUSED/);
+test('fetchWithRetry sends a POST once by default, since the server may have acted on it', async (t) => {
+  const server = await serve((req, res) => {
+    res.statusCode = 502;
+    res.end();
+  });
+  t.after(server.close);
+  await assert.rejects(fetchWithRetry(`${server.url}/issues`, { method: 'POST', body: '{}', delayMs: 1 }), { status: 502 });
+  assert.equal(server.requests.length, 1);
+  await capture(() =>
+    assert.rejects(fetchWithRetry(`${server.url}/issues`, { method: 'POST', body: '{}', attempts: 2, delayMs: 1 }), { status: 502 }),
+  );
+  assert.equal(server.requests.length, 3, 'an explicit attempts count retries a POST');
+});
+
+test('fetchWithRetry waits out a Retry-After, and gives up on one longer than two minutes', async (t) => {
+  const later = new Date(Date.now() + 3_600_000).toUTCString();
+  const server = await serve((req, res, n) => {
+    if (req.url === '/soon') {
+      res.statusCode = n === 1 ? 429 : 200;
+      if (n === 1) res.setHeader('retry-after', '1');
+    } else {
+      res.statusCode = 503;
+      res.setHeader('retry-after', later);
+    }
+    res.end();
+  });
+  t.after(server.close);
+  const started = Date.now();
+  const { stdout } = await capture(() => fetchWithRetry(`${server.url}/soon`, { delayMs: 1 }));
+  assert.ok(Date.now() - started >= 900, 'the second attempt came before the second Retry-After asked for');
+  assert.match(stdout, /retrying in 1000 ms/);
+  await assert.rejects(fetchWithRetry(`${server.url}/later`, { delayMs: 1 }), (err) => {
+    assert.equal(err.status, 503);
+    assert.ok(err.retryAfterMs > 3_500_000 && err.retryAfterMs <= 3_600_000, `retryAfterMs ${err.retryAfterMs}`);
+    return true;
+  });
+  assert.equal(server.requests.length, 3);
+});
+
+test('fetchWithRetry retries a request whose connection drops before an answer', async (t) => {
+  const server = await serve((req) => req.socket.destroy());
+  t.after(server.close);
+  const { stdout } = await capture(() => assert.rejects(fetchWithRetry(`${server.url}/x`, { attempts: 2, delayMs: 1 }), TypeError));
+  assert.equal(server.requests.length, 2);
+  assert.match(stdout, /^::warning::GET http:\/\/127\.0\.0\.1:\d+\/x: attempt 1 of 2 failed \(fetch failed: .+\)/);
+});
+
+test('fetchWithRetry does not retry a request fetch refuses to send', async (t) => {
+  const server = await serve((req, res) => res.end());
+  t.after(server.close);
+  const { stdout } = await capture(() => assert.rejects(fetchWithRetry(`${server.url}/x`, { body: 'x', delayMs: 1 }), TypeError));
+  assert.equal(stdout, '');
+  assert.equal(server.requests.length, 0);
 });
 
 test('fetchWithRetry times out an attempt that gets no response, and retries it', async (t) => {
@@ -472,6 +595,16 @@ test("fetchWithRetry honours the caller's own abort signal, without retrying it"
   controller.abort();
   await assert.rejects(pending, { name: 'AbortError' });
   assert.ok(server.requests.length <= 1);
+});
+
+test("fetchWithRetry does not retry the caller's own timeout", async (t) => {
+  const server = await serve(() => {});
+  t.after(server.close);
+  const { stdout } = await capture(() =>
+    assert.rejects(fetchWithRetry(`${server.url}/x`, { signal: AbortSignal.timeout(100), delayMs: 1 }), { name: 'TimeoutError' }),
+  );
+  assert.equal(stdout, '');
+  assert.equal(server.requests.length, 1);
 });
 
 // --- Hashing ------------------------------------------------------------------
