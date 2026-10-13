@@ -35,8 +35,10 @@ Shell has cost this repo in four ways:
   five genuine bugs drawn by new bash in one PR (#857), and check.yml's
   shellcheck job comment names the orchestrator's worst defects as this
   kind.
-- **No home for shared logic.** The block that opens or updates a nightly
-  tracking issue exists ten times, in ten workflows.
+- **No home for shared logic.** Even the CI's existing JavaScript is
+  pasted inline: the `actions/github-script` block that opens or updates a
+  nightly tracking issue exists ten times, in ten workflows, because there
+  is nowhere to put it once.
 
 Two constraints decide what can replace it:
 
@@ -55,8 +57,9 @@ Two constraints decide what can replace it:
 Each piece of CI logic goes to exactly one of three homes.
 
 1. **Workflow YAML** keeps a step that runs one command — a `bazel`,
-   `cargo` or similar invocation, with its flags — and has no control flow.
-   Moving a one-line command into a program only hides it.
+   `cargo` or similar invocation, with its flags — or a short fixed
+   sequence of them, with no control flow. Moving a few plain commands
+   into a program only hides them.
 
 2. **JavaScript, as local actions**, for logic that runs inside GitHub
    Actions, above all before a toolchain exists or against the GitHub API:
@@ -66,8 +69,11 @@ Each piece of CI logic goes to exactly one of three homes.
    - **Node built-ins only**: no npm dependencies, no `package.json`, no
      bundler or build step, no TypeScript. What a dependency would provide
      (an archive reader, request signing) is written here and tested here;
-   - code shared between actions lives in one helper module inside
-     `.github/actions/`;
+   - code shared between actions lives in one helper module, placed
+     where Bazel can test it (see Consequences);
+   - inline `actions/github-script` follows the same rule as shell: a few
+     lines may stay in the workflow, and anything longer, or repeated,
+     becomes a local action;
    - an action that needs another action (`actions/cache`) is a thin
      composite wrapper around the JavaScript action, since a JavaScript
      action cannot call one;
@@ -92,8 +98,10 @@ Three kinds of code are outside this decision:
   decision. The orchestrator also has its own test harness.
 - **Python.** `tools/ci/*.py` and `tools/coverage/*.py` are already in a
   programming language. Whether to move them is a separate question.
-- **Git hooks.** `.cargo-husky/hooks/pre-commit` stays shell; it calls the
-  tools this decision moves.
+- **Git hooks.** `.cargo-husky/hooks/pre-commit` stays shell. It runs
+  Cargo, Bazel and the Python lock check, and names the repin script only
+  in a comment; the lock check's messages are what send developers to
+  that script.
 
 ## Consequences
 
