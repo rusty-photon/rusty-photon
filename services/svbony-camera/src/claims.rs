@@ -311,19 +311,19 @@ mod tests {
         );
         assert!(
             listing
-                .notes
+                .paste_notes
                 .iter()
                 .any(|n| n.contains("devices override stale")),
             "{:?}",
-            listing.notes
+            listing.paste_notes
         );
         assert!(
             listing
-                .notes
+                .paste_notes
                 .iter()
                 .any(|n| n.starts_with("Delete the devices map from svbony-camera.json")),
             "{:?}",
-            listing.notes
+            listing.paste_notes
         );
     }
 

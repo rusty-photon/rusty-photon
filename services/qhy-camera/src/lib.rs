@@ -170,12 +170,14 @@ impl ServerBuilder {
 
     /// Register the devices this configuration serves and bind the listener.
     ///
-    /// With no `usb_devices` list, every camera the SDK enumerates, in SDK
-    /// order, each probed for a CFW without `InitQHYCCD` (C0, C5). With a list,
-    /// the list, opening nothing (see [`Self::register_list`]). A camera's
-    /// connect handshake happens later, on `set_connected(true)`; the device
-    /// list is fixed at build, so a reload re-enumerates. Zero cameras is not
-    /// a hard failure (C0).
+    /// With no `usb_devices` list, every camera the USB scan places, in port
+    /// order, each probed for a CFW without `InitQHYCCD`, and only those: a
+    /// camera the scan cannot place is never opened (see
+    /// [`Self::register_enumerated`], U11). With a list, the list, opening
+    /// nothing (see [`Self::register_list`]). A camera's connect handshake
+    /// happens later, on `set_connected(true)`; the device list is fixed at
+    /// build, so a reload re-enumerates. Zero cameras is not a hard failure
+    /// (C0).
     ///
     /// # Errors
     ///

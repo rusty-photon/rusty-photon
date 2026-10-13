@@ -1041,9 +1041,14 @@ pub struct Listing {
     pub rows: Vec<ListingRow>,
     /// The paste-ready block; `None` prints none.
     pub block: Option<Vec<BlockEntry>>,
-    /// Paragraphs printed after the table: what the join could not place,
-    /// renumbering warnings, the unplug procedure.
+    /// Paragraphs printed after the table, on its rows: what the join could
+    /// not place, the unplug procedure.
     pub notes: Vec<String>,
+    /// Paragraphs printed after [`Self::notes`], on pasting the block: the
+    /// `devices` overrides it cannot carry, deleting the `devices` map,
+    /// checking the wheel numbers (`qhy-camera`). `usb-devices.implicit`
+    /// carries them with the block.
+    pub paste_notes: Vec<String>,
     /// The driver serves a filter wheel through its camera, which an entry
     /// declares (`qhy-camera`): the text above the block says `--devices`
     /// cannot see one and how to declare it.
@@ -1120,6 +1125,7 @@ impl Claims<'_> {
             .collect::<Vec<_>>();
 
         let mut notes = self.unplaced_notes();
+        let mut paste_notes = Vec::new();
         let block = match list {
             Some(list) => {
                 let mut entries = list.to_vec();
@@ -1127,7 +1133,7 @@ impl Claims<'_> {
                 Some(entries)
             }
             None if placed.is_empty() => None,
-            None => Some(self.no_list_block(&placed, cameras, overrides, &mut notes)),
+            None => Some(self.no_list_block(&placed, cameras, overrides, &mut paste_notes)),
         };
         if rows.len() > 1 {
             notes.push(UNPLUG_NOTE.to_string());
@@ -1139,21 +1145,23 @@ impl Claims<'_> {
             rows,
             block,
             notes,
+            paste_notes,
             wheels: false,
         }
     }
 
     /// The block that pins what the no-list default serves: every placed
     /// camera, numbered in port order, with the names its `devices` override
-    /// gives it, and a note for each override that it cannot carry. A camera
-    /// whose override names its wheel's slots has a wheel, so its entry
-    /// declares one, the wheels numbered in port order too.
+    /// gives it, and in `paste_notes` each override that it cannot carry and
+    /// the map's deletion. A camera whose override names its wheel's slots
+    /// has a wheel, so its entry declares one, the wheels numbered in port
+    /// order too.
     fn no_list_block(
         &self,
         placed: &[(usize, &str)],
         cameras: &[CameraFacts],
         overrides: &BTreeMap<String, DisplayNames>,
-        notes: &mut Vec<String>,
+        paste_notes: &mut Vec<String>,
     ) -> Vec<BlockEntry> {
         let key_of = |index: usize| cameras.get(index).and_then(|f| f.override_key.as_ref());
         let mut matched_keys = Vec::new();
@@ -1186,7 +1194,7 @@ impl Claims<'_> {
             .keys()
             .filter(|k| !matched_keys.contains(&k.as_str()))
         {
-            notes.push(if every_key_known {
+            paste_notes.push(if every_key_known {
                 format!(
                     "The devices override {key} matches no camera placed on a port; move its \
                      fields into the right entry by hand."
@@ -1205,7 +1213,7 @@ impl Claims<'_> {
             } else {
                 ""
             };
-            notes.push(format!(
+            paste_notes.push(format!(
                 "Delete the devices map from {}.json when you paste this block: {carried}a \
                  devices map beside a usb_devices list refuses the start.",
                 self.service
@@ -1360,17 +1368,11 @@ impl Claims<'_> {
                         self.service,
                         render_block(block)
                     );
-                    // What the listing says about pasting it — delete the
-                    // devices map, check the wheels — goes with the block.
-                    // The notes on what the join could not place are this
-                    // check's warnings, below, and the unplug note is about
-                    // the listing's rows, which a check has none of.
-                    let unplaced = self.unplaced_notes();
-                    for note in listing
-                        .notes
-                        .iter()
-                        .filter(|note| !unplaced.contains(note) && note.as_str() != UNPLUG_NOTE)
-                    {
+                    // What the listing says about pasting it goes with the
+                    // block. Its notes on the rows do not: what the join
+                    // could not place is this check's warnings, below, and
+                    // a check has no rows to unplug.
+                    for note in &listing.paste_notes {
                         let _ = write!(detail, "\n{note}");
                     }
                 }
@@ -1478,7 +1480,7 @@ pub fn render_listing(listing: &Listing) -> String {
             out.push('\n');
         }
     }
-    for note in &listing.notes {
+    for note in listing.notes.iter().chain(&listing.paste_notes) {
         out.push('\n');
         out.push_str(note);
         out.push('\n');
@@ -2482,6 +2484,7 @@ mod tests {
             rows,
             block,
             notes: Vec::new(),
+            paste_notes: Vec::new(),
             wheels: false,
         }
     }
@@ -2522,6 +2525,22 @@ mod tests {
                 "  platform-xhci-hcd.1-usbv3-0:1  SV605CC  0123481353808C03EE2512150035  —           0",
                 "  p2                             SV605CC  0123481353808C03EE2512150035  —           not listed",
             ]
+        );
+    }
+
+    #[test]
+    fn the_notes_on_pasting_follow_the_notes_on_the_rows_and_precede_the_block() {
+        let mut with_notes = listing(Vec::new(), Some(vec![entry(0, "p1", None)]));
+        with_notes.notes = vec!["On the rows.".to_string()];
+        with_notes.paste_notes = vec!["On pasting.".to_string()];
+        let text = render_listing(&with_notes);
+        let at = |needle: &str| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} missing from {text}"))
+        };
+        assert!(
+            at("On the rows.") < at("On pasting.") && at("On pasting.") < at("\"usb_devices\""),
+            "{text}"
         );
     }
 
@@ -2751,6 +2770,10 @@ mod tests {
         listing.notes.iter().any(|n| n.starts_with(start))
     }
 
+    fn has_paste_note(listing: &Listing, start: &str) -> bool {
+        listing.paste_notes.iter().any(|n| n.starts_with(start))
+    }
+
     #[test]
     fn with_no_list_the_block_carries_the_override_names_in_port_order() {
         let cameras = [
@@ -2782,26 +2805,31 @@ mod tests {
             listing.notes
         );
         assert!(
-            has_note(
+            has_paste_note(
                 &listing,
                 "The devices override stale matches no camera placed on a port"
             ),
             "{:?}",
-            listing.notes
+            listing.paste_notes
         );
         assert!(
-            has_note(
+            has_paste_note(
                 &listing,
                 "Delete the devices map from svbony-camera.json when you paste this block: the \
                  block carries its names"
             ),
             "{:?}",
-            listing.notes
+            listing.paste_notes
         );
         assert!(
             has_note(&listing, "Cannot tell which row is which camera?"),
             "{:?}",
             listing.notes
+        );
+        assert!(
+            !has_paste_note(&listing, "Cannot tell which row is which camera?"),
+            "the unplug note is about the rows: {:?}",
+            listing.paste_notes
         );
     }
 
@@ -2877,21 +2905,21 @@ mod tests {
         .listing(&cameras, None, &overrides);
         assert_eq!(listing.block.as_ref().unwrap()[0].name, None);
         assert!(
-            has_note(
+            has_paste_note(
                 &listing,
                 "The devices override 0a1b2c cannot be matched to a camera without opening one"
             ),
             "{:?}",
-            listing.notes
+            listing.paste_notes
         );
         assert!(
-            has_note(
+            has_paste_note(
                 &listing,
                 "Delete the devices map from svbony-camera.json when you paste this block: a \
                  devices map beside a usb_devices list refuses the start."
             ),
             "{:?}",
-            listing.notes
+            listing.paste_notes
         );
         assert!(
             !has_note(&listing, "Pasting this block renumbers"),

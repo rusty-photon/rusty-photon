@@ -232,10 +232,13 @@ impl ServerBuilder {
     /// Register the cameras this configuration serves and bind the Alpaca
     /// listener.
     ///
-    /// With no `usb_devices` list, every camera the SDK enumerates, in SDK
-    /// order; zero discovered cameras is **not** a hard failure: the server
-    /// starts with no Camera devices and logs a warning (a later reload
-    /// re-enumerates). With a list, the list (see [`Self::register_list`]).
+    /// With no `usb_devices` list, every camera the USB scan places, in port
+    /// order, each opened uninitialised for its serial, and only those: a
+    /// camera the scan cannot place is never opened (see
+    /// [`Self::register_enumerated`], U10). Zero registered cameras is
+    /// **not** a hard failure: the server starts with no Camera devices and
+    /// logs a warning (a later reload re-enumerates). With a list, the list
+    /// (see [`Self::register_list`]).
     ///
     /// # Errors
     /// Returns [`ZwoCameraError`] when the list breaks a rule, SDK

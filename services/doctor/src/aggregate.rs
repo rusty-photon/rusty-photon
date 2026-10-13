@@ -325,7 +325,7 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
                 .and_then(|facts| facts.binary_path.as_deref());
             inventory_checks(
                 scan.entry.name,
-                &binary_command(unit.clone(), recorded),
+                &devices_command(unit.clone(), recorded, &scan.config_path),
                 &devices,
                 ctx.hardware.as_ref(),
             )
@@ -334,29 +334,43 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
     }
 }
 
-/// How to run a service binary by hand: the path its service manager
-/// `recorded`, which needs no `PATH` entry (the MSI adds none), quoted when it
-/// holds a space; else `unit_name`, which the packaged binary shares.
-fn binary_command(unit_name: String, recorded: Option<&std::path::Path>) -> String {
-    match recorded.map(|path| path.display().to_string()) {
-        Some(path) if path.contains(' ') => format!("\"{path}\""),
-        Some(path) => path,
-        None => unit_name,
-    }
+/// How to run a service's `doctor --devices` by hand, against the `config`
+/// doctor judged rather than whichever one the operator's shell would resolve.
+/// The binary is the path its service manager `recorded`, which needs no
+/// `PATH` entry (the MSI adds none), else `unit_name`, which the packaged
+/// binary shares. A path that holds a space is quoted.
+fn devices_command(
+    unit_name: String,
+    recorded: Option<&std::path::Path>,
+    config: &std::path::Path,
+) -> String {
+    let word = |text: String| {
+        if text.contains(' ') {
+            format!("\"{text}\"")
+        } else {
+            text
+        }
+    };
+    let binary = recorded.map_or(unit_name, |path| path.display().to_string());
+    format!(
+        "{} doctor --devices --config {}",
+        word(binary),
+        word(config.display().to_string())
+    )
 }
 
 /// `service.devices` over an inventory the service answered with: one `ok`
 /// naming its devices, and a `warn` for each device-claims placeholder among
 /// them, which stands in for a listed camera (or its wheel) and is not one.
-/// A placeholder never re-scans, so when `hardware`'s USB scan now holds a
+/// A placeholder never re-scans, so when `hardware`'s USB scan holds a
 /// working device on its port, the warning names it, and leaves whether a
 /// reload would place it to the driver's `doctor --devices`: a placeholder's
 /// reason (a look-alike, an unknown model, a failed scan the service re-scans
 /// by itself) is not in `configureddevices`, and only the driver's join knows
-/// it. `binary` is the service's packaged binary.
+/// it. `command` runs that `doctor --devices` ([`devices_command`]).
 fn inventory_checks(
     service: &str,
-    binary: &str,
+    command: &str,
     devices: &[ConfiguredDevice],
     hardware: Option<&HardwareFacts>,
 ) -> Vec<Check> {
@@ -385,8 +399,7 @@ fn inventory_checks(
             other => other.to_lowercase(),
         };
         let mut detail = format!(
-            "{} #{} is a placeholder for {port}, not a {kind}: run `{binary} doctor --devices` \
-             for the reason",
+            "{} #{} is a placeholder for {port}, not a {kind}: run `{command}` for the reason",
             placeholder.device_type, placeholder.number
         );
         let on_the_port = hardware
@@ -395,8 +408,8 @@ fn inventory_checks(
         if let Some(device) = on_the_port {
             let _ = write!(
                 detail,
-                "; the host's USB scan now finds {} ({}:{}) on {port}: `{binary} doctor \
-                 --devices` says whether a reload of {service} would place it",
+                "; the host's USB scan shows {} ({}:{}) on {port}: `{command}` says whether a \
+                 reload of {service} would place it",
                 device.model.as_deref().unwrap_or("a device"),
                 device.vendor,
                 device.product
@@ -407,8 +420,7 @@ fn inventory_checks(
             Some(service.to_string()),
             detail,
             Some(format!(
-                "run `{binary} doctor --devices`; once the camera is fixed, reload or restart \
-                 {service}"
+                "run `{command}`; once the camera is fixed, reload or restart {service}"
             )),
         ));
     }
@@ -931,6 +943,10 @@ mod tests {
     /// and its declared wheel are placeholders.
     const GUIDE_PORT: &str = "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(3)";
 
+    /// The `doctor --devices` command the placeholder tests hand in.
+    const DEVICES_COMMAND: &str =
+        "rusty-photon-qhy-camera doctor --devices --config /etc/rusty-photon/qhy-camera.json";
+
     #[test]
     fn test_a_placeholder_is_reported_as_one_not_as_a_device() {
         let devices = [
@@ -948,7 +964,7 @@ mod tests {
                 &format!("placeholder:qhy-camera:CFW-{GUIDE_PORT}"),
             ),
         ];
-        let checks = inventory_checks("qhy-camera", "rusty-photon-qhy-camera", &devices, None);
+        let checks = inventory_checks("qhy-camera", DEVICES_COMMAND, &devices, None);
         assert_eq!(checks.len(), 3, "{checks:?}");
         assert_eq!(checks[0].status, Status::Ok);
         assert!(
@@ -966,7 +982,17 @@ mod tests {
             checks[1].detail,
             format!(
                 "Camera #1 is a placeholder for {GUIDE_PORT}, not a camera: run \
-                 `rusty-photon-qhy-camera doctor --devices` for the reason"
+                 `{DEVICES_COMMAND}` for the reason"
+            )
+        );
+        assert_eq!(
+            checks[1].suggestion.as_deref(),
+            Some(
+                format!(
+                    "run `{DEVICES_COMMAND}`; once the camera is fixed, reload or restart \
+                     qhy-camera"
+                )
+                .as_str()
             )
         );
         assert!(
@@ -1000,17 +1026,12 @@ mod tests {
             usb: vec![on_the_port],
             ..HardwareFacts::default()
         };
-        let checks = inventory_checks(
-            "qhy-camera",
-            "rusty-photon-qhy-camera",
-            &devices,
-            Some(&hardware),
-        );
+        let checks = inventory_checks("qhy-camera", DEVICES_COMMAND, &devices, Some(&hardware));
         assert!(
             checks[1].detail.ends_with(&format!(
-                "; the host's USB scan now finds QHY678U3G20-20230106 (1618:0679) on \
-                 {GUIDE_PORT}: `rusty-photon-qhy-camera doctor --devices` says whether a \
-                 reload of qhy-camera would place it"
+                "; the host's USB scan shows QHY678U3G20-20230106 (1618:0679) on \
+                 {GUIDE_PORT}: `{DEVICES_COMMAND}` says whether a reload of qhy-camera would \
+                 place it"
             )),
             "{}",
             checks[1].detail
@@ -1020,45 +1041,51 @@ mod tests {
             usb_unavailable: Some("powershell.exe timed out".to_string()),
             ..HardwareFacts::default()
         };
-        let checks = inventory_checks(
-            "qhy-camera",
-            "rusty-photon-qhy-camera",
-            &devices,
-            Some(&failed),
-        );
+        let checks = inventory_checks("qhy-camera", DEVICES_COMMAND, &devices, Some(&failed));
         assert!(
-            !checks[1].detail.contains("now finds"),
+            !checks[1].detail.contains("USB scan shows"),
             "a failed scan names nothing on the port: {}",
             checks[1].detail
         );
     }
 
     #[test]
-    fn test_the_binary_to_run_is_the_recorded_one_quoted_when_spaced() {
+    fn test_the_devices_command_runs_the_recorded_binary_on_the_judged_config() {
         let unit = || "rusty-photon-qhy-camera".to_string();
-        assert_eq!(binary_command(unit(), None), "rusty-photon-qhy-camera");
+        let config = std::path::Path::new("/etc/rusty-photon/qhy-camera.json");
         assert_eq!(
-            binary_command(
-                unit(),
-                Some(std::path::Path::new("/usr/bin/rusty-photon-qhy-camera"))
-            ),
-            "/usr/bin/rusty-photon-qhy-camera"
+            devices_command(unit(), None, config),
+            "rusty-photon-qhy-camera doctor --devices --config /etc/rusty-photon/qhy-camera.json"
         );
         assert_eq!(
-            binary_command(
+            devices_command(
                 unit(),
+                Some(std::path::Path::new("/usr/bin/rusty-photon-qhy-camera")),
+                config
+            ),
+            "/usr/bin/rusty-photon-qhy-camera doctor --devices --config \
+             /etc/rusty-photon/qhy-camera.json"
+        );
+    }
+
+    #[test]
+    fn test_the_devices_command_quotes_a_spaced_binary_and_config() {
+        assert_eq!(
+            devices_command(
+                "rusty-photon-qhy-camera".to_string(),
                 Some(std::path::Path::new(
                     r"C:\Program Files\rusty-photon\rusty-photon-qhy-camera.exe"
-                ))
+                )),
+                std::path::Path::new(r"C:\ProgramData\rusty photon\qhy-camera.json")
             ),
-            r#""C:\Program Files\rusty-photon\rusty-photon-qhy-camera.exe""#
+            r#""C:\Program Files\rusty-photon\rusty-photon-qhy-camera.exe" doctor --devices --config "C:\ProgramData\rusty photon\qhy-camera.json""#
         );
     }
 
     #[test]
     fn test_an_inventory_of_devices_alone_is_one_ok() {
         let devices = [device("QHY178M", "Camera", 0, "qhy-uid")];
-        let checks = inventory_checks("qhy-camera", "rusty-photon-qhy-camera", &devices, None);
+        let checks = inventory_checks("qhy-camera", DEVICES_COMMAND, &devices, None);
         assert_eq!(checks.len(), 1);
         assert_eq!(
             checks[0].detail,

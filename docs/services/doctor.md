@@ -1054,11 +1054,16 @@ installed service, and the two paths are naturally exclusive:
   (`placeholder:qhy-camera:CFW-<port>` for a declared wheel), so
   `service.devices` leaves it out of the `ok` inventory and reports each as
   a `warn` of its own — *Camera #1 is a placeholder for `<port>`, not a
-  camera: run `rusty-photon-<service> doctor --devices` for the reason*. A
-  placeholder never re-scans, so when doctor's own USB scan holds a working
-  device on that port — a hub powered on after the service started — the
-  detail names it and sends the operator to the driver's `doctor --devices`
-  to learn whether a reload would place it. `configureddevices` does not
+  camera: run `rusty-photon-<service> doctor --devices --config <file>` for
+  the reason*. The command names the config file doctor judged, so it reads
+  the service's list rather than whichever config the operator's shell would
+  resolve, and the binary the service manager recorded, so it runs with no
+  `PATH` entry (a path that holds a space is quoted). A placeholder never
+  re-scans, so when doctor's own USB scan holds a working device on that
+  port — a hub powered on after the service started, or the look-alike that
+  made the placeholder — the detail says what the scan shows there and sends
+  the operator to the driver's `doctor --devices` to learn whether a reload
+  would place it. `configureddevices` does not
   carry a placeholder's reason, and not every reason yields to a reload: a
   look-alike or an unknown model stays a placeholder, and a service whose own
   scan failed re-scans and places the camera by itself. The `ok` names the other devices, and is still reported when

@@ -352,12 +352,12 @@ mod tests {
         assert_eq!(listing.rows[0].sdk_id, None);
         assert_eq!(listing.block.as_ref().unwrap()[0].name, None);
         assert!(
-            listing.notes.iter().any(|n| n.starts_with(
+            listing.paste_notes.iter().any(|n| n.starts_with(
                 "The devices override 1915d5081b090900 cannot be matched to a camera without \
                  opening one"
             )),
             "{:?}",
-            listing.notes
+            listing.paste_notes
         );
     }
 

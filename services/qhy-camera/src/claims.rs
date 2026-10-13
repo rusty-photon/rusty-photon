@@ -271,7 +271,7 @@ pub fn listing(config: &Config, claims: &Claims<'_>, cameras: &[Enumerated]) -> 
         // numbers the block gives may not be the served ones even though no
         // camera moves. The text above the block says why `--devices` cannot
         // see a wheel.
-        listing.notes.push(
+        listing.paste_notes.push(
             "Check rp's filter_wheels[].device_number when you paste this block: without a \
              list the service numbers the wheels its probe finds in their cameras' port \
              order, and --devices cannot see which cameras have one, so the wheel numbers you \
@@ -475,7 +475,7 @@ mod tests {
         let claims = claims_for(vec![record("c179", "Q178-Cool", "p1")], &cameras);
         let wheel_note = |listing: &Listing| {
             listing
-                .notes
+                .paste_notes
                 .iter()
                 .any(|n| n.starts_with("Check rp's filter_wheels[].device_number"))
         };
@@ -520,18 +520,24 @@ mod tests {
         let wheel_notes: Vec<_> = listing
             .notes
             .iter()
+            .chain(&listing.paste_notes)
             .filter(|n| n.contains("filter_wheels[].device_number"))
             .collect();
-        assert_eq!(wheel_notes.len(), 1, "{:#?}", listing.notes);
+        assert_eq!(wheel_notes.len(), 1, "{:#?}", listing.paste_notes);
         assert!(
             wheel_notes[0].starts_with("Check rp's filter_wheels[].device_number"),
             "{}",
             wheel_notes[0]
         );
         assert!(
-            !listing.notes.iter().any(|n| n.contains("renumber")),
-            "{:#?}",
-            listing.notes
+            !listing
+                .notes
+                .iter()
+                .chain(&listing.paste_notes)
+                .any(|n| n.contains("renumber")),
+            "{:#?} {:#?}",
+            listing.notes,
+            listing.paste_notes
         );
     }
 
