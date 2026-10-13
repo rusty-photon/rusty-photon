@@ -24,6 +24,7 @@ old server's has been dropped and has released the process's SDK resource.
 | Camera | QHY178M-Cool (USB `1618:c179`, SuperSpeed), SDK id `QHY178M-222b16468c5966524`, with its 7-slot CFW (`CFW-QHY178M-222b16468c5966524`). It sits on USB3 port 3 of the Pegasus PPBA Gen2's embedded hub (`pci-0000:c1:00.4-usbv3-0:1.3`), and its 12 V comes from the PPBA's Quad 12V output, driven through `ppba-driver` (`cargo run -p ppba-driver`) |
 | Config (ConformU) | `usb_devices: [{ device_number: 0, usb_port: "pci-0000:c1:00.4-usbv3-0:1.3", name: "C4 hw test", filter_wheel_number: 0 }]`, the block `doctor --devices` printed, pasted with the wheel declared and the `devices` map deleted |
 | ConformU | **4.5.0** build 53834.49ab847 (the latest release), against `http://127.0.0.1:11121/api/v1/{camera,filterwheel}/0` |
+| Service logs | The service's stdout and stderr: [`service-gate-nolist.log`](service-gate-nolist.log) (steps 1–5 below), [`service-gate-list.log`](service-gate-list.log) (steps 7–9) and [`service-conformu.log`](service-conformu.log) (the ConformU session). The one edit is the privacy scrub: the scratch directory and the build's worktree, whose paths carry a local username, read `<scratch>` and `<worktree>` in the `Compiling`, `Running`, `Configuration path` and `Load ini filePath` lines, and the terminal colour codes are stripped |
 
 Each session switched the Quad 12V output on and started the service about 50 s later,
 past the CFW's power-up homing, which takes about 20 s (qhy-camera's connect contract
@@ -45,10 +46,13 @@ suites ran.
 
 `ErrorCount` / `IssueCount` / `ConfigurationAlertCount` / `TimingIssuesCount`
 are all **0** in both results files. The 16 informational items are the set every QHY
-record carries. Every connect in the suites was to the list-registered devices, and
-the service logged no `WARN` or `ERROR` of its own. Every such line in its
-log comes from `ascom_alpaca` answering ConformU's deliberately malformed and
-out-of-range requests.
+record carries. In the service's log of the session, every connect is to the
+list-registered camera and wheel, and none of the 235 `WARN` and `ERROR` lines is the
+service's own: each has an `ascom_alpaca::server` target. 126 are `Unused parameters`,
+for ConformU's deliberately malformed requests. 78 are `Alpaca method is not
+implemented`, for the members `qhy-camera` does not implement. 21 refuse the invalid
+values ConformU sends (`INVALID_VALUE`), and 10 answer `LastExposureDuration` and
+`LastExposureStartTime` read before any exposure (`VALUE_NOT_SET`).
 
 ## The one-`Sdk` gate
 
@@ -63,16 +67,21 @@ disconnected. Every cycle gave the same numbers to within a few milliseconds:
 
 Every cycle passed.
 
+The times after a signal or an apply come from polling every 50 ms: the log for the
+new server's `Service started successfully` line, or the process for its exit. Each
+can therefore read up to one poll late. The comparisons below use the log's own
+timestamps.
+
 | # | Step | Outcome |
 |---|---|---|
 | 1 | Start with no list | `cameras=1 filter_wheels=1 placeholders=0`, ready 1.64 s after start |
 | 2 | Reload by SIGHUP | rebuilt 0.654 s after the signal |
-| 3 | Reload by SIGHUP, **with the camera and wheel connected**: after step 2's cycle, a bare connect of both (no exposure, no disconnect), then the signal | rebuilt 1.559 s after the signal; 0.907 s of it lay between `qhy-camera shut down` and the next config load, the old `Sdk`'s drop closing the open camera |
-| 4 | Reload by `config.apply` (a `devices` name for the camera) | `status: applying`, `reload: [devices.QHY178M-222b16468c5966524]`; rebuilt 0.703 s after the apply, and the camera's `Name` then read the new name |
+| 3 | Reload by SIGHUP, **with the camera and wheel connected**: after step 2's cycle, a bare connect of both (no exposure, no disconnect), then the signal | rebuilt 1.559 s after the signal; 0.907 s of it lay between `qhy-camera shut down` and the next config load. That span holds the old `Sdk`'s drop, which closes the open camera and then runs `ReleaseQHYCCDResource`, and the config read. No log line times the close apart from the release |
+| 4 | Reload by `config.apply` (a `devices` name for the camera) | `status: applying`, `reload: [devices.QHY178M-222b16468c5966524]`; rebuilt 0.703 s after the apply, whose reload fires 100 ms after its response (`RELOAD_AFTER_RESPONSE_DELAY`), and the camera's `Name` then read the new name |
 | 5 | Stop by SIGINT | the process exited 0.052 s after the signal, status 0 |
 | 6 | `doctor --devices` | one row, `pci-0000:c1:00.4-usbv3-0:1.3  QHY178M  QHY178M-222b16468c5966524  —  0`, and the block the ConformU config above was pasted from |
 | 7 | Start with the list | `a listed port holds a QHY camera`, `a declared filter wheel is served on its camera's connection`; `cameras=1 filter_wheels=1 placeholders=0` |
-| 8 | Reload by SIGHUP, on the list | rebuilt 0.050 s after the signal, where the no-list reloads with nothing open took 0.65–0.70 s. The no-list build opens each camera to probe it for a CFW and the list's is designed to open none (U1), which would account for the gap, but the timing does not show it (see *Not shown either*, below) |
+| 8 | Reload by SIGHUP, on the list | rebuilt 0.050 s after the signal. In the log, `qhy-camera shut down` to `Service started successfully` took 2.6 ms, where it took 0.604 s on both no-list reloads with nothing open (steps 2 and 4). The no-list build opens each camera to probe it for a CFW and the list's is designed to open none (U1), which would account for the gap, but the timing does not show it (see *Not shown either*, below) |
 | 9 | Stop by SIGINT | exited 0.052 s after the signal, status 0 |
 | 10 | `qhyccd-rs` `examples/enumerate`, service stopped | exit 0 after 1.12 s, `{"index":0,"id":"QHY178M-222b16468c5966524","model":"QHY178M"}` |
 
@@ -90,10 +99,11 @@ warning therefore shows nothing on its own.
 What the reloads do show is three things about the real SDK's teardown:
 
 - **The drop returns.** From `qhy-camera shut down` to the next build's config load
-  took 0.1 ms or less on the reloads with nothing open, and 0.907 s on step 3's, with
+  took at most 0.134 ms on the reloads with nothing open, and 0.907 s on step 3's, with
   the camera and wheel connected.
 - **It reports no failure.** The gate exercise ran with `qhyccd_rs=debug`, and its logs
-  hold no `WARN` or `ERROR` line from any target. That includes the `error!` lines a
+  ([no list](service-gate-nolist.log), [list](service-gate-list.log)) hold no `WARN` or
+  `ERROR` line from any target. That includes the `error!` lines a
   failed camera close or `ReleaseQHYCCDResource` would log during the drop.
 - **The SDK comes back after it.** Each next build initialised the SDK again, found the
   camera, and served it through a full cycle.

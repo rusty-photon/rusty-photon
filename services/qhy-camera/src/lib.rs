@@ -107,7 +107,8 @@ pub struct ServerBuilder {
     overrides: CliOverrides,
     reload: Option<ReloadSignal>,
     /// SDK injected by `main` (the only use is the test-only simulation
-    /// backends); when `None`, `build()` opens the SDK via `Sdk::new()`.
+    /// backends); when `None`, `build()` opens the SDK with `Sdk::try_new()`,
+    /// waiting in `Sdk::new()` only while a re-scan's try holds one.
     injected_sdk: Option<qhyccd_rs::Sdk>,
     /// Where a `usb_devices` list's USB scan comes from (U7); `None` takes
     /// this driver's default ([`claims::default_usb_source`]).
@@ -548,8 +549,9 @@ impl ServerBuilder {
             move || source.scan().map(drop),
             || {
                 // A failed scan's server holds no SDK, so another `Sdk` alive
-                // in this process means this try outlived its server and the
-                // next one is serving: `try_new` answers rather than waits.
+                // in this process is the next server's, this try having
+                // outlived its own, or the SDK check of a try that outlived
+                // an earlier server: `try_new` answers rather than waits.
                 qhyccd_rs::Sdk::try_new()
                     .map(drop)
                     .map_err(|e| format!("{e:#}"))

@@ -1,0 +1,143 @@
+   Compiling crypto-common v0.1.7
+   Compiling zerovec v0.11.6
+   Compiling ascom-alpaca v1.0.0-beta.10 (https://github.com/rusty-photon/ascom-alpaca-rs.git?branch=fix%2Fconnecting-counts-in-flight-operations#6f9fa597)
+   Compiling digest v0.10.7
+   Compiling blake2 v0.10.6
+   Compiling argon2 v0.5.3
+   Compiling tinystr v0.8.3
+   Compiling potential_utf v0.1.5
+   Compiling icu_collections v2.2.0
+   Compiling icu_locale_core v2.2.0
+   Compiling rp-auth v0.1.0 (<worktree>/crates/rp-auth)
+   Compiling icu_provider v2.2.0
+   Compiling icu_normalizer v2.2.0
+   Compiling icu_properties v2.2.0
+   Compiling rusty-photon-driver v0.1.0 (<worktree>/crates/rusty-photon-driver)
+   Compiling rusty-photon-camera-core v0.1.0 (<worktree>/crates/rusty-photon-camera-core)
+   Compiling idna_adapter v1.2.2
+   Compiling idna v1.1.0
+   Compiling url v2.5.8
+   Compiling tower-http v0.6.11
+   Compiling reqwest v0.13.5
+   Compiling rusty-photon-tls v0.1.0 (<worktree>/crates/rusty-photon-tls)
+   Compiling rusty-photon-server-config v0.1.0 (<worktree>/crates/rusty-photon-server-config)
+   Compiling qhy-camera v0.1.0 (<worktree>/services/qhy-camera)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.78s
+     Running `target/debug/qhy-camera --config <scratch>/hw-c4-qhy.json`
+2026-10-13T15:09:43.113138Z DEBUG qhy_camera: Starting QHY camera driver
+2026-10-13T15:09:43.113150Z DEBUG qhy_camera: Configuration path: <scratch>/hw-c4-qhy.json
+2026-10-13T15:09:43.115924Z DEBUG qhy_camera: Loaded effective configuration: server.port=11121
+QHYCCD|QHYCOMMON.CPP|UpdateMainProgramName|start
+QHYCCD|QHYCOMMON.CPP|UpdateMainProgramName|main program=qhy-camera
+QHYCCD|QHYCCD.CPP|InitQHYCCDResource|main program name=qhy-camera
+-- qhyccd.cpp param
+QHYCCD|QHYCCD.CPP|InitQHYCCDResource()|START
+QHYCCD|QHYCCD.CPP|InitQHYCCDResource|auto_detect_camera:false,call InitQHYCCDResourceInside
+QHYCCD|QHYCCD.CPP|InitQHYCCDResourceInside|START
+QHYCCD|QHYCCD.CPP|libusb_version 1.0.30.12037
+QHYCCD|QHYCCD.CPP|libusb_init(libqhyccd_context) called...
+QHYCCD|QHYCCD.CPP|InitQHYCCDResourceInside|numdev set to 0
+QHYCCD|QHYCCD.CPP|InitQHYCCDResourceInside|END
+************************** config file path  26.6.4.16 svn: 17228  ************************************
+QHYCCD|QHYCCD.CPP|InitQHYCCDResource|Load ini filePath = <worktree>  fileName = qhyccd.ini
+2026-10-13T15:09:44.750727Z DEBUG qhy_camera: registered Camera device camera=QHY178M-222b16468c5966524
+2026-10-13T15:09:44.750770Z DEBUG qhy_camera: registered FilterWheel device filter_wheel=QHY178M-222b16468c5966524
+Bound Alpaca server bound_addr=0.0.0.0:11121
+2026-10-13T15:09:44.750973Z  INFO qhy_camera: Service started successfully on 0.0.0.0:11121 cameras=1 filter_wheels=1 placeholders=0
+2026-10-13T15:09:44.750991Z DEBUG qhy_camera: serving plain HTTP
+2026-10-13T15:09:56.022001Z DEBUG qhy_camera::camera: sensor geometry image_width_px=3056 image_height_px=2048 bits_per_pixel=16 effective_x_px=0 effective_y_px=0 effective_width_px=3056 effective_height_px=2048
+2026-10-13T15:09:56.022031Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin3x3mode }
+2026-10-13T15:09:56.022035Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin4x4mode }
+2026-10-13T15:09:56.022037Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin6x6mode }
+2026-10-13T15:09:56.022039Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin8x8mode }
+2026-10-13T15:09:56.022073Z DEBUG qhy_camera::camera: cached control range and armed value control="gain" min=0 max=51 value=Some(30)
+2026-10-13T15:09:56.022079Z DEBUG qhy_camera::camera: cached control range and armed value control="offset" min=0 max=1023 value=Some(0)
+2026-10-13T15:09:56.022084Z DEBUG qhy_camera::camera: camera connected camera=QHY178M-222b16468c5966524
+2026-10-13T15:09:57.037822Z DEBUG qhy_camera::filterwheel: filter wheel connected filter_wheel=CFW-QHY178M-222b16468c5966524 slots=7
+2026-10-13T15:09:57.045805Z DEBUG qhy_camera::camera: ROI armed roi=CCDChipArea { start_x: 0, start_y: 0, width: 3056, height: 2048 }
+2026-10-13T15:09:57.064432Z DEBUG qhy_camera::camera: gain and offset armed gain=Some(30) offset=Some(0)
+2026-10-13T15:10:00.069190Z DEBUG qhy_camera::camera: frame read width=3056 height=2048 bits_per_pixel=16 channels=1 buffer_bytes=27116352
+2026-10-13T15:10:00.248949Z DEBUG qhy_camera::filterwheel: sending the wheel to the slot it stands on first, so its status cannot name the move's own slot in transit slot=0
+2026-10-13T15:10:00.751348Z DEBUG qhy_camera::filterwheel: the wheel's status was just read; resting before the move rest=249.994181ms slot=2
+2026-10-13T15:10:03.930551Z DEBUG qhy_camera::filterwheel: the wheel's status was just read; resting before the move rest=249.162158ms slot=0
+2026-10-13T15:10:08.007260Z DEBUG qhy_camera::camera: camera disconnected camera=QHY178M-222b16468c5966524
+2026-10-13T15:10:21.664509Z DEBUG qhy_camera: qhy-camera shut down
+2026-10-13T15:10:21.664573Z DEBUG qhy_camera: Loaded effective configuration: server.port=11121
+2026-10-13T15:10:22.268603Z DEBUG qhy_camera: registered Camera device camera=QHY178M-222b16468c5966524
+2026-10-13T15:10:22.268632Z DEBUG qhy_camera: registered FilterWheel device filter_wheel=QHY178M-222b16468c5966524
+Bound Alpaca server bound_addr=0.0.0.0:11121
+2026-10-13T15:10:22.268763Z  INFO qhy_camera: Service started successfully on 0.0.0.0:11121 cameras=1 filter_wheels=1 placeholders=0
+2026-10-13T15:10:22.268776Z DEBUG qhy_camera: serving plain HTTP
+2026-10-13T15:10:28.661847Z DEBUG qhy_camera::camera: sensor geometry image_width_px=3056 image_height_px=2048 bits_per_pixel=16 effective_x_px=0 effective_y_px=0 effective_width_px=3056 effective_height_px=2048
+2026-10-13T15:10:28.661878Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin3x3mode }
+2026-10-13T15:10:28.661882Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin4x4mode }
+2026-10-13T15:10:28.661884Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin6x6mode }
+2026-10-13T15:10:28.661886Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin8x8mode }
+2026-10-13T15:10:28.661913Z DEBUG qhy_camera::camera: cached control range and armed value control="gain" min=0 max=51 value=Some(30)
+2026-10-13T15:10:28.661918Z DEBUG qhy_camera::camera: cached control range and armed value control="offset" min=0 max=1023 value=Some(0)
+2026-10-13T15:10:28.661922Z DEBUG qhy_camera::camera: camera connected camera=QHY178M-222b16468c5966524
+2026-10-13T15:10:29.677474Z DEBUG qhy_camera::filterwheel: filter wheel connected filter_wheel=CFW-QHY178M-222b16468c5966524 slots=7
+2026-10-13T15:10:29.685077Z DEBUG qhy_camera::camera: ROI armed roi=CCDChipArea { start_x: 0, start_y: 0, width: 3056, height: 2048 }
+2026-10-13T15:10:29.703691Z DEBUG qhy_camera::camera: gain and offset armed gain=Some(30) offset=Some(0)
+2026-10-13T15:10:32.698819Z DEBUG qhy_camera::camera: frame read width=3056 height=2048 bits_per_pixel=16 channels=1 buffer_bytes=27116352
+2026-10-13T15:10:32.898894Z DEBUG qhy_camera::filterwheel: sending the wheel to the slot it stands on first, so its status cannot name the move's own slot in transit slot=0
+2026-10-13T15:10:33.401247Z DEBUG qhy_camera::filterwheel: the wheel's status was just read; resting before the move rest=249.993821ms slot=2
+2026-10-13T15:10:36.568536Z DEBUG qhy_camera::filterwheel: the wheel's status was just read; resting before the move rest=249.01831ms slot=0
+2026-10-13T15:10:40.646685Z DEBUG qhy_camera::camera: camera disconnected camera=QHY178M-222b16468c5966524
+2026-10-13T15:10:53.265254Z DEBUG qhy_camera::camera: sensor geometry image_width_px=3056 image_height_px=2048 bits_per_pixel=16 effective_x_px=0 effective_y_px=0 effective_width_px=3056 effective_height_px=2048
+2026-10-13T15:10:53.265280Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin3x3mode }
+2026-10-13T15:10:53.265285Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin4x4mode }
+2026-10-13T15:10:53.265287Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin6x6mode }
+2026-10-13T15:10:53.265289Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin8x8mode }
+2026-10-13T15:10:53.265314Z DEBUG qhy_camera::camera: cached control range and armed value control="gain" min=0 max=51 value=Some(30)
+2026-10-13T15:10:53.265324Z DEBUG qhy_camera::camera: cached control range and armed value control="offset" min=0 max=1023 value=Some(0)
+2026-10-13T15:10:53.265329Z DEBUG qhy_camera::camera: camera connected camera=QHY178M-222b16468c5966524
+2026-10-13T15:10:54.280206Z DEBUG qhy_camera::filterwheel: filter wheel connected filter_wheel=CFW-QHY178M-222b16468c5966524 slots=7
+2026-10-13T15:10:54.341488Z DEBUG qhy_camera: qhy-camera shut down
+2026-10-13T15:10:55.248633Z DEBUG qhy_camera: Loaded effective configuration: server.port=11121
+2026-10-13T15:10:55.852300Z DEBUG qhy_camera: registered Camera device camera=QHY178M-222b16468c5966524
+2026-10-13T15:10:55.852332Z DEBUG qhy_camera: registered FilterWheel device filter_wheel=QHY178M-222b16468c5966524
+Bound Alpaca server bound_addr=0.0.0.0:11121
+2026-10-13T15:10:55.852467Z  INFO qhy_camera: Service started successfully on 0.0.0.0:11121 cameras=1 filter_wheels=1 placeholders=0
+2026-10-13T15:10:55.852478Z DEBUG qhy_camera: serving plain HTTP
+2026-10-13T15:11:01.562504Z DEBUG qhy_camera::camera: sensor geometry image_width_px=3056 image_height_px=2048 bits_per_pixel=16 effective_x_px=0 effective_y_px=0 effective_width_px=3056 effective_height_px=2048
+2026-10-13T15:11:01.562528Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin3x3mode }
+2026-10-13T15:11:01.562533Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin4x4mode }
+2026-10-13T15:11:01.562535Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin6x6mode }
+2026-10-13T15:11:01.562537Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin8x8mode }
+2026-10-13T15:11:01.562563Z DEBUG qhy_camera::camera: cached control range and armed value control="gain" min=0 max=51 value=Some(30)
+2026-10-13T15:11:01.562568Z DEBUG qhy_camera::camera: cached control range and armed value control="offset" min=0 max=1023 value=Some(0)
+2026-10-13T15:11:01.562573Z DEBUG qhy_camera::camera: camera connected camera=QHY178M-222b16468c5966524
+2026-10-13T15:11:02.578216Z DEBUG qhy_camera::filterwheel: filter wheel connected filter_wheel=CFW-QHY178M-222b16468c5966524 slots=7
+2026-10-13T15:11:02.585600Z DEBUG qhy_camera::camera: ROI armed roi=CCDChipArea { start_x: 0, start_y: 0, width: 3056, height: 2048 }
+2026-10-13T15:11:02.604186Z DEBUG qhy_camera::camera: gain and offset armed gain=Some(30) offset=Some(0)
+2026-10-13T15:11:05.603921Z DEBUG qhy_camera::camera: frame read width=3056 height=2048 bits_per_pixel=16 channels=1 buffer_bytes=27116352
+2026-10-13T15:11:05.787189Z DEBUG qhy_camera::filterwheel: sending the wheel to the slot it stands on first, so its status cannot name the move's own slot in transit slot=0
+2026-10-13T15:11:06.289857Z DEBUG qhy_camera::filterwheel: the wheel's status was just read; resting before the move rest=249.99355ms slot=2
+2026-10-13T15:11:09.455347Z DEBUG qhy_camera::filterwheel: the wheel's status was just read; resting before the move rest=249.054555ms slot=0
+2026-10-13T15:11:13.547137Z DEBUG qhy_camera::camera: camera disconnected camera=QHY178M-222b16468c5966524
+2026-10-13T15:11:32.049163Z DEBUG qhy_camera: qhy-camera shut down
+2026-10-13T15:11:32.049297Z DEBUG qhy_camera: Loaded effective configuration: server.port=11121
+2026-10-13T15:11:32.653139Z DEBUG qhy_camera: registered Camera device camera=QHY178M-222b16468c5966524
+2026-10-13T15:11:32.653173Z DEBUG qhy_camera: registered FilterWheel device filter_wheel=QHY178M-222b16468c5966524
+Bound Alpaca server bound_addr=0.0.0.0:11121
+2026-10-13T15:11:32.653308Z  INFO qhy_camera: Service started successfully on 0.0.0.0:11121 cameras=1 filter_wheels=1 placeholders=0
+2026-10-13T15:11:32.653322Z DEBUG qhy_camera: serving plain HTTP
+2026-10-13T15:11:37.525154Z DEBUG qhy_camera::camera: sensor geometry image_width_px=3056 image_height_px=2048 bits_per_pixel=16 effective_x_px=0 effective_y_px=0 effective_width_px=3056 effective_height_px=2048
+2026-10-13T15:11:37.525181Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin3x3mode }
+2026-10-13T15:11:37.525185Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin4x4mode }
+2026-10-13T15:11:37.525187Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin6x6mode }
+2026-10-13T15:11:37.525189Z DEBUG qhyccd_rs::camera: control=IsControlAvailable { control: CamBin8x8mode }
+2026-10-13T15:11:37.525214Z DEBUG qhy_camera::camera: cached control range and armed value control="gain" min=0 max=51 value=Some(30)
+2026-10-13T15:11:37.525219Z DEBUG qhy_camera::camera: cached control range and armed value control="offset" min=0 max=1023 value=Some(0)
+2026-10-13T15:11:37.525224Z DEBUG qhy_camera::camera: camera connected camera=QHY178M-222b16468c5966524
+2026-10-13T15:11:38.540689Z DEBUG qhy_camera::filterwheel: filter wheel connected filter_wheel=CFW-QHY178M-222b16468c5966524 slots=7
+2026-10-13T15:11:38.548233Z DEBUG qhy_camera::camera: ROI armed roi=CCDChipArea { start_x: 0, start_y: 0, width: 3056, height: 2048 }
+2026-10-13T15:11:38.566828Z DEBUG qhy_camera::camera: gain and offset armed gain=Some(30) offset=Some(0)
+2026-10-13T15:11:41.561566Z DEBUG qhy_camera::camera: frame read width=3056 height=2048 bits_per_pixel=16 channels=1 buffer_bytes=27116352
+2026-10-13T15:11:41.745608Z DEBUG qhy_camera::filterwheel: sending the wheel to the slot it stands on first, so its status cannot name the move's own slot in transit slot=0
+2026-10-13T15:11:42.248012Z DEBUG qhy_camera::filterwheel: the wheel's status was just read; resting before the move rest=249.993831ms slot=2
+2026-10-13T15:11:45.412948Z DEBUG qhy_camera::filterwheel: the wheel's status was just read; resting before the move rest=249.05124ms slot=0
+2026-10-13T15:11:49.509152Z DEBUG qhy_camera::camera: camera disconnected camera=QHY178M-222b16468c5966524
+2026-10-13T15:11:55.272714Z  INFO rusty_photon_service_lifecycle::runner: qhy-camera: shutdown signal received, terminating
+2026-10-13T15:11:55.272854Z DEBUG qhy_camera: qhy-camera shut down
