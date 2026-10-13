@@ -223,6 +223,22 @@ test('run puts the causes in the annotation, where fetch says why it failed', as
   assert.equal(stdout, '::error::fetch failed: connect ECONNREFUSED 127.0.0.1:443\n');
 });
 
+test('run explains a cause with no message of its own, as fetch gives for a dual-stack host', async (t) => {
+  t.after(() => {
+    process.exitCode = undefined;
+  });
+  const refused = Object.assign(
+    new AggregateError([new Error('connect ECONNREFUSED ::1:59999'), new Error('connect ECONNREFUSED 127.0.0.1:59999')], ''),
+    { code: 'ECONNREFUSED' },
+  );
+  const { stdout } = await capture(() =>
+    run(async () => {
+      throw new TypeError('fetch failed', { cause: refused });
+    }),
+  );
+  assert.equal(stdout, '::error::fetch failed: connect ECONNREFUSED ::1:59999; connect ECONNREFUSED 127.0.0.1:59999\n');
+});
+
 test('run leaves a step that returns alone', async () => {
   const { stdout, stderr } = await capture(() => run(async () => {}));
   assert.equal(stdout, '');
@@ -340,6 +356,13 @@ test('isTransient retries what may pass on a second try, and nothing else', () =
   assert.equal(isTransient(answer(429, 120_001)), false, 'Retry-After beyond two minutes');
   assert.equal(isTransient(new DOMException('timed out', 'TimeoutError')), true);
   assert.equal(isTransient(networkFailure()), true);
+  assert.equal(isTransient(networkFailure('UND_ERR_SOCKET')), true);
+  assert.equal(isTransient(networkFailure('EAI_AGAIN')), true);
+  const dualStack = Object.assign(new AggregateError([], ''), { code: 'ECONNREFUSED' });
+  assert.equal(isTransient(new TypeError('fetch failed', { cause: dualStack })), true);
+  assert.equal(isTransient(networkFailure('CERT_HAS_EXPIRED')), false, 'a certificate fails the same way again');
+  assert.equal(isTransient(networkFailure('ERR_TLS_CERT_ALTNAME_INVALID')), false);
+  assert.equal(isTransient(networkFailure('ENOTFOUND')), false, 'a name that does not exist');
   assert.equal(isTransient(new TypeError('fetch failed')), false, 'no cause: not from the network');
   assert.equal(isTransient(new TypeError('Request with GET/HEAD method cannot have body.')), false);
   assert.equal(isTransient(new TypeError("Cannot read properties of undefined (reading 'x')")), false);
@@ -388,12 +411,12 @@ test('retry gives up after the last attempt and throws its error', async () => {
       retry(
         async () => {
           calls += 1;
-          throw networkFailure(`E${calls}`);
+          throw Object.assign(networkFailure(), { attempt: calls });
         },
         { attempts: 2, delayMs: 1 },
       ),
       (err) => {
-        assert.equal(err.cause.code, 'E2');
+        assert.equal(err.attempt, 2);
         return true;
       },
     ),
@@ -469,6 +492,37 @@ test('fetchWithRetry throws a 4xx answer at once, with its body kept out of the 
     return true;
   });
   assert.equal(server.requests.length, 1);
+});
+
+test('HttpError takes a URL as a string too', () => {
+  const err = new HttpError('GET', 'https://example.invalid/x?sig=1', 404, 'Not Found');
+  assert.equal(err.message, 'GET https://example.invalid/x: 404 Not Found');
+});
+
+test('fetchWithRetry reads no more of an error body than it keeps', async (t) => {
+  const server = await serve((req, res) => {
+    res.writeHead(500, { 'content-length': '100000' });
+    res.write('x'.repeat(5000));
+  });
+  t.after(server.close);
+  const started = Date.now();
+  await assert.rejects(fetchWithRetry(`${server.url}/x`, { attempts: 1, timeoutMs: 10_000 }), (err) => {
+    assert.equal(err.status, 500);
+    assert.equal(err.body, 'x'.repeat(4096));
+    return true;
+  });
+  assert.ok(Date.now() - started < 5_000, 'it waited for the rest of the body');
+});
+
+test('fetchWithRetry sends the method upper-cased, as its logs and errors name it', async (t) => {
+  const methods = [];
+  const server = await serve((req, res) => {
+    methods.push(req.method);
+    res.end();
+  });
+  t.after(server.close);
+  await fetchWithRetry(`${server.url}/issues/1`, { method: 'patch', body: '{}' });
+  assert.deepEqual(methods, ['PATCH']);
 });
 
 test('fetchWithRetry does not retry a 501, which no later attempt can pass', async (t) => {

@@ -67,7 +67,8 @@ node_test = rule(
     attrs = {
         "data": attr.label_list(allow_files = True),
         "node_flags": attr.string_list(doc = "More flags for Node, after the launcher's own."),
-        "srcs": attr.label_list(allow_files = [".mjs", ".js", ".cjs"], mandatory = True),
+        # .mjs only: link_test refuses any other JavaScript file.
+        "srcs": attr.label_list(allow_files = [".mjs"], mandatory = True),
         "_windows": attr.label(default = "@platforms//os:windows"),
     },
     test = True,

@@ -115,9 +115,19 @@ function describe(err) {
   const seen = new Set();
   for (let e = err; e !== undefined && e !== null && !seen.has(e); e = e.cause) {
     seen.add(e);
-    parts.push(e instanceof Error ? e.message : String(e));
+    parts.push(explain(e));
   }
   return parts.join(': ');
+}
+
+// One error's own text. fetch's cause for a refused connection to a host
+// with both an IPv4 and an IPv6 address is an AggregateError with an empty
+// message: the reason is in the errors it holds, one per address.
+function explain(e) {
+  if (!(e instanceof Error)) return String(e);
+  if (e.message) return e.message;
+  if (e instanceof AggregateError && e.errors.length > 0) return e.errors.map(explain).join('; ');
+  return e.code ?? e.name;
 }
 
 /**
@@ -222,7 +232,7 @@ const ERROR_BODY_LIMIT = 4096;
  */
 export class HttpError extends Error {
   constructor(method, url, status, statusText, { body = '', retryAfterMs } = {}) {
-    super(`${method} ${forLog(url)}: ${status} ${statusText}`);
+    super(`${method} ${forLog(new URL(url))}: ${status} ${statusText}`);
     this.name = 'HttpError';
     this.status = status;
     this.retryAfterMs = retryAfterMs;
@@ -239,13 +249,25 @@ function parseRetryAfter(header) {
   return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
 }
 
-// The start of an error response's body, or '' if it cannot be read.
+// The start of an error response's body: no more of it is read than is
+// kept, and a body that breaks off keeps what arrived.
 async function errorBody(response) {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
   try {
-    return (await response.text()).slice(0, ERROR_BODY_LIMIT);
+    while (text.length < ERROR_BODY_LIMIT) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
   } catch {
-    return '';
+    // Keep what arrived.
+  } finally {
+    reader.cancel().catch(() => {});
   }
+  return text.slice(0, ERROR_BODY_LIMIT);
 }
 
 // Answers that a later attempt may not get: a request timeout, a rate
@@ -256,22 +278,43 @@ const TRANSIENT_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 // A server that asks for a longer wait than this is not waited for.
 const MAX_RETRY_AFTER_MS = 120_000;
 
+// The codes of a request that got no answer: the connection was refused,
+// reset or cut, it or the network timed out or could not be reached, the
+// name lookup failed for now (EAI_AGAIN), or undici's socket closed or timed
+// out. A certificate the server presents (CERT_HAS_EXPIRED,
+// ERR_TLS_CERT_ALTNAME_INVALID) or a name that does not exist (ENOTFOUND)
+// fails the same way every time, and is not here.
+const NO_ANSWER_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ECONNABORTED',
+  'EPIPE',
+  'ETIMEDOUT',
+  'ENETUNREACH',
+  'EHOSTUNREACH',
+  'EAI_AGAIN',
+  'UND_ERR_SOCKET',
+  'UND_ERR_CLOSED',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+]);
+
 /**
  * Whether a failed attempt is worth repeating: an answer in
  * TRANSIENT_STATUSES (unless its Retry-After is longer than two minutes),
- * a timeout, or a request that never got an answer. fetch reports that last
- * one as `TypeError('fetch failed')`, with the network's error as its cause,
- * which carries a code (ECONNRESET, UND_ERR_SOCKET, ...). Its other
- * TypeErrors are requests it refused to send, such as a GET with a body, and
- * a TypeError from the caller's own code is a bug: neither passes on a
- * second try.
+ * a timeout, or a request that got no answer. fetch reports that last one
+ * as `TypeError('fetch failed')`, with the network's error as its cause,
+ * whose code is in NO_ANSWER_CODES. Its other TypeErrors are requests it
+ * refused to send, such as a GET with a body, and a TypeError from the
+ * caller's own code is a bug: neither passes on a second try.
  */
 export function isTransient(err) {
   if (err instanceof HttpError) {
     return TRANSIENT_STATUSES.has(err.status) && !(err.retryAfterMs > MAX_RETRY_AFTER_MS);
   }
   if (err?.name === 'TimeoutError') return true;
-  return err instanceof TypeError && typeof err.cause?.code === 'string';
+  return err instanceof TypeError && NO_ANSWER_CODES.has(err.cause?.code);
 }
 
 /**
@@ -332,6 +375,8 @@ const IDEMPOTENT_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE']);
  */
 export async function fetchWithRetry(url, { attempts, delayMs = 1000, timeoutMs = 30_000, ...init } = {}) {
   const target = new URL(url);
+  // Upper-cased for fetch too, which sends any method but the six the
+  // Fetch standard normalises (PATCH is not one) exactly as written.
   const method = (init.method ?? 'GET').toUpperCase();
   const tries = attempts ?? (IDEMPOTENT_METHODS.has(method) ? 3 : 1);
   if (tries > 1 && !isReusableBody(init.body)) {
@@ -341,7 +386,7 @@ export async function fetchWithRetry(url, { attempts, delayMs = 1000, timeoutMs 
     async () => {
       const timeout = AbortSignal.timeout(timeoutMs);
       const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
-      const response = await fetch(target, { ...init, signal });
+      const response = await fetch(target, { ...init, method, signal });
       if (!response.ok) {
         throw new HttpError(method, target, response.status, response.statusText, {
           body: await errorBody(response),

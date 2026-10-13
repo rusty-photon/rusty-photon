@@ -124,40 +124,29 @@ any template rebuild.
 
 ### F1 — JavaScript foundation
 
-- **A pinned Node for tests.** Add rules_nodejs from the Bazel Central
-  Registry for a Node toolchain of the same major version as the actions'
-  `runs.using: node24`.
-- **A test rule** that runs `node --test` over an action's test files, as
-  an ordinary Bazel test, on Linux, Windows and macOS. On Windows the
-  launcher cannot be a shell script.
-- **Where the tests live.** `.github` is in `.bazelignore` (since #82, with
-  no reason recorded), so a BUILD file under `.github/actions` is never
-  loaded, and no Bazel test can read a workflow file. R6 must read the
-  workflows, so `.github` has to leave the ignore list whatever else is
-  decided; the plain answer is that F1 takes it out, checking that
-  nothing else under it then reaches `//...`, and the helper and its
-  tests live beside the actions. If F1 still keeps the helper elsewhere,
-  it records where in ADR-022's "placed where Bazel can test it", and
-  J7's sparse checkout must include that place.
-- **The helper module**, which every action imports:
-  reading inputs (`INPUT_*`); writing to the files `GITHUB_OUTPUT`,
-  `GITHUB_ENV` and `GITHUB_PATH` name (multi-line values in the delimiter
-  form); masking (`::add-mask::`); log groups; failing the step; HTTP with
-  timeouts and bounded retries over `fetch`; SHA-256 of a stream.
-- **A syntax check of every action file.** Tests catch a syntax error only
-  in a file they import, and an action's entry file is usually not
-  imported, because it runs on load. A broken entry file would then pass
-  every PR check and fail only where the action runs, which for J7 is
-  after a scheduled failure and for J1's save after a push to main. F1
-  adds a Bazel test that runs `node --check` over every `.js` file under
-  the actions and the helper, so an action added later is covered too.
-- **Conventions** in a new skill doc that F2 extends, linked from AGENTS.md
-  rule 1: where actions live, Node built-ins only, how to test, how to
-  wrap an action that needs `actions/cache` (the order ADR-022 gives:
-  resolve, then the cache, then install).
-- **Done when** a test of the helper module runs in `bazel test //...` on
-  the Linux and Windows PR legs, and a deliberately broken helper turns
-  both legs red, as does a syntax error in an entry file no test imports.
+Done in #1508. [ci-logic.md](../skills/ci-logic.md) has the conventions it
+set; what later items build on:
+
+- **Node for tests.** rules_nodejs in `MODULE.bazel` pins a Node 24, the
+  major version of the actions' `runs.using: node24`.
+- **Where everything lives.** `.github` is out of `.bazelignore` (it had
+  been there since #82, with no reason recorded; nothing under it had a
+  BUILD file). The helper and every action's tests live in one Bazel
+  package, `.github/actions`, with no BUILD file below it.
+- **`node_test`** (`.github/actions/node_test.bzl`) runs `node --test` as
+  an ordinary Bazel test on Linux, macOS and Windows; the Windows
+  launcher is a batch file.
+- **`link_test`** parses and links every JavaScript file in the package
+  without running it, so an entry file that no test imports still fails
+  the PR on a syntax error, a wrong import, an npm package or a `.js`
+  file. It replaced the planned `node --check` in review, since parsing
+  alone missed imports.
+- **`lib/helpers.mjs`**: inputs, the `GITHUB_OUTPUT`/`GITHUB_ENV`/
+  `GITHUB_PATH` files, masking, log groups, failing the step, `fetch` with
+  timeouts and bounded retries, SHA-256 of a stream.
+- **Proven** by two deliberately red commits, each failing on both PR legs
+  (a broken helper; an unimported entry file that does not parse, then
+  one importing a name that does not exist), and reverted.
 
 ### F2 — Rust tools crate
 

@@ -1,11 +1,12 @@
 // Every JavaScript file under .github/actions must parse and link: each
-// import names a file that exists, or a Node built-in, and each name it
-// imports is exported there. Nothing is run. node_link_test in
+// static import names a file that exists, or a Node built-in, and each name
+// it imports is exported there. Nothing is run, so a dynamic import() is not
+// followed, which is why actions use static imports only. node_link_test in
 // node_test.bzl puts every file in this test's runfiles, and says why.
 //
 // vm.SourceTextModule parses a module, and `link` resolves its imports and
 // instantiates it without evaluating it, so an entry file's action never
-// starts. It needs --experimental-vm-modules, which BUILD.bazel passes.
+// starts. It needs --experimental-vm-modules, which node_link_test passes.
 
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
