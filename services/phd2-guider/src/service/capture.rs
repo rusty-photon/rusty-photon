@@ -43,9 +43,10 @@ const FITS_BLOCK: u64 = 2880;
 pub const ABORT_WAIT: Duration = Duration::from_secs(2);
 /// PHD2's longest single frame (`capture_single_frame` refuses more).
 pub const MAX_EXPOSURE: Duration = Duration::from_secs(600);
-/// How long each of a capture's two requests to PHD2 may take while the
-/// guiding lock is held. PHD2 answers both in milliseconds.
-const START_RPC_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long each request the facade sends PHD2 while it holds the
+/// guiding lock may take: the capture's two, and an abort's
+/// `stop_capture`. PHD2 answers each in milliseconds.
+const LOCKED_RPC_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Why a capture could not start. Each maps to an ASCOM error in
 /// `camera.rs`.
@@ -149,10 +150,6 @@ impl CaptureEngine {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub fn image_dir(&self) -> &Path {
-        &self.image_dir
-    }
-
     pub const fn grace(&self) -> Duration {
         self.grace
     }
@@ -161,7 +158,8 @@ impl CaptureEngine {
     /// 600 000): claim the capture slot under the guiding lock, check
     /// PHD2 is Stopped, write the marker, and ask PHD2 for the frame.
     /// The lock is held only for these steps; the exposure holds none.
-    /// The orphan sweep runs after the lock is let go.
+    /// The orphan sweep is the caller's, once it has answered its client
+    /// ([`Self::sweep_orphans`]).
     ///
     /// # Errors
     ///
@@ -185,7 +183,7 @@ impl CaptureEngine {
                 humantime::format_rfc3339_seconds(claim.deadline)
             )));
         }
-        let state = tokio::time::timeout(START_RPC_TIMEOUT, self.client.get_app_state())
+        let state = tokio::time::timeout(LOCKED_RPC_TIMEOUT, self.client.get_app_state())
             .await
             .map_err(|_| StartError::Unreachable("PHD2 did not answer get_app_state".to_string()))?
             .map_err(map_rpc_error)?;
@@ -223,6 +221,7 @@ impl CaptureEngine {
             &op,
             CaptureClaim {
                 path: path.clone(),
+                expires: deadline,
                 deadline: deadline_wall,
                 stop_requested: false,
                 recovered: false,
@@ -234,7 +233,7 @@ impl CaptureEngine {
             frames,
         };
         let request = tokio::time::timeout(
-            START_RPC_TIMEOUT,
+            LOCKED_RPC_TIMEOUT,
             self.client.capture_single_frame_to(exposure_ms, &path_text),
         )
         .await
@@ -246,16 +245,20 @@ impl CaptureEngine {
         let inflight = self.settle_request(request, inflight)?;
         drop(op);
         debug!(path = %path.display(), exposure_ms, "PHD2 accepted the facade's frame");
+        Ok(inflight)
+    }
 
+    /// Delete every orphaned facade frame in `image_dir` but `keep`, the
+    /// capture in flight. Holds no lock.
+    pub async fn sweep_orphans(&self, keep: &Path) {
         let image_dir = self.image_dir.clone();
-        let keep = path.clone();
+        let keep = keep.to_path_buf();
         let removed = tokio::task::spawn_blocking(move || sweep(&image_dir, Some(&keep)))
             .await
             .unwrap_or_default();
         if removed > 0 {
             debug!("swept {removed} orphaned frame file(s) as the capture started");
         }
-        Ok(inflight)
     }
 
     /// What PHD2's answer to `capture_single_frame` means for the frame
@@ -267,7 +270,9 @@ impl CaptureEngine {
     /// the marker: nothing started. Any other failure means the request
     /// may have reached PHD2, so the slot and the marker stay, held by a
     /// background wait as for a frame PHD2 accepted
-    /// ([`StartError::Unconfirmed`]).
+    /// ([`StartError::Unconfirmed`]). That includes a reply this client
+    /// cannot read: it may be an acceptance, and guiding sent into a
+    /// running frame can wedge PHD2.
     fn settle_request(
         self: &Arc<Self>,
         request: crate::error::Result<()>,
@@ -289,7 +294,9 @@ impl CaptureEngine {
                 );
                 let engine = Arc::clone(self);
                 tokio::spawn(async move {
-                    if engine.wait(inflight).await == FrameEnd::Saved {
+                    // A frame given up on has no file yet; its late report
+                    // deletes it. Any other end may have left one.
+                    if !matches!(engine.wait(inflight).await, FrameEnd::NotReported { .. }) {
                         engine.discard(&path);
                     }
                 });
@@ -413,8 +420,13 @@ impl CaptureEngine {
                 return true;
             }
             self.ops.mark_capture_stopped();
-            if let Err(e) = self.client.stop_capture().await {
-                warn!("cannot stop PHD2's frame: {e}");
+            match tokio::time::timeout(LOCKED_RPC_TIMEOUT, self.client.stop_capture()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => warn!("cannot stop PHD2's frame: {e}"),
+                Err(_) => warn!(
+                    "PHD2 did not answer stop_capture within {}",
+                    humantime::format_duration(LOCKED_RPC_TIMEOUT)
+                ),
             }
         }
         self.ops.wait_capture_released(path, limit).await
@@ -482,12 +494,13 @@ impl CaptureEngine {
     }
 
     /// At startup: sweep orphans, and honour a restart marker. A marker
-    /// whose deadline is still ahead holds the capture slot until its
-    /// file appears, PHD2 reports it, or the deadline passes; one whose
-    /// deadline passed is removed at once. A deadline further ahead than
-    /// the longest exposure plus the longest grace is clamped to that,
-    /// so a marker written under a wrong clock cannot hold the slot for
-    /// longer than any frame could.
+    /// whose deadline is still ahead holds the capture slot until PHD2
+    /// reports its frame or the deadline passes; one whose deadline
+    /// passed, or that names no facade frame, is removed at once. A
+    /// deadline further ahead than the longest exposure plus the longest
+    /// grace is clamped to that and written back, so a marker written
+    /// under a wrong clock cannot hold the slot for longer than any frame
+    /// could, however often the service restarts.
     pub async fn recover(self: &Arc<Self>) {
         let marker_path = self.marker_path();
         let marker = match std::fs::read(&marker_path) {
@@ -509,23 +522,40 @@ impl CaptureEngine {
         let latest = now
             .checked_add(MAX_EXPOSURE.saturating_add(MAX_CAPTURE_GRACE))
             .unwrap_or(now);
-        let deadline = marker
+        let written = marker
             .as_ref()
-            .and_then(|m| UNIX_EPOCH.checked_add(Duration::from_millis(m.deadline_unix_ms)))
-            .map(|deadline| deadline.min(latest));
-        let in_flight = match (&marker, deadline) {
-            (Some(marker), Some(deadline)) if deadline > now && self.is_our_frame(&marker.path) => {
+            .and_then(|m| UNIX_EPOCH.checked_add(Duration::from_millis(m.deadline_unix_ms)));
+        let in_flight = match (&marker, written) {
+            (Some(marker), _) if !self.is_our_frame(&marker.path) => {
+                warn!(
+                    path = %marker.path.display(),
+                    "capture marker names no camera-facade frame; removing it"
+                );
+                remove_quietly(&marker_path);
+                None
+            }
+            (Some(marker), Some(written)) if written > now => {
+                let deadline = written.min(latest);
+                if deadline < written {
+                    // Written back, so the next start does not clamp
+                    // again from its own startup time.
+                    let clamped = Marker {
+                        path: marker.path.clone(),
+                        deadline_unix_ms: unix_ms(deadline),
+                    };
+                    if let Err(e) = write_marker(&marker_path, &clamped) {
+                        warn!(path = %marker_path.display(), "cannot rewrite the capture marker: {e}");
+                    }
+                }
                 Some((marker.path.clone(), deadline))
             }
             (Some(marker), _) => {
                 debug!("capture marker's deadline has passed; removing it");
                 remove_quietly(&marker_path);
-                if self.is_our_frame(&marker.path) {
-                    self.discard(&marker.path);
-                }
+                self.discard(&marker.path);
                 None
             }
-            _ => None,
+            (None, _) => None,
         };
         let keep = in_flight.as_ref().map(|(path, _)| path.clone());
         let image_dir = self.image_dir.clone();
@@ -538,12 +568,19 @@ impl CaptureEngine {
         let Some((path, deadline)) = in_flight else {
             return;
         };
+        // From here the slot runs on the monotonic clock, as a frame this
+        // process started does.
+        let left = deadline.duration_since(now).unwrap_or_default();
+        let expires = tokio::time::Instant::now()
+            .checked_add(left)
+            .unwrap_or_else(tokio::time::Instant::now);
         {
             let op = self.ops.op_lock().lock().await;
             self.ops.claim_capture(
                 &op,
                 CaptureClaim {
                     path: path.clone(),
+                    expires,
                     deadline,
                     stop_requested: false,
                     recovered: true,
@@ -557,16 +594,14 @@ impl CaptureEngine {
             humantime::format_rfc3339_seconds(deadline)
         );
         let engine = Arc::clone(self);
-        tokio::spawn(async move { engine.watch_recovered(path, deadline).await });
+        tokio::spawn(async move { engine.watch_recovered(path, expires).await });
     }
 
     /// Hold the restart marker's frame until PHD2 reports it (the late
-    /// cleaner then releases it) or its deadline passes. The frame's file
-    /// existing proves nothing: PHD2 creates it before it has written it.
-    async fn watch_recovered(&self, path: PathBuf, deadline: SystemTime) {
-        let left = deadline
-            .duration_since(SystemTime::now())
-            .unwrap_or_default();
+    /// cleaner then releases it) or it expires. The frame's file existing
+    /// proves nothing: PHD2 creates it before it has written it.
+    async fn watch_recovered(&self, path: PathBuf, expires: tokio::time::Instant) {
+        let left = expires.saturating_duration_since(tokio::time::Instant::now());
         if self.ops.wait_capture_released(&path, left).await {
             return; // PHD2 reported it; the cleaner released it.
         }
@@ -866,6 +901,7 @@ mod tests {
             &op,
             CaptureClaim {
                 path: path.to_path_buf(),
+                expires: tokio::time::Instant::now() + Duration::from_secs(60),
                 deadline: SystemTime::now() + Duration::from_secs(60),
                 stop_requested: false,
                 recovered,
@@ -950,6 +986,34 @@ mod tests {
                 stopped: false,
             }
         );
+    }
+
+    #[tokio::test]
+    async fn an_unconfirmed_frame_that_fails_still_has_its_file_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine(dir.path());
+        let path = dir.path().join(FRAME);
+        let inflight = in_flight(&engine, &path, Duration::from_secs(30)).await;
+        let err = engine
+            .settle_request(Err(Phd2Error::Timeout("no answer".into())), inflight)
+            .unwrap_err();
+        assert!(matches!(err, StartError::Unconfirmed(_)), "{err:?}");
+        assert!(
+            engine.ops.capture_claim().is_some(),
+            "an unconfirmed frame freed the slot"
+        );
+        // PHD2 did start the frame, and failed after creating its file.
+        std::fs::write(&path, b"partial").unwrap();
+        report(&engine, &path, false, Some("error saving image file"));
+        assert!(
+            engine
+                .ops
+                .wait_capture_released(&path, Duration::from_secs(5))
+                .await
+        );
+        // On this one-thread runtime the background wait releases the
+        // slot and deletes the file in one poll, with no await between.
+        assert!(!path.exists(), "a failed frame's file was left behind");
     }
 
     #[tokio::test(start_paused = true)]
@@ -1137,6 +1201,11 @@ mod tests {
             .expect("the marker holds the slot");
         let longest = SystemTime::now() + MAX_EXPOSURE + MAX_CAPTURE_GRACE;
         assert!(claim.deadline <= longest, "{:?}", claim.deadline);
+        // Written back: a restart loop cannot extend it from each start.
+        let marker: Marker =
+            serde_json::from_slice(&std::fs::read(engine.marker_path()).unwrap()).unwrap();
+        assert_eq!(marker.deadline_unix_ms, unix_ms(claim.deadline));
+        assert_eq!(marker.path, path);
     }
 
     #[tokio::test]
@@ -1184,10 +1253,9 @@ mod tests {
     }
 
     #[test]
-    fn the_engine_reports_its_directory_and_grace() {
+    fn the_engine_reports_its_grace() {
         let dir = tempfile::tempdir().unwrap();
         let engine = engine(dir.path());
-        assert_eq!(engine.image_dir(), dir.path());
         assert_eq!(engine.grace(), Duration::from_secs(10));
         assert_eq!(
             whole_ms(Duration::from_micros(1_500_400)),

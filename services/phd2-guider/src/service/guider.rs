@@ -142,7 +142,12 @@ pub struct CaptureClaim {
     /// The file PHD2 saves the frame to.
     pub path: PathBuf,
     /// When the slot is released even without PHD2's event:
-    /// `exposure + capture_grace` after the request.
+    /// `exposure + capture_grace` after the request, on the monotonic
+    /// clock the frame's own wait runs on, so a wall-clock step cannot
+    /// end a claim while PHD2 is still exposing.
+    pub expires: tokio::time::Instant,
+    /// The same moment in wall-clock time, for messages and the restart
+    /// marker.
     pub deadline: SystemTime,
     /// A guiding stop or the facade's own abort sent `stop_capture` for
     /// this frame, so a failure PHD2 reports for it is that stop.
@@ -247,7 +252,7 @@ impl GuiderOps {
     pub fn capture_claim(&self) -> Option<CaptureClaim> {
         self.capture_slot()
             .clone()
-            .filter(|claim| claim.deadline > SystemTime::now())
+            .filter(|claim| claim.expires > tokio::time::Instant::now())
     }
 
     /// Claim the capture slot for a facade frame. The caller holds the
@@ -258,9 +263,8 @@ impl GuiderOps {
         *self.capture_slot() = Some(claim);
     }
 
-    /// Release the capture slot if it is still held for `path`. Returns
-    /// whether it was.
-    pub(crate) fn release_capture(&self, path: &Path) -> bool {
+    /// Release the capture slot if it is still held for `path`.
+    pub(crate) fn release_capture(&self, path: &Path) {
         let released = {
             let mut slot = self.capture_slot();
             if slot.as_ref().is_some_and(|claim| claim.path == path) {
@@ -274,7 +278,6 @@ impl GuiderOps {
             debug!(path = %path.display(), "capture slot released");
             self.capture_released.notify_waiters();
         }
-        released
     }
 
     /// Wait until the capture slot is no longer held for `path`, or
@@ -958,6 +961,7 @@ mod tests {
     fn claim(path: &str) -> CaptureClaim {
         CaptureClaim {
             path: PathBuf::from(path),
+            expires: tokio::time::Instant::now() + Duration::from_secs(60),
             deadline: SystemTime::now() + Duration::from_secs(60),
             stop_requested: false,
             recovered: false,
@@ -1013,10 +1017,35 @@ mod tests {
     async fn the_slot_is_released_only_for_its_own_frame() {
         let ops = test_ops();
         claim_slot(&ops, "/images/phd2-guider-a.fits").await;
-        assert!(!ops.release_capture(Path::new("/images/phd2-guider-b.fits")));
+        ops.release_capture(Path::new("/images/phd2-guider-b.fits"));
         assert!(ops.capture_claim().is_some());
-        assert!(ops.release_capture(Path::new("/images/phd2-guider-a.fits")));
+        ops.release_capture(Path::new("/images/phd2-guider-a.fits"));
         assert!(ops.capture_claim().is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_claim_ends_on_the_monotonic_clock_not_the_wall_clock() {
+        let ops = test_ops();
+        {
+            let op = ops.op_lock().lock().await;
+            ops.claim_capture(
+                &op,
+                CaptureClaim {
+                    // As after the wall clock stepped forward an hour.
+                    deadline: SystemTime::now() - Duration::from_hours(1),
+                    ..claim("/images/phd2-guider-a.fits")
+                },
+            );
+        }
+        assert!(
+            ops.capture_claim().is_some(),
+            "a wall-clock step ended the claim"
+        );
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert!(
+            ops.capture_claim().is_none(),
+            "the claim outlived its expiry"
+        );
     }
 
     #[tokio::test]

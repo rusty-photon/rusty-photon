@@ -34,6 +34,7 @@ async-trait = { workspace = true }
 # The opt-in ASCOM Alpaca Camera facade (docs/services/phd2-guider.md
 # § "Camera facade") and its config actions.
 ascom-alpaca = { workspace = true, features = ["server", "camera"] }
+rusty-photon-camera-core = { workspace = true }
 rusty-photon-driver = { workspace = true }
 schemars = { workspace = true }
 ndarray = { workspace = true }

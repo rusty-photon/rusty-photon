@@ -1144,13 +1144,15 @@ a client polls `ImageReady` as with any camera.
      and any other refusal to `UnspecifiedError` with PHD2's text.
    - With no PHD2 connection the request is never sent: `NotConnected`,
      with the same release.
-   - A request that may have reached PHD2 but got no answer (a timeout,
-     or a connection dropped mid-request) keeps the slot and the marker,
+   - A request that may have reached PHD2 but got no answer it can use
+     (a timeout, a connection dropped mid-request, or a reply this client
+     cannot read, which may be an acceptance) keeps the slot and the marker,
      exactly as for a frame PHD2 accepted, until PHD2 reports the frame
      or its deadline passes. `StartExposure` fails with `UnspecifiedError`
      saying so.
-4. **Let the lock go, sweep orphans, and return.** The exposure holds no
-   lock, and neither does the sweep (see [Files](#files)).
+4. **Let the lock go and return, then sweep orphans.** `StartExposure`
+   does not wait on the sweep, and neither the exposure nor the sweep
+   holds a lock (see [Files](#files)).
 
 In the background the facade waits for the `SingleFrameComplete` event
 whose `Path` is the one it sent, bounded by `exposure + capture_grace`
@@ -1253,7 +1255,9 @@ the lock is held. The frame's end clears it.
   a guiding operation. A guiding operation in progress refuses the
   capture with `InvalidOperation`. The capture holds the lock only for
   steps 2–3 above: a few milliseconds while PHD2 answers, and never more
-  than 5 s for each of its two requests when PHD2 does not.
+  than 5 s for each of its two requests when PHD2 does not. An abort
+  (`AbortExposure`, a disconnect, shutdown) holds it the same way while
+  it sends `stop_capture`, also for at most 5 s.
 - **`guiding/start`, `pause`, `resume`, `dither`, `calibration/clear` and
   `star/reselect`** still queue on the lock as before. Once they hold it
   they check the slot, and a capture in flight refuses them with
@@ -1268,7 +1272,10 @@ the lock is held. The frame's end clears it.
 - **The slot is released** when PHD2's event for the frame arrives, or
   when `exposure + capture_grace` has passed since the request, whichever
   comes first. A claim whose deadline has passed holds nothing, even
-  before the task that ends it has run. A connection lost mid-frame can cost the event, and then
+  before the task that ends it has run. The deadline runs on the
+  monotonic clock, so a wall-clock step, such as a host without a
+  battery-backed clock setting its time mid-frame, neither ends a claim
+  early nor stretches it. A connection lost mid-frame can cost the event, and then
   the deadline releases. A released slot never waits on PHD2. If PHD2 is
   running the frame later than the deadline, a request PHD2 then receives
   meets PHD2's own rules: a capture is refused, and a guide starts after
@@ -1306,7 +1313,8 @@ take the lock and are never refused.
 - **Sweeping.** Any `phd2-guider-*.fits` in `image_dir` other than the
   capture in flight is an orphan. One appears when PHD2 saved a frame the
   facade had already given up on. The facade deletes orphans at startup
-  and as each capture starts, once the guiding lock is let go, looking at
+  and as each capture starts, once PHD2 has accepted it and
+  `StartExposure` has answered, looking at
   no more than 4096 directory entries per sweep and logging what it
   removed. When a late
   `SingleFrameComplete` names a frame whose deadline already passed, the
@@ -1334,10 +1342,15 @@ take the lock and are never refused.
   PHD2 creates it before it has written it. That is never longer
   after the original request than the running process would have held
   the slot. A deadline further ahead than 660 s from startup (the longest
-  exposure plus the longest grace) is cut to that, so a marker written
-  under a wrong clock cannot hold the slot longer than any frame could.
+  exposure plus the longest grace) is cut to that and written back to the
+  marker, so a marker written under a wrong clock cannot hold the slot
+  longer than any frame could, however often the service restarts.
   A marker whose deadline passed while the service was down is removed
-  at once. The marker is read only when `camera.enabled` is true.
+  at once, and so is one that names no facade frame. A marker also
+  outlives a host reboot or a PHD2 restart, after which its frame cannot
+  be running. Nothing PHD2 reports tells that apart (its state can read
+  Stopped while a frame runs), so the slot is then held to the deadline,
+  at most 660 s. The marker is read only when `camera.enabled` is true.
 - **The marker and the slot change together.** The facade removes the
   marker and releases the slot under the guiding lock, so no new capture
   writes its marker in between, and it removes the marker only if it

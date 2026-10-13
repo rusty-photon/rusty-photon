@@ -17,6 +17,7 @@ use ascom_alpaca::api::camera::{CameraState, ImageArray, SensorType};
 use ascom_alpaca::api::{Camera, Device};
 use ascom_alpaca::{ASCOMError, ASCOMErrorCode, ASCOMResult};
 use ndarray::Array2;
+use rusty_photon_camera_core::Roi;
 use rusty_photon_driver::ConfigActionCtx;
 use tracing::{debug, warn};
 
@@ -297,6 +298,8 @@ impl Phd2Camera {
             return;
         }
         let _ = started.send(Ok(()));
+        // After the answer, so StartExposure never waits on the sweep.
+        self.inner.engine.sweep_orphans(&inflight.path).await;
         self.run_capture(generation, inflight, geometry, subframe)
             .await;
     }
@@ -820,27 +823,17 @@ fn exposure_ms(duration: Duration) -> ASCOMResult<u32> {
         .map_err(|_| ASCOMError::invalid_value("Duration is outside PHD2's 0.001 s to 600 s"))
 }
 
+/// The subframe against the sensor, by the rules every camera driver
+/// shares. The facade has one bin and no alignment rule.
 fn check_subframe(subframe: Subframe, geometry: &Geometry) -> ASCOMResult<()> {
-    let Subframe {
-        start_x,
-        start_y,
-        num_x,
-        num_y,
-    } = subframe;
-    if num_x == 0 || num_y == 0 {
-        return Err(ASCOMError::invalid_value(format!(
-            "NumX and NumY must be greater than 0 (got {num_x} x {num_y})"
-        )));
-    }
-    if start_x.saturating_add(num_x) > geometry.width
-        || start_y.saturating_add(num_y) > geometry.height
-    {
-        return Err(ASCOMError::invalid_value(format!(
-            "subframe {num_x} x {num_y} at ({start_x}, {start_y}) does not fit the {} x {} sensor",
-            geometry.width, geometry.height
-        )));
-    }
-    Ok(())
+    let roi = Roi {
+        start_x: subframe.start_x,
+        start_y: subframe.start_y,
+        width: subframe.num_x,
+        height: subframe.num_y,
+    };
+    rusty_photon_camera_core::check(roi, geometry.width, geometry.height, 1, None)
+        .map_err(ASCOMError::from)
 }
 
 /// The ASCOM `ImageArray` for a row-major image. ASCOM's array is

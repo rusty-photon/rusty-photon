@@ -3373,6 +3373,7 @@ dependencies = [
  "reqwest",
  "rp-auth",
  "rp-fits",
+ "rusty-photon-camera-core",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
  "rusty-photon-driver",

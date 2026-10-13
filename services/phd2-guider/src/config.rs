@@ -494,10 +494,13 @@ mod tests {
     use super::*;
 
     fn enabled(extra: &str) -> Config {
-        serde_json::from_str(&format!(
-            r#"{{"camera": {{"enabled": true, "pixel_size_x_um": 2.9, "pixel_size_y_um": 2.9, "image_dir": "/var/lib/rusty-photon/phd2-images"{extra}}}}}"#
+        let mut config: Config = serde_json::from_str(&format!(
+            r#"{{"camera": {{"enabled": true, "pixel_size_x_um": 2.9, "pixel_size_y_um": 2.9{extra}}}}}"#
         ))
-        .unwrap()
+        .unwrap();
+        // Absolute on every platform; `/var/...` is not, on Windows.
+        config.camera.image_dir = Some(std::env::temp_dir().join("phd2-images"));
+        config
     }
 
     #[test]

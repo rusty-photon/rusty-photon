@@ -115,6 +115,25 @@ static FRAME_IN_FLIGHT: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
 /// every event-server client, not only the one that asked for the frame.
 static CLIENTS: Mutex<Vec<Arc<Mutex<TcpStream>>>> = Mutex::new(Vec::new());
 
+/// A client's place in [`CLIENTS`], given up when its connection ends.
+struct Registered(Arc<Mutex<TcpStream>>);
+
+impl Registered {
+    fn new(writer: &Arc<Mutex<TcpStream>>) -> Self {
+        CLIENTS.lock().unwrap().push(Arc::clone(writer));
+        Self(Arc::clone(writer))
+    }
+}
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        CLIENTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|writer| !Arc::ptr_eq(writer, &self.0));
+    }
+}
+
 /// Write one line to every connected client; a client gone away is
 /// skipped.
 fn broadcast(line: &str) {
@@ -630,7 +649,7 @@ fn handle_client(
 
     let reader = BufReader::new(stream.try_clone().unwrap());
     let writer = Arc::new(Mutex::new(stream));
-    CLIENTS.lock().unwrap().push(Arc::clone(&writer));
+    let _registered = Registered::new(&writer);
 
     // Send Version event on connect
     let version = std::env::var("MOCK_PHD2_VERSION").unwrap_or_else(|_| "2.6.11-mock".to_string());
