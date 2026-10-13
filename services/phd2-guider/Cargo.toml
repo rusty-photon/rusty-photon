@@ -31,12 +31,23 @@ rusty-photon-service-lifecycle = { workspace = true }
 rusty-photon-tls = { workspace = true }
 rp-auth = { workspace = true }
 async-trait = { workspace = true }
+# The opt-in ASCOM Alpaca Camera facade (docs/services/phd2-guider.md
+# § "Camera facade") and its config actions.
+ascom-alpaca = { workspace = true, features = ["server", "camera"] }
+rusty-photon-driver = { workspace = true }
+schemars = { workspace = true }
+ndarray = { workspace = true }
+uuid = { workspace = true }
 
 # Enable the Windows Service Control Manager dispatch only on Windows;
 # on Unix the `scm` feature would pull in `windows-service` for no
 # runtime benefit.
 [target.'cfg(windows)'.dependencies]
 rusty-photon-service-lifecycle = { workspace = true, features = ["scm"] }
+
+# `O_NOFOLLOW` for opening the facade's frames without following a link.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
 
 [package.metadata.miri]
 command = "cargo miri test -p phd2-guider"
@@ -118,6 +129,8 @@ cargo-husky = { workspace = true }
 cucumber = { workspace = true }
 bdd-infra = { workspace = true, features = ["tls-auth"] }
 reqwest = { workspace = true }
+# The camera-facade BDD steps talk to the facade as an Alpaca client.
+ascom-alpaca = { workspace = true, features = ["client", "camera"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = { workspace = true }

@@ -198,7 +198,7 @@ fn main() -> ServiceResult {
             // bare binary).
             let command = args.command.unwrap_or(Commands::Serve);
 
-            let config = resolve_config(
+            let (config, config_path) = resolve_config(
                 &command,
                 args.config.as_deref(),
                 args.host.clone(),
@@ -206,7 +206,7 @@ fn main() -> ServiceResult {
             )?;
 
             if matches!(command, Commands::Serve) {
-                return run_serve(config, shutdown).await;
+                return run_serve(config, config_path, shutdown).await;
             }
 
             let client = Phd2Client::new(config.phd2);
@@ -273,16 +273,19 @@ fn main() -> ServiceResult {
 /// default config there on first start when no `--host`/`--port`
 /// override is in play — and every remaining mode falls back to
 /// defaults with the `--host`/`--port` flags applied, writing nothing.
+///
+/// Returns the file the config came from, when there is one: the
+/// camera facade's config actions persist there.
 fn resolve_config(
     command: &Commands,
     config_arg: Option<&std::path::Path>,
     host: Option<String>,
     port: Option<u16>,
-) -> Result<Config, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(Config, Option<PathBuf>), Box<dyn std::error::Error + Send + Sync>> {
     let is_serve = matches!(command, Commands::Serve);
     if let Some(config_path) = config_arg {
         debug!("Loading configuration from {:?}", config_path);
-        return load_config(config_path);
+        return load_serve_config(config_path, is_serve);
     }
     if is_serve && host.is_none() && port.is_none() {
         let path = rusty_photon_config::resolve_and_init::<Config>(
@@ -292,7 +295,7 @@ fn resolve_config(
             &[],
         )?;
         debug!("Loading configuration from default path {:?}", path);
-        return load_config(&path);
+        return load_serve_config(&path, is_serve);
     }
     let default_path = is_serve
         .then(|| rusty_photon_config::resolve_config_path("phd2-guider", None).ok())
@@ -300,7 +303,7 @@ fn resolve_config(
         .filter(|p| p.exists());
     if let Some(path) = default_path {
         debug!("Loading configuration from default path {:?}", path);
-        return load_config(&path);
+        return load_serve_config(&path, is_serve);
     }
     let mut phd2 = Phd2Config::default();
     if let Some(host) = host {
@@ -309,21 +312,67 @@ fn resolve_config(
     if let Some(port) = port {
         phd2.port = port;
     }
-    Ok(Config {
-        phd2,
-        ..Default::default()
-    })
+    Ok((
+        Config {
+            phd2,
+            ..Default::default()
+        },
+        None,
+    ))
+}
+
+/// Where the camera facade's `UniqueID` lives in the config file.
+const CAMERA_IDENTITY_POINTERS: &[&str] = &["/camera/unique_id"];
+
+/// Load the config at `path`. For `serve` with the camera facade
+/// enabled, first mint the facade's `unique_id` into the file if it has
+/// none, so the device keeps one identity across restarts. A disabled
+/// facade mints nothing, so a default install's file is never touched.
+fn load_serve_config(
+    path: &std::path::Path,
+    is_serve: bool,
+) -> Result<(Config, Option<PathBuf>), Box<dyn std::error::Error + Send + Sync>> {
+    let config = load_config(path)?;
+    let needs_identity = is_serve
+        && config.camera.enabled
+        && config
+            .camera
+            .unique_id
+            .as_deref()
+            .is_none_or(|id| id.trim().is_empty());
+    if !needs_identity {
+        return Ok((config, Some(path.to_path_buf())));
+    }
+    let outcome = rusty_photon_config::materialize_identity::<Config>(
+        path,
+        &serde_json::Value::Object(serde_json::Map::new()),
+        CAMERA_IDENTITY_POINTERS,
+    )?;
+    debug!(
+        path = ?path,
+        wrote = outcome.wrote,
+        filled = ?outcome.filled,
+        "minted the camera facade's UniqueID"
+    );
+    Ok((load_config(path)?, Some(path.to_path_buf())))
 }
 
 /// Run the rp-managed guider HTTP service until shutdown.
 ///
 /// Prints `bound_addr=<host>:<port>` to stdout once the listener is
 /// bound (the `bdd-infra::ServiceHandle` port-discovery convention).
+/// The camera facade's address is logged, never printed: a second
+/// `bound_addr=` line would be ambiguous to that parser.
 async fn run_serve(
     config: Config,
+    config_path: Option<PathBuf>,
     shutdown: Shutdown,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let bound = ServerBuilder::new().with_config(config).build().await?;
+    let mut builder = ServerBuilder::new().with_config(config);
+    if let Some(path) = config_path {
+        builder = builder.with_config_path(path);
+    }
+    let bound = builder.build().await?;
     // Parsed by test harnesses; keep the exact format.
     // Console mode only: stdout is a dead handle under the Windows SCM,
     // and the only stdout consumer (bdd-infra's port parser) never runs
@@ -332,6 +381,9 @@ async fn run_serve(
         println!("bound_addr={}", bound.listen_addr());
     }
     info!("guider service listening on {}", bound.listen_addr());
+    if let Some(camera) = bound.camera_addr() {
+        info!("camera facade listening on {camera}");
+    }
     bound.start(shutdown.cancelled()).await?;
     Ok(())
 }

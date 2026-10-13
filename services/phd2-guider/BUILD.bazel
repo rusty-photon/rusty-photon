@@ -28,6 +28,7 @@ _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-auth:rp-auth",
     "//crates/rusty-photon-tls:rusty-photon-tls",
     "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+    "//crates/rusty-photon-driver:rusty-photon-driver",
 ]
 
 rust_library(

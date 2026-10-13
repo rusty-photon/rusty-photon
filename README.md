@@ -14,7 +14,7 @@ Coverage comes from the `bazel coverage` job (`.github/workflows/bazel-coverage.
 | [filemonitor](services/filemonitor) | ASCOM SafetyMonitor | 11111 | Monitors file content for observatory safety status |
 | [ppba-driver](services/ppba-driver) | ASCOM Switch + ObservingConditions | 11112 | Driver for Pegasus Astro Pocket Powerbox Advance Gen2 |
 | [qhy-focuser](services/qhy-focuser) | ASCOM Focuser | 11113 | Driver for QHY Q-Focuser (EAF) |
-| [phd2-guider](services/phd2-guider) | Client library | — | Rust client for PHD2 autoguiding via JSON RPC |
+| [phd2-guider](services/phd2-guider) | Guider service; opt-in ASCOM Camera | 11130; 11128 (loopback) | Guider service wrapping PHD2 for rp, plus an opt-in Camera that serves PHD2's guide frames |
 | [sentinel](services/sentinel) | Monitoring service | 11114 | Polls devices, sends notifications, serves web dashboard |
 | [calibrator-flats](services/calibrator-flats) | Tool provider (MCP server aggregated by rp; MCP client of rp) | 11170 | `train_flats` / `take_flats` / `get_flat_training` per optical train, flat timing remembered in a redb store |
 | [focus-model](services/focus-model) | Tool provider (MCP server aggregated by rp; MCP client of rp) | 11173 | `focus_train` / `determine_filter_offsets` / `calibrate_temperature` / `get_sweep_plan` / `get_focus_model` / `get_focus_runs` / `set_focus_offsets` / `reset_focus_model` per optical train, sweeps sized from the optics and every run remembered in a redb store |
@@ -178,8 +178,7 @@ cargo run -p sentinel -- -c services/sentinel/examples/config.json
 
 Every service ships as a `.deb` / `.rpm` package (`rusty-photon-<svc>`),
 built natively on the target machine via `scripts/build-packages.sh` —
-each daemon with a hardened systemd unit, `phd2-guider` as a plain CLI
-tool. See [docs/packaging.md](docs/packaging.md) for building,
+each daemon with a hardened systemd unit. See [docs/packaging.md](docs/packaging.md) for building,
 installing, configuring, and camera-SDK specifics.
 
 ## Testing

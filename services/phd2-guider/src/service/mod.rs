@@ -1,25 +1,33 @@
 //! HTTP service mode (`phd2-guider serve`) — the rp-managed guider
-//! service.
+//! service, and its opt-in ASCOM Alpaca Camera facade.
 //!
-//! See `docs/services/phd2-guider.md` § "HTTP Service Mode" for the
-//! behavior contract and `docs/services/rp.md` § "Guider Service" for
-//! how `rp` consumes it.
+//! See `docs/services/phd2-guider.md` § "HTTP Service Mode" and
+//! § "Camera facade" for the behavior contract, and
+//! `docs/services/rp.md` § "Guider Service" for how `rp` consumes it.
 
 pub mod api;
+pub mod camera;
+pub mod capture;
 pub mod error;
 pub mod guider;
 
+pub use camera::Phd2Camera;
 pub use error::{ErrorCode, ErrorResponse, ServiceError};
 pub use guider::GuiderOps;
 
 use std::future::Future;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
+use ascom_alpaca::api::CargoServerInfo;
+use rusty_photon_driver::ConfigActionCtx;
 use tokio::net::TcpListener;
 
 use crate::client::Phd2Client;
 use crate::config::Config;
+
+use self::capture::CaptureEngine;
 
 /// Two-phase server builder. `build()` binds the TCP listener (so the
 /// bound port is known up-front), then `start()` serves.
@@ -29,6 +37,7 @@ use crate::config::Config;
 /// § "Phase 4 Stabilization".
 pub struct ServerBuilder {
     config: Option<Config>,
+    config_path: Option<PathBuf>,
     client: Option<Arc<Phd2Client>>,
 }
 
@@ -37,6 +46,7 @@ impl ServerBuilder {
     pub const fn new() -> Self {
         Self {
             config: None,
+            config_path: None,
             client: None,
         }
     }
@@ -44,6 +54,15 @@ impl ServerBuilder {
     #[must_use]
     pub fn with_config(mut self, config: Config) -> Self {
         self.config = Some(config);
+        self
+    }
+
+    /// The file the config came from. The camera facade's
+    /// `config.apply` persists there; without it the facade serves no
+    /// config actions.
+    #[must_use]
+    pub fn with_config_path(mut self, path: PathBuf) -> Self {
+        self.config_path = Some(path);
         self
     }
 
@@ -55,15 +74,17 @@ impl ServerBuilder {
         self
     }
 
-    /// Bind the listener and assemble the router, spawning the event pump
-    /// and the PHD2 connect-retry loop only after the bind succeeds.
+    /// Bind the listener — and, with `camera.enabled`, the camera
+    /// facade's — and assemble the routers, spawning the event pump and
+    /// the PHD2 connect-retry loop only after every bind succeeds.
     ///
     /// # Errors
     ///
-    /// Fails when no config was supplied to the builder, or when binding
-    /// the TCP listener or reading back its local address fails. A PHD2
-    /// that is not yet reachable is not an error — the retry task keeps
-    /// dialing it.
+    /// Fails when no config was supplied to the builder, when binding a
+    /// listener or reading back its local address fails, or, with
+    /// `camera.enabled`, when `camera.image_dir` is unusable or the
+    /// camera has no `unique_id`. A PHD2 that is not yet reachable is not
+    /// an error — the retry task keeps dialing it.
     pub async fn build(self) -> Result<BoundServer, std::io::Error> {
         let config = self.config.ok_or_else(|| {
             std::io::Error::other(
@@ -76,7 +97,7 @@ impl ServerBuilder {
             .unwrap_or_else(|| Arc::new(Phd2Client::new(config.phd2.clone())));
 
         let ops = Arc::new(GuiderOps::new(
-            client,
+            Arc::clone(&client),
             config.settling.clone(),
             config.stop_timeout,
         ));
@@ -86,8 +107,17 @@ impl ServerBuilder {
         // PHD2 connect-retry loop.
         let listener = TcpListener::bind(config.server.socket_addr()).await?;
         let local_addr = listener.local_addr()?;
+        let camera = if config.camera.enabled {
+            Some(bind_camera(&config, self.config_path, &client, &ops).await?)
+        } else {
+            None
+        };
 
         ops.spawn_event_pump();
+        if let Some(camera) = &camera {
+            camera.engine.recover().await;
+            camera.engine.spawn_late_file_cleaner();
+        }
         // A failed initial connect is not fatal: PHD2 may start later.
         // The retry task establishes the first connection; the
         // client's auto-reconnect owns recovery after that.
@@ -98,13 +128,7 @@ impl ServerBuilder {
         // Opt-in HTTP Basic Auth (shared server config `auth` block).
         let router = match &config.server.auth {
             Some(auth) => {
-                if config.server.tls.is_none() {
-                    tracing::warn!(
-                        "Authentication is enabled but TLS is not. \
-                         Credentials will be transmitted in cleartext. \
-                         Consider enabling TLS (see `doctor --fix`)."
-                    );
-                }
+                warn_auth_without_tls(config.server.tls.is_none());
                 rp_auth::layer(router, auth)
             }
             None => router,
@@ -115,6 +139,7 @@ impl ServerBuilder {
             router,
             local_addr,
             tls: config.server.tls.clone(),
+            camera,
         })
     }
 }
@@ -125,6 +150,109 @@ impl Default for ServerBuilder {
     }
 }
 
+fn warn_auth_without_tls(no_tls: bool) {
+    if no_tls {
+        tracing::warn!(
+            "Authentication is enabled but TLS is not. \
+             Credentials will be transmitted in cleartext. \
+             Consider enabling TLS (see `doctor --fix`)."
+        );
+    }
+}
+
+/// Check the facade's directory, build its device and bind its
+/// loopback listener.
+async fn bind_camera(
+    config: &Config,
+    config_path: Option<PathBuf>,
+    client: &Arc<Phd2Client>,
+    ops: &Arc<GuiderOps>,
+) -> Result<BoundCamera, std::io::Error> {
+    let camera_config = &config.camera;
+    // `load_config` already refused an enabled block without these.
+    let missing = |field: &str| std::io::Error::other(format!("camera.{field} is required"));
+    let image_dir = camera_config
+        .image_dir
+        .clone()
+        .ok_or_else(|| missing("image_dir"))?;
+    let pixel_x = camera_config
+        .pixel_size_x_um
+        .ok_or_else(|| missing("pixel_size_x_um"))?;
+    let pixel_y = camera_config
+        .pixel_size_y_um
+        .ok_or_else(|| missing("pixel_size_y_um"))?;
+    let unique_id = camera_config
+        .unique_id
+        .clone()
+        .filter(|id| !id.trim().is_empty())
+        .ok_or_else(|| {
+            std::io::Error::other(
+                "camera.unique_id is missing; it is minted into the config file on the first \
+                 start with camera.enabled, so start the service with its config file",
+            )
+        })?;
+    capture::check_image_dir(&image_dir).map_err(std::io::Error::other)?;
+
+    let engine = Arc::new(CaptureEngine::new(
+        Arc::clone(ops),
+        Arc::clone(client),
+        image_dir,
+        camera_config.capture_grace.duration(),
+    ));
+    let device = Phd2Camera::new(
+        Arc::clone(client),
+        Arc::clone(&engine),
+        unique_id,
+        camera::PixelSize {
+            x_um: pixel_x.um(),
+            y_um: pixel_y.um(),
+        },
+    );
+    let device = match config_path {
+        Some(path) => device.with_config_actions(ConfigActionCtx {
+            effective: config.clone(),
+            path,
+            overrides: (),
+            // Never fired: the disposition is `Restart`.
+            reload: rusty_photon_service_lifecycle::ReloadSignal::new(),
+        }),
+        None => device,
+    };
+
+    let mut server = ascom_alpaca::Server::new(CargoServerInfo!());
+    let addr = camera_config.server.socket_addr();
+    server.listen_addr = addr;
+    server.devices.register(device);
+    let router = axum::Router::new().fallback_service(server.into_service());
+    let router = match &camera_config.server.auth {
+        Some(auth) => {
+            warn_auth_without_tls(camera_config.server.tls.is_none());
+            rp_auth::layer(router, auth)
+        }
+        None => router,
+    };
+    let listener = TcpListener::bind(addr).await.map_err(|e| {
+        std::io::Error::new(e.kind(), format!("camera facade cannot bind {addr}: {e}"))
+    })?;
+    let local_addr = listener.local_addr()?;
+    Ok(BoundCamera {
+        listener,
+        router,
+        local_addr,
+        tls: camera_config.server.tls.clone(),
+        engine,
+    })
+}
+
+/// The camera facade's bound listener.
+struct BoundCamera {
+    listener: TcpListener,
+    router: axum::Router,
+    local_addr: SocketAddr,
+    tls: Option<rusty_photon_tls::config::TlsConfig>,
+    engine: Arc<CaptureEngine>,
+}
+
 /// A fully bound server ready to accept connections.
 pub struct BoundServer {
     listener: TcpListener,
@@ -132,6 +260,8 @@ pub struct BoundServer {
     local_addr: SocketAddr,
     /// TLS settings from the shared server config; `None` serves plain HTTP.
     tls: Option<rusty_photon_tls::config::TlsConfig>,
+    /// The camera facade, with `camera.enabled`.
+    camera: Option<BoundCamera>,
 }
 
 impl BoundServer {
@@ -139,16 +269,23 @@ impl BoundServer {
         self.local_addr
     }
 
-    /// Run the server until `shutdown` resolves.
+    /// The camera facade's address, with `camera.enabled`.
+    pub fn camera_addr(&self) -> Option<SocketAddr> {
+        self.camera.as_ref().map(|camera| camera.local_addr)
+    }
+
+    /// Run the server — and the camera facade, if enabled — until
+    /// `shutdown` resolves. A facade frame still in flight at shutdown
+    /// is ended (`stop_capture`) before this returns.
     ///
     /// The runner ([`rusty_photon_service_lifecycle::ServiceRunner`]) owns
     /// signal installation; this method just threads the shutdown future
-    /// into the serve loop (TLS when `server.tls` is configured, plain
+    /// into the serve loops (TLS when a `tls` block is configured, plain
     /// `axum::serve` otherwise).
     ///
     /// # Errors
     ///
-    /// Returns an I/O error when the serve loop fails; TLS configuration
+    /// Returns an I/O error when a serve loop fails; TLS configuration
     /// and serve failures surface wrapped as I/O errors.
     pub async fn start(
         self,
@@ -159,18 +296,52 @@ impl BoundServer {
             router,
             local_addr: _,
             tls,
+            camera,
         } = self;
-        match tls {
-            Some(ref tls_config) => {
-                rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown)
-                    .await
-                    .map_err(std::io::Error::other)
-            }
-            None => {
-                axum::serve(listener, router)
-                    .with_graceful_shutdown(shutdown)
-                    .await
-            }
+        // One shutdown, two listeners: fan it out.
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            shutdown.await;
+            let _ = stop_tx.send(true);
+        });
+        let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
+            let _ = rx.wait_for(|stop| *stop).await;
+        };
+
+        let guider = serve(listener, router, tls, stopped(stop_rx.clone()));
+        let Some(camera) = camera else {
+            return guider.await;
+        };
+        let BoundCamera {
+            listener: camera_listener,
+            router: camera_router,
+            local_addr: _,
+            tls: camera_tls,
+            engine,
+        } = camera;
+        let facade = serve(camera_listener, camera_router, camera_tls, stopped(stop_rx));
+        let served = tokio::try_join!(guider, facade).map(|_| ());
+        engine.shutdown().await;
+        served
+    }
+}
+
+async fn serve(
+    listener: TcpListener,
+    router: axum::Router,
+    tls: Option<rusty_photon_tls::config::TlsConfig>,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<(), std::io::Error> {
+    match tls {
+        Some(ref tls_config) => {
+            rusty_photon_tls::server::serve_tls(listener, router, tls_config, shutdown)
+                .await
+                .map_err(std::io::Error::other)
+        }
+        None => {
+            axum::serve(listener, router)
+                .with_graceful_shutdown(shutdown)
+                .await
         }
     }
 }

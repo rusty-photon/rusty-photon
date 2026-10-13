@@ -273,6 +273,18 @@ pub enum Phd2Event {
     /// Guiding stopped
     GuidingStopped,
 
+    /// A `capture_single_frame` frame ended (PHD2 2.6.14+). Sent on
+    /// success and on failure; `path` names the saved file when the
+    /// capture asked PHD2 to save it, also on a failed save.
+    SingleFrameComplete {
+        #[serde(rename = "Success")]
+        success: bool,
+        #[serde(rename = "Error", default)]
+        error: Option<String>,
+        #[serde(rename = "Path", default)]
+        path: Option<String>,
+    },
+
     // ========================================================================
     // Connection state events (internal, not from PHD2)
     // ========================================================================
@@ -479,6 +491,45 @@ mod tests {
         let json = r#"{"Event":"GuidingStopped"}"#;
         let event: Phd2Event = serde_json::from_str(json).unwrap();
         assert!(matches!(event, Phd2Event::GuidingStopped));
+    }
+
+    #[test]
+    fn a_saved_single_frame_reports_its_path() {
+        // PHD2 2.6.14's event, as read off the wire on pier1.
+        let json = r#"{"Event":"SingleFrameComplete","Timestamp":1791927328.093,"Host":"pier1","Inst":1,"Success":true,"Path":"/tmp/phd2probe-wd/path-2000.fits"}"#;
+        let event: Phd2Event = serde_json::from_str(json).unwrap();
+        let Phd2Event::SingleFrameComplete {
+            success,
+            error,
+            path,
+        } = event
+        else {
+            panic!("expected SingleFrameComplete, got {event:?}");
+        };
+        assert!(success);
+        assert_eq!(error, None);
+        assert_eq!(path.as_deref(), Some("/tmp/phd2probe-wd/path-2000.fits"));
+    }
+
+    #[test]
+    fn a_failed_single_frame_reports_phd2s_error_text() {
+        let json = r#"{"Event":"SingleFrameComplete","Success":false,"Error":"camera error -- see debug log","Path":"/tmp/x.fits"}"#;
+        let event: Phd2Event = serde_json::from_str(json).unwrap();
+        let Phd2Event::SingleFrameComplete { success, error, .. } = event else {
+            panic!("expected SingleFrameComplete, got {event:?}");
+        };
+        assert!(!success);
+        assert_eq!(error.as_deref(), Some("camera error -- see debug log"));
+    }
+
+    #[test]
+    fn an_unsaved_single_frame_has_no_path() {
+        let json = r#"{"Event":"SingleFrameComplete","Success":true}"#;
+        let event: Phd2Event = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            event,
+            Phd2Event::SingleFrameComplete { path: None, .. }
+        ));
     }
 
     #[test]

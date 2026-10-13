@@ -13,6 +13,10 @@ The binary has two roles:
   (`start_guiding`, `stop_guiding`, `dither`, …) to. See
   [HTTP Service Mode](#http-service-mode-serve) below and
   `docs/services/rp.md` § "Guider Service".
+- **Opt-in ASCOM Alpaca Camera** — with `camera.enabled`, `serve` also
+  serves the guide camera as an Alpaca Camera on port 11128 (loopback
+  only), its frames captured by PHD2. See
+  [Camera facade](#camera-facade-camera).
 
 `phd2-guider doctor [--config <file>] [--json]` diagnoses this service's
 own config read-only without starting it — see
@@ -60,11 +64,14 @@ services/phd2-guider/src/
 ├── process.rs      # Phd2ProcessManager, get_default_phd2_path
 ├── rpc.rs          # RpcRequest, RpcResponse, RpcErrorObject
 ├── types.rs        # Rect, Profile, Equipment (shared types)
+├── config_actions.rs # config.get/apply/schema for the camera facade
 └── service/        # HTTP service mode (`phd2-guider serve`)
     ├── mod.rs      # ServerBuilder, BoundServer
     ├── api.rs      # axum router, wire types, request handlers
     ├── error.rs    # ServiceError enum + structured error envelope
-    └── guider.rs   # GuiderOps: settle wait, stop poll, rolling RMS stats
+    ├── guider.rs   # GuiderOps: settle wait, stop poll, rolling RMS stats, the capture slot
+    ├── capture.rs  # the facade's capture: files, the restart marker, the wait for PHD2's event
+    └── camera.rs   # Phd2Camera: the ASCOM Alpaca Camera device
 ```
 
 | Module | Description | Key Types |
@@ -79,7 +86,8 @@ services/phd2-guider/src/
 | `process` | Process management | `Phd2ProcessManager`, `get_default_phd2_path` |
 | `rpc` | JSON RPC 2.0 protocol | `RpcRequest`, `RpcResponse`, `RpcErrorObject` |
 | `types` | Common types | `Rect`, `Profile`, `Equipment`, `EquipmentDevice`, `CalibrationData`, `CalibrationTarget`, `GuideAxis`, `CoolerStatus`, `StarImage` |
-| `service` | HTTP service mode | `ServerBuilder`, `BoundServer`, `GuiderOps`, `ServiceError` |
+| `service` | HTTP service mode and the camera facade | `ServerBuilder`, `BoundServer`, `GuiderOps`, `ServiceError`, `Phd2Camera` |
+| `config_actions` | The facade's config actions | `Phd2GuiderDriver` |
 
 All commonly used types are re-exported at the crate root for convenience. The `connection` module is internal (`pub(crate)`) and handles TCP connection establishment, message reading, and auto-reconnection logic.
 
@@ -179,7 +187,7 @@ PHD2 provides two network interfaces:
 
 | Method | Parameters | Description | Status |
 |--------|------------|-------------|--------|
-| `capture_single_frame` | `exposure: int`, `subframe: [x,y,w,h]` | Acquire one frame with optional exposure (ms) and subframe | ✅ |
+| `capture_single_frame` | `exposure: int`, `binning: int`, `gain: int`, `subframe: [x,y,w,h]`, `save: bool`, `path: string` | Acquire one frame, all parameters optional. With `save`, PHD2 saves the frame when it ends, at `path` (absolute, must not exist) or a name of its own, and sends `SingleFrameComplete` (PHD2 2.6.14+, see [Camera facade](#what-phd2-does-with-a-single-frame)) | ✅ |
 | `set_exposure` | `exposure: int` | Set exposure duration in milliseconds | ✅ |
 | `get_exposure` | none | Get current exposure time in milliseconds | ✅ |
 | `get_exposure_durations` | none | List all valid exposure duration options | ✅ |
@@ -278,6 +286,7 @@ PHD2 sends asynchronous event notifications over the same TCP connection:
 | `GuideParamChange` | Guide algorithm parameter changed |
 | `ConfigurationChange` | Configuration was modified |
 | `Alert` | Alert message for user |
+| `SingleFrameComplete` | A `capture_single_frame` frame ended: `Success`, `Error` on failure, `Path` when saved (PHD2 2.6.14+) |
 
 ## Service API Design
 
@@ -433,6 +442,11 @@ async fn get_use_subframes(&self) -> Result<bool>;
 
 /// Capture a single frame
 async fn capture_single_frame(&self, exposure_ms: Option<u32>, subframe: Option<Rect>) -> Result<()>;
+
+/// Capture a single full frame and have PHD2 save it at `path`
+/// (absolute, must not exist) when it ends (PHD2 2.6.14+). PHD2 then
+/// sends `Phd2Event::SingleFrameComplete` naming `path`.
+async fn capture_single_frame_to(&self, exposure_ms: u32, path: &str) -> Result<()>;
 ```
 
 ### Camera Cooling
@@ -580,6 +594,9 @@ async fn stop_reconnection(&self);
     "pixels": 0.5,
     "time": "10s",
     "timeout": "60s"
+  },
+  "camera": {
+    "enabled": false
   }
 }
 ```
@@ -623,6 +640,9 @@ Configuration sections:
   it rounds these durations up to whole seconds (ceil rounding) before
   sending them to PHD2. For example, `"500ms"` is sent as `1` second,
   and `"1.2s"` is sent as `2` seconds.
+- **camera** (`serve` mode only): the opt-in ASCOM Alpaca Camera facade,
+  off by default. Its fields and rules are in
+  [Camera facade § Configuration](#configuration-1).
 
 ### Config-path resolution and first-start creation
 
@@ -733,7 +753,9 @@ Default port: **11130** (matches the `guider.url` placeholder in
   active guide loop. The only state lost is the rolling RMS window,
   which refills within a few guide exposures. Restart is always cheap
   — the same property that makes the plate-solver's supervision
-  posture safe.
+  posture safe. The camera facade's one piece of persisted state is the
+  marker of a capture in flight, which keeps guiding refused after a
+  crash until that frame ends (see [Restart](#restart)).
 - Graceful shutdown does **not** stop guiding. Stopping the guide loop
   is an explicit `POST /api/v1/guiding/stop` (issued by `rp` — e.g.
   its safety path), never a side effect of service lifecycle.
@@ -985,6 +1007,11 @@ error** (plate-solver precedent). PHD2 is a single guiding head;
 concurrent settle waits are meaningless. `stats`, `metrics`,
 `equipment`, and `health` do not take the mutex.
 
+The camera facade's capture takes the same mutex without queueing, and
+while a capture is in flight every mutating request except
+`guiding/stop` is refused with `camera_busy` instead of waiting. See
+[Exclusivity: the capture slot](#exclusivity-the-capture-slot).
+
 ### Error envelope
 
 Errors return the plate-solver's structured shape (`details` is
@@ -998,6 +1025,7 @@ omitted from the wire when there is nothing to attach):
 |------|-------------|---------|
 | `invalid_request` | 400 | Schema-invalid body, non-positive or non-finite `amount_px` / `settle.pixels`, unparseable durations. Rejected before any RPC. |
 | `not_guiding` | 409 | `dither` while PHD2's application state is not `Guiding`. |
+| `camera_busy` | 409 | `guiding/start`, `pause`, `resume`, `dither`, `calibration/clear` or `star/reselect` while the camera facade has a frame in flight, or after a crash until that frame's deadline. Never `guiding/stop`. |
 | `guide_failed` | 422 | PHD2 reported `SettleDone{status ≠ 0}` (star lost, calibration failed, settle threshold not reached in time). PHD2's error text is in `message`. |
 | `settle_timeout` | 504 | Wall-clock backstop (`settle.timeout + 10 s`) expired without any `SettleDone`. |
 | `stop_timeout` | 504 | PHD2 did not reach `Stopped` within `stop_timeout`. |
@@ -1019,6 +1047,379 @@ request.
 `bound_addr=<host>:<port>` to stdout (the `bdd-infra::ServiceHandle`
 discovery convention; `port: 0` auto-assigns). Config validation
 failures exit non-zero before binding.
+
+## Camera facade (`camera`)
+
+`phd2-guider serve` can also serve the guide camera as an ASCOM Alpaca
+**Camera**. Its frames are captured by PHD2 itself, so the camera stays
+PHD2's and a client still gets frames from it. The facade is opt-in
+(`camera.enabled`, default `false`). It is a second listener in the same
+process, on port **11128**, loopback only, with one Camera at device
+number 0. Its reason to exist is rp's guiding train: with the facade, the
+guide camera can be a train's terminal camera like any other (the
+device-claims plan, C7). The plan's Part B
+([`device-claims-and-phd2-camera.md`](../plans/device-claims-and-phd2-camera.md)
+D9–D11) records how this design was reached; this section is the contract.
+
+### Prerequisites
+
+These are deployment rules. The facade checks the ones it can at load.
+
+- **PHD2 2.6.14 or later**, on the **same host**, reached on a loopback
+  address. The facade reads the frames PHD2 writes, so they must land on
+  a disk it can read. `Connected = true` refuses an older PHD2, judged by
+  the `PHDVersion` its `Version` event reports.
+- **The guide camera's vendor driver must not serve it.** If
+  `qhy-camera`, `zwo-camera` or `svbony-camera` also opens the guide
+  camera, whichever opens second fails. Use that driver's `usb_devices`
+  list and leave the guide camera's port off it. That is a hard
+  prerequisite, not advice: the facade cannot detect the conflict,
+  because nothing tells a process that someone else wanted the device it
+  already holds.
+- **This service has sole control of PHD2 during a capture.** The facade
+  refuses every guiding operation that reaches PHD2 *through this
+  service* while it captures. PHD2 accepts other clients on port 4400,
+  and the facade cannot stop them. One case matters most: a **full pause**
+  sent to PHD2 during a frame throws the frame away and leaves PHD2
+  refusing every capture until PHD2 restarts (measured, below).
+- **`image_dir` is shared between PHD2's account and this service's.**
+  See [Sharing `image_dir`](#sharing-image_dir).
+
+### What PHD2 does with a single frame
+
+PHD2 2.6.14's `capture_single_frame` takes `exposure` (whole
+milliseconds), `save` and `path`. With `path`, PHD2 saves the frame there
+when the exposure ends, then sends a `SingleFrameComplete` event to every
+event-server client. Measured on `pier1` (PHD2 2.6.14, Simulator profile,
+2026-10-13):
+
+| Sent to PHD2 | What PHD2 did |
+|---|---|
+| `capture_single_frame {"exposure": 2000, "save": true, "path": "<abs>"}` | replied `0`; 2.08 s later `{"Event": "SingleFrameComplete", "Success": true, "Path": "<abs>"}`, the file already at full size |
+| the same at 1, 10, 100 ms | events 87, 84, 172 ms after the request |
+| during a frame: `get_app_state` | `Looping` (or `Selected` with a star selected); `Stopped` after the event |
+| during a frame: a second `capture_single_frame` | error 1, `cannot capture single frame when capture is currently active` |
+| during a frame: `loop` | `0`, and nothing more |
+| during a frame: `stop_capture` | the event 65 ms later, `Success: false`, `camera error -- see debug log`, no file |
+| during a frame: `guide` | accepted; calibration starts when the frame ends and fails, `SettleDone` status 1, `Stopped capturing`; the frame is saved |
+| during a frame: `set_paused [true, "full"]` | the frame is thrown away with **no event**, and PHD2 refuses every later capture; `stop_capture` does nothing; only a PHD2 restart clears it |
+| a `path` in a directory that does not exist | the event, `Success: false`, `error saving image file [<abs>] -- see debug log for more info` |
+| a `path` that exists; a relative one; `exposure` 0, 600 001 or `1500.0` | `-32602`, nothing captured |
+| the camera disconnected | one reply with two `error` members (code 1, then code 2) |
+
+The frame is a 16-bit FITS (`BITPIX = 16`, `BZERO = 32768`) the size
+`get_camera_frame_size` reports. Whether `stop_capture` cuts an exposure
+short depends on PHD2's camera driver. The simulator and ZWO drivers
+check for it. The QHY driver does only when PHD2 was built with
+`CAN_STOP_CAPTURE`. A driver that ignores it finishes the frame.
+
+### Capturing a frame
+
+`StartExposure(duration, light)` checks the request, starts PHD2's
+exposure, and returns. Everything after that runs in the background, and
+a client polls `ImageReady` as with any camera.
+
+1. **Checked before PHD2 is asked**, each refused at once:
+   - not connected → `NotConnected`;
+   - `light = false` → `InvalidValue`. PHD2 has no dark-frame mode and
+     the guide camera usually has no shutter, so a "dark" would be a
+     light frame under a false name;
+   - a duration below 1 ms or above 600 s → `InvalidValue`. A duration
+     inside that range is rounded to the nearest whole millisecond;
+   - a subframe outside the sensor (`StartX + NumX > CameraXSize`, the
+     same for Y, or a zero `NumX`/`NumY`) → `InvalidValue`;
+   - an exposure of this facade already in flight → `InvalidOperation`.
+2. **Take the capture slot**, under the guider's operation lock (see
+   [Exclusivity](#exclusivity-the-capture-slot)). A guiding operation in
+   progress → `InvalidOperation` naming it. Holding the lock:
+   `get_app_state` must answer `Stopped`, or the request is refused with
+   `InvalidOperation` naming the state. `Stopped` is an allowlist: a
+   `Paused` PHD2 that is still looping must not get a capture.
+3. **Sweep orphans** in `image_dir` (see [Files](#files)), write the
+   restart marker, set the slot, and send
+   `capture_single_frame {"exposure": <ms>, "save": true, "path":
+   "<image_dir>/phd2-guider-<32 hex digits>.fits"}`. The name is random
+   and new for each capture. PHD2 refusing it releases the slot and
+   removes the marker. Its `capture is currently active` refusal maps to
+   `InvalidOperation`, and any other refusal to `UnspecifiedError` with
+   PHD2's text. A lost PHD2 connection maps to `NotConnected`.
+4. **Let the lock go and return.** The exposure holds no lock.
+
+In the background the facade waits for the `SingleFrameComplete` event
+whose `Path` is the one it sent, bounded by `exposure + capture_grace`
+from the request:
+
+- `Success: true` → read and decode the file (bounded, below), crop it to
+  the subframe, and publish it: `ImageReady` becomes true.
+- `Success: false` → the exposure fails with PHD2's `Error` text, or with
+  "aborted" when this facade's own abort or a `guiding/stop` caused it.
+- Nothing by the deadline → the exposure fails with "PHD2 did not report
+  the frame within <deadline>", and a warning is logged.
+
+On every one of those exits the facade deletes the file, removes the
+marker and releases the slot. A failed exposure leaves `CameraState =
+Error` and `ImageReady = false`, and `ImageArray` returns the reason as
+an `UnspecifiedError` until the next `StartExposure`.
+
+The capture never calls `set_exposure`, and it never sends `binning` or
+`gain`, so PHD2's guiding exposure, binning and gain are untouched. PHD2
+restores its own binning and gain after a single frame anyway. It never
+calls `save_image` either: the facade names the file, so no request can
+return an earlier frame.
+
+### Exposure contract
+
+| Property | Value |
+|---|---|
+| `ExposureMin` / `ExposureMax` | 0.001 s / 600 s (PHD2's own bounds for a single frame) |
+| `ExposureResolution` | 0.001 s; a request is rounded to the nearest whole millisecond |
+| `LastExposureDuration` | the rounded duration PHD2 was asked for |
+| `LastExposureStartTime` | when PHD2 accepted the request |
+| `CanAbortExposure` / `CanStopExposure` | `true` / `false` |
+| `HasShutter` | `false` |
+| `MaxADU` | 65535 |
+| `MaxBinX` / `MaxBinY`, `BinX` / `BinY` | 1; setting any other bin → `InvalidValue` |
+| `CameraXSize` / `CameraYSize` | PHD2's `get_camera_frame_size`, read on connect |
+| `PixelSizeX` / `PixelSizeY` | `camera.pixel_size_x_um` / `camera.pixel_size_y_um` |
+| `SensorType` | `Monochrome` (the facade serves PHD2's frame as written) |
+| `SensorName` | the camera name PHD2's `get_current_equipment` reports, read on connect |
+| `ReadoutModes` / `ReadoutMode` | `["Default"]` / 0 |
+| cooler, gain, offset, fast readout, pulse guiding | not implemented (`CanSetCCDTemperature`, `CanGetCoolerPower`, `CanFastReadout`, `CanPulseGuide` all `false`). PHD2 owns those settings through its equipment profile |
+
+`StartX`/`StartY`/`NumX`/`NumY` cut the subframe from PHD2's full frame,
+in the facade. The full frame is what PHD2 captures, whatever the
+subframe.
+
+### Connecting
+
+`Connected = true` succeeds when the PHD2 connection is up, PHD2 reports
+2.6.14 or later, and `get_camera_frame_size` and `get_current_equipment`
+answer, which they do only while PHD2's camera is connected. The version
+comes from the `Version` event PHD2 sends first on every connection. A
+connect that arrives before this service has read that event waits up to
+2 s for it. It caches
+the frame size and the camera's name, and resets the subframe to the
+full frame. It writes nothing to PHD2: no exposure, no equipment
+connection, no profile change, and no stop (workspace tenet 3, *no
+actuation on connect*). A failed connect is `NotConnected`, naming what
+was missing.
+
+`Connected` reads back the state the client set. A PHD2 that goes away
+afterwards surfaces as errors from the calls that need it.
+`Connected = false` during an exposure aborts it as `AbortExposure`
+does.
+
+Before the first successful connect, `CameraXSize`, `CameraYSize` and
+`SensorName` return `NotConnected`. The configured `PixelSizeX`/`Y` and
+the fixed values in the table answer at any time.
+
+### Aborting
+
+`AbortExposure` takes the guider's operation lock and, if this facade's
+exposure still holds the capture slot, sends PHD2 `stop_capture` (a
+stop-class command, inside a session the client started). It then waits
+up to 2 s for PHD2's event and returns. The frame is discarded either
+way. If PHD2's camera driver ignores the interrupt, the frame runs to its
+end. `CameraState` reads `Exposing` until PHD2's event arrives, and the
+slot is held that long too. With no exposure in flight, `AbortExposure`
+does nothing and succeeds. `StopExposure` is not implemented: PHD2
+cannot end an exposure early and keep its frame.
+
+### Exclusivity: the capture slot
+
+PHD2 runs one exposure at a time: a second capture is refused, `loop` is a
+no-op, and a `guide` sent during a frame starts only after it (measured,
+above). So no request can put a guide exposure on top of the facade's.
+What a request during a frame can still do is spoil it or wedge PHD2: a
+`guide` turns the frame's end into the start of a calibration that fails
+at once, and a full pause throws the frame away and leaves PHD2 unable to
+capture. So while a capture is in flight, this service refuses every
+guiding operation except stop.
+
+The guider's operation lock (`op_lock`, see [Concurrency](#concurrency))
+guards one **capture slot**. The slot is set, and checked, only while
+the lock is held. The frame's end clears it.
+
+- A **capture** takes the lock with `try_lock`, so it never queues behind
+  a guiding operation. A guiding operation in progress refuses the
+  capture with `InvalidOperation`. The capture holds the lock only for
+  steps 2–3 above, a few milliseconds.
+- **`guiding/start`, `pause`, `resume`, `dither`, `calibration/clear` and
+  `star/reselect`** still queue on the lock as before. Once they hold it
+  they check the slot, and a capture in flight refuses them with
+  `camera_busy` (409). A mutation either gets the lock before the capture
+  does, and the capture is then refused as busy, or after it, and then it
+  sees the slot. Either way it never waits out an exposure.
+- **`guiding/stop` is never refused.** It takes the lock as before. A
+  capture holds the lock only briefly, so stop does not wait on it. PHD2's
+  state during a frame is not `Stopped`, so stop sends `stop_capture`,
+  which ends the frame. The capture then fails as "aborted" when PHD2's
+  event arrives, and stop confirms `Stopped` as it always has.
+- **The slot is released** when PHD2's event for the frame arrives, or
+  when `exposure + capture_grace` has passed since the request, whichever
+  comes first. A connection lost mid-frame can cost the event, and then
+  the deadline releases. A released slot never waits on PHD2. If PHD2 is
+  running the frame later than the deadline, a request PHD2 then receives
+  meets PHD2's own rules: a capture is refused, and a guide starts after
+  the frame.
+
+The read-only endpoints (`stats`, `metrics`, `equipment`, `/health`) never
+take the lock and are never refused.
+
+### Files
+
+- **Names.** Every capture writes
+  `<image_dir>/phd2-guider-<32 hex digits>.fits`, a random name the facade
+  chooses. PHD2 refuses a path that already exists, so a file or link
+  planted at the name fails the capture instead of being read.
+- **Reading.** The facade opens that name without following a link
+  (`O_NOFOLLOW` on Unix, `FILE_FLAG_OPEN_REPARSE_POINT` on Windows) and
+  checks that the handle it got is a regular file. The file must be no
+  larger than the frame needs: the data for `CameraXSize × CameraYSize`
+  16-bit pixels plus eight 2880-byte header blocks. A larger file is
+  refused unread. A frame whose `NAXIS1`/`NAXIS2` differ from the size
+  read on connect fails with "PHD2's frame size changed; reconnect the
+  camera". The read and the decode run inside the capture's deadline.
+- **Deleting.** The file is deleted on every exit from the capture:
+  success, failure, abort, deadline and shutdown. A failed deletion is
+  logged as a warning and never fails the capture. The delete resolves
+  the name a second time, so a peer that swaps the file between the read
+  and the delete gets the swapped file deleted. That is accepted under a
+  stated **trusted-peer assumption**: `image_dir` is shared with one
+  other local process, PHD2, run by the operator, and a hostile process
+  with write access there has already won more than a FITS file.
+- **Sweeping.** Any `phd2-guider-*.fits` in `image_dir` other than the
+  capture in flight is an orphan. One appears when PHD2 saved a frame the
+  facade had already given up on. The facade deletes orphans at startup
+  and before each capture, looking at no more than 4096 directory entries
+  per sweep and logging what it removed. When a late
+  `SingleFrameComplete` names a frame whose deadline already passed, the
+  facade deletes that file at once. It remembers the last 64 frames it
+  gave up on for this, and the sweep catches any it misses.
+  The sweep never touches a file without the prefix, so PHD2's own
+  `save_image_…` files and anything else in the directory are safe.
+
+### Restart
+
+- **Graceful shutdown** during a capture sends PHD2 `stop_capture` for
+  the facade's frame (stop-class, inside the operator's session). It then
+  waits up to `capture_grace` for the event, deletes the file and exits.
+  A shutdown never stops guiding: with a capture in flight, guiding was
+  refused.
+- **A crash** leaves the restart marker, `phd2-guider-capture.json` in
+  `image_dir`. It is written before `capture_single_frame` and removed on
+  release, and holds the frame's path and its deadline in wall-clock
+  time. At startup, a marker whose deadline is still ahead holds the
+  capture slot. Guiding operations through this service are refused with
+  `camera_busy`, naming the deadline. The slot is held until the frame's
+  file appears, its `SingleFrameComplete` arrives, or the deadline passes,
+  and then the file and the marker are deleted. That is never longer
+  after the original request than the running process would have held
+  the slot. A marker whose deadline passed while the service was down is
+  removed at once. The marker is read only when `camera.enabled` is true.
+
+### Configuration
+
+```json
+"camera": {
+  "enabled": true,
+  "unique_id": "9f4c3a52-…",
+  "pixel_size_x_um": 2.9,
+  "pixel_size_y_um": 2.9,
+  "image_dir": "/var/lib/rusty-photon/phd2-images",
+  "capture_grace": "10s",
+  "server": { "port": 11128, "bind_address": "127.0.0.1" }
+}
+```
+
+| Field | Default | Rule |
+|---|---|---|
+| `enabled` | `false` | With `false` the facade does not exist: no listener, no marker, and the remaining fields are not required |
+| `unique_id` | minted | The device's ASCOM `UniqueID`, minted into the config file on the first start with `enabled: true` and never changed after. Not derived from PHD2's profile or camera, which change when the operator reconfigures PHD2 |
+| `pixel_size_x_um` / `pixel_size_y_um` | — | **Required when enabled.** Finite and greater than 0. Entered from the guide camera's datasheet. They are two fields because a sensor's pixels need not be square, and rp reads each axis separately. PHD2 does not report them in a usable form: its pixel scale needs the focal length |
+| `image_dir` | — | **Required when enabled.** An absolute path to an existing directory that this service can create and remove files in. Startup checks it by creating and removing `.phd2-guider-probe` there |
+| `capture_grace` | `"10s"` | Greater than 0 and at most `"60s"`. It covers PHD2's download and save of one frame; a grace longer than that is a misconfiguration |
+| `server.port` | `11128` | The Alpaca listener's port |
+| `server.bind_address` | `"127.0.0.1"` | **Must be a loopback address.** See [Loopback only](#loopback-only) |
+| `server.tls` / `server.auth` | absent | The shared TLS and Basic Auth blocks, as on any driver |
+
+With `enabled: true`, `phd2.host` must be `localhost` or a loopback
+address. Every rule except `image_dir`'s check is enforced when the file
+is parsed, so `phd2-guider doctor` reports them too. A broken `camera`
+block fails startup only when `enabled` is true, and the message names
+the field. A facade listener that cannot bind fails startup the same
+way.
+
+### Config actions
+
+The facade device answers the shared `config.get`, `config.apply` and
+`config.schema` Actions ([config-actions.md](config-actions.md)) over
+phd2-guider's whole config. The service has no reload path, so the
+disposition is **`Restart`**: `config.apply` persists the change and
+reports it in `restart_required[]`. It takes effect at the next start,
+as `rp`'s config does. `server.port`, `camera.enabled`,
+`camera.server.port` and `camera.server.bind_address` are read-only,
+because changing them would cut the client off the endpoint it is editing
+through. `camera.unique_id` is locked. The two auth password hashes
+(`server.auth` and `camera.server.auth`) are redacted secrets.
+
+### Loopback only
+
+In this first version the facade binds only to loopback, and the bind
+address is refused at load otherwise. So a client must run on the same
+host: rp, ConformU, or an SSH tunnel. The reason is doctor's catalog,
+which describes each service with one port. A port that exists only when
+`camera.enabled` is true would raise false collision and availability
+findings whenever it is off. Doctor therefore does not see 11128:
+`ports.collision` does not report a clash on it, and a client URL at
+11128 joins no service ([doctor.md](doctor.md)). Off-host access waits on
+a catalog that can describe an optional second listener. The firewall and
+the packaging verification scripts need no change while the port is
+loopback-only and off by default.
+
+### Sharing `image_dir`
+
+PHD2 runs as the operator, under their desktop or VNC session. The
+packaged service runs as `rusty-photon` (Linux) or `LocalSystem`
+(Windows). The directory must let PHD2 create files and let the service
+read and delete them. The step-by-step recipe, and the acceptance test it
+must pass (a frame PHD2 wrote is read and deleted by the service
+account), are in
+[packaging.md § phd2-guider: the camera facade](../packaging.md#phd2-guider-the-camera-facade).
+In short: on Linux, `/var/lib/rusty-photon/phd2-images` with an access
+ACL admitting the operator, traverse rights on `/var/lib/rusty-photon`,
+and a default ACL giving the `rusty-photon` group read and write on new
+files. On Windows, `%PROGRAMDATA%\rusty-photon\phd2-images`, with a
+grant that lets the operator's account modify files there. The Windows
+recipe has not been run on a Windows host yet. A same-user deployment
+needs none of this.
+
+### Errors
+
+ASCOM errors from the Camera:
+
+| Condition | ASCOM error |
+|---|---|
+| Not connected; PHD2 unreachable; PHD2 older than 2.6.14 or its camera not connected (on connect) | `NotConnected` |
+| `light = false`; a duration outside 1 ms–600 s; a subframe outside the sensor; a bin other than 1 | `InvalidValue` |
+| An exposure already in flight; a guiding operation in progress; PHD2 not `Stopped`; PHD2's own "capture is currently active" | `InvalidOperation` |
+| `ImageArray` with no image yet | `InvalidOperation` |
+| `ImageArray` after a failed exposure (PHD2's error text, "aborted", the deadline, an unreadable or malformed file, a changed frame size) | `UnspecifiedError` with the reason |
+| `StopExposure`, and the cooler, gain and offset surface | `NotImplemented` |
+
+HTTP API: guiding operations refused while a capture is in flight return
+`camera_busy` (409), see [Error envelope](#error-envelope).
+
+### Not in this version
+
+- **Off-host access**: loopback only, see above.
+- **The sweep lease** rp needs for a multi-frame focus sweep: a pair of
+  ASCOM `Action`s on the facade device that reserve the capture path for
+  a whole sweep, with an owner token, a TTL renewed while the sweep runs,
+  and a release that still waits for PHD2's event. It is built in C7,
+  together with the rp sweep that is its only consumer.
+- **Gain, binning and offset** through the facade: PHD2's profile owns
+  them.
 
 ## Implementation Phases
 
@@ -1082,6 +1483,15 @@ failures exit non-zero before binding.
 - [x] `mock_phd2` event emission (settle modes, RPC log, app-state tracking)
 - [x] BDD suite for the HTTP contract (`http_api.feature`)
 - [ ] PHD2 process adoption under serve (spawn/supervise; `auto_start`) — deferred
+
+### Phase 9: Camera facade (device-claims plan C6)
+- [x] Measure PHD2's single-frame completion against a live PHD2 (2.6.14, `pier1`)
+- [ ] `SingleFrameComplete` event, `capture_single_frame_to`, and a reply reader that keeps the first of two `error` members
+- [ ] The capture slot in `GuiderOps` and `camera_busy` on the guiding endpoints
+- [ ] `Phd2Camera` on a loopback Alpaca listener, the `camera` config block, config actions
+- [ ] Files, sweep and restart marker
+- [ ] `mock_phd2`: `save`/`path` and `SingleFrameComplete`; BDD `camera_facade.feature`
+- [ ] ConformU against PHD2's simulator; the `image_dir` sharing recipe run with the packaged service account
 
 ## Dependencies
 

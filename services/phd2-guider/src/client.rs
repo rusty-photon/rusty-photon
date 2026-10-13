@@ -968,6 +968,35 @@ impl Phd2Client {
         Ok(())
     }
 
+    /// Capture a single full frame and have PHD2 save it at `path` when
+    /// the exposure ends (PHD2 2.6.14+).
+    ///
+    /// PHD2 replies as soon as the exposure has started. When the frame
+    /// ends it sends [`Phd2Event::SingleFrameComplete`] naming `path`,
+    /// after the file is written, on success and on failure. `path` must
+    /// be absolute and must not exist yet; PHD2 refuses it otherwise. The
+    /// capture leaves PHD2's own exposure, binning and gain settings as
+    /// they were.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC: while it is
+    /// looping, guiding or already capturing a frame, with its camera
+    /// disconnected, or for a path or exposure it refuses.
+    pub async fn capture_single_frame_to(&self, exposure_ms: u32, path: &str) -> Result<()> {
+        debug!("Capturing single frame, exposure={exposure_ms}ms, saved to {path}");
+        let params = serde_json::json!({
+            "exposure": exposure_ms,
+            "save": true,
+            "path": path,
+        });
+        self.send_request("capture_single_frame", Some(params))
+            .await?;
+        Ok(())
+    }
+
     // ========================================================================
     // Guide Algorithm Parameter Methods
     // ========================================================================
@@ -2480,6 +2509,56 @@ mod mock_tests {
 
         let messages = sent.lock().unwrap();
         assert!(messages[0].contains("capture_single_frame"));
+    }
+
+    #[tokio::test]
+    async fn a_saved_capture_asks_phd2_to_save_the_frame_at_the_path() {
+        let (client, sent) = create_test_client_with_responses(vec![
+            Some(version_event()),
+            Some(rpc_response(1, "0")),
+        ]);
+
+        client.connect().await.unwrap();
+        client
+            .capture_single_frame_to(1500, "/var/lib/rusty-photon/phd2-images/f.fits")
+            .await
+            .unwrap();
+
+        let messages = sent.lock().unwrap();
+        let request: serde_json::Value = serde_json::from_str(&messages[0]).unwrap();
+        assert_eq!(request["method"], "capture_single_frame");
+        assert_eq!(
+            request["params"],
+            serde_json::json!({
+                "exposure": 1500,
+                "save": true,
+                "path": "/var/lib/rusty-photon/phd2-images/f.fits",
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_with_two_errors_fails_the_call_with_the_first() {
+        // PHD2 2.6.14's reply with its camera disconnected. Before the
+        // reader kept the first error, this call waited out the command
+        // timeout instead.
+        let (client, _sent) = create_test_client_with_responses(vec![
+            Some(version_event()),
+            Some(
+                r#"{"jsonrpc":"2.0","error":{"code":1,"message":"cannot capture single frame when camera is not connected"},"error":{"code":2,"message":"failed to start exposure"},"id":1}"#
+                    .to_string(),
+            ),
+        ]);
+
+        client.connect().await.unwrap();
+        let err = client
+            .capture_single_frame_to(1000, "/tmp/f.fits")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Phd2Error::RpcError { code: 1, message } if message.contains("camera is not connected")),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[tokio::test]

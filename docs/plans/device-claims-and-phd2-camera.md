@@ -100,8 +100,8 @@ recorded here so the option is not lost.
 | C2 | `usb_devices` schema + `svbony-camera` — port placement (the join), listed numbers, placeholders (their fixed connect error code, which rp treats as permanent for the pass, and their config actions), the failed-scan re-scan, each simulation backend's synthetic inventory, and `svbony-camera doctor --devices` (D5's listing and paste-ready block; the `usb-devices.*` checks stay in C5), so no driver serves the list before its paste source exists. `usb_devices` is part of `config.schema`/`config.apply` from the phase that adds it, under the ordinary `Reload` disposition (D4.1), and D3's validation rejects a bad list in `config.apply` as well as at load. The easy case; proves schema, join and placeholder behaviour | Merged — [svbony-camera.md](../services/svbony-camera.md) U1-U9; the D4.8 twin hint is deferred to a collector change (D4.8) | `feature/device-claims-c2-svbony` ([#1466](https://github.com/rusty-photon/rusty-photon/pull/1466)) |
 | C3 | `usb_devices` in `zwo-camera`, with its `doctor --devices` listing; a failed identity open is a per-camera outcome (D7) | Merged — [zwo-camera.md](../services/zwo-camera.md) U1-U9; the placeholder device and the re-scan moved to `rusty-photon-driver`'s `claims` feature (D7) | `feature/device-claims-c3-zwo` ([#1476](https://github.com/rusty-photon/rusty-photon/pull/1476)) |
 | C4 | `usb_devices` in `qhy-camera`, with its `doctor --devices` listing and each entry's declared filter wheel (D4.7), whose placeholder rp already classifies (C2 taught the connect routine every kind shares the placeholder's refusal) + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup and reload entirely** (the split alone narrows the tenet-3 problem, it does not discharge it). With a third driver serving the list, the `usb_devices` entry type and its validation glue, which svbony-camera and zwo-camera each still carry, move to one shared home | Merged — [qhy-camera.md](../services/qhy-camera.md) U1-U10; D6 settled on option 2 (the no-list probe opens without `InitQHYCCD`, measured, decision 17). The `usb_devices` entry type and its validation glue moved to `rusty-photon-doctor-checks`' `claims` module, which `qhy-camera` extends with the declared wheel; the placeholder FilterWheel stays in `qhy-camera`, the only driver with one | `feature/device-claims-c4-qhy` ([#1479](https://github.com/rusty-photon/rusty-photon/pull/1479)) |
-| C5 | `usb-devices.resolve` / `usb-devices.unlisted` / `usb-devices.implicit` checks on top of the per-driver `--devices` listings, and central doctor's `service.devices` recognising placeholders (D5); **the breaking no-list changes for all three drivers at once** — numbering by port order, unplaceable cameras refused, and the port-based `UniqueID` fallback for serial-less cameras (ZWO/SVBony; QHY's case decided here, D4.6) | In progress — design: [svbony-camera.md](../services/svbony-camera.md) U10-U11, [zwo-camera.md](../services/zwo-camera.md) U10-U11, [qhy-camera.md](../services/qhy-camera.md) U11-U12, [doctor.md](../services/doctor.md) (the checks and `service.devices`). QHY keeps its raw id (decision 18). The macOS check that held it is closed: the report half answered by the collector fix in [#1500](https://github.com/rusty-photon/rusty-photon/pull/1500), merged, and the location-id half accepted for C5 by the owner on 2026-10-13, to be read on a real Mac later | `feature/device-claims-c5` ([#1501](https://github.com/rusty-photon/rusty-photon/pull/1501)) |
-| C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | Not started, except the `save_image` wire-format fix (D9), merged | `fix/phd2-save-image-wire-format` ([#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)) |
+| C5 | `usb-devices.resolve` / `usb-devices.unlisted` / `usb-devices.implicit` checks on top of the per-driver `--devices` listings, and central doctor's `service.devices` recognising placeholders (D5); **the breaking no-list changes for all three drivers at once** — numbering by port order, unplaceable cameras refused, and the port-based `UniqueID` fallback for serial-less cameras (ZWO/SVBony; QHY's case decided here, D4.6) | Merged — [svbony-camera.md](../services/svbony-camera.md) U10-U11, [zwo-camera.md](../services/zwo-camera.md) U10-U11, [qhy-camera.md](../services/qhy-camera.md) U11-U12, [doctor.md](../services/doctor.md) (the checks and `service.devices`). QHY keeps its raw id (decision 18). The macOS check that held it is closed: the report half answered by the collector fix in [#1500](https://github.com/rusty-photon/rusty-photon/pull/1500), merged, and the location-id half accepted for C5 by the owner on 2026-10-13, to be read on a real Mac later. C4's one-SDK gate and list were read on the QHY178M + CFW3 with ConformU clean ([2026-10-13 record](../validation/2026-10-13-qhy-camera-qhy178m-cfw-linux-sdk-gate/README.md), [#1504](https://github.com/rusty-photon/rusty-photon/pull/1504)) | `feature/device-claims-c5` ([#1501](https://github.com/rusty-photon/rusty-photon/pull/1501)) |
+| C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | In progress — the `save_image` wire-format fix (D9) merged first. The watermark was measured on 2026-10-13 against PHD2 2.6.14, which turned out to have one: `capture_single_frame` saves to a path the caller names and announces the finished file with a `SingleFrameComplete` event (D9, "Settled in C6"). Design: [phd2-guider.md](../services/phd2-guider.md) § Camera facade. In C6 the facade listens on loopback only, so no catalog, firewall or verify-script change is needed yet (D10, "Settled in C6") | `fix/phd2-save-image-wire-format` ([#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)), `feature/device-claims-c6-phd2-camera` |
 | C7 | rp wiring: guide camera as a train-terminal camera, capture-sweep focusing for the guiding train, doc updates. **Blocked on reconciling with [`focus-model.md`](focus-model.md) S7/D17**, which retires rp's capture-based `auto_focus` and keeps the metric sweep under that name | Not started | |
 | C8 | `ui-htmx` editing of `usb_devices` | Deferred | |
 
@@ -135,9 +135,10 @@ Each phase follows
 update first (`qhy-camera.md` / `zwo-camera.md` / `svbony-camera.md` /
 `phd2-guider.md` / `rp.md`), BDD second, implementation third.
 `doctor.md` is updated **three times** — in C6 as well, because the
-optional second listener changes the catalog schema and the
-port-collision semantics, and leaving that undocumented would break the
-design-doc-first rule for the most operator-visible part of C6. In C1,
+second listener is one doctor does not see: C6 binds it to loopback and
+leaves the catalog at one port per service (D10, "Settled in C6"), and
+leaving that undocumented would break the design-doc-first rule for the
+most operator-visible part of C6. In C1,
 because the shared facts contract changes there (`UsbDevice` gains `port`/`serial` and inventory
 errors stop being folded into an empty bus — central-doctor behaviour
 that must not land undocumented), and again in C5 for the new
@@ -1677,6 +1678,72 @@ wxWidgets' `CreateTempFileName`:
 So D10's cleanup sweep must key on neither the `save_image_` prefix nor a
 missing extension.
 
+**Settled in C6 (design, 2026-10-13): PHD2 has the watermark, and the
+facade never calls `save_image`.** The table above came from the
+EventMonitoring wiki, which is behind PHD2 itself. PHD2's own
+`capture_single_frame enhancements` change (upstream PR #1312, August 2025,
+first in a stable release with 2.6.14) gave `capture_single_frame` two more
+parameters and a completion event. Read in 2.6.14's source
+(`event_server.cpp`, `myframe.cpp`, `myframe_events.cpp`) and measured on
+`pier1`'s PHD2 2.6.14 with its Simulator profile:
+
+- `capture_single_frame` takes `save` and `path` as well as `exposure`,
+  `binning`, `gain` and `subframe`. With `path`, PHD2 saves the frame
+  there when the exposure ends. The path must be absolute and must not
+  exist yet. `exposure` is any whole number of milliseconds from 1 to
+  600 000, not only the durations `get_exposure_durations` lists, and a
+  non-integer is refused.
+- When the frame ends, PHD2 sends **`SingleFrameComplete`** to every
+  event-server client: `{"Success": true, "Path": "<the path>"}`, or
+  `Success: false` with an `Error` text. `SingleExposure::Complete` saves the
+  file, then sends the event. On every successful capture measured, the file
+  already had its full size when the event arrived (875 520 bytes for the
+  simulator's 752 × 580 frame).
+- During the exposure `get_app_state` answered `Looping` (`Selected` when a
+  star was selected), not `Stopped`. It answered `Stopped` again after the
+  event. A single frame sets `CaptureActive`, and while it is set
+  `Guider::GetExposedState` follows the guider's own state, which was
+  selecting (`Looping`) in every capture measured. The source still
+  reports `Stopped` for a capture-active guider in its uninitialised or
+  stopped state, so the state cannot be trusted either way. The premise
+  above, that the state reads `Stopped` before, during and after, held for
+  none of the captures measured, and the event makes the question moot.
+
+So the watermark is the event that names the facade's own path. It beats
+all three candidates above: there is no counter to compare, no transition
+to catch and no header to trust. Nothing can return the previous frame,
+because the facade never asks for "the current frame". It names a file,
+and PHD2 writes that exposure's frame there. The facade needs PHD2 2.6.14
+or later and refuses to connect to an older one.
+
+What else the measurement showed, each on `pier1` (Simulator profile):
+
+| Sent to PHD2 | What PHD2 did |
+|---|---|
+| `capture_single_frame` `{exposure: 2000, save: true, path}` | `0`, then the event 2.08 s after the request, `Success: true`, the file complete |
+| the same at 1, 10 and 100 ms | events 87, 84 and 172 ms after the request |
+| a second `capture_single_frame` during one | error 1, `cannot capture single frame when capture is currently active` (also its answer while looping) |
+| `loop` during one | `0`, and nothing more: capture ends with the frame |
+| `stop_capture` 1 s into an 8 s frame | the event 65 ms later, `Success: false`, `camera error -- see debug log`, no file |
+| `guide` during one | accepted; calibration starts when the frame ends and fails at once, `SettleDone` status 1, `Stopped capturing`; the frame is saved intact |
+| `set_paused [true, "full"]` during one | the frame is thrown away with no event, and PHD2 stays capture-active: every later capture is refused, and `stop_capture` and `set_connected false` do nothing (its debug log: `StopCapturing CaptureActive=1 continueCapturing=0 exposurePending=0`). Only a PHD2 restart cleared it |
+| a path in a directory that does not exist | the event, `Success: false`, `error saving image file [<path>] -- see debug log for more info` |
+| an existing path; a relative one | `-32602`, `destination file already exists`; `path param must be an absolute path` |
+| any capture with the camera disconnected | one reply carrying **two** `error` members, code 1 and then code 2 |
+
+Two of these are camera-driver facts, not PHD2 facts. `stop_capture` cut
+the simulator's exposure short. PHD2's ZWO driver checks for the interrupt
+too, and its QHY driver does only when built with `CAN_STOP_CAPTURE`. A
+driver that ignores it finishes the frame, and the event then reports
+success. The pause row is a PHD2 defect: `SetPaused(PAUSE_NONE)` schedules
+the next exposure only when `m_continueCapturing` is set, which a single
+frame never sets. Both shape D11 below.
+
+The duplicate `error` reply also exposed a client defect. `phd2-guider`'s
+reply type rejected the second member as a duplicate field, so the reader
+dropped the whole line and the request waited out its 30 s command
+timeout. C6 makes the reader keep the first `error` member.
+
 ### D10. Shape of the facade
 
 - **Where.** Inside the `phd2-guider` binary, as a second server: add
@@ -2061,6 +2128,64 @@ missing extension.
   error remains, for the runtime cases load-time validation cannot see
   (the directory disappearing, a permission change mid-session).
 
+**Settled in C6 (design, 2026-10-13).** The contract as built is in
+[`phd2-guider.md` § Camera facade](../services/phd2-guider.md#camera-facade-camera).
+Each bullet below settles a choice this section left open, or changes a
+rule D9's measurement overtook. The rest stand as written.
+
+- **Loopback only, so no catalog, firewall or verify-script change yet.**
+  C6 takes the fallback this section allows. `camera.server.bind_address`
+  must be a loopback address and is refused at load otherwise, so 11128
+  is never reachable off the host. With the facade off by default, a
+  default install has no second port at all. Doctor's catalog keeps one
+  port per service. `doctor.md` records that doctor does not see 11128:
+  `ports.collision` cannot report a clash on it, and a client URL at
+  11128 joins no service. The optional-listener catalog shape, and the
+  wider bind that waits on it, are follow-up work, not C6.
+- **The facade names the file.** Every capture saves to
+  `<image_dir>/phd2-guider-<32 hex digits>.fits`, a random name the facade
+  chooses. That makes the "direct child, one component" rule true by
+  construction. PHD2 refuses a path that already exists, so a file or link
+  planted at the name fails the capture instead of being read. The read
+  opens that name with no-follow and checks that the handle it got is a
+  regular file inside the size cap. The unlink resolves the name again,
+  and the design states the trusted-peer assumption for it rather than
+  claiming the window closed. The sweep keys on the facade's own prefix,
+  never on PHD2's temporary names. Any such file other than the capture in
+  flight is an orphan, so the sweep needs no age cutoff. It runs at
+  startup and at each capture start, within an entry budget. When a late
+  event names a frame the facade gave up on at its deadline, that file is
+  deleted when the event lands.
+- **The exposure range is continuous.** `capture_single_frame` takes any
+  whole millisecond from 1 to 600 000 (D9). So `ExposureMin` is 1 ms,
+  `ExposureMax` 600 s and `ExposureResolution` 1 ms. A request is rounded
+  to the nearest millisecond, and one outside the range is refused with
+  `InvalidValueException`. The effective exposure therefore never exceeds
+  the request by more than 0.5 ms, and the snap-or-reject question
+  disappears.
+- **`CanAbortExposure` is true.** `AbortExposure` sends `stop_capture`,
+  which ended the simulator's frame within 65 ms (D9). A driver that
+  ignores the interrupt finishes the frame. Either way the facade discards
+  it, and the camera reads busy until PHD2's event says the frame ended.
+  `CanStopExposure` stays false: PHD2 cannot end an exposure early and
+  keep its frame.
+- **Config actions take the `Restart` disposition, for phd2-guider's whole
+  config.** The service has no reload path, so a change is persisted and
+  takes effect at the next start, as `rp`'s does. `camera.enabled`,
+  `camera.server.port`, `camera.server.bind_address` and `server.port` are
+  read-only. Changing them would cut the client off the endpoint it is
+  editing through.
+- **The identity is minted only when `camera.enabled` is true.** A default
+  install's config file is unchanged, so the verification scripts'
+  expectations need no change.
+- **The deadline composes with the client's timeouts because nothing waits
+  on an RPC during the exposure.** The capture makes two RPCs before the
+  exposure starts, `get_app_state` and `capture_single_frame`. Both answer
+  in milliseconds, and `StartExposure` reports their errors itself. After
+  that the facade only listens for the event, with no polls and no
+  `save_image`, so `command_timeout` never runs inside the
+  `exposure + capture_grace` budget.
+
 ### D11. The exclusivity contract (the part that must not be got wrong)
 
 Guiding and single-frame capture are mutually exclusive *in PHD2*, so the
@@ -2219,6 +2344,60 @@ facade must make that explicit rather than resolve it:
   Fail-closed after an unclean restart costs a delayed guide start; the
   alternative costs a guide loop driven onto a live exposure, which
   nothing downstream can recover.
+
+**Settled in C6 (design, 2026-10-13).** D9's measurement removes this
+section's premise and leaves one hazard it did not name. PHD2 runs one
+exposure at a time. A second capture is refused, `loop` does nothing, and
+a `guide` sent during a frame starts only after the frame ends, then fails.
+So no request can drive a guide loop onto a live exposure. What a request
+during a frame can still do is the pause defect: a full pause throws the
+frame away and leaves PHD2 unable to capture until it restarts. As built:
+
+- **One capture slot, set and checked only under `op_lock`.** A capture
+  takes `op_lock` with `try_lock`, so it never queues behind a guiding
+  operation and is refused with a busy error while one runs. Holding the
+  lock, it checks the allowlisted `Stopped` state, sets the slot, sends
+  `capture_single_frame`, and lets the lock go: the exposure itself holds
+  no lock. Every non-privileged mutation (`guiding/start`, `pause`,
+  `resume`, `dither`, `calibration/clear`, `star/reselect`) keeps its
+  `lock().await` and checks the slot once it holds the lock. If a capture
+  is in flight it is refused with `camera_busy` (409). A mutation either
+  takes the lock before the capture does, and the capture is then refused
+  as busy, or after it, and then it sees the slot. It never waits out an
+  exposure. That closes the race this section names without a second lock,
+  so there is no acquisition order to get wrong. Ordinary guiding-to-guiding
+  queueing is unchanged.
+- **Stop needs nothing new.** `guiding/stop` still takes `op_lock` and
+  sends `stop_capture`, because PHD2's state during a frame is not
+  `Stopped` (D9). That ends the frame, and the facade's capture fails with
+  "stopped" when the event arrives. The slot is released on that event, not
+  on the stop, so a driver that ignores the interrupt keeps the slot until
+  its frame really ends.
+- **The deadline releases the slot.** The slot is held until PHD2's event
+  reports the frame finished, or until `exposure + capture_grace` has
+  passed since the request. A connection lost mid-frame can cost the
+  event, and then the deadline is what releases.
+  The quarantine past the deadline is dropped. Its job was to stop guiding
+  starting on a live exposure, which PHD2 already prevents. What it would
+  still guard against is a pause into a frame that PHD2 is running more
+  than `capture_grace` late. A PHD2 that late is already in trouble, and a
+  slot held without bound would refuse guiding behind an unreported frame
+  all night. The release logs a warning naming the frame.
+- **Restart.** A graceful shutdown cancels the frame in flight with
+  `stop_capture`. That is a stop-class command, sent inside the operator's
+  own session. Shutdown then waits up to `capture_grace` for its event. A
+  crash leaves a marker, `phd2-guider-capture.json` in `image_dir`,
+  written before `capture_single_frame` and removed on release. It holds
+  the frame's path and its deadline in wall-clock time. At startup a
+  marker holds the slot until its file appears or its deadline passes.
+  That is never longer after the original request than the running process
+  would have held it, and it needs no state query. A marker whose deadline
+  passed while the service was down releases at once.
+- **The sweep lease is an ASCOM `Action` pair on the facade device**
+  (D12's first option), built in C7 with its only consumer. The facade is
+  the one Alpaca device rp already talks to, and an `Action` can refuse a
+  `guiding/start` arriving from anywhere through this service, which an
+  rp-owned reservation cannot.
 
 ### D12. What this changes in rp (C7)
 
@@ -2418,10 +2597,11 @@ review.
 | 17 | **The no-list CFW probe opens the camera without `InitQHYCCD`** (D6, option 2) — 2026-10-11 | `IsQHYCCDCFWPlugged` and the slot count answered after a bare open exactly as after an init, on a QHY178M (Linux, warm and fresh from power-up) and on `rig2`'s QHY600M (Windows), and a parked wheel stayed put, so no init is reachable from startup or reload in either path. Deferring the probe to connect (option 1) stays the list path's answer, where the wheel is declared; an unsafe operator command (option 3) was not needed. A model that turns out to need the init loses its wheel on the no-list path — a missing device, logged — and a list declaring the wheel is the remedy. |
 | 18 | **QHY keeps its raw `GetQHYCCDId` as `UniqueID` and `devices` key; no port-based identity** (D4.6, the QHY note after D4.8) — 2026-10-12 | Two cameras share an id only by sharing a model, and so the product id QHY's join matches on: they are look-alikes, refused with or without a list from C5, so no two registered cameras can carry one id. A port-based identity would change nothing a client sees and would cost a `devices`-key and wheel-id migration. |
 
-Nothing in this plan is waiting on an *operator* answer. **Four** things
+Nothing in this plan is waiting on an *operator* answer. **Three** things
 are waiting on evidence or an implementation choice, each named at its
 rule — one of them blocks a phase outright: C7's focus-model
-reconciliation. The macOS check, which held C5's no-list flip, no longer
+reconciliation. C6's completion watermark, which held C6's design, was
+answered on 2026-10-13 (D9, "Settled in C6"). The macOS check, which held C5's no-list flip, no longer
 does: its report half was answered on 2026-10-12, and on 2026-10-13 the
 owner accepted its location-id half, which no real Mac has read, for C5.
 QHY's serial-less identity was settled in C5 (decision 18). C4's
@@ -2440,9 +2620,10 @@ and on 2026-10-11 the owner accepted the legs no real hardware has read
   by the owner on 2026-10-11 (decision 2); to be read on `rig2` or another
   Windows host when someone is at one. Blocks no phase.
 
-- **C6 — the capture completion watermark**, waiting on one measurement
-  against a live PHD2 (D9). Until it exists the facade cannot tell a
-  finished exposure from the frame before it.
+- **C6 — the capture completion watermark** — answered on 2026-10-13
+  against PHD2 2.6.14 on `pier1`: PHD2 saves the frame to a path the
+  caller names and reports it with a `SingleFrameComplete` event (D9,
+  "Settled in C6").
 - **macOS — the report answered, the location id still unread on a real
   Mac.** Whether `system_profiler -json SPUSBDataType` still works on
   macOS 26 was answered on GitHub's runners on 2026-10-12: it does not.

@@ -54,7 +54,7 @@ its port:
 | zwo-camera | 11122 | `ZwoCamera` | its SDK DLL bundled |
 | pa-scops-oag | 11123 | `PaScopsOag` | serial (COM port) |
 | zwo-focuser | 11124 | `ZwoFocuser` | its SDK DLL bundled |
-| phd2-guider | 11130 | `Phd2Guider` | wraps PHD2 (installed separately) |
+| phd2-guider | 11130 | `Phd2Guider` | wraps PHD2 (installed separately); its opt-in camera facade adds 11128 on loopback only, which needs no firewall rule ([packaging.md](packaging.md#phd2-guider-the-camera-facade)) |
 | plate-solver | 11131 | `PlateSolver` | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | `CalibratorFlats` | config-gated |
 | session-runner | 11171 | `SessionRunner` | config-gated |

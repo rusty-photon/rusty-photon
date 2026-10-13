@@ -36,6 +36,25 @@ pub struct GuiderWorld {
 
     /// Doctor-subcommand smoke state (staged config file + run output)
     pub doctor_smoke: bdd_infra::doctor_smoke::DoctorSmokeState,
+
+    /// The config file the running service was started on.
+    pub config_path: Option<PathBuf>,
+
+    /// The camera facade's port, reserved before the service starts.
+    pub camera_port: Option<u16>,
+
+    /// The facade camera, as an Alpaca client sees it.
+    pub camera: Option<std::sync::Arc<dyn ascom_alpaca::api::Camera>>,
+
+    /// The ASCOM error of the most recent facade call that failed:
+    /// `(error number, message)`.
+    pub last_ascom_error: Option<(u16, String)>,
+
+    /// The deadline a staged capture marker carries.
+    pub marker_deadline: Option<std::time::SystemTime>,
+
+    /// The most recent `config.schema` / `config.apply` answer.
+    pub config_action_reply: Option<serde_json::Value>,
 }
 
 impl bdd_infra::doctor_smoke::DoctorSmokeWorld for GuiderWorld {
@@ -153,6 +172,14 @@ impl GuiderWorld {
         self.temp_dir.as_ref().unwrap().path().to_path_buf()
     }
 
+    /// The camera facade's `image_dir`, created on first use inside the
+    /// scenario's temp dir.
+    pub fn image_dir(&mut self) -> PathBuf {
+        let dir = self.temp_dir_path().join("images");
+        std::fs::create_dir_all(&dir).expect("create image_dir");
+        dir
+    }
+
     /// Service base URL (e.g., `http://127.0.0.1:37113`).
     pub fn service_url(&self) -> String {
         let handle = self
@@ -229,8 +256,14 @@ impl GuiderWorld {
         stop_timeout: &str,
         wait_connected: bool,
     ) {
-        let dir = self.temp_dir_path();
-        let config = serde_json::json!({
+        let config = Self::service_config(phd2_port, stop_timeout);
+        self.start_service_with_config(config, wait_connected).await;
+    }
+
+    /// The suite's config: the service on an OS-picked port, pointed at
+    /// the PHD2 on `phd2_port`.
+    pub fn service_config(phd2_port: u16, stop_timeout: &str) -> serde_json::Value {
+        serde_json::json!({
             "server": {
                 "bind_address": "127.0.0.1",
                 "port": 0,  // OS picks a free port; ServiceHandle parses it from stdout
@@ -244,8 +277,19 @@ impl GuiderWorld {
                 "reconnect": { "enabled": true, "interval": "200ms" }
             },
             "settling": { "pixels": 0.5, "time": "10s", "timeout": "60s" }
-        });
+        })
+    }
+
+    /// Write `config` and start `phd2-guider serve` on it. See
+    /// [`Self::start_service`] for `wait_connected`.
+    pub async fn start_service_with_config(
+        &mut self,
+        config: serde_json::Value,
+        wait_connected: bool,
+    ) {
+        let dir = self.temp_dir_path();
         let config_path = dir.join("config.json");
+        self.config_path = Some(config_path.clone());
         std::fs::write(&config_path, config.to_string()).expect("write config");
         let config_str = config_path.to_string_lossy().into_owned();
 
