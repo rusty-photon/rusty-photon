@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# Print the `sha256s` entries for MODULE.bazel's `rust.toolchain` for one
-# stable Rust release: usage `scripts/rust-toolchain-sha256s.sh 1.99.0`.
+# Print the `sha256s` entries for MODULE.bazel's `rust.toolchain` for one Rust
+# release, either of the two it pins:
 #
-# rules_rust pins the archives of the releases it knows (known_shas.bzl); a
-# release newer than the rules_rust in use downloads unverified unless
-# MODULE.bazel names its hashes. They are taken here from the release's channel
-# manifest (`channel-rust-<version>.toml`, the `xz_hash` of each package),
+#   scripts/rust-toolchain-sha256s.sh 1.99.0              # the stable pin
+#   scripts/rust-toolchain-sha256s.sh nightly/2026-08-15  # the coverage nightly
+#
+# rules_rust pins the archives of the releases it knows (known_shas.bzl): the
+# stable releases up to its own, and a few nightly dates. Any other release
+# downloads unverified unless MODULE.bazel names its hashes. They are taken
+# here from the release's channel manifest (the `xz_hash` of each package),
 # after checking the manifest's detached signature against the Rust release
 # key, whose fingerprint is pinned below rather than trusted from the same
-# server that serves the manifest.
+# server that serves the manifest. A nightly's manifest is signed by the same
+# key. For a nightly, once every archive has passed, its rustc version goes to
+# stderr as the comment line that sits directly above the nightly entry in
+# MODULE.bazel, ready to paste.
 #
 # Covers the seven tools rules_rust fetches for a host, for the five hosts CI
 # and the dev machines run on, plus rust-src: one archive for every host,
@@ -16,15 +22,32 @@
 # over the existing entries.
 set -euo pipefail
 
-version=${1:?usage: $0 <stable version, e.g. 1.99.0>}
+usage="usage: $0 <stable version, e.g. 1.99.0 | nightly/<date>, e.g. nightly/2026-08-15>"
+release=${1:?$usage}
+if [[ $release =~ ^nightly/([0-9]{4}-[0-9]{2}-[0-9]{2})$ ]]; then
+  date=${BASH_REMATCH[1]}
+  manifest=dist/$date/channel-rust-nightly.toml
+  # rules_rust names a nightly's archives `<tool>-nightly-<host>.tar.xz` and
+  # keys them by date: `<date>/<tool>-nightly-<host>.tar.xz`. All but
+  # rust-src: `load_rust_src` looks it up by `produce_tool_path`, which has
+  # no date, so its key is `rust-src-nightly.tar.xz`.
+  name_version=nightly
+elif [[ $release =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  date=
+  manifest=dist/channel-rust-$release.toml
+  name_version=$release
+else
+  echo "$usage" >&2
+  exit 2
+fi
 # Rust Language (Tag and Release Signing Key) <rust-key@rust-lang.org>
 fingerprint=108F66205EAEB0AAA8DD5E1C85AB96E6FA1BE5FE
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 base=https://static.rust-lang.org
-curl -fsSL -o "$work/manifest.toml" "$base/dist/channel-rust-$version.toml"
-curl -fsSL -o "$work/manifest.toml.asc" "$base/dist/channel-rust-$version.toml.asc"
+curl -fsSL -o "$work/manifest.toml" "$base/$manifest"
+curl -fsSL -o "$work/manifest.toml.asc" "$base/$manifest.asc"
 curl -fsSL -o "$work/key.asc" "$base/rust-key.gpg.ascii"
 
 mkdir -m 700 "$work/gnupg"
@@ -44,16 +67,16 @@ fi
 # which pipefail reports as a failed verification.
 if ! verdict=$(gpg --homedir "$work/gnupg" --status-fd 1 --verify "$work/manifest.toml.asc" "$work/manifest.toml" 2>/dev/null) \
   || ! grep -q "^\[GNUPG:\] VALIDSIG $fingerprint " <<<"$verdict"; then
-  echo "channel-rust-$version.toml is not signed by the Rust release key" >&2
+  echo "$manifest is not signed by the Rust release key" >&2
   exit 1
 fi
 
-python3 -I - "$work/manifest.toml" "$version" <<'EOF'
+python3 -I - "$work/manifest.toml" "$name_version" "$date" <<'EOF'
 import sys
 import tomllib
 from pathlib import PurePosixPath
 
-manifest_path, version = sys.argv[1], sys.argv[2]
+manifest_path, version, date = sys.argv[1], sys.argv[2], sys.argv[3]
 # manifest package -> rules_rust tool name (the archive's file-name prefix)
 packages = {
     "rustc": "rustc",
@@ -73,6 +96,8 @@ hosts = [
 ]
 with open(manifest_path, "rb") as f:
     manifest = tomllib.load(f)
+if date and manifest.get("date") != date:
+    sys.exit(f"the manifest is dated {manifest.get('date')}, not {date}")
 entries = {}
 for package, tool in packages.items():
     for host in hosts:
@@ -82,14 +107,18 @@ for package, tool in packages.items():
         name = PurePosixPath(target["xz_url"]).name
         if name != f"{tool}-{version}-{host}.tar.xz":
             sys.exit(f"unexpected archive name {name} for {package} on {host}")
-        entries[name] = target["xz_hash"]
+        entries[f"{date}/{name}" if date else name] = target["xz_hash"]
 target = manifest["pkg"]["rust-src"]["target"].get("*")
 if not target or not target.get("available"):
     sys.exit(f"rust-src {version} has no build")
 name = PurePosixPath(target["xz_url"]).name
 if name != f"rust-src-{version}.tar.xz":
     sys.exit(f"unexpected archive name {name} for rust-src")
+# Undated even for a nightly: rules_rust looks rust-src up without the date.
 entries[name] = target["xz_hash"]
-for name in sorted(entries):
-    print(f'        "{name}": "{entries[name]}",')
+# Only now, so a refused release prints an error and no line to paste.
+if date:
+    print(f"        # nightly/{date} is rustc {manifest['pkg']['rustc']['version']}", file=sys.stderr)
+for key in sorted(entries):
+    print(f'        "{key}": "{entries[key]}",')
 EOF
