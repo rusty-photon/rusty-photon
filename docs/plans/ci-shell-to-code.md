@@ -87,7 +87,7 @@ first in their columns.
 
 | ID  | Item | Replaces | Needs | Status |
 | --- | ---- | -------- | ----- | ------ |
-| F1  | JavaScript foundation: helper module, Node test rule, conventions | — | — | Done (#NNNN) |
+| F1  | JavaScript foundation: helper module, Node test rule, conventions | — | — | Done (#1508) |
 | F2  | Rust tools crate, with its first tool (`repin-bazel-lock`) | `scripts/repin-bazel-lock.sh` | — | Not started |
 | J1  | Cargo cache on the LAN object store | nothing (adds a cache to the pool `stable / clippy`; rust-cache stays for its hosted runs) | F1 | Not started |
 | J2  | Shared download-verify-extract module, first used by `install-omnisim` | `install-omnisim` | F1 | Not started |
