@@ -108,7 +108,7 @@ cargo run  -p zwo-camera --features simulation -- --port 11122
   // Optional: pin each USB port to an Alpaca device number; a camera on an
   // unlisted port is never opened. Paste it from `zwo-camera doctor --devices`
   // (docs/services/zwo-camera.md "Device claims"). Absent = every camera the
-  // SDK enumerates, in SDK order.
+  // USB scan places, in port order.
   // "usb_devices": [{ "device_number": 0, "usb_port": "pci-0000:c1:00.4-usbv3-0:1.4" }],
   "devices": {},          // per-serial name/description overrides (no list only)
   "server": {

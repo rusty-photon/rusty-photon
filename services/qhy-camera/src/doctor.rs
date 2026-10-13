@@ -19,7 +19,7 @@ use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::exit;
 
-use rusty_photon_doctor_checks::claims::devices_report;
+use rusty_photon_doctor_checks::claims::{block_entries, devices_report, usb_devices_checks};
 use rusty_photon_doctor_checks::report::Check;
 #[cfg(any(windows, test))]
 use rusty_photon_doctor_checks::report::Status;
@@ -74,6 +74,9 @@ impl SdkVersionFinding {
 /// story), plus the Windows-only installation checks.
 struct Probe {
     sdk: Option<SdkOutcome>,
+    /// The cameras that enumeration found, id and model, for the
+    /// `usb-devices.*` checks; `None` whenever `sdk` is not a list of devices.
+    cameras: Option<Vec<claims::Enumerated>>,
     extras: Vec<Check>,
 }
 
@@ -114,11 +117,12 @@ fn devices(
     source: &UsbSource,
 ) -> Result<(String, i32), Box<dyn std::error::Error + Send + Sync>> {
     let config = read_effective_config(config_path, &CliOverrides::default())?;
+    let list = config.usb_devices.as_deref().map(block_entries);
     Ok(devices_report(
         NORMALIZER,
         SERVICE,
         config_path,
-        config.check_list(),
+        config.check_list().map(|()| list.as_deref()),
         source.scan(),
         || {
             let cameras = enumerated()?;
@@ -138,22 +142,55 @@ fn enumerated() -> Result<Vec<claims::Enumerated>, String> {
     Ok(claims::enumerate(&sdk))
 }
 
-pub fn run(config: Option<PathBuf>, json: bool) -> ! {
-    let config_path = match rusty_photon_config::resolve_config_path("qhy-camera", config) {
+/// The `usb-devices.*` checks (U12): the claims a start would make from
+/// `source`'s scan and the `cameras` the report's probe enumerated, with no
+/// CFW probe, so nothing is opened. None — and no scan taken — when the
+/// config did not load, which `config.full-shape` reports, or the SDK did not
+/// enumerate, which `hardware.sdk-devices` (or `hardware.sdk-dll`) reports.
+fn claims_checks(
+    config: Option<crate::Config>,
+    source: &UsbSource,
+    cameras: Option<Vec<claims::Enumerated>>,
+) -> Vec<Check> {
+    let (Some(config), Some(cameras)) = (config, cameras) else {
+        return Vec::new();
+    };
+    let list = config.usb_devices.as_deref().map(block_entries);
+    usb_devices_checks(
+        NORMALIZER,
+        SERVICE,
+        list.as_deref(),
+        source.scan(),
+        claims::sdk_cameras(&cameras),
+        |claims| listing(&config, claims, &cameras),
+    )
+}
+
+/// The report: `config.full-shape`, `hardware.sdk-devices` and the Windows
+/// installation checks, and the `usb-devices.*` checks of the claims a start
+/// would make from `source`'s scan (U12).
+pub fn run(config: Option<PathBuf>, json: bool, source: &UsbSource) -> ! {
+    let config_path = match rusty_photon_config::resolve_config_path(SERVICE, config) {
         Ok(path) => path,
         Err(error) => {
             eprintln!("doctor: {error}");
             exit(2);
         }
     };
-    let checks = assemble(&config_path, probe());
+    // One config load and one SDK enumeration serve every check, so all of
+    // them judge the same file and the same cameras.
+    let loaded = load_effective_config(&config_path, &CliOverrides::default());
+    let mut probe = probe();
+    let cameras = probe.cameras.take();
+    let mut checks = assemble(&config_path, &loaded, probe);
+    checks.extend(claims_checks(loaded.ok(), source, cameras));
     // DR2: offer the download page only in operator-facing text mode, and
     // only when the Windows SDK installation needs attention. JSON mode is
     // machine mode (central doctor's shell-out) and must never prompt.
     #[cfg(windows)]
     let offer_download = !json && needs_operator_attention(&checks);
     let (output, code) = service::emit(
-        "qhy-camera",
+        SERVICE,
         env!("CARGO_PKG_VERSION"),
         &config_path,
         checks,
@@ -177,11 +214,13 @@ pub fn run(config: Option<PathBuf>, json: bool) -> ! {
 
 /// The full check list: the standard pair (config shape, SDK enumeration)
 /// plus whatever installation checks the probe produced.
-fn assemble(config_path: &Path, probe: Probe) -> Vec<Check> {
-    let mut checks = vec![service::full_shape_check(config_path, |path| {
-        load_effective_config(path, &CliOverrides::default())
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+fn assemble<E: std::fmt::Display>(
+    config_path: &Path,
+    loaded: &Result<crate::Config, E>,
+    probe: Probe,
+) -> Vec<Check> {
+    let mut checks = vec![service::full_shape_check(config_path, |_| {
+        loaded.as_ref().map(|_| ()).map_err(ToString::to_string)
     })];
     if let Some(outcome) = probe.sdk {
         checks.push(service::sdk_devices_check(outcome));
@@ -305,6 +344,7 @@ fn probe() -> Probe {
         DllResolution::NotFound { probed, failures } => {
             return Probe {
                 sdk: None,
+                cameras: None,
                 extras: vec![dll_missing_check(&probed, &failures, &driver_pack)],
             };
         }
@@ -314,18 +354,24 @@ fn probe() -> Probe {
             .to_string(),
     };
     let dll_check = Check::ok("hardware.sdk-dll", None, found);
-    let (version, outcome) = query_sdk();
+    let (version, outcome, cameras) = query_sdk();
     Probe {
         sdk: Some(outcome),
+        cameras,
         extras: vec![dll_check, sdk_version_check(&version)],
     }
 }
 
 /// Init the SDK from the resident DLL, read `GetQHYCCDSDKVersion`, and
-/// enumerate. First real FFI calls of the process: the delay-load helper
-/// binds them to the module the preflight probe loaded.
+/// enumerate — ids for `hardware.sdk-devices`, ids and models for the claims.
+/// First real FFI calls of the process: the delay-load helper binds them to
+/// the module the preflight probe loaded.
 #[cfg(all(windows, not(feature = "simulation")))]
-fn query_sdk() -> (SdkVersionFinding, SdkOutcome) {
+fn query_sdk() -> (
+    SdkVersionFinding,
+    SdkOutcome,
+    Option<Vec<claims::Enumerated>>,
+) {
     match qhyccd_rs::Sdk::new() {
         Ok(sdk) => {
             let devices = SdkOutcome::Devices(
@@ -333,6 +379,7 @@ fn query_sdk() -> (SdkVersionFinding, SdkOutcome) {
                     .map(|camera| camera.id().to_string())
                     .collect(),
             );
+            let cameras = claims::enumerate(&sdk);
             let version = match sdk.version() {
                 Ok(version) => SdkVersionFinding::Loaded {
                     year: version.year,
@@ -344,7 +391,7 @@ fn query_sdk() -> (SdkVersionFinding, SdkOutcome) {
                     SdkVersionFinding::Failed(format!("GetQHYCCDSDKVersion failed: {error}"))
                 }
             };
-            (version, devices)
+            (version, devices, Some(cameras))
         }
         Err(error) => (
             SdkVersionFinding::Failed(format!("SDK init failed: {error}")),
@@ -354,6 +401,7 @@ fn query_sdk() -> (SdkVersionFinding, SdkOutcome) {
                     "install QHY's All-in-One pack from {QHY_ALL_IN_ONE_URL}"
                 )),
             },
+            None,
         ),
     }
 }
@@ -364,23 +412,30 @@ fn query_sdk() -> (SdkVersionFinding, SdkOutcome) {
 
 #[cfg(not(all(windows, not(feature = "simulation"))))]
 fn probe() -> Probe {
-    let sdk = match qhyccd_rs::Sdk::new() {
-        Ok(sdk) => SdkOutcome::Devices(
-            sdk.cameras()
-                .map(|camera| camera.id().to_string())
-                .collect(),
-        ),
-        Err(error) => SdkOutcome::Error {
-            detail: error.to_string(),
-            suggestion: Some(
-                "check the USB connection and, on Linux, that \
-                 rusty-photon-qhy-firmware-install has been run once as root"
-                    .to_string(),
+    let (sdk, cameras) = match qhyccd_rs::Sdk::new() {
+        Ok(sdk) => (
+            SdkOutcome::Devices(
+                sdk.cameras()
+                    .map(|camera| camera.id().to_string())
+                    .collect(),
             ),
-        },
+            Some(claims::enumerate(&sdk)),
+        ),
+        Err(error) => (
+            SdkOutcome::Error {
+                detail: error.to_string(),
+                suggestion: Some(
+                    "check the USB connection and, on Linux, that \
+                     rusty-photon-qhy-firmware-install has been run once as root"
+                        .to_string(),
+                ),
+            },
+            None,
+        ),
     };
     Probe {
         sdk: Some(sdk),
+        cameras,
         extras: Vec::new(),
     }
 }
@@ -541,9 +596,11 @@ mod tests {
         let config_path = dir.path().join("qhy-camera.json");
         let probe = Probe {
             sdk: Some(SdkOutcome::Devices(vec!["QHY178M-1".to_string()])),
+            cameras: None,
             extras: vec![Check::ok("hardware.sdk-dll", None, "found")],
         };
-        let checks = assemble(&config_path, probe);
+        let loaded = load_effective_config(&config_path, &CliOverrides::default());
+        let checks = assemble(&config_path, &loaded, probe);
         let names: Vec<&str> = checks.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(
             names,
@@ -562,9 +619,11 @@ mod tests {
         let config_path = dir.path().join("qhy-camera.json");
         let probe = Probe {
             sdk: None,
+            cameras: None,
             extras: vec![dll_missing_check(&[], &[], &[])],
         };
-        let names: Vec<String> = assemble(&config_path, probe)
+        let loaded = load_effective_config(&config_path, &CliOverrides::default());
+        let names: Vec<String> = assemble(&config_path, &loaded, probe)
             .into_iter()
             .map(|c| c.name)
             .collect();

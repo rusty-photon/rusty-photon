@@ -21,8 +21,7 @@ Feature: Device claims -- the usb_devices list
   not a working device; a camera the join cannot tell apart from another
   (U3); a working record no SDK camera is placed on; no working camera on the
   port; or the camera placed there could not be opened for its identity
-  (U5). Without a list, a camera that cannot be opened still fails the start
-  (C0). A failed scan is never a startup failure: the service re-scans in the
+  (U5). A failed scan is never a startup failure: the service re-scans in the
   background after waits of 10 s, 20 s and 40 s and every 60 s after that,
   and rebuilds itself on the first scan that succeeds, from the configuration
   it serves (U6). An empty list
@@ -36,7 +35,13 @@ Feature: Device claims -- the usb_devices list
   at, and prints the usb_devices block to paste: with no list, every placed
   camera numbered in port order; with a list, the list itself (U8). It opens
   nothing, so it never shows a ZWO SDK id and cannot tell which camera a
-  devices override names.
+  devices override names. `zwo-camera doctor` judges a list from its own
+  scan (U11): usb-devices.resolve is ok when every listed port resolves,
+  warns for each number a placeholder would hold, and fails if the scan
+  failed; usb-devices.unlisted names each placed camera no entry lists.
+  --devices closes its listing with usb-devices.resolve, the one verdict
+  the listing does not show. Without a list, see
+  usb_devices_no_list.feature.
 
   The simulation build never scans the host (U7). By default its scan holds
   one working record for the simulated camera, 03c3:2600 on port
@@ -193,11 +198,6 @@ Feature: Device claims -- the usb_devices list
     And the rejection says "could not open the camera placed on simulated-usbv3-0:1"
     And the rejection says "general error"
     And camera device 0 reports a Description containing "could not open the camera placed on simulated-usbv3-0:1"
-
-  Scenario: Without a list, a camera that cannot be opened still fails the start
-    Given the configuration JSON {}
-    When the zwo-camera service is started with a simulated camera that cannot be opened
-    Then the service refuses to start saying general error
 
   Scenario: A failed USB scan holds every listed number with a placeholder naming the error
     Given the staged USB inventory:
@@ -393,3 +393,41 @@ Feature: Device claims -- the usb_devices list
     When doctor --devices runs
     Then the doctor exits with code 1
     And the doctor output says "the USB scan failed: powershell.exe did not answer within 10 s"
+
+  Scenario: doctor finds every listed port resolving to a camera
+    Given the configuration lists these USB devices:
+      | device_number | usb_port            |
+      | 0             | simulated-usbv3-0:1 |
+    When the doctor subcommand runs on the configuration
+    Then the doctor exits with code 0
+    And the doctor's usb-devices.resolve check is ok saying "1 listed port resolves, no placeholders"
+    And the doctor reports no usb-devices.unlisted check
+
+  Scenario: doctor warns of a listed number a placeholder would hold, and names the camera left out
+    Given the configuration lists these USB devices:
+      | device_number | usb_port            |
+      | 0             | simulated-usbv3-0:9 |
+    When the doctor subcommand runs on the configuration
+    Then the doctor exits with code 0
+    And the doctor's usb-devices.resolve check warns saying "device 0 (simulated-usbv3-0:9) would be a placeholder: no working camera is enumerated on simulated-usbv3-0:9"
+    And the doctor's usb-devices.unlisted check is ok saying "simulated-usbv3-0:1 (ASI2600MM-Pro-Simulated) is on the bus and not listed"
+
+  Scenario: doctor fails usb-devices.resolve when the USB scan failed
+    Given the staged USB inventory:
+      """
+      { "usb_unavailable": "powershell.exe did not answer within 10 s" }
+      """
+    And the configuration lists these USB devices:
+      | device_number | usb_port            |
+      | 0             | simulated-usbv3-0:1 |
+    When the doctor subcommand runs on the configuration
+    Then the doctor exits with code 1
+    And the doctor's usb-devices.resolve check fails saying "the USB scan failed: powershell.exe did not answer within 10 s"
+
+  Scenario: doctor --devices closes the listing with usb-devices.resolve
+    Given the configuration lists these USB devices:
+      | device_number | usb_port            |
+      | 0             | simulated-usbv3-0:9 |
+    When doctor --devices runs
+    Then the doctor exits with code 0
+    And the doctor output says "warn usb-devices.resolve: device 0 (simulated-usbv3-0:9) would be a placeholder"

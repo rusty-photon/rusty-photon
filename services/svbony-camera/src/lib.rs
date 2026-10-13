@@ -99,14 +99,11 @@ use tracing::{debug, error, info, warn};
 
 use crate::backend::{CameraHandle, SvbonyCameraHandle};
 
-/// One camera discovered at enumeration: its index, [`CameraInfo`], the bare
-/// SDK `serial` (the key for `devices` config overrides), and the
-/// serial-derived ASCOM `UniqueID`.
+/// One camera discovered at enumeration: its SDK index and [`CameraInfo`].
+/// Its identity waits for the port the join places it on (*Device identity*).
 struct EnumeratedCamera {
     index: usize,
     info: CameraInfo,
-    serial: String,
-    unique_id: String,
 }
 
 /// Builds a bound svbony-camera server from an effective [`Config`].
@@ -118,8 +115,8 @@ pub struct ServerBuilder {
     reload: Option<ReloadSignal>,
     /// Register no cameras regardless of what enumeration would otherwise
     /// report — the test-only zero-camera startup path, mirroring
-    /// `zwo-camera`'s `--simulation-empty` (contract C0). With a
-    /// `usb_devices` list it empties only the SDK's side of the join.
+    /// `zwo-camera`'s `--simulation-empty` (contract C0). It empties only the
+    /// SDK's side of the join; the USB scan is untouched.
     force_empty: bool,
     /// Where a `usb_devices` list's USB scan comes from (U7); `None` takes
     /// this driver's default ([`claims::default_usb_source`]).
@@ -210,15 +207,17 @@ impl ServerBuilder {
     /// Register the cameras this configuration serves and bind the Alpaca
     /// listener.
     ///
-    /// With no `usb_devices` list, every camera the SDK enumerates, in SDK
-    /// order; zero discovered cameras is **not** a hard failure: the server
-    /// starts with no Camera devices and logs a warning (a later reload
-    /// re-enumerates). With a list, the list (see [`Self::register_list`]).
+    /// With no `usb_devices` list, every camera the USB scan places, in port
+    /// order (see [`Self::register_enumerated`]); zero registered cameras is
+    /// **not** a hard failure: the server starts with no Camera devices and
+    /// logs a warning (a later reload re-enumerates). With a list, the list
+    /// (see [`Self::register_list`]).
     ///
     /// # Errors
     /// Returns [`SvbonyCameraError`] when SDK enumeration fails or the
     /// listener cannot bind the configured port. A failed USB scan is not an
-    /// error: it is served as placeholders and retried (U6).
+    /// error: it registers placeholders, or no camera without a list, and is
+    /// retried (U6, U10).
     pub async fn build(self) -> Result<BoundServer, SvbonyCameraError> {
         // The load refuses a list that breaks a rule; checked again here
         // because registration depends on it — numbers 0..N-1 are what make
@@ -229,11 +228,7 @@ impl ServerBuilder {
             .map_err(SvbonyCameraError::Config)?;
         let mut server = Server::new(CargoServerInfo!());
         let registered = match &self.config.usb_devices {
-            None => Registered {
-                cameras: self.register_enumerated(&mut server).await?,
-                placeholders: 0,
-                rescan: None,
-            },
+            None => self.register_enumerated(&mut server).await?,
             Some(list) => self.register_list(&mut server, list).await?,
         };
 
@@ -304,24 +299,82 @@ impl ServerBuilder {
         })
     }
 
-    /// The no-list default: every camera the SDK enumerates, in SDK order.
-    /// Returns how many were registered.
-    async fn register_enumerated(&self, server: &mut Server) -> Result<usize, SvbonyCameraError> {
-        let cameras = if self.force_empty {
-            Vec::new()
-        } else {
-            enumerate_cameras().await?
-        };
-        if cameras.is_empty() {
+    /// The no-list default (U10): take the USB scan, enumerate the SDK, place
+    /// each SDK camera on a port, and register every camera placed, numbered
+    /// in port order. A camera the join cannot place is refused and logged.
+    /// Nothing is opened. A failed scan registers no camera; it returns the
+    /// re-scan to run instead (U6).
+    async fn register_enumerated(
+        &self,
+        server: &mut Server,
+    ) -> Result<Registered, SvbonyCameraError> {
+        let (scan, cameras) = self.scan_and_enumerate().await?;
+        let claims = Claims::new(
+            claims::NORMALIZER,
+            claims::SERVICE,
+            scan,
+            claims::sdk_cameras(cameras.iter().map(|c| &c.info)),
+        );
+        let mut registered = Registered::default();
+        if let Some(error) = claims.scan_error() {
+            error!(
+                %error,
+                "the USB scan failed; no SVBony camera is registered until a re-scan succeeds"
+            );
+            registered.rescan = Some(self.rescan());
+            return Ok(registered);
+        }
+        for note in claims.unplaced_notes() {
+            warn!(%note, "without a usb_devices list, a camera the USB scan cannot place is not served");
+        }
+        // The join places only what the SDK enumerated, so every index is in
+        // `cameras`.
+        let placed = claims
+            .placed()
+            .into_iter()
+            .filter_map(|(index, port)| cameras.get(index).map(|cam| (cam, port)));
+        for (cam, port) in placed {
+            debug!(
+                camera = cam.index,
+                port, "an SVBony camera is placed on a port"
+            );
+            // `devices` overrides are keyed by the bare SDK serial, or
+            // `noserial-<port>` (matching the config-actions `devices.{key}`
+            // paths), NOT the prefixed `SVBONY:{name}:{key}` UniqueID.
+            let key = claims::override_key(&cam.info, port);
+            self.register_camera(server, cam, port, self.config.devices.get(&key))?;
+            registered.cameras = registered.cameras.saturating_add(1);
+        }
+        if registered.cameras == 0 {
             warn!("no SVBony cameras registered; starting with no Camera devices");
         }
-        for cam in &cameras {
-            // `devices` overrides are keyed by the bare SDK serial (matching
-            // the config-actions `devices.{serial}` paths), NOT the prefixed
-            // `SVBONY:{name}:{serial}` UniqueID.
-            self.register_camera(server, cam, self.config.devices.get(&cam.serial))?;
-        }
-        Ok(cameras.len())
+        Ok(registered)
+    }
+
+    /// This build's USB scan and, once it has run, the SDK's cameras — none
+    /// when the scan failed, since a failed scan places nothing, or when the
+    /// test-only empty backend is on.
+    async fn scan_and_enumerate(
+        &self,
+    ) -> Result<
+        (
+            Result<rusty_photon_doctor_checks::UsbScan, String>,
+            Vec<EnumeratedCamera>,
+        ),
+        SvbonyCameraError,
+    > {
+        let source = self.usb_source();
+        // A collector that panics has failed to scan, like one that errors:
+        // a re-scan, never a failed start (U6).
+        let scan = tokio::task::spawn_blocking(move || source.scan())
+            .await
+            .unwrap_or_else(|error| Err(format!("the USB scan did not finish: {error}")));
+        let cameras = match &scan {
+            Err(_) => Vec::new(),
+            Ok(_) if self.force_empty => Vec::new(),
+            Ok(_) => enumerate_cameras().await?,
+        };
+        Ok((scan, cameras))
     }
 
     /// A `usb_devices` list: take the USB scan, enumerate the SDK, place each
@@ -341,24 +394,14 @@ impl ServerBuilder {
             );
             return Ok(Registered::default());
         }
-        let source = self.usb_source();
-        // A collector that panics has failed to scan, like one that errors:
-        // placeholders and a re-scan, never a failed start (U6).
-        let scan = tokio::task::spawn_blocking(move || source.scan())
-            .await
-            .unwrap_or_else(|error| Err(format!("the USB scan did not finish: {error}")));
-        let cameras = match &scan {
-            Err(error) => {
-                error!(
-                    %error,
-                    "the USB scan failed; every listed number is a placeholder until a re-scan \
-                     succeeds"
-                );
-                Vec::new()
-            }
-            Ok(_) if self.force_empty => Vec::new(),
-            Ok(_) => enumerate_cameras().await?,
-        };
+        let (scan, cameras) = self.scan_and_enumerate().await?;
+        if let Err(error) = &scan {
+            error!(
+                %error,
+                "the USB scan failed; every listed number is a placeholder until a re-scan \
+                 succeeds"
+            );
+        }
         let claims = Claims::new(
             claims::NORMALIZER,
             claims::SERVICE,
@@ -383,7 +426,12 @@ impl ServerBuilder {
                         port = %entry.usb_port,
                         "a listed port holds an SVBony camera"
                     );
-                    self.register_camera(server, cam, Some(&DeviceOverride::from(entry)))?;
+                    self.register_camera(
+                        server,
+                        cam,
+                        &entry.usb_port,
+                        Some(&DeviceOverride::from(entry)),
+                    )?;
                     registered.cameras = registered.cameras.saturating_add(1);
                 }
                 Err(reason) => {
@@ -421,7 +469,7 @@ impl ServerBuilder {
     /// this build's scan and, once that runs, enumerates the SDK; on the first
     /// try both pass, it ends its own server, which the caller rebuilds from
     /// the configuration it was serving ([`Ended::Rescanned`]) — placing the
-    /// listed cameras afresh.
+    /// cameras afresh, listed or not.
     fn rescan(&self) -> Rescan {
         let source = self.usb_source();
         Rescan::new(
@@ -435,11 +483,13 @@ impl ServerBuilder {
         )
     }
 
-    /// Register one enumerated camera with its display overrides.
+    /// Register one enumerated camera, placed on `port`, with its display
+    /// overrides.
     fn register_camera(
         &self,
         server: &mut Server,
         cam: &EnumeratedCamera,
+        port: &str,
         overrides: Option<&DeviceOverride>,
     ) -> Result<(), SvbonyCameraError> {
         // Said here rather than where the identity is minted: with a list,
@@ -448,17 +498,16 @@ impl ServerBuilder {
         if cam.info.serial.is_empty() {
             warn!(
                 camera = %cam.info.friendly_name,
-                "camera reports an empty serial; using a position-based identity"
+                port,
+                "camera reports an empty serial; using an identity built from its USB port"
             );
         }
+        let (_, unique_id) = mint_identity(&cam.info, port);
         let sdk = svbony_rs::Sdk::new()?;
         #[cfg(feature = "simulation")]
         let sdk = self.departing(sdk);
-        let handle: Arc<dyn CameraHandle> = Arc::new(SvbonyCameraHandle::new(
-            sdk,
-            cam.info.clone(),
-            cam.unique_id.clone(),
-        ));
+        let handle: Arc<dyn CameraHandle> =
+            Arc::new(SvbonyCameraHandle::new(sdk, cam.info.clone(), unique_id));
         let mut device = SvbonyCamera::new(handle, overrides);
         if let Some(ctx) = self.config_actions() {
             device = device.with_config_actions(ctx);
@@ -552,8 +601,7 @@ impl BoundServer {
     }
 }
 
-/// Enumerate connected `SVBony` cameras, minting each device's serial-derived
-/// `UniqueID`.
+/// Enumerate connected `SVBony` cameras.
 ///
 /// Unlike ZWO (`ASIGetSerialNumber` requires an open camera), `SVBony`'s
 /// `CameraSN` arrives with `SVBGetCameraInfo` at enumeration time
@@ -570,15 +618,7 @@ fn enumerate_cameras_blocking() -> Result<Vec<EnumeratedCamera>, svbony_rs::Erro
     Ok(sdk_camera_infos()?
         .into_iter()
         .enumerate()
-        .map(|(index, info)| {
-            let (serial, unique_id) = mint_identity(&info, index);
-            EnumeratedCamera {
-                index,
-                info,
-                serial,
-                unique_id,
-            }
-        })
+        .map(|(index, info)| EnumeratedCamera { index, info })
         .collect())
 }
 
@@ -588,15 +628,16 @@ pub(crate) fn sdk_camera_infos() -> Result<Vec<CameraInfo>, svbony_rs::Error> {
     svbony_rs::Sdk::new()?.cameras()
 }
 
-/// Mint the `(serial, UniqueID)` pair for an enumerated camera.
+/// Mint the `(serial, UniqueID)` pair for a camera placed on `port`.
 ///
 /// The serial is the camera's hardware `CameraSN`, read pre-open at
 /// enumeration (unlike ZWO, no open-to-mint-identity dance is needed — see
 /// [`enumerate_cameras`]'s doc comment). A camera reporting an empty serial
-/// falls back to a stable position-based identity (`noserial-{index}`),
-/// mirroring `zwo-camera`'s `mint_identity` fallback.
-fn mint_identity(info: &CameraInfo, index: usize) -> (String, String) {
-    let serial = claims::override_key(info, index);
+/// falls back to an identity built from its port (`noserial-{port}`),
+/// mirroring `zwo-camera`'s `mint_identity` fallback: every registered camera
+/// has one, and it holds across bus reordering and replug.
+fn mint_identity(info: &CameraInfo, port: &str) -> (String, String) {
+    let serial = claims::override_key(info, port);
     let unique_id = format!("SVBONY:{}:{}", info.friendly_name.replace(' ', "-"), serial);
     (serial, unique_id)
 }
@@ -618,21 +659,25 @@ mod identity_tests {
 
     #[test]
     fn mint_identity_uses_the_enumeration_time_serial_when_present() {
-        let (serial, unique_id) = mint_identity(&info("SV605CC", "SVB0123456789AB"), 0);
+        let (serial, unique_id) = mint_identity(&info("SV605CC", "SVB0123456789AB"), "1-4.2");
         assert_eq!(serial, "SVB0123456789AB");
         assert_eq!(unique_id, "SVBONY:SV605CC:SVB0123456789AB");
     }
 
     #[test]
-    fn mint_identity_falls_back_to_position_when_serial_is_empty() {
-        let (serial, unique_id) = mint_identity(&info("SV605CC", ""), 2);
-        assert_eq!(serial, "noserial-2");
-        assert_eq!(unique_id, "SVBONY:SV605CC:noserial-2");
+    fn mint_identity_falls_back_to_the_port_when_serial_is_empty() {
+        let (serial, unique_id) =
+            mint_identity(&info("SV605CC", ""), "platform-xhci-hcd.1-usbv3-0:1");
+        assert_eq!(serial, "noserial-platform-xhci-hcd.1-usbv3-0:1");
+        assert_eq!(
+            unique_id,
+            "SVBONY:SV605CC:noserial-platform-xhci-hcd.1-usbv3-0:1"
+        );
     }
 
     #[test]
     fn mint_identity_replaces_spaces_in_the_friendly_name() {
-        let (_, unique_id) = mint_identity(&info("SV605 CC Pro", "ABC"), 0);
+        let (_, unique_id) = mint_identity(&info("SV605 CC Pro", "ABC"), "1-4.2");
         assert_eq!(unique_id, "SVBONY:SV605-CC-Pro:ABC");
     }
 }
@@ -662,21 +707,21 @@ mod simulation_tests {
     #[tokio::test]
     async fn device_overrides_are_keyed_by_serial_not_unique_id() {
         let cameras = enumerate_cameras().await.unwrap();
-        let cam = &cameras[0];
+        let (serial, unique_id) = mint_identity(&cameras[0].info, "simulated-usbv3-0:1");
         assert!(
-            cam.serial != cam.unique_id && cam.unique_id.ends_with(&cam.serial),
+            serial != unique_id && unique_id.ends_with(&serial),
             "UniqueID should be the prefixed serial, serial the bare key"
         );
         let mut config = Config::default();
         config.devices.insert(
-            cam.serial.clone(),
+            serial.clone(),
             DeviceOverride {
                 name: Some("Main Imaging".to_string()),
                 ..Default::default()
             },
         );
-        assert!(config.devices.contains_key(&cam.serial));
-        assert!(!config.devices.contains_key(&cam.unique_id));
+        assert!(config.devices.contains_key(&serial));
+        assert!(!config.devices.contains_key(&unique_id));
     }
 
     fn list(entries: &[(u32, &str)]) -> Vec<UsbDeviceEntry> {

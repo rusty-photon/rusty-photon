@@ -1,10 +1,10 @@
 @serial
 Feature: Camera enumeration and connection lifecycle
-  qhy-camera enumerates every connected QHY camera (and any CFW discovered
-  on it) at startup and registers each as an ASCOM device,
-  index 0, 1, 2, ..., on one port (C0). Each device's UniqueID is derived
-  from its SDK serial, so two identical-model cameras are distinguished by
-  serial. Connect is per-device (C4): connecting or disconnecting one camera
+  qhy-camera enumerates the connected QHY cameras at startup and registers
+  each the USB scan places (and any CFW discovered on it) as an ASCOM
+  device, index 0, 1, 2, ... in port order, on one port (C0, U11). Each
+  device's UniqueID is derived from its SDK serial. Connect is per-device
+  (C4): connecting or disconnecting one camera
   does not affect the others. Opening a device (C1) caches its CCD info,
   valid binning modes, and exposure/gain/offset limits. An open failure
   leaves the device not connected (C2). Disconnect closes the device and

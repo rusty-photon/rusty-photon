@@ -13,7 +13,7 @@ use std::collections::BTreeMap;
 
 pub use rusty_photon_doctor_checks::claims::UsbSource;
 use rusty_photon_doctor_checks::claims::{
-    self, BlockEntry, CameraFacts, Claims, DisplayNames, ListEntry, Listing, Normalizer, SdkCamera,
+    self, CameraFacts, Claims, DisplayNames, Listing, Normalizer, SdkCamera,
 };
 use rusty_photon_driver::claims::{Placeholder, PlaceholderCamera};
 use zwo_rs::CameraInfo;
@@ -169,7 +169,7 @@ pub fn placeholder(entry: &UsbDeviceEntry, reason: String) -> PlaceholderCamera<
 ///
 /// Without an open there is no SDK id to show, and no telling which camera a
 /// `devices` override names: its key is the camera's serial, or
-/// `noserial-<index>` when it has none, and both need an open.
+/// `noserial-<port>` when it has none, and telling which needs an open.
 #[must_use]
 pub fn listing(config: &Config, claims: &Claims<'_>, infos: &[CameraInfo]) -> Listing {
     let cameras: Vec<CameraFacts> = infos
@@ -180,10 +180,7 @@ pub fn listing(config: &Config, claims: &Claims<'_>, infos: &[CameraInfo]) -> Li
             override_key: None,
         })
         .collect();
-    let list: Option<Vec<BlockEntry>> = config
-        .usb_devices
-        .as_ref()
-        .map(|list| list.iter().map(ListEntry::block_entry).collect());
+    let list = config.usb_devices.as_deref().map(claims::block_entries);
     let overrides: BTreeMap<String, DisplayNames> = config
         .devices
         .iter()
@@ -355,12 +352,12 @@ mod tests {
         assert_eq!(listing.rows[0].sdk_id, None);
         assert_eq!(listing.block.as_ref().unwrap()[0].name, None);
         assert!(
-            listing.notes.iter().any(|n| n.starts_with(
+            listing.paste_notes.iter().any(|n| n.starts_with(
                 "The devices override 1915d5081b090900 cannot be matched to a camera without \
                  opening one"
             )),
             "{:?}",
-            listing.notes
+            listing.paste_notes
         );
     }
 

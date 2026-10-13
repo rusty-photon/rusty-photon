@@ -1,8 +1,8 @@
 @serial
 Feature: Camera enumeration and connection lifecycle
-  zwo-camera enumerates every connected ASI camera at startup and registers
-  each as an ASCOM device,
-  index 0, 1, 2, ..., on one port (C0). Each device's UniqueID is derived
+  zwo-camera enumerates the connected ASI cameras at startup and registers
+  each the USB scan places as an ASCOM device, index 0, 1, 2, ... in port
+  order, on one port (C0, U10). Each device's UniqueID is derived
   from its SDK serial; because ASIGetSerialNumber requires an open camera,
   enumeration opens each camera briefly to read the serial, so two
   identical-model cameras are distinguished by serial. Connect is per-device

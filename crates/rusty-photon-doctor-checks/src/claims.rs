@@ -28,6 +28,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::facts::{UsbDevice, UsbScan};
+use crate::report::{Check, Status};
 
 /// The ASCOM error number a placeholder's `Connected = true` fails with.
 ///
@@ -58,6 +59,17 @@ pub fn placeholder_name(sdk: &str, usb_port: &str) -> String {
     format!("{sdk} camera on {usb_port} (placeholder)")
 }
 
+/// What a wheel placeholder's port carries in its `UniqueID`, so it is not its
+/// camera's (`qhy-camera`'s declared filter wheel).
+const PLACEHOLDER_WHEEL_PREFIX: &str = "CFW-";
+
+/// A wheel placeholder's `UniqueID`: `placeholder:<service>:CFW-<usb_port>`,
+/// which neither a device nor its camera's placeholder can take.
+#[must_use]
+pub fn placeholder_wheel_unique_id(service: &str, usb_port: &str) -> String {
+    placeholder_unique_id(service, &format!("{PLACEHOLDER_WHEEL_PREFIX}{usb_port}"))
+}
+
 /// Whether a device is a device-claims placeholder, by its `UniqueID`.
 ///
 /// The driver range is shared by every Alpaca driver, so a client tells a
@@ -66,6 +78,19 @@ pub fn placeholder_name(sdk: &str, usb_port: &str) -> String {
 #[must_use]
 pub fn is_placeholder_unique_id(unique_id: &str) -> bool {
     unique_id.starts_with(PLACEHOLDER_ID_PREFIX)
+}
+
+/// The USB port a placeholder stands in for, read back from its `UniqueID`.
+///
+/// A camera's or a wheel's; `None` for any other device's. A service name
+/// holds no `:`, so the port is everything after the second field, `:`s and
+/// all.
+#[must_use]
+pub fn placeholder_port(unique_id: &str) -> Option<&str> {
+    let (_service, port) = unique_id
+        .strip_prefix(PLACEHOLDER_ID_PREFIX)?
+        .split_once(':')?;
+    Some(port.strip_prefix(PLACEHOLDER_WHEEL_PREFIX).unwrap_or(port))
 }
 
 // --- the list -------------------------------------------------------------------
@@ -126,6 +151,12 @@ impl ListEntry for UsbDeviceEntry {
             ..BlockEntry::default()
         }
     }
+}
+
+/// `list`'s entries as the paste-ready block reproduces them.
+#[must_use]
+pub fn block_entries<E: ListEntry>(list: &[E]) -> Vec<BlockEntry> {
+    list.iter().map(ListEntry::block_entry).collect()
 }
 
 /// Every rule a configured `usb_devices` list breaks; empty without a list.
@@ -1010,9 +1041,14 @@ pub struct Listing {
     pub rows: Vec<ListingRow>,
     /// The paste-ready block; `None` prints none.
     pub block: Option<Vec<BlockEntry>>,
-    /// Paragraphs printed after the table: what the join could not place,
-    /// renumbering warnings, the unplug procedure.
+    /// Paragraphs printed after the table, on its rows: what the join could
+    /// not place, the unplug procedure.
     pub notes: Vec<String>,
+    /// Paragraphs printed after [`Self::notes`], on pasting the block: the
+    /// `devices` overrides it cannot carry, deleting the `devices` map,
+    /// checking the wheel numbers (`qhy-camera`). `usb-devices.implicit`
+    /// carries them with the block.
+    pub paste_notes: Vec<String>,
     /// The driver serves a filter wheel through its camera, which an entry
     /// declares (`qhy-camera`): the text above the block says `--devices`
     /// cannot see one and how to declare it.
@@ -1065,15 +1101,18 @@ impl Claims<'_> {
         let placed = self.placed();
         let rows = placed
             .iter()
-            .map(|&(index, port)| {
+            .zip(0_usize..)
+            .map(|(&(index, port), position)| {
                 let facts = cameras.get(index);
                 ListingRow {
                     port: port.to_string(),
                     model: facts.map(|f| f.model.clone()).unwrap_or_default(),
                     sdk_id: facts.and_then(|f| f.sdk_id.clone()),
                     usb_serial: self.record_on(port).and_then(|r| r.serial.clone()),
+                    // Without a list a placed camera is served at its place in
+                    // port order (the plan's D4.7).
                     device: list.map_or_else(
-                        || index.to_string(),
+                        || position.to_string(),
                         |list| {
                             list.iter().find(|e| e.usb_port == port).map_or_else(
                                 || "not listed".to_string(),
@@ -1086,6 +1125,7 @@ impl Claims<'_> {
             .collect::<Vec<_>>();
 
         let mut notes = self.unplaced_notes();
+        let mut paste_notes = Vec::new();
         let block = match list {
             Some(list) => {
                 let mut entries = list.to_vec();
@@ -1093,14 +1133,10 @@ impl Claims<'_> {
                 Some(entries)
             }
             None if placed.is_empty() => None,
-            None => Some(self.no_list_block(&placed, cameras, overrides, &mut notes)),
+            None => Some(self.no_list_block(&placed, cameras, overrides, &mut paste_notes)),
         };
         if rows.len() > 1 {
-            notes.push(
-                "Cannot tell which row is which camera? Unplug one and run this again: the port \
-                 that disappears is the one you unplugged."
-                    .to_string(),
-            );
+            notes.push(UNPLUG_NOTE.to_string());
         }
         Listing {
             sdk: self.normalizer.sdk.to_string(),
@@ -1109,21 +1145,23 @@ impl Claims<'_> {
             rows,
             block,
             notes,
+            paste_notes,
             wheels: false,
         }
     }
 
     /// The block that pins what the no-list default serves: every placed
     /// camera, numbered in port order, with the names its `devices` override
-    /// gives it, and a note for each override that it cannot carry. A camera
-    /// whose override names its wheel's slots has a wheel, so its entry
-    /// declares one, the wheels numbered in port order too.
+    /// gives it, and in `paste_notes` each override that it cannot carry and
+    /// the map's deletion. A camera whose override names its wheel's slots
+    /// has a wheel, so its entry declares one, the wheels numbered in port
+    /// order too.
     fn no_list_block(
         &self,
         placed: &[(usize, &str)],
         cameras: &[CameraFacts],
         overrides: &BTreeMap<String, DisplayNames>,
-        notes: &mut Vec<String>,
+        paste_notes: &mut Vec<String>,
     ) -> Vec<BlockEntry> {
         let key_of = |index: usize| cameras.get(index).and_then(|f| f.override_key.as_ref());
         let mut matched_keys = Vec::new();
@@ -1148,25 +1186,6 @@ impl Claims<'_> {
                 }
             })
             .collect();
-        if placed
-            .iter()
-            .zip(0_usize..)
-            .any(|(&(index, _), position)| index != position)
-        {
-            notes.push(
-                if block.iter().any(|e| e.filter_wheel_number.is_some()) {
-                    "Pasting this block renumbers cameras and their filter wheels: without a list \
-                     the service serves them in SDK order, and the block numbers them in port \
-                     order. Check rp's cameras[].device_number and filter_wheels[].device_number \
-                     when you paste it."
-                } else {
-                    "Pasting this block renumbers cameras: without a list the service serves them \
-                     in SDK order, and the block numbers them in port order. Check rp's \
-                     cameras[].device_number when you paste it."
-                }
-                .to_string(),
-            );
-        }
         // A key no placed camera's matched is a stale override when every
         // placed camera's key was known; when some could not be known
         // without an open, it may well be one of theirs.
@@ -1175,7 +1194,7 @@ impl Claims<'_> {
             .keys()
             .filter(|k| !matched_keys.contains(&k.as_str()))
         {
-            notes.push(if every_key_known {
+            paste_notes.push(if every_key_known {
                 format!(
                     "The devices override {key} matches no camera placed on a port; move its \
                      fields into the right entry by hand."
@@ -1194,7 +1213,7 @@ impl Claims<'_> {
             } else {
                 ""
             };
-            notes.push(format!(
+            paste_notes.push(format!(
                 "Delete the devices map from {}.json when you paste this block: {carried}a \
                  devices map beside a usb_devices list refuses the start.",
                 self.service
@@ -1202,6 +1221,218 @@ impl Claims<'_> {
         }
         block
     }
+}
+
+// --- the doctor checks ----------------------------------------------------------
+
+/// The listing's note for an operator who cannot tell its rows apart.
+const UNPLUG_NOTE: &str = "Cannot tell which row is which camera? Unplug one and run this \
+                           again: the port that disappears is the one you unplugged.";
+
+const RESOLVE: &str = "usb-devices.resolve";
+const UNLISTED: &str = "usb-devices.unlisted";
+const IMPLICIT: &str = "usb-devices.implicit";
+
+/// What a failed scan's check suggests: the host is what needs fixing, and the
+/// service re-scans on its own.
+fn failed_scan_suggestion(service: &str) -> String {
+    format!(
+        "fix what the error names on the host; a running {service} re-scans on its own and \
+         rebuilds once a scan succeeds"
+    )
+}
+
+impl Claims<'_> {
+    /// The `usb-devices.*` checks of the driver's `doctor`
+    /// ([doctor.md](../../../docs/services/doctor.md), "The per-service
+    /// subcommand"), judged from this join — what a start would serve now.
+    ///
+    /// With `list`, `usb-devices.resolve` and `usb-devices.unlisted`; without
+    /// one, `usb-devices.implicit`, whose `ok` names the numbers port order
+    /// gives and, given the no-list `listing`, the block that pins them with
+    /// the notes that go with pasting it. Only a failed scan fails: a dead
+    /// device, an empty listed port, a look-alike or an unrecognised model
+    /// only warns.
+    #[must_use]
+    pub fn checks(&self, list: Option<&[BlockEntry]>, listing: Option<&Listing>) -> Vec<Check> {
+        list.map_or_else(
+            || self.implicit_checks(listing),
+            |list| self.list_checks(list),
+        )
+    }
+
+    fn list_checks(&self, list: &[BlockEntry]) -> Vec<Check> {
+        let mut checks = self.resolve_checks(list);
+        if self.scan_error().is_some() {
+            return checks;
+        }
+        for (index, port) in self.placed() {
+            if !list.iter().any(|e| e.usb_port == port) {
+                checks.push(Check::ok(
+                    UNLISTED,
+                    None,
+                    format!(
+                        "{port} ({}) is on the bus and not listed",
+                        self.model_of(index)
+                    ),
+                ));
+            }
+        }
+        checks
+    }
+
+    /// `usb-devices.resolve` over `list`: an empty list first, since it
+    /// registers nothing and needs no scan, then a failed scan, then each
+    /// entry's port.
+    fn resolve_checks(&self, list: &[BlockEntry]) -> Vec<Check> {
+        if list.is_empty() {
+            return vec![Check::ok(
+                RESOLVE,
+                None,
+                "the list is empty: no camera is registered",
+            )];
+        }
+        if let Some(error) = self.scan_error() {
+            return vec![Check::fail(
+                RESOLVE,
+                None,
+                format!(
+                    "the USB scan failed: {error}; every listed number would be a placeholder \
+                     until a scan succeeds"
+                ),
+                Some(failed_scan_suggestion(self.service)),
+            )];
+        }
+        let mut entries: Vec<&BlockEntry> = list.iter().collect();
+        entries.sort_by_key(|e| e.device_number);
+        let mut checks: Vec<Check> = entries
+            .iter()
+            .filter_map(|entry| match self.resolve(&entry.usb_port) {
+                Resolution::Camera(_) => None,
+                Resolution::Placeholder(reason) => Some(Check::warn(
+                    RESOLVE,
+                    None,
+                    format!(
+                        "device {} ({}) would be a placeholder: {reason}",
+                        entry.device_number, entry.usb_port
+                    ),
+                    None,
+                )),
+            })
+            .collect();
+        if checks.is_empty() {
+            checks.push(Check::ok(
+                RESOLVE,
+                None,
+                match entries.len() {
+                    1 => "1 listed port resolves, no placeholders".to_string(),
+                    n => format!("{n} listed ports resolve, no placeholders"),
+                },
+            ));
+        }
+        checks
+    }
+
+    fn implicit_checks(&self, listing: Option<&Listing>) -> Vec<Check> {
+        if let Some(error) = self.scan_error() {
+            return vec![Check::fail(
+                IMPLICIT,
+                None,
+                format!(
+                    "the USB scan failed: {error}; without a list no camera is registered until \
+                     a scan succeeds"
+                ),
+                Some(failed_scan_suggestion(self.service)),
+            )];
+        }
+        let mut checks = Vec::new();
+        let placed = self.placed();
+        if placed.len() > 1 {
+            let served: Vec<String> = placed
+                .iter()
+                .zip(0_usize..)
+                .map(|(&(index, port), number)| {
+                    format!("{number} {} on {port}", self.model_of(index))
+                })
+                .collect();
+            let mut detail = format!(
+                "without a list the service serves {} cameras, numbered in port order: {}",
+                placed.len(),
+                served.join(", ")
+            );
+            if let Some(listing) = listing {
+                if let Some(block) = &listing.block {
+                    let _ = write!(
+                        detail,
+                        ". To pin them, paste this into {}.json:\n{}",
+                        self.service,
+                        render_block(block)
+                    );
+                    // What the listing says about pasting it goes with the
+                    // block. Its notes on the rows do not: what the join
+                    // could not place is this check's warnings, below, and
+                    // a check has no rows to unplug.
+                    for note in &listing.paste_notes {
+                        let _ = write!(detail, "\n{note}");
+                    }
+                }
+            }
+            checks.push(Check::ok(IMPLICIT, None, detail));
+        }
+        checks.extend(
+            self.unplaced_notes()
+                .into_iter()
+                .map(|note| Check::warn(IMPLICIT, None, note, None)),
+        );
+        checks
+    }
+
+    /// The SDK's model name for the camera at `index`.
+    fn model_of(&self, index: usize) -> &str {
+        self.sdk.get(index).map_or("", |c| c.model.as_str())
+    }
+}
+
+/// The `usb-devices.*` checks a camera driver's `doctor` report carries.
+///
+/// `scan` and the SDK's `cameras` are joined as a start would join them, and
+/// [`Claims::checks`] judges the result, with the no-list block and notes
+/// `listing` builds.
+///
+/// The report enumerates the SDK once, for `hardware.sdk-devices` and these
+/// alike, so `cameras` arrives enumerated. A caller whose configuration does
+/// not load, or whose SDK does not enumerate, makes none of these:
+/// `config.full-shape` or `hardware.sdk-devices` says so.
+pub fn usb_devices_checks(
+    normalizer: Normalizer<'_>,
+    service: &str,
+    list: Option<&[BlockEntry]>,
+    scan: Result<UsbScan, String>,
+    cameras: Vec<SdkCamera>,
+    listing: impl FnOnce(&Claims<'_>) -> Listing,
+) -> Vec<Check> {
+    let claims = Claims::new(normalizer, service, scan, cameras);
+    let listing = list
+        .is_none()
+        .then(|| claims.placement().map(|_| listing(&claims)))
+        .flatten();
+    claims.checks(list, listing.as_ref())
+}
+
+/// `checks` as the lines that close `doctor --devices`: one per check, its
+/// status first, lowercase. A status this build does not know, which it never
+/// emits, reads as a failure, as the text report reads it.
+fn render_checks(checks: &[Check]) -> String {
+    let mut out = String::new();
+    for check in checks {
+        let status = match check.status {
+            Status::Ok => "ok",
+            Status::Warn => "warn",
+            Status::Fail | Status::Unknown => "fail",
+        };
+        let _ = writeln!(out, "{status:<4} {}: {}", check.name, check.detail);
+    }
+    out
 }
 
 const ABSENT: &str = "—";
@@ -1249,7 +1480,7 @@ pub fn render_listing(listing: &Listing) -> String {
             out.push('\n');
         }
     }
-    for note in &listing.notes {
+    for note in listing.notes.iter().chain(&listing.paste_notes) {
         out.push('\n');
         out.push_str(note);
         out.push('\n');
@@ -1279,11 +1510,14 @@ pub fn render_listing(listing: &Listing) -> String {
 
 /// What `<service> doctor --devices` prints, and its exit code.
 ///
-/// The cameras by port and the block to paste, exit 0 — or why there is no
-/// listing, exit 1: the scan failed, or the SDK could not enumerate. A list
-/// in `config_path` that breaks a rule (`list_check`'s error) is said first
-/// whatever else fails, so a host fault fixed first does not hide it; with
-/// one the block is withheld, since it would only reproduce the list the
+/// The cameras by port, the block to paste and, closing it with a list,
+/// `usb-devices.resolve`'s verdicts on the configured entries, exit 0 — or why
+/// there is no listing, exit 1: the scan failed, or the SDK could not
+/// enumerate. `list` is the configured
+/// `usb_devices` (`None` without one), or the rule it breaks. A list in
+/// `config_path` that breaks a rule is said first whatever else fails, so a
+/// host fault fixed first does not hide it; with one the block and the checks
+/// are withheld, since they would only reproduce or judge the list the
 /// service refuses, and the exit code is 1.
 ///
 /// `enumerate` runs only once the scan has, and returns the SDK's cameras as
@@ -1292,12 +1526,16 @@ pub fn devices_report<I>(
     normalizer: Normalizer<'_>,
     service: &str,
     config_path: &std::path::Path,
-    list_check: Result<(), String>,
+    list: Result<Option<&[BlockEntry]>, String>,
     scan: Result<UsbScan, String>,
     enumerate: impl FnOnce() -> Result<(Vec<SdkCamera>, I), String>,
     listing: impl FnOnce(&Claims<'_>, &I) -> Listing,
 ) -> (String, i32) {
-    let list_note = list_check.err().map(|error| {
+    let (list, list_note) = match list {
+        Ok(list) => (list, None),
+        Err(error) => (None, Some(error)),
+    };
+    let list_note = list_note.map(|error| {
         format!(
             "The usb_devices list in {} breaks a rule, so the service refuses to start: \
              {error}.",
@@ -1332,7 +1570,21 @@ pub fn devices_report<I>(
     let claims = Claims::new(normalizer, service, scan, cameras);
     let mut listing = listing(&claims, &facts);
     let Some(note) = list_note else {
-        return (render_listing(&listing), 0);
+        // The listing shows the placed cameras, the block, and what the join
+        // could not place. What it does not show is which listed numbers a
+        // placeholder would hold: `usb-devices.resolve`'s verdicts, which
+        // close it. A failed scan, the one thing that fails them, returned
+        // above.
+        let resolve: Vec<Check> = list
+            .map(|list| claims.resolve_checks(list))
+            .unwrap_or_default();
+        if resolve.is_empty() {
+            return (render_listing(&listing), 0);
+        }
+        return (
+            format!("{}\n{}", render_listing(&listing), render_checks(&resolve)),
+            0,
+        );
     };
     // A block reproducing a list the service refuses would only be pasted
     // back; the ports listed are what the operator fixes it from.
@@ -2232,6 +2484,7 @@ mod tests {
             rows,
             block,
             notes: Vec::new(),
+            paste_notes: Vec::new(),
             wheels: false,
         }
     }
@@ -2272,6 +2525,22 @@ mod tests {
                 "  platform-xhci-hcd.1-usbv3-0:1  SV605CC  0123481353808C03EE2512150035  —           0",
                 "  p2                             SV605CC  0123481353808C03EE2512150035  —           not listed",
             ]
+        );
+    }
+
+    #[test]
+    fn the_notes_on_pasting_follow_the_notes_on_the_rows_and_precede_the_block() {
+        let mut with_notes = listing(Vec::new(), Some(vec![entry(0, "p1", None)]));
+        with_notes.notes = vec!["On the rows.".to_string()];
+        with_notes.paste_notes = vec!["On pasting.".to_string()];
+        let text = render_listing(&with_notes);
+        let at = |needle: &str| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("{needle:?} missing from {text}"))
+        };
+        assert!(
+            at("On the rows.") < at("On pasting.") && at("On pasting.") < at("\"usb_devices\""),
+            "{text}"
         );
     }
 
@@ -2501,6 +2770,10 @@ mod tests {
         listing.notes.iter().any(|n| n.starts_with(start))
     }
 
+    fn has_paste_note(listing: &Listing, start: &str) -> bool {
+        listing.paste_notes.iter().any(|n| n.starts_with(start))
+    }
+
     #[test]
     fn with_no_list_the_block_carries_the_override_names_in_port_order() {
         let cameras = [
@@ -2518,36 +2791,45 @@ mod tests {
         assert_eq!(block[1].usb_port, "1-4.10");
         assert_eq!(block[1].name, None);
         assert_eq!(
-            listing.rows[0].device, "1",
-            "the SDK-order number it is served at"
+            (
+                listing.rows[0].device.as_str(),
+                listing.rows[1].device.as_str()
+            ),
+            ("0", "1"),
+            "without a list each camera is served at its place in port order"
         );
         assert_eq!(listing.rows[0].sdk_id.as_deref(), Some("B"));
         assert!(
-            has_note(&listing, "Pasting this block renumbers"),
-            "{:?}",
+            !listing.notes.iter().any(|n| n.contains("renumber")),
+            "the block pins the numbers served now: {:?}",
             listing.notes
         );
         assert!(
-            has_note(
+            has_paste_note(
                 &listing,
                 "The devices override stale matches no camera placed on a port"
             ),
             "{:?}",
-            listing.notes
+            listing.paste_notes
         );
         assert!(
-            has_note(
+            has_paste_note(
                 &listing,
                 "Delete the devices map from svbony-camera.json when you paste this block: the \
                  block carries its names"
             ),
             "{:?}",
-            listing.notes
+            listing.paste_notes
         );
         assert!(
             has_note(&listing, "Cannot tell which row is which camera?"),
             "{:?}",
             listing.notes
+        );
+        assert!(
+            !has_paste_note(&listing, "Cannot tell which row is which camera?"),
+            "the unplug note is about the rows: {:?}",
+            listing.paste_notes
         );
     }
 
@@ -2577,19 +2859,8 @@ mod tests {
             ("1-4.10", Some(1))
         );
         assert!(
-            has_note(
-                &listing,
-                "Pasting this block renumbers cameras and their filter wheels"
-            ),
-            "{:?}",
-            listing.notes
-        );
-        assert!(
-            listing
-                .notes
-                .iter()
-                .any(|n| n.contains("filter_wheels[].device_number")),
-            "{:?}",
+            !listing.notes.iter().any(|n| n.contains("renumber")),
+            "the cameras are served in port order already: {:?}",
             listing.notes
         );
     }
@@ -2634,21 +2905,21 @@ mod tests {
         .listing(&cameras, None, &overrides);
         assert_eq!(listing.block.as_ref().unwrap()[0].name, None);
         assert!(
-            has_note(
+            has_paste_note(
                 &listing,
                 "The devices override 0a1b2c cannot be matched to a camera without opening one"
             ),
             "{:?}",
-            listing.notes
+            listing.paste_notes
         );
         assert!(
-            has_note(
+            has_paste_note(
                 &listing,
                 "Delete the devices map from svbony-camera.json when you paste this block: a \
                  devices map beside a usb_devices list refuses the start."
             ),
             "{:?}",
-            listing.notes
+            listing.paste_notes
         );
         assert!(
             !has_note(&listing, "Pasting this block renumbers"),
@@ -2746,7 +3017,7 @@ mod tests {
             SVB,
             "svbony-camera",
             std::path::Path::new("/etc/svbony-camera.json"),
-            list_check,
+            list_check.map(|()| None),
             scan,
             || enumerate.map(|()| (vec![camera("SV605CC")], ())),
             |claims, ()| {
@@ -2817,5 +3088,335 @@ mod tests {
         assert!(output.contains("1-4.2"), "{output}");
         assert!(!output.contains("\"usb_devices\""), "{output}");
         assert!(output.contains("Fix it from the ports above."), "{output}");
+    }
+
+    // --- C5: the placeholder's port, and the doctor checks ---------------------
+
+    #[test]
+    fn a_placeholder_unique_id_gives_back_the_port_it_stands_in_for() {
+        let port = "pci-0000:00:14.0-usbv3-0:4.2";
+        assert_eq!(
+            placeholder_port(&placeholder_unique_id("zwo-camera", port)),
+            Some(port)
+        );
+        let windows = "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(1)";
+        assert_eq!(
+            placeholder_wheel_unique_id("qhy-camera", windows),
+            format!("placeholder:qhy-camera:CFW-{windows}")
+        );
+        assert_eq!(
+            placeholder_port(&placeholder_wheel_unique_id("qhy-camera", windows)),
+            Some(windows),
+            "a wheel's port is its camera's"
+        );
+        assert_eq!(
+            placeholder_port("ZWO:ASI1600MM-Cool:noserial-pci-0000:00:14.0-usbv3-0:4.2"),
+            None,
+            "a camera's UniqueID is no placeholder's"
+        );
+    }
+
+    /// Each check as (name, status, detail).
+    fn verdicts(checks: &[Check]) -> Vec<(&str, Status, &str)> {
+        checks
+            .iter()
+            .map(|c| (c.name.as_str(), c.status, c.detail.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn with_a_list_every_port_resolving_is_one_ok_and_an_unlisted_camera_is_named() {
+        let checks = two_cameras().checks(Some(&[entry(0, "1-4.2", None)]), None);
+        assert_eq!(
+            verdicts(&checks),
+            [
+                (
+                    RESOLVE,
+                    Status::Ok,
+                    "1 listed port resolves, no placeholders"
+                ),
+                (
+                    UNLISTED,
+                    Status::Ok,
+                    "1-4.10 (SV605CC) is on the bus and not listed"
+                ),
+            ]
+        );
+        let both = two_cameras().checks(
+            Some(&[entry(0, "1-4.2", None), entry(1, "1-4.10", None)]),
+            None,
+        );
+        assert_eq!(
+            verdicts(&both),
+            [(
+                RESOLVE,
+                Status::Ok,
+                "2 listed ports resolve, no placeholders"
+            )]
+        );
+    }
+
+    #[test]
+    fn with_a_list_each_number_a_placeholder_would_hold_warns_with_its_reason() {
+        let checks = two_cameras().checks(
+            Some(&[entry(1, "1-4.9", None), entry(0, "1-4.2", None)]),
+            None,
+        );
+        let resolve: Vec<_> = verdicts(&checks)
+            .into_iter()
+            .filter(|(name, ..)| *name == RESOLVE)
+            .collect();
+        assert_eq!(resolve.len(), 1, "no ok beside a warning: {resolve:?}");
+        assert_eq!(resolve[0].1, Status::Warn);
+        assert!(
+            resolve[0].2.starts_with(
+                "device 1 (1-4.9) would be a placeholder: no working camera is enumerated on 1-4.9"
+            ),
+            "{resolve:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_list_resolves_nothing_and_says_so() {
+        let checks = two_cameras().checks(Some(&[]), None);
+        assert_eq!(
+            verdicts(&checks),
+            [
+                (
+                    RESOLVE,
+                    Status::Ok,
+                    "the list is empty: no camera is registered"
+                ),
+                (
+                    UNLISTED,
+                    Status::Ok,
+                    "1-4.2 (SV705C) is on the bus and not listed"
+                ),
+                (
+                    UNLISTED,
+                    Status::Ok,
+                    "1-4.10 (SV605CC) is on the bus and not listed"
+                ),
+            ],
+            "every camera on the bus is one no entry lists"
+        );
+        // An empty list needs no scan, so a failed one is no fault of it.
+        let failed = claims(Err("timed out".to_string()), vec![camera("SV605CC")]);
+        assert_eq!(
+            verdicts(&failed.checks(Some(&[]), None)),
+            [(
+                RESOLVE,
+                Status::Ok,
+                "the list is empty: no camera is registered"
+            )]
+        );
+    }
+
+    #[test]
+    fn a_failed_scan_fails_the_check_that_applies_and_nothing_else() {
+        let failed = claims(Err("timed out".to_string()), vec![camera("SV605CC")]);
+        let listed = failed.checks(Some(&[entry(0, "1-4.2", None)]), None);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            (listed[0].name.as_str(), listed[0].status),
+            (RESOLVE, Status::Fail)
+        );
+        assert!(
+            listed[0]
+                .detail
+                .starts_with("the USB scan failed: timed out;"),
+            "{}",
+            listed[0].detail
+        );
+        let implicit = failed.checks(None, None);
+        assert_eq!(implicit.len(), 1);
+        assert_eq!(
+            (implicit[0].name.as_str(), implicit[0].status),
+            (IMPLICIT, Status::Fail)
+        );
+        assert!(
+            implicit[0]
+                .detail
+                .starts_with("the USB scan failed: timed out;"),
+            "{}",
+            implicit[0].detail
+        );
+    }
+
+    #[test]
+    fn without_a_list_one_placed_camera_is_not_reported() {
+        let one = claims(
+            Ok(scan(vec![record("9a0a", "1-4.2")])),
+            vec![camera("SV605CC")],
+        );
+        assert_eq!(verdicts(&one.checks(None, None)), []);
+    }
+
+    #[test]
+    fn without_a_list_several_cameras_are_named_with_their_numbers_and_the_block() {
+        let claims = two_cameras();
+        // A devices key no camera matches, so the listing says to delete
+        // the map when pasting; the block must carry that with it.
+        let overrides = BTreeMap::from([("stale".to_string(), DisplayNames::default())]);
+        let listing = claims.listing(
+            &[
+                facts("SV605CC", "A", Some("A")),
+                facts("SV705C", "B", Some("B")),
+            ],
+            None,
+            &overrides,
+        );
+        let checks = claims.checks(None, Some(&listing));
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert_eq!(
+            (checks[0].name.as_str(), checks[0].status),
+            (IMPLICIT, Status::Ok)
+        );
+        assert!(
+            checks[0].detail.starts_with(
+                "without a list the service serves 2 cameras, numbered in port order: \
+                 0 SV705C on 1-4.2, 1 SV605CC on 1-4.10. To pin them, paste this into \
+                 svbony-camera.json:"
+            ),
+            "{}",
+            checks[0].detail
+        );
+        assert!(
+            checks[0]
+                .detail
+                .contains(r#"{ "device_number": 1, "usb_port": "1-4.10" }"#),
+            "{}",
+            checks[0].detail
+        );
+        assert!(
+            checks[0]
+                .detail
+                .contains("Delete the devices map from svbony-camera.json when you paste"),
+            "the block goes with what pasting it needs: {}",
+            checks[0].detail
+        );
+        assert!(
+            !checks[0].detail.contains(UNPLUG_NOTE),
+            "the unplug note is about the listing's rows: {}",
+            checks[0].detail
+        );
+    }
+
+    #[test]
+    fn without_a_list_each_refused_camera_warns() {
+        let look_alike = claims(
+            Ok(scan(vec![record("9a0a", "1-4.1"), record("9a0a", "1-4.2")])),
+            vec![camera("SV605CC")],
+        );
+        let checks = look_alike.checks(None, None);
+        assert!(
+            checks.iter().any(|c| c.name == IMPLICIT
+                && c.status == Status::Warn
+                && c.detail.contains("cannot be told apart")),
+            "{checks:?}"
+        );
+        assert!(
+            checks.iter().all(|c| c.status != Status::Ok),
+            "nothing is placed, so nothing is named as served: {checks:?}"
+        );
+    }
+
+    #[test]
+    fn the_report_checks_fail_on_a_failed_scan_and_list_nothing() {
+        let failed = usb_devices_checks(
+            SVB,
+            "svbony-camera",
+            None,
+            Err("timed out".to_string()),
+            vec![camera("SV605CC")],
+            |_| panic!("a failed scan has no ports to list"),
+        );
+        assert_eq!(
+            failed.iter().map(|c| c.status).collect::<Vec<_>>(),
+            [Status::Fail]
+        );
+    }
+
+    #[test]
+    fn the_report_checks_carry_the_listings_block_without_a_list() {
+        let checks = usb_devices_checks(
+            SVB,
+            "svbony-camera",
+            None,
+            Ok(scan(vec![
+                record("9a0a", "1-4.10"),
+                record("9a0b", "1-4.2"),
+            ])),
+            vec![camera("SV605CC"), camera("SV705C")],
+            |claims| {
+                claims.listing(
+                    &[
+                        facts("SV605CC", "A", Some("A")),
+                        facts("SV705C", "B", Some("B")),
+                    ],
+                    None,
+                    &BTreeMap::new(),
+                )
+            },
+        );
+        assert_eq!(checks.len(), 1, "{checks:?}");
+        assert!(
+            checks[0].detail.contains(r#""usb_devices": ["#),
+            "{}",
+            checks[0].detail
+        );
+    }
+
+    #[test]
+    fn devices_closes_the_listing_with_the_checks() {
+        let list = [entry(0, "1-4.9", None)];
+        let (output, code) = devices_report(
+            SVB,
+            "svbony-camera",
+            std::path::Path::new("/etc/svbony-camera.json"),
+            Ok(Some(&list)),
+            Ok(one_camera()),
+            || Ok((vec![camera("SV605CC")], ())),
+            |claims, ()| {
+                claims.listing(
+                    &[facts("SV605CC", "A", Some("A"))],
+                    Some(&list),
+                    &BTreeMap::new(),
+                )
+            },
+        );
+        assert_eq!(code, 0, "a warning fails nothing: {output}");
+        assert!(
+            output.contains(
+                "\nwarn usb-devices.resolve: device 0 (1-4.9) would be a placeholder: no working \
+                 camera is enumerated on 1-4.9"
+            ),
+            "{output}"
+        );
+        assert!(
+            !output.contains("usb-devices.unlisted"),
+            "the listing's rows already say the camera is not listed: {output}"
+        );
+    }
+
+    #[test]
+    fn devices_without_a_list_adds_no_check_to_the_listing() {
+        let (output, code) = report(Ok(()), Ok(one_camera()), Ok(()));
+        assert_eq!(code, 0);
+        assert!(!output.contains("usb-devices."), "{output}");
+    }
+
+    /// Each status is spelled as `--json` spells it.
+    #[test]
+    fn a_check_line_leads_with_its_status() {
+        let checks = [
+            Check::ok(RESOLVE, None, "a"),
+            Check::warn(RESOLVE, None, "b", None),
+            Check::fail(RESOLVE, None, "c", None),
+        ];
+        assert_eq!(
+            render_checks(&checks),
+            "ok   usb-devices.resolve: a\nwarn usb-devices.resolve: b\nfail usb-devices.resolve: c\n"
+        );
     }
 }

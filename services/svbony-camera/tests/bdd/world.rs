@@ -111,8 +111,9 @@ impl CameraWorld {
     ///
     /// Port 0 (OS-assigned) by default; the real port is read from the
     /// `bound_addr=` line on stdout by `ServiceHandle`. A configuration with a
-    /// `usb_devices` list takes a reserved port instead, because a list is the
-    /// one configuration whose service reloads itself (U6): a reload rebinds
+    /// `usb_devices` list, or a staged USB scan, takes a reserved port instead,
+    /// because only those can rebuild the service on their own (U6, and the
+    /// no-list default's failed scan): a reload rebinds
     /// the configured port, and port 0 would move the service to a port the
     /// harness never learns. The port is reserved once per scenario, so a
     /// later rewrite (a doctor run, say, or a hand edit) keeps the port a
@@ -122,7 +123,7 @@ impl CameraWorld {
             .config_json
             .clone()
             .unwrap_or_else(|| serde_json::json!({ "devices": {} }));
-        let port = if config.get("usb_devices").is_some() {
+        let port = if config.get("usb_devices").is_some() || self.usb_inventory.is_some() {
             *self
                 .config_port
                 .get_or_insert_with(bdd_infra::reserved_test_port)
@@ -197,11 +198,13 @@ impl CameraWorld {
 
     /// Whether this scenario's service should register at least one Camera:
     /// a list registers exactly its entries, whatever the SDK sees (U4), and
-    /// no list registers what the SDK enumerates (C0).
+    /// no list registers what the scan places (U10) — the simulated camera on
+    /// its default record, and on a staged scan whatever that places, which
+    /// may be nothing.
     fn expects_a_camera(&self) -> bool {
         match self.config_json.as_ref().and_then(|c| c.get("usb_devices")) {
             Some(list) => list.as_array().is_some_and(|l| !l.is_empty()),
-            None => !self.empty_backend,
+            None => !self.empty_backend && self.usb_inventory.is_none(),
         }
     }
 

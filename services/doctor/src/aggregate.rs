@@ -15,6 +15,8 @@
 use std::process::Command;
 use std::time::Duration;
 
+use rusty_photon_doctor_checks::claims::{is_placeholder_unique_id, placeholder_port};
+use rusty_photon_doctor_checks::HardwareFacts;
 use rusty_photon_process::{Bounded, Capture, Outcome, OUTPUT_LIMIT, STDERR_TAIL};
 use serde::Deserialize;
 use tracing::debug;
@@ -100,7 +102,7 @@ pub fn checks(ctx: &Context) -> Vec<Check> {
         for probe in probes {
             match probe {
                 Probe::Devices(scan) => {
-                    checks.push(probe_devices(ctx, scan, acme_domain.as_deref()).await);
+                    checks.extend(probe_devices(ctx, scan, acme_domain.as_deref()).await);
                 }
                 Probe::ShellOut(scan, unit) => {
                     checks.extend(probe_shell_out(ctx, scan, unit).await);
@@ -280,7 +282,8 @@ struct ConfiguredDevice {
     device_type: String,
     #[serde(rename = "DeviceNumber", default)]
     number: u32,
-    /// Read by the fake-mount probe only; the inventory ignores it.
+    /// Read by the fake-mount probe, and by the inventory to tell a
+    /// device-claims placeholder from a device.
     #[serde(rename = "UniqueID", default)]
     unique_id: String,
 }
@@ -310,13 +313,132 @@ fn client_build_warn(service: Option<String>, had_ca: bool, e: &impl std::fmt::D
     }
 }
 
+/// `service.devices` for an active Alpaca service: its configured devices
+/// ([`inventory_checks`]), or why they could not be read.
+async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&str>) -> Vec<Check> {
+    match fetch_devices(ctx, scan, acme_domain).await {
+        Ok(devices) => {
+            let unit = scan.entry.unit_name();
+            let recorded = ctx
+                .facts
+                .unit(&unit)
+                .and_then(|facts| facts.binary_path.as_deref());
+            inventory_checks(
+                scan.entry.name,
+                &devices_command(unit.clone(), recorded, &scan.config_path),
+                &devices,
+                ctx.hardware.as_ref(),
+            )
+        }
+        Err(check) => vec![*check],
+    }
+}
+
+/// How to run a service's `doctor --devices` by hand, against the `config`
+/// doctor judged rather than whichever one the operator's shell would resolve.
+/// The binary is the path its service manager `recorded`, which needs no
+/// `PATH` entry (the MSI adds none), else `unit_name`, which the packaged
+/// binary shares. A path that holds a space is quoted.
+fn devices_command(
+    unit_name: String,
+    recorded: Option<&std::path::Path>,
+    config: &std::path::Path,
+) -> String {
+    let word = |text: String| {
+        if text.contains(' ') {
+            format!("\"{text}\"")
+        } else {
+            text
+        }
+    };
+    let binary = recorded.map_or(unit_name, |path| path.display().to_string());
+    format!(
+        "{} doctor --devices --config {}",
+        word(binary),
+        word(config.display().to_string())
+    )
+}
+
+/// `service.devices` over an inventory the service answered with: one `ok`
+/// naming its devices, and a `warn` for each device-claims placeholder among
+/// them, which stands in for a listed camera (or its wheel) and is not one.
+/// A placeholder never re-scans, so when `hardware`'s USB scan holds a
+/// working device on its port, the warning names it, and leaves whether a
+/// reload would place it to the driver's `doctor --devices`: a placeholder's
+/// reason (a look-alike, an unknown model, a failed scan the service re-scans
+/// by itself) is not in `configureddevices`, and only the driver's join knows
+/// it. `command` runs that `doctor --devices` ([`devices_command`]).
+fn inventory_checks(
+    service: &str,
+    command: &str,
+    devices: &[ConfiguredDevice],
+    hardware: Option<&HardwareFacts>,
+) -> Vec<Check> {
+    use std::fmt::Write as _;
+
+    let (placeholders, served): (Vec<&ConfiguredDevice>, Vec<&ConfiguredDevice>) = devices
+        .iter()
+        .partition(|device| is_placeholder_unique_id(&device.unique_id));
+    let mut detail = describe_devices(&served);
+    if !placeholders.is_empty() {
+        let _ = write!(
+            detail,
+            ", and {} placeholder(s), reported below",
+            placeholders.len()
+        );
+    }
+    let mut checks = vec![Check::ok(
+        "service.devices",
+        Some(service.to_string()),
+        detail,
+    )];
+    for placeholder in placeholders {
+        let port = placeholder_port(&placeholder.unique_id).unwrap_or_default();
+        let kind = match placeholder.device_type.as_str() {
+            "FilterWheel" => "filter wheel".to_string(),
+            other => other.to_lowercase(),
+        };
+        let mut detail = format!(
+            "{} #{} is a placeholder for {port}, not a {kind}: run `{command}` for the reason",
+            placeholder.device_type, placeholder.number
+        );
+        let on_the_port = hardware
+            .filter(|hw| hw.usb_unavailable.is_none())
+            .and_then(|hw| hw.usb.iter().find(|d| d.port.as_deref() == Some(port)));
+        if let Some(device) = on_the_port {
+            let _ = write!(
+                detail,
+                "; the host's USB scan shows {} ({}:{}) on {port}: `{command}` says whether a \
+                 reload of {service} would place it",
+                device.model.as_deref().unwrap_or("a device"),
+                device.vendor,
+                device.product
+            );
+        }
+        checks.push(Check::warn(
+            "service.devices",
+            Some(service.to_string()),
+            detail,
+            Some(format!(
+                "run `{command}`; once the camera is fixed, reload or restart {service}"
+            )),
+        ));
+    }
+    checks
+}
+
 /// Ask an active Alpaca service for its configured devices, following the
 /// service's own config: HTTPS when its `server.tls` is set, the
 /// observatory credential when its `server.auth` is on. The dialled host
 /// and the root of trust come as a pair from the install's TLS story:
 /// `<service>.<domain>` verified by the platform store on an ACME
 /// install, `localhost` verified by doctor's own CA on a self-signed one.
-async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&str>) -> Check {
+/// `Err` is the `service.devices` check saying why there is no inventory.
+async fn fetch_devices(
+    ctx: &Context,
+    scan: &ServiceScan,
+    acme_domain: Option<&str>,
+) -> Result<Vec<ConfiguredDevice>, Box<Check>> {
     let service = Some(scan.entry.name.to_string());
     let port = scan.effective_port();
     let tls_on = scan.server().is_some_and(|s| s.tls.is_some());
@@ -331,7 +453,7 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
     });
     let client = match rusty_photon_tls::client::build_reqwest_client(ca_path.as_deref()) {
         Ok(client) => client,
-        Err(e) => return client_build_warn(service, ca_path.is_some(), &e),
+        Err(e) => return Err(Box::new(client_build_warn(service, ca_path.is_some(), &e))),
     };
     let credential = if auth_on {
         crate::provision::read_credential(&ctx.config_dir)
@@ -346,7 +468,7 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
     let response = match request.send().await {
         Ok(response) => response,
         Err(e) => {
-            return Check::fail(
+            return Err(Box::new(Check::fail(
                 "service.devices",
                 service,
                 format!(
@@ -358,7 +480,7 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
                      — restart it and check its logs"
                         .to_string(),
                 ),
-            );
+            )));
         }
     };
     let status = response.status();
@@ -368,7 +490,7 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
         } else {
             "doctor holds no credential for it (no pki/credential)"
         };
-        return Check::warn(
+        return Err(Box::new(Check::warn(
             "service.devices",
             service,
             format!(
@@ -376,28 +498,24 @@ async fn probe_devices(ctx: &Context, scan: &ServiceScan, acme_domain: Option<&s
                  so liveness is proven but the device inventory is not"
             ),
             Some("run `rusty-photon-doctor --fix` to align the observatory credential".to_string()),
-        );
+        )));
     }
     if !status.is_success() {
-        return Check::fail(
+        return Err(Box::new(Check::fail(
             "service.devices",
             service,
             format!("the management API answered HTTP {status}"),
             Some("check the service's logs".to_string()),
-        );
+        )));
     }
     match response.json::<ManagementResponse>().await {
-        Ok(management) => Check::ok(
-            "service.devices",
-            service,
-            describe_devices(&management.value),
-        ),
-        Err(e) => Check::fail(
+        Ok(management) => Ok(management.value),
+        Err(e) => Err(Box::new(Check::fail(
             "service.devices",
             service,
             format!("the management API answered but its payload did not parse: {e}"),
             Some("check the service's logs".to_string()),
-        ),
+        ))),
     }
 }
 
@@ -429,7 +547,7 @@ fn describe_send_error(e: reqwest::Error, deadline: Duration) -> String {
     text
 }
 
-fn describe_devices(devices: &[ConfiguredDevice]) -> String {
+fn describe_devices(devices: &[&ConfiguredDevice]) -> String {
     if devices.is_empty() {
         return "the service reports 0 configured devices".to_string();
     }
@@ -789,7 +907,7 @@ mod tests {
             describe_devices(&[]),
             "the service reports 0 configured devices"
         );
-        let devices = vec![
+        let devices = [
             ConfiguredDevice {
                 name: "QHY178M".to_string(),
                 device_type: "Camera".to_string(),
@@ -803,12 +921,175 @@ mod tests {
                 unique_id: "eaf-uid".to_string(),
             },
         ];
-        let text = describe_devices(&devices);
+        let text = describe_devices(&devices.iter().collect::<Vec<_>>());
         assert!(
             text.contains("2 configured device(s)")
                 && text.contains("Camera \"QHY178M\" (#0)")
                 && text.contains("Focuser \"EAF\" (#1)"),
             "{text}"
+        );
+    }
+
+    fn device(name: &str, device_type: &str, number: u32, unique_id: &str) -> ConfiguredDevice {
+        ConfiguredDevice {
+            name: name.to_string(),
+            device_type: device_type.to_string(),
+            number,
+            unique_id: unique_id.to_string(),
+        }
+    }
+
+    /// `rig2`'s guide port, listed but holding no camera tonight: its camera
+    /// and its declared wheel are placeholders.
+    const GUIDE_PORT: &str = "PCIROOT(0)#PCI(1400)#USBROOT(0)#USB(14)#USB(3)";
+
+    /// The `doctor --devices` command the placeholder tests hand in.
+    const DEVICES_COMMAND: &str =
+        "rusty-photon-qhy-camera doctor --devices --config /etc/rusty-photon/qhy-camera.json";
+
+    #[test]
+    fn test_a_placeholder_is_reported_as_one_not_as_a_device() {
+        let devices = [
+            device("Main Imaging", "Camera", 0, "QHY600M-3b1ea54688eb9f9d7"),
+            device(
+                "Guide port",
+                "Camera",
+                1,
+                &format!("placeholder:qhy-camera:{GUIDE_PORT}"),
+            ),
+            device(
+                "QHY filter wheel (placeholder)",
+                "FilterWheel",
+                0,
+                &format!("placeholder:qhy-camera:CFW-{GUIDE_PORT}"),
+            ),
+        ];
+        let checks = inventory_checks("qhy-camera", DEVICES_COMMAND, &devices, None);
+        assert_eq!(checks.len(), 3, "{checks:?}");
+        assert_eq!(checks[0].status, Status::Ok);
+        assert!(
+            checks[0].detail.contains("1 configured device(s)")
+                && checks[0].detail.contains("Main Imaging")
+                && !checks[0].detail.contains("Guide port")
+                && checks[0]
+                    .detail
+                    .ends_with(", and 2 placeholder(s), reported below"),
+            "{}",
+            checks[0].detail
+        );
+        assert_eq!(checks[1].status, Status::Warn);
+        assert_eq!(
+            checks[1].detail,
+            format!(
+                "Camera #1 is a placeholder for {GUIDE_PORT}, not a camera: run \
+                 `{DEVICES_COMMAND}` for the reason"
+            )
+        );
+        assert_eq!(
+            checks[1].suggestion.as_deref(),
+            Some(
+                format!(
+                    "run `{DEVICES_COMMAND}`; once the camera is fixed, reload or restart \
+                     qhy-camera"
+                )
+                .as_str()
+            )
+        );
+        assert!(
+            checks[2].detail.starts_with(&format!(
+                "FilterWheel #0 is a placeholder for {GUIDE_PORT}, not a filter wheel:"
+            )),
+            "{}",
+            checks[2].detail
+        );
+        assert!(checks
+            .iter()
+            .all(|c| c.service.as_deref() == Some("qhy-camera")));
+    }
+
+    #[test]
+    fn test_a_placeholder_whose_port_now_holds_a_device_says_a_reload_would_place_it() {
+        let devices = [device(
+            "Guide port",
+            "Camera",
+            0,
+            &format!("placeholder:qhy-camera:{GUIDE_PORT}"),
+        )];
+        let on_the_port = rusty_photon_doctor_checks::UsbDevice {
+            vendor: "1618".to_string(),
+            product: "0679".to_string(),
+            model: Some("QHY678U3G20-20230106".to_string()),
+            port: Some(GUIDE_PORT.to_string()),
+            serial: None,
+        };
+        let hardware = HardwareFacts {
+            usb: vec![on_the_port],
+            ..HardwareFacts::default()
+        };
+        let checks = inventory_checks("qhy-camera", DEVICES_COMMAND, &devices, Some(&hardware));
+        assert!(
+            checks[1].detail.ends_with(&format!(
+                "; the host's USB scan shows QHY678U3G20-20230106 (1618:0679) on \
+                 {GUIDE_PORT}: `{DEVICES_COMMAND}` says whether a reload of qhy-camera would \
+                 place it"
+            )),
+            "{}",
+            checks[1].detail
+        );
+
+        let failed = HardwareFacts {
+            usb_unavailable: Some("powershell.exe timed out".to_string()),
+            ..HardwareFacts::default()
+        };
+        let checks = inventory_checks("qhy-camera", DEVICES_COMMAND, &devices, Some(&failed));
+        assert!(
+            !checks[1].detail.contains("USB scan shows"),
+            "a failed scan names nothing on the port: {}",
+            checks[1].detail
+        );
+    }
+
+    #[test]
+    fn test_the_devices_command_runs_the_recorded_binary_on_the_judged_config() {
+        let unit = || "rusty-photon-qhy-camera".to_string();
+        let config = std::path::Path::new("/etc/rusty-photon/qhy-camera.json");
+        assert_eq!(
+            devices_command(unit(), None, config),
+            "rusty-photon-qhy-camera doctor --devices --config /etc/rusty-photon/qhy-camera.json"
+        );
+        assert_eq!(
+            devices_command(
+                unit(),
+                Some(std::path::Path::new("/usr/bin/rusty-photon-qhy-camera")),
+                config
+            ),
+            "/usr/bin/rusty-photon-qhy-camera doctor --devices --config \
+             /etc/rusty-photon/qhy-camera.json"
+        );
+    }
+
+    #[test]
+    fn test_the_devices_command_quotes_a_spaced_binary_and_config() {
+        assert_eq!(
+            devices_command(
+                "rusty-photon-qhy-camera".to_string(),
+                Some(std::path::Path::new(
+                    r"C:\Program Files\rusty-photon\rusty-photon-qhy-camera.exe"
+                )),
+                std::path::Path::new(r"C:\ProgramData\rusty photon\qhy-camera.json")
+            ),
+            r#""C:\Program Files\rusty-photon\rusty-photon-qhy-camera.exe" doctor --devices --config "C:\ProgramData\rusty photon\qhy-camera.json""#
+        );
+    }
+
+    #[test]
+    fn test_an_inventory_of_devices_alone_is_one_ok() {
+        let devices = [device("QHY178M", "Camera", 0, "qhy-uid")];
+        let checks = inventory_checks("qhy-camera", DEVICES_COMMAND, &devices, None);
+        assert_eq!(checks.len(), 1);
+        assert_eq!(
+            checks[0].detail,
+            "the service reports 1 configured device(s): Camera \"QHY178M\" (#0)"
         );
     }
 
