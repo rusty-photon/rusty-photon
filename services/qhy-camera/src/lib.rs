@@ -783,3 +783,43 @@ mod list_tests {
         }
     }
 }
+
+/// A server's build and an `Sdk` still alive in the process (U6): a re-scan
+/// try that outlived its server.
+#[cfg(all(test, feature = "simulation"))]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod take_sdk_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn a_build_waits_for_a_live_sdk_to_drop_before_opening_its_own() {
+        let try_sdk = qhyccd_rs::Sdk::new().unwrap();
+        let (taken_tx, taken) = mpsc::channel();
+        let build = std::thread::spawn(move || {
+            let sdk = take_sdk(None).unwrap();
+            taken_tx.send(()).unwrap();
+            drop(sdk);
+        });
+        assert_eq!(
+            taken.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout),
+            "the build opened an SDK beside a live one"
+        );
+        drop(try_sdk);
+        taken.recv_timeout(Duration::from_secs(30)).unwrap();
+        build.join().unwrap();
+    }
+
+    #[test]
+    fn an_injected_sdk_is_taken_as_it_is() {
+        let mut injected = qhyccd_rs::Sdk::new_simulated();
+        injected.add_simulated_camera(
+            qhyccd_rs::simulation::SimulatedCameraConfig::default().with_id("INJECTED"),
+        );
+        let sdk = take_sdk(Some(injected)).unwrap();
+        let ids: Vec<&str> = sdk.cameras().map(qhyccd_rs::Camera::id).collect();
+        assert_eq!(ids, ["INJECTED"]);
+    }
+}
