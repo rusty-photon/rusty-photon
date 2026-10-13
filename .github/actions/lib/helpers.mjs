@@ -71,7 +71,7 @@ export const io = {
 // The runner unescapes these three in a command's data, and reads a command
 // only at the start of a line, so an unescaped line break would end it early.
 function escapeData(text) {
-  return String(text).replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+  return String(text).replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
 }
 
 function command(name, data) {
