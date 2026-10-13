@@ -1306,101 +1306,255 @@ mod bounded {
 
 /// Gated on `test` as well as macOS so the pure tree walk — where the
 /// device/fault split lives — is exercised by every platform's CI leg; the
-/// `system_profiler` call stays macOS-only.
+/// `system_profiler` calls stay macOS-only.
 #[cfg(any(target_os = "macos", test))]
 mod macos {
     #[cfg(target_os = "macos")]
     use std::process::Command;
+    #[cfg(target_os = "macos")]
+    use std::sync::OnceLock;
+    #[cfg(target_os = "macos")]
+    use std::time::{Duration, Instant};
 
     #[cfg(target_os = "macos")]
     use tracing::debug;
 
     use super::{UsbDevice, UsbFault, UsbScan};
 
-    /// `system_profiler -json SPUSBDataType`. Only the query itself
-    /// failing, or returning something other than its report, fails the
-    /// scan; a device that cannot be placed is reported as a fault.
+    /// One of `system_profiler`'s two USB reports, and the keys it spells a
+    /// device's fields with. Each macOS lists one of them in
+    /// `-listDataTypes` — macOS 15.7 [`LEGACY`], macOS 26.6 [`HOST`] — and
+    /// answers a query for the other with an empty list (both measured on
+    /// GitHub's runners, 2026-10-12), which would read as a bus with no
+    /// devices. So the collector asks which one the host lists before it
+    /// reads one.
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct UsbReport {
+        /// The data type `-listDataTypes` lists and the query names.
+        pub data_type: &'static str,
+        vendor: &'static str,
+        product: &'static str,
+        location: &'static str,
+        serial: &'static str,
+    }
+
+    /// `SPUSBHostDataType`, macOS 26's report.
+    pub const HOST: UsbReport = UsbReport {
+        data_type: "SPUSBHostDataType",
+        vendor: "USBDeviceKeyVendorID",
+        product: "USBDeviceKeyProductID",
+        location: "USBKeyLocationID",
+        serial: "USBDeviceKeySerialNumber",
+    };
+
+    /// `SPUSBDataType`, the report through macOS 15.
+    pub const LEGACY: UsbReport = UsbReport {
+        data_type: "SPUSBDataType",
+        vendor: "vendor_id",
+        product: "product_id",
+        location: "location_id",
+        serial: "serial_num",
+    };
+
+    /// `system_profiler`, named by its path. A bare name is looked up on
+    /// `PATH`, and a process can run with one that leaves out `/usr/sbin`:
+    /// Bazel's test actions do, under `--incompatible_strict_action_env`,
+    /// where the scan would fail as a command that could not start.
+    #[cfg(target_os = "macos")]
+    const SYSTEM_PROFILER: &str = "/usr/sbin/system_profiler";
+
+    /// The report the installed macOS lists. That changes only with an
+    /// upgrade, which restarts every process, so it is read once per
+    /// process and the scans after the first make one query, not two.
+    #[cfg(target_os = "macos")]
+    static REPORT: OnceLock<&'static UsbReport> = OnceLock::new();
+
+    /// The USB report this host lists, then that report. Only a query
+    /// failing, the host listing neither report, or output that is not the
+    /// report fails the scan; a device record that cannot be placed is
+    /// reported as a fault. A scan that lists the data types first shares
+    /// the one deadline every platform's scan has between the two queries.
     #[cfg(target_os = "macos")]
     pub fn usb_inventory() -> Result<UsbScan, String> {
+        let deadline = super::bounded::DEADLINE;
+        let (report, listing_took) = listed_report(deadline)?;
+        debug!(
+            report = report.data_type,
+            "querying system_profiler's USB report"
+        );
+        let left = deadline.saturating_sub(listing_took.unwrap_or_default());
+        let query_started = Instant::now();
         let output = super::bounded::capture(
-            Command::new("system_profiler").args(["-json", "SPUSBDataType"]),
-            super::bounded::DEADLINE,
+            Command::new(SYSTEM_PROFILER).args(["-json", report.data_type]),
+            left,
         )
         .map_err(|e| {
             debug!(error = %e, "system_profiler query failed");
-            format!("macOS USB inventory failed: {e}")
+            // A query that ran out of time after the listing ran out of what
+            // the listing left it, not of the whole deadline.
+            let after_listing = listing_took
+                .filter(|_| query_started.elapsed() >= left)
+                .map_or_default(|took| {
+                    format!(" (the data type listing took {took:?} of the scan's {deadline:?})")
+                });
+            format!("macOS USB inventory failed: {e}{after_listing}")
         })?;
         let value = serde_json::from_slice::<serde_json::Value>(&output).map_err(|e| {
             debug!(error = %e, "system_profiler output is not valid JSON");
             format!("macOS USB inventory returned unparsable JSON: {e}")
         })?;
-        parse_system_profiler(&value).map_err(|e| {
+        parse_system_profiler(&value, report).map_err(|e| {
             debug!(error = %e, "system_profiler output is not a USB report");
             format!("macOS USB inventory returned an unparsable report: {e}")
         })
     }
 
+    /// The report this host lists: [`REPORT`], or the listing's answer under
+    /// `deadline`, kept there — with how long the listing took when it ran.
+    #[cfg(target_os = "macos")]
+    fn listed_report(deadline: Duration) -> Result<(&'static UsbReport, Option<Duration>), String> {
+        if let Some(report) = REPORT.get() {
+            return Ok((report, None));
+        }
+        let started = Instant::now();
+        let listing = super::bounded::capture(
+            Command::new(SYSTEM_PROFILER).arg("-listDataTypes"),
+            deadline,
+        )
+        .map_err(|e| {
+            debug!(error = %e, "system_profiler data type listing failed");
+            format!("macOS USB inventory failed: {e}")
+        })?;
+        let report = pick_report(&String::from_utf8_lossy(&listing)).map_err(|e| {
+            debug!(error = %e, "system_profiler lists no USB report");
+            format!("macOS USB inventory failed: {e}")
+        })?;
+        debug!(
+            report = report.data_type,
+            "system_profiler lists this USB report"
+        );
+        Ok((REPORT.get_or_init(|| report), Some(started.elapsed())))
+    }
+
+    /// Which USB report `system_profiler -listDataTypes` lists, one data
+    /// type per line. macOS 26's report wins if a host ever lists both. A
+    /// host that lists neither has no report this collector can read, which
+    /// fails the scan rather than reading as an empty bus.
+    pub fn pick_report(listing: &str) -> Result<&'static UsbReport, String> {
+        let listed = |report: &UsbReport| listing.lines().any(|l| l.trim() == report.data_type);
+        [&HOST, &LEGACY]
+            .into_iter()
+            .find(|report| listed(report))
+            .ok_or_else(|| {
+                format!(
+                    "system_profiler lists neither {} nor {}",
+                    HOST.data_type, LEGACY.data_type
+                )
+            })
+    }
+
     /// Split `system_profiler`'s tree into the working devices and the
     /// faults. Hubs nest their devices under `_items`, so the walk recurses.
     ///
-    /// A report with no `SPUSBDataType` list is not an empty bus: it is a
-    /// `system_profiler` that did not answer for that data type (reported
-    /// for macOS 26, unverified), so it fails the scan rather than reading as one with
-    /// no devices. An empty list is an empty bus.
-    pub fn parse_system_profiler(value: &serde_json::Value) -> Result<UsbScan, String> {
+    /// A report with no list under its data type is not an empty bus: it is
+    /// a `system_profiler` that did not answer for that data type, so it
+    /// fails the scan rather than reading as one with no devices. An empty
+    /// list is an empty bus.
+    pub fn parse_system_profiler(
+        value: &serde_json::Value,
+        report: &UsbReport,
+    ) -> Result<UsbScan, String> {
         let top = value
-            .get("SPUSBDataType")
+            .get(report.data_type)
             .and_then(|v| v.as_array())
-            .ok_or_else(|| "it has no SPUSBDataType list".to_string())?;
+            .ok_or_else(|| format!("it has no {} list", report.data_type))?;
         let mut scan = UsbScan::default();
         for item in top {
-            walk(item, &mut scan);
+            walk(item, report, &mut scan);
         }
         Ok(scan)
     }
 
-    fn walk(item: &serde_json::Value, scan: &mut UsbScan) {
-        // A candidate device record is one presenting a vendor id; the
+    fn walk(item: &serde_json::Value, report: &UsbReport, scan: &mut UsbScan) {
+        // A device record is one carrying the report's vendor id key; the
         // tree also carries controllers and other non-device nodes, which
-        // are skipped silently as they always were.
-        if let (Some(vendor), Some(product)) = (
-            item.get("vendor_id").and_then(hex_field),
-            item.get("product_id").and_then(hex_field),
-        ) {
+        // are skipped silently as they always were. A device record whose
+        // ids or port cannot be read is a fault, never skipped, so the
+        // inventory is never shorter than the bus without saying why.
+        if let Some(raw_vendor) = item.get(report.vendor) {
+            let raw_product = item.get(report.product);
+            let vendor = vendor_field(raw_vendor);
+            let product = raw_product.and_then(hex_field);
+            let port = item.get(report.location).and_then(location_id);
             let model = item.get("_name").and_then(text_field);
-            match item.get("location_id").and_then(location_id) {
-                Some(port) => scan.devices.push(UsbDevice {
+            match (vendor, product, port) {
+                (Some(vendor), Some(product), Some(port)) => scan.devices.push(UsbDevice {
                     vendor,
                     product,
                     model,
                     port: Some(port),
-                    serial: item.get("serial_num").and_then(text_field),
+                    serial: item.get(report.serial).and_then(serial_field),
                 }),
-                None => scan.faults.push(UsbFault {
-                    record: model
-                        .clone()
-                        .unwrap_or_else(|| format!("{vendor}:{product}")),
-                    vendor: Some(vendor),
-                    product: Some(product),
-                    model,
-                    location: None,
-                    reason: "it reports no usable location_id, so its port cannot be named"
-                        .to_string(),
-                }),
+                (vendor, product, port) => {
+                    // Every field that cannot be read is named, so one look
+                    // at the fault says all that is wrong with the record.
+                    let mut problems = Vec::new();
+                    if vendor.is_none() {
+                        problems.push(format!(
+                            "its {} reads {raw_vendor}, which is not a USB vendor id",
+                            report.vendor
+                        ));
+                    }
+                    if product.is_none() {
+                        problems.push(raw_product.map_or_else(
+                            || format!("it reports no {}", report.product),
+                            |raw| {
+                                format!(
+                                    "its {} reads {raw}, which is not a USB product id",
+                                    report.product
+                                )
+                            },
+                        ));
+                    }
+                    if port.is_none() {
+                        problems.push(format!(
+                            "it reports no usable {}, so its port cannot be named",
+                            report.location
+                        ));
+                    }
+                    let reason = problems.join("; ");
+                    let record = model.clone().unwrap_or_else(|| {
+                        format!(
+                            "{}:{}",
+                            vendor.as_deref().unwrap_or("????"),
+                            product.as_deref().unwrap_or("????")
+                        )
+                    });
+                    scan.faults.push(UsbFault {
+                        record,
+                        vendor,
+                        product,
+                        model,
+                        location: port,
+                        reason,
+                    });
+                }
             }
         }
         if let Some(children) = item.get("_items").and_then(|v| v.as_array()) {
             for child in children {
-                walk(child, scan);
+                walk(child, report, scan);
             }
         }
     }
 
-    /// `location_id` renders as `0x14200000` or `0x14200000 / 3`. Only the
-    /// hex encodes the port chain; the trailing field is the USB device
-    /// address, which is assigned in attach order and changes on replug —
-    /// so keeping it would make the key unstable in exactly the situation
-    /// the key exists to survive.
+    /// The location id renders as `0x14200000` (macOS 26) or
+    /// `0x14200000 / 3` (through macOS 15). Only the hex encodes the port
+    /// chain, and it reads the same in both reports, so a list written
+    /// before an upgrade still names its ports after one. The trailing
+    /// field is the USB device address, which is assigned in attach order
+    /// and changes on replug — so keeping it would make the key unstable in
+    /// exactly the situation the key exists to survive.
     fn location_id(value: &serde_json::Value) -> Option<String> {
         let text = value.as_str()?;
         let token = text.split_whitespace().next()?;
@@ -1409,15 +1563,32 @@ mod macos {
             .then(|| token.to_lowercase())
     }
 
-    /// `vendor_id` renders as `0x0403` or `0x0403  (Vendor Name)`.
     /// A descriptor string the device actually published. An empty one is
     /// not a shorter name, it is the absence of a name — which is what
     /// `None` means, and what the Linux and Windows collectors already
-    /// return for the same case. `serial_num` was already read this way;
-    /// `_name` was not, and that was the inconsistency.
+    /// return for the same case. The name (`_name`) and, through
+    /// [`serial_field`], the serial are read this way.
     fn text_field(value: &serde_json::Value) -> Option<String> {
         let text = value.as_str()?.trim();
         (!text.is_empty()).then(|| text.to_string())
+    }
+
+    /// macOS 26's report spells the serial of a device that publishes none
+    /// `Not Provided` rather than leaving it out, and that is no serial.
+    fn serial_field(value: &serde_json::Value) -> Option<String> {
+        text_field(value).filter(|serial| serial != "Not Provided")
+    }
+
+    /// The vendor id renders as `0x0403` or `0x0403  (Vendor Name)` — and,
+    /// through macOS 15, as `apple_vendor_id` for Apple's own devices, which
+    /// is Apple's `05ac`, so those devices, Apple's hubs included, are
+    /// inventoried rather than reported as faults.
+    fn vendor_field(value: &serde_json::Value) -> Option<String> {
+        if value.as_str()? == "apple_vendor_id" {
+            Some("05ac".to_string())
+        } else {
+            hex_field(value)
+        }
     }
 
     fn hex_field(value: &serde_json::Value) -> Option<String> {
@@ -3656,13 +3827,358 @@ USB\\VID_0403&PID_6015\\UPB248E11M\tUPBv2 revA\tPCIROOT(0)#PCI(1400)#USBROOT(0)#
     }
 
     fn system_profiler(json: &str) -> Result<UsbScan, String> {
-        super::macos::parse_system_profiler(&serde_json::from_str(json).unwrap())
+        usb_report(&super::macos::LEGACY, json)
     }
 
-    /// A report without the `SPUSBDataType` list — the shape expected
-    /// (unverified) from a `system_profiler` that no longer answers for the
-    /// data type — fails the scan instead of reading as a bus with no
-    /// devices.
+    fn usb_report(report: &super::macos::UsbReport, json: &str) -> Result<UsbScan, String> {
+        super::macos::parse_system_profiler(&serde_json::from_str(json).unwrap(), report)
+    }
+
+    /// `system_profiler -json SPUSBDataType` on GitHub's `macos-15` runner
+    /// (macOS 15.7.9), 2026-10-12, verbatim.
+    const MACOS_15_USB_REPORT: &str = r#"{
+  "SPUSBDataType" : [
+    {
+      "_items" : [
+        {
+          "_name" : "Virtual USB Digitizer",
+          "bcd_device" : "0.00",
+          "bus_power" : "500",
+          "bus_power_used" : "500",
+          "device_speed" : "full_speed",
+          "extra_current_used" : "0",
+          "location_id" : "0x0ca00000 / 2",
+          "manufacturer" : "Apple Inc.",
+          "product_id" : "0x8106",
+          "vendor_id" : "apple_vendor_id"
+        },
+        {
+          "_name" : "Virtual USB Keyboard",
+          "bcd_device" : "0.00",
+          "bus_power" : "500",
+          "bus_power_used" : "500",
+          "device_speed" : "full_speed",
+          "extra_current_used" : "0",
+          "location_id" : "0x0c900000 / 1",
+          "manufacturer" : "Apple Inc.",
+          "product_id" : "0x8105",
+          "vendor_id" : "apple_vendor_id"
+        }
+      ],
+      "_name" : "USB31Bus",
+      "host_controller" : "AppleUSBXHCIPCI",
+      "pci_device" : "0x1a06 ",
+      "pci_revision" : "0x0000 ",
+      "pci_vendor" : "0x106b "
+    }
+  ]
+}"#;
+
+    /// `system_profiler -json SPUSBHostDataType` on GitHub's `macos-latest`
+    /// runner (macOS 26.6.2), 2026-10-12, verbatim. The same runner answered
+    /// `SPUSBDataType` with `{ "SPUSBDataType" : [ ] }`.
+    const MACOS_26_USB_HOST_REPORT: &str = r#"{
+  "SPUSBHostDataType" : [
+    {
+      "_items" : [
+        {
+          "_name" : "Virtual USB Keyboard",
+          "USBDeviceKeyLinkSpeed" : "12 Mb/s",
+          "USBDeviceKeyPowerAllocation" : "2.5 W (500 mA)",
+          "USBDeviceKeyProductID" : "0x8105",
+          "USBDeviceKeyProductVersion" : "0x0000",
+          "USBDeviceKeySerialNumber" : "Not Provided",
+          "USBDeviceKeyVendorID" : "0x05ac",
+          "USBDeviceKeyVendorName" : "Apple Inc.",
+          "USBKeyHardwareType" : "Removable",
+          "USBKeyLocationID" : "0x0c900000"
+        },
+        {
+          "_name" : "Virtual USB Digitizer",
+          "USBDeviceKeyLinkSpeed" : "12 Mb/s",
+          "USBDeviceKeyPowerAllocation" : "2.5 W (500 mA)",
+          "USBDeviceKeyProductID" : "0x8106",
+          "USBDeviceKeyProductVersion" : "0x0000",
+          "USBDeviceKeySerialNumber" : "Not Provided",
+          "USBDeviceKeyVendorID" : "0x05ac",
+          "USBDeviceKeyVendorName" : "Apple Inc.",
+          "USBKeyHardwareType" : "Removable",
+          "USBKeyLocationID" : "0x0ca00000"
+        }
+      ],
+      "_name" : "USB 3.1 Bus",
+      "Driver" : "AppleUSBXHCIPCI",
+      "USBControllerKeyPCIDeviceID" : "0x1a06",
+      "USBControllerKeyPCIRevisionID" : "0x0000",
+      "USBControllerKeyPCIVendorID" : "0x106b",
+      "USBKeyHardwareType" : "PCI",
+      "USBKeyLocationID" : "0x0c000000"
+    }
+  ]
+}"#;
+
+    /// `system_profiler -listDataTypes` prints a header and then one data
+    /// type per line. Each runner listed one USB report, and only that one:
+    /// `SPUSBHostDataType` on macOS 26.6.2, `SPUSBDataType` on macOS 15.7.9
+    /// (2026-10-12). The other lines are abbreviated to two neighbours.
+    fn listing(usb: &str) -> String {
+        format!("Available Datatypes:\nSPHardwareDataType\n{usb}\nSPSoftwareDataType\n")
+    }
+
+    #[test]
+    fn test_macos_26_is_read_through_the_usb_host_report() {
+        assert_eq!(
+            super::macos::pick_report(&listing("SPUSBHostDataType")).unwrap(),
+            &super::macos::HOST
+        );
+    }
+
+    #[test]
+    fn test_macos_15_is_read_through_the_usb_report() {
+        assert_eq!(
+            super::macos::pick_report(&listing("SPUSBDataType")).unwrap(),
+            &super::macos::LEGACY
+        );
+    }
+
+    /// A host that lists both — none seen yet — is read through macOS 26's.
+    #[test]
+    fn test_a_host_listing_both_usb_reports_is_read_through_the_host_report() {
+        assert_eq!(
+            super::macos::pick_report(&listing("SPUSBDataType\nSPUSBHostDataType")).unwrap(),
+            &super::macos::HOST
+        );
+    }
+
+    /// A host that lists neither report has none to read: the scan fails
+    /// rather than reading as an empty bus, which is what querying an
+    /// unlisted report would have given.
+    #[test]
+    fn test_a_host_listing_no_usb_report_fails_the_scan() {
+        assert_eq!(
+            super::macos::pick_report(&listing("SPThunderboltDataType")).unwrap_err(),
+            "system_profiler lists neither SPUSBHostDataType nor SPUSBDataType"
+        );
+    }
+
+    /// macOS 26's report spells each field its own way, and says
+    /// `Not Provided` for a serial the device does not publish.
+    #[test]
+    fn test_macos_26_usb_host_report_lists_its_devices() {
+        let scan = usb_report(&super::macos::HOST, MACOS_26_USB_HOST_REPORT).unwrap();
+
+        assert_eq!(scan.faults, Vec::<UsbFault>::new());
+        assert_eq!(
+            scan.devices,
+            vec![
+                UsbDevice {
+                    vendor: "05ac".to_string(),
+                    product: "8105".to_string(),
+                    model: Some("Virtual USB Keyboard".to_string()),
+                    port: Some("0x0c900000".to_string()),
+                    serial: None,
+                },
+                UsbDevice {
+                    vendor: "05ac".to_string(),
+                    product: "8106".to_string(),
+                    model: Some("Virtual USB Digitizer".to_string()),
+                    port: Some("0x0ca00000".to_string()),
+                    serial: None,
+                },
+            ],
+            "the controller node is not a device"
+        );
+    }
+
+    /// The key is the one the macOS 26 capture carries; that capture shows
+    /// only its value for a device publishing no serial, so a published
+    /// serial's spelling under it is assumed, not yet seen. Nothing but
+    /// `doctor --devices`' USB serial column reads it while no driver
+    /// offers the join an SDK serial (claims.rs, `keyed_match`).
+    #[test]
+    fn test_usb_host_report_keeps_a_published_serial() {
+        let scan = usb_report(
+            &super::macos::HOST,
+            r#"{ "SPUSBHostDataType": [ { "_name": "ASI662MC",
+                   "USBDeviceKeyVendorID": "0x03c3", "USBDeviceKeyProductID": "0x662b",
+                   "USBDeviceKeySerialNumber": "0123456789", "USBKeyLocationID": "0x14210000" } ] }"#,
+        )
+        .unwrap();
+        assert_eq!(scan.devices[0].serial.as_deref(), Some("0123456789"));
+    }
+
+    /// A device with no usable location id in macOS 26's report is a fault
+    /// named by that report's key.
+    #[test]
+    fn test_usb_host_report_device_without_a_location_id_is_a_fault() {
+        let scan = usb_report(
+            &super::macos::HOST,
+            r#"{ "SPUSBHostDataType": [ { "_name": "ASI662MC",
+                   "USBDeviceKeyVendorID": "0x03c3", "USBDeviceKeyProductID": "0x662b" } ] }"#,
+        )
+        .unwrap();
+        assert_eq!(scan.devices, Vec::<UsbDevice>::new());
+        assert_eq!(
+            scan.faults[0].reason,
+            "it reports no usable USBKeyLocationID, so its port cannot be named"
+        );
+    }
+
+    #[test]
+    fn test_usb_host_report_without_its_list_fails_the_scan() {
+        assert_eq!(
+            usb_report(&super::macos::HOST, r#"{ "SPUSBDataType": [] }"#).unwrap_err(),
+            "it has no SPUSBHostDataType list"
+        );
+    }
+
+    /// The same two devices, on two runners a macOS release apart, are on
+    /// the same ports in both reports, so a `usb_devices` list written
+    /// before an upgrade to macOS 26 still names its cameras after it.
+    #[test]
+    fn test_a_port_reads_the_same_in_both_reports() {
+        let ports = |scan: UsbScan| -> Vec<(String, Option<String>)> {
+            let mut ports: Vec<_> = scan
+                .devices
+                .into_iter()
+                .map(|d| (d.product, d.port))
+                .collect();
+            ports.sort();
+            ports
+        };
+        let legacy = system_profiler(MACOS_15_USB_REPORT).unwrap();
+        let host = usb_report(&super::macos::HOST, MACOS_26_USB_HOST_REPORT).unwrap();
+
+        assert_eq!(legacy.devices.len(), 2);
+        assert_eq!(ports(legacy), ports(host));
+    }
+
+    /// Through macOS 15 the report names Apple's vendor id instead of
+    /// printing it. Apple's devices are inventoried under `05ac` all the
+    /// same, rather than left out without a fault.
+    #[test]
+    fn test_macos_15_names_apples_vendor_id_and_its_devices_are_inventoried() {
+        let scan = system_profiler(MACOS_15_USB_REPORT).unwrap();
+
+        assert_eq!(scan.faults, Vec::<UsbFault>::new());
+        assert!(
+            scan.devices.iter().all(|d| d.vendor == "05ac"),
+            "{:?}",
+            scan.devices
+        );
+        assert_eq!(scan.devices.len(), 2);
+    }
+
+    /// A device record whose vendor id does not read as one is a fault that
+    /// names the key and the value, and keeps the port it is on — never
+    /// dropped without a trace.
+    #[test]
+    fn test_a_device_record_with_an_unreadable_vendor_id_is_a_fault() {
+        let scan = usb_report(
+            &super::macos::HOST,
+            r#"{ "SPUSBHostDataType": [ { "_name": "Mystery Camera",
+                   "USBDeviceKeyVendorID": "some_vendor_id", "USBDeviceKeyProductID": "0x662b",
+                   "USBKeyLocationID": "0x14210000" } ] }"#,
+        )
+        .unwrap();
+        assert_eq!(scan.devices, Vec::<UsbDevice>::new());
+        assert_eq!(
+            scan.faults,
+            vec![UsbFault {
+                record: "Mystery Camera".to_string(),
+                vendor: None,
+                product: Some("662b".to_string()),
+                model: Some("Mystery Camera".to_string()),
+                location: Some("0x14210000".to_string()),
+                reason: "its USBDeviceKeyVendorID reads \"some_vendor_id\", which is not a USB \
+                         vendor id"
+                    .to_string(),
+            }]
+        );
+    }
+
+    /// A record with more than one field that cannot be read names each.
+    #[test]
+    fn test_a_fault_names_every_field_it_cannot_read() {
+        let scan = system_profiler(
+            r#"{ "SPUSBDataType": [ { "_name": "Mystery Camera",
+                   "vendor_id": "some_vendor_id", "product_id": "0x662b" } ] }"#,
+        )
+        .unwrap();
+        assert_eq!(
+            scan.faults[0].reason,
+            "its vendor_id reads \"some_vendor_id\", which is not a USB vendor id; it reports \
+             no usable location_id, so its port cannot be named"
+        );
+    }
+
+    /// So is a device record with no product id, or one that is not four
+    /// hex digits.
+    #[test]
+    fn test_a_device_record_with_an_unreadable_product_id_is_a_fault() {
+        let scan = system_profiler(
+            r#"{ "SPUSBDataType": [
+                { "vendor_id": "0x03c3", "location_id": "0x14100000 / 1" },
+                { "vendor_id": "0x03c3", "product_id": "0x66", "location_id": "0x14200000 / 2" } ] }"#,
+        )
+        .unwrap();
+        assert_eq!(scan.devices, Vec::<UsbDevice>::new());
+        let reasons: Vec<&str> = scan.faults.iter().map(|f| f.reason.as_str()).collect();
+        assert_eq!(
+            reasons,
+            [
+                "it reports no product_id",
+                "its product_id reads \"0x66\", which is not a USB product id"
+            ]
+        );
+        assert_eq!(scan.faults[0].record, "03c3:????");
+    }
+
+    /// The real collector, on the Mac running the tests, places a device
+    /// when the I/O Registry's USB plane shows one. On macOS 26
+    /// `SPUSBDataType` answers with an empty list, and a report whose keys
+    /// the collector misread would leave only faults: either fails here.
+    /// Only that much is asserted: the I/O Registry and `system_profiler`
+    /// are two reads of a bus a device can join or leave between them, so
+    /// their counts need not agree on a Mac in use.
+    ///
+    /// It needs a device on the bus to tell an empty scan from a wrong one,
+    /// and fails rather than passing on a bus with none. So it is ignored by
+    /// default, which spares a Mac with no USB device, and test.yml's macOS
+    /// job runs it by name on GitHub's runners, which carry two virtual
+    /// devices. A device node is counted by its exact class,
+    /// `IOUSBHostDevice`, which leaves out the root-hub nodes an Intel Mac's
+    /// plane carries (`AppleUSBRootHubDevice`), which `system_profiler`
+    /// does not list as devices. `ioreg` is named by its path, as the
+    /// collector names `system_profiler`, since a test's `PATH` can leave
+    /// out `/usr/sbin`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "needs a USB device on the bus; test.yml's macOS job runs it by name"]
+    fn test_the_collector_reads_a_bus_with_devices_as_one() {
+        let ioreg = std::process::Command::new("/usr/sbin/ioreg")
+            .args(["-p", "IOUSB", "-w0"])
+            .output()
+            .unwrap();
+        assert!(ioreg.status.success(), "ioreg failed: {ioreg:?}");
+        let plane = String::from_utf8_lossy(&ioreg.stdout);
+        let shown = plane.matches("<class IOUSBHostDevice,").count();
+        assert!(
+            shown > 0,
+            "the I/O Registry's USB plane shows no device, so this test cannot tell an empty \
+             scan from a wrong one: plug a USB device in\n{plane}"
+        );
+
+        let scan = super::macos::usb_inventory().unwrap();
+
+        assert!(
+            !scan.devices.is_empty(),
+            "the USB plane shows {shown} device(s), the scan places none: {scan:?}\n{plane}"
+        );
+    }
+
+    /// A report without the `SPUSBDataType` list fails the scan instead of
+    /// reading as a bus with no devices.
     #[test]
     fn test_system_profiler_report_without_the_usb_list_fails_the_scan() {
         assert_eq!(
