@@ -65,14 +65,14 @@ Every cycle passed.
 
 | # | Step | Outcome |
 |---|---|---|
-| 1 | Start with no list | `cameras=1 filter_wheels=1 placeholders=0`, ready 1.64 s after start, no re-scan warning |
+| 1 | Start with no list | `cameras=1 filter_wheels=1 placeholders=0`, ready 1.64 s after start |
 | 2 | Reload by SIGHUP | rebuilt 0.654 s after the signal |
 | 3 | Reload by SIGHUP, **with the camera and wheel connected**: after step 2's cycle, a bare connect of both (no exposure, no disconnect), then the signal | rebuilt 1.559 s after the signal; 0.907 s of it lay between `qhy-camera shut down` and the next config load, the old `Sdk`'s drop closing the open camera |
 | 4 | Reload by `config.apply` (a `devices` name for the camera) | `status: applying`, `reload: [devices.QHY178M-222b16468c5966524]`; rebuilt 0.703 s after the apply, and the camera's `Name` then read the new name |
 | 5 | Stop by SIGINT | the process exited 0.052 s after the signal, status 0 |
 | 6 | `doctor --devices` | one row, `pci-0000:c1:00.4-usbv3-0:1.3  QHY178M  QHY178M-222b16468c5966524  —  0`, and the block the ConformU config above was pasted from |
 | 7 | Start with the list | `a listed port holds a QHY camera`, `a declared filter wheel is served on its camera's connection`; `cameras=1 filter_wheels=1 placeholders=0` |
-| 8 | Reload by SIGHUP, on the list | rebuilt 0.050 s after the signal. By design the list opens nothing to build (U1), where the no-list default opens each camera to probe it for a CFW |
+| 8 | Reload by SIGHUP, on the list | rebuilt 0.050 s after the signal, where the no-list reloads with nothing open took 0.65–0.70 s. The no-list build opens each camera to probe it for a CFW and the list's is designed to open none (U1), which would account for the gap, but the timing does not show it (see *Not shown either*, below) |
 | 9 | Stop by SIGINT | exited 0.052 s after the signal, status 0 |
 | 10 | `qhyccd-rs` `examples/enumerate`, service stopped | exit 0 after 1.12 s, `{"index":0,"id":"QHY178M-222b16468c5966524","model":"QHY178M"}` |
 
@@ -83,8 +83,10 @@ signal.
 **What this shows of the gate.** A server drops its `Sdk` when it stops serving, before
 the next build begins (`BoundServer::start`). The drop closes any open camera and runs
 `ReleaseQHYCCDResource`, and the claim the next build's `Sdk::try_new` needs is a field
-of the dropped `Sdk`, freed when the drop returns. So a reload cannot meet a held
-claim, and the absence of the build's `SdkInUse` warning shows nothing on its own.
+of the dropped `Sdk`, freed when the drop returns. So a reload cannot meet the old
+server's claim. The only claim a build can meet is a failed scan's re-scan try's (*Not
+exercised*, below), and none was alive here. The absence of the build's `SdkInUse`
+warning therefore shows nothing on its own.
 What the reloads do show is three things about the real SDK's teardown:
 
 - **The drop returns.** From `qhy-camera shut down` to the next build's config load

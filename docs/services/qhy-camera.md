@@ -1302,10 +1302,11 @@ which a list replaces with the declaration.
   SDK dropped while the next server's lives would release it under that
   server's cameras. `qhyccd-rs` therefore makes one `Sdk` at a time in a
   process: `Sdk::new` waits while another lives, and `Sdk::try_new` answers
-  `SdkInUse` instead. A server's build makes its `Sdk` with `new` and keeps it
-  as long as it serves, and a try makes its own with `try_new`. A try refused
-  is one whose server is gone, since a failed scan's server holds no SDK; a
-  build that has to wait logs it at `warn!` and waits out one enumeration.
+  `SdkInUse` instead. A server's build tries `try_new` first; only when a
+  re-scan's try holds the SDK does it log that at `warn!` and wait in `new`,
+  which takes one enumeration. It keeps its `Sdk` as long as it serves. A try
+  makes its own with `try_new`, and a try refused is one whose server is gone,
+  since a failed scan's server holds no SDK.
   On a QHY178M + CFW at C4's merge, four reloads, one of them with the camera
   and wheel connected, each saw the old server's `Sdk` drop return within
   0.91 s with no error logged, and the next build open the SDK again and serve
