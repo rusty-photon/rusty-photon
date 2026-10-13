@@ -268,7 +268,14 @@ pub fn listing(config: &Config, claims: &Claims<'_>, cameras: &[Enumerated]) -> 
         .collect();
     let mut listing = claims.listing(&facts, list.as_deref(), &overrides);
     listing.wheels = true;
-    if list.is_none() && listing.block.is_some() {
+    // The shared note on a block that renumbers cameras and their wheels
+    // already says to check the wheels' numbers; the text above the block says
+    // why `--devices` cannot see a wheel.
+    let wheel_numbers_noted = listing
+        .notes
+        .iter()
+        .any(|note| note.contains("filter_wheels[].device_number"));
+    if list.is_none() && listing.block.is_some() && !wheel_numbers_noted {
         // A camera whose override names no filters may still have a wheel the
         // service serves now, which the block cannot declare, so the wheel
         // numbers the block gives may not be the served ones even when no
@@ -489,6 +496,46 @@ mod tests {
         assert!(
             !wheel_note(&listing(&listed, &claims, &cameras)),
             "a list's block reproduces its wheel numbers"
+        );
+    }
+
+    /// `rig2`'s cameras, whose SDK order is not their port order, with the
+    /// QHY600M's filters named: pasting renumbers a camera and its wheel, which
+    /// one note says, not two.
+    #[test]
+    fn a_block_that_renumbers_the_wheels_says_to_check_them_once() {
+        let cameras = [
+            camera("QHY5III678M-4a94be45b27d3aa79", "QHY5III678M"),
+            camera("QHY600M-3b1ea54688eb9f9d7", "QHY600M"),
+        ];
+        let claims = claims_for(
+            vec![
+                record("c601", "QHY600U3G20-20230614", "PCIROOT(0)#USB(14)#USB(1)"),
+                record("0679", "QHY678U3G20-20230106", "PCIROOT(0)#USB(14)#USB(3)"),
+            ],
+            &cameras,
+        );
+        let mut config = Config::default();
+        config.devices.insert(
+            "QHY600M-3b1ea54688eb9f9d7".to_string(),
+            DeviceOverride {
+                filter_names: Some(vec!["L".to_string(), "R".to_string()]),
+                ..DeviceOverride::default()
+            },
+        );
+
+        let listing = listing(&config, &claims, &cameras);
+
+        let wheel_notes: Vec<_> = listing
+            .notes
+            .iter()
+            .filter(|n| n.contains("filter_wheels[].device_number"))
+            .collect();
+        assert_eq!(wheel_notes.len(), 1, "{:#?}", listing.notes);
+        assert!(
+            wheel_notes[0].starts_with("Pasting this block renumbers cameras and their filter"),
+            "{}",
+            wheel_notes[0]
         );
     }
 

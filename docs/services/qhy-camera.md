@@ -1273,7 +1273,8 @@ which a list replaces with the declaration.
   rather than moving or ending the service. A rebuild whose SDK enumeration
   fails would still end it — with the first scan failed, the rebuild is the
   first enumeration since the start — so each try takes the scan, then checks
-  that the SDK enumerates, models included, and rebuilds only when both pass.
+  that the SDK enumerates (`Sdk::try_new`), and rebuilds only when both pass.
+  It reads no model: a model that cannot be read fails no rebuild (U1).
   An SDK that blocks it is logged at `warn!` each time it starts to, and at
   `debug!` while it persists, and the re-scan carries on. The re-scan stops
   when it rebuilds, and with the server it belongs to. It is not hot-plug: a
@@ -1359,12 +1360,13 @@ which a list replaces with the declaration.
   fields by hand. And since only a camera whose override names its
   filters gets a wheel in the block, while the no-list default serves every
   wheel its probe finds, the wheel numbers the block declares may not be the
-  ones served now — so a no-list block always says to check rp's
+  ones served now — so a no-list block always says, once, to check rp's
   `filter_wheels[].device_number` before pasting. Until the plan's C5 the
   no-list default serves SDK order, so
   when port order differs the listing says pasting renumbers the cameras and
   their wheels, and to check rp's `cameras[].device_number` and
-  `filter_wheels[].device_number`. With a list, the block reproduces it — every
+  `filter_wheels[].device_number`; that note, when the block declares a
+  wheel, is the one that says it. With a list, the block reproduces it — every
   entry, number and declared wheel, placeholders included — and an unlisted
   camera appears in the table only: serving it is an ownership decision, made by
   copying its port into an entry.
@@ -2237,11 +2239,11 @@ which a list replaces with the declaration.
   `qhyccd.ini` from the service process's **working directory** — it logs
   `Load ini filePath = <that directory>` as it starts — so the file that
   decides this for a service is the one where that service runs, not the copy
-  the SDK installs under `/usr/local/lib`. Service start is one more such init, with no
-  client involved: to find each camera's filter wheel, `build()` opens every
-  camera and runs `InitQHYCCD` before `IsQHYCCDCFWPlugged`, the order indi-qhy
-  uses in its connect. So on such a rig, a TEC still running when the service
-  starts, or when a config reload re-enumerates, is switched off by that init.
+  the SDK installs under `/usr/local/lib`. Service start and a config reload
+  run no such init: with a `usb_devices` list nothing is opened (U1), and
+  without one the CFW probe opens and closes each camera without `InitQHYCCD`
+  (C0, decision 17). So a client's connect is the only init a running TEC
+  meets.
 
 ### Sensor type
 

@@ -525,27 +525,32 @@ fn probe_leaves_the_camera_closed() {
 
 #[test]
 fn probe_opens_only_the_cameras_it_is_given() {
+    // The unnamed camera cannot close: a probe that opened it would leave it
+    // open, since its close fails and keeps the handle.
+    let close_failure = departure_file("probe_only_named");
+    std::fs::write(&close_failure, b"").unwrap();
     let mut sdk = Sdk::new_simulated();
-    let unnamed = SimulatedCameraConfig::default()
-        .with_id("UNNAMED")
-        .with_filter_wheel(5);
-    sdk.add_simulated_camera(unnamed);
+    sdk.add_simulated_camera(
+        SimulatedCameraConfig::default()
+            .with_id("UNNAMED")
+            .with_filter_wheel(5)
+            .with_close_failure_file(&close_failure),
+    );
     sdk.add_simulated_camera(
         SimulatedCameraConfig::default()
             .with_id("NAMED")
             .with_filter_wheel(5),
     );
-    // Hold the unnamed camera open: a probe that opened, initialised and closed
-    // it would leave it closed.
-    let unnamed = sdk.cameras().next().unwrap().clone();
-    unnamed.open().unwrap();
 
     let outcomes = sdk.probe_filter_wheels(&["NAMED"]);
 
     assert_eq!(outcomes, vec![("NAMED".to_string(), Ok(true))]);
-    assert!(unnamed.is_open().unwrap());
+    let unnamed = sdk.cameras().next().unwrap();
+    assert_eq!(unnamed.id(), "UNNAMED");
+    assert!(!unnamed.is_open().unwrap(), "the probe opened UNNAMED");
     let wheels: Vec<_> = sdk.filter_wheels().map(|w| w.id().to_string()).collect();
     assert_eq!(wheels, vec!["NAMED".to_string()]);
+    let _ = std::fs::remove_file(&close_failure);
 }
 
 #[test]
