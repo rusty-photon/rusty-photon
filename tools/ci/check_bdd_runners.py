@@ -17,9 +17,9 @@ being green. So they are checked here instead, over every entry point at
 once. See docs/skills/testing.md sections 2.7 and 2.9 for the rules and the
 history behind them.
 
-Runs in the `stable / clippy` job, so a new suite meets the policy on the
-same required PR gate that lints it. Also runnable locally with no
-arguments — the repo root is derived from this file's location.
+Runs first in the `bazel / ubuntu-latest` job, so a new suite meets the
+policy on the same required PR gate that runs it. Also runnable locally
+with no arguments — the repo root is derived from this file's location.
 """
 
 from __future__ import annotations

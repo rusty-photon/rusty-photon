@@ -430,8 +430,9 @@ dangerous combination. The rule bifurcates by runner kind
   fork-PR approval checkpoint, JIT single-use VMs, no credentials on the
   runner, VLAN fencing, and the per-OS kill-switch variables
   (`RP_POOL_LINUX`, `RP_POOL_WINDOWS`).
-  bazel.yml's Linux and Windows legs, bazel-coverage.yml, and
-  repin-bazel.yml's Linux job are the implementation; the last is also the
+  bazel.yml's Linux and Windows legs, bazel-coverage.yml, check.yml's
+  `stable / clippy`, and repin-bazel.yml's Linux job are the
+  implementation; the last is also the
   one pool job that holds a push credential on a `pull_request` event — a
   Dependabot-secret PAT on dependabot PRs only, bounded as ADR-020 layer 4's
   2026-09-10 amendment records. **Approving a fork PR's
@@ -493,7 +494,8 @@ dangerous combination. The rule bifurcates by runner kind
 
   This is part of the one-time setup contract.
 * **Kill switches, one per OS:** routing of every Linux pool job —
-  bazel.yml's Linux leg, `bazel coverage`, and the dependabot repin — is
+  bazel.yml's Linux leg, `bazel coverage`, `stable / clippy`, and the
+  dependabot repin — is
   gated on the repo Actions variable `RP_POOL_LINUX` being `on`, and
   bazel.yml's Windows leg on `RP_POOL_WINDOWS`. They are separate because the venues fail
   independently — a wedged Windows slot or a stale Windows template should
@@ -506,7 +508,7 @@ dangerous combination. The rule bifurcates by runner kind
   needed. Match the variable to the leg that is stuck:
 
   ```sh
-  gh variable set RP_POOL_LINUX  --body off   # bazel / ubuntu-latest, bazel coverage, repin MODULE.bazel.lock
+  gh variable set RP_POOL_LINUX  --body off   # bazel / ubuntu-latest, bazel coverage, stable / clippy, repin MODULE.bazel.lock
   gh variable set RP_POOL_WINDOWS --body off  # bazel / windows-latest
   ```
 

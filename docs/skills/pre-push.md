@@ -61,10 +61,12 @@ clippy 1.99 does not lint `suboptimal_flops` inside a `const fn` body, and
 ## Procedure
 
 > **Bazel is the per-PR gate.** The required checks are
-> `bazel / {ubuntu,windows}-latest` (build + clippy + test), `bazel coverage`,
-> and the Cargo `stable / fmt` + `stable / clippy` lint jobs (Bazel runs no
-> rustfmt, and its clippy lints each target's Bazel feature set rather than
-> Cargo's two passes). `bazel / macos-latest` is **not** a PR check — it runs on
+> `bazel / {ubuntu,windows}-latest` (build + clippy + test; the Linux leg
+> first runs `cargo fmt --check`, since Bazel runs no rustfmt), `bazel
+> coverage`, and the Cargo `stable / clippy` lint job (Bazel's clippy lints
+> each target's Bazel feature set rather than Cargo's two passes). Both the
+> Linux leg and `stable / clippy` run on the self-hosted Linux pool for
+> same-repo PRs. `bazel / macos-latest` is **not** a PR check — it runs on
 > push-to-main and nightly, so a macOS-only break is caught on main within
 > minutes of the merge rather than blocking the PR. `bazel/cargo target
 > parity`, plus the Cargo build / test / hack / msrv jobs, run nightly and do
@@ -75,7 +77,7 @@ clippy 1.99 does not lint `suboptimal_flops` inside a `const fn` body, and
 > bazel build //... && bazel test //...                       # bazel / <os> (build + tests incl. BDD; OmniSim suites need OMNISIM_PATH/OMNISIM_DIR)
 > tools/ci/bazel-clippy.sh                                    # bazel / <os> `bazel clippy` step
 > bazel coverage --config=coverage //...                      # bazel coverage (needs OmniSim)
-> cargo fmt --check                                           # `stable / fmt`
+> cargo fmt --check                                           # bazel / ubuntu-latest `cargo fmt --check` step
 > cargo clippy --all-targets --all-features -- -D warnings    # `stable / clippy` pass 1
 > cargo clippy --workspace --lib --bins -- -D warnings        # `stable / clippy` pass 2 — default-features complement (#988)
 > ```
@@ -238,22 +240,24 @@ still surfaces in the nightly `--workspace --all-features` build and the off-PR
 
 ### check.yml
 
-`fmt` and stable `clippy` run on every PR + push to main (required PR gates:
-Bazel runs no rustfmt, and its `bazel clippy` step lints the Bazel targets'
-feature sets, not Cargo's two passes — see *Clippy under Bazel* below). The
+Stable `clippy` runs on every PR + push to main (a required PR gate: Bazel's
+`bazel clippy` step lints the Bazel targets' feature sets, not Cargo's two
+passes — see *Clippy under Bazel* below), on the self-hosted Linux pool for
+same-repo PRs and push to main. `cargo fmt --check` is not a check.yml job: it
+is the first step of bazel.yml's Linux leg, since Bazel runs no rustfmt. The
 `clippy-os`, `hack`, and `msrv`
 jobs run on push to main, the nightly schedule, and `workflow_dispatch` —
 skipped on PRs via `if: github.event_name != 'pull_request'`. ("Off-PR" below =
 that set.) `clippy (beta)` is narrower still: schedule and `workflow_dispatch`
-only, since only the scheduled run acts on its census. Stable `clippy` also
-asserts — before linting — that every BDD entry point still calls
+only, since only the scheduled run acts on its census. bazel.yml's Linux leg
+asserts — before Bazel starts — that every BDD entry point still calls
 `.fail_on_skipped()` and an `_and_exit` runner (`python3
 tools/ci/check_bdd_runners.py`; testing.md §2.7 and §2.9) — the two
 cucumber defaults under which a suite can exit 0 having proved nothing.
 
 | CI Job | Local Command | Prerequisites | Runs |
 |--------|---------------|---------------|------|
-| **fmt** | `cargo fmt --check` | stable rustfmt | **PR gate** |
+| **fmt** (a step of bazel.yml's Linux leg, not a check.yml job) | `cargo fmt --check` | stable rustfmt | **PR gate** |
 | **clippy (stable)** | `cargo clippy --all-targets --all-features -- -D warnings` then `cargo clippy --workspace --lib --bins -- -D warnings` (#988) | stable clippy | **PR gate** |
 | **clippy-os (windows / macos)** | same two passes, on that host OS | stable clippy | Off-PR |
 | **clippy (beta)** | `cargo +beta clippy --all-targets --all-features -- --cap-lints warn` | beta toolchain | Nightly |
@@ -678,14 +682,14 @@ is a different task with a version gate of its own — see
 ## Quick Reference
 
 Pre-push checks (copy-paste) — these mirror the full required gate (`bazel / <os>`,
-`bazel coverage`, `stable / fmt`, `stable / clippy`); `fmt` and Cargo's two
-clippy passes are the lint shapes Bazel doesn't cover:
+`bazel coverage`, `stable / clippy`); `fmt` and Cargo's two clippy passes are
+the lint shapes Bazel doesn't cover:
 
 ```bash
 bazel build //... && bazel test //...                     # bazel / <os> (build + tests incl. BDD; OmniSim suites need OMNISIM_PATH/OMNISIM_DIR)
 tools/ci/bazel-clippy.sh                                  # bazel / <os> `bazel clippy` step
 bazel coverage --config=coverage //...                    # bazel coverage (heavier; needs OmniSim)
-cargo fmt --check                                         # stable / fmt
+cargo fmt --check                                         # bazel / ubuntu-latest, before Bazel starts
 cargo clippy --all-targets --all-features -- -D warnings  # stable / clippy pass 1
 cargo clippy --workspace --lib --bins -- -D warnings      # stable / clippy pass 2 (#988)
 ```

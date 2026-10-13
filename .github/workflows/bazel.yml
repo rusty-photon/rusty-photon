@@ -6,7 +6,8 @@
 # `bazel / windows-latest` required checks; macOS joins the matrix on
 # push-to-main and on the nightly schedule only — see the `os:` comment for
 # why. Coverage is gated separately by bazel-coverage.yml and Bazel/Cargo
-# target parity by parity.yml.
+# target parity by parity.yml. The Linux leg is also the formatting gate:
+# `cargo fmt --check` and the BDD-runner check run before Bazel starts.
 #
 # Venue routing (ADR-020, docs/plans/archive/proxmox-pr-routing.md): the Linux and
 # Windows legs run on the ephemeral self-hosted pool
@@ -156,6 +157,41 @@ jobs:
           fi
 
       - uses: actions/checkout@v7
+
+      # Two checks that need neither Bazel nor a build run first, on the
+      # Linux leg only, since neither depends on the OS. Both take seconds,
+      # and a failure ends the leg before Bazel starts. That is deliberate:
+      # neither is fixed by reading test results, and the check turns red in
+      # about a minute instead of after the tests.
+      #
+      # Two cucumber defaults let a BDD suite exit 0 having proved nothing:
+      # an unmatched step is "skipped", which passes, and the bare `run` /
+      # `filter_run` runners return the summary instead of exiting on it.
+      # Neither is visible in a passing run's output, so a suite that lost
+      # its assertions just stays green. Asserted here over every entry
+      # point at once (docs/skills/testing.md sections 2.7 and 2.9).
+      - name: BDD runners fail on skipped steps
+        if: runner.os == 'Linux'
+        run: python3 tools/ci/check_bdd_runners.py
+
+      # Bazel runs no rustfmt, so formatting is checked by Cargo's, on stable
+      # like the developer's own `cargo fmt`. Deliberately not
+      # dtolnay/rust-toolchain: it writes CARGO_HOME and other CARGO_*
+      # variables into GITHUB_ENV, which every Bazel step after this one would
+      # then run with. Here the toolchain goes where rustup already keeps it,
+      # or, on a runner without rustup, into RUNNER_TEMP for this step alone.
+      - name: cargo fmt --check
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v rustup >/dev/null; then
+            export CARGO_HOME="$RUNNER_TEMP/cargo" RUSTUP_HOME="$RUNNER_TEMP/rustup"
+            curl --proto '=https' --tlsv1.2 --retry 10 --retry-connrefused -sSf https://sh.rustup.rs |
+              sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+            export PATH="$CARGO_HOME/bin:$PATH"
+          fi
+          rustup toolchain install stable --profile minimal --component rustfmt --no-self-update
+          cargo +stable fmt --version
+          cargo +stable fmt --check
 
       # MSVC cl.exe (VS 2022 17.7+) respects the LongPathsEnabled
       # registry key, removing the 260-char MAX_PATH ceiling for include

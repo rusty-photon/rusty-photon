@@ -13,7 +13,7 @@ the `uncovered-diff-lines` check on the PR. The moving parts:
 | `uncovered-diff-lines` | nothing — informational: counts + inline annotations for the diff's uncovered lines | best-effort — same-repo PRs; skipped on forks and on any annotate-step failure (§0) |
 
 `bazel coverage` is required on `main` (the `main_protection` ruleset,
-alongside `stable / fmt`, `stable / clippy` and `bazel /
+alongside `stable / clippy` and `bazel /
 {ubuntu,windows}-latest`). The standing rule when any coverage signal goes red
 is **write the test**.
 

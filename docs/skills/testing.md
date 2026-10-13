@@ -331,7 +331,7 @@ This is not the same guarantee as `_and_exit` (§2.7): `_and_exit` makes a
 *non-executing* one fail at all. A new suite needs both.
 
 `tools/ci/check_bdd_runners.py` asserts both calls over every
-`tests/bdd.rs` in the repo, on the `stable / clippy` gate, so a new suite
+`tests/bdd.rs` in the repo, on the `bazel / ubuntu-latest` gate, so a new suite
 cannot be born without them.
 
 Cucumber's escape hatch is the `@allow.skipped` tag on a feature,
