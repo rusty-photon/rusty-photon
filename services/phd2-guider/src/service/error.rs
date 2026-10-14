@@ -22,6 +22,9 @@ pub enum ServiceError {
     #[error("cannot dither: PHD2 is not guiding (application state: {0})")]
     NotGuiding(String),
 
+    #[error("camera busy: {0}")]
+    CameraBusy(String),
+
     #[error("settle failed: {0}")]
     GuideFailed(String),
 
@@ -45,6 +48,7 @@ pub enum ServiceError {
 pub enum ErrorCode {
     InvalidRequest,
     NotGuiding,
+    CameraBusy,
     GuideFailed,
     SettleTimeout,
     StopTimeout,
@@ -67,6 +71,7 @@ impl ServiceError {
         match self {
             Self::InvalidRequest(_) => ErrorCode::InvalidRequest,
             Self::NotGuiding(_) => ErrorCode::NotGuiding,
+            Self::CameraBusy(_) => ErrorCode::CameraBusy,
             Self::GuideFailed(_) => ErrorCode::GuideFailed,
             Self::SettleTimeout(_) => ErrorCode::SettleTimeout,
             Self::StopTimeout(_) => ErrorCode::StopTimeout,
@@ -80,7 +85,7 @@ impl ServiceError {
     pub const fn status(&self) -> StatusCode {
         match self {
             Self::InvalidRequest(_) => StatusCode::BAD_REQUEST,
-            Self::NotGuiding(_) => StatusCode::CONFLICT,
+            Self::NotGuiding(_) | Self::CameraBusy(_) => StatusCode::CONFLICT,
             Self::GuideFailed(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Self::SettleTimeout(_) | Self::StopTimeout(_) => StatusCode::GATEWAY_TIMEOUT,
             Self::Phd2Unreachable(_) => StatusCode::BAD_GATEWAY,
@@ -145,6 +150,11 @@ mod tests {
                 StatusCode::CONFLICT,
             ),
             (
+                ServiceError::CameraBusy("frame in flight".into()),
+                ErrorCode::CameraBusy,
+                StatusCode::CONFLICT,
+            ),
+            (
                 ServiceError::GuideFailed("star lost".into()),
                 ErrorCode::GuideFailed,
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -182,6 +192,8 @@ mod tests {
         assert_eq!(json, "\"phd2_unreachable\"");
         let json = serde_json::to_string(&ErrorCode::NotGuiding).unwrap();
         assert_eq!(json, "\"not_guiding\"");
+        let json = serde_json::to_string(&ErrorCode::CameraBusy).unwrap();
+        assert_eq!(json, "\"camera_busy\"");
     }
 
     #[test]

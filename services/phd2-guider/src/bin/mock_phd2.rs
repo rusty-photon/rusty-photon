@@ -38,6 +38,27 @@
 //!     client to remove. There is no default: unset, not UTF-8 or not
 //!     absolute, `save_image` writes nothing and answers PHD2's "error
 //!     saving image"
+//!   `MOCK_PHD2_VERSION` - the `PHDVersion` the `Version` event reports
+//!     (default "2.6.11-mock")
+//!   `MOCK_PHD2_FRAME_SIZE` - the camera's frame size as `<width>x<height>`
+//!     (default "640x480"): `get_camera_frame_size`'s answer and the size
+//!     of the frames `capture_single_frame` saves
+//!   `MOCK_PHD2_CAMERA` - "disconnected" makes `get_camera_frame_size`
+//!     answer PHD2's "camera not connected" and `capture_single_frame`
+//!     answer with PHD2 2.6.14's reply carrying two `error` members
+//!   `MOCK_PHD2_CAPTURE_MODE` - how a saved `capture_single_frame` frame
+//!     ends (PHD2 2.6.14's `save`/`path` capture; see `capture_single_frame`):
+//!     - "completes" (default): the frame is written at the path, then
+//!       `SingleFrameComplete {Success: true, Path}`
+//!     - "fails": no file, `SingleFrameComplete {Success: false, Error:
+//!       "Mock camera error", Path}`
+//!     - "`never_reports`": no file and no event; the capture ends
+//!       silently (drives the facade's deadline)
+//!
+//! As in PHD2, `SingleFrameComplete` goes to every connected client.
+//! One test hook is not a PHD2 method: `mock_report_frame {"path"}`
+//! sends every client a successful `SingleFrameComplete` for `path`, a
+//! frame PHD2 finished on its own (one a crashed guider started).
 //!
 //! Command line argument takes precedence over environment variable for port.
 //! Default port is 4400 (same as PHD2).
@@ -84,6 +105,43 @@ use rp_fits::writer::write_u16_image;
 /// Application state shared across connections, mirroring the single
 /// state machine inside a real PHD2 instance.
 type AppState = Arc<Mutex<String>>;
+
+/// The single frame in flight, if any: PHD2 has one camera, so one
+/// frame at a time across every connection. Setting the flag asks the
+/// frame's thread to end it early, as `stop_capture` does in PHD2.
+static FRAME_IN_FLIGHT: Mutex<Option<Arc<AtomicBool>>> = Mutex::new(None);
+
+/// Every connected client's writer. PHD2 sends `SingleFrameComplete` to
+/// every event-server client, not only the one that asked for the frame.
+static CLIENTS: Mutex<Vec<Arc<Mutex<TcpStream>>>> = Mutex::new(Vec::new());
+
+/// A client's place in [`CLIENTS`], given up when its connection ends.
+struct Registered(Arc<Mutex<TcpStream>>);
+
+impl Registered {
+    fn new(writer: &Arc<Mutex<TcpStream>>) -> Self {
+        CLIENTS.lock().unwrap().push(Arc::clone(writer));
+        Self(Arc::clone(writer))
+    }
+}
+
+impl Drop for Registered {
+    fn drop(&mut self) {
+        CLIENTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .retain(|writer| !Arc::ptr_eq(writer, &self.0));
+    }
+}
+
+/// Write one line to every connected client; a client gone away is
+/// skipped.
+fn broadcast(line: &str) {
+    let clients = CLIENTS.lock().unwrap().clone();
+    for writer in &clients {
+        let _ = write_line(writer, line);
+    }
+}
 
 fn main() {
     // Get operating mode from environment
@@ -379,6 +437,203 @@ fn save_image() -> Result<String, String> {
     Ok(filename)
 }
 
+/// Test hook, not a PHD2 method: report a frame PHD2 finished on its
+/// own (one a crashed guider started), to every client.
+fn report_frame(params: &serde_json::Value) -> serde_json::Value {
+    let path = params.get("path").cloned().unwrap_or_default();
+    broadcast(
+        &serde_json::json!({
+            "Event": "SingleFrameComplete",
+            "Success": true,
+            "Path": path,
+        })
+        .to_string(),
+    );
+    serde_json::json!(0)
+}
+
+/// `MOCK_PHD2_CAMERA=disconnected`.
+fn camera_disconnected() -> bool {
+    std::env::var("MOCK_PHD2_CAMERA").as_deref() == Ok("disconnected")
+}
+
+/// The camera's frame size, from `MOCK_PHD2_FRAME_SIZE` (`<w>x<h>`),
+/// 640 x 480 by default.
+fn frame_size() -> (usize, usize) {
+    std::env::var("MOCK_PHD2_FRAME_SIZE")
+        .ok()
+        .and_then(|size| {
+            let (w, h) = size.split_once('x')?;
+            Some((w.parse().ok()?, h.parse().ok()?))
+        })
+        .unwrap_or((640, 480))
+}
+
+/// Why `capture_single_frame` refused, rendered by the caller with the
+/// request's id.
+enum Refusal {
+    /// An ordinary PHD2 error reply.
+    Error(i32, &'static str),
+    /// PHD2 2.6.14's reply with its camera disconnected: two `error`
+    /// members in one object.
+    CameraDisconnected,
+}
+
+impl Refusal {
+    fn reply(&self, id: &serde_json::Value) -> String {
+        match self {
+            Self::Error(code, message) => format!(
+                r#"{{"jsonrpc":"2.0","error":{},"id":{id}}}"#,
+                serde_json::json!({"code": code, "message": message})
+            ),
+            Self::CameraDisconnected => format!(
+                r#"{{"jsonrpc":"2.0","error":{{"code":1,"message":"cannot capture single frame when camera is not connected"}},"error":{{"code":2,"message":"failed to start exposure"}},"id":{id}}}"#
+            ),
+        }
+    }
+}
+
+/// PHD2 2.6.14's `capture_single_frame`, as far as the camera facade
+/// uses it (`docs/services/phd2-guider.md` § "What PHD2 does with a
+/// single frame"). A call that asks for neither `save` nor `path` keeps
+/// the old fixture's answer, `0` with no frame modelled. One with them
+/// is checked as PHD2 checks it, refused while a frame or a loop is
+/// running, and then exposed for `exposure` milliseconds on its own
+/// thread. The thread ends the frame per `MOCK_PHD2_CAPTURE_MODE`, or
+/// early when `stop_capture` arrives, and reports it with
+/// `SingleFrameComplete` to every connected client. A completed
+/// frame is the `MOCK_PHD2_FRAME_SIZE` ramp (pixel `i` is `i × 1365 mod
+/// 65536`, row-major) written at `path` before the event is sent, as
+/// PHD2 writes it first.
+fn capture_single_frame(
+    params: &serde_json::Value,
+    app_state: &AppState,
+) -> Result<serde_json::Value, Refusal> {
+    if camera_disconnected() {
+        return Err(Refusal::CameraDisconnected);
+    }
+    let path = params.get("path");
+    let save = params.get("save");
+    if path.is_none() && save.is_none() {
+        return Ok(serde_json::json!(0));
+    }
+    let mut in_flight = FRAME_IN_FLIGHT.lock().unwrap();
+    if in_flight.is_some() || *app_state.lock().unwrap() != "Stopped" {
+        return Err(Refusal::Error(
+            1,
+            "cannot capture single frame when capture is currently active",
+        ));
+    }
+    let bad_exposure = Refusal::Error(-32602, "expected exposure param");
+    let exposure_ms = match params.get("exposure") {
+        Some(serde_json::Value::Number(n)) => n
+            .as_u64()
+            .filter(|ms| (1..=600_000).contains(ms))
+            .ok_or(bad_exposure)?,
+        Some(_) => return Err(bad_exposure),
+        None => 1000,
+    };
+    let path = match path {
+        Some(serde_json::Value::String(p)) => Some(p.clone()),
+        Some(_) => {
+            return Err(Refusal::Error(
+                -32602,
+                "invalid path param: string expected",
+            ))
+        }
+        None => None,
+    };
+    if let Some(p) = &path {
+        if !Path::new(p).is_absolute() {
+            return Err(Refusal::Error(
+                -32602,
+                "path param must be an absolute path",
+            ));
+        }
+        if Path::new(p).exists() {
+            return Err(Refusal::Error(-32602, "destination file already exists"));
+        }
+    }
+    let save = match save {
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(_) => return Err(Refusal::Error(-32602, "save param must be a boolean")),
+        None => path.is_some(),
+    };
+    if !save && path.is_some() {
+        return Err(Refusal::Error(
+            -32602,
+            "path param not allowed when save = false",
+        ));
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    *in_flight = Some(Arc::clone(&stop));
+    drop(in_flight);
+    *app_state.lock().unwrap() = "Looping".to_string();
+    let app_state = Arc::clone(app_state);
+    std::thread::spawn(move || expose_frame(exposure_ms, path, &stop, &app_state));
+    Ok(serde_json::json!(0))
+}
+
+/// One accepted frame's thread: expose until `exposure_ms` passes or
+/// `stop` is set, end the frame per `MOCK_PHD2_CAPTURE_MODE`, and report
+/// it to every client, as PHD2 does.
+fn expose_frame(exposure_ms: u64, path: Option<String>, stop: &AtomicBool, app_state: &AppState) {
+    let mode = std::env::var("MOCK_PHD2_CAPTURE_MODE").unwrap_or_else(|_| "completes".to_string());
+    let deadline = std::time::Instant::now()
+        .checked_add(Duration::from_millis(exposure_ms))
+        .unwrap();
+    while std::time::Instant::now() < deadline && !stop.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // `None`: the frame ends silently. `Some(Ok)`: saved.
+    // `Some(Err)`: failed, with PHD2's error text.
+    let outcome: Option<Result<(), String>> = if stop.load(Ordering::Relaxed) {
+        Some(Err("camera error -- see debug log".to_string()))
+    } else {
+        match mode.as_str() {
+            "never_reports" => None,
+            "fails" => Some(Err("Mock camera error".to_string())),
+            _ => Some(
+                path.as_deref()
+                    .map_or(Ok(()), write_frame)
+                    .map_err(|e| format!("error saving image file: {e}")),
+            ),
+        }
+    };
+    *FRAME_IN_FLIGHT.lock().unwrap() = None;
+    *app_state.lock().unwrap() = "Stopped".to_string();
+    let Some(outcome) = outcome else {
+        eprintln!("Mock PHD2: never_reports mode - withholding SingleFrameComplete");
+        return;
+    };
+    // PHD2 leaves out `Error` on success and `Path` without a save.
+    let mut event = serde_json::Map::new();
+    event.insert("Event".to_string(), "SingleFrameComplete".into());
+    event.insert("Success".to_string(), outcome.is_ok().into());
+    if let Err(error) = outcome {
+        event.insert("Error".to_string(), error.into());
+    }
+    if let Some(path) = path {
+        event.insert("Path".to_string(), path.into());
+    }
+    broadcast(&serde_json::Value::Object(event).to_string());
+    broadcast(r#"{"Event":"LoopingExposuresStopped"}"#);
+}
+
+/// Write the camera's frame at `path`, refusing a name that exists.
+fn write_frame(path: &str) -> Result<(), String> {
+    let (width, height) = frame_size();
+    // `& 0xFFFF` is `mod 65536` for the unsigned index.
+    let pixels: Vec<u16> = (0..width.saturating_mul(height))
+        .map(|i| u16::try_from(i.wrapping_mul(SAVED_FRAME_STEP) & 0xFFFF).unwrap())
+        .collect();
+    let mut file =
+        std::fs::File::create_new(path).map_err(|e| format!("cannot create {path}: {e}"))?;
+    write_u16_image(&mut file, &pixels, width, height, &[])
+        .map_err(|e| format!("cannot write {path}: {e}"))
+}
+
 fn handle_client(
     stream: TcpStream,
     shutdown: &Arc<AtomicBool>,
@@ -394,11 +649,18 @@ fn handle_client(
 
     let reader = BufReader::new(stream.try_clone().unwrap());
     let writer = Arc::new(Mutex::new(stream));
+    let _registered = Registered::new(&writer);
 
     // Send Version event on connect
-    let version_event =
-        r#"{"Event":"Version","PHDVersion":"2.6.11-mock","PHDSubver":"test","MsgVersion":1}"#;
-    if write_line(&writer, version_event).is_err() {
+    let version = std::env::var("MOCK_PHD2_VERSION").unwrap_or_else(|_| "2.6.11-mock".to_string());
+    let version_event = serde_json::json!({
+        "Event": "Version",
+        "PHDVersion": version,
+        "PHDSubver": "test",
+        "MsgVersion": 1,
+    })
+    .to_string();
+    if write_line(&writer, &version_event).is_err() {
         return;
     }
 
@@ -499,6 +761,11 @@ fn handle_request(
             serde_json::json!(0)
         }
         "stop_capture" => {
+            // A frame in flight ends early, reported as PHD2 reports an
+            // interrupted exposure.
+            if let Some(stop) = FRAME_IN_FLIGHT.lock().unwrap().as_ref() {
+                stop.store(true, Ordering::Relaxed);
+            }
             let stop_mode =
                 std::env::var("MOCK_PHD2_STOP_MODE").unwrap_or_else(|_| "stops".to_string());
             if stop_mode == "never_stops" {
@@ -508,6 +775,20 @@ fn handle_request(
             }
             serde_json::json!(0)
         }
+        "mock_report_frame" => report_frame(&params),
+        "get_camera_frame_size" => {
+            if camera_disconnected() {
+                return format!(
+                    r#"{{"jsonrpc":"2.0","error":{{"code":1,"message":"camera not connected"}},"id":{id}}}"#
+                );
+            }
+            let (width, height) = frame_size();
+            serde_json::json!([width, height])
+        }
+        "capture_single_frame" => match capture_single_frame(&params, app_state) {
+            Ok(result) => result,
+            Err(refusal) => return refusal.reply(&id),
+        },
         "dither" => {
             emit_settle_sequence(writer.clone());
             serde_json::json!(0)
@@ -557,17 +838,9 @@ fn canned_response(method: &str) -> Option<serde_json::Value> {
         }
         // Setters and one-shot commands with no state to update here —
         // the mock acknowledges with the PHD2 success code 0.
-        "set_connected"
-        | "set_profile"
-        | "set_exposure"
-        | "clear_calibration"
-        | "flip_calibration"
-        | "set_lock_position"
-        | "find_star"
-        | "set_paused"
-        | "set_algo_param"
-        | "set_cooler_state"
-        | "capture_single_frame" => {
+        "set_connected" | "set_profile" | "set_exposure" | "clear_calibration"
+        | "flip_calibration" | "set_lock_position" | "find_star" | "set_paused"
+        | "set_algo_param" | "set_cooler_state" => {
             serde_json::json!(0)
         }
         "get_profiles" => serde_json::json!([
@@ -576,7 +849,6 @@ fn canned_response(method: &str) -> Option<serde_json::Value> {
         "get_profile" => serde_json::json!({"id": 1, "name": "Mock Profile"}),
         "get_exposure" => serde_json::json!(1000),
         "get_exposure_durations" => serde_json::json!([100, 200, 500, 1000, 2000, 3000]),
-        "get_camera_frame_size" => serde_json::json!([640, 480]),
         "get_calibration_data" => serde_json::json!({
             "calibrated": false,
             "xAngle": 0.0,

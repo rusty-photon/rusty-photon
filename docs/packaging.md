@@ -47,7 +47,7 @@ doubles as the PHD2 CLI via subcommands.)
 | zwo-focuser | 11124 | USB focuser; its SDK blob bundled |
 | planetarium-bridge | 11126 | virtual planetarium target-entry telescope (no hardware) |
 | upbv2-driver | 11127 | serial (dialout; deb adds plugdev) |
-| phd2-guider | 11130 | guider service wrapping PHD2 (PHD2 installed separately, below) |
+| phd2-guider | 11130 | guider service wrapping PHD2 (PHD2 installed separately, below); its opt-in camera facade adds 11128 on loopback only ([below](#phd2-guider-the-camera-facade)) |
 | plate-solver | 11131 | config-gated; needs ASTAP (below) |
 | calibrator-flats | 11170 | config-gated |
 | session-runner | 11171 | config-gated |
@@ -579,6 +579,83 @@ guider's `503` counts as **alive but degraded** under
 no restarts, no notifications, an amber dashboard row showing the
 guider's own `message` (issue #595). Supervision still restarts the
 guider the moment it stops answering HTTP at all.
+
+## phd2-guider: the camera facade
+
+The guider can also serve the guide camera as an ASCOM Alpaca Camera,
+its frames captured by PHD2 itself
+([phd2-guider.md § Camera facade](services/phd2-guider.md#camera-facade-camera)).
+It is off by default. It listens on `127.0.0.1:11128`, loopback only, so
+the host firewall needs no change. It needs PHD2 2.6.14 or later on the
+same host, and one directory that PHD2 can write and the service can read
+and delete in.
+
+Before you enable it, take the guide camera off its vendor driver: give
+that driver (`qhy-camera`, `zwo-camera` or `svbony-camera`) a
+`usb_devices` list without the guide camera's port. Otherwise the driver
+and PHD2 both open it.
+
+1. **Create the shared directory** (Linux). PHD2 runs as you, under your
+   VNC session. The service runs as `rusty-photon` and may write only
+   under `/var/lib/rusty-photon`, which is closed to other accounts. So
+   grant your account a way through, and give the service's group read
+   and write on every file PHD2 creates there:
+
+   ```sh
+   OPERATOR=$(id -un)        # the account PHD2 runs as
+   sudo install -d -o rusty-photon -g rusty-photon -m 0770 /var/lib/rusty-photon/phd2-images
+   sudo setfacl -m u:"$OPERATOR":x /var/lib/rusty-photon                # pass through, no listing
+   sudo setfacl -m u:"$OPERATOR":rwx /var/lib/rusty-photon/phd2-images  # create the frames
+   sudo setfacl -d -m g:rusty-photon:rwx /var/lib/rusty-photon/phd2-images  # service reads + deletes them
+   ```
+
+   The default ACL on the last line matters. Without it, a PHD2 started
+   under `umask 077` creates frames only their owner can read, and the
+   service fails every capture with "permission denied". `setfacl` comes
+   with the `acl` package.
+
+   On Windows, create `%PROGRAMDATA%\rusty-photon\phd2-images` and grant
+   the account PHD2 runs as the right to modify files there:
+
+   ```powershell
+   New-Item -ItemType Directory "$env:ProgramData\rusty-photon\phd2-images"
+   icacls "$env:ProgramData\rusty-photon\phd2-images" /grant "${env:USERNAME}:(OI)(CI)M"
+   ```
+
+   The service runs as `LocalSystem`. This recipe has not yet been run on
+   a Windows host, so check step 3 there with particular care.
+
+2. **Enable the facade** in `phd2-guider.json` and restart the service:
+
+   ```json
+   "camera": {
+     "enabled": true,
+     "pixel_size_x_um": 2.9,
+     "pixel_size_y_um": 2.9,
+     "image_dir": "/var/lib/rusty-photon/phd2-images"
+   }
+   ```
+
+   The pixel sizes come from the guide camera's datasheet; PHD2 does not
+   report them. The first start with `enabled: true` mints the camera's
+   `unique_id` into the file. A wrong `camera` block, or a directory the
+   service cannot write, stops the service with a message naming the
+   field. `journalctl -u rusty-photon-phd2-guider` shows it.
+
+3. **Verify**, with PHD2 running and its camera connected:
+
+   ```sh
+   curl -s -X PUT -d 'Connected=true' http://127.0.0.1:11128/api/v1/camera/0/connected
+   curl -s -X PUT -d 'Duration=1&Light=true' http://127.0.0.1:11128/api/v1/camera/0/startexposure
+   sleep 3
+   curl -s http://127.0.0.1:11128/api/v1/camera/0/imageready
+   ```
+
+   `"Value":true` means a frame PHD2 wrote as you was read by the
+   service account, and then deleted: `ls /var/lib/rusty-photon/phd2-images`
+   shows nothing left behind. An `ErrorNumber` on `startexposure` usually
+   means PHD2 is guiding or looping, since the facade captures only from
+   a stopped PHD2.
 
 ## Removing
 

@@ -1,0 +1,84 @@
+{"t": 0.0021, "kind": "event", "msg": {"Event": "Version", "Timestamp": 1791927351.896, "Host": "<rig-host>", "Inst": 1, "PHDVersion": "2.6.14", "PHDSubver": "", "OverlapSupport": true, "MsgVersion": 1}}
+{"t": 0.0022, "kind": "event", "msg": {"Event": "AppState", "Timestamp": 1791927351.896, "Host": "<rig-host>", "Inst": 1, "State": "Stopped"}}
+{"t": 1.0021, "kind": "scenario", "name": "second_capture"}
+{"t": 1.0027, "kind": "rpc", "req": {"method": "stop_capture", "id": 1}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 1}, "sent": 1.0022}
+{"t": 1.5033, "kind": "rpc", "req": {"method": "get_connected", "id": 2}, "reply": {"jsonrpc": "2.0", "result": true, "id": 2}, "sent": 1.5028}
+{"t": 1.5051, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791927353.399, "Host": "<rig-host>", "Inst": 1}}
+{"t": 1.5466, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 3, "params": {"exposure": 3000, "save": true, "path": "/tmp/phd2probe-wd/second-a.fits"}}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 3}, "sent": 1.5034}
+{"t": 2.0472, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 4, "params": {"exposure": 1000, "save": true, "path": "/tmp/phd2probe-wd/second-b.fits"}}, "reply": {"jsonrpc": "2.0", "error": {"code": 1, "message": "cannot capture single frame when capture is currently active"}, "id": 4}, "sent": 2.0468}
+{"t": 2.0477, "kind": "state", "state": "Looping"}
+{"t": 4.5768, "kind": "event", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927356.471, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "/tmp/phd2probe-wd/second-a.fits", "_stat_at_event": 875520}}
+{"t": 4.5769, "kind": "event", "msg": {"Event": "LoopingExposuresStopped", "Timestamp": 1791927356.471, "Host": "<rig-host>", "Inst": 1}}
+{"t": 4.5958, "kind": "state", "state": "Stopped"}
+{"t": 4.8979, "kind": "complete", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927356.471, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "/tmp/phd2probe-wd/second-a.fits", "_stat_at_event": 875520}}
+{"t": 6.3981, "kind": "files", "a": true, "b": false}
+{"t": 6.3982, "kind": "scenario", "name": "loop_during"}
+{"t": 6.3987, "kind": "rpc", "req": {"method": "stop_capture", "id": 63}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 63}, "sent": 6.3982}
+{"t": 6.8992, "kind": "rpc", "req": {"method": "get_connected", "id": 64}, "reply": {"jsonrpc": "2.0", "result": true, "id": 64}, "sent": 6.8988}
+{"t": 6.9008, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791927358.795, "Host": "<rig-host>", "Inst": 1}}
+{"t": 6.9426, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 65, "params": {"exposure": 3000, "save": true, "path": "/tmp/phd2probe-wd/loop-during.fits"}}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 65}, "sent": 6.8992}
+{"t": 7.4432, "kind": "rpc", "req": {"method": "loop", "id": 66}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 66}, "sent": 7.4428}
+{"t": 7.4437, "kind": "state", "state": "Looping"}
+{"t": 9.9735, "kind": "event", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927361.867, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "/tmp/phd2probe-wd/loop-during.fits", "_stat_at_event": 875520}}
+{"t": 9.9736, "kind": "event", "msg": {"Event": "LoopingExposuresStopped", "Timestamp": 1791927361.867, "Host": "<rig-host>", "Inst": 1}}
+{"t": 9.9919, "kind": "state", "state": "Stopped"}
+{"t": 10.2942, "kind": "complete", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927361.867, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "/tmp/phd2probe-wd/loop-during.fits", "_stat_at_event": 875520}}
+{"t": 13.2948, "kind": "rpc", "req": {"method": "get_app_state", "id": 125}, "reply": {"jsonrpc": "2.0", "result": "Stopped", "id": 125}, "sent": 13.2943}
+{"t": 13.2953, "kind": "rpc", "req": {"method": "stop_capture", "id": 126}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 126}, "sent": 13.2949}
+{"t": 14.2958, "kind": "rpc", "req": {"method": "get_app_state", "id": 127}, "reply": {"jsonrpc": "2.0", "result": "Stopped", "id": 127}, "sent": 14.2954}
+{"t": 14.2959, "kind": "scenario", "name": "stop_during"}
+{"t": 14.2963, "kind": "rpc", "req": {"method": "stop_capture", "id": 128}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 128}, "sent": 14.2959}
+{"t": 14.7969, "kind": "rpc", "req": {"method": "get_connected", "id": 129}, "reply": {"jsonrpc": "2.0", "result": true, "id": 129}, "sent": 14.7964}
+{"t": 14.7987, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791927366.693, "Host": "<rig-host>", "Inst": 1}}
+{"t": 14.8426, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 130, "params": {"exposure": 8000, "save": true, "path": "/tmp/phd2probe-wd/stop-during.fits"}}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 130}, "sent": 14.797}
+{"t": 15.8444, "kind": "rpc", "req": {"method": "stop_capture", "id": 131}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 131}, "sent": 15.8428}
+{"t": 15.846, "kind": "state", "state": "Looping"}
+{"t": 15.9082, "kind": "event", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927367.802, "Host": "<rig-host>", "Inst": 1, "Success": false, "Error": "camera error -- see debug log", "Path": "/tmp/phd2probe-wd/stop-during.fits", "_stat_at_event": null}}
+{"t": 15.9083, "kind": "event", "msg": {"Event": "LoopingExposuresStopped", "Timestamp": 1791927367.802, "Host": "<rig-host>", "Inst": 1}}
+{"t": 15.9481, "kind": "state", "state": "Stopped"}
+{"t": 16.2501, "kind": "complete", "after_request_s": 1.1113, "after_stop_s": 0.0655, "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791927367.802, "Host": "<rig-host>", "Inst": 1, "Success": false, "Error": "camera error -- see debug log", "Path": "/tmp/phd2probe-wd/stop-during.fits", "_stat_at_event": null}}
+{"t": 16.2501, "kind": "file", "exists": false}
+{"t": 16.2502, "kind": "scenario", "name": "pause_during"}
+{"t": 16.2505, "kind": "rpc", "req": {"method": "stop_capture", "id": 141}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 141}, "sent": 16.2502}
+{"t": 16.751, "kind": "rpc", "req": {"method": "get_connected", "id": 142}, "reply": {"jsonrpc": "2.0", "result": true, "id": 142}, "sent": 16.7506}
+{"t": 16.7527, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791927368.647, "Host": "<rig-host>", "Inst": 1}}
+{"t": 16.7946, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 143, "params": {"exposure": 3000, "save": true, "path": "/tmp/phd2probe-wd/pause-during.fits"}}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 143}, "sent": 16.7511}
+{"t": 17.3128, "kind": "event", "msg": {"Event": "Paused", "Timestamp": 1791927369.207, "Host": "<rig-host>", "Inst": 1}}
+{"t": 17.313, "kind": "rpc", "req": {"method": "set_paused", "id": 144, "params": [true, "full"]}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 144}, "sent": 17.2948}
+{"t": 17.3145, "kind": "state", "state": "Paused"}
+{"t": 25.6244, "kind": "complete", "msg": null}
+{"t": 25.6247, "kind": "rpc", "req": {"method": "get_paused", "id": 312}, "reply": {"jsonrpc": "2.0", "result": true, "id": 312}, "sent": 25.6244}
+{"t": 25.643, "kind": "event", "msg": {"Event": "Resumed", "Timestamp": 1791927377.537, "Host": "<rig-host>", "Inst": 1}}
+{"t": 25.6866, "kind": "rpc", "req": {"method": "set_paused", "id": 313, "params": [false]}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 313}, "sent": 25.6247}
+{"t": 25.687, "kind": "state", "state": "Looping"}
+{"t": 33.9992, "kind": "complete-after-resume", "msg": null}
+{"t": 33.9993, "kind": "file", "exists": false}
+{"t": 33.9996, "kind": "rpc", "req": {"method": "stop_capture", "id": 480}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 480}, "sent": 33.9993}
+{"t": 33.9997, "kind": "scenario", "name": "bad_params"}
+{"t": 34.0, "kind": "rpc", "req": {"method": "stop_capture", "id": 481}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 481}, "sent": 33.9997}
+{"t": 34.5005, "kind": "rpc", "req": {"method": "get_connected", "id": 482}, "reply": {"jsonrpc": "2.0", "result": true, "id": 482}, "sent": 34.5001}
+{"t": 34.5009, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 483, "params": {"exposure": 1000, "save": true, "path": "/tmp/phd2probe-wd/exists.fits"}}, "reply": {"jsonrpc": "2.0", "error": {"code": 1, "message": "cannot capture single frame when capture is currently active"}, "id": 483}, "sent": 34.5006}
+{"t": 34.5013, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 484, "params": {"exposure": 1000, "save": true, "path": "rel.fits"}}, "reply": {"jsonrpc": "2.0", "error": {"code": 1, "message": "cannot capture single frame when capture is currently active"}, "id": 484}, "sent": 34.501}
+{"t": 34.5017, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 485, "params": {"exposure": 0}}, "reply": {"jsonrpc": "2.0", "error": {"code": 1, "message": "cannot capture single frame when capture is currently active"}, "id": 485}, "sent": 34.5014}
+{"t": 34.502, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 486, "params": {"exposure": 600001}}, "reply": {"jsonrpc": "2.0", "error": {"code": 1, "message": "cannot capture single frame when capture is currently active"}, "id": 486}, "sent": 34.5017}
+{"t": 34.5023, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 487, "params": {"exposure": 1000, "save": false, "path": "/tmp/phd2probe-wd/x.fits"}}, "reply": {"jsonrpc": "2.0", "error": {"code": 1, "message": "cannot capture single frame when capture is currently active"}, "id": 487}, "sent": 34.502}
+{"t": 34.5027, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 488, "params": {"exposure": 1500.0}}, "reply": {"jsonrpc": "2.0", "error": {"code": 1, "message": "cannot capture single frame when capture is currently active"}, "id": 488}, "sent": 34.5024}
+{"t": 34.5027, "kind": "scenario", "name": "bad_dir"}
+{"t": 34.503, "kind": "rpc", "req": {"method": "stop_capture", "id": 489}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 489}, "sent": 34.5027}
+{"t": 35.0035, "kind": "rpc", "req": {"method": "get_connected", "id": 490}, "reply": {"jsonrpc": "2.0", "result": true, "id": 490}, "sent": 35.0031}
+{"t": 35.004, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 491, "params": {"exposure": 1000, "save": true, "path": "/tmp/phd2probe-wd/no-such-dir/f.fits"}}, "reply": {"jsonrpc": "2.0", "error": {"code": 1, "message": "cannot capture single frame when capture is currently active"}, "id": 491}, "sent": 35.0036}
+{"t": 35.0044, "kind": "state", "state": "Looping"}
+{"t": 45.3305, "kind": "complete", "missing": true, "waited_s": 10}
+{"t": 45.3306, "kind": "scenario", "name": "disconnected"}
+{"t": 45.331, "kind": "rpc", "req": {"method": "stop_capture", "id": 697}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 697}, "sent": 45.3306}
+{"t": 45.8314, "kind": "rpc", "req": {"method": "set_connected", "id": 698, "params": [false]}, "reply": {"jsonrpc": "2.0", "error": {"code": 1, "message": "cannot disconnect equipment while capture active"}, "id": 698}, "sent": 45.8311}
+{"t": 46.832, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 699, "params": {"exposure": 1000, "save": true, "path": "/tmp/phd2probe-wd/disc.fits"}}, "reply": {"jsonrpc": "2.0", "error": {"code": 1, "message": "cannot capture single frame when capture is currently active"}, "id": 699}, "sent": 46.8315}
+{"t": 48.8326, "kind": "rpc", "req": {"method": "set_connected", "id": 700, "params": [true]}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 700}, "sent": 48.8321}
+{"t": 50.8327, "kind": "scenario", "name": "looping_refusal"}
+{"t": 50.8333, "kind": "rpc", "req": {"method": "stop_capture", "id": 701}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 701}, "sent": 50.8328}
+{"t": 51.3338, "kind": "rpc", "req": {"method": "get_connected", "id": 702}, "reply": {"jsonrpc": "2.0", "result": true, "id": 702}, "sent": 51.3334}
+{"t": 51.3343, "kind": "rpc", "req": {"method": "loop", "id": 703}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 703}, "sent": 51.3339}
+{"t": 53.3349, "kind": "rpc", "req": {"method": "get_app_state", "id": 704}, "reply": {"jsonrpc": "2.0", "result": "Looping", "id": 704}, "sent": 53.3344}
+{"t": 53.3353, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 705, "params": {"exposure": 1000, "save": true, "path": "/tmp/phd2probe-wd/while-looping.fits"}}, "reply": {"jsonrpc": "2.0", "error": {"code": 1, "message": "cannot capture single frame when capture is currently active"}, "id": 705}, "sent": 53.3349}
+{"t": 53.3357, "kind": "rpc", "req": {"method": "stop_capture", "id": 706}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 706}, "sent": 53.3353}
+{"t": 54.3358, "kind": "done"}

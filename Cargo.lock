@@ -3356,6 +3356,7 @@ dependencies = [
 name = "phd2-guider"
 version = "0.1.0"
 dependencies = [
+ "ascom-alpaca",
  "async-trait",
  "axum",
  "base64 0.23.1",
@@ -3368,14 +3369,18 @@ dependencies = [
  "humantime-serde",
  "libc",
  "mockall",
+ "ndarray",
  "reqwest",
  "rp-auth",
  "rp-fits",
+ "rusty-photon-camera-core",
  "rusty-photon-config",
  "rusty-photon-doctor-checks",
+ "rusty-photon-driver",
  "rusty-photon-server-config",
  "rusty-photon-service-lifecycle",
  "rusty-photon-tls",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",
@@ -3383,6 +3388,7 @@ dependencies = [
  "tokio",
  "tokio-test",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
