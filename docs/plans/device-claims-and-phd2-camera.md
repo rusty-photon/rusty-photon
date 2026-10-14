@@ -101,8 +101,8 @@ recorded here so the option is not lost.
 | C3 | `usb_devices` in `zwo-camera`, with its `doctor --devices` listing; a failed identity open is a per-camera outcome (D7) | Merged — [zwo-camera.md](../services/zwo-camera.md) U1-U9; the placeholder device and the re-scan moved to `rusty-photon-driver`'s `claims` feature (D7) | `feature/device-claims-c3-zwo` ([#1476](https://github.com/rusty-photon/rusty-photon/pull/1476)) |
 | C4 | `usb_devices` in `qhy-camera`, with its `doctor --devices` listing and each entry's declared filter wheel (D4.7), whose placeholder rp already classifies (C2 taught the connect routine every kind shares the placeholder's refusal) + `qhyccd-rs` enumerate/probe split — restores the documented enumeration-only contract, **and moves the CFW probe off startup and reload entirely** (the split alone narrows the tenet-3 problem, it does not discharge it). With a third driver serving the list, the `usb_devices` entry type and its validation glue, which svbony-camera and zwo-camera each still carry, move to one shared home | Merged — [qhy-camera.md](../services/qhy-camera.md) U1-U10; D6 settled on option 2 (the no-list probe opens without `InitQHYCCD`, measured, decision 17). The `usb_devices` entry type and its validation glue moved to `rusty-photon-doctor-checks`' `claims` module, which `qhy-camera` extends with the declared wheel; the placeholder FilterWheel stays in `qhy-camera`, the only driver with one | `feature/device-claims-c4-qhy` ([#1479](https://github.com/rusty-photon/rusty-photon/pull/1479)) |
 | C5 | `usb-devices.resolve` / `usb-devices.unlisted` / `usb-devices.implicit` checks on top of the per-driver `--devices` listings, and central doctor's `service.devices` recognising placeholders (D5); **the breaking no-list changes for all three drivers at once** — numbering by port order, unplaceable cameras refused, and the port-based `UniqueID` fallback for serial-less cameras (ZWO/SVBony; QHY's case decided here, D4.6) | Merged — [svbony-camera.md](../services/svbony-camera.md) U10-U11, [zwo-camera.md](../services/zwo-camera.md) U10-U11, [qhy-camera.md](../services/qhy-camera.md) U11-U12, [doctor.md](../services/doctor.md) (the checks and `service.devices`). QHY keeps its raw id (decision 18). The macOS check that held it is closed: the report half answered by the collector fix in [#1500](https://github.com/rusty-photon/rusty-photon/pull/1500), merged, and the location-id half accepted for C5 by the owner on 2026-10-13, to be read on a real Mac later. C4's one-SDK gate and list were read on the QHY178M + CFW3 with ConformU clean ([2026-10-13 record](../validation/2026-10-13-qhy-camera-qhy178m-cfw-linux-sdk-gate/README.md), [#1504](https://github.com/rusty-photon/rusty-photon/pull/1504)) | `feature/device-claims-c5` ([#1501](https://github.com/rusty-photon/rusty-photon/pull/1501)) |
-| C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | In progress — the `save_image` wire-format fix (D9) merged first. The watermark was measured on 2026-10-13 against PHD2 2.6.14, which turned out to have one: `capture_single_frame` saves to a path the caller names and announces the finished file with a `SingleFrameComplete` event (D9, "Settled in C6"). Design: [phd2-guider.md](../services/phd2-guider.md) § Camera facade. In C6 the facade listens on loopback only, so no catalog, firewall or verify-script change is needed yet (D10, "Settled in C6"). ConformU was clean against PHD2 2.6.14's simulator on the field rig, and the `image_dir` recipe passed its acceptance test ([2026-10-13 record](../validation/2026-10-13-phd2-guider-phd2-simulator-linux/README.md)); a run with a real guide camera behind PHD2 is still owed | `fix/phd2-save-image-wire-format` ([#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)), `feature/device-claims-c6-phd2-camera` |
-| C7 | rp wiring: guide camera as a train-terminal camera, capture-sweep focusing for the guiding train, doc updates. **Blocked on reconciling with [`focus-model.md`](focus-model.md) S7/D17**, which retires rp's capture-based `auto_focus` and keeps the metric sweep under that name | Not started | |
+| C6 | `phd2-guider` Alpaca Camera facade on port 11128 (design doc → BDD → code): the completion watermark demonstrated against a live PHD2, the nested `camera` config block, `image_dir` + unit `ReadWritePaths=`, try-lock arbitration, and the catalog/packaging/firewall registration — plus the `save_image` wire-format fix | Merged — the `save_image` wire-format fix (D9) merged first. The watermark was measured on 2026-10-13 against PHD2 2.6.14, which turned out to have one: `capture_single_frame` saves to a path the caller names and announces the finished file with a `SingleFrameComplete` event (D9, "Settled in C6"). Design: [phd2-guider.md](../services/phd2-guider.md) § Camera facade. In C6 the facade listens on loopback only, so no catalog, firewall or verify-script change is needed yet (D10, "Settled in C6"). ConformU was clean against PHD2 2.6.14's simulator on the field rig, and the `image_dir` recipe passed its acceptance test ([2026-10-13 record](../validation/2026-10-13-phd2-guider-phd2-simulator-linux/README.md)); a run with a real guide camera behind PHD2 is still owed | `fix/phd2-save-image-wire-format` ([#1463](https://github.com/rusty-photon/rusty-photon/pull/1463)), `feature/device-claims-c6-phd2-camera` ([#1507](https://github.com/rusty-photon/rusty-photon/pull/1507)) |
+| C7 | The guide camera as a train-terminal camera, and capture-sweep focusing for the guiding train: the facade lease (`phd2-guider`), rp's train lease and the gate change, and `focus-model`'s training run on a guiding train. It is [`focus-model.md`](focus-model.md)'s S10. The reconciliation with that plan's S7/D17 that held it was settled on 2026-10-13: the sweep is a training run of `focus_train` (D12, "Settled in C7"; decision 19) | In design — C7a, the design, is D12's "Settled in C7"; C7b–C7e follow it, one PR each | `feature/device-claims-c7` |
 | C8 | `ui-htmx` editing of `usb_devices` | Deferred | |
 
 Order: C1 first and **blocking** — no schema commits to the Windows port
@@ -2568,6 +2568,140 @@ camera of the guiding train. Then:
 - The Guide Focus Watch keeps reading `GuideStep` HFD; nothing there
   changes.
 
+**Settled in C7 (design, 2026-10-13).** The owner chose the first option
+on 2026-10-13: the guide-train capture sweep is a **training run of
+`focus-model`'s `focus_train`**, and of `determine_filter_offsets`,
+addressed to the guiding train without `shared`. rp gains no focus
+operation of its own, and its `auto_focus` on a guiding train stays the
+PHD2-metric sweep ([focus-model.md](focus-model.md) O4, rule 8). C7 is
+that plan's S10. It does not wait for S7: it builds on `focus_train`,
+which exists, and touches nothing S7 retires. The three leases, as
+designed:
+
+- **The facade lease is three Actions on the facade device.** D11 named
+  a pair. The third, renewal, exists because the lease has a TTL.
+  - `rustyphoton:sweep-lease-acquire`, parameters `{"ttl_s": n}` (10 to
+    300, default 60), answers `{"token": "<32 hex digits>", "ttl_s": n}`.
+    It takes `op_lock` with `try_lock`, as a capture does. It is refused
+    with `InvalidOperation` when the camera is not connected, a guiding
+    operation holds the lock, a capture is in flight, PHD2's state is not
+    `Stopped` (the allowlist a capture checks, named in the message), or
+    a lease is already held (naming when it expires).
+  - `rustyphoton:sweep-lease-renew {"token"}` restarts the TTL, and
+    `rustyphoton:sweep-lease-release {"token"}` ends the lease. A token
+    that is not the held lease's fails a renewal with `InvalidOperation`
+    saying why: expired, ended by a stop, released, or never issued by
+    this process, since a restart forgets the lease. A release of such a
+    token answers `{"released": false}` rather than an error, so a
+    put-back path never fails on it.
+  - While a lease is held, the facade refuses the mutations its capture
+    slot refuses (`guiding/start`, `pause`, `resume`, `dither`,
+    `calibration/clear`, `star/reselect`) with `camera_busy` (409),
+    naming the lease. `guiding/stop` is never refused, and it ends the
+    lease: the privileged stop breaks it, as this section requires. So do
+    `Connected = false` and shutdown.
+  - The TTL runs on the monotonic clock from the last acquire or renewal.
+    A lease that lapses during a frame needs no rule of its own: the
+    capture slot refuses guiding until PHD2 reports the frame, so the
+    watermark still decides when guiding may start.
+  - The lease does not gate captures. ASCOM gives `StartExposure` no way
+    to name its sender, and every capture already re-checks `Stopped`
+    (D11). A PHD2 that another client set looping therefore fails the
+    next sample, naming its state, which is the fail-safe this section
+    asks for.
+- **rp's train lease is two tools.** `acquire_train_lease {train_id}`
+  answers `{lease_id, train_id, focuser_id, filter_wheel_ids, cameras,
+  facade_lease, idle_timeout}`, and `release_train_lease {lease_id}`
+  answers `{released}`. A train without a terminal focuser or a camera is
+  refused. The lease **covers** what a training run on the train may
+  move: its terminal focuser and every filter wheel in it. It holds three
+  things, taken in this order, and a refusal at any step releases what
+  was already taken:
+  1. **The drain.** The capture slot of every camera in every train that
+     contains a covered device, the train's own camera included, taken in
+     camera-id order. Taking a slot waits for that camera's capture in
+     flight to finish, as a second capture through it does, and then
+     holds new ones off until the lease ends. A lease that would cover a
+     device another lease covers, or need a camera another lease holds,
+     is refused at once, naming that lease, rather than waiting out a
+     sweep.
+  2. **The mount-motion lease.** The motion gate, shared, taken after the
+     slots, which is the order a capture takes them in. Slews, dithers and
+     flips then wait for the lease to end, and one already queued delays
+     the lease as it delays a capture.
+  3. **The facade lease**, when the train's camera answers the acquire
+     Action. rp renews it every third of its TTL while the lease lives,
+     and releases it with the lease. A **guiding** train's lease requires
+     it: a guiding train's camera that does not answer the Action refuses
+     the lease ("camera 'x' of guiding train 'guide' is not the PHD2
+     camera facade"). That is O4's rule 7, enforced where the camera is
+     known. An imaging train's lease has no facade lease.
+- **Calls under the lease.** `capture`, `move_focuser` and `set_filter`
+  take an optional `lease_id`.
+  - A capture that carries the held lease's id through a camera the lease
+    holds runs under the lease's slot and gate permit, and takes neither
+    again. A second shared acquire queued behind a slew would deadlock on
+    the fair gate.
+  - Without the id, a `move_focuser` or `set_filter` on a covered device
+    is refused, naming the lease. A capture through a held camera waits,
+    as it waits behind another capture through that camera.
+  - A capture whose id is not held (expired, released, ended by the
+    safety transition, or its facade lease lost) is refused saying why.
+    That is how a sweep learns its lease broke. A move or a filter change
+    with such an id runs as an ordinary call, so a put-back still lands.
+  - rp's own `auto_focus`, `refocus_train` and `center_on_target` capture
+    through the internal path, and meet a lease as a call without an id
+    does.
+- **The lease's lifetime.** It ends:
+  - on release;
+  - after `idle_timeout` (60 s) with no call under it in flight;
+  - when a facade-lease renewal is refused (a `guiding/stop`, a
+    phd2-guider restart);
+  - on the safety transition, which cancels in-flight work and must not
+    leave the gate held in front of a recovery slew;
+  - at rp shutdown.
+
+  If rp crashes, its side ends with the process and the facade's at its
+  TTL.
+- **The gate learns guide captures.** A capture through a camera in
+  **any** train holds the gate shared, and only a camera outside every
+  train is exempt. rp.md § Mount Motion Gate's exemption shrinks to that.
+  None of rp's own operations captures through a guiding train's camera
+  today. The one thing that changes is a client's direct `capture`
+  through one, which now waits for a mount motion in flight.
+- **`focus-model`'s side (its S10).** A training run on a guiding train
+  is refused unless the train's terminal focuser is in no imaging train
+  (O4, rule 1). Otherwise the error names the imaging train that focuses
+  it (rules 2 and 4). The run acquires the train lease before anything
+  moves, passes its `lease_id` on every capture, move and filter change,
+  put-back included, and releases it after the put-back on every path.
+  The guiding handshake finds PHD2 `Stopped`, as the lease requires, and
+  does nothing. `determine_filter_offsets` takes the lease the same way.
+  Where the wheel is the imaging train's, the drain turns O4's "must not
+  run while an imaging session is using that wheel" from an operator
+  precondition into a guarantee. `requires_tools` grows the two lease
+  tools.
+- **Not in C7.** An imaging train's training run could take the same
+  lease and close the same hazard, a dither between two samples, which
+  imaging sweeps carry today. Recorded, not built: it changes an imaging
+  path that works, and one session document already runs its focus and
+  its dithers one after the other.
+- **Slices**, each its own PR, in this order:
+  - **C7a**, this design, with C6's status and its run with a real guide
+    camera;
+  - **C7b**, `phd2-guider`'s facade lease;
+  - **C7c**, rp's train lease and the gate change;
+  - **C7d**, `focus-model`'s training run on a guiding train;
+  - **C7e**, the rest of S10's `rp` work, which needs no facade: the
+    redundant guide step `af_sequence` still yields, and the two
+    topologies O4's rule 2 leaves open.
+
+  `pier1` meets O4's rule 1 (its Scops OAG focuses the guide path,
+  behind the EAF the imaging train shares) and runs each slice's
+  hardware check. The plumbing (the leases, the refusals, a sweep that
+  fails for want of stars and puts the focuser back) needs no sky. A
+  V-curve does.
+
 ### D13. Why not the alternatives
 
 - **`get_star_image` as the image source** — needs a selected star and
@@ -2610,11 +2744,15 @@ review.
 | 16 | **`usb_devices` numbers must run `0..N-1`; a gap is rejected, not filled** (D3) — 2026-10-01 | Every served number is one the operator wrote, so a typo cannot become a phantom camera. Retiring a camera below the highest number means renumbering the entries above it (and rp); a retired camera's entry is never kept to hold a number, because a listed port opens whatever is plugged in there next. |
 | 17 | **The no-list CFW probe opens the camera without `InitQHYCCD`** (D6, option 2) — 2026-10-11 | `IsQHYCCDCFWPlugged` and the slot count answered after a bare open exactly as after an init, on a QHY178M (Linux, warm and fresh from power-up) and on `rig2`'s QHY600M (Windows), and a parked wheel stayed put, so no init is reachable from startup or reload in either path. Deferring the probe to connect (option 1) stays the list path's answer, where the wheel is declared; an unsafe operator command (option 3) was not needed. A model that turns out to need the init loses its wheel on the no-list path — a missing device, logged — and a list declaring the wheel is the remedy. |
 | 18 | **QHY keeps its raw `GetQHYCCDId` as `UniqueID` and `devices` key; no port-based identity** (D4.6, the QHY note after D4.8) — 2026-10-12 | Two cameras share an id only by sharing a model, and so the product id QHY's join matches on: they are look-alikes, refused with or without a list from C5, so no two registered cameras can carry one id. A port-based identity would change nothing a client sees and would cost a `devices`-key and wheel-id migration. |
+| 19 | **The guide-train capture sweep is a training run of `focus-model`'s `focus_train`, not an rp operation** (D12, its first option) — 2026-10-13 | The provider is becoming the one expert on focusing a train ([focus-model.md](focus-model.md) D1, D17), and the facade only gives it a camera it lacked. A separately named rp operation would add a tool during `auto_focus`'s retirement that the provider would want back. C7 is that plan's S10 and does not wait for its S7. |
+| 20 | **The caller takes rp's train lease through two tools, and an idle timeout ends a lease its caller forgot** (D12, "Settled in C7") — 2026-10-13 | rp cannot take the lease around a proxied focus call on its own: it would have to read the provider's arguments to tell a training run from the in-session `shared: true` walk, and a facade lease taken around that walk would refuse the walk's own guiding resume. The provider knows which call it is making. The idle timeout, not the proxied call, bounds a lease whose holder died, so the tools stay usable by any client. |
 
-Nothing in this plan is waiting on an *operator* answer. **Three** things
-are waiting on evidence or an implementation choice, each named at its
-rule — one of them blocks a phase outright: C7's focus-model
-reconciliation. C6's completion watermark, which held C6's design, was
+Nothing in this plan is waiting on an *operator* answer, and nothing
+blocks a phase. **Two** things are waiting on evidence, each named at its
+rule: the Windows legs only a VM read, and the macOS location id. C7's
+focus-model reconciliation, which blocked C7, was settled by the owner
+on 2026-10-13 (D12, "Settled in C7"; decision 19). C6's completion
+watermark, which held C6's design, was
 answered on 2026-10-13 (D9, "Settled in C6"). The macOS check, which held C5's no-list flip, no longer
 does: its report half was answered on 2026-10-12, and on 2026-10-13 the
 owner accepted its location-id half, which no real Mac has read, for C5.
@@ -2660,5 +2798,7 @@ and on 2026-10-11 the owner accepted the legs no real hardware has read
   18): QHY keeps its raw id, since the join refuses every pair of
   cameras that could share one (the QHY note after D4.8).
 - **C7 — its relationship to [`focus-model.md`](focus-model.md) S7/D17**,
-  which retires rp's capture-based `auto_focus`. C7 must not land before
-  that is settled, or the two plans race on one contract (D12).
+  which retires rp's capture-based `auto_focus` — settled by the owner on
+  2026-10-13: the guide-train capture sweep is a training run of
+  `focus_train`, and C7 is that plan's S10 (D12, "Settled in C7";
+  decision 19).
