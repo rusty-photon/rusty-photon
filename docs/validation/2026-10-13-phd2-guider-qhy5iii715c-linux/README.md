@@ -186,7 +186,12 @@ left it so. The camera's product id stayed `0716` across every trigger:
 connected the camera and saved a 100 ms frame with no ACL
 (`SingleFrameComplete`, `Success: true`, 0.644 s). The rule was then
 deleted, and a `change` trigger returned the node to
-`root:rusty-photon`. The installed `qhy-camera` predated `doctor
+`root:rusty-photon`. An `add` event, the kind a replug, a reboot or a
+firmware load sends when the node is created, was replayed later the same
+day with `udevadm trigger --action=add` and the rule in place: the node
+took the operator's group the same way, the product id stayed `0716`,
+and the rule was removed again afterwards. A physical replug and a reboot
+were not tried. The installed `qhy-camera` predated `doctor
 --devices`, so the port was read from `udevadm info`, and `doctor
 --devices` was not run. What links the two is earlier evidence: on
 2026-10-08 the USB collector behind `doctor --devices` matched udev's

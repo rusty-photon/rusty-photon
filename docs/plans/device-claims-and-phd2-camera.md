@@ -2614,25 +2614,31 @@ designed:
     to name its sender, and every capture already re-checks `Stopped`
     (D11). A PHD2 that another client set looping therefore fails the
     next sample, naming its state, which is the fail-safe this section
-    asks for.
+    asks for. For the same reason, sole control of the facade during a
+    sweep is a deployment precondition, as sole control of PHD2 is: a
+    capture another Alpaca client starts between two samples makes rp's
+    next one fail as busy, and the sweep fails and puts the focuser
+    back.
 - **rp's train lease is two tools.** `acquire_train_lease {train_id,
   lease_id, max_duration}` answers `{lease_id, train_id, focuser_id,
   filter_wheel_ids, held_focuser_ids, cameras, facade_lease, ends_by}`,
-  and
-  `release_train_lease {lease_id}` answers `{released}`.
+  and `release_train_lease {lease_id}` answers `{released}`.
   - **The caller names the lease.** `lease_id` is a fresh id of the
-    caller's choosing. An id this rp process has granted before, held or
-    ended, is refused, so an old holder's call can never land inside a
-    new lease. A caller that gave up on its acquire (cancelled, or timed
-    out waiting for the answer) still knows the id and can release it.
-  - **`max_duration`** is the lease's whole life: 5 minutes by default,
-    at most 10, which is no longer than the longest exposure (600 s)
-    already holds the gate today. A training run takes one lease per
-    sweep, not one for a whole procedure. Every gate wait stays bounded
-    by its holders' own deadlines (rp.md § Mount Motion Gate), and a
-    lease is a holder. Starting a training run no closer to the meridian
-    flip than its lease's life is the session's job, as the flip's
-    timing is.
+    caller's choosing. An id this rp process has seen before, granted or
+    named in a release, is refused, so an old holder's call can never
+    land inside a new lease. A caller that gave up on its acquire
+    (cancelled, or timed out waiting for the answer) still knows the id
+    and can release it. A release that arrives before rp has seen the
+    acquire records the id as ended, so the acquire, when it arrives, is
+    refused.
+  - **`max_duration`** is the lease's life, counted from the moment it
+    is granted: 5 minutes by default, at most 10. The waits before the
+    grant are bounded by the holders being waited on, as every gate wait
+    is (rp.md § Mount Motion Gate). A capture under the lease is refused
+    if its duration plus rp's readout backstop would run past `ends_by`,
+    so no call keeps the lease's gate permit past it. Starting a training
+    run no closer to the meridian flip than its lease's life is the
+    session's job, as the flip's timing is.
   - A train without a terminal focuser or a camera is refused. The lease
     **moves** what a training run on the train may move: its terminal
     focuser and every filter wheel in it. It **holds still** every other
@@ -2644,15 +2650,18 @@ designed:
     it will drain. A second acquire that overlaps any of them is refused
     at once, naming the first, rather than waiting out a sweep. Two
     acquires therefore never wait on each other, and the order in which
-    one takes its slots cannot deadlock.
+    one takes its slots cannot deadlock. From the reservation on, an
+    ordinary move or filter change of a reserved device waits, as it
+    will for the granted lease.
 
-  It holds four things, taken in this order. A refusal at any step
-  releases what was already taken:
+  It holds five things, taken in this order. A refusal at any step, a
+  cancellation, or the facade lease being lost before the grant releases
+  what was already taken and fails the acquire:
   1. **The train's own camera's slot.** Taking it waits for rp's capture
      in flight through that camera, if any, to finish, as a second
      capture through it does.
-  2. **The facade lease**, before any wait on another camera or on the
-     gate, because it is the step that refuses at once (PHD2 not
+  2. **The facade lease**, before any wait on another camera or device or
+     on the gate, because it is the step that refuses at once (PHD2 not
      `Stopped`) and so should cost little to learn. A train's camera is a
      facade when its `SupportedActions` lists
      `rustyphoton:sweep-lease-acquire`. A facade that refuses the acquire
@@ -2667,20 +2676,23 @@ designed:
      after rp's capture through it ended, which is the case of a cancelled
      sweep's last frame on a camera whose driver ignores a stop (below);
      its refusal names when that frame ends.
-  3. **The drain.** The capture slot of every other camera in every train
+  3. **The devices' slots.** A move or filter change holds its device's
+     slot for as long as it runs, as a capture holds its camera's. The
+     acquire takes the slot of every device it moves or holds still, in
+     device-id order, so a move or filter change already under way
+     finishes before the lease is granted.
+  4. **The drain.** The capture slot of every other camera in every train
      that contains a device the lease moves, taken in camera-id order.
      Taking a slot waits for that camera's capture in flight to finish,
      and then holds new ones off until the lease ends. A camera behind a
      focuser the lease only holds still is not drained: nothing in its
      light path moves.
-  4. **The mount-motion lease.** The motion gate, shared, taken after the
+  5. **The mount-motion lease.** The motion gate, shared, taken after the
      slots, which is the order a capture takes them in. Slews, dithers and
      flips then wait for the lease to end, and one already queued delays
      the lease as it delays a capture.
 
-  The acquire can be cancelled while it waits. A cancelled acquire
-  releases what it took and answers `cancelled`. A
-  `release_train_lease` naming an acquire still waiting cancels it.
+  A `release_train_lease` naming an acquire still waiting cancels it.
 - **Calls under the lease.** `capture`, `move_focuser` and `set_filter`
   take an optional `lease_id`.
   - A capture that carries the held lease's id through a camera the lease
@@ -2691,24 +2703,27 @@ designed:
   - A capture that carries the held lease's id through a camera the lease
     does not hold is refused, naming the camera. Taking the gate for it
     would be that same deadlock.
+  - A move carrying the held lease's id is admitted only for a device
+    the lease moves. One that names a device the lease holds still is
+    refused, naming the device.
   - Without the id, a capture through a held camera, and a move or
     filter change of a device the lease moves or holds still, wait for
     the lease to end, as a capture waits behind another capture through
     its camera. The wait can be cancelled, and the lease's
-    `max_duration` bounds it.
-  - A move carrying the held lease's id is admitted only for a device
-    the lease moves. One that names a device the lease holds still is
-    refused, naming the device.
-  - A capture whose id is not held (expired, released, ended by the
-    safety transition, or its facade lease lost) is refused saying why.
-    That is how a sweep learns its lease broke. A move or a filter change
-    with such an id runs as an ordinary call, so a put-back still lands.
+    `max_duration` bounds it once the lease is granted.
+  - A call whose id is not held (expired, released, ended by the safety
+    transition, or its facade lease lost) is refused saying why, a
+    capture, a move and a filter change alike. That is how a sweep learns
+    its lease broke, and no call slips past the drain on an ended lease.
+    A put-back refused that way is sent again without the id, as an
+    ordinary call that waits its turn like any other.
   - rp's own `auto_focus`, `refocus_train` and `center_on_target` capture
-    through the internal path, and meet a lease as a call without an id
-    does.
+    and move through the internal paths, and meet a lease as a call
+    without an id does.
 - **The lease's lifetime.** It ends:
   - on release;
-  - after `idle_timeout` (60 s) with no call under it in flight;
+  - after `idle_timeout` (60 s) with no call under it in flight, counted
+    from the grant or the last call's end;
   - at `max_duration`;
   - when the facade refuses a renewal because the lease is no longer
     held (a `guiding/stop`, a phd2-guider restart). A renewal that does
@@ -2721,9 +2736,13 @@ designed:
   An ending lease admits no further call at once, and keeps its slots and
   its gate permit until the last call under it has finished. A capture
   under it therefore never loses them mid-exposure, whatever ended the
-  lease, and the gate's longest hold is `max_duration` plus one capture's
-  own deadline. If rp crashes, its side ends with the process and the
-  facade's at its TTL.
+  lease. Since a capture must fit before `ends_by`, the gate's longest
+  hold is `max_duration`. A capture cancelled on a camera whose driver
+  ignores a stop is the one exception: it keeps the permit to its frame's
+  natural end, at most that sample's exposure (a few seconds for a guide
+  camera), and a recovery slew after the safety transition waits that
+  long. If rp crashes, its side ends with the process and the facade's
+  at its TTL.
 - **The gate learns guide captures.** A capture through a camera in
   **any** train holds the gate shared, and only a camera outside every
   train is exempt. rp.md § Mount Motion Gate's exemption shrinks to that.
@@ -2733,17 +2752,31 @@ designed:
 - **`focus-model`'s side (its S10).** A training run on a guiding train
   is refused unless the train's terminal focuser is in no imaging train
   (O4, rule 1). Otherwise the error names the imaging train that focuses
-  it (rules 2 and 4). The run acquires the train lease under a fresh
-  id before anything moves, passes that id on every capture, move and
-  filter change, put-back included, and releases it after the put-back
-  on every path, a cancelled or failed acquire included. The guiding
-  handshake finds PHD2 `Stopped`, as the lease requires, and does
-  nothing. `determine_filter_offsets` takes one lease for each sweep it
-  runs, so no lease outlives one sweep.
-  Where the wheel is the imaging train's, the drain turns O4's "must not
-  run while an imaging session is using that wheel" from an operator
-  precondition into a guarantee. `requires_tools` grows the two lease
-  tools.
+  it (rules 2 and 4).
+  - **`focus_train`** takes one lease for the whole run, its retried
+    attempts included, so neither guiding nor mount motion can slip in
+    between attempts. It asks for the `max_duration` its sweep needs:
+    points × frames per step × (exposure + 1 s) × attempts, plus the
+    moves. It refuses before anything moves when that is over 10
+    minutes, naming the numbers, so a configuration that cannot finish
+    inside a lease fails at once and says why.
+  - It acquires the lease under a fresh id before anything moves, passes
+    that id on every capture, move and filter change, put-back included,
+    and releases it after the put-back on every path, a cancelled or
+    failed acquire included. The guiding handshake finds PHD2 `Stopped`,
+    as the lease requires, and does nothing.
+  - **`determine_filter_offsets`** takes one lease for each sweep it
+    runs, so no lease outlives one sweep. Between two sweeps nothing is
+    measured. Guiding may start in that gap, and then the next acquire is
+    refused, naming PHD2's state, before anything moves. The procedure's
+    final put-back, after its last sweep's lease, is an ordinary call.
+    The lease guarantees each sweep, not the whole procedure: a wheel or
+    upstream focuser that another client moves between two sweeps still
+    skews the difference the procedure measures. So O4's "must not run
+    while an imaging session is using that wheel" stays an operator
+    precondition for the procedure as a whole, and the drain makes it a
+    guarantee within each sweep.
+  - `requires_tools` grows the two lease tools.
 - **Not in C7.** An imaging train's training run could take the same
   lease and close the same hazard, a dither between two samples, which
   imaging sweeps carry today. Recorded, not built: it changes an imaging
