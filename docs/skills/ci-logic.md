@@ -114,7 +114,10 @@ it stays in the action.
   and links it without running it: every static import must be a `node:`
   built-in or a relative `.mjs` file that exists, and every name imported
   must be exported there. It cannot follow a dynamic `import()`, so
-  actions use static imports only. So a misspelt import in an entry file, which no
+  actions use static imports only. Nor does it catch a name a file uses
+  without declaring or importing it (a misspelt call): that shows only
+  when the code runs. That is one more reason to keep an entry file to a
+  few lines and the logic in a module its tests import. So a misspelt import in an entry file, which no
   test imports, fails the PR instead of the runner, and so does an npm
   package or a `.js` file.
 - **No BUILD file below `.github/actions`.** `link_test` checks the files
