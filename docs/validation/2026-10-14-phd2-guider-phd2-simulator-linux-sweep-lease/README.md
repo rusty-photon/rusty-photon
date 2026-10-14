@@ -21,7 +21,7 @@ QHY5III715C is C7d's hardware check.
 
 | | |
 |---|---|
-| Commit | [`83210804`](https://github.com/rusty-photon/rusty-photon/commit/83210804) (branch `feature/device-claims-c7b`, PR #1517). The head this record ships with adds only a `mock_phd2` change on top, which is a test binary |
+| Commit | [`83210804`](https://github.com/rusty-photon/rusty-photon/commit/83210804) (branch `feature/device-claims-c7b`, PR #1517). The commits after it on the branch change `mock_phd2`, a test binary, and the wording and sharing of the facade's refusals; none changes what the lease does |
 | Host | the field rig (Raspberry Pi 5, Raspberry Pi OS, Debian 13, aarch64) |
 | Build | `cargo run --release -p phd2-guider --bin phd2-guider -- --config <file> serve` on the rig (cargo 1.99.0), no features; no native SDK is involved in the facade. `RUST_LOG=info,phd2_guider=debug`, so `service.log` shows each lease's grant, renewal, release and end |
 | PHD2 | 2.6.14, source-built on the rig, headless under TigerVNC as the operator, equipment profile "Simulator" (PHD2's built-in camera and mount simulator), camera 752 × 580. Started for the run and shut down after it (`set_connected false`, then `shutdown`), as it was found |

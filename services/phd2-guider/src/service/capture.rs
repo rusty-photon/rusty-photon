@@ -21,7 +21,9 @@ use crate::config::MAX_CAPTURE_GRACE;
 use crate::error::Phd2Error;
 use crate::events::AppState;
 
-use super::guider::{CaptureClaim, FrameReport, GuiderOps, StoppedLockError};
+use super::guider::{
+    CaptureClaim, FrameReport, GuiderOps, RpcFailure, StoppedLockError, LOCKED_RPC_TIMEOUT,
+};
 
 /// Every file the facade asks PHD2 to save starts with this. The sweep
 /// keys on it, so it never touches a file the facade did not name.
@@ -43,10 +45,6 @@ const FITS_BLOCK: u64 = 2880;
 pub const ABORT_WAIT: Duration = Duration::from_secs(2);
 /// PHD2's longest single frame (`capture_single_frame` refuses more).
 pub const MAX_EXPOSURE: Duration = Duration::from_secs(600);
-/// How long each request the facade sends PHD2 while it holds the
-/// guiding lock may take: the capture's two, and an abort's
-/// `stop_capture`. PHD2 answers each in milliseconds.
-pub const LOCKED_RPC_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Why a capture could not start. Each maps to an ASCOM error in
 /// `camera.rs`.
@@ -180,8 +178,7 @@ impl CaptureEngine {
             e @ (StoppedLockError::Busy | StoppedLockError::Capturing(_)) => {
                 StartError::Busy(e.to_string())
             }
-            StoppedLockError::Unreachable(message) => StartError::Unreachable(message),
-            StoppedLockError::Refused(message) => StartError::Phd2Refused(message),
+            StoppedLockError::Rpc(failure) => start_error_of(failure),
             StoppedLockError::NotStopped(state) => StartError::NotStopped(state),
         })?;
 
@@ -894,14 +891,15 @@ fn unix_ms(time: SystemTime) -> u64 {
 
 /// Map a PHD2 client error from the capture's RPCs.
 fn map_rpc_error(e: Phd2Error) -> StartError {
-    match e {
-        Phd2Error::RpcError { message, .. } if message.contains("currently active") => {
-            StartError::Phd2Busy(message)
-        }
-        Phd2Error::RpcError { message, .. } | Phd2Error::InvalidState(message) => {
-            StartError::Phd2Refused(message)
-        }
-        other => StartError::Unreachable(other.to_string()),
+    start_error_of(e.into())
+}
+
+/// A failed request to PHD2, as a capture that could not start.
+fn start_error_of(failure: RpcFailure) -> StartError {
+    match failure {
+        RpcFailure::Busy(message) => StartError::Phd2Busy(message),
+        RpcFailure::Refused(message) => StartError::Phd2Refused(message),
+        RpcFailure::Unreachable(message) => StartError::Unreachable(message),
     }
 }
 

@@ -649,10 +649,11 @@ struct Client {
 /// The socket is put back into blocking mode: Windows hands out an
 /// accepted socket in its listener's non-blocking mode, and the client
 /// loop relies on its read timeout rather than spinning on `WouldBlock`.
-/// The client is registered here, in accept order, before its thread
-/// runs, so an event broadcast on behalf of a later client (as
-/// `mock_report_frame` does) reaches every client accepted before it,
-/// as PHD2's event server does. `None` when the socket cannot be set up.
+/// The client is sent its `Version` event, then registered, here, in
+/// accept order, before its thread runs. So an event broadcast on behalf
+/// of a later client (as `mock_report_frame` does) reaches every client
+/// accepted before it, and only after its `Version`, as PHD2's event
+/// server does. `None` when the socket cannot be set up or written to.
 fn accept_client(stream: TcpStream) -> Option<Client> {
     let set_up = stream
         .set_nonblocking(false)
@@ -662,6 +663,11 @@ fn accept_client(stream: TcpStream) -> Option<Client> {
     match set_up {
         Ok(reader) => {
             let writer = Arc::new(Mutex::new(stream));
+            if let Err(e) = write_line(&writer, &version_event()) {
+                eprintln!("cannot send the Version event: {e}");
+                return None;
+            }
+            eprintln!("Sent version event");
             let registered = Registered::new(&writer);
             Some(Client {
                 reader,
@@ -676,6 +682,18 @@ fn accept_client(stream: TcpStream) -> Option<Client> {
     }
 }
 
+/// The `Version` event PHD2 sends first on every connection.
+fn version_event() -> String {
+    let version = std::env::var("MOCK_PHD2_VERSION").unwrap_or_else(|_| "2.6.11-mock".to_string());
+    serde_json::json!({
+        "Event": "Version",
+        "PHDVersion": version,
+        "PHDSubver": "test",
+        "MsgVersion": 1,
+    })
+    .to_string()
+}
+
 fn handle_client(
     client: Client,
     shutdown: &Arc<AtomicBool>,
@@ -688,21 +706,6 @@ fn handle_client(
         registered: _registered,
     } = client;
     let reader = BufReader::new(reader);
-
-    // Send Version event on connect
-    let version = std::env::var("MOCK_PHD2_VERSION").unwrap_or_else(|_| "2.6.11-mock".to_string());
-    let version_event = serde_json::json!({
-        "Event": "Version",
-        "PHDVersion": version,
-        "PHDSubver": "test",
-        "MsgVersion": 1,
-    })
-    .to_string();
-    if write_line(&writer, &version_event).is_err() {
-        return;
-    }
-
-    eprintln!("Sent version event");
 
     for line in reader.lines() {
         match line {

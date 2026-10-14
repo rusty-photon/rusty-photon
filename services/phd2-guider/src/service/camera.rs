@@ -25,9 +25,8 @@ use crate::client::Phd2Client;
 use crate::config_actions::Phd2GuiderDriver;
 use crate::error::Phd2Error;
 
-use super::capture::{
-    CaptureEngine, Frame, FrameEnd, StartError, ABORT_WAIT, LOCKED_RPC_TIMEOUT, MAX_EXPOSURE,
-};
+use super::capture::{CaptureEngine, Frame, FrameEnd, StartError, ABORT_WAIT, MAX_EXPOSURE};
+use super::guider::LOCKED_RPC_TIMEOUT;
 use super::lease::{self, LeaseAction, LeaseEnd, LeaseError};
 
 /// How long an abort or a disconnect waits for its exposure to leave the

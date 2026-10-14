@@ -1406,9 +1406,10 @@ knows a camera is the facade, with a phd2-guider that has the lease, when
     `Stopped`. This is the privileged stop: it breaks a lease without
     waiting for its TTL;
   - `Connected = false`;
-  - shutdown. A restart forgets the lease, which is never written to
-    disk, so guiding through this service is accepted again once it
-    restarts, unless a frame's restart marker holds the capture slot.
+  - shutdown, with the process: the lease lives only in the service's
+    memory and is never written to disk. A restart therefore forgets it,
+    and guiding through this service is accepted again once it restarts,
+    unless a frame's restart marker holds the capture slot.
 - **The TTL runs on the monotonic clock** from the acquire or the last
   renewal, so a wall-clock step neither ends a lease early nor stretches
   it. A lease that lapses during a frame needs no rule of its own: the
