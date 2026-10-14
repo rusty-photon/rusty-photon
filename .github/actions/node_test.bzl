@@ -17,9 +17,10 @@ in .bazelrc.
 _NODE_TOOLCHAIN = "@rules_nodejs//nodejs:runtime_toolchain_type"
 
 # `node --test` reads each path as a glob pattern, so a test file whose name
-# holds a pattern character would run other files, or none. cmd.exe expands
-# `%` and ends a quoted argument at `"`; the `sh` launcher quotes in `'`.
-_UNSAFE = "*?[]{}!%\"'"
+# holds a pattern character, extglob's `(`, `)` and `|` included, would run
+# other files, or none. cmd.exe expands `%` and ends a quoted argument at
+# `"`; the `sh` launcher quotes in `'`.
+_UNSAFE = "*?[]{}()|!%\"'"
 
 _NODE_FLAGS = [
     "--test",

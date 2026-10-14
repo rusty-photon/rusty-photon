@@ -203,8 +203,8 @@ export function exportVariable(name, value) {
 
 /** Puts `dir` first on PATH for the job's later steps, and for this process. */
 export function addPath(dir) {
-  if (dir === '' || /[\r\n]/.test(dir)) {
-    throw new Error(`GITHUB_PATH: ${JSON.stringify(dir)} cannot be a directory (empty, or holds a line break)`);
+  if (typeof dir !== 'string' || dir === '' || /[\r\n]/.test(dir)) {
+    throw new Error(`GITHUB_PATH: ${JSON.stringify(dir)} cannot be a directory (not a string, empty, or holds a line break)`);
   }
   appendFileSync(commandFile('GITHUB_PATH'), `${dir}${EOL}`, 'utf8');
   process.env.PATH = process.env.PATH ? `${dir}${PATH_DELIMITER}${process.env.PATH}` : dir;
@@ -273,6 +273,19 @@ function parseRetryAfter(header) {
   return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
 }
 
+// The wait a response asks for: its Retry-After, or else, from the GitHub
+// API, the time until its rate limit resets. GitHub's REST docs ("Rate
+// limits for the REST API"): with `x-ratelimit-remaining` at 0, "you
+// should not retry your request until after the time specified by the
+// `x-ratelimit-reset` header", which is in UTC epoch seconds.
+function requestedWait(headers) {
+  const retryAfter = parseRetryAfter(headers.get('retry-after'));
+  if (retryAfter !== undefined) return retryAfter;
+  const reset = headers.get('x-ratelimit-reset');
+  if (headers.get('x-ratelimit-remaining') !== '0' || !/^\d+$/.test(reset ?? '')) return undefined;
+  return Math.max(0, Number(reset) * 1000 - Date.now());
+}
+
 // The start of an error response's body: no more of it is read than is
 // kept, and a body that breaks off keeps what arrived.
 async function errorBody(response) {
@@ -304,10 +317,12 @@ const MAX_RETRY_AFTER_MS = 120_000;
 
 // The codes of a request that got no answer: the connection was refused,
 // reset or cut, it or the network timed out or could not be reached, the
-// name lookup failed for now (EAI_AGAIN), or undici's socket closed or timed
-// out. A certificate the server presents (CERT_HAS_EXPIRED,
-// ERR_TLS_CERT_ALTNAME_INVALID) or a name that does not exist (ENOTFOUND)
-// fails the same way every time, and is not here.
+// name lookup failed, or undici's socket closed or timed out. ENOTFOUND is
+// here though it also means a name that does not exist: a resolver's
+// hiccup can report it too, and a wrong name costs only the retries. A
+// certificate the server presents (CERT_HAS_EXPIRED,
+// ERR_TLS_CERT_ALTNAME_INVALID) fails the same way every time, and is not
+// here.
 const NO_ANSWER_CODES = new Set([
   'ECONNREFUSED',
   'ECONNRESET',
@@ -317,6 +332,7 @@ const NO_ANSWER_CODES = new Set([
   'ENETUNREACH',
   'EHOSTUNREACH',
   'EAI_AGAIN',
+  'ENOTFOUND',
   'UND_ERR_SOCKET',
   'UND_ERR_CLOSED',
   'UND_ERR_CONNECT_TIMEOUT',
@@ -326,15 +342,20 @@ const NO_ANSWER_CODES = new Set([
 
 /**
  * Whether a failed attempt is worth repeating: an answer in
- * TRANSIENT_STATUSES, a timeout, or a request that got no answer. fetch reports that last one
- * as `TypeError('fetch failed')`, with the network's error as its cause,
- * whose code is in NO_ANSWER_CODES. Its other TypeErrors are requests it
- * refused to send, such as a GET with a body, and a TypeError from the
- * caller's own code is a bug: neither passes on a second try.
+ * TRANSIENT_STATUSES, a 403 that says how long to wait, a timeout, or a
+ * request that got no answer.
+ *
+ * GitHub's API answers a rate limit with a 403 or a 429, and gives the wait
+ * in Retry-After or the reset headers (requestedWait); a 403 with neither
+ * is a refusal, which no later attempt passes. fetch reports a request that
+ * got no answer as `TypeError('fetch failed')`, with the network's error as
+ * its cause, whose code is in NO_ANSWER_CODES. Its other TypeErrors are
+ * requests it refused to send, such as a GET with a body, and a TypeError
+ * from the caller's own code is a bug: neither passes on a second try.
  */
 export function isTransient(err) {
   if (err instanceof HttpError) {
-    return TRANSIENT_STATUSES.has(err.status);
+    return TRANSIENT_STATUSES.has(err.status) || (err.status === 403 && err.retryAfterMs !== undefined);
   }
   if (err?.name === 'TimeoutError') return true;
   return err instanceof TypeError && NO_ANSWER_CODES.has(err.cause?.code);
@@ -345,12 +366,15 @@ export function isTransient(err) {
  * `delayMs`, then twice that, and so on, between attempts, or longer when
  * the error carries a `retryAfterMs`. An error that `isRetryable` rejects,
  * one whose `retryAfterMs` is over two minutes, or the last attempt's error
- * is thrown. Once `signal` aborts, nothing is retried, and a wait under way
- * ends with an AbortError whose cause is the error it was waiting to retry.
- * `label` names the operation in the warning each retry logs.
+ * is thrown. Once `signal` aborts, no attempt starts and nothing is
+ * retried, and a wait under way ends with an AbortError whose cause is the
+ * error it was waiting to retry. `label` names the operation in the warning
+ * each retry logs. A fetchWithRetry inside `fn` should get `attempts: 1`,
+ * or the two retry counts multiply.
  */
 export async function retry(fn, { attempts = 3, delayMs = 1000, isRetryable = isTransient, label = 'operation', signal } = {}) {
   for (let attempt = 1; ; attempt++) {
+    signal?.throwIfAborted();
     try {
       return await fn(attempt);
     } catch (err) {
@@ -422,7 +446,7 @@ export async function fetchWithRetry(url, { attempts, delayMs = 1000, timeoutMs 
       if (!response.ok) {
         throw new HttpError(method, target, response.status, response.statusText, {
           body: await errorBody(response),
-          retryAfterMs: parseRetryAfter(response.headers.get('retry-after')),
+          retryAfterMs: requestedWait(response.headers),
         });
       }
       return response;

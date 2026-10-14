@@ -335,6 +335,8 @@ test('addPath refuses a directory with a line break, which would add a second en
   await withEnv({ GITHUB_PATH: file }, () => {
     assert.throws(() => addPath('/opt/a\n/tmp/evil'), /cannot be a directory/);
     assert.throws(() => addPath(''), /cannot be a directory/);
+    assert.throws(() => addPath(undefined), /cannot be a directory/);
+    assert.throws(() => addPath(42), /cannot be a directory/);
   });
   assert.equal(readFileSync(file, 'utf8'), '');
 });
@@ -352,6 +354,8 @@ test('isTransient retries what may pass on a second try, and nothing else', () =
   const answer = (status, retryAfterMs) => new HttpError('GET', url, status, '', { retryAfterMs });
   for (const status of [408, 429, 500, 502, 503, 504]) assert.equal(isTransient(answer(status)), true, status);
   for (const status of [400, 401, 403, 404, 409, 422, 501, 505]) assert.equal(isTransient(answer(status)), false, status);
+  assert.equal(isTransient(answer(403, 0)), true, 'a 403 that says to retry now');
+  assert.equal(isTransient(answer(403, 60_000)), true, 'a 403 that says to wait a minute');
   assert.equal(isTransient(new DOMException('timed out', 'TimeoutError')), true);
   assert.equal(isTransient(networkFailure()), true);
   assert.equal(isTransient(networkFailure('UND_ERR_SOCKET')), true);
@@ -360,7 +364,7 @@ test('isTransient retries what may pass on a second try, and nothing else', () =
   assert.equal(isTransient(new TypeError('fetch failed', { cause: dualStack })), true);
   assert.equal(isTransient(networkFailure('CERT_HAS_EXPIRED')), false, 'a certificate fails the same way again');
   assert.equal(isTransient(networkFailure('ERR_TLS_CERT_ALTNAME_INVALID')), false);
-  assert.equal(isTransient(networkFailure('ENOTFOUND')), false, 'a name that does not exist');
+  assert.equal(isTransient(networkFailure('ENOTFOUND')), true, 'a resolver hiccup can report it');
   assert.equal(isTransient(new TypeError('fetch failed')), false, 'no cause: not from the network');
   assert.equal(isTransient(new TypeError('Request with GET/HEAD method cannot have body.')), false);
   assert.equal(isTransient(new TypeError("Cannot read properties of undefined (reading 'x')")), false);
@@ -465,6 +469,20 @@ test('retry stops once its signal aborts, ending a wait under way, and says what
   );
   assert.equal(calls, 1);
   assert.ok(Date.now() - started < 2_500, 'the 5 s wait ran to its end');
+});
+
+test('retry starts no attempt once its signal has aborted', async () => {
+  let calls = 0;
+  await assert.rejects(
+    retry(
+      async () => {
+        calls += 1;
+      },
+      { signal: AbortSignal.abort() },
+    ),
+    { name: 'AbortError' },
+  );
+  assert.equal(calls, 0);
 });
 
 test('retry does not wait out a Retry-After over two minutes, whatever isRetryable says', async () => {
@@ -606,6 +624,30 @@ test('fetchWithRetry waits out a Retry-After, and gives up on one longer than tw
   assert.equal(server.requests.length, 3);
 });
 
+test("fetchWithRetry retries a 403 only when it says how long to wait, as the GitHub API's rate limits do", async (t) => {
+  const resetNow = String(Math.floor(Date.now() / 1000));
+  const server = await serve((req, res, n) => {
+    const first = server.requests.filter((url) => url === req.url).length === 1;
+    if (req.url === '/retry-after' && first) {
+      res.writeHead(403, { 'retry-after': '0' });
+    } else if (req.url === '/reset' && first) {
+      res.writeHead(403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': resetNow });
+    } else if (req.url === '/refused') {
+      res.writeHead(403);
+    } else {
+      res.writeHead(200);
+    }
+    res.end();
+  });
+  t.after(server.close);
+  await capture(async () => {
+    assert.equal((await fetchWithRetry(`${server.url}/retry-after`, { delayMs: 1 })).status, 200);
+    assert.equal((await fetchWithRetry(`${server.url}/reset`, { delayMs: 1 })).status, 200);
+  });
+  await assert.rejects(fetchWithRetry(`${server.url}/refused`, { delayMs: 1 }), { status: 403 });
+  assert.deepEqual(server.requests, ['/retry-after', '/retry-after', '/reset', '/reset', '/refused']);
+});
+
 test('fetchWithRetry retries a request whose connection drops before an answer', async (t) => {
   const server = await serve((req) => req.socket.destroy());
   t.after(server.close);
@@ -625,10 +667,12 @@ test('fetchWithRetry does not retry a request fetch refuses to send', async (t) 
 test('fetchWithRetry times out an attempt that gets no response, and retries it', async (t) => {
   const server = await serve(() => {});
   t.after(server.close);
-  await capture(() =>
+  const { stdout } = await capture(() =>
     assert.rejects(fetchWithRetry(`${server.url}/slow`, { attempts: 2, delayMs: 1, timeoutMs: 100 }), { name: 'TimeoutError' }),
   );
-  assert.equal(server.requests.length, 2);
+  // The warnings, not the server's count: under load an attempt can time
+  // out before its request reaches the server at all.
+  assert.match(stdout, /^::warning::GET .*\/slow: attempt 1 of 2 failed \(The operation was aborted due to timeout\); retrying in 1 ms\n$/);
 });
 
 test('fetchWithRetry times out a body that stops arriving', async (t) => {
@@ -696,8 +740,7 @@ test("fetchWithRetry does not retry the caller's own timeout", async (t) => {
   const { stdout } = await capture(() =>
     assert.rejects(fetchWithRetry(`${server.url}/x`, { signal: AbortSignal.timeout(100), delayMs: 1 }), { name: 'TimeoutError' }),
   );
-  assert.equal(stdout, '');
-  assert.equal(server.requests.length, 1);
+  assert.equal(stdout, '', 'a retry was attempted');
 });
 
 // --- Hashing ------------------------------------------------------------------
