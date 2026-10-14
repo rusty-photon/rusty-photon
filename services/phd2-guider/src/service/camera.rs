@@ -28,6 +28,7 @@ use crate::error::Phd2Error;
 use super::capture::{
     CaptureEngine, Frame, FrameEnd, StartError, ABORT_WAIT, LOCKED_RPC_TIMEOUT, MAX_EXPOSURE,
 };
+use super::lease::{self, LeaseAction, LeaseEnd, LeaseError};
 
 /// How long an abort or a disconnect waits for its exposure to leave the
 /// session: a start's two requests and the stop, each bounded by
@@ -72,7 +73,7 @@ struct Subframe {
 struct Image {
     width: usize,
     height: usize,
-    pixels: Vec<i32>,
+    pixels: Vec<u16>,
 }
 
 #[derive(Debug)]
@@ -540,6 +541,43 @@ impl Phd2Camera {
         self.inner.exposure_ended.notify_waiters();
     }
 
+    /// Answer one of the sweep lease's Actions
+    /// (`docs/services/phd2-guider.md` § "The sweep lease").
+    async fn lease_action(&self, action: LeaseAction, parameters: &str) -> ASCOMResult<String> {
+        let ops = self.inner.engine.ops();
+        let reply = match action {
+            LeaseAction::Acquire => {
+                let request =
+                    lease::parse_acquire(parameters).map_err(ASCOMError::invalid_value)?;
+                // A disconnect waits for the acquire, so it always ends
+                // the lease the acquire granted.
+                let _transition = self.inner.lifecycle.lock().await;
+                self.ensure_connected()?;
+                let granted = ops
+                    .acquire_lease(&request)
+                    .await
+                    .map_err(|e| lease_error_to_ascom(&e))?;
+                serde_json::to_string(&granted)
+            }
+            LeaseAction::Renew => {
+                let token = lease::parse_token(lease::RENEW, parameters)
+                    .map_err(ASCOMError::invalid_value)?;
+                let granted = ops
+                    .renew_lease(&token)
+                    .map_err(ASCOMError::invalid_operation)?;
+                serde_json::to_string(&granted)
+            }
+            LeaseAction::Release => {
+                let token = lease::parse_token(lease::RELEASE, parameters)
+                    .map_err(ASCOMError::invalid_value)?;
+                serde_json::to_string(&lease::Released {
+                    released: ops.release_lease(&token),
+                })
+            }
+        };
+        reply.map_err(|e| ASCOMError::new(UNSPECIFIED_ERROR, format!("lease answer: {e}")))
+    }
+
     /// Undo a start PHD2 refused, if nothing has replaced it since.
     fn cancel_start(&self, generation: u64) {
         let mut session = self.session();
@@ -584,6 +622,7 @@ impl Device for Phd2Camera {
             self.begin_session(geometry);
             return Ok(());
         }
+        self.inner.engine.ops().end_lease(LeaseEnd::Disconnected);
         if let Some(aborted) = self.begin_abort() {
             debug!("disconnect ends the facade's exposure in flight");
             self.finish_abort(aborted).await;
@@ -604,13 +643,27 @@ impl Device for Phd2Camera {
         Ok(env!("CARGO_PKG_VERSION").to_string())
     }
 
+    /// The sweep lease's three Actions, then the config Actions.
     async fn supported_actions(&self) -> ASCOMResult<Vec<String>> {
-        Ok(rusty_photon_driver::supported_actions(&self.config_ctx))
+        let mut names: Vec<String> = lease::ACTIONS.iter().map(ToString::to_string).collect();
+        names.extend(rusty_photon_driver::supported_actions(&self.config_ctx));
+        Ok(names)
     }
 
+    /// A lease Action, or else a config Action. An unknown name is
+    /// `ActionNotImplemented`, from the config dispatch.
     async fn action(&self, action: String, parameters: String) -> ASCOMResult<String> {
-        rusty_photon_driver::dispatch::<Phd2GuiderDriver>(&self.config_ctx, action, parameters)
-            .await
+        match LeaseAction::from_name(&action) {
+            Some(lease_action) => self.lease_action(lease_action, &parameters).await,
+            None => {
+                rusty_photon_driver::dispatch::<Phd2GuiderDriver>(
+                    &self.config_ctx,
+                    action,
+                    parameters,
+                )
+                .await
+            }
+        }
     }
 }
 
@@ -995,6 +1048,14 @@ fn version_at_least(version: &str, min: (u32, u32, u32)) -> bool {
     (major, minor, patch) >= min
 }
 
+/// Map a lease acquire that was not granted to its ASCOM error.
+fn lease_error_to_ascom(e: &LeaseError) -> ASCOMError {
+    match e {
+        LeaseError::NotConnected(message) => not_connected(message.clone()),
+        LeaseError::Refused(message) => ASCOMError::invalid_operation(message.clone()),
+    }
+}
+
 /// Map a capture that could not start to its ASCOM error.
 fn start_error_to_ascom(e: &StartError) -> ASCOMError {
     match e {
@@ -1079,7 +1140,11 @@ mod tests {
         );
         assert_eq!(
             camera.supported_actions().await.unwrap(),
-            Vec::<String>::new()
+            [
+                "rustyphoton:sweep-lease-acquire",
+                "rustyphoton:sweep-lease-renew",
+                "rustyphoton:sweep-lease-release"
+            ]
         );
         assert!((camera.pixel_size_x().await.unwrap() - 2.9).abs() < f64::EPSILON);
         assert!((camera.pixel_size_y().await.unwrap() - 3.1).abs() < f64::EPSILON);
@@ -1511,6 +1576,95 @@ mod tests {
         );
     }
 
+    const TOKEN_A: &str = r#"{"token": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#;
+
+    #[tokio::test]
+    async fn a_lease_action_with_parameters_of_another_shape_is_an_invalid_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        for action in [lease::ACQUIRE, lease::RENEW, lease::RELEASE] {
+            let err = camera
+                .action(action.to_string(), "not json".to_string())
+                .await
+                .unwrap_err();
+            assert_eq!(err.code, ASCOMErrorCode::INVALID_VALUE, "{action}: {err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lease_on_a_camera_that_is_not_connected_is_not_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = test_camera(dir.path());
+        let err = camera
+            .action(lease::ACQUIRE.to_string(), TOKEN_A.to_string())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED, "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_lease_with_phd2_unreachable_is_not_connected() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = connected_camera(dir.path());
+        let err = camera
+            .action(lease::ACQUIRE.to_string(), TOKEN_A.to_string())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::NOT_CONNECTED, "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_token_that_holds_no_lease_fails_a_renewal_and_is_released_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = test_camera(dir.path());
+        let err = camera
+            .action(lease::RENEW.to_string(), TOKEN_A.to_string())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::INVALID_OPERATION, "{err}");
+        assert!(err.message.contains("never acquired"), "{err}");
+        let reply = camera
+            .action(lease::RELEASE.to_string(), TOKEN_A.to_string())
+            .await
+            .unwrap();
+        assert_eq!(reply, r#"{"released":false}"#);
+    }
+
+    #[tokio::test]
+    async fn an_action_the_facade_does_not_have_is_not_implemented() {
+        let dir = tempfile::tempdir().unwrap();
+        let camera = test_camera(dir.path());
+        let err = camera
+            .action("rustyphoton:sweep-lease-steal".to_string(), String::new())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ASCOMErrorCode::ACTION_NOT_IMPLEMENTED, "{err}");
+    }
+
+    #[test]
+    fn a_lease_refusal_maps_to_its_ascom_error() {
+        let code = |e: LeaseError| lease_error_to_ascom(&e).code;
+        assert_eq!(
+            code(LeaseError::NotConnected("x".into())),
+            ASCOMErrorCode::NOT_CONNECTED
+        );
+        assert_eq!(
+            code(LeaseError::Refused("x".into())),
+            ASCOMErrorCode::INVALID_OPERATION
+        );
+    }
+
+    #[test]
+    fn an_image_goes_out_as_unsigned_16_bit_values() {
+        let image = image_array_of(Image {
+            width: 2,
+            height: 1,
+            pixels: vec![0, 65535],
+        })
+        .unwrap();
+        assert_eq!(image[[1, 0, 0]], 65535);
+    }
+
     #[test]
     fn a_refused_start_maps_to_its_ascom_error() {
         let code = |e: StartError| start_error_to_ascom(&e).code;
@@ -1579,7 +1733,7 @@ mod tests {
             width,
             height,
             pixels: (0..width * height)
-                .map(|i| i32::try_from(i).unwrap())
+                .map(|i| u16::try_from(i).unwrap())
                 .collect(),
         }
     }

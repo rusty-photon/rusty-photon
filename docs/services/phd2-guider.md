@@ -69,8 +69,9 @@ services/phd2-guider/src/
     ├── mod.rs      # ServerBuilder, BoundServer
     ├── api.rs      # axum router, wire types, request handlers
     ├── error.rs    # ServiceError enum + structured error envelope
-    ├── guider.rs   # GuiderOps: settle wait, stop poll, rolling RMS stats, the capture slot
+    ├── guider.rs   # GuiderOps: settle wait, stop poll, rolling RMS stats, the capture slot, the sweep lease
     ├── capture.rs  # the facade's capture: files, the restart marker, the wait for PHD2's event
+    ├── lease.rs    # the sweep lease's Actions, tokens and the record of them
     └── camera.rs   # Phd2Camera: the ASCOM Alpaca Camera device
 ```
 
@@ -831,7 +832,9 @@ Stop capture and **block until PHD2 confirms it stopped**. Sends
 `stop_capture`, then polls `get_app_state` every 250 ms until it
 reports `Stopped`, bounded by the config `stop_timeout` (default
 `"10s"`; expiry → `stop_timeout` error). Idempotent — an
-already-stopped PHD2 returns success immediately.
+already-stopped PHD2 returns success immediately. It ends the camera
+facade's [sweep lease](#the-sweep-lease), if one is held, once it
+holds the guiding lock, whatever PHD2 then answers.
 
 Response: `{ "state": "stopped" }`.
 
@@ -1010,7 +1013,9 @@ concurrent settle waits are meaningless. `stats`, `metrics`,
 The camera facade's capture takes the same mutex without queueing, and
 while a capture is in flight every mutating request except
 `guiding/stop` is refused with `camera_busy` instead of waiting. See
-[Exclusivity: the capture slot](#exclusivity-the-capture-slot).
+[Exclusivity: the capture slot](#exclusivity-the-capture-slot). A
+[sweep lease](#the-sweep-lease) is acquired the same way, and while
+one is held the same requests are refused the same way.
 
 ### Error envelope
 
@@ -1025,7 +1030,7 @@ omitted from the wire when there is nothing to attach):
 |------|-------------|---------|
 | `invalid_request` | 400 | Schema-invalid body, non-positive or non-finite `amount_px` / `settle.pixels`, unparseable durations. Rejected before any RPC. |
 | `not_guiding` | 409 | `dither` while PHD2's application state is not `Guiding`. |
-| `camera_busy` | 409 | `guiding/start`, `pause`, `resume`, `dither`, `calibration/clear` or `star/reselect` while the camera facade has a frame in flight, or after a crash until that frame's deadline. Never `guiding/stop`. |
+| `camera_busy` | 409 | `guiding/start`, `pause`, `resume`, `dither`, `calibration/clear` or `star/reselect` while the camera facade has a frame in flight, after a crash until that frame's deadline, or while a sweep lease is held. Never `guiding/stop`. |
 | `guide_failed` | 422 | PHD2 reported `SettleDone{status ≠ 0}` (star lost, calibration failed, settle threshold not reached in time). PHD2's error text is in `message`. |
 | `settle_timeout` | 504 | Wall-clock backstop (`settle.timeout + 10 s`) expired without any `SettleDone`. |
 | `stop_timeout` | 504 | PHD2 did not reach `Stopped` within `stop_timeout`. |
@@ -1092,7 +1097,9 @@ These are deployment rules. The facade checks the ones it can at load.
   service* while it captures. PHD2 accepts other clients on port 4400,
   and the facade cannot stop them. One case matters most: a **full pause**
   sent to PHD2 during a frame throws the frame away and leaves PHD2
-  refusing every capture until PHD2 restarts (measured, below).
+  refusing every capture until PHD2 restarts (measured, below). The
+  same holds for a whole sweep under a [sweep lease](#the-sweep-lease),
+  and so does sole control of the facade itself.
 - **`image_dir` is shared between PHD2's account and this service's.**
   See [Sharing `image_dir`](#sharing-image_dir).
 
@@ -1205,6 +1212,7 @@ return an earlier frame.
 | `PercentCompleted` | while exposing, the share of `LastExposureDuration` elapsed since `LastExposureStartTime`, capped at 99; 100 once the image is ready; 0 otherwise |
 | `HasShutter` | `false` |
 | `MaxADU` | 65535 |
+| `ImageArray` | unsigned 16-bit values, sent as `UInt16` (ImageBytes `TransmissionElementType` 8): half the bytes of `Int32` |
 | `MaxBinX` / `MaxBinY`, `BinX` / `BinY` | 1; setting any other bin → `InvalidValue` |
 | `CameraXSize` / `CameraYSize` | PHD2's `get_camera_frame_size`, read on connect |
 | `PixelSizeX` / `PixelSizeY` | `camera.pixel_size_x_um` / `camera.pixel_size_y_um` |
@@ -1309,6 +1317,107 @@ the lock is held. The frame's end clears it.
 The read-only endpoints (`stats`, `metrics`, `equipment`, `/health`) never
 take the lock and are never refused.
 
+### The sweep lease
+
+A focus sweep through the facade takes many frames, and the focuser moves
+between them. Each frame checks that PHD2 is `Stopped`, but nothing in
+that check holds guiding off between two frames. A guide start that lands
+between two samples fails the next frame after the focuser has already
+moved; one that is stopped again in time leaves frames taken under other
+conditions in one V-curve. The sweep lease holds guiding off for a whole
+sweep. rp's train lease takes it for a guiding train's training run
+([device-claims plan](../plans/device-claims-and-phd2-camera.md) D12,
+"Settled in C7").
+
+The lease is three ASCOM `Action`s on the facade's Camera.
+`SupportedActions` lists them before the config Actions, so a client
+knows a camera is the facade, with a phd2-guider that has the lease, when
+`rustyphoton:sweep-lease-acquire` is on that list. Each takes its
+`Parameters` as a JSON object and answers one:
+
+| Action | `Parameters` | Answer |
+|---|---|---|
+| `rustyphoton:sweep-lease-acquire` | `{"token": "<32 hex digits>", "ttl_s": 60}` | `{"token": "<the token>", "ttl_s": 60}` |
+| `rustyphoton:sweep-lease-renew` | `{"token": "<32 hex digits>"}` | `{"token": "<the token>", "ttl_s": 60}` |
+| `rustyphoton:sweep-lease-release` | `{"token": "<32 hex digits>"}` | `{"released": true}`, or `{"released": false}` when the token holds no lease |
+
+- **The caller names the token**: 32 lowercase hex digits, new for each
+  lease. The caller knows it before it asks, so a caller whose acquire
+  got no answer (a timeout, a dropped connection) can still release the
+  lease it may have been granted. `ttl_s` is a whole number of seconds
+  from 10 to 300, and 60 when left out. A `Parameters` string that is not
+  such an object, a token of any other form, or a `ttl_s` outside the
+  range is refused with `InvalidValue` before anything else is looked at.
+- **Acquiring** takes the guiding lock with `try_lock`, as a capture
+  does, so it never queues behind a guiding operation. It grants the
+  lease only when every check below passes, and each refusal says why:
+  - the camera is not connected, or PHD2 cannot be reached →
+    `NotConnected`;
+  - a guiding operation holds the lock → `InvalidOperation`;
+  - a facade frame is in flight → `InvalidOperation`, naming when the
+    frame ends at the latest. A frame whose driver ignores a stop runs on
+    after its abort has answered (see [Aborting](#aborting)), so this
+    refusal can outlast an abort;
+  - a lease is already held → `InvalidOperation`, naming when it expires
+    unless it is renewed;
+  - the token was used before: for a lease held, released or ended, or
+    in a release that came first → `InvalidOperation`;
+  - the facade already remembers 256 tokens (below) and this one is new
+    → `InvalidOperation`, naming when the oldest is forgotten;
+  - PHD2 is not `Stopped` → `InvalidOperation`, naming the state. It is
+    the allowlist a capture checks.
+
+  A `Connected` change that arrives while an acquire runs waits for it,
+  so a disconnect always ends the lease the acquire granted.
+- **Renewing** restarts the TTL from now, with the `ttl_s` the acquire
+  set. **Releasing** ends the lease. Neither takes the guiding lock, and
+  neither needs the camera connected: they change only the lease's own
+  record, so a renewal is never held up by a capture or by a guiding
+  operation. For a token that does not hold the lease:
+  - a renewal fails with `InvalidOperation`, saying why: the lease
+    expired, was released, was ended by a guiding stop, a disconnect or
+    shutdown, or was never acquired in this process. A restart forgets
+    every lease, so after one the holder learns it at its next renewal;
+  - a release answers `{"released": false}` and is never an error, so a
+    holder's clean-up never fails on a lease that has already ended. A
+    release of a token the facade has not seen records the token, so an
+    acquire that arrives after it under that token is refused.
+- **Tokens are remembered** while their lease is held and for an hour
+  after it ends, or after a release recorded them, and at most 256 at
+  once, the held lease's included. At 256 an acquire naming a new token is
+  refused, rather than a token younger than an hour being forgotten. A
+  release is never refused: at 256 a release of a token the facade has not
+  seen answers `{"released": false}` without recording it, and an acquire
+  under that token, a new one, is refused anyway while the cap holds.
+- **While a lease is held**, the guiding operations a capture refuses
+  (`guiding/start`, `pause`, `resume`, `dither`, `calibration/clear` and
+  `star/reselect`) are refused with `camera_busy` (409), naming the lease
+  and when it expires unless it is renewed. A mutation queued on the
+  guiding lock checks the lease once it holds the lock, as it checks the
+  capture slot, so it never waits out a lease.
+- **The lease ends** at its release, at its TTL, and at:
+  - `guiding/stop`, which is never refused. It ends the lease as soon as
+    it holds the guiding lock, whether or not PHD2 then confirms
+    `Stopped`. This is the privileged stop: it breaks a lease without
+    waiting for its TTL;
+  - `Connected = false`;
+  - shutdown. A restart forgets the lease, which is never written to
+    disk, so guiding through this service is accepted again once it
+    restarts, unless a frame's restart marker holds the capture slot.
+- **The TTL runs on the monotonic clock** from the acquire or the last
+  renewal, so a wall-clock step neither ends a lease early nor stretches
+  it. A lease that lapses during a frame needs no rule of its own: the
+  capture slot keeps guiding refused until PHD2 reports the frame.
+- **The lease does not gate captures.** ASCOM gives `StartExposure` no way
+  to name its sender, and every capture checks `Stopped` anyway, so a PHD2
+  that another client set looping fails the next frame, naming its state.
+  For the same reason, sole control of the facade during a sweep is a
+  deployment precondition, as sole control of PHD2 is (see
+  [Prerequisites](#prerequisites)): a capture another Alpaca client
+  starts between two samples makes the sweep's next one fail as busy.
+
+The ASCOM errors are listed under [Errors](#errors).
+
 ### Files
 
 - **Names.** Every capture writes
@@ -1322,7 +1431,8 @@ take the lock and are never refused.
   16-bit pixels plus eight 2880-byte header blocks. A larger file is
   refused unread. A frame whose `NAXIS1`/`NAXIS2` differ from the size
   read on connect fails with "PHD2's frame size changed; reconnect the
-  camera". The read and the decode are bounded by `capture_grace`: one
+  camera". A value outside 0 to 65535, which no frame PHD2 writes holds,
+  fails it too. The read and the decode are bounded by `capture_grace`: one
   that takes longer fails the exposure, so a stalled read cannot leave
   the camera downloading for good.
 - **Deleting.** The file is deleted on every exit from the capture:
@@ -1478,8 +1588,18 @@ ASCOM errors from the Camera:
 | `ImageArray` after a failed exposure (PHD2's error text, "aborted", the deadline, an unreadable or malformed file, a changed frame size) | `UnspecifiedError` with the reason |
 | `StopExposure`, and the cooler, gain and offset surface | `NotImplemented` |
 
-HTTP API: guiding operations refused while a capture is in flight return
-`camera_busy` (409), see [Error envelope](#error-envelope).
+ASCOM errors from the [sweep lease](#the-sweep-lease)'s Actions:
+
+| Condition | ASCOM error |
+|---|---|
+| `Parameters` not a JSON object of the Action's shape; a token not 32 lowercase hex digits; a `ttl_s` outside 10–300 | `InvalidValue` |
+| An acquire with the camera not connected, or PHD2 unreachable | `NotConnected` |
+| An acquire while a guiding operation holds the lock, a frame is in flight, a lease is held or PHD2 is not `Stopped`; a token used before; a new token at the cap of 256; a renewal of a token that does not hold the lease | `InvalidOperation` |
+| An Action the facade does not have | `ActionNotImplemented` |
+
+HTTP API: guiding operations refused while a capture is in flight or a
+sweep lease is held return `camera_busy` (409), see
+[Error envelope](#error-envelope).
 
 ### Real-hardware validation
 
@@ -1496,7 +1616,9 @@ HTTP API: guiding operations refused while a capture is in flight return
   luminance frame, 3864 × 2192, so `SensorType = Monochrome` holds. A
   client on the rig has a frame 0.8 s after the exposure ends: PHD2 adds
   0.5 s to read out and save it, the facade 0.1 s to read it, and the
-  34 MB download 0.2 s. PHD2 2.6.14's QHY driver ignores `stop_capture`
+  34 MB download 0.2 s. That download was of `Int32` values; the facade
+  has sent `UInt16` since, half the bytes. PHD2 2.6.14's QHY driver
+  ignores `stop_capture`
   (see [Aborting](#aborting)). PHD2 could not open the camera until its
   account could open the device node (see
   [Prerequisites](#prerequisites)).
@@ -1505,12 +1627,6 @@ HTTP API: guiding operations refused while a capture is in flight return
 ### Not in this version
 
 - **Off-host access**: loopback only, see above.
-- **The sweep lease** rp needs for a multi-frame focus sweep: three
-  ASCOM `Action`s on the facade device (acquire, renew, release) that keep
-  guiding from starting for a whole sweep, with an owner token and a TTL
-  renewed while the sweep runs. Designed in the device-claims plan's D12,
-  "Settled in C7", and built in C7 together with rp's train lease, its
-  only consumer.
 - **Gain, binning and offset** through the facade: PHD2's profile owns
   them.
 
@@ -1586,6 +1702,13 @@ HTTP API: guiding operations refused while a capture is in flight return
 - [x] `mock_phd2`: `save`/`path` and `SingleFrameComplete`; BDD `camera_facade.feature`, `camera_exclusivity.feature`, `camera_config.feature`
 - [x] ConformU against PHD2's simulator; the `image_dir` sharing recipe run with the packaged service account
 - [x] ConformU with a real guide camera behind PHD2 (the QHY5III715C on `pier1`)
+
+### Phase 10: The sweep lease (device-claims plan C7b)
+- [x] The three lease Actions and the token record
+- [x] `camera_busy` while a lease is held; `guiding/stop`, `Connected = false` and shutdown end it
+- [x] Frames sent as `UInt16`
+- [x] BDD `camera_lease.feature`, and the ImageBytes header in `camera_facade.feature`
+- [ ] A lease held through a sweep on `pier1` (C7d's hardware check)
 
 ## Dependencies
 

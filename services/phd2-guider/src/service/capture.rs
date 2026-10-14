@@ -99,12 +99,12 @@ pub enum FrameEnd {
     NotReported { waited: Duration },
 }
 
-/// A decoded frame: row-major unsigned 16-bit values as `i32`.
+/// A decoded frame: row-major unsigned 16-bit values.
 #[derive(Debug, Clone)]
 pub struct Frame {
     pub width: usize,
     pub height: usize,
-    pub pixels: Vec<i32>,
+    pub pixels: Vec<u16>,
 }
 
 /// The restart marker's content.
@@ -152,6 +152,11 @@ impl CaptureEngine {
 
     pub const fn grace(&self) -> Duration {
         self.grace
+    }
+
+    /// The guiding operations the capture slot lives beside.
+    pub const fn ops(&self) -> &Arc<GuiderOps> {
+        &self.ops
     }
 
     /// Start one exposure of `exposure` (whole milliseconds, 1 to
@@ -618,9 +623,11 @@ impl CaptureEngine {
         self.finish_claim(&path, false).await;
     }
 
-    /// At shutdown: end the facade's frame in flight, if any, and wait
-    /// up to the capture grace for PHD2 to report it.
+    /// At shutdown: end the sweep lease, end the facade's frame in
+    /// flight, if any, and wait up to the capture grace for PHD2 to report
+    /// it.
     pub async fn shutdown(&self) {
+        self.ops.end_lease(super::lease::LeaseEnd::Shutdown);
         let Some(claim) = self.ops.capture_claim() else {
             return;
         };
@@ -786,6 +793,17 @@ fn read_frame(path: &Path, width: u32, height: u32) -> Result<Frame, String> {
              read on connect; reconnect the camera"
         ));
     }
+    let pixels = pixels
+        .into_iter()
+        .map(u16::try_from)
+        .collect::<Result<Vec<u16>, _>>()
+        .map_err(|_| {
+            format!(
+                "PHD2's frame {} holds a value outside 0 to 65535, so it is not the unsigned \
+                 16-bit frame PHD2 writes",
+                path.display()
+            )
+        })?;
     Ok(Frame {
         width: got_width,
         height: got_height,
@@ -1329,6 +1347,36 @@ mod tests {
         assert_eq!((frame.width, frame.height), (8, 6));
         assert_eq!(frame.pixels[1], 1365);
         assert_eq!(frame.pixels[47], 47 * 1365);
+    }
+
+    #[test]
+    fn a_frame_holding_a_value_below_zero_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.fits");
+        // A signed 16-bit 2 x 1 frame with no BZERO: -1, then 7.
+        let header = [
+            "SIMPLE  =                    T",
+            "BITPIX  =                   16",
+            "NAXIS   =                    2",
+            "NAXIS1  =                    2",
+            "NAXIS2  =                    1",
+            "END",
+        ]
+        .iter()
+        .fold(String::new(), |mut header, card| {
+            use std::fmt::Write as _;
+            write!(header, "{card:<80}").unwrap();
+            header
+        });
+        let mut bytes = format!("{header:<2880}").into_bytes();
+        let mut data = Vec::new();
+        data.extend_from_slice(&(-1i16).to_be_bytes());
+        data.extend_from_slice(&7i16.to_be_bytes());
+        data.resize(2880, 0);
+        bytes.extend_from_slice(&data);
+        std::fs::write(&path, bytes).unwrap();
+        let err = read_frame(&path, 2, 1).unwrap_err();
+        assert!(err.contains("outside 0 to 65535"), "{err}");
     }
 
     #[test]
