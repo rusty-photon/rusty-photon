@@ -11,27 +11,29 @@ use crate::world::GuiderWorld;
 
 #[given("a mock PHD2 that settles successfully")]
 async fn mock_settles(world: &mut GuiderWorld) {
-    world.start_mock("settle_ok", "stops");
+    world.start_mock("settle_ok", "stops").await;
 }
 
 #[given("a mock PHD2 that fails to settle")]
 async fn mock_settle_fails(world: &mut GuiderWorld) {
-    world.start_mock("settle_fail", "stops");
+    world.start_mock("settle_fail", "stops").await;
 }
 
 #[given("a mock PHD2 that never settles")]
 async fn mock_never_settles(world: &mut GuiderWorld) {
-    world.start_mock("never_settle", "stops");
+    world.start_mock("never_settle", "stops").await;
 }
 
 #[given("a mock PHD2 that ignores stop requests")]
 async fn mock_never_stops(world: &mut GuiderWorld) {
-    world.start_mock("settle_ok", "never_stops");
+    world.start_mock("settle_ok", "never_stops").await;
 }
 
 #[given("a mock PHD2 with a connected rotator")]
 async fn mock_with_rotator(world: &mut GuiderWorld) {
-    world.start_mock_env("settle_ok", "stops", &[("MOCK_PHD2_ROTATOR", "connected")]);
+    world
+        .start_mock_env("settle_ok", "stops", &[("MOCK_PHD2_ROTATOR", "connected")])
+        .await;
 }
 
 #[given("the guider service is running")]

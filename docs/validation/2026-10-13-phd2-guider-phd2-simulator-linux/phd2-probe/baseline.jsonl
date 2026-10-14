@@ -1,0 +1,14 @@
+{"t": 0.0017, "kind": "event", "msg": {"Event": "Version", "Timestamp": 1791927314.197, "Host": "<rig-host>", "Inst": 1, "PHDVersion": "2.6.14", "PHDSubver": "", "OverlapSupport": true, "MsgVersion": 1}}
+{"t": 0.0018, "kind": "event", "msg": {"Event": "AppState", "Timestamp": 1791927314.198, "Host": "<rig-host>", "Inst": 1, "State": "Stopped"}}
+{"t": 1.0017, "kind": "scenario", "name": "baseline"}
+{"t": 1.0022, "kind": "rpc", "req": {"method": "get_app_state", "id": 1}, "reply": {"jsonrpc": "2.0", "result": "Stopped", "id": 1}, "sent": 1.0018}
+{"t": 1.0025, "kind": "rpc", "req": {"method": "get_profile", "id": 2}, "reply": {"jsonrpc": "2.0", "result": {"id": 2, "name": "Simulator"}, "id": 2}, "sent": 1.0022}
+{"t": 1.0027, "kind": "rpc", "req": {"method": "get_connected", "id": 3}, "reply": {"jsonrpc": "2.0", "result": false, "id": 3}, "sent": 1.0025}
+{"t": 1.003, "kind": "rpc", "req": {"method": "get_camera_frame_size", "id": 4}, "reply": {"jsonrpc": "2.0", "error": {"code": 1, "message": "camera not connected"}, "id": 4}, "sent": 1.0028}
+{"t": 1.0031, "kind": "rpc", "req": {"method": "get_exposure", "id": 5}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 5}, "sent": 1.003}
+{"t": 1.0034, "kind": "rpc", "req": {"method": "get_exposure_durations", "id": 6}, "reply": {"jsonrpc": "2.0", "result": [10, 20, 50, 100, 200, 500, 1000, 1500, 2000, 2500, 3000, 3500, 4000, 4500, 5000, 6000, 7000, 8000, 9000, 10000, 15000, 30000], "id": 6}, "sent": 1.0032}
+{"t": 1.0036, "kind": "rpc", "req": {"method": "get_camera_binning", "id": 7}, "reply": {"jsonrpc": "2.0", "error": {"code": 1, "message": "camera not connected"}, "id": 7}, "sent": 1.0034}
+{"t": 1.0038, "kind": "rpc", "req": {"method": "get_pixel_scale", "id": 8}, "reply": {"jsonrpc": "2.0", "result": 5.93012, "id": 8}, "sent": 1.0036}
+{"t": 1.0039, "kind": "rpc", "req": {"method": "get_use_subframes", "id": 9}, "reply": {"jsonrpc": "2.0", "result": false, "id": 9}, "sent": 1.0038}
+{"t": 1.0041, "kind": "rpc", "req": {"method": "get_paused", "id": 10}, "reply": {"jsonrpc": "2.0", "result": false, "id": 10}, "sent": 1.0039}
+{"t": 1.0041, "kind": "done"}

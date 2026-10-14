@@ -5,10 +5,18 @@
 //! Mode". The mutating operations serialize behind a single-flight
 //! mutex (overlapping requests queue, not error); the read-only
 //! snapshot paths bypass it.
+//!
+//! The same mutex guards the camera facade's **capture slot**
+//! (`docs/services/phd2-guider.md` § "Exclusivity: the capture slot"):
+//! a facade frame is claimed only while the mutex is held, every
+//! mutation except stop checks the claim once it holds the mutex and
+//! is refused with `camera_busy`, and the claim is released when PHD2
+//! reports the frame ended or its deadline passes.
 
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
@@ -114,6 +122,40 @@ pub struct StatsSnapshot {
     pub sample_count: usize,
 }
 
+/// Capacity of the frame-report channel. PHD2 sends one
+/// `SingleFrameComplete` per frame, and frames run one at a time.
+const FRAME_CHANNEL_CAPACITY: usize = 16;
+
+/// PHD2's `SingleFrameComplete`, republished by the event pump for the
+/// camera facade.
+#[derive(Debug, Clone)]
+pub struct FrameReport {
+    pub success: bool,
+    pub error: Option<String>,
+    /// The saved file, when the capture asked PHD2 to save it.
+    pub path: Option<String>,
+}
+
+/// A facade frame holding the capture slot.
+#[derive(Debug, Clone)]
+pub struct CaptureClaim {
+    /// The file PHD2 saves the frame to.
+    pub path: PathBuf,
+    /// When the slot is released even without PHD2's event:
+    /// `exposure + capture_grace` after the request, on the monotonic
+    /// clock the frame's own wait runs on, so a wall-clock step cannot
+    /// end a claim while PHD2 is still exposing.
+    pub expires: tokio::time::Instant,
+    /// The same moment in wall-clock time, for messages and the restart
+    /// marker.
+    pub deadline: SystemTime,
+    /// A guiding stop or the facade's own abort sent `stop_capture` for
+    /// this frame, so a failure PHD2 reports for it is that stop.
+    pub stop_requested: bool,
+    /// Taken from a restart marker: a frame a previous process started.
+    pub recovered: bool,
+}
+
 /// Stats endpoint payload: the window snapshot plus PHD2's current
 /// application state.
 #[derive(Debug)]
@@ -158,6 +200,13 @@ pub struct GuiderOps {
     /// raw PHD2 stream is what makes the snapshot a guide response
     /// returns include every step PHD2 sent before it settled.
     settle_events: broadcast::Sender<SettleOutcome>,
+    /// PHD2's single-frame reports, for the camera facade.
+    frame_reports: broadcast::Sender<FrameReport>,
+    /// The camera facade's capture slot. Set only while `op_lock` is
+    /// held; cleared when the frame ends.
+    capture: std::sync::Mutex<Option<CaptureClaim>>,
+    /// Fires each time the capture slot is released.
+    capture_released: tokio::sync::Notify,
     default_settle: SettleParams,
     stop_timeout: Duration,
 }
@@ -176,9 +225,121 @@ impl GuiderOps {
                 METRICS_WINDOW,
             )),
             settle_events: broadcast::channel(SETTLE_CHANNEL_CAPACITY).0,
+            frame_reports: broadcast::channel(FRAME_CHANNEL_CAPACITY).0,
+            capture: std::sync::Mutex::new(None),
+            capture_released: tokio::sync::Notify::new(),
             default_settle,
             stop_timeout,
         }
+    }
+
+    /// The mutex the guiding mutations serialize behind. The camera
+    /// facade takes it with `try_lock` to claim the capture slot.
+    pub(crate) const fn op_lock(&self) -> &tokio::sync::Mutex<()> {
+        &self.op_lock
+    }
+
+    fn capture_slot(&self) -> std::sync::MutexGuard<'_, Option<CaptureClaim>> {
+        self.capture
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The frame holding the capture slot, if any. A claim whose deadline
+    /// has passed holds nothing, so the documented bound holds even if
+    /// the task that should release it never runs.
+    #[must_use]
+    pub fn capture_claim(&self) -> Option<CaptureClaim> {
+        self.capture_slot()
+            .clone()
+            .filter(|claim| claim.expires > tokio::time::Instant::now())
+    }
+
+    /// Claim the capture slot for a facade frame. The caller holds the
+    /// guard of [`Self::op_lock`], which is what makes the claim atomic
+    /// with the mutations' check.
+    pub(crate) fn claim_capture(&self, _op: &tokio::sync::MutexGuard<'_, ()>, claim: CaptureClaim) {
+        debug!(path = %claim.path.display(), recovered = claim.recovered, "capture slot claimed");
+        *self.capture_slot() = Some(claim);
+    }
+
+    /// Release the capture slot if it is still held for `path`.
+    pub(crate) fn release_capture(&self, path: &Path) {
+        let released = {
+            let mut slot = self.capture_slot();
+            if slot.as_ref().is_some_and(|claim| claim.path == path) {
+                *slot = None;
+                true
+            } else {
+                false
+            }
+        };
+        if released {
+            debug!(path = %path.display(), "capture slot released");
+            self.capture_released.notify_waiters();
+        }
+    }
+
+    /// Wait until the capture slot is no longer held for `path`, or
+    /// `limit` passes. Returns whether it was released.
+    pub(crate) async fn wait_capture_released(&self, path: &Path, limit: Duration) -> bool {
+        let deadline = tokio::time::Instant::now().checked_add(limit);
+        loop {
+            let released = self.capture_released.notified();
+            let mut released = std::pin::pin!(released);
+            // Register before checking, so a release between the check
+            // and the wait is not missed.
+            released.as_mut().enable();
+            if self
+                .capture_slot()
+                .as_ref()
+                .is_none_or(|claim| claim.path != path)
+            {
+                return true;
+            }
+            let Some(deadline) = deadline else {
+                released.await;
+                continue;
+            };
+            if tokio::time::timeout_at(deadline, released).await.is_err() {
+                return false;
+            }
+        }
+    }
+
+    /// Mark the frame holding the slot as stopped by this service, so
+    /// the failure PHD2 reports for it reads as the stop it was.
+    pub(crate) fn mark_capture_stopped(&self) {
+        if let Some(claim) = self.capture_slot().as_mut() {
+            claim.stop_requested = true;
+        }
+    }
+
+    /// PHD2's single-frame reports, for the camera facade.
+    pub fn subscribe_frames(&self) -> broadcast::Receiver<FrameReport> {
+        self.frame_reports.subscribe()
+    }
+
+    /// Refuse a guiding mutation while a facade frame holds the capture
+    /// slot. Called with `op_lock` held.
+    fn refuse_while_capturing(&self) -> Result<(), ServiceError> {
+        let Some(claim) = self.capture_claim() else {
+            return Ok(());
+        };
+        let until = humantime::format_rfc3339_seconds(claim.deadline);
+        let message = if claim.recovered {
+            format!(
+                "a camera-facade frame started before this service restarted may still be \
+                 exposing; guiding operations are refused until it ends, by {until} at the latest"
+            )
+        } else {
+            format!(
+                "the camera facade is capturing a frame; guiding operations are refused until it \
+                 ends, by {until} at the latest"
+            )
+        };
+        debug!("{message}");
+        Err(ServiceError::CameraBusy(message))
     }
 
     fn push_metrics(&self, entry: FrameMetrics) {
@@ -215,7 +376,7 @@ impl GuiderOps {
     /// it are already in the window, so the snapshot a guide response
     /// carries can never under-report the steps PHD2 sent before it
     /// settled.
-    fn ingest(&self, event: Phd2Event) {
+    pub(crate) fn ingest(&self, event: Phd2Event) {
         match event {
             Phd2Event::GuideStep(step) => {
                 {
@@ -255,6 +416,18 @@ impl GuiderOps {
             Phd2Event::SettleDone { status, error } => {
                 // No receiver means no guide or dither is waiting.
                 let _ = self.settle_events.send(SettleOutcome { status, error });
+            }
+            Phd2Event::SingleFrameComplete {
+                success,
+                error,
+                path,
+            } => {
+                // No receiver means the camera facade is off.
+                let _ = self.frame_reports.send(FrameReport {
+                    success,
+                    error,
+                    path,
+                });
             }
             _ => {}
         }
@@ -324,6 +497,7 @@ impl GuiderOps {
         recalibrate: bool,
     ) -> Result<StatsSnapshot, ServiceError> {
         let _op = self.op_lock.lock().await;
+        self.refuse_while_capturing()?;
         // Subscribe before issuing the RPC so a fast SettleDone
         // cannot be missed.
         let rx = self.settle_events.subscribe();
@@ -371,6 +545,7 @@ impl GuiderOps {
         settle: SettleParams,
     ) -> Result<StatsSnapshot, ServiceError> {
         let _op = self.op_lock.lock().await;
+        self.refuse_while_capturing()?;
         let state = self
             .client
             .get_app_state()
@@ -392,6 +567,10 @@ impl GuiderOps {
     /// Stop capture and block until PHD2 confirms the Stopped state.
     /// Idempotent: an already-stopped PHD2 succeeds immediately.
     ///
+    /// Never refused for a camera-facade frame: with one in flight, the
+    /// stop is sent whatever PHD2's state reads, which ends the frame
+    /// (`docs/services/phd2-guider.md` § "Exclusivity: the capture slot").
+    ///
     /// # Errors
     ///
     /// Returns the mapped client failure when the state poll or the stop
@@ -404,9 +583,18 @@ impl GuiderOps {
             .get_app_state()
             .await
             .map_err(ServiceError::from)?;
-        if state == AppState::Stopped {
+        // A facade frame of this process is always stopped, whatever the
+        // state reads. During every measured frame PHD2 answered Looping,
+        // but its source reports Stopped for a capture-active guider in
+        // some guider states, so Stopped does not prove no frame is running.
+        let frame_in_flight = self.capture_claim().is_some_and(|claim| !claim.recovered);
+        if state == AppState::Stopped && !frame_in_flight {
             debug!("stop requested while already stopped");
             return Ok(());
+        }
+        if frame_in_flight {
+            debug!("stop ends the camera facade's frame in flight");
+            self.mark_capture_stopped();
         }
         self.client
             .stop_capture()
@@ -444,6 +632,7 @@ impl GuiderOps {
     /// cannot be reached, `guide_failed` when PHD2 rejects the RPC.
     pub async fn pause(&self, full: bool) -> Result<(), ServiceError> {
         let _op = self.op_lock.lock().await;
+        self.refuse_while_capturing()?;
         self.client.pause(full).await.map_err(ServiceError::from)
     }
 
@@ -455,6 +644,7 @@ impl GuiderOps {
     /// cannot be reached, `guide_failed` when PHD2 rejects the RPC.
     pub async fn resume(&self) -> Result<(), ServiceError> {
         let _op = self.op_lock.lock().await;
+        self.refuse_while_capturing()?;
         self.client.resume().await.map_err(ServiceError::from)
     }
 
@@ -528,6 +718,7 @@ impl GuiderOps {
         which: crate::types::CalibrationTarget,
     ) -> Result<(), ServiceError> {
         let _op = self.op_lock.lock().await;
+        self.refuse_while_capturing()?;
         self.client
             .clear_calibration(which)
             .await
@@ -543,6 +734,7 @@ impl GuiderOps {
     /// cannot be reached, `guide_failed` when PHD2 rejects the RPC.
     pub async fn reselect_star(&self) -> Result<(), ServiceError> {
         let _op = self.op_lock.lock().await;
+        self.refuse_while_capturing()?;
         self.client
             .find_star(None)
             .await
@@ -764,6 +956,138 @@ mod tests {
             matches!(err, ServiceError::SettleTimeout(_)),
             "unexpected error: {err:?}"
         );
+    }
+
+    fn claim(path: &str) -> CaptureClaim {
+        CaptureClaim {
+            path: PathBuf::from(path),
+            expires: tokio::time::Instant::now() + Duration::from_secs(60),
+            deadline: SystemTime::now() + Duration::from_secs(60),
+            stop_requested: false,
+            recovered: false,
+        }
+    }
+
+    async fn claim_slot(ops: &Arc<GuiderOps>, path: &str) {
+        let op = ops.op_lock().lock().await;
+        ops.claim_capture(&op, claim(path));
+    }
+
+    #[tokio::test]
+    async fn a_guiding_mutation_is_refused_while_a_frame_holds_the_slot() {
+        let ops = test_ops();
+        claim_slot(&ops, "/images/phd2-guider-a.fits").await;
+        // Refused before any RPC: the test client is not even connected.
+        let err = ops.pause(false).await.unwrap_err();
+        assert!(
+            matches!(&err, ServiceError::CameraBusy(text) if text.contains("capturing a frame")),
+            "unexpected error: {err:?}"
+        );
+        let err = ops
+            .clear_calibration(crate::types::CalibrationTarget::Mount)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ServiceError::CameraBusy(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_recovered_frame_is_named_as_one_from_before_the_restart() {
+        let ops = test_ops();
+        {
+            let op = ops.op_lock().lock().await;
+            ops.claim_capture(
+                &op,
+                CaptureClaim {
+                    recovered: true,
+                    ..claim("/images/phd2-guider-a.fits")
+                },
+            );
+        }
+        let err = ops.resume().await.unwrap_err();
+        assert!(
+            matches!(&err, ServiceError::CameraBusy(text) if text.contains("before this service restarted")),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_slot_is_released_only_for_its_own_frame() {
+        let ops = test_ops();
+        claim_slot(&ops, "/images/phd2-guider-a.fits").await;
+        ops.release_capture(Path::new("/images/phd2-guider-b.fits"));
+        assert!(ops.capture_claim().is_some());
+        ops.release_capture(Path::new("/images/phd2-guider-a.fits"));
+        assert!(ops.capture_claim().is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_claim_ends_on_the_monotonic_clock_not_the_wall_clock() {
+        let ops = test_ops();
+        {
+            let op = ops.op_lock().lock().await;
+            ops.claim_capture(
+                &op,
+                CaptureClaim {
+                    // As after the wall clock stepped forward an hour.
+                    deadline: SystemTime::now() - Duration::from_hours(1),
+                    ..claim("/images/phd2-guider-a.fits")
+                },
+            );
+        }
+        assert!(
+            ops.capture_claim().is_some(),
+            "a wall-clock step ended the claim"
+        );
+        tokio::time::advance(Duration::from_secs(61)).await;
+        assert!(
+            ops.capture_claim().is_none(),
+            "the claim outlived its expiry"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stop_marks_the_frame_in_the_slot_as_stopped() {
+        let ops = test_ops();
+        claim_slot(&ops, "/images/phd2-guider-a.fits").await;
+        ops.mark_capture_stopped();
+        assert!(ops.capture_claim().unwrap().stop_requested);
+    }
+
+    #[tokio::test]
+    async fn a_wait_for_the_slot_returns_once_it_is_released() {
+        let ops = test_ops();
+        claim_slot(&ops, "/images/phd2-guider-a.fits").await;
+        let waiter = tokio::spawn({
+            let ops = Arc::clone(&ops);
+            async move {
+                ops.wait_capture_released(
+                    Path::new("/images/phd2-guider-a.fits"),
+                    Duration::from_secs(30),
+                )
+                .await
+            }
+        });
+        // Whether the waiter has registered yet or not, it must see the
+        // release: it registers before it checks the slot.
+        ops.release_capture(Path::new("/images/phd2-guider-a.fits"));
+        assert!(waiter.await.unwrap());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_wait_for_the_slot_gives_up_at_its_limit() {
+        let ops = test_ops();
+        claim_slot(&ops, "/images/phd2-guider-a.fits").await;
+        let released = ops
+            .wait_capture_released(
+                Path::new("/images/phd2-guider-a.fits"),
+                Duration::from_secs(2),
+            )
+            .await;
+        assert!(!released);
+        assert!(ops.capture_claim().is_some());
     }
 
     #[test]

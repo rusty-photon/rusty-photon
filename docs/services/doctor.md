@@ -704,6 +704,17 @@ the typed shape — validates its own file and doctor aggregates.
 | `ports.collision` | fail | Two services resolve to the same **effective** port. Effective = the configured `server.port`, else the catalog default. A service is in the collision set when its unit is installed or its config file exists. |
 | `ports.discovery-collision` | fail | Two or more Alpaca configs set the same `discovery_port`. The responder is a per-host opt-in for single-driver deployments precisely because N responders collide; two enabled is always a mistake. |
 
+The catalog gives each service one port, its top-level `server.port`.
+`phd2-guider`'s opt-in camera facade
+([phd2-guider.md § Camera facade](phd2-guider.md#camera-facade-camera)) is
+a second listener, configured at `camera.server.port` (default 11128) and
+present only when `camera.enabled` is true. Doctor does not read it:
+`ports.collision` cannot report a clash on it, and a client URL at the
+facade's port joins no service, so it gets no client-target verdict. The
+facade binds only to loopback for that reason. Describing an optional
+second listener in the catalog is follow-up work, and so is the wider
+bind that waits on it.
+
 ### Units and privileges (systemd facts; run where the platform has them)
 
 | Check | Status | Trigger |

@@ -22,12 +22,14 @@ exports_files(
 
 _INTRA_WORKSPACE_DEPS = [
     "//crates/rp-fits:rp-fits",
+    "//crates/rusty-photon-camera-core:rusty-photon-camera-core",
     "//crates/rusty-photon-config:rusty-photon-config",
     "//crates/rusty-photon-doctor-checks:rusty-photon-doctor-checks",
     "//crates/rusty-photon-server-config:rusty-photon-server-config",
     "//crates/rp-auth:rp-auth",
     "//crates/rusty-photon-tls:rusty-photon-tls",
     "//crates/rusty-photon-service-lifecycle:rusty-photon-service-lifecycle",
+    "//crates/rusty-photon-driver:rusty-photon-driver",
 ]
 
 rust_library(

@@ -30,6 +30,35 @@ use crate::types::{
     StarImage,
 };
 
+/// The pending requests, by RPC id.
+type PendingMap = tokio::sync::Mutex<std::collections::HashMap<u64, PendingRequest>>;
+
+/// Takes a request's entry out of the pending set when the request ends:
+/// on a timeout, a write error, or a caller that drops the request (an
+/// outer timeout), none of which ever sees a reply. A reply has already
+/// taken the entry, and this then finds nothing.
+struct PendingEntry {
+    pending: Arc<PendingMap>,
+    id: u64,
+}
+
+impl Drop for PendingEntry {
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.pending.try_lock() {
+            pending.remove(&self.id);
+            return;
+        }
+        // The reader holds the set only briefly: remove it once it lets go.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let pending = Arc::clone(&self.pending);
+            let id = self.id;
+            runtime.spawn(async move {
+                pending.lock().await.remove(&id);
+            });
+        }
+    }
+}
+
 /// PHD2 client for communicating with PHD2 via JSON RPC
 pub struct Phd2Client {
     config: Phd2Config,
@@ -268,6 +297,10 @@ impl Phd2Client {
             let mut pending = self.shared.pending_requests.lock().await;
             pending.insert(id, PendingRequest { sender });
         }
+        let _entry = PendingEntry {
+            pending: Arc::clone(&self.shared.pending_requests),
+            id,
+        };
 
         // Send the request using the MessageWriter trait
         {
@@ -964,6 +997,35 @@ impl Phd2Client {
         };
 
         self.send_request("capture_single_frame", params_value)
+            .await?;
+        Ok(())
+    }
+
+    /// Capture a single full frame and have PHD2 save it at `path` when
+    /// the exposure ends (PHD2 2.6.14+).
+    ///
+    /// PHD2 replies as soon as the exposure has started. When the frame
+    /// ends it sends [`Phd2Event::SingleFrameComplete`] naming `path`,
+    /// after the file is written, on success and on failure. `path` must
+    /// be absolute and must not exist yet; PHD2 refuses it otherwise. The
+    /// capture leaves PHD2's own exposure, binning and gain settings as
+    /// they were.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client is not connected, the request
+    /// cannot be sent, no reply arrives within the command timeout or the
+    /// connection drops mid-flight, or PHD2 rejects the RPC: while it is
+    /// looping, guiding or already capturing a frame, with its camera
+    /// disconnected, or for a path or exposure it refuses.
+    pub async fn capture_single_frame_to(&self, exposure_ms: u32, path: &str) -> Result<()> {
+        debug!("Capturing single frame, exposure={exposure_ms}ms, saved to {path}");
+        let params = serde_json::json!({
+            "exposure": exposure_ms,
+            "save": true,
+            "path": path,
+        });
+        self.send_request("capture_single_frame", Some(params))
             .await?;
         Ok(())
     }
@@ -2483,6 +2545,73 @@ mod mock_tests {
     }
 
     #[tokio::test]
+    async fn a_saved_capture_asks_phd2_to_save_the_frame_at_the_path() {
+        let (client, sent) = create_test_client_with_responses(vec![
+            Some(version_event()),
+            Some(rpc_response(1, "0")),
+        ]);
+
+        client.connect().await.unwrap();
+        client
+            .capture_single_frame_to(1500, "/var/lib/rusty-photon/phd2-images/f.fits")
+            .await
+            .unwrap();
+
+        let messages = sent.lock().unwrap();
+        let request: serde_json::Value = serde_json::from_str(&messages[0]).unwrap();
+        assert_eq!(request["method"], "capture_single_frame");
+        assert_eq!(
+            request["params"],
+            serde_json::json!({
+                "exposure": 1500,
+                "save": true,
+                "path": "/var/lib/rusty-photon/phd2-images/f.fits",
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_with_two_errors_fails_the_call_with_the_first() {
+        // PHD2 2.6.14's reply with its camera disconnected. Before the
+        // reader kept the first error, this call waited out the command
+        // timeout instead.
+        let (client, _sent) = create_test_client_with_responses(vec![
+            Some(version_event()),
+            Some(
+                r#"{"jsonrpc":"2.0","error":{"code":1,"message":"cannot capture single frame when camera is not connected"},"error":{"code":2,"message":"failed to start exposure"},"id":1}"#
+                    .to_string(),
+            ),
+        ]);
+
+        client.connect().await.unwrap();
+        let err = client
+            .capture_single_frame_to(1000, "/tmp/f.fits")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Phd2Error::RpcError { code: 1, message } if message.contains("camera is not connected")),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reply_the_client_cannot_read_fails_its_request_at_once() {
+        // `error` is not an object, so the reply does not parse; it still
+        // names request 1, which fails now instead of at the timeout.
+        let (client, _sent) = create_test_client_with_responses(vec![
+            Some(version_event()),
+            Some(r#"{"jsonrpc":"2.0","error":"oops","id":1}"#.to_string()),
+        ]);
+
+        client.connect().await.unwrap();
+        let err = client.get_app_state().await.unwrap_err();
+        assert!(
+            matches!(&err, Phd2Error::InvalidState(text) if text.contains("cannot read")),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_capture_single_frame_with_exposure() {
         let (client, sent) = create_test_client_with_responses(vec![
             Some(version_event()),
@@ -2834,5 +2963,40 @@ mod mock_tests {
 
         client.set_auto_reconnect_enabled(true);
         assert!(client.is_auto_reconnect_enabled());
+    }
+
+    fn pending_with(id: u64) -> Arc<PendingMap> {
+        let (sender, _receiver) = tokio::sync::oneshot::channel();
+        let pending = Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new()));
+        pending
+            .try_lock()
+            .unwrap()
+            .insert(id, PendingRequest { sender });
+        pending
+    }
+
+    #[tokio::test]
+    async fn a_request_that_ends_without_a_reply_leaves_no_pending_entry() {
+        let pending = pending_with(7);
+        drop(PendingEntry {
+            pending: Arc::clone(&pending),
+            id: 7,
+        });
+        assert!(pending.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_pending_entry_is_removed_once_the_busy_set_is_free() {
+        let pending = pending_with(7);
+        let held = pending.lock().await;
+        drop(PendingEntry {
+            pending: Arc::clone(&pending),
+            id: 7,
+        });
+        assert_eq!(held.len(), 1);
+        drop(held);
+        // On this one-thread runtime the removal task runs at this yield.
+        tokio::task::yield_now().await;
+        assert!(pending.lock().await.is_empty());
     }
 }
