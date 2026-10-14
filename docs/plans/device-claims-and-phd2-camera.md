@@ -2630,15 +2630,22 @@ designed:
     (cancelled, or timed out waiting for the answer) still knows the id
     and can release it. A release that arrives before rp has seen the
     acquire records the id as ended, so the acquire, when it arrives, is
-    refused.
+    refused. rp keeps a seen id for an hour, longer than the longest wait
+    before a grant plus `max_duration`, and keeps at most 4096, dropping
+    the oldest first. The held lease's id is never dropped. rp's MCP
+    endpoint is authenticated, so a client able to flood the set already
+    holds rp's credentials.
   - **`max_duration`** is the lease's life, counted from the moment it
     is granted: 5 minutes by default, at most 10. The waits before the
     grant are bounded by the holders being waited on, as every gate wait
-    is (rp.md § Mount Motion Gate). A capture under the lease is refused
-    if its duration plus rp's readout backstop would run past `ends_by`,
-    so no call keeps the lease's gate permit past it. Starting a training
-    run no closer to the meridian flip than its lease's life is the
-    session's job, as the flip's timing is.
+    is (rp.md § Mount Motion Gate). A call under the lease is admitted
+    until `ends_by`, and then runs to its own end, bounded by its own
+    deadline: a capture's readout backstop, a focuser move's leg
+    deadlines, a filter change's wait for the wheel to rest. The lease's
+    gate permit is therefore held at most `max_duration` plus the last
+    call's own deadline, one call longer than the lease (below).
+    Starting a training run no closer to the meridian flip than that is
+    the session's job, as the flip's timing is.
   - A train without a terminal focuser or a camera is refused. The lease
     **moves** what a training run on the train may move: its terminal
     focuser and every filter wheel in it. It **holds still** every other
@@ -2667,12 +2674,17 @@ designed:
      `rustyphoton:sweep-lease-acquire`. A facade that refuses the acquire
      has its refusal relayed. A **guiding** train's lease requires a
      facade: a guiding train's camera that does not list the Action
-     refuses the lease ("camera 'x' of guiding train 'guide' is not the
-     PHD2 camera facade"). That is O4's rule 7, enforced where the camera
-     is known. An imaging train's lease has no facade lease. rp renews
-     the facade lease every third of its TTL from the moment it is taken,
-     through the rest of the acquire's waits, and releases it with the
-     lease. The facade still refuses while a frame of its own runs on
+     refuses the lease, naming what is missing ("camera 'x' of guiding
+     train 'guide' does not offer the sweep lease
+     (`rustyphoton:sweep-lease-acquire`): it is not the PHD2 camera
+     facade, or its phd2-guider predates the lease"). A facade from
+     before the lease lacks the Action too, so the message points at a
+     version skew as well as at the configuration. That is O4's rule 7,
+     enforced where the camera is known. An imaging train's lease has no
+     facade lease. rp asks for a `ttl_s` of 60 and renews every 20 s from
+     the moment the facade lease is taken, through the rest of the
+     acquire's waits, so two renewals in a row can fail before it lapses.
+     rp releases it with the train lease. The facade still refuses while a frame of its own runs on
      after rp's capture through it ended, which is the case of a cancelled
      sweep's last frame on a camera whose driver ignores a stop (below);
      its refusal names when that frame ends.
@@ -2709,8 +2721,9 @@ designed:
   - Without the id, a capture through a held camera, and a move or
     filter change of a device the lease moves or holds still, wait for
     the lease to end, as a capture waits behind another capture through
-    its camera. The wait can be cancelled, and the lease's
-    `max_duration` bounds it once the lease is granted.
+    its camera. The wait can be cancelled, and once the lease is granted
+    it is bounded by the lease's `max_duration` plus its last call's own
+    deadline.
   - A call whose id is not held (expired, released, ended by the safety
     transition, or its facade lease lost) is refused saying why, a
     capture, a move and a filter change alike. That is how a sweep learns
@@ -2736,13 +2749,16 @@ designed:
   An ending lease admits no further call at once, and keeps its slots and
   its gate permit until the last call under it has finished. A capture
   under it therefore never loses them mid-exposure, whatever ended the
-  lease. Since a capture must fit before `ends_by`, the gate's longest
-  hold is `max_duration`. A capture cancelled on a camera whose driver
-  ignores a stop is the one exception: it keeps the permit to its frame's
-  natural end, at most that sample's exposure (a few seconds for a guide
-  camera), and a recovery slew after the safety transition waits that
-  long. If rp crashes, its side ends with the process and the facade's
-  at its TTL.
+  lease. The gate's longest hold is therefore `max_duration` plus the
+  last call's own deadline, whether that call is a capture, a move or a
+  filter change. A **cancelled** capture gives the gate back sooner: it
+  releases its gate permit as soon as its abort is sent, and keeps only
+  its camera's slot until the camera is idle. Its frame is discarded, so
+  mount motion during the rest of it harms nothing, and a recovery slew
+  after the safety transition goes at once, even on a camera whose
+  driver ignores a stop. That rule is rp's capture in general, not only
+  under a lease, so C7c's rp.md change carries it. If rp crashes, its
+  side ends with the process and the facade's at its TTL.
 - **The gate learns guide captures.** A capture through a camera in
   **any** train holds the gate shared, and only a camera outside every
   train is exempt. rp.md § Mount Motion Gate's exemption shrinks to that.
@@ -2756,8 +2772,11 @@ designed:
   - **`focus_train`** takes one lease for the whole run, its retried
     attempts included, so neither guiding nor mount motion can slip in
     between attempts. It asks for the `max_duration` its sweep needs:
-    points × frames per step × (exposure + 1 s) × attempts, plus the
-    moves. It refuses before anything moves when that is over 10
+    (points × frames per step + 1) × (exposure + 2 s) × attempts, plus
+    the moves. The extra frame is each attempt's confirmation frame at
+    the vertex. The 2 s per frame covers the 0.8 s measured for PHD2, the
+    facade and the download (below), and rp's FITS write, its document
+    and `measure_basic` on a full guide frame. It refuses before anything moves when that is over 10
     minutes, naming the numbers, so a configuration that cannot finish
     inside a lease fails at once and says why.
   - It acquires the lease under a fresh id before anything moves, passes
@@ -2785,7 +2804,8 @@ designed:
 - **Slices**, each its own PR, in this order:
   - **C7a**, this design, with C6's status and its run with a real guide
     camera;
-  - **C7b**, `phd2-guider`'s facade lease;
+  - **C7b**, `phd2-guider`'s facade lease, and its frames sent as
+    UInt16 (below), which its `phd2-guider.md` change records;
   - **C7c**, rp's train lease and the gate change;
   - **C7d**, `focus-model`'s training run on a guiding train;
   - **C7e**, the rest of S10's `rp` work, which needs no facade: the
@@ -2808,7 +2828,8 @@ designed:
   `stop_capture`, so a cancelled sweep leaves the camera exposing to the
   frame's own end. That is at most one sample's exposure. Until then a
   capture through the facade is refused as busy, and so is a new facade
-  lease, whose refusal names when the frame ends.
+  lease, whose refusal names when the frame ends. The mount does not wait
+  for it: rp's cancelled capture has given its gate permit back.
 
 ### D13. Why not the alternatives
 

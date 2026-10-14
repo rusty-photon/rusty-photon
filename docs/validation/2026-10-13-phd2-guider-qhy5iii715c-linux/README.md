@@ -34,7 +34,7 @@ suite needs stars.
 | Host | the field rig (Raspberry Pi 5, Raspberry Pi OS, Debian 13, aarch64) |
 | Build | `cargo run --release -p phd2-guider --bin phd2-guider` on the rig (cargo 1.99.0), no features; no native SDK is involved in the facade |
 | Guide camera | QHY5III715C (Sony IMX715, colour), USB `1618:0716` after its firmware load; QHY SDK id `QHY5III715C-6cf42c41a8b2f3188`. On the port it uses in service |
-| PHD2 | 2.6.14, source-built on the rig with its bundled QHY camera support (QHY SDK `V20240329_10`), headless under TigerVNC as the operator. A new equipment profile, "QHY5III715C guide (no mount)": camera `QHY Camera`, mount, aux mount, AO and rotator all `None`, pixel size 1.45 µm, focal length 360 mm. Made by cloning the "Simulator" profile's keys while PHD2 was stopped (`probe/addprofile.py`). Only the camera was connected; PHD2 never looped, guided or connected a mount |
+| PHD2 | 2.6.14, source-built on the rig with its bundled QHY camera support (QHY SDK `V20240329_10`), headless under TigerVNC as the operator. A new equipment profile, "QHY5III715C guide (no mount)": camera `QHY Camera`, mount, aux mount, AO and rotator all `None`, pixel size 1.45 µm, focal length 360 mm. Made by cloning the "Simulator" profile's keys while PHD2 was stopped (`probe/addprofile.py`). The script sets pixel size and focal length only where the source profile has the key, and says nothing when it lacks one. This one had both: the frame's header carries `XPIXSZ` 1.45 and `PIXSCALE` 0.8307896, which is 206.265 × 1.45 / 360 (`probe/probe-abort-then-start.jsonl`). Only the camera was connected; PHD2 never looped, guided or connected a mount |
 | Vendor driver | `rusty-photon-qhy-camera` was stopped for the run, so it did not hold the camera, and started again afterwards. No `usb_devices` list was written: the run tests PHD2's side of the facade, and the list path is the drivers' own (C5) |
 | Service account | The operator's, not `rusty-photon`. PHD2 and the facade both ran as the operator, with `camera.image_dir` in the operator's home. The service account's sandbox and the shared-directory recipe were tested in the simulator record and are not repeated here |
 | Config | REST on `127.0.0.1:11230` and the facade on `127.0.0.1:11228`. `camera.pixel_size_x_um` / `_y_um` 1.45, the value `qhy-camera` reads from the SDK for this camera. Defaults otherwise (`capture_grace` 10 s) |
@@ -89,6 +89,14 @@ All times come from the probe, which ran on the rig, drove the facade over
 loopback and read PHD2's events as a second event-server client
 (`probe/qhyprobe.py`). `ImageReady` was polled every 10 ms.
 
+The probe logs what it saw and does not assert it. A frame that never
+came is logged with a null `event_t` or `ready_t`, and a scenario that
+raises is logged and the next one runs. In these runs, every `null` in
+the three JSONL files is an Alpaca reply's empty `Value` (a void PUT),
+an absent request `form`, or a FITS card PHD2 does not write
+(`BAYERPAT`, `EXPTIME`, `PIXSIZE1`, `PIXSIZE2`). No `event_t` or
+`ready_t` is null. A re-run must treat a null timing field as a failure.
+
 **PHD2 alone** (`capture_single_frame` with a path), from the request to
 `SingleFrameComplete`:
 
@@ -133,7 +141,8 @@ nothing for a QHY camera:
   `AbortExposure` sent 1.0 s into a 5 s exposure answered after 2.003 s.
   The facade's 2 s wait for PHD2's event ran out (`service.log`: "PHD2 has
   not reported the aborted frame yet"). `CameraState` read `Exposing` (2)
-  until PHD2's event, 5.48 s after the start, with `Success: true`. The
+  until PHD2's event, 5.52 s after `StartExposure` was sent, with
+  `Success: true`. The
   facade then deleted the file and ended the exposure as aborted
   ("aborted exposure ended"). `ImageReady` stayed false, and the next
   `StartExposure` was accepted.

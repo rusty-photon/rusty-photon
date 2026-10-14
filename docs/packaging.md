@@ -618,11 +618,21 @@ and PHD2 both open it.
    since `85-qhyccd.rules` acts only on `add`. `ls -l /dev/bus/usb/*/*`
    shows the camera's node with your group. Start PHD2 after this, or
    restart it: its QHY support looks for cameras once, and does not look
-   again after finding none. On a board whose USB controller udev names
-   `xhci-hcd.N.auto` (Rockchip, i.MX), doctor's port and udev's differ
-   ([device-claims plan, D2](plans/device-claims-and-phd2-camera.md)).
-   There, take the camera's `ID_PATH_WITH_USB_REVISION` from
-   `udevadm info` instead.
+   again after finding none.
+
+   On a board whose USB controller udev names `xhci-hcd.N.auto`
+   (Rockchip, i.MX), doctor's port and udev's differ
+   ([device-claims plan, D2](plans/device-claims-and-phd2-camera.md)),
+   and udev's cannot key this rule. The kernel numbers `.auto`
+   controllers in probe order, so after a reboot the same name can
+   belong to the other controller, and the rule would then give your
+   group whatever camera sits on that socket of it, perhaps the imaging
+   camera. There, match the camera's `DEVPATH` (from `udevadm info`)
+   instead, with its `xhci-hcd.N.auto` and bus-number parts replaced by
+   `*`, so the match rests on the stable platform node that doctor's
+   port names and on the port chain. Check after a reboot that the
+   camera's node still has your group. This variant has not been run on
+   such a board.
 
 2. **Create the shared directory** (Linux). PHD2 runs as you, under your
    VNC session. The service runs as `rusty-photon` and may write only
