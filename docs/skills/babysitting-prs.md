@@ -119,7 +119,10 @@ reviewed under the wrong SHA. Then, for each head:
    ```
 
    Post it from a file, which keeps the backticks and pipes away from
-   the shell, and escape a `|` inside a table cell as `\|`. A comment
+   the shell, and escape a `|` inside a table cell as `\|`. Escape `<`
+   as `&lt;` in the findings' text outside backticks too, or GitHub drops
+   what reads as a tag: a bare `Option<Duration>` renders as `Option`.
+   A comment
    holds 65,536 characters; if the full text runs over, put it in a
    second comment.
 

@@ -188,6 +188,10 @@ outside API consumers to protect.
 | likely or plausible and low, or remote and high | **optional** | fixed only if the change is small and stays in code the PR already touches; otherwise declined, in the round comment for the owner to see |
 | anything else                                   | **decline**  | declined, with the rating's reason as the record                                                                                        |
 
+A finding that the change breaks a project tenet — above all tenet 3, no
+actuation on connect (AGENTS.md rule 13) — rates **fix** whatever its
+realism: the tenets hold on every path, not only the likely ones.
+
 A finding that repeats one an earlier round declined is declined with a
 link to that round, unless the code it points at has changed since.
 Fallout from an earlier round's fix is rated on its own merits, like any
