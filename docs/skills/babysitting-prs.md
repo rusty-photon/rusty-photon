@@ -67,7 +67,9 @@ reviewed under the wrong SHA. Then, for each head:
    - **fix** → verify the claim against the code, then fix it.
    - **optional** → fix it only if the change is small and stays in
      code the PR already touches; otherwise decline it.
-   - **decline** → decline it; the rating's reason is the record.
+   - **decline** → check the code it points at for the trigger the
+     rating ruled out, then decline it, with the rating's reason as the
+     record.
    - Overrule a verdict only with evidence, in either direction, and
      say so in the round comment (code-review.md §The rating step).
    - If the same wrong claim keeps recurring, consider making the code
@@ -88,16 +90,18 @@ reviewed under the wrong SHA. Then, for each head:
    `delete_branch_on_merge` on, a push to a PR the owner has merged in
    the meantime silently recreates its deleted branch (`remote: Create a
    pull request … pull/new/…` in the push output is the tell). A round
-   that fixed nothing skips this step.
+   with nothing to push — no fix, and no merge of `origin/main` — skips
+   this step.
 8. **Record the round** — one PR comment per review, posted once its
    outcomes are settled: after the push when the round fixed something,
    straight away when it declined everything. It is the only record of
    the review on the PR, and what the merge-ready report cites. Every
-   finding gets a row; the review's full text goes underneath:
+   finding gets a row, the review's full text goes underneath, and a
+   count that is zero is left out of the first line:
 
    ```markdown
    **Code review (high) of `<sha>`**, review <r> of 4: <k> findings —
-   <f> fixed in `<fix-sha>`, <d> declined.
+   <f> fixed in `<fix-sha>`, <d> declined, <h> held for the owner.
 
    | # | Where | Finding | Rating | Outcome |
    |--:|-------|---------|--------|---------|
@@ -132,8 +136,8 @@ reviewed under the wrong SHA. Then, for each head:
    ```
 
 9. **Go to step 1 for the new head.** A round that declined every
-   finding pushed nothing, and its review is the clean review of the
-   head.
+   finding and had nothing else to push leaves the head where it was,
+   and its review is the clean review of the head.
 
 Each review sees the PR as it stands, not the earlier rounds, so a
 finding you declined can come back. The rating step reads the earlier
@@ -144,10 +148,12 @@ keeps that fallout small: on the record, fixing noise was what kept the
 rounds coming (code-review.md §What the record shows).
 
 Four reviews is the budget, not counting the re-run of a review that
-errored. If the fourth raises findings rated **fix**, stop and report to
-the owner, and don't start a fifth for any reason without their say.
-Post that review's round comment all the same, with "held for the
-owner" as the outcome of each finding you would have fixed.
+errored. Nothing the fourth review raises is fixed without the owner's
+say, since any fix would need a fifth review: decline what rates
+**optional** or **decline**, and if anything rates **fix**, stop and
+report to the owner, and don't start a fifth for any reason without
+their say. Post that review's round comment all the same, with "held
+for the owner" as the outcome of each finding rated **fix**.
 Findings that survive four rounds usually mean a design question that
 fixes cannot settle.
 

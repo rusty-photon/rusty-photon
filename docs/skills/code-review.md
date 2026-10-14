@@ -239,11 +239,13 @@ Findings:
 ```
 
 The babysitter acts on the verdicts, and overrules one only with
-evidence, saying so in the round comment. A **fix** whose claim the
-code, a command or a record refutes is declined with that evidence; a
-**decline** it can show is realistic — a reproduction, a log, hardware
-behaviour on record — is fixed. That a finding sounds right, or that its
-fix looks cheap, is evidence of neither.
+evidence, saying so in the round comment. The same evidence counts in
+both directions: the code, a command and its output, or a record. A
+**fix** whose claim that evidence refutes is declined; a **decline**
+whose trigger it shows to be realistic — the path runs on every
+reconnect, a reproduction, a log, hardware behaviour on record — is
+fixed. That a finding sounds right, or that its fix looks cheap, is
+evidence of neither.
 
 A human reviewer's comment is not rated: it gets an answer on its
 merits, in its own thread.
@@ -251,10 +253,12 @@ merits, in its own thread.
 ## Acting on a finding
 
 `high` has no separate verification step, and the rating judges a
-finding's scenario rather than re-reading the code. So verify every
-claim against the code before acting on it, in both directions: don't
-dismiss a real bug because it reads pedantic, and don't "fix" working
-code because the finding sounds confident.
+finding's scenario rather than re-reading the code. So check every
+finding against the code before acting on it, in both directions — a
+fix-rated claim before fixing it, a decline-rated one for the trigger
+its rating ruled out: don't dismiss a real bug because it reads
+pedantic, and don't "fix" working code because the finding sounds
+confident.
 
 - **A finding can be right about the defect and wrong about the
   remedy.** On #902 a finding correctly called a schema assertion too

@@ -48,14 +48,16 @@ Arguments: $ARGUMENTS
    fork — using the prompt in code-review.md §The rating step.
 5. Act on each verdict (babysitting-prs.md, step 4 of the loop): fix what
    rates fix, fix an optional one only if it is small and in code the PR
-   touches, decline the rest, and overrule a verdict only with evidence.
+   touches, decline the rest once the code shows no trigger the rating
+   missed, and overrule a verdict only with evidence.
    Run the quality gate (AGENTS.md rule 4), commit (rule 6), check the PR
    is still open, and push once per round. Then post the round comment
    (step 8) and reply in any human reviewer's thread.
 6. Between events, run the background CI watcher the skill doc mandates
    (§Pacing) rather than sleeping on assumed durations. For unattended
    babysitting, wrap this command in `/loop`.
-7. If the fourth review still raises findings rated fix, stop and report
-   to the owner. When the exit criteria hold, report merge readiness —
+7. Fix nothing the fourth review raises without the owner's say: decline
+   its optional findings, and if any rate fix, stop and report to the
+   owner. When the exit criteria hold, report merge readiness —
    checks, each review with its fixed / declined counts, thread status —
    and stop. Never merge the PR yourself.
