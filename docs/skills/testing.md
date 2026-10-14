@@ -486,7 +486,10 @@ binary discovery, spawning, port parsing, and graceful shutdown logic.
 
 - `ServiceHandle` — spawns a service binary, parses its bound port from stdout,
   provides `stop()` for graceful SIGTERM shutdown, and drains stdout to prevent
-  pipe deadlocks. On `Drop`, sends a best-effort SIGTERM.
+  pipe deadlocks. On `Drop`, sends a best-effort SIGTERM. Its async starts
+  spawn on the blocking pool, so a step that starts a service never blocks
+  the poll loop
+  ([§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop)).
 - `parse_bound_port()` — standalone function also usable by ConformU tests.
 - `run_once_async()` / `run_once()` — run a binary once (a `doctor` subcommand,
   a `--help`) and reap its output. Steps use the async form; see
@@ -721,7 +724,10 @@ take it from a reserved band **below the platform's ephemeral floor** (32768 on
 Linux, 49152 on Windows and macOS), entered at a per-process start so concurrent
 test binaries do not march in step. `bdd_infra::reserved_test_port()` is the
 shared helper for suites built on `bdd-infra` (calibrator-flats' suite pins
-rp's port with it so the provider's config can name rp before rp starts);
+rp's port with it so the provider's config can name rp before rp starts). A
+step calls its async form, `bdd_infra::reserved_test_port_async()`, which
+probes on the blocking pool
+([§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop));
 `reserved_test_port()` in `services/phd2-guider/tests/test_integration.rs` is
 the original, self-contained implementation.
 
@@ -1082,6 +1088,18 @@ process — cost far more than the step it sits in. While it runs:
 So: **`bdd_infra::run_once_async` in a step, never `run_once`** (the
 synchronous form is for plain `#[test]`s, which have no runtime to yield
 to), and any other blocking wait belongs in `tokio::task::spawn_blocking`.
+
+A wait does not have to look like one. `reserved_test_port`'s probe is a
+loopback `connect()` that is meant to be refused, and on the Windows CI
+runner each refusal took about 2 s: phd2-guider's camera-facade scenarios,
+which each probed once from a step, started their services 2.00 s apart,
+while its scenarios that probed nothing started theirs milliseconds apart.
+The poll loop stood still for each of those 2 s. Every other
+scenario's health wait then ran out with its service up and connected,
+and 48 of 58 scenarios failed on a service that had done nothing wrong. Steps call **`reserved_test_port_async`**, and
+`ServiceHandle`'s async starts spawn their process on the blocking pool
+for the same reason: process creation is a synchronous call a loaded host
+makes slow.
 `tokio::task::block_in_place` is *not* a fix here — it hands a worker's
 queue to a replacement thread, and the poll loop being starved is not on a
 worker.

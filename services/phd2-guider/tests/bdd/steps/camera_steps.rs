@@ -71,10 +71,14 @@ async fn mock_with_disconnected_camera(world: &mut GuiderWorld, version: String)
 }
 
 /// The `camera` block the suite runs the facade with.
-fn camera_block(world: &mut GuiderWorld) -> serde_json::Value {
-    let port = *world
-        .camera_port
-        .get_or_insert_with(bdd_infra::reserved_test_port);
+async fn camera_block(world: &mut GuiderWorld) -> serde_json::Value {
+    let port = if let Some(port) = world.camera_port {
+        port
+    } else {
+        let port = bdd_infra::reserved_test_port_async().await;
+        world.camera_port = Some(port);
+        port
+    };
     let image_dir = world.image_dir();
     serde_json::json!({
         "enabled": true,
@@ -95,7 +99,7 @@ async fn start_with_camera(world: &mut GuiderWorld, camera: serde_json::Value) {
 
 #[given("the guider service is running with the camera facade enabled")]
 async fn service_with_camera(world: &mut GuiderWorld) {
-    let camera = camera_block(world);
+    let camera = camera_block(world).await;
     start_with_camera(world, camera).await;
 }
 
@@ -103,14 +107,14 @@ async fn service_with_camera(world: &mut GuiderWorld) {
     expr = "the guider service is running with the camera facade enabled and a capture grace of {string}"
 )]
 async fn service_with_camera_grace(world: &mut GuiderWorld, grace: String) {
-    let mut camera = camera_block(world);
+    let mut camera = camera_block(world).await;
     camera["capture_grace"] = grace.into();
     start_with_camera(world, camera).await;
 }
 
 #[given("the guider service is running with the camera facade enabled and no unique_id")]
 async fn service_with_camera_no_id(world: &mut GuiderWorld) {
-    let mut camera = camera_block(world);
+    let mut camera = camera_block(world).await;
     camera
         .as_object_mut()
         .expect("camera block is an object")

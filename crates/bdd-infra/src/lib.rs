@@ -279,6 +279,11 @@ const RESERVED_PORT_TRIES: u16 = 64;
 /// The same shape as `reserved_test_port` in phd2-guider's integration
 /// tests, shared here for the suites built on this crate.
 ///
+/// The probe is a synchronous `connect()`, and a refused connect is not
+/// instant everywhere: on the Windows CI runner each one cost about 2 s.
+/// **A cucumber step calls [`reserved_test_port_async`] instead**, for
+/// the reason [`run_once_async`] gives; this form is for plain `#[test]`s.
+///
 /// # Panics
 ///
 /// Panics if no band port answers "refused" within
@@ -317,6 +322,18 @@ pub fn reserved_test_port() -> u16 {
     panic!("no free port in {RESERVED_PORT_TRIES} tries");
 }
 
+/// [`reserved_test_port`], probed on the blocking pool so the step that
+/// needs the port yields instead of stalling every scenario in flight.
+///
+/// # Panics
+///
+/// [`reserved_test_port`]'s panic, carried over with its message.
+pub async fn reserved_test_port_async() -> u16 {
+    tokio::task::spawn_blocking(reserved_test_port)
+        .await
+        .unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()))
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod reserved_port_tests {
@@ -334,6 +351,16 @@ mod reserved_port_tests {
             );
         }
         assert_ne!(a, b);
+    }
+
+    #[tokio::test]
+    async fn the_async_form_draws_from_the_same_band() {
+        let port = reserved_test_port_async().await;
+        assert!(
+            (RESERVED_PORT_BAND_START..RESERVED_PORT_BAND_START + RESERVED_PORT_BAND_LEN)
+                .contains(&port),
+            "{port} is outside the reserved band"
+        );
     }
 }
 
@@ -430,6 +457,11 @@ fn child_coverage_profile_path(
 /// should use [`stop`](ServiceHandle::stop) when they need an explicit
 /// graceful shutdown path, because dropping the handle may still force the
 /// process to terminate if it has not already exited.
+///
+/// Its async methods run inside cucumber steps, which all share one poll
+/// loop (see [`run_once_async`]), so nothing they do may block it: the
+/// spawn itself runs on the blocking pool, and every wait is awaited. Keep
+/// it that way in anything added here.
 #[derive(Debug)]
 pub struct ServiceHandle {
     child: Option<tokio::process::Child>,
@@ -491,7 +523,7 @@ impl ServiceHandle {
         let binary = require_binary(package_name);
         let label = next_spawn_label(package_name);
 
-        let mut child = spawn_process(&binary, package_name, args, envs);
+        let mut child = spawn_off_loop(binary, package_name, args, envs).await;
 
         let stderr = child
             .stderr
@@ -572,7 +604,7 @@ impl ServiceHandle {
         let binary = require_binary(package_name);
         let label = next_spawn_label(package_name);
 
-        let mut child = spawn_process(&binary, package_name, args, envs);
+        let mut child = spawn_off_loop(binary, package_name, args, envs).await;
 
         let stderr = child
             .stderr
@@ -939,6 +971,38 @@ fn spawn_process(
     }
     cmd.spawn()
         .unwrap_or_else(|e| panic!("failed to start {package_name} binary '{binary}': {e}"))
+}
+
+/// [`spawn_process`] on the blocking pool, for the async start paths.
+///
+/// Creating a process is a synchronous call that a loaded host can make
+/// slow, and an async `ServiceHandle` start runs inside a cucumber step:
+/// spawning there would stall every scenario in flight (see
+/// [`run_once_async`]). The blocking pool's threads carry the runtime's
+/// context, so the `tokio::process::Child` made there registers its pipes
+/// with the same runtime the caller awaits them on.
+async fn spawn_off_loop(
+    binary: String,
+    package_name: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> tokio::process::Child {
+    let package = package_name.to_string();
+    let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
+    let envs: Vec<(String, String)> = envs
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+        .collect();
+    tokio::task::spawn_blocking(move || {
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let envs: Vec<(&str, &str)> = envs
+            .iter()
+            .map(|(key, value)| (key.as_str(), value.as_str()))
+            .collect();
+        spawn_process(&binary, &package, &args, &envs)
+    })
+    .await
+    .unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()))
 }
 
 /// Forward a spawned child's stderr to this process's own stderr line by
