@@ -228,12 +228,15 @@ fn main() {
         match listener.accept() {
             Ok((stream, addr)) => {
                 eprintln!("Connection from {addr}");
+                let Some(client) = accept_client(stream) else {
+                    continue;
+                };
                 let shutdown_clone = shutdown.clone();
                 let ignore_shutdown_clone = ignore_shutdown;
                 let app_state_clone = app_state.clone();
                 std::thread::spawn(move || {
                     handle_client(
-                        stream,
+                        client,
                         &shutdown_clone,
                         ignore_shutdown_clone,
                         &app_state_clone,
@@ -634,22 +637,57 @@ fn write_frame(path: &str) -> Result<(), String> {
         .map_err(|e| format!("cannot write {path}: {e}"))
 }
 
+/// An accepted connection, registered for events and ready to serve.
+struct Client {
+    reader: TcpStream,
+    writer: Arc<Mutex<TcpStream>>,
+    registered: Registered,
+}
+
+/// Make an accepted connection a client, on the accepting thread.
+///
+/// The socket is put back into blocking mode: Windows hands out an
+/// accepted socket in its listener's non-blocking mode, and the client
+/// loop relies on its read timeout rather than spinning on `WouldBlock`.
+/// The client is registered here, in accept order, before its thread
+/// runs, so an event broadcast on behalf of a later client (as
+/// `mock_report_frame` does) reaches every client accepted before it,
+/// as PHD2's event server does. `None` when the socket cannot be set up.
+fn accept_client(stream: TcpStream) -> Option<Client> {
+    let set_up = stream
+        .set_nonblocking(false)
+        .and_then(|()| stream.set_read_timeout(Some(std::time::Duration::from_secs(5))))
+        .and_then(|()| stream.set_write_timeout(Some(std::time::Duration::from_secs(5))))
+        .and_then(|()| stream.try_clone());
+    match set_up {
+        Ok(reader) => {
+            let writer = Arc::new(Mutex::new(stream));
+            let registered = Registered::new(&writer);
+            Some(Client {
+                reader,
+                writer,
+                registered,
+            })
+        }
+        Err(e) => {
+            eprintln!("cannot set up an accepted connection: {e}");
+            None
+        }
+    }
+}
+
 fn handle_client(
-    stream: TcpStream,
+    client: Client,
     shutdown: &Arc<AtomicBool>,
     ignore_shutdown: bool,
     app_state: &AppState,
 ) {
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-        .ok();
-    stream
-        .set_write_timeout(Some(std::time::Duration::from_secs(5)))
-        .ok();
-
-    let reader = BufReader::new(stream.try_clone().unwrap());
-    let writer = Arc::new(Mutex::new(stream));
-    let _registered = Registered::new(&writer);
+    let Client {
+        reader,
+        writer,
+        registered: _registered,
+    } = client;
+    let reader = BufReader::new(reader);
 
     // Send Version event on connect
     let version = std::env::var("MOCK_PHD2_VERSION").unwrap_or_else(|_| "2.6.11-mock".to_string());
