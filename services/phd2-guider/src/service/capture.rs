@@ -21,7 +21,7 @@ use crate::config::MAX_CAPTURE_GRACE;
 use crate::error::Phd2Error;
 use crate::events::AppState;
 
-use super::guider::{CaptureClaim, FrameReport, GuiderOps};
+use super::guider::{CaptureClaim, FrameReport, GuiderOps, StoppedLockError};
 
 /// Every file the facade asks PHD2 to save starts with this. The sweep
 /// keys on it, so it never touches a file the facade did not name.
@@ -176,25 +176,14 @@ impl CaptureEngine {
     /// until PHD2 reports the frame or its deadline passes, as for a
     /// frame PHD2 accepted.
     pub async fn start(self: &Arc<Self>, exposure_ms: u32) -> Result<InFlight, StartError> {
-        let Ok(op) = self.ops.op_lock().try_lock() else {
-            return Err(StartError::Busy(
-                "the guider is busy: a guiding request, or the end of an earlier frame".to_string(),
-            ));
-        };
-        if let Some(claim) = self.ops.capture_claim() {
-            return Err(StartError::Busy(format!(
-                "a frame is still exposing in PHD2 ({}), until {} at the latest",
-                claim.path.display(),
-                humantime::format_rfc3339_seconds(claim.deadline)
-            )));
-        }
-        let state = tokio::time::timeout(LOCKED_RPC_TIMEOUT, self.client.get_app_state())
-            .await
-            .map_err(|_| StartError::Unreachable("PHD2 did not answer get_app_state".to_string()))?
-            .map_err(map_rpc_error)?;
-        if state != AppState::Stopped {
-            return Err(StartError::NotStopped(state));
-        }
+        let op = self.ops.lock_while_stopped().await.map_err(|e| match e {
+            e @ (StoppedLockError::Busy | StoppedLockError::Capturing(_)) => {
+                StartError::Busy(e.to_string())
+            }
+            StoppedLockError::Unreachable(message) => StartError::Unreachable(message),
+            StoppedLockError::Refused(message) => StartError::Phd2Refused(message),
+            StoppedLockError::NotStopped(state) => StartError::NotStopped(state),
+        })?;
 
         let path = self.image_dir.join(format!(
             "{FILE_PREFIX}{}{FILE_SUFFIX}",
@@ -623,11 +612,9 @@ impl CaptureEngine {
         self.finish_claim(&path, false).await;
     }
 
-    /// At shutdown: end the sweep lease, end the facade's frame in
-    /// flight, if any, and wait up to the capture grace for PHD2 to report
-    /// it.
+    /// At shutdown: end the facade's frame in flight, if any, and wait
+    /// up to the capture grace for PHD2 to report it.
     pub async fn shutdown(&self) {
-        self.ops.end_lease(super::lease::LeaseEnd::Shutdown);
         let Some(claim) = self.ops.capture_claim() else {
             return;
         };
@@ -776,13 +763,13 @@ fn read_frame(path: &Path, width: u32, height: u32) -> Result<Frame, String> {
             path.display()
         ));
     }
-    let (pixels, got_width, got_height) =
-        rp_fits::reader::read_primary_as_i32(std::io::Cursor::new(bytes)).map_err(|e| {
-            format!(
-                "PHD2's frame {} is not a readable FITS image: {e}",
-                path.display()
-            )
-        })?;
+    let image = rp_fits::reader::read_primary(std::io::Cursor::new(bytes)).map_err(|e| {
+        format!(
+            "PHD2's frame {} is not a readable FITS image: {e}",
+            path.display()
+        )
+    })?;
+    let (got_width, got_height) = (image.width, image.height);
     let expected = (
         usize::try_from(width).unwrap_or(usize::MAX),
         usize::try_from(height).unwrap_or(usize::MAX),
@@ -793,22 +780,48 @@ fn read_frame(path: &Path, width: u32, height: u32) -> Result<Frame, String> {
              read on connect; reconnect the camera"
         ));
     }
-    let pixels = pixels
-        .into_iter()
-        .map(u16::try_from)
-        .collect::<Result<Vec<u16>, _>>()
-        .map_err(|_| {
-            format!(
-                "PHD2's frame {} holds a value outside 0 to 65535, so it is not the unsigned \
-                 16-bit frame PHD2 writes",
-                path.display()
-            )
-        })?;
+    let pixels = unsigned_16(image).ok_or_else(|| {
+        format!(
+            "PHD2's frame {} holds a value outside 0 to 65535, so it is not the unsigned \
+             16-bit frame PHD2 writes",
+            path.display()
+        )
+    })?;
     Ok(Frame {
         width: got_width,
         height: got_height,
         pixels,
     })
+}
+
+/// A frame's values as unsigned 16-bit, or `None` when one falls outside
+/// 0 to 65535. PHD2 writes `BITPIX = 16` with `BZERO = 32768`, which maps
+/// each stored value to its unsigned one with no arithmetic and no wider
+/// copy of the frame. Any other encoding is scaled first.
+fn unsigned_16(image: rp_fits::reader::FitsImage) -> Option<Vec<u16>> {
+    let rp_fits::reader::FitsImage {
+        data,
+        bscale,
+        bzero,
+        ..
+    } = image;
+    match data {
+        rp_fits::reader::Pixels::I16(stored)
+            if bscale.total_cmp(&1.0).is_eq() && bzero.total_cmp(&32768.0).is_eq() =>
+        {
+            Some(
+                stored
+                    .into_iter()
+                    .map(|value| value.cast_unsigned() ^ 0x8000)
+                    .collect(),
+            )
+        }
+        other => other
+            .scaled_to_i32(bscale, bzero)
+            .into_iter()
+            .map(|value| u16::try_from(value).ok())
+            .collect(),
+    }
 }
 
 #[cfg(unix)]
@@ -1345,15 +1358,14 @@ mod tests {
         write_ramp(&path, 8, 6);
         let frame = read_frame(&path, 8, 6).unwrap();
         assert_eq!((frame.width, frame.height), (8, 6));
+        assert_eq!(frame.pixels[0], 0);
         assert_eq!(frame.pixels[1], 1365);
+        // Past the signed 16-bit midpoint, as PHD2's BZERO stores it.
         assert_eq!(frame.pixels[47], 47 * 1365);
     }
 
-    #[test]
-    fn a_frame_holding_a_value_below_zero_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("f.fits");
-        // A signed 16-bit 2 x 1 frame with no BZERO: -1, then 7.
+    /// A signed 16-bit 2 x 1 frame with no `BZERO`, holding `values`.
+    fn write_signed_pair(path: &Path, values: [i16; 2]) {
         let header = [
             "SIMPLE  =                    T",
             "BITPIX  =                   16",
@@ -1370,13 +1382,29 @@ mod tests {
         });
         let mut bytes = format!("{header:<2880}").into_bytes();
         let mut data = Vec::new();
-        data.extend_from_slice(&(-1i16).to_be_bytes());
-        data.extend_from_slice(&7i16.to_be_bytes());
+        for value in values {
+            data.extend_from_slice(&value.to_be_bytes());
+        }
         data.resize(2880, 0);
         bytes.extend_from_slice(&data);
-        std::fs::write(&path, bytes).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn a_frame_holding_a_value_below_zero_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.fits");
+        write_signed_pair(&path, [-1, 7]);
         let err = read_frame(&path, 2, 1).unwrap_err();
         assert!(err.contains("outside 0 to 65535"), "{err}");
+    }
+
+    #[test]
+    fn a_frame_in_another_encoding_is_scaled_to_its_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.fits");
+        write_signed_pair(&path, [7, 32767]);
+        assert_eq!(read_frame(&path, 2, 1).unwrap().pixels, [7, 32767]);
     }
 
     #[test]

@@ -1663,6 +1663,12 @@ mod tests {
         })
         .unwrap();
         assert_eq!(image[[1, 0, 0]], 65535);
+        // `ImageArray`'s equality includes its element type, so the same
+        // values built as `Int32` differ from the facade's image.
+        let as_u16: Array2<u16> = Array2::from_shape_vec((1, 2), vec![0, 65535]).unwrap();
+        assert_eq!(image, ImageArray::from(as_u16.reversed_axes()));
+        let as_i32: Array2<i32> = Array2::from_shape_vec((1, 2), vec![0, 65535]).unwrap();
+        assert_ne!(image, ImageArray::from(as_i32.reversed_axes()));
     }
 
     #[test]

@@ -163,6 +163,31 @@ pub struct CaptureClaim {
     pub recovered: bool,
 }
 
+/// Why [`GuiderOps::lock_while_stopped`] did not take the guiding lock.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum StoppedLockError {
+    /// A guiding operation, or the end of an earlier frame, holds the lock.
+    #[error("the guider is busy: a guiding request, or the end of an earlier frame")]
+    Busy,
+    /// A facade frame holds the capture slot.
+    #[error(
+        "a frame is still exposing in PHD2 ({path}), until {until} at the latest",
+        path = .0.path.display(),
+        until = humantime::format_rfc3339_seconds(.0.deadline)
+    )]
+    Capturing(CaptureClaim),
+    /// PHD2 did not answer `get_app_state`, or could not be reached.
+    #[error("{0}")]
+    Unreachable(String),
+    /// PHD2 answered `get_app_state` with an error, or a state this client
+    /// cannot read.
+    #[error("PHD2 refused get_app_state: {0}")]
+    Refused(String),
+    /// PHD2 is not `Stopped`.
+    #[error("PHD2 is {0}; the camera facade works only while PHD2 is Stopped")]
+    NotStopped(AppState),
+}
+
 /// Stats endpoint payload: the window snapshot plus PHD2's current
 /// application state.
 #[derive(Debug)]
@@ -351,36 +376,19 @@ impl GuiderOps {
         &self,
         request: &AcquireRequest,
     ) -> Result<Granted, LeaseError> {
-        let Ok(_op) = self.op_lock.try_lock() else {
-            return Err(LeaseError::Refused(
-                "the guider is busy: a guiding request, or the end of an earlier frame".to_string(),
-            ));
-        };
-        if let Some(claim) = self.capture_claim() {
-            return Err(LeaseError::Refused(format!(
-                "a frame is still exposing in PHD2 ({}), until {} at the latest; a sweep lease is \
-                 granted only while no frame is",
-                claim.path.display(),
-                humantime::format_rfc3339_seconds(claim.deadline)
-            )));
-        }
+        // Before the lock, so a token used before costs no RPC.
         self.lease_book()
             .check_grant(&request.token, tokio::time::Instant::now())
             .map_err(LeaseError::Refused)?;
-        let state = tokio::time::timeout(LOCKED_RPC_TIMEOUT, self.client.get_app_state())
-            .await
-            .map_err(|_| LeaseError::NotConnected("PHD2 did not answer get_app_state".to_string()))?
-            .map_err(|e| match e {
-                crate::error::Phd2Error::RpcError { message, .. } => {
-                    LeaseError::Refused(format!("PHD2 refused get_app_state: {message}"))
-                }
-                other => LeaseError::NotConnected(format!("PHD2 unreachable: {other}")),
-            })?;
-        if state != AppState::Stopped {
-            return Err(LeaseError::Refused(format!(
+        let _op = self.lock_while_stopped().await.map_err(|e| match e {
+            StoppedLockError::Unreachable(message) => {
+                LeaseError::NotConnected(format!("PHD2 unreachable: {message}"))
+            }
+            StoppedLockError::NotStopped(state) => LeaseError::Refused(format!(
                 "PHD2 is {state}; a sweep lease is granted only while PHD2 is Stopped"
-            )));
-        }
+            )),
+            other => LeaseError::Refused(other.to_string()),
+        })?;
         // Checked again: a release recorded the token while PHD2 answered.
         let granted = self
             .lease_book()
@@ -420,6 +428,43 @@ impl GuiderOps {
     /// End the held lease, if any: a stop, a disconnect, shutdown.
     pub(crate) fn end_lease(&self, why: LeaseEnd) {
         self.lease_book().end(why, tokio::time::Instant::now());
+    }
+
+    /// Take the guiding lock for the camera facade, as a capture and a
+    /// sweep lease's acquire do: with `try_lock`, so it never queues behind
+    /// a guiding operation, and only while no facade frame holds the
+    /// capture slot and PHD2 answers `Stopped`, the one state the facade
+    /// works from. The guard is returned held.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoppedLockError`] naming the check that failed; nothing
+    /// is held then.
+    pub(crate) async fn lock_while_stopped(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, ()>, StoppedLockError> {
+        let Ok(op) = self.op_lock.try_lock() else {
+            return Err(StoppedLockError::Busy);
+        };
+        if let Some(claim) = self.capture_claim() {
+            return Err(StoppedLockError::Capturing(claim));
+        }
+        let state = tokio::time::timeout(LOCKED_RPC_TIMEOUT, self.client.get_app_state())
+            .await
+            .map_err(|_| {
+                StoppedLockError::Unreachable("PHD2 did not answer get_app_state".to_string())
+            })?
+            .map_err(|e| match e {
+                crate::error::Phd2Error::RpcError { message, .. }
+                | crate::error::Phd2Error::InvalidState(message) => {
+                    StoppedLockError::Refused(message)
+                }
+                other => StoppedLockError::Unreachable(other.to_string()),
+            })?;
+        if state != AppState::Stopped {
+            return Err(StoppedLockError::NotStopped(state));
+        }
+        Ok(op)
     }
 
     /// Refuse a guiding mutation while a facade frame holds the capture

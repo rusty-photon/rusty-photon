@@ -158,7 +158,6 @@ pub enum LeaseEnd {
     /// A `guiding/stop`.
     Stopped,
     Disconnected,
-    Shutdown,
     /// Released before any acquire under it arrived.
     ReleasedFirst,
 }
@@ -356,7 +355,6 @@ const fn used_for(why: LeaseEnd) -> &'static str {
         LeaseEnd::Expired => "its lease expired",
         LeaseEnd::Stopped => "its lease was ended by a guiding stop",
         LeaseEnd::Disconnected => "its lease was ended when the camera was disconnected",
-        LeaseEnd::Shutdown => "its lease was ended at shutdown",
         LeaseEnd::ReleasedFirst => "it was released before any acquire under it",
     }
 }
@@ -375,9 +373,6 @@ fn not_held(token: &Token, ended: &Ended, now: Instant) -> String {
         LeaseEnd::Disconnected => format!(
             "the sweep lease under token {token} was ended when the camera was disconnected"
         ),
-        LeaseEnd::Shutdown => {
-            format!("the sweep lease under token {token} was ended at shutdown")
-        }
         LeaseEnd::ReleasedFirst => {
             format!("token {token} was released before any acquire under it")
         }
@@ -462,8 +457,8 @@ mod tests {
         assert!(token("0123456789ABCDEF0123456789ABCDEF")
             .unwrap_err()
             .contains("32 lowercase hex digits"));
-        assert!(token("0123").is_err());
-        assert!(token("0123456789abcdef0123456789abcdeg").is_err());
+        token("0123").unwrap_err();
+        token("0123456789abcdef0123456789abcdeg").unwrap_err();
     }
 
     #[test]
@@ -476,7 +471,8 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("unknown field"), "{err}");
-        assert!(parse_acquire(r#"{"ttl_s": 60}"#).is_err());
+        let err = parse_acquire(r#"{"ttl_s": 60}"#).unwrap_err();
+        assert!(err.contains("missing field `token`"), "{err}");
     }
 
     #[tokio::test(start_paused = true)]
@@ -517,7 +513,6 @@ mod tests {
         let cases = [
             (LeaseEnd::Stopped, "guiding stop"),
             (LeaseEnd::Disconnected, "disconnected"),
-            (LeaseEnd::Shutdown, "shutdown"),
             (LeaseEnd::Released, "was released"),
         ];
         for (why, needle) in cases {
@@ -562,7 +557,8 @@ mod tests {
         let mut book = book_with_lease(start);
         book.release(&token(1), start);
         let almost = start + TOKEN_MEMORY - Duration::from_secs(1);
-        assert!(book.check_grant(&token(1), almost).is_err());
+        let err = book.check_grant(&token(1), almost).unwrap_err();
+        assert!(err.contains("used before"), "{err}");
         book.check_grant(&token(1), start + TOKEN_MEMORY).unwrap();
     }
 

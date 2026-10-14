@@ -1365,7 +1365,9 @@ knows a camera is the facade, with a phd2-guider that has the lease, when
   - the facade already remembers 256 tokens (below) and this one is new
     → `InvalidOperation`, naming when the oldest is forgotten;
   - PHD2 is not `Stopped` → `InvalidOperation`, naming the state. It is
-    the allowlist a capture checks.
+    the allowlist a capture checks;
+  - PHD2 answers `get_app_state` with an error, or with a state this
+    service cannot read → `InvalidOperation`, with PHD2's text.
 
   A `Connected` change that arrives while an acquire runs waits for it,
   so a disconnect always ends the lease the acquire granted.
@@ -1375,9 +1377,9 @@ knows a camera is the facade, with a phd2-guider that has the lease, when
   record, so a renewal is never held up by a capture or by a guiding
   operation. For a token that does not hold the lease:
   - a renewal fails with `InvalidOperation`, saying why: the lease
-    expired, was released, was ended by a guiding stop, a disconnect or
-    shutdown, or was never acquired in this process. A restart forgets
-    every lease, so after one the holder learns it at its next renewal;
+    expired, was released, was ended by a guiding stop or a disconnect,
+    or was never acquired in this process. A restart forgets every lease,
+    so after one the holder learns it at its next renewal;
   - a release answers `{"released": false}` and is never an error, so a
     holder's clean-up never fails on a lease that has already ended. A
     release of a token the facade has not seen records the token, so an
@@ -1389,6 +1391,9 @@ knows a camera is the facade, with a phd2-guider that has the lease, when
   release is never refused: at 256 a release of a token the facade has not
   seen answers `{"released": false}` without recording it, and an acquire
   under that token, a new one, is refused anyway while the cap holds.
+  Once the oldest token is forgotten, such an acquire can be granted, and
+  with nobody renewing it the lease lapses at its TTL, at most 300 s
+  later. Only a flood of tokens reaches the cap: a sweep takes one.
 - **While a lease is held**, the guiding operations a capture refuses
   (`guiding/start`, `pause`, `resume`, `dither`, `calibration/clear` and
   `star/reselect`) are refused with `camera_busy` (409), naming the lease
@@ -1594,7 +1599,7 @@ ASCOM errors from the [sweep lease](#the-sweep-lease)'s Actions:
 |---|---|
 | `Parameters` not a JSON object of the Action's shape; a token not 32 lowercase hex digits; a `ttl_s` outside 10–300 | `InvalidValue` |
 | An acquire with the camera not connected, or PHD2 unreachable | `NotConnected` |
-| An acquire while a guiding operation holds the lock, a frame is in flight, a lease is held or PHD2 is not `Stopped`; a token used before; a new token at the cap of 256; a renewal of a token that does not hold the lease | `InvalidOperation` |
+| An acquire while a guiding operation holds the lock, a frame is in flight, a lease is held or PHD2 is not `Stopped`, or when PHD2 refuses `get_app_state`; a token used before; a new token at the cap of 256; a renewal of a token that does not hold the lease | `InvalidOperation` |
 | An Action the facade does not have | `ActionNotImplemented` |
 
 HTTP API: guiding operations refused while a capture is in flight or a
