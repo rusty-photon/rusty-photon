@@ -82,19 +82,6 @@ impl Drop for PebbleHandle {
     }
 }
 
-/// N distinct free localhost ports, held simultaneously so no two picks
-/// collide, then released for the children to claim.
-fn free_ports<const N: usize>() -> [u16; N] {
-    let listeners: Vec<std::net::TcpListener> = (0..N)
-        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").expect("bind a free port"))
-        .collect();
-    let mut ports = [0u16; N];
-    for (port, listener) in ports.iter_mut().zip(&listeners) {
-        *port = listener.local_addr().expect("bound addr").port();
-    }
-    ports
-}
-
 /// A DNS query for `readiness.probe. A IN`, wire-format per RFC 1035 §4.1.
 fn dns_query() -> Vec<u8> {
     let mut msg = Vec::new();
@@ -205,6 +192,19 @@ impl PebbleHandle {
     }
 
     async fn try_start(validity_seconds: u64) -> Result<Self, String> {
+        let (mut handle, dns_port) =
+            bdd_infra::off_loop(move || Self::spawn_pair(validity_seconds)).await;
+        match handle.wait_ready(dns_port).await {
+            Ok(()) => Ok(handle),
+            Err(e) => Err(format!("{e}; children output:\n{}", handle.child_logs())),
+        }
+    }
+
+    /// The synchronous half of a start, run off the poll loop every
+    /// scenario shares (docs/skills/testing.md §5.7): mint the endpoint
+    /// certificate, pick the ports, write Pebble's config and spawn both
+    /// children. Returns the handle and the sidecar's DNS port.
+    fn spawn_pair(validity_seconds: u64) -> (Self, u16) {
         let (pebble_path, challtestsrv_path) =
             env_paths().expect("@pebble scenario ran without PEBBLE_PATH/PEBBLE_CHALLTESTSRV_PATH");
         let dir = tempfile::tempdir().expect("pebble scratch dir");
@@ -224,7 +224,7 @@ impl PebbleHandle {
         )
         .expect("pebble endpoint cert");
 
-        let [acme_port, mgmt_port, chall_mgmt_port, dns_port] = free_ports::<4>();
+        let [acme_port, mgmt_port, chall_mgmt_port, dns_port] = bdd_infra::ephemeral_ports::<4>();
         // The issued-certificate validity rides in the default profile —
         // Pebble ignores the legacy top-level certificateValidityPeriod
         // once profiles exist, and its no-profile default is 90 days.
@@ -258,7 +258,8 @@ impl PebbleHandle {
         let log = |name: &str| {
             Stdio::from(std::fs::File::create(dir.path().join(name)).expect("child log file"))
         };
-        let challtestsrv = Command::new(&challtestsrv_path)
+        let mut challtestsrv = Command::new(&challtestsrv_path);
+        challtestsrv
             .arg("-management")
             // The loopback host is spelled out: a bare ":<port>" is Go's
             // all-interfaces bind, which puts a dual-stack listener on
@@ -277,21 +278,32 @@ impl PebbleHandle {
             .arg("-tlsalpn01")
             .arg("")
             .stdout(log("challtestsrv.log"))
-            .stderr(log("challtestsrv.err.log"))
-            .spawn()
-            .expect("spawn pebble-challtestsrv");
-        let pebble = Command::new(&pebble_path)
+            .stderr(log("challtestsrv.err.log"));
+        let mut pebble = Command::new(&pebble_path);
+        pebble
             .arg("-config")
             .arg(&config_path)
             .arg("-dnsserver")
             .arg(format!("127.0.0.1:{dns_port}"))
             .env("PEBBLE_VA_NOSLEEP", "1")
             .stdout(log("pebble.log"))
-            .stderr(log("pebble.err.log"))
-            .spawn()
-            .expect("spawn pebble");
+            .stderr(log("pebble.err.log"));
+        // Each process creation under the lock every spawn in this test
+        // process shares (`bdd_infra::with_spawn_lock`).
+        let mut challtestsrv =
+            bdd_infra::with_spawn_lock(|| challtestsrv.spawn()).expect("spawn pebble-challtestsrv");
+        let pebble = match bdd_infra::with_spawn_lock(|| pebble.spawn()) {
+            Ok(pebble) => pebble,
+            Err(e) => {
+                // Nothing owns the sidecar yet, so stop and reap it here
+                // rather than leave it running for the rest of the suite.
+                challtestsrv.kill().ok();
+                challtestsrv.wait().ok();
+                panic!("spawn pebble: {e}");
+            }
+        };
 
-        let mut handle = Self {
+        let handle = Self {
             // 127.0.0.1 rather than localhost: Pebble binds IPv4 loopback
             // only, and localhost resolves to ::1 first on some hosts. The
             // endpoint cert carries loopback IP SANs, so the IP URL verifies.
@@ -302,10 +314,7 @@ impl PebbleHandle {
             pebble,
             challtestsrv,
         };
-        match handle.wait_ready(dns_port).await {
-            Ok(()) => Ok(handle),
-            Err(e) => Err(format!("{e}; children output:\n{}", handle.child_logs())),
-        }
+        (handle, dns_port)
     }
 
     /// Poll the directory (through the minted CA), the challtestsrv

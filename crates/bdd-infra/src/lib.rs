@@ -279,12 +279,43 @@ const RESERVED_PORT_TRIES: u16 = 64;
 /// The same shape as `reserved_test_port` in phd2-guider's integration
 /// tests, shared here for the suites built on this crate.
 ///
+/// The probe is a synchronous `connect()`, and a refused connect is not
+/// instant everywhere: on the Windows CI runner each one cost about 2 s.
+/// So it runs on the blocking pool ([`off_loop`]), and the step that
+/// needs the port yields instead of stalling every scenario in flight.
+/// There is no synchronous form outside this crate.
+///
 /// # Panics
 ///
 /// Panics if no band port answers "refused" within
 /// [`RESERVED_PORT_TRIES`] tries.
+pub async fn reserved_test_port_async() -> u16 {
+    let port = off_loop(reserved_test_port).await;
+    debug!(port, "reserved a test port");
+    port
+}
+
+/// The port in `slot`, reserving one with [`reserved_test_port_async`] the
+/// first time. For a scenario that must keep one port across rewrites of
+/// its config, so a reload or a restart rebinds the same port.
+///
+/// # Panics
+///
+/// [`reserved_test_port_async`]'s panic.
+pub async fn reserved_port_once(slot: &mut Option<u16>) -> u16 {
+    if let Some(port) = *slot {
+        debug!(port, "reusing the scenario's reserved port");
+        return port;
+    }
+    let port = reserved_test_port_async().await;
+    *slot = Some(port);
+    port
+}
+
+/// The probe behind [`reserved_test_port_async`], run on the blocking
+/// pool. It blocks, so nothing outside this crate may call it.
 #[must_use]
-pub fn reserved_test_port() -> u16 {
+pub(crate) fn reserved_test_port() -> u16 {
     static START: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
     static CURSOR: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
 
@@ -334,6 +365,155 @@ mod reserved_port_tests {
             );
         }
         assert_ne!(a, b);
+    }
+
+    /// The poll loop keeps running while `f` blocks. On a single-threaded
+    /// runtime a ticker spawned beside the call must keep ticking through
+    /// the 300 ms `f` sleeps; run inline, `f` would hold the only thread
+    /// and the ticker could not tick once.
+    #[tokio::test(flavor = "current_thread")]
+    async fn off_loop_leaves_the_poll_loop_running_while_its_closure_blocks() {
+        let ticks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ticker = {
+            let ticks = std::sync::Arc::clone(&ticks);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(10));
+                loop {
+                    interval.tick().await;
+                    ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            })
+        };
+        let before = ticks.load(std::sync::atomic::Ordering::Relaxed);
+        off_loop(|| std::thread::sleep(Duration::from_millis(300))).await;
+        let during = ticks
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .saturating_sub(before);
+        ticker.abort();
+        assert!(
+            during >= 5,
+            "the ticker advanced {during} times while a 300 ms closure blocked"
+        );
+    }
+
+    #[tokio::test]
+    async fn off_loop_fails_its_caller_with_the_closures_panic() {
+        let joined = tokio::spawn(off_loop::<()>(|| panic!("the probe exploded"))).await;
+        let payload = joined
+            .expect_err("a panicking closure must fail its caller")
+            .into_panic();
+        assert_eq!(
+            payload.downcast_ref::<&str>().copied(),
+            Some("the probe exploded")
+        );
+    }
+
+    /// A formatted re-raise, as `shared_pki` makes, reaches the caller as
+    /// the very `String` it was given.
+    #[tokio::test]
+    async fn off_loop_carries_a_string_payload_unchanged() {
+        let joined = tokio::spawn(off_loop::<()>(|| {
+            std::panic::resume_unwind(Box::new(String::from("PKI generation for x panicked")))
+        }))
+        .await;
+        let payload = joined
+            .expect_err("a re-raised panic must fail its caller")
+            .into_panic();
+        assert_eq!(
+            payload.downcast_ref::<String>().map(String::as_str),
+            Some("PKI generation for x panicked")
+        );
+    }
+
+    #[test]
+    fn a_spawn_that_panicked_under_the_lock_does_not_fail_the_next() {
+        let panicked = std::panic::catch_unwind(|| with_spawn_lock(|| panic!("the spawn blew up")));
+        panicked.expect_err("a panic under the spawn lock must reach the caller");
+        assert_eq!(with_spawn_lock(|| 7), 7);
+    }
+
+    #[test]
+    fn ephemeral_ports_are_distinct_and_bindable() {
+        let ports = ephemeral_ports::<3>();
+        assert!(ports.iter().all(|&port| port != 0), "{ports:?}");
+        assert!(
+            ports[0] != ports[1] && ports[1] != ports[2] && ports[0] != ports[2],
+            "{ports:?}"
+        );
+        for port in ports {
+            std::net::TcpListener::bind(("127.0.0.1", port))
+                .unwrap_or_else(|e| panic!("port {port} was not released: {e}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_async_form_hands_out_an_ephemeral_port() {
+        let [port] = ephemeral_ports_async::<1>().await;
+        assert_ne!(port, 0);
+    }
+
+    /// The async form waits for the lock without blocking the loop: on a
+    /// single-threaded runtime, a closure under the synchronous form on a
+    /// pool thread holds the lock while the loop keeps ticking, and the
+    /// async form gets it once that closure is done.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_async_form_waits_for_the_lock_without_blocking_the_loop() {
+        let (held_tx, held_rx) = tokio::sync::oneshot::channel();
+        let holder = off_loop(move || {
+            with_spawn_lock(|| {
+                held_tx.send(()).expect("the test is waiting");
+                std::thread::sleep(Duration::from_millis(200));
+            });
+        });
+        let holder = tokio::spawn(holder);
+        held_rx.await.expect("the holder took the lock");
+        let ticks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ticker = {
+            let ticks = std::sync::Arc::clone(&ticks);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(10));
+                loop {
+                    interval.tick().await;
+                    ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            })
+        };
+        assert_eq!(with_spawn_lock_async(|| 7).await, 7);
+        let during = ticks.load(std::sync::atomic::Ordering::Relaxed);
+        ticker.abort();
+        holder.await.expect("the holder finished");
+        assert!(
+            during >= 5,
+            "the loop ticked {during} times while the async form waited for the lock"
+        );
+    }
+
+    #[test]
+    fn panic_text_reads_both_string_payloads() {
+        let literal: Box<dyn std::any::Any + Send> = Box::new("a literal");
+        let formatted: Box<dyn std::any::Any + Send> = Box::new(String::from("a formatted one"));
+        let other: Box<dyn std::any::Any + Send> = Box::new(7_u8);
+        assert_eq!(panic_text(literal.as_ref()), "a literal");
+        assert_eq!(panic_text(formatted.as_ref()), "a formatted one");
+        assert_eq!(panic_text(other.as_ref()), "a panic without a message");
+    }
+
+    #[tokio::test]
+    async fn a_reserved_port_is_kept_once_reserved() {
+        let mut slot = None;
+        let first = reserved_port_once(&mut slot).await;
+        assert_eq!(slot, Some(first));
+        assert_eq!(reserved_port_once(&mut slot).await, first);
+    }
+
+    #[tokio::test]
+    async fn the_async_form_draws_from_the_same_band() {
+        let port = reserved_test_port_async().await;
+        assert!(
+            (RESERVED_PORT_BAND_START..RESERVED_PORT_BAND_START + RESERVED_PORT_BAND_LEN)
+                .contains(&port),
+            "{port} is outside the reserved band"
+        );
     }
 }
 
@@ -430,6 +610,11 @@ fn child_coverage_profile_path(
 /// should use [`stop`](ServiceHandle::stop) when they need an explicit
 /// graceful shutdown path, because dropping the handle may still force the
 /// process to terminate if it has not already exited.
+///
+/// Its async methods run inside cucumber steps, which all share one poll
+/// loop (see [`run_once_async`]), so nothing they do may block it: the
+/// spawn itself runs on the blocking pool, and every wait is awaited. Keep
+/// it that way in anything added here.
 #[derive(Debug)]
 pub struct ServiceHandle {
     child: Option<tokio::process::Child>,
@@ -488,10 +673,9 @@ impl ServiceHandle {
     /// one nor exits blocks here —
     /// [`try_start_with_env`](Self::try_start_with_env) bounds the wait.
     pub async fn start_with_env(package_name: &str, args: &[&str], envs: &[(&str, &str)]) -> Self {
-        let binary = require_binary(package_name);
         let label = next_spawn_label(package_name);
 
-        let mut child = spawn_process(&binary, package_name, args, envs);
+        let mut child = spawn_service(package_name, args, envs).await;
 
         let stderr = child
             .stderr
@@ -569,10 +753,9 @@ impl ServiceHandle {
         args: &[&str],
         envs: &[(&str, &str)],
     ) -> Result<Self, String> {
-        let binary = require_binary(package_name);
         let label = next_spawn_label(package_name);
 
-        let mut child = spawn_process(&binary, package_name, args, envs);
+        let mut child = spawn_service(package_name, args, envs).await;
 
         let stderr = child
             .stderr
@@ -747,24 +930,167 @@ pub fn run_once(
 /// # Panics
 ///
 /// Panics if the binary cannot be found, spawned, fed its stdin, or waited
-/// on, or if the blocking task fails to join.
+/// on, with [`run_once`]'s message.
 pub async fn run_once_async(
     package_name: &str,
     args: &[&str],
     stdin_data: Option<&[u8]>,
 ) -> std::process::Output {
-    let binary = require_binary(package_name);
-    debug!(binary = %binary, "running {} from pre-built binary", package_name);
-
     let package = package_name.to_string();
     let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
     let stdin_data = stdin_data.map(<[u8]>::to_vec);
-    tokio::task::spawn_blocking(move || {
+    off_loop(move || {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        run_to_completion(&package, &binary, &args, stdin_data.as_deref())
+        run_once(&package, &args, stdin_data.as_deref())
     })
     .await
-    .unwrap_or_else(|e| panic!("failed to join the {package_name} run: {e}"))
+}
+
+/// The message a panic carried, for re-raising it with more context: the
+/// text `panic!` was given, or a stand-in when the payload is not a string.
+#[cfg(any(feature = "tls-auth", test))]
+pub(crate) fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("a panic without a message")
+}
+
+/// Run `f` on the blocking pool and await its result, so a step that has
+/// to block (wait on a child, probe a port, stat files) yields to the
+/// poll loop every scenario shares (see [`run_once_async`]).
+///
+/// The blocking pool's threads enter the runtime, so `f` may create
+/// runtime-bound things there, such as a `tokio::process::Child` whose
+/// pipes the caller then awaits.
+///
+/// Process state tied to the spawning *thread* follows that pool thread,
+/// which the pool retires once it has sat idle, not the caller. Linux's
+/// `PR_SET_PDEATHSIG` is one: it fires when the thread that forked the
+/// child exits, so a child spawned with it through `off_loop` would be
+/// killed when the pool thread goes, mid-scenario. Spawn such a child
+/// where it is meant to live; the `OmniSim` harness is one.
+///
+/// # Panics
+///
+/// Re-raises a panic in `f` with its own payload, so the step fails with
+/// `f`'s message. Panics if the runtime shut down before `f` ran.
+pub async fn off_loop<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(f).await {
+        Ok(value) => value,
+        Err(e) => match e.try_into_panic() {
+            Ok(payload) => std::panic::resume_unwind(payload),
+            Err(e) => panic!("the blocking task did not run: {e}"),
+        },
+    }
+}
+
+/// The lock that orders process creation in this test process against
+/// other process creation, and against the probes that bind a port only to
+/// hand it to a child ([`ephemeral_ports`]).
+///
+/// [`off_loop`] runs spawns in parallel on blocking-pool threads, where the
+/// single poll loop used to run them one at a time. On targets without
+/// `pipe2` and `SOCK_CLOEXEC` (macOS among them) std makes a descriptor in
+/// two steps, creating it and only then marking it close-on-exec, for a
+/// child's stdio pipes and for every socket alike. A fork that lands
+/// between the two steps inherits the descriptor: a stray copy of a pipe's
+/// write end keeps a child's stdout from ever reaching EOF, and a stray
+/// copy of a probe's listener keeps its port bound after the probe let it
+/// go. Spawns and those probes all take this lock, so none of them forks
+/// or makes its descriptors while another holds it.
+///
+/// That is all it orders. A socket made anywhere else at the instant of a
+/// fork (a step's stub listener, a reqwest connection, on the poll loop or
+/// a runtime worker) can still be inherited on macOS: std's `Command` does
+/// not expose `posix_spawn`'s close-every-other-descriptor default, so no
+/// lock in this crate closes that window.
+///
+/// It covers the spawn or the probe alone: never a child's life, a wait or
+/// a binary lookup. It is tokio's mutex, so code on the poll loop waits for
+/// it without blocking the loop ([`with_spawn_lock_async`]), and a panic
+/// while it is held releases it like any other unwind.
+static SPAWN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Run `spawn`, one process creation or one listener probe, holding the
+/// process-wide spawn lock.
+///
+/// For synchronous code: a closure under [`off_loop`], or a plain
+/// `#[test]`. The lock's reasons are on `SPAWN_LOCK`, below this crate's
+/// public surface.
+///
+/// # Panics
+///
+/// Panics if called from within an asynchronous execution context, such as
+/// a task or a `#[tokio::test]` body, as tokio's `blocking_lock` does.
+/// Async code takes [`with_spawn_lock_async`].
+pub fn with_spawn_lock<T>(spawn: impl FnOnce() -> T) -> T {
+    let _held = SPAWN_LOCK.blocking_lock();
+    spawn()
+}
+
+/// [`with_spawn_lock`] for async code that creates its process where it
+/// stands.
+///
+/// Waits for the lock without blocking the poll loop, then runs `spawn`
+/// synchronously while holding it. `OmniSim` is the case that must spawn on
+/// the loop (see [`off_loop`] on `PR_SET_PDEATHSIG`).
+pub async fn with_spawn_lock_async<T>(spawn: impl FnOnce() -> T) -> T {
+    let _held = SPAWN_LOCK.lock().await;
+    spawn()
+}
+
+/// `N` distinct ephemeral loopback ports, for children told their port
+/// after the probe.
+///
+/// Binds `127.0.0.1:0` `N` times, holds every listener until all `N` ports
+/// are read so no two collide, then lets them go for the children to claim.
+/// The ports come from the OS's ephemeral range, so another process can
+/// take one before its child binds it: a caller retries on that lost race.
+/// [`reserved_test_port_async`] is the other shape, a band below the
+/// ephemeral floor probed by connecting, for a port a test must know
+/// before the child starts.
+///
+/// The probe runs under the spawn lock: on some targets a socket is made in
+/// two steps, and a fork landing between them would keep a copy of a
+/// listener, and so its port, bound after the probe let it go.
+///
+/// # Panics
+///
+/// Panics if a listener cannot be bound or read back, or, as
+/// [`with_spawn_lock`] does, when called from within an async context,
+/// where [`ephemeral_ports_async`] is the form to take.
+#[must_use]
+pub fn ephemeral_ports<const N: usize>() -> [u16; N] {
+    with_spawn_lock(bind_ephemeral_ports::<N>)
+}
+
+/// [`ephemeral_ports`] for async code.
+///
+/// # Panics
+///
+/// Panics if a listener cannot be bound or read back.
+pub async fn ephemeral_ports_async<const N: usize>() -> [u16; N] {
+    with_spawn_lock_async(bind_ephemeral_ports::<N>).await
+}
+
+fn bind_ephemeral_ports<const N: usize>() -> [u16; N] {
+    let listeners: Vec<std::net::TcpListener> = (0..N)
+        .map(|_| {
+            std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap_or_else(|e| panic!("bind an ephemeral loopback port: {e}"))
+        })
+        .collect();
+    let mut ports = [0u16; N];
+    for (port, listener) in ports.iter_mut().zip(&listeners) {
+        *port = listener
+            .local_addr()
+            .unwrap_or_else(|e| panic!("read back an ephemeral port: {e}"))
+            .port();
+    }
+    debug!(?ports, "probed ephemeral ports");
+    ports
 }
 
 /// Spawn `binary`, feed it `stdin_data`, and reap its `Output`.
@@ -787,8 +1113,7 @@ fn run_to_completion(
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let mut child = cmd
-            .spawn()
+        let mut child = with_spawn_lock(|| cmd.spawn())
             .unwrap_or_else(|e| panic!("failed to spawn {package_name}: {e}"));
 
         if let Some(ref mut stdin) = child.stdin {
@@ -802,8 +1127,15 @@ fn run_to_completion(
             .wait_with_output()
             .unwrap_or_else(|e| panic!("failed to wait on {package_name}: {e}"))
     } else {
-        cmd.output()
+        // `output()`'s own stdio, spawned under the lock and waited on
+        // outside it.
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        with_spawn_lock(|| cmd.spawn())
             .unwrap_or_else(|e| panic!("failed to run {package_name}: {e}"))
+            .wait_with_output()
+            .unwrap_or_else(|e| panic!("failed to wait on {package_name}: {e}"))
     }
 }
 
@@ -811,7 +1143,10 @@ fn run_to_completion(
 ///
 /// Discovery order:
 /// 1. The conventional env var `{PACKAGE_UPPER_SNAKE}_BINARY`
-///    (e.g., `FILEMONITOR_BINARY=/path/to/bin`).
+///    (e.g., `FILEMONITOR_BINARY=/path/to/bin`). A set override is used as
+///    given, even when nothing is at that path: a stale one then fails the
+///    spawn loudly, naming the path, rather than letting the search below
+///    quietly test some other build.
 /// 2. `$CARGO_TARGET_DIR/debug/<pkg>` (or `$CARGO_TARGET_DIR/$CARGO_BUILD_TARGET/debug/<pkg>`
 ///    when the latter is set). `CARGO_LLVM_COV_TARGET_DIR` is also honored.
 /// 3. Walking up from the current directory, probe `<ancestor>/target/debug/<pkg>` (and
@@ -909,17 +1244,18 @@ fn require_binary(package_name: &str) -> String {
 #[cfg(windows)]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
-/// Spawn the service process from a pre-built binary.
+/// The service's command line, built on the poll loop: nothing here
+/// blocks.
 ///
 /// On Windows the child is spawned with [`CREATE_NEW_PROCESS_GROUP`] so that
 /// [`send_sigterm`] can deliver `CTRL_BREAK_EVENT` only to the child's group
 /// without affecting the test runner.
-fn spawn_process(
+fn service_command(
     binary: &str,
     package_name: &str,
     args: &[&str],
     envs: &[(&str, &str)],
-) -> tokio::process::Child {
+) -> tokio::process::Command {
     debug!(binary = %binary, ?args, "starting {} from pre-built binary", package_name);
     let mut cmd = tokio::process::Command::new(binary);
     cmd.args(args)
@@ -937,8 +1273,26 @@ fn spawn_process(
     {
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
-    cmd.spawn()
-        .unwrap_or_else(|e| panic!("failed to start {package_name} binary '{binary}': {e}"))
+    cmd
+}
+
+/// Find the service's binary and spawn it, both off the poll loop: the
+/// lookup stats files and reads `Cargo.toml`, and creating a process is a
+/// synchronous call a loaded host makes slow.
+async fn spawn_service(
+    package_name: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> tokio::process::Child {
+    let package = package_name.to_string();
+    let binary = off_loop(move || require_binary(&package)).await;
+    let mut cmd = service_command(&binary, package_name, args, envs);
+    let package = package_name.to_string();
+    off_loop(move || {
+        with_spawn_lock(|| cmd.spawn())
+            .unwrap_or_else(|e| panic!("failed to start {package} binary '{binary}': {e}"))
+    })
+    .await
 }
 
 /// Forward a spawned child's stderr to this process's own stderr line by
@@ -1046,7 +1400,7 @@ compile_error!(
 /// * **Unix** — sends `SIGTERM`.
 /// * **Windows** — sends `CTRL_BREAK_EVENT` via `GenerateConsoleCtrlEvent`.
 ///   The child must have been spawned with `CREATE_NEW_PROCESS_GROUP` so the
-///   event targets only its process group (see [`spawn_process`]).
+///   event targets only its process group (see [`service_command`]).
 fn send_sigterm(pid: u32) {
     #[cfg(unix)]
     {
@@ -1092,17 +1446,25 @@ mod tests {
     /// The mutex serializes cwd-changing tests so they don't stomp each other.
     static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Spawn `program` with `args`, stdout and stderr piped, under the spawn
+    /// lock: these children's pipes are read to EOF beside tests that start
+    /// long-lived services.
+    async fn spawn_piped(program: &str, args: &[&str]) -> tokio::process::Child {
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+        with_spawn_lock_async(|| cmd.spawn())
+            .await
+            .unwrap_or_else(|e| panic!("spawn {program}: {e}"))
+    }
+
     // -----------------------------------------------------------------------
     // parse_bound_port tests
     // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn test_parse_bound_port_alpaca_prefix() {
-        let mut child = tokio::process::Command::new("echo")
-            .arg("Bound Alpaca server bound_addr=0.0.0.0:54321")
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut child =
+            spawn_piped("echo", &["Bound Alpaca server bound_addr=0.0.0.0:54321"]).await;
         let stdout = child.stdout.take().unwrap();
 
         let (port, drain) = parse_bound_port(stdout).await.unwrap();
@@ -1112,11 +1474,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_bound_port_rp_prefix() {
-        let mut child = tokio::process::Command::new("echo")
-            .arg("Bound rp server bound_addr=127.0.0.1:9999")
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut child = spawn_piped("echo", &["Bound rp server bound_addr=127.0.0.1:9999"]).await;
         let stdout = child.stdout.take().unwrap();
 
         let (port, drain) = parse_bound_port(stdout).await.unwrap();
@@ -1126,11 +1484,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_bound_port_arbitrary_prefix() {
-        let mut child = tokio::process::Command::new("echo")
-            .arg("some future service bound_addr=10.0.0.1:8080")
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut child =
+            spawn_piped("echo", &["some future service bound_addr=10.0.0.1:8080"]).await;
         let stdout = child.stdout.take().unwrap();
 
         let (port, drain) = parse_bound_port(stdout).await.unwrap();
@@ -1141,11 +1496,11 @@ mod tests {
     #[tokio::test]
     async fn test_parse_bound_port_with_preceding_lines() {
         // printf outputs multiple lines; the port line comes after noise
-        let mut child = tokio::process::Command::new("printf")
-            .arg("starting up...\nloading config\nBound Alpaca server bound_addr=0.0.0.0:11111\n")
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut child = spawn_piped(
+            "printf",
+            &["starting up...\nloading config\nBound Alpaca server bound_addr=0.0.0.0:11111\n"],
+        )
+        .await;
         let stdout = child.stdout.take().unwrap();
 
         let (port, drain) = parse_bound_port(stdout).await.unwrap();
@@ -1155,11 +1510,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_bound_port_no_match_returns_none() {
-        let mut child = tokio::process::Command::new("echo")
-            .arg("no port info here")
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut child = spawn_piped("echo", &["no port info here"]).await;
         let stdout = child.stdout.take().unwrap();
 
         let result = parse_bound_port(stdout).await;
@@ -1168,10 +1519,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_bound_port_empty_output_returns_none() {
-        let mut child = tokio::process::Command::new("true")
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut child = spawn_piped("true", &[]).await;
         let stdout = child.stdout.take().unwrap();
 
         let result = parse_bound_port(stdout).await;
@@ -1198,12 +1546,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_stderr_forwarder_terminates_on_eof() {
-        let mut child = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg("echo one >&2; echo two >&2")
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut child = spawn_piped("sh", &["-c", "echo one >&2; echo two >&2"]).await;
         let stderr = child.stderr.take().unwrap();
         let handle = spawn_stderr_forwarder(stderr, "test#0".to_string());
 

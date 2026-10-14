@@ -1014,7 +1014,10 @@ impl OmniSimProcess {
         let binary = Self::find_binary();
         let mut last_failure = String::new();
         for _ in 0..SPAWN_ATTEMPTS {
-            let port = Self::pick_free_port();
+            // Another process can take the port before OmniSim binds it: that
+            // lost race surfaces as an early child exit in `wait_healthy`, and
+            // costs one more attempt here.
+            let [port] = crate::ephemeral_ports_async::<1>().await;
             match Self::spawn_on_port(&binary, port).await {
                 Ok(process) => return process,
                 Err(SpawnFailure::Retry(failure)) => last_failure = failure,
@@ -1051,8 +1054,10 @@ impl OmniSimProcess {
         let mut cmd = Self::command(binary, &base_url, Self::prepare_settings_dir());
         cmd.stdout(stdout_target).stderr(stderr_target);
 
-        let mut child = cmd
-            .spawn()
+        // On the poll loop (see `crate::off_loop` on `PR_SET_PDEATHSIG`),
+        // but under the lock every other spawn in this process takes.
+        let mut child = crate::with_spawn_lock_async(|| cmd.spawn())
+            .await
             .map_err(|e| SpawnFailure::Retry(format!("spawn failed: {e}")))?;
 
         let outcome = match Self::wait_healthy(&mut child, &base_url).await {
@@ -1284,20 +1289,6 @@ impl OmniSimProcess {
         } else {
             Some(picked.join("\n"))
         }
-    }
-
-    /// Probe the OS for a free `127.0.0.1` port by binding an ephemeral
-    /// listener and immediately dropping it. Another process can grab the
-    /// port in the window before `OmniSim` binds it — that lost race surfaces
-    /// as an early child exit in [`Self::wait_healthy`] and costs one retry
-    /// in [`Self::get_or_spawn`].
-    fn pick_free_port() -> u16 {
-        std::net::TcpListener::bind(("127.0.0.1", 0))
-            .and_then(|listener| listener.local_addr())
-            .map_or_else(
-                |e| panic!("failed to probe a free port for OmniSim: {e}"),
-                |addr| addr.port(),
-            )
     }
 
     /// Seed a per-instance `OMNISIM_SETTINGS_DIR` for `OmniSim` and return
@@ -2339,7 +2330,7 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_on_port_reports_early_exit_and_reaps_the_child() {
-        let port = OmniSimProcess::pick_free_port();
+        let [port] = crate::ephemeral_ports_async::<1>().await;
         let err = OmniSimProcess::spawn_on_port(quick_fail_binary(), port)
             .await
             .expect_err("a binary that exits at startup must not yield an instance");

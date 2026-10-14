@@ -21,11 +21,12 @@ async fn generate_tls_certs(world: &mut SentinelWorld) {
     let for_cert = std::sync::Arc::clone(&pki);
     FILEMONITOR_CERT
         .get_or_init(|| async move {
-            tokio::task::spawn_blocking(move || {
-                let ca_pem = std::fs::read_to_string(for_cert.ca_path()).unwrap();
+            bdd_infra::off_loop(move || {
+                let ca_pem = std::fs::read_to_string(for_cert.ca_path())
+                    .expect("read the shared CA certificate to sign filemonitor's");
                 let ca_key =
                     std::fs::read_to_string(for_cert.ca_path().with_file_name("ca-key.pem"))
-                        .unwrap();
+                        .expect("read the shared CA key to sign filemonitor's certificate");
                 let certs_dir = for_cert
                     .cert_path()
                     .parent()
@@ -37,10 +38,9 @@ async fn generate_tls_certs(world: &mut SentinelWorld) {
                     "filemonitor",
                     &certs_dir,
                 )
-                .unwrap();
+                .expect("filemonitor certificate generation failed");
             })
-            .await
-            .expect("filemonitor cert generation panicked");
+            .await;
         })
         .await;
     world.pki = Some(pki);
