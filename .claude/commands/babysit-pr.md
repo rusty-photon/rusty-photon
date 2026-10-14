@@ -47,8 +47,9 @@ Arguments: $ARGUMENTS
 4. Rate the findings with one fresh `general-purpose` subagent — never a
    fork — using the prompt in code-review.md §The rating step.
 5. Act on each verdict (babysitting-prs.md, step 4 of the loop): fix what
-   rates fix, fix an optional one only if it is small and in code the PR
-   touches, decline the rest once the code shows no trigger the rating
+   rates fix, fix an optional one only if the round pushes anyway and the
+   change is small and in code the PR touches, decline the rest once the
+   code shows no trigger the rating
    missed, and overrule a verdict only with evidence.
    Run the quality gate (AGENTS.md rule 4), commit (rule 6), check the PR
    is still open, and push once per round. Then post the round comment

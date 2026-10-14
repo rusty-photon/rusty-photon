@@ -65,8 +65,9 @@ reviewed under the wrong SHA. Then, for each head:
    skips this.
 4. **Act on each verdict** (code-review.md §Acting on a finding):
    - **fix** → verify the claim against the code, then fix it.
-   - **optional** → fix it only if the change is small and stays in
-     code the PR already touches; otherwise decline it.
+   - **optional** → fix it only if the round pushes anyway — for a
+     fix-rated finding, a CI fix or a merge — and the change is small
+     and stays in code the PR already touches; otherwise decline it.
    - **decline** → check the code it points at for the trigger the
      rating ruled out, then decline it, with the rating's reason as the
      record.
@@ -120,8 +121,9 @@ reviewed under the wrong SHA. Then, for each head:
 
    Post it from a file, which keeps the backticks and pipes away from
    the shell, and escape a `|` inside a table cell as `\|`. Escape `<`
-   as `&lt;` in the findings' text outside backticks too, or GitHub drops
-   what reads as a tag: a bare `Option<Duration>` renders as `Option`.
+   as `&lt;` anywhere in the comment outside backticks, table cells
+   included, or GitHub drops what reads as a tag: a bare
+   `Option<Duration>` renders as `Option`.
    A comment
    holds 65,536 characters; if the full text runs over, put it in a
    second comment.
