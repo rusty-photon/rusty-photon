@@ -7,6 +7,7 @@
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -153,7 +154,7 @@ impl Drop for MockPhd2Handle {
 /// than hanging the suite on an endless stdout read. Blocking: run it on
 /// the blocking pool.
 fn spawn_mock(mut cmd: Command) -> (u16, Child) {
-    let mut child = cmd.spawn().expect("spawn mock_phd2");
+    let mut child = bdd_infra::with_spawn_lock(|| cmd.spawn()).expect("spawn mock_phd2");
     let stdout = child.stdout.take().expect("mock_phd2 stdout piped");
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -176,16 +177,14 @@ fn spawn_mock(mut cmd: Command) -> (u16, Child) {
 }
 
 impl GuiderWorld {
-    /// Locate the in-tree `mock_phd2` binary the way
-    /// `tests/test_integration.rs` does: explicit `MOCK_PHD2_BINARY`
-    /// (set by the Bazel test target), then `CARGO_BIN_EXE_mock_phd2`
-    /// (set by Cargo for `[[test]]` crates).
+    /// Locate the in-tree `mock_phd2` binary: explicit `MOCK_PHD2_BINARY`
+    /// (set by the Bazel test target), then `CARGO_BIN_EXE_mock_phd2` (set
+    /// by Cargo for `[[test]]` crates). A set override is used as given, as
+    /// `bdd_infra`'s binary lookup uses one: a stale path fails the spawn
+    /// loudly, naming it, rather than quietly testing another build.
     pub fn mock_phd2_path() -> PathBuf {
-        if let Ok(p) = std::env::var("MOCK_PHD2_BINARY") {
-            let path = PathBuf::from(p);
-            if path.exists() {
-                return path;
-            }
+        if let Some(path) = std::env::var_os("MOCK_PHD2_BINARY") {
+            return PathBuf::from(path);
         }
         if let Some(p) = option_env!("CARGO_BIN_EXE_mock_phd2") {
             let path = PathBuf::from(p);
@@ -243,28 +242,34 @@ impl GuiderWorld {
         let rpc_log = dir.join("rpc_log.jsonl");
         self.rpc_log_path = Some(rpc_log.clone());
 
-        let mut cmd = Command::new(Self::mock_phd2_path());
-        cmd.env("MOCK_PHD2_PORT", "0")
-            .env("MOCK_PHD2_SETTLE_MODE", settle_mode)
-            .env("MOCK_PHD2_STOP_MODE", stop_mode)
-            .env("MOCK_PHD2_RPC_LOG", &rpc_log);
-        for (key, value) in extra {
-            cmd.env(key, value);
-        }
-        cmd.stdout(Stdio::piped())
-            // mock_phd2 logs verbosely to stderr; discard it so a full
-            // pipe buffer can never deadlock the mock under parallel
-            // scenarios (same policy as tests/test_integration.rs).
-            .stderr(Stdio::null());
-        apply_child_coverage_profile(&mut cmd);
-        // The spawn and the wait for the port run on the blocking pool:
-        // spawning is slow on a loaded Windows runner, and a step that
-        // blocks a runtime worker stalls every other scenario in flight
-        // (see `bdd_infra::run_once_async`).
-        // A panic in `spawn_mock` fails the step with its own message.
-        let (port, child) = tokio::task::spawn_blocking(move || spawn_mock(cmd))
-            .await
-            .unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
+        let mut envs: Vec<(OsString, OsString)> = vec![
+            ("MOCK_PHD2_PORT".into(), "0".into()),
+            ("MOCK_PHD2_SETTLE_MODE".into(), settle_mode.into()),
+            ("MOCK_PHD2_STOP_MODE".into(), stop_mode.into()),
+            ("MOCK_PHD2_RPC_LOG".into(), rpc_log.into_os_string()),
+        ];
+        envs.extend(
+            extra
+                .iter()
+                .map(|(key, value)| ((*key).into(), (*value).into())),
+        );
+        // The binary lookup (it stats files), the spawn and the wait for
+        // the port run on the blocking pool: spawning is slow on a loaded
+        // Windows runner, and a step that blocks stalls the one poll loop
+        // every scenario shares (see `bdd_infra::off_loop`). A panic in
+        // here fails the step with its own message.
+        let (port, child) = bdd_infra::off_loop(move || {
+            let mut cmd = Command::new(Self::mock_phd2_path());
+            cmd.envs(envs)
+                .stdout(Stdio::piped())
+                // mock_phd2 logs verbosely to stderr; discard it so a full
+                // pipe buffer can never deadlock the mock under parallel
+                // scenarios (same policy as tests/test_integration.rs).
+                .stderr(Stdio::null());
+            apply_child_coverage_profile(&mut cmd);
+            spawn_mock(cmd)
+        })
+        .await;
         self.mock = Some(MockPhd2Handle {
             port,
             child: Some(child),
@@ -316,7 +321,9 @@ impl GuiderWorld {
         let dir = self.temp_dir_path();
         let config_path = dir.join("config.json");
         self.config_path = Some(config_path.clone());
-        std::fs::write(&config_path, config.to_string()).expect("write config");
+        tokio::fs::write(&config_path, config.to_string())
+            .await
+            .expect("write config");
         let config_str = config_path.to_string_lossy().into_owned();
 
         let handle =

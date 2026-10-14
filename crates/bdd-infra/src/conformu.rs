@@ -691,15 +691,18 @@ async fn run_mode(
     let lines = Arc::new(Mutex::new(Vec::new()));
     let sink = Arc::clone(&lines);
     let prefix = format!("[conformu {mode}]");
-    let outcome = Bounded::new(&mut command, MODE_DEADLINE)
+    let bounded = Bounded::new(&mut command, MODE_DEADLINE)
         .stderr(Capture::Inherit)
         .on_stdout_line(move |line| {
             println!("{prefix} {line}");
             sink.lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .push(line.to_owned());
-        })
-        .spawn()?
+        });
+    // The process is created under the lock every spawn in this test
+    // process takes; the run itself is awaited outside it.
+    let outcome = crate::with_spawn_lock_async(|| bounded.spawn())
+        .await?
         .await?;
     let status = match outcome {
         Outcome::Exited(output) => output.status,

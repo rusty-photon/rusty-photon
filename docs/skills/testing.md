@@ -489,7 +489,10 @@ binary discovery, spawning, port parsing, and graceful shutdown logic.
 
 - `ServiceHandle` — spawns a service binary, parses its bound port from stdout,
   provides `stop()` for graceful SIGTERM shutdown, and drains stdout to prevent
-  pipe deadlocks. On `Drop`, sends a best-effort SIGTERM.
+  pipe deadlocks. On `Drop`, sends a best-effort SIGTERM. Its async starts
+  spawn on the blocking pool, so a step that starts a service never blocks
+  the poll loop
+  ([§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop)).
 - `parse_bound_port()` — standalone function also usable by ConformU tests.
 - `run_once_async()` / `run_once()` — run a binary once (a `doctor` subcommand,
   a `--help`) and reap its output. Steps use the async form; see
@@ -675,6 +678,9 @@ never binds would hang the test until the Bazel timeout.
 **Binary discovery order:**
 
 1. Explicit env var `{PACKAGE_UPPER_SNAKE}_BINARY` (e.g., `FILEMONITOR_BINARY=/path/to/bin`).
+   A set override is used as given, even when nothing is at that path: a stale
+   one fails the spawn loudly, naming the path, rather than letting steps 2-3
+   quietly test some other build.
 2. `$CARGO_TARGET_DIR/debug/<pkg>` (or `$CARGO_LLVM_COV_TARGET_DIR/debug/<pkg>` under
    `cargo llvm-cov`) when either env var is set. If `CARGO_BUILD_TARGET` is also set,
    the triple is inserted: `.../<triple>/debug/<pkg>`. When one of these env vars is
@@ -722,9 +728,12 @@ test genuinely has to know the port *first* — because the port is an input to 
 API under test, or because the test needs a port with **nothing** listening —
 take it from a reserved band **below the platform's ephemeral floor** (32768 on
 Linux, 49152 on Windows and macOS), entered at a per-process start so concurrent
-test binaries do not march in step. `bdd_infra::reserved_test_port()` is the
-shared helper for suites built on `bdd-infra` (calibrator-flats' suite pins
-rp's port with it so the provider's config can name rp before rp starts);
+test binaries do not march in step. `bdd_infra::reserved_test_port_async()`
+is the shared helper for suites built on `bdd-infra` (calibrator-flats' suite
+pins rp's port with it so the provider's config can name rp before rp
+starts). It probes on the blocking pool, and has no synchronous form outside
+the crate, because a probe is a wait
+([§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop));
 `reserved_test_port()` in `services/phd2-guider/tests/test_integration.rs` is
 the original, self-contained implementation.
 
@@ -742,8 +751,10 @@ Do **not** probe by binding `:0` and releasing it. Two things go wrong:
   that suite's spawn rate. **Probe by connecting instead**: a refused connect is
   the same "nobody is there" answer and leaves nothing behind.
 
-Where a bind-and-release probe does survive (`omnisim.rs::pick_free_port`,
-`pebble.rs::free_ports`) it is paired with a retry on the lost race. Keep that
+Where a bind-and-release probe does survive, it is
+`bdd_infra::ephemeral_ports::<N>()` (or `ephemeral_ports_async`), for a child
+told its port after the probe: OmniSim's and Pebble's harnesses and
+geckodriver use it, each paired with a retry on the lost race. Keep that
 pairing if you add another — and note that the retry is worth exactly as much
 as the readiness check that fires it. Verify **every** endpoint the child was
 handed a port for, not just the one easiest to poll: a child that survives a
@@ -1084,10 +1095,63 @@ process — cost far more than the step it sits in. While it runs:
 
 So: **`bdd_infra::run_once_async` in a step, never `run_once`** (the
 synchronous form is for plain `#[test]`s, which have no runtime to yield
-to), and any other blocking wait belongs in `tokio::task::spawn_blocking`.
+to), and any other blocking wait belongs on the blocking pool:
+**`bdd_infra::off_loop(|| ...)`** runs a closure there and re-raises its
+panic with the closure's own message.
 `tokio::task::block_in_place` is *not* a fix here — it hands a worker's
 queue to a replacement thread, and the poll loop being starved is not on a
 worker.
+
+A wait does not have to look like one. A port probe is a loopback
+`connect()` that is meant to be refused, and on the Windows CI runner each
+refusal took about 2 s: phd2-guider's camera-facade scenarios, which each
+probed once from a step, started their services 2.00 s apart, while its
+scenarios that probed nothing started theirs milliseconds apart. The poll
+loop stood still for each of those 2 s. Every other scenario's health wait
+then ran out with its service up and connected, and 48 of 58 scenarios
+failed on a service that had done nothing wrong.
+
+So synchronous work a scenario does goes through `off_loop`: steps take a
+port from **`bdd_infra::reserved_test_port_async`** (or keep one with
+`reserved_port_once`), `ServiceHandle`'s async starts find their binary
+and spawn their process there (the lookup stats files and reads
+`Cargo.toml`, and process creation is a synchronous call a loaded host
+makes slow), a binary run to its exit goes through `run_once_async`, and
+doctor's Pebble harness mints its certificates and spawns its pair there
+for every `@pebble` scenario.
+
+Off the loop, spawns run in parallel on pool threads where the loop used
+to run them one at a time, so every process creation in a test process
+takes one lock: **`bdd_infra::with_spawn_lock(|| cmd.spawn())`** in
+synchronous code (a closure under `off_loop`, a plain `#[test]`), and
+**`bdd_infra::with_spawn_lock_async(|| cmd.spawn()).await`** in async code,
+which waits without blocking the loop (the synchronous form panics there).
+On targets without `pipe2` and `SOCK_CLOEXEC` (macOS among them) std makes
+a descriptor in two steps, creating it and only then marking it
+close-on-exec, for a child's stdio pipes and for every socket alike. A
+fork that lands in between inherits it: a stray pipe write end keeps a
+child's stdout from ever reaching EOF, and a stray copy of a probe's
+listener keeps its port bound after the probe let it go. So the lock
+orders process creation against other process creation and against
+`ephemeral_ports`, which takes it itself. The lock covers the spawn or the
+probe alone, never the child's life, a wait or a binary lookup.
+`ServiceHandle`, `run_once`, phd2-guider's mock, doctor's Pebble pair,
+OmniSim, ConformU, geckodriver and bdd-infra's own unit tests all take it.
+
+That is all it orders. A socket made anywhere else at the instant of a fork
+(a step's stub listener, a reqwest connection, on the poll loop or a runtime
+worker) can still be inherited on macOS: std's `Command` does not expose
+`posix_spawn`'s close-every-other-descriptor default, so no lock in
+bdd-infra closes that window.
+
+Three spawns stay on the loop, each rare, taking the lock's async form:
+OmniSim's `spawn_on_port` (once per test process), ConformU (run by plain
+`#[tokio::test]`s, not by cucumber), and ui-htmx's geckodriver (once per
+`@browser` scenario, in an opt-in suite of four). OmniSim must stay: it is spawned with Linux's
+`PR_SET_PDEATHSIG`, which ties the child to the *thread* that forked it,
+and a blocking-pool thread retires once it has sat idle, taking the child
+with it mid-scenario. Anything spawned that way does not go through
+`off_loop`.
 
 CPU-bound setup counts as blocking, not just waiting on a child. The TLS
 fixture is the standing example: a CA keypair, a service keypair, a

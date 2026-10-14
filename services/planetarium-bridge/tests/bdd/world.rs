@@ -183,7 +183,7 @@ impl BridgeWorld {
             },
             // Neither smoke imports anything, and a dead URL keeps the
             // import worker off whatever is listening on rp's real port.
-            "rp": { "mcp_server_url": unreachable_rp_url() },
+            "rp": { "mcp_server_url": dead_rp_url() },
             "device": {
                 "slew_duration": "3s",
                 "assume_epoch": "j2000",
@@ -194,7 +194,7 @@ impl BridgeWorld {
     }
 
     fn write_config(&mut self) -> String {
-        let rp_url = self.rp_url.get_or_insert_with(unreachable_rp_url).clone();
+        let rp_url = self.rp_url.get_or_insert_with(dead_rp_url).clone();
         let spool_path = self.spool_path();
 
         let mut device = serde_json::Map::new();
@@ -414,41 +414,25 @@ pub fn ascom_code(name: &str) -> u16 {
 
 /// A URL where nothing listens — the "rp is unreachable" fixture.
 ///
-/// Ports come from a reserved band below the platform ephemeral floor,
-/// probed by *connecting* (a refused connect is the same "nobody is there"
-/// answer), never by binding and releasing — a bind probe draws from the
-/// same range the OS hands to every concurrent `bind(0)` and its listener
-/// can leak into forked children (testing.md §5.1, issue #745). Band
-/// 23100–24099 stays clear of the rusty-photon service band (111xx) and
-/// phd2-guider's reserved band.
-pub fn unreachable_rp_url() -> String {
-    format!("http://127.0.0.1:{}/mcp", reserved_dead_port())
+/// Unlike [`dead_rp_url`], this port must be one the scenario can later
+/// bind: "the stub rp comes up at the configured rp address" starts a stub
+/// on it, and concurrent scenarios must not share it. So it is reserved
+/// with `bdd_infra::reserved_test_port_async` (testing.md §5.1), which
+/// probes off the poll loop (§5.7).
+pub async fn unreachable_rp_url() -> String {
+    let port = bdd_infra::reserved_test_port_async().await;
+    format!("http://127.0.0.1:{port}/mcp")
 }
 
-const RESERVED_PORT_BAND_START: u16 = 23100;
-const RESERVED_PORT_BAND_LEN: u16 = 1000;
-const RESERVED_PORT_TRIES: u16 = 64;
+/// The port of [`dead_rp_url`], which no scenario can bring rp up on: port 1
+/// is reserved, nothing on a test host listens there, and the bridge's own
+/// config tests use it for their dead URL.
+pub const DEAD_RP_PORT: u16 = 1;
 
-fn reserved_dead_port() -> u16 {
-    static START: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
-    static CURSOR: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
-
-    // Distinct per process: pids alone are too regular when a harness starts
-    // many copies at once.
-    let start = *START.get_or_init(|| {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.subsec_nanos());
-        ((std::process::id() ^ nanos) % u32::from(RESERVED_PORT_BAND_LEN)) as u16
-    });
-
-    for _ in 0..RESERVED_PORT_TRIES {
-        let step = CURSOR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let candidate =
-            RESERVED_PORT_BAND_START + (start.wrapping_add(step) % RESERVED_PORT_BAND_LEN);
-        if std::net::TcpStream::connect(("127.0.0.1", candidate)).is_err() {
-            return candidate;
-        }
-    }
-    panic!("no free reserved port in {RESERVED_PORT_TRIES} tries");
+/// The rp URL of a scenario that never brings rp up, and of the doctor and
+/// TLS/auth smokes. It needs no probe, and none of these binds a stub on
+/// it: a scenario that does says "rp is unreachable" and gets
+/// [`unreachable_rp_url`] instead.
+fn dead_rp_url() -> String {
+    format!("http://127.0.0.1:{DEAD_RP_PORT}/mcp")
 }
