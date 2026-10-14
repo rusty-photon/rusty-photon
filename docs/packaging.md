@@ -627,12 +627,15 @@ and PHD2 both open it.
    controllers in probe order, so after a reboot the same name can
    belong to the other controller, and the rule would then give your
    group whatever camera sits on that socket of it, perhaps the imaging
-   camera. There, match the camera's `DEVPATH` (from `udevadm info`)
-   instead, with its `xhci-hcd.N.auto` and bus-number parts replaced by
-   `*`, so the match rests on the stable platform node that doctor's
-   port names and on the port chain. Check after a reboot that the
-   camera's node still has your group. This variant has not been run on
-   such a board.
+   camera. The bus number is no better, since buses are numbered in the
+   order their root hubs register. There the rule must rest on what
+   doctor's port spells: the stable platform node above the controller,
+   the root hub's USB revision and the port chain. A `DEVPATH` pattern
+   with the bus number wildcarded drops the revision, and port 1 of a
+   controller's USB 2 root hub need not be the socket of port 1 of its
+   USB 3 root hub. Write the rule from `udevadm info --attribute-walk`
+   on the camera's node, and check after a reboot that the node still
+   has your group. This recipe has not been worked out on such a board.
 
 2. **Create the shared directory** (Linux). PHD2 runs as you, under your
    VNC session. The service runs as `rusty-photon` and may write only

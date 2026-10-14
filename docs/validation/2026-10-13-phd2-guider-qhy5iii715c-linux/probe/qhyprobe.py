@@ -3,7 +3,8 @@
 
 Usage: python3 qhyprobe.py <scratch dir> <scenario> [...]
 
-Scenarios: facts, direct, facade, abort, direct_abort.
+Scenarios: facts, direct, facade, abort, direct_abort, abort_then_start,
+header.
 
 Every event, RPC exchange and Alpaca call is printed as one JSON line with a
 time in seconds since the probe started. PHD2's event stream is read as a
