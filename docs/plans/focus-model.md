@@ -72,7 +72,7 @@ once and kept.
 | S7 | `session-runner`: `deep_sky.json` calls `focus_train` everywhere it called `auto_focus` and `refocus_train`; `rp`: the capture-based `auto_focus` and `refocus_train` retire, the imaging train's `auto_focus` block goes with them, `rp.md`'s invalidation table stops saying "backlog" | Not started | |
 | S8 | `rp`: `optical_trains[].obstruction_mm` with its load-time bounds, and `obstruction_mm` + the derived `obstruction_ratio` on `get_train_info.optics`; `focus-model`: D9 derives the blur constant from it, and the record identity grows the optical facts (O1, O8) | Not started | |
 | S9 | `focus-model`: the hyperbolic fit replaces the ported parabola, `min_fit_r_squared` reported and not enforced by default; `rp`: the same model in the guide-metric sweep (gating plan G2) | Not started | |
-| S10 | = [device-claims-and-phd2-camera.md](device-claims-and-phd2-camera.md) C7: the guiding train captured through the PHD2 camera facade (its C6) with PHD2 `Stopped`, under that plan's sweep, train and mount-motion leases; `focus-model`: the purpose guard, then `focus_train` and `determine_filter_offsets` accept a guiding train under O4's rules 1–7 (its own focuser, the facade as its camera; the imaging-first order is the provider's only inside a `shared: true` walk on the guiding train, the caller's otherwise — O4 rules 2–3) | Blocked on the S7/D17 ↔ C7 reconciliation both plans record | |
+| S10 | = [device-claims-and-phd2-camera.md](device-claims-and-phd2-camera.md) C7: the guiding train captured through the PHD2 camera facade (its C6) with PHD2 `Stopped`, under that plan's sweep, train and mount-motion leases; `focus-model`: the purpose guard, then `focus_train` and `determine_filter_offsets` accept a guiding train under O4's rules 1–7 (its own focuser, the facade as its camera; the imaging-first order is the provider's only inside a `shared: true` walk on the guiding train, the caller's otherwise — O4 rules 2–3) | In design — the reconciliation with C7 was settled on 2026-10-13: the guide-train sweep is a training run of `focus_train` ([device-claims-and-phd2-camera.md](device-claims-and-phd2-camera.md) D12, "Settled in C7"), and it does not wait for S7 | `feature/device-claims-c7` |
 | S11 | `focus-model`: `trains.<id>.temperature_sensor` names a stand-in focuser probe for a train whose own focuser has none, with the sensor id in the record identity; prediction-only, the refocus trigger is unchanged (O3) | Not started | |
 
 S3 to S6 are merged. S7 waits for a rig night on S4.
@@ -1168,13 +1168,13 @@ needs, and "we considered it and declined" is not the same answer as
 
   | # | Rule | Holds when | Today |
   |---|------|-----------|-------|
-  | 1 | The guiding train gets a sweep of its own | it has its own motorised focuser (a separate guide scope, an OAG with a motorised helical) | such a rig exists: **pier1** has a motorised focuser on its guide path (operator, 2026-09-27); whether it shares a focuser with the imaging train (rules 2–3) or has a wheel in the guide path (rule 5) is not yet recorded |
+  | 1 | The guiding train gets a sweep of its own | it has its own motorised focuser (a separate guide scope, an OAG with a motorised helical) | such a rig exists: **pier1** has a motorised focuser on its guide path (operator, 2026-09-27), its Scops OAG. Its guiding train is `[zwo-eaf, scops-oag, guide camera]` beside the imaging train `[zwo-eaf, falcon, main camera]`, so the two share the EAF (rules 2–3), and neither train has a wheel, so rule 5 does not arise there (read from pier1's rp config, 2026-10-13). The config puts the Falcon rotator in the imaging train only, so rp treats the guide camera as not rotator-coupled, and that is right: the Scops OAG sits in front of the Falcon, so the Falcon turns the main camera only (operator, 2026-10-14; the reference rig in [optical-trains.md](optical-trains.md)). The guiding train lists no rotator, so rp's rotate-while-guiding ladder leaves guiding alone when the Falcon turns, and C7's train lease, which holds still only the rotators a train lists, holds none |
   | 2 | The provider orders the walk so the guide step runs after the imaging train's — that guide step being `rp`'s PHD2-metric sweep (rule 8), never the provider's facade capture sweep, which is a direct training run's alone | rule 1 holds (a guiding train whose only focuser is the shared one is rule 4, and gets no sweep) **and** the two trains **share** a focuser **and** the call is `focus_train {shared: true}` addressed to the **guiding** train: `af_sequence` builds the plan for the addressed train, so it is the guiding train's plan that holds the shared imaging capture step and then the guide step, while the imaging train's own plan never contains a guide step (`services/rp/src/equipment/trains.rs`) — provided the shared focuser is terminal in an imaging train. Two topologies break that: one terminal nowhere falls back to the addressed train in `af_sequence`, which for the guiding train makes it a second `metric: "guide"` step with no imaging capture before it; and one terminal *only* in the guiding train (imaging `[shared, own, cam]`, guiding `[shared, guide-cam]`) is run in the guiding train, so the **imaging** plan gets a `metric: "guide"` step before its own focuser and no camera ever measures the shared one through the better optics. Whether `rp` rejects those topologies at load or S10 defines their sequencing is S10's to decide, right after the refusal | the plan carries that order and the escalation walks it; the redundant step is not yet suppressed |
   | 3 | The caller orders the two trains, imaging first | every other case: the trains share **no** focuser (each plan is per train and cannot sequence the other), **or** the call is a direct training run — `focus_train` without `shared`, or `determine_filter_offsets`, on the guiding train — which reads the plan only for the guiding handshake, never for ordering, whether or not an upstream focuser is shared | session workflow's or the operator's job; S10 states it |
   | 4 | No provider training sweep and no facade capture; rule 8's in-session metric sweep is untouched | the guide path sits behind the imaging focuser **with no focuser of its own** | `af_sequence` still yields a redundant `metric: "guide"` step |
   | 5 | The guiding train has an offset table of its own | rule 1 **and** the wheel is in its light path | hand-entered through `set_focus_offsets`, which has no purpose guard, works today; **measuring** it with `determine_filter_offsets` waits on rule 7's transport |
   | 6 | Its focus participates in filter-change invalidation | the wheel is in its light path (upstream of an OAG pick-off, or in front of a shared aperture as on a duo camera) | shipped |
-  | 7 | A training run captures over Alpaca, through the PHD2 camera facade | rule 1 **and** the facade of [device-claims-and-phd2-camera.md](device-claims-and-phd2-camera.md) Part B is configured (its C6), with the vendor driver excluded from the guide camera (its Part A), so the guide camera is an ordinary `rp` camera | not implemented, and not refused either: the provider receives `get_train_info.purpose` and drops it, so `focus_train` or `determine_filter_offsets` on a guiding train today attempts a capture sweep through whatever camera the train names, past the mount motion gate — the refusal is S10's first change. The transport is that plan's C6; the sweep against it is its C7, which is this plan's S10, blocked on the reconciliation both plans record |
+  | 7 | A training run captures over Alpaca, through the PHD2 camera facade | rule 1 **and** the facade of [device-claims-and-phd2-camera.md](device-claims-and-phd2-camera.md) Part B is configured (its C6), with the vendor driver excluded from the guide camera (its Part A), so the guide camera is an ordinary `rp` camera | not implemented, and not refused either: the provider receives `get_train_info.purpose` and drops it, so `focus_train` or `determine_filter_offsets` on a guiding train today attempts a capture sweep through whatever camera the train names, past the mount motion gate — the refusal is S10's first change. The transport is that plan's C6, merged; the sweep against it is its C7, which is this plan's S10, in design since the reconciliation was settled on 2026-10-13 |
   | 8 | The PHD2-metric sweep is used | in-session guide focus, always — `guide_focus_degraded` escalates into it | shipped, and permanent |
 
   Rules 1–4 are the ordering; 5–6 the offsets; 7–8 the transport. A
@@ -1289,21 +1289,22 @@ needs, and "we considered it and declined" is not the same answer as
       and a **mount-motion lease across the whole sweep**, closing the
       `imaging_permit` exemption for guide-train cameras (its D12). The
       provider's one-run claim reaches none of these; the provider takes
-      them through whatever `rp` surface C7 defines, before the first
-      move, and treats a refusal as a refusal.
+      them through `rp`'s `acquire_train_lease`, which takes all three,
+      before the first move, and treats a refusal as a refusal (that
+      plan's D12, "Settled in C7").
     - *The fail-safe is per frame.* Sole control of PHD2 during a sweep
       is a deployment precondition; the facade re-checks the state on
       every frame and a frame from a PHD2 that left `Stopped` aborts the
       sweep with a structured error naming the state, after which D6's
       put-back runs. That replaces the geometry read-back abort earlier
       revisions asked for.
-    - *The image path.* A full frame comes from `save_image` through the
-      facade's `image_dir`, never from `get_star_image`, a ≤32 px cutout
-      that needs a selected star (its D13) — the #1187 donuts were 26–30
-      px across. The completion watermark that keeps `save_image` from
-      returning the previous frame is that plan's largest unknown and
-      C6's to demonstrate against a live PHD2; nothing here depends on
-      which candidate wins.
+    - *The image path.* A full frame comes from PHD2's
+      `capture_single_frame`, saved to a path the facade names in its
+      `image_dir`, never from `get_star_image`, a ≤32 px cutout that
+      needs a selected star (its D13) — the #1187 donuts were 26–30 px
+      across. The completion watermark, that plan's largest unknown, was
+      demonstrated in C6: PHD2 reports the saved file with a
+      `SingleFrameComplete` event (its D9, "Settled in C6").
 
     What this plan still owns in S10: the purpose guard (rule 7's Today
     cell); accepting a guiding train in `focus_train` and
@@ -1313,13 +1314,14 @@ needs, and "we considered it and declined" is not the same answer as
     put-back semantics of a guiding-train run — D9 reads the facade's
     `PixelSizeX`, which is configuration there, and D6's put-back
     releases the three leases on every failure and cancellation path.
-    C7's design phase chooses between landing the guide capture sweep in
-    this provider as a mode of `focus_train` — which that plan calls the
-    likely right answer and this plan's D1 and D17 already assume — or a
-    separately named `rp` operation. This plan records the first as its
-    position and S10 as **blocked on that choice**, mirroring the
-    dependency that plan records against S7 and D17: neither slice lands
-    before the two agree on the one contract.
+    C7's design phase chose between landing the guide capture sweep in
+    this provider as a mode of `focus_train` — which that plan called the
+    likely right answer and this plan's D1 and D17 already assumed — or a
+    separately named `rp` operation. The owner chose the first on
+    2026-10-13 (that plan's D12, "Settled in C7", and its decision 19):
+    a training run on a guiding train is `focus_train` without `shared`,
+    or `determine_filter_offsets`, addressed to it. S10 builds on
+    `focus_train` as it is and does not wait for S7.
 
     rp.md's "the guide camera is never captured through" (§ Guide-train
     sweep) and the same sentence in optical-trains.md become conditional
@@ -1415,24 +1417,25 @@ keeps serving the escalation with its metric guide step (D16). The
 rest of S10 is [device-claims-and-phd2-camera.md](device-claims-and-phd2-camera.md)'s
 C7: the facade (its C6) as the guiding train's camera, its three
 leases taken before the first move and released from any point, and
-the provider's guiding-train support on top — and it is blocked until
-that plan's C7 design phase and this plan's S7/D17 agree on the one
-contract, which both plans record. It needs a rig meeting O4's rules 1
+the provider's guiding-train support on top. The two plans agreed on
+the one contract on 2026-10-13 (that plan's D12, "Settled in C7"), and
+S10 is in design there as C7's slices. It needs a rig meeting O4's rules 1
 and 7 — a guide path with its own motorised focuser *and* the facade
 configured with the vendor driver excluded from the guide camera. A
 filter in the guide path (rule 5) is the extra condition for the
 *offset table* half, not for focusing the guider. Its hardware unknown
-is that plan's, not this one's: C6's capture completion watermark.
+was that plan's, not this one's: C6's capture completion watermark,
+which C6 demonstrated.
 Note what the ordering rule does to its reach: a guide path behind the
 imaging train's focuser — the duo camera, the unmotorised OAG — needs
 none of this, because focusing the imaging train focuses it. S10 earns
 its place only on a rig with an independently focusable guider, and
 one candidate exists: pier1 has a motorised focuser on its guide
-path (O4 rule 1, recorded 2026-09-27). Rule 7 is still open there —
-the PHD2 camera facade is not yet configured on any rig, and cannot be
-before device-claims-and-phd2-camera.md's C6 — so pier1 is the rig S10
-will be built for, not one it can run on today; the question is its
-order against S8, S9 and S11 and the C7 reconciliation. S11 is a config field, the read behind it, and the record-identity
+path (O4 rule 1, recorded 2026-09-27): its Scops OAG focuses the
+guide camera, behind the EAF the imaging train shares. Rule 7 is the
+facade, which C6 built; pier1 is the rig S10 is built and checked on,
+one slice at a time. The owner started S10 on 2026-10-13, ahead of
+S8, S9 and S11. S11 is a config field, the read behind it, and the record-identity
 change that keeps a swapped probe from looking fresh; it does not
 extend the refocus trigger, which stays keyed to a train's own
 focuser.

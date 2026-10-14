@@ -1,0 +1,57 @@
+{"t": 0.0017, "kind": "event", "msg": {"Event": "Version", "Timestamp": 1791940285.39, "Host": "<rig-host>", "Inst": 1, "PHDVersion": "2.6.14", "PHDSubver": "", "OverlapSupport": true, "MsgVersion": 1}}
+{"t": 0.0018, "kind": "event", "msg": {"Event": "AppState", "Timestamp": 1791940285.39, "Host": "<rig-host>", "Inst": 1, "State": "Stopped"}}
+{"t": 0.5018, "kind": "scenario", "name": "facade"}
+{"t": 0.516, "kind": "alpaca", "method": "PUT", "member": "connected", "form": {"Connected": "true"}, "sent": 0.5018, "answered": 0.5159, "reply": {"ClientTransactionID": 1, "ServerTransactionID": 17, "ErrorNumber": 0, "ErrorMessage": "", "Value": null}}
+{"t": 0.518, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791940285.907, "Host": "<rig-host>", "Inst": 1}}
+{"t": 0.5643, "kind": "alpaca", "method": "PUT", "member": "startexposure", "form": {"Duration": "0.1", "Light": "true"}, "sent": 0.516, "answered": 0.5643, "reply": {"ClientTransactionID": 2, "ServerTransactionID": 18, "ErrorNumber": 0, "ErrorMessage": "", "Value": null}}
+{"t": 1.1137, "kind": "event", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791940286.502, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "<home>/c6qhy-images/phd2-guider-6e1e79437ce84b098d361496903a954c.fits"}}
+{"t": 1.1139, "kind": "event", "msg": {"Event": "LoopingExposuresStopped", "Timestamp": 1791940286.503, "Host": "<rig-host>", "Inst": 1}}
+{"t": 1.114, "kind": "facade_event", "duration": "0.1", "event_t": 1.1138, "event": {"Event": "SingleFrameComplete", "Timestamp": 1791940286.502, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "<home>/c6qhy-images/phd2-guider-6e1e79437ce84b098d361496903a954c.fits"}}
+{"t": 1.216, "kind": "facade_ready", "duration": "0.1", "ready_t": 1.216}
+{"t": 1.2163, "kind": "alpaca", "method": "GET", "member": "camerastate", "form": null, "sent": 1.216, "answered": 1.2163, "reply": {"ClientTransactionID": 13, "ServerTransactionID": 29, "ErrorNumber": 0, "ErrorMessage": "", "Value": 0}}
+{"t": 1.2167, "kind": "alpaca", "method": "GET", "member": "lastexposureduration", "form": null, "sent": 1.2164, "answered": 1.2166, "reply": {"ClientTransactionID": 14, "ServerTransactionID": 30, "ErrorNumber": 0, "ErrorMessage": "", "Value": 0.1}}
+{"t": 1.4249, "kind": "alpaca", "method": "GET", "member": "imagearray", "form": null, "sent": 1.2167, "answered": 1.4249, "reply": {"imagebytes": true, "bytes": 33879596, "error": 0, "data_start": 44, "element_type": 2, "transmission_type": 2, "rank": 2, "dims": [3864, 2192, 0]}}
+{"t": 1.4283, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791940286.817, "Host": "<rig-host>", "Inst": 1}}
+{"t": 1.4722, "kind": "alpaca", "method": "PUT", "member": "startexposure", "form": {"Duration": "1", "Light": "true"}, "sent": 1.4256, "answered": 1.4722, "reply": {"ClientTransactionID": 16, "ServerTransactionID": 32, "ErrorNumber": 0, "ErrorMessage": "", "Value": null}}
+{"t": 2.9219, "kind": "event", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791940288.311, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "<home>/c6qhy-images/phd2-guider-70240e9c70a444afb50254a592d98da0.fits"}}
+{"t": 2.922, "kind": "event", "msg": {"Event": "LoopingExposuresStopped", "Timestamp": 1791940288.311, "Host": "<rig-host>", "Inst": 1}}
+{"t": 2.9222, "kind": "facade_event", "duration": "1", "event_t": 2.922, "event": {"Event": "SingleFrameComplete", "Timestamp": 1791940288.311, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "<home>/c6qhy-images/phd2-guider-70240e9c70a444afb50254a592d98da0.fits"}}
+{"t": 3.0253, "kind": "facade_ready", "duration": "1", "ready_t": 3.0253}
+{"t": 3.0258, "kind": "alpaca", "method": "GET", "member": "camerastate", "form": null, "sent": 3.0254, "answered": 3.0258, "reply": {"ClientTransactionID": 27, "ServerTransactionID": 43, "ErrorNumber": 0, "ErrorMessage": "", "Value": 0}}
+{"t": 3.0262, "kind": "alpaca", "method": "GET", "member": "lastexposureduration", "form": null, "sent": 3.0258, "answered": 3.0261, "reply": {"ClientTransactionID": 28, "ServerTransactionID": 44, "ErrorNumber": 0, "ErrorMessage": "", "Value": 1.0}}
+{"t": 3.2391, "kind": "alpaca", "method": "GET", "member": "imagearray", "form": null, "sent": 3.0262, "answered": 3.2391, "reply": {"imagebytes": true, "bytes": 33879596, "error": 0, "data_start": 44, "element_type": 2, "transmission_type": 2, "rank": 2, "dims": [3864, 2192, 0]}}
+{"t": 3.2426, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791940288.631, "Host": "<rig-host>", "Inst": 1}}
+{"t": 3.2842, "kind": "alpaca", "method": "PUT", "member": "startexposure", "form": {"Duration": "5", "Light": "true"}, "sent": 3.2397, "answered": 3.2842, "reply": {"ClientTransactionID": 30, "ServerTransactionID": 46, "ErrorNumber": 0, "ErrorMessage": "", "Value": null}}
+{"t": 8.7689, "kind": "event", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791940294.158, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "<home>/c6qhy-images/phd2-guider-82e901f557f44946b9ffa4f98a90da1b.fits"}}
+{"t": 8.7691, "kind": "event", "msg": {"Event": "LoopingExposuresStopped", "Timestamp": 1791940294.158, "Host": "<rig-host>", "Inst": 1}}
+{"t": 8.7691, "kind": "facade_event", "duration": "5", "event_t": 8.769, "event": {"Event": "SingleFrameComplete", "Timestamp": 1791940294.158, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "<home>/c6qhy-images/phd2-guider-82e901f557f44946b9ffa4f98a90da1b.fits"}}
+{"t": 8.8707, "kind": "facade_ready", "duration": "5", "ready_t": 8.8707}
+{"t": 8.8711, "kind": "alpaca", "method": "GET", "member": "camerastate", "form": null, "sent": 8.8708, "answered": 8.8711, "reply": {"ClientTransactionID": 41, "ServerTransactionID": 57, "ErrorNumber": 0, "ErrorMessage": "", "Value": 0}}
+{"t": 8.8714, "kind": "alpaca", "method": "GET", "member": "lastexposureduration", "form": null, "sent": 8.8711, "answered": 8.8714, "reply": {"ClientTransactionID": 42, "ServerTransactionID": 58, "ErrorNumber": 0, "ErrorMessage": "", "Value": 5.0}}
+{"t": 9.0855, "kind": "alpaca", "method": "GET", "member": "imagearray", "form": null, "sent": 8.8715, "answered": 9.0855, "reply": {"imagebytes": true, "bytes": 33879596, "error": 0, "data_start": 44, "element_type": 2, "transmission_type": 2, "rank": 2, "dims": [3864, 2192, 0]}}
+{"t": 9.0862, "kind": "scenario", "name": "abort"}
+{"t": 9.0869, "kind": "alpaca", "method": "PUT", "member": "connected", "form": {"Connected": "true"}, "sent": 9.0862, "answered": 9.0868, "reply": {"ClientTransactionID": 44, "ServerTransactionID": 60, "ErrorNumber": 0, "ErrorMessage": "", "Value": null}}
+{"t": 9.0894, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791940294.478, "Host": "<rig-host>", "Inst": 1}}
+{"t": 9.1322, "kind": "alpaca", "method": "PUT", "member": "startexposure", "form": {"Duration": "5", "Light": "true"}, "sent": 9.0869, "answered": 9.1322, "reply": {"ClientTransactionID": 45, "ServerTransactionID": 61, "ErrorNumber": 0, "ErrorMessage": "", "Value": null}}
+{"t": 12.1354, "kind": "alpaca", "method": "PUT", "member": "abortexposure", "form": null, "sent": 10.1323, "answered": 12.1353, "reply": {"ClientTransactionID": 46, "ServerTransactionID": 62, "ErrorNumber": 0, "ErrorMessage": "", "Value": null}}
+{"t": 12.136, "kind": "alpaca", "method": "GET", "member": "camerastate", "form": null, "sent": 12.1354, "answered": 12.136, "reply": {"ClientTransactionID": 47, "ServerTransactionID": 63, "ErrorNumber": 0, "ErrorMessage": "", "Value": 2}}
+{"t": 14.607, "kind": "event", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791940299.996, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "<home>/c6qhy-images/phd2-guider-54267faf92be41bea53519132fcc8aaf.fits"}}
+{"t": 14.6071, "kind": "event", "msg": {"Event": "LoopingExposuresStopped", "Timestamp": 1791940299.996, "Host": "<rig-host>", "Inst": 1}}
+{"t": 14.6072, "kind": "abort_event", "event_t": 14.607, "event": {"Event": "SingleFrameComplete", "Timestamp": 1791940299.996, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "<home>/c6qhy-images/phd2-guider-54267faf92be41bea53519132fcc8aaf.fits"}}
+{"t": 14.6081, "kind": "alpaca", "method": "GET", "member": "camerastate", "form": null, "sent": 14.6072, "answered": 14.608, "reply": {"ClientTransactionID": 48, "ServerTransactionID": 64, "ErrorNumber": 0, "ErrorMessage": "", "Value": 2}}
+{"t": 14.6087, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "sent": 14.6081, "answered": 14.6087, "reply": {"ClientTransactionID": 49, "ServerTransactionID": 65, "ErrorNumber": 0, "ErrorMessage": "", "Value": false}}
+{"t": 14.6338, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791940300.023, "Host": "<rig-host>", "Inst": 1}}
+{"t": 14.6762, "kind": "alpaca", "method": "PUT", "member": "startexposure", "form": {"Duration": "0.1", "Light": "true"}, "sent": 14.6088, "answered": 14.6762, "reply": {"ClientTransactionID": 50, "ServerTransactionID": 66, "ErrorNumber": 0, "ErrorMessage": "", "Value": null}}
+{"t": 15.2264, "kind": "event", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791940300.615, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "<home>/c6qhy-images/phd2-guider-f425c4ccbce142b0a08345e686613dc1.fits"}}
+{"t": 15.2266, "kind": "event", "msg": {"Event": "LoopingExposuresStopped", "Timestamp": 1791940300.615, "Host": "<rig-host>", "Inst": 1}}
+{"t": 15.2266, "kind": "after_abort_event", "event_t": 15.2265, "event": {"Event": "SingleFrameComplete", "Timestamp": 1791940300.615, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "<home>/c6qhy-images/phd2-guider-f425c4ccbce142b0a08345e686613dc1.fits"}}
+{"t": 15.3287, "kind": "after_abort_ready"}
+{"t": 15.3291, "kind": "alpaca", "method": "GET", "member": "camerastate", "form": null, "sent": 15.3288, "answered": 15.3291, "reply": {"ClientTransactionID": 61, "ServerTransactionID": 77, "ErrorNumber": 0, "ErrorMessage": "", "Value": 0}}
+{"t": 15.3291, "kind": "scenario", "name": "direct_abort"}
+{"t": 15.3304, "kind": "event", "msg": {"Event": "ConfigurationChange", "Timestamp": 1791940300.719, "Host": "<rig-host>", "Inst": 1}}
+{"t": 15.3311, "kind": "rpc", "req": {"method": "capture_single_frame", "id": 1, "params": {"exposure": 5000, "save": true, "path": "<home>/c6qhy-probe/direct-abort.fits"}}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 1}, "sent": 15.3292}
+{"t": 16.3324, "kind": "rpc", "req": {"method": "stop_capture", "id": 2}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 2}, "sent": 16.3312}
+{"t": 20.8513, "kind": "event", "msg": {"Event": "SingleFrameComplete", "Timestamp": 1791940306.24, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "<home>/c6qhy-probe/direct-abort.fits"}}
+{"t": 20.8515, "kind": "event", "msg": {"Event": "LoopingExposuresStopped", "Timestamp": 1791940306.24, "Host": "<rig-host>", "Inst": 1}}
+{"t": 20.8515, "kind": "direct_abort_event", "event_t": 20.8514, "event": {"Event": "SingleFrameComplete", "Timestamp": 1791940306.24, "Host": "<rig-host>", "Inst": 1, "Success": true, "Path": "<home>/c6qhy-probe/direct-abort.fits"}, "file_size": 16943040}
+{"t": 20.8765, "kind": "rpc", "req": {"method": "get_app_state", "id": 3}, "reply": {"jsonrpc": "2.0", "result": "Stopped", "id": 3}, "sent": 20.8515}

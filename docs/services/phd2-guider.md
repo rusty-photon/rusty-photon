@@ -1076,6 +1076,17 @@ These are deployment rules. The facade checks the ones it can at load.
   prerequisite, not advice: the facade cannot detect the conflict,
   because nothing tells a process that someone else wanted the device it
   already holds.
+- **PHD2's account must be able to open the guide camera** (Linux). Each
+  camera package's udev rule, and `rusty-photon-zwo-focuser`'s (ZWO's
+  id, which its cameras share), gives its vendor's whole USB id to the
+  `rusty-photon` group, so PHD2, running as the operator, finds no
+  camera. A udev rule keyed on the guide camera's port gives that port to
+  the operator's group
+  ([packaging.md](../packaging.md#phd2-guider-the-camera-facade), step 1).
+  PHD2's QHY support does not look for cameras again after finding none,
+  so PHD2 starts after the rule is in place. Found and fixed on the field
+  rig with the QHY5III715C
+  ([record](../validation/2026-10-13-phd2-guider-qhy5iii715c-linux/README.md)).
 - **This service has sole control of PHD2 during a capture.** The facade
   refuses every guiding operation that reaches PHD2 *through this
   service* while it captures. PHD2 accepts other clients on port 4400,
@@ -1111,7 +1122,11 @@ The frame is a 16-bit FITS (`BITPIX = 16`, `BZERO = 32768`) the size
 `get_camera_frame_size` reports. Whether `stop_capture` cuts an exposure
 short depends on PHD2's camera driver. The simulator and ZWO drivers
 check for it. The QHY driver does only when PHD2 was built with
-`CAN_STOP_CAPTURE`. A driver that ignores it finishes the frame.
+`CAN_STOP_CAPTURE`, and PHD2 2.6.14 is built without it: on the field
+rig's QHY5III715C a stop changed nothing, and PHD2 reported the frame as
+a success at its natural end
+([record](../validation/2026-10-13-phd2-guider-qhy5iii715c-linux/README.md)).
+A driver that ignores it finishes the frame.
 
 ### Capturing a frame
 
@@ -1475,17 +1490,27 @@ HTTP API: guiding operations refused while a capture is in flight return
   test. The same session made the single-frame measurement this section
   rests on.
   [Record](../validation/2026-10-13-phd2-guider-phd2-simulator-linux/README.md).
-  A run with a real guide camera behind PHD2 is still owed: whether
-  `stop_capture` cuts an exposure short is left to PHD2's camera driver.
+- **2026-10-13, field rig, the QHY5III715C behind PHD2 2.6.14:** ConformU
+  `alpacaprotocol` and `conformance` clean with a real guide camera.
+  PHD2's QHY driver serves the colour sensor as a full-resolution
+  luminance frame, 3864 × 2192, so `SensorType = Monochrome` holds. A
+  client on the rig has a frame 0.8 s after the exposure ends: PHD2 adds
+  0.5 s to read out and save it, the facade 0.1 s to read it, and the
+  34 MB download 0.2 s. PHD2 2.6.14's QHY driver ignores `stop_capture`
+  (see [Aborting](#aborting)). PHD2 could not open the camera until its
+  account could open the device node (see
+  [Prerequisites](#prerequisites)).
+  [Record](../validation/2026-10-13-phd2-guider-qhy5iii715c-linux/README.md).
 
 ### Not in this version
 
 - **Off-host access**: loopback only, see above.
-- **The sweep lease** rp needs for a multi-frame focus sweep: a pair of
-  ASCOM `Action`s on the facade device that reserve the capture path for
-  a whole sweep, with an owner token, a TTL renewed while the sweep runs,
-  and a release that still waits for PHD2's event. It is built in C7,
-  together with the rp sweep that is its only consumer.
+- **The sweep lease** rp needs for a multi-frame focus sweep: three
+  ASCOM `Action`s on the facade device (acquire, renew, release) that keep
+  guiding from starting for a whole sweep, with an owner token and a TTL
+  renewed while the sweep runs. Designed in the device-claims plan's D12,
+  "Settled in C7", and built in C7 together with rp's train lease, its
+  only consumer.
 - **Gain, binning and offset** through the facade: PHD2's profile owns
   them.
 
@@ -1560,7 +1585,7 @@ HTTP API: guiding operations refused while a capture is in flight return
 - [x] Files, sweep and restart marker
 - [x] `mock_phd2`: `save`/`path` and `SingleFrameComplete`; BDD `camera_facade.feature`, `camera_exclusivity.feature`, `camera_config.feature`
 - [x] ConformU against PHD2's simulator; the `image_dir` sharing recipe run with the packaged service account
-- [ ] ConformU with a real guide camera behind PHD2
+- [x] ConformU with a real guide camera behind PHD2 (the QHY5III715C on `pier1`)
 
 ## Dependencies
 

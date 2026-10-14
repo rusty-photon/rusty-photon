@@ -44,15 +44,17 @@ uses it.
 
 ## Acceptance: a frame PHD2 wrote, read and deleted by the service account
 
-1. **The recipe, by hand.** The four commands of packaging.md's step 1
-   were run as given. PHD2, running as the operator, then saved a 0.5 s
+1. **The recipe, by hand.** The four commands of packaging.md's
+   shared-directory step (step 1 then, step 2 since the guide camera's
+   udev rule became step 1) were run as given. PHD2, running as the operator, then saved a 0.5 s
    frame to `/var/lib/rusty-photon/phd2-images/accept-1.fits`. The file
    was the operator's (`rw-rw----`), and the default ACL gave
    `group:rusty-photon` `rw-`. `sudo -u rusty-photon` read all 875 520
    bytes and deleted it.
 2. **Through the facade, under the unit's sandbox.** Startup's
    `image_dir` check (`.phd2-guider-probe` created and removed) passed.
-   packaging.md's step 3 then ran through the tunnel: `Connected`,
+   packaging.md's Verify step (step 3 then, now step 4) then ran
+   through the tunnel: `Connected`,
    `CameraXSize` 752, `SensorName` "Simulator", and a 1 s exposure gave
    `ImageReady` true. `service.log` lines 31–41 show the slot claimed,
    PHD2 accepting the frame, and the slot released on PHD2's event

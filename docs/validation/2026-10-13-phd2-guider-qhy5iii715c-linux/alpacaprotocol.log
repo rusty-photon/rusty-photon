@@ -1,0 +1,101 @@
+18:12:32.349 Check Alpaca Protocol - Conform Universal 4.5.0 (Build 53834.49ab847) 
+18:12:32.349                                     
+18:12:32.350 Test Camera device:  - 127.0.0.1:11228 through URL: http://127.0.0.1:11228 
+18:12:32.350                                     
+18:12:32.354 OK messages are suppressed, they can be enabled through the Alpaca and COM settings page. 
+18:12:32.354                                     
+18:12:32.354 Connecting to device...             
+18:12:32.401                                     
+18:12:32.401 Successfully connected to device, disconnecting in order to test that connection using a different PUT parameter order is successful... 
+18:12:32.405                                     
+18:12:32.405 Successfully disconnected from device, re-connecting using re-ordered PUT parameters... 
+18:12:32.405                                     
+18:12:32.408 Successfully connected to device using re-ordered PUT parameters, testing device... 
+18:12:32.408                                     
+18:12:32.414 Device exposes interface version 4  
+18:12:33.864 PUT StartExposure                   INFO     Parameters Duration and Light (Good casing) - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.875 PUT StartExposure                   INFO     Parameters Duration and Light (Good casing with extra parameter) - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.886 PUT StartExposure                   INFO     Bad ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.888 PUT StartExposure                   INFO     Bad ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.941 GET ImageArray                      INFO     Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.942 GET ImageArray                      INFO     Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.943 GET ImageArray                      INFO     Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.944 GET ImageArray                      INFO     Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.955 GET ImageArrayVariant               INFO     Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.957 GET ImageArrayVariant               INFO     Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.958 GET ImageArrayVariant               INFO     Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.959 GET ImageArrayVariant               INFO     Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.971 GET LastExposureDuration            INFO     Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.972 GET LastExposureDuration            INFO     Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.973 GET LastExposureDuration            INFO     Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.974 GET LastExposureDuration            INFO     Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.985 GET LastExposureStartTime           INFO     Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.986 GET LastExposureStartTime           INFO     Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.987 GET LastExposureStartTime           INFO     Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:33.989 GET LastExposureStartTime           INFO     Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error:
+18:12:34.013                                     
+18:12:34.014 Successfully disconnected from device. 
+18:12:34.014                                     
+18:12:34.014 Found 0 errors, 0 issues and 20 information messages. 
+18:12:34.014                                     
+18:12:34.014 Information Message Summary         
+18:12:34.014 PUT StartExposure ==> Parameters Duration and Light (Good casing) - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidValue error (0x00000401) for client transaction: 67890, server transaction: 447. Error message: dark frames are not supported: PHD2 has no dark-frame capture and the guide camera has no shutter
+ 
+18:12:34.014 PUT StartExposure ==> Parameters Duration and Light (Good casing with extra parameter) - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidValue error (0x00000401) for client transaction: 67890, server transaction: 449. Error message: dark frames are not supported: PHD2 has no dark-frame capture and the guide camera has no shutter
+ 
+18:12:34.015 PUT StartExposure ==> Bad ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidValue error (0x00000401) for client transaction: 67890, server transaction: 457. Error message: dark frames are not supported: PHD2 has no dark-frame capture and the guide camera has no shutter
+ 
+18:12:34.015 PUT StartExposure ==> Bad ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidValue error (0x00000401) for client transaction: 0, server transaction: 459. Error message: dark frames are not supported: PHD2 has no dark-frame capture and the guide camera has no shutter
+ 
+18:12:34.015 GET ImageArray ==> Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image is ready
+ 
+18:12:34.015 GET ImageArray ==> Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image is ready
+ 
+18:12:34.015 GET ImageArray ==> Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image is ready
+ 
+18:12:34.015 GET ImageArray ==> Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image is ready
+ 
+18:12:34.015 GET ImageArrayVariant ==> Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image is ready
+ 
+18:12:34.015 GET ImageArrayVariant ==> Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image is ready
+ 
+18:12:34.015 GET ImageArrayVariant ==> Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image is ready
+ 
+18:12:34.015 GET ImageArrayVariant ==> Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 319. Error message: no image is ready
+ 
+18:12:34.015 GET LastExposureDuration ==> Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 484. Error message: no exposure has started yet
+ 
+18:12:34.015 GET LastExposureDuration ==> Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 485. Error message: no exposure has started yet
+ 
+18:12:34.015 GET LastExposureDuration ==> Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 486. Error message: no exposure has started yet
+ 
+18:12:34.015 GET LastExposureDuration ==> Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 487. Error message: no exposure has started yet
+ 
+18:12:34.015 GET LastExposureStartTime ==> Good ClientID and ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 488. Error message: no exposure has started yet
+ 
+18:12:34.015 GET LastExposureStartTime ==> Good ClientID and ClientTransactionID casing with additional parameter - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 489. Error message: no exposure has started yet
+ 
+18:12:34.015 GET LastExposureStartTime ==> Different ClientID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 490. Error message: no exposure has started yet
+ 
+18:12:34.015 GET LastExposureStartTime ==> Different ClientTransactionID casing - Received HTTP status 200 (OK) as expected but the device reported an ASCOM error: 
+  Response: Device returned a InvalidOperationException error (0x0000040B) for client transaction: 67890, server transaction: 491. Error message: no exposure has started yet
+ 
