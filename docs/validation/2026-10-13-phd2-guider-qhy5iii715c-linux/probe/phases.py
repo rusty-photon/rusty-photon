@@ -13,8 +13,10 @@ with open(path, "rb") as f:
     hdr = b""
     while True:
         block = f.read(2880)
+        if not block:
+            sys.exit("no END card before the end of the file")
         hdr += block
-        if b"END     " in block or block.find(b"END" + b" " * 77) >= 0:
+        if any(block[i:i + 8].rstrip(b" ") == b"END" for i in range(0, len(block), 80)):
             break
     cards = {}
     for i in range(0, len(hdr), 80):

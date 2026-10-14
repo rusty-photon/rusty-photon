@@ -2407,8 +2407,9 @@ frame away and leaves PHD2 unable to capture until it restarts. As built:
   stay, exactly as for an accepted frame, until the frame is reported or
   its deadline passes. Only a request PHD2 refused, or one never sent,
   releases at once.
-- **The sweep lease is an ASCOM `Action` pair on the facade device**
-  (D12's first option), built in C7 with its only consumer. The facade is
+- **The sweep lease is ASCOM `Action`s on the facade device** (D12's
+  first option), built in C7 with its only consumer. C7's design made
+  them three, acquire, renew and release (D12, "Settled in C7"). The facade is
   the one Alpaca device rp already talks to, and an `Action` can refuse a
   `guiding/start` arriving from anywhere through this service, which an
   rp-owned reservation cannot.
@@ -2578,7 +2579,7 @@ that plan's S10. It does not wait for S7: it builds on `focus_train`,
 which exists, and touches nothing S7 retires. The three leases, as
 designed:
 
-- **The facade lease is three Actions on the facade device.** D11 named
+- **The facade lease is three Actions on the facade device.** D11 first named
   a pair. The third, renewal, exists because the lease has a TTL.
   - `rustyphoton:sweep-lease-acquire`, parameters `{"ttl_s": n}` (10 to
     300, default 60), answers `{"token": "<32 hex digits>", "ttl_s": n}`.
@@ -2616,42 +2617,63 @@ designed:
     asks for.
 - **rp's train lease is two tools.** `acquire_train_lease {train_id,
   lease_id, max_duration}` answers `{lease_id, train_id, focuser_id,
-  filter_wheel_ids, cameras, facade_lease, ends_by}`, and
+  filter_wheel_ids, held_focuser_ids, cameras, facade_lease, ends_by}`,
+  and
   `release_train_lease {lease_id}` answers `{released}`.
   - **The caller names the lease.** `lease_id` is a fresh id of the
-    caller's choosing, and one already in use is refused. A caller that
-    gave up on its acquire (cancelled, or timed out waiting for the
-    answer) still knows the id and can release it.
-  - **`max_duration`** is the lease's whole life: 15 minutes by default,
-    at most 60. A training run takes one lease per sweep, not one for a
-    whole procedure. Every gate wait stays bounded by its holders' own
-    deadlines (rp.md § Mount Motion Gate), and a lease is a holder.
+    caller's choosing. An id this rp process has granted before, held or
+    ended, is refused, so an old holder's call can never land inside a
+    new lease. A caller that gave up on its acquire (cancelled, or timed
+    out waiting for the answer) still knows the id and can release it.
+  - **`max_duration`** is the lease's whole life: 5 minutes by default,
+    at most 10, which is no longer than the longest exposure (600 s)
+    already holds the gate today. A training run takes one lease per
+    sweep, not one for a whole procedure. Every gate wait stays bounded
+    by its holders' own deadlines (rp.md § Mount Motion Gate), and a
+    lease is a holder. Starting a training run no closer to the meridian
+    flip than its lease's life is the session's job, as the flip's
+    timing is.
   - A train without a terminal focuser or a camera is refused. The lease
-    **covers** what a training run on the train may move: its terminal
-    focuser and every filter wheel in it.
+    **moves** what a training run on the train may move: its terminal
+    focuser and every filter wheel in it. It **holds still** every other
+    focuser in the train, such as an upstream focuser the train shares
+    with an imaging train (`pier1`'s EAF), since moving one shifts the
+    focus the sweep measures.
+  - **The acquire reserves at once.** Before it waits on anything, the
+    acquire records the devices it moves or holds still and the cameras
+    it will drain. A second acquire that overlaps any of them is refused
+    at once, naming the first, rather than waiting out a sweep. Two
+    acquires therefore never wait on each other, and the order in which
+    one takes its slots cannot deadlock.
 
-  It holds three things, taken in this order. A refusal at any step
+  It holds four things, taken in this order. A refusal at any step
   releases what was already taken:
-  1. **The facade lease**, first, because it is the step that refuses at
-     once (PHD2 not `Stopped`) and so should cost nothing to learn. A
-     train's camera is a facade when its `SupportedActions` lists
+  1. **The train's own camera's slot.** Taking it waits for rp's capture
+     in flight through that camera, if any, to finish, as a second
+     capture through it does.
+  2. **The facade lease**, before any wait on another camera or on the
+     gate, because it is the step that refuses at once (PHD2 not
+     `Stopped`) and so should cost little to learn. A train's camera is a
+     facade when its `SupportedActions` lists
      `rustyphoton:sweep-lease-acquire`. A facade that refuses the acquire
      has its refusal relayed. A **guiding** train's lease requires a
      facade: a guiding train's camera that does not list the Action
      refuses the lease ("camera 'x' of guiding train 'guide' is not the
      PHD2 camera facade"). That is O4's rule 7, enforced where the camera
      is known. An imaging train's lease has no facade lease. rp renews
-     the facade lease every third of its TTL while the lease lives, and
-     releases it with the lease.
-  2. **The drain.** The capture slot of every camera in every train that
-     contains a covered device, the train's own camera included, taken in
-     camera-id order. Taking a slot waits for that camera's capture in
-     flight to finish, as a second capture through it does, and then
-     holds new ones off until the lease ends. A lease that would cover a
-     device another lease covers, or need a camera another lease holds,
-     is refused at once, naming that lease, rather than waiting out a
-     sweep.
-  3. **The mount-motion lease.** The motion gate, shared, taken after the
+     the facade lease every third of its TTL from the moment it is taken,
+     through the rest of the acquire's waits, and releases it with the
+     lease. The facade still refuses while a frame of its own runs on
+     after rp's capture through it ended, which is the case of a cancelled
+     sweep's last frame on a camera whose driver ignores a stop (below);
+     its refusal names when that frame ends.
+  3. **The drain.** The capture slot of every other camera in every train
+     that contains a device the lease moves, taken in camera-id order.
+     Taking a slot waits for that camera's capture in flight to finish,
+     and then holds new ones off until the lease ends. A camera behind a
+     focuser the lease only holds still is not drained: nothing in its
+     light path moves.
+  4. **The mount-motion lease.** The motion gate, shared, taken after the
      slots, which is the order a capture takes them in. Slews, dithers and
      flips then wait for the lease to end, and one already queued delays
      the lease as it delays a capture.
@@ -2670,9 +2692,13 @@ designed:
     does not hold is refused, naming the camera. Taking the gate for it
     would be that same deadlock.
   - Without the id, a capture through a held camera, and a move or
-    filter change of a covered device, wait for the lease to end, as a
-    capture waits behind another capture through its camera. The wait
-    can be cancelled, and the lease's `max_duration` bounds it.
+    filter change of a device the lease moves or holds still, wait for
+    the lease to end, as a capture waits behind another capture through
+    its camera. The wait can be cancelled, and the lease's
+    `max_duration` bounds it.
+  - A move carrying the held lease's id is admitted only for a device
+    the lease moves. One that names a device the lease holds still is
+    refused, naming the device.
   - A capture whose id is not held (expired, released, ended by the
     safety transition, or its facade lease lost) is refused saying why.
     That is how a sweep learns its lease broke. A move or a filter change
@@ -2794,7 +2820,7 @@ review.
 | 17 | **The no-list CFW probe opens the camera without `InitQHYCCD`** (D6, option 2) — 2026-10-11 | `IsQHYCCDCFWPlugged` and the slot count answered after a bare open exactly as after an init, on a QHY178M (Linux, warm and fresh from power-up) and on `rig2`'s QHY600M (Windows), and a parked wheel stayed put, so no init is reachable from startup or reload in either path. Deferring the probe to connect (option 1) stays the list path's answer, where the wheel is declared; an unsafe operator command (option 3) was not needed. A model that turns out to need the init loses its wheel on the no-list path — a missing device, logged — and a list declaring the wheel is the remedy. |
 | 18 | **QHY keeps its raw `GetQHYCCDId` as `UniqueID` and `devices` key; no port-based identity** (D4.6, the QHY note after D4.8) — 2026-10-12 | Two cameras share an id only by sharing a model, and so the product id QHY's join matches on: they are look-alikes, refused with or without a list from C5, so no two registered cameras can carry one id. A port-based identity would change nothing a client sees and would cost a `devices`-key and wheel-id migration. |
 | 19 | **The guide-train capture sweep is a training run of `focus-model`'s `focus_train`, not an rp operation** (D12, its first option) — 2026-10-13 | The provider is becoming the one expert on focusing a train ([focus-model.md](focus-model.md) D1, D17), and the facade only gives it a camera it lacked. A separately named rp operation would add a tool during `auto_focus`'s retirement that the provider would want back. C7 is that plan's S10 and does not wait for its S7. |
-| 20 | **The caller takes rp's train lease through two tools, under an id it names, and an idle timeout and a maximum life bound a lease its caller forgot** (D12, "Settled in C7") — 2026-10-13 | rp cannot take the lease around a proxied focus call on its own: it would have to read the provider's arguments to tell a training run from the in-session `shared: true` walk, and a facade lease taken around that walk would refuse the walk's own guiding resume. The provider knows which call it is making. The idle timeout and the maximum life, not the proxied call, bound a lease whose holder died, so the tools stay usable by any client. The caller names the id so that a caller that gave up on its acquire can still release it. |
+| 20 | **The caller takes rp's train lease through two tools, under an id it names, and an idle timeout and a maximum life bound a lease its caller forgot** (D12, "Settled in C7") — 2026-10-13 | rp cannot take the lease around a proxied focus call on its own: it would have to read the provider's arguments to tell a training run from the in-session `shared: true` walk. That walk runs while PHD2 guides, so a facade lease rp tried to take around it would be refused, and rp would fail the walk before it moved anything. The provider knows which call it is making. The idle timeout and the maximum life, not the proxied call, bound a lease whose holder died, so the tools stay usable by any client. The caller names the id so that a caller that gave up on its acquire can still release it. |
 
 Nothing in this plan is waiting on an *operator* answer, and nothing
 blocks a phase. **Two** things are waiting on evidence, each named at its

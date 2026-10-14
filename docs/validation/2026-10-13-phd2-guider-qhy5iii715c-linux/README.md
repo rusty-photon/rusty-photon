@@ -4,7 +4,9 @@
 ([phd2-guider.md § Camera facade](../../services/phd2-guider.md#camera-facade-camera))
 with a real guide camera behind PHD2: the field rig's QHY5III715C. ConformU
 4.5.0 ran its `alpacaprotocol` and `conformance` suites, and both were
-**clean**: every count in `conformance-results.json` is 0.
+**clean**: `conformance-results.json`'s `ErrorCount`, `IssueCount`,
+`ConfigurationAlertCount` and `TimingIssuesCount` are all 0 (its
+`TimingCount`, 51, counts timing messages, not issues).
 
 This is the run the
 [simulator record](../2026-10-13-phd2-guider-phd2-simulator-linux/README.md)
