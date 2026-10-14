@@ -133,10 +133,11 @@ impl CameraWorld {
             .expect("the scenario's configuration is a JSON object")
             .insert("server".to_string(), serde_json::json!({ "port": port }));
         let path = self.scratch_dir().join("zwo-camera.json");
-        std::fs::write(
+        tokio::fs::write(
             &path,
             serde_json::to_string_pretty(&config).expect("serialize config"),
         )
+        .await
         .expect("write config");
         path.to_str().expect("utf8 config path").to_string()
     }

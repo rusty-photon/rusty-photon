@@ -237,7 +237,10 @@ impl PebbleHandle {
         )
         .expect("pebble endpoint cert");
 
-        let [acme_port, mgmt_port, chall_mgmt_port, dns_port] = free_ports::<4>();
+        // The probe's listeners are made in two steps on some targets, so
+        // they take the lock every spawn in this test process takes.
+        let [acme_port, mgmt_port, chall_mgmt_port, dns_port] =
+            bdd_infra::with_spawn_lock(free_ports::<4>);
         // The issued-certificate validity rides in the default profile —
         // Pebble ignores the legacy top-level certificateValidityPeriod
         // once profiles exist, and its no-profile default is 90 days.
@@ -303,9 +306,18 @@ impl PebbleHandle {
             .stderr(log("pebble.err.log"));
         // Each process creation under the lock every spawn in this test
         // process shares (`bdd_infra::with_spawn_lock`).
-        let challtestsrv =
+        let mut challtestsrv =
             bdd_infra::with_spawn_lock(|| challtestsrv.spawn()).expect("spawn pebble-challtestsrv");
-        let pebble = bdd_infra::with_spawn_lock(|| pebble.spawn()).expect("spawn pebble");
+        let pebble = match bdd_infra::with_spawn_lock(|| pebble.spawn()) {
+            Ok(pebble) => pebble,
+            Err(e) => {
+                // Nothing owns the sidecar yet, so stop and reap it here
+                // rather than leave it running for the rest of the suite.
+                challtestsrv.kill().ok();
+                challtestsrv.wait().ok();
+                panic!("spawn pebble: {e}");
+            }
+        };
 
         let handle = Self {
             // 127.0.0.1 rather than localhost: Pebble binds IPv4 loopback

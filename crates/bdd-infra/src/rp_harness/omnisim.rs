@@ -1014,7 +1014,9 @@ impl OmniSimProcess {
         let binary = Self::find_binary();
         let mut last_failure = String::new();
         for _ in 0..SPAWN_ATTEMPTS {
-            let port = Self::pick_free_port();
+            // The probe's listener is made in two steps on some targets, so it
+            // takes the lock every spawn in this process takes.
+            let port = crate::with_spawn_lock_async(Self::pick_free_port).await;
             match Self::spawn_on_port(&binary, port).await {
                 Ok(process) => return process,
                 Err(SpawnFailure::Retry(failure)) => last_failure = failure,
@@ -1053,7 +1055,8 @@ impl OmniSimProcess {
 
         // On the poll loop (see `crate::off_loop` on `PR_SET_PDEATHSIG`),
         // but under the lock every other spawn in this process takes.
-        let mut child = crate::with_spawn_lock(|| cmd.spawn())
+        let mut child = crate::with_spawn_lock_async(|| cmd.spawn())
+            .await
             .map_err(|e| SpawnFailure::Retry(format!("spawn failed: {e}")))?;
 
         let outcome = match Self::wait_healthy(&mut child, &base_url).await {

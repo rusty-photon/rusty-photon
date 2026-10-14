@@ -59,7 +59,9 @@ impl BrowserSession {
     pub async fn start() -> Self {
         let gecko_bin =
             std::env::var("GECKODRIVER_BINARY").unwrap_or_else(|_| "geckodriver".to_string());
-        let port = free_port();
+        // The probe and the spawn below each take the lock every spawn in
+        // this test process takes (`bdd_infra::with_spawn_lock_async`).
+        let port = bdd_infra::with_spawn_lock_async(free_port).await;
         let mut command = Command::new(&gecko_bin);
         command
             .arg("--port")
@@ -72,8 +74,8 @@ impl BrowserSession {
         // and the orphan check is scoped to this group (plan §9 step 4 / §10).
         #[cfg(unix)]
         command.process_group(0);
-        let mut geckodriver = command
-            .spawn()
+        let mut geckodriver = bdd_infra::with_spawn_lock_async(|| command.spawn())
+            .await
             .unwrap_or_else(|e| panic!("failed to spawn geckodriver ({gecko_bin:?}): {e}"));
         let geckodriver_pid = geckodriver
             .id()

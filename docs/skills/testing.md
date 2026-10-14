@@ -1116,20 +1116,28 @@ doctor's Pebble harness mints its certificates and spawns its pair there
 for every `@pebble` scenario.
 
 Off the loop, spawns run in parallel on pool threads where the loop used
-to run them one at a time, so each process creation takes
-**`bdd_infra::with_spawn_lock(|| cmd.spawn())`**. On targets without
-`pipe2` (macOS among them) std makes a child's stdio pipes with `pipe()`
-and marks them close-on-exec only afterwards, and a spawn that forks in
-between inherits the other child's pipe ends: a stray write end keeps that
-child's stdout from ever reaching EOF. The lock covers the spawn alone,
-never the child's life, a wait or a binary lookup. `ServiceHandle`,
-`run_once`, phd2-guider's mock, doctor's Pebble pair and OmniSim all take
-it.
+to run them one at a time, so every process creation in a test process
+takes one lock: **`bdd_infra::with_spawn_lock(|| cmd.spawn())`** in
+synchronous code (a closure under `off_loop`, a plain `#[test]`), and
+**`bdd_infra::with_spawn_lock_async(|| cmd.spawn()).await`** in async code,
+which waits without blocking the loop (the synchronous form panics there).
+On targets without `pipe2` and `SOCK_CLOEXEC` (macOS among them) std makes
+a descriptor in two steps, creating it and only then marking it
+close-on-exec, for a child's stdio pipes and for every socket alike. A
+fork that lands in between inherits it: a stray pipe write end keeps a
+child's stdout from ever reaching EOF, and a stray copy of a probe's
+listener keeps its port bound after the probe let it go. So the
+bind-and-release probes that hand a port to a child take the lock too.
+The lock covers the spawn or the probe alone, never the child's life, a
+wait or a binary lookup. `ServiceHandle`, `run_once`, phd2-guider's mock,
+doctor's Pebble pair and its port probe, OmniSim and its port probe,
+ConformU, geckodriver and its port probe, and bdd-infra's own unit tests
+all take it.
 
-Three spawns stay where they are, each rare: OmniSim's `spawn_on_port`
-(once per test process), ConformU (run by plain `#[tokio::test]`s, not by
-cucumber), and ui-htmx's geckodriver (once per `@browser` scenario, in an
-opt-in suite of four). OmniSim must stay: it is spawned with Linux's
+Three spawns stay on the loop, each rare, taking the lock's async form:
+OmniSim's `spawn_on_port` (once per test process), ConformU (run by plain
+`#[tokio::test]`s, not by cucumber), and ui-htmx's geckodriver (once per
+`@browser` scenario, in an opt-in suite of four). OmniSim must stay: it is spawned with Linux's
 `PR_SET_PDEATHSIG`, which ties the child to the *thread* that forked it,
 and a blocking-pool thread retires once it has sat idle, taking the child
 with it mid-scenario. Anything spawned that way does not go through
