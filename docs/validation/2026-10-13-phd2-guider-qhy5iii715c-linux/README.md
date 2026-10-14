@@ -185,8 +185,11 @@ connected the camera and saved a 100 ms frame with no ACL
 (`SingleFrameComplete`, `Success: true`, 0.644 s). The rule was then
 deleted, and a `change` trigger returned the node to
 `root:rusty-photon`. The installed `qhy-camera` predated `doctor
---devices`, so the port was read from `udevadm info`; it is the spelling
-`doctor --devices` prints on this host.
+--devices`, so the port was read from `udevadm info`, and `doctor
+--devices` was not run. What links the two is earlier evidence: on
+2026-10-08 the USB collector behind `doctor --devices` matched udev's
+`ID_PATH_WITH_USB_REVISION` for every one of this host's 10 devices
+([device-claims plan, D2](../../plans/device-claims-and-phd2-camera.md)).
 
 ## Service log
 
