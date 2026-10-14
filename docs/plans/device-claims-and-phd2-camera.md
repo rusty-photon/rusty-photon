@@ -2940,9 +2940,7 @@ review.
 | 19 | **The guide-train capture sweep is a training run of `focus-model`'s `focus_train`, not an rp operation** (D12, its first option) — 2026-10-13 | The provider is becoming the one expert on focusing a train ([focus-model.md](focus-model.md) D1, D17), and the facade only gives it a camera it lacked. A separately named rp operation would add a tool during `auto_focus`'s retirement that the provider would want back. C7 is that plan's S10 and does not wait for its S7. |
 | 20 | **The caller takes rp's train lease through two tools, under an id it names, and an idle timeout and a maximum life bound a lease its caller forgot** (D12, "Settled in C7") — 2026-10-13 | rp cannot take the lease around a proxied focus call on its own: it would have to read the provider's arguments to tell a training run from the in-session `shared: true` walk. That walk runs while PHD2 guides, so a facade lease rp tried to take around it would be refused, and rp would fail the walk before it moved anything. The provider knows which call it is making. The idle timeout and the maximum life, not the proxied call, bound a lease whose holder died, so the tools stay usable by any client. The caller names the id so that a caller that gave up on its acquire can still release it. |
 
-One thing is waiting on an *operator* answer: whether `pier1`'s Scops
-OAG sits behind its Falcon rotator ([focus-model.md](focus-model.md)
-O4, rule 1), which C7d's hardware check needs. Nothing blocks a phase.
+Nothing blocks a phase.
 **Five** things are waiting on evidence, each named at
 its rule: the Windows legs only a VM read, the macOS location id, the
 facade's `image_dir` recipe on Windows (never run there), the guide
@@ -2950,7 +2948,11 @@ camera's udev rule on an `xhci-hcd.N.auto` board (not worked out), and
 the per-frame constant in `focus_train`'s lease sizing (C7d measures
 it). C7's
 focus-model reconciliation, which blocked C7, was settled by the owner
-on 2026-10-13 (D12, "Settled in C7"; decision 19). C6's completion
+on 2026-10-13 (D12, "Settled in C7"; decision 19). The operator
+question C7 raised, whether `pier1`'s Scops OAG sits behind its Falcon
+rotator, was answered on 2026-10-14: it sits in front, so the Falcon
+turns the main camera only and the guiding train rightly lists no
+rotator ([focus-model.md](focus-model.md) O4, rule 1). C6's completion
 watermark, which held C6's design, was
 answered on 2026-10-13 (D9, "Settled in C6"). The macOS check, which held C5's no-list flip, no longer
 does: its report half was answered on 2026-10-12, and on 2026-10-13 the
