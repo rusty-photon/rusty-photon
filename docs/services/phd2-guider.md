@@ -1628,6 +1628,16 @@ sweep lease is held return `camera_busy` (409), see
   account could open the device node (see
   [Prerequisites](#prerequisites)).
   [Record](../validation/2026-10-13-phd2-guider-qhy5iii715c-linux/README.md).
+- **2026-10-14, field rig, PHD2 2.6.14 with its Simulator camera, the
+  sweep lease:** ConformU `alpacaprotocol` and `conformance` clean with
+  the three lease Actions listed. A probe drove the lease against the
+  live PHD2 through every rule above that PHD2's state decides: refused
+  while PHD2 loops and while a frame is in flight, guiding refused while
+  it is held, and ended by a stop, a disconnect and its TTL. A frame
+  under it went out as `UInt16`. PHD2's simulator reports a 0 × 0 frame
+  until it has taken one, which the connect does not refuse
+  ([#1518](https://github.com/rusty-photon/rusty-photon/issues/1518)).
+  [Record](../validation/2026-10-14-phd2-guider-phd2-simulator-linux-sweep-lease/README.md).
 
 ### Not in this version
 
@@ -1713,6 +1723,7 @@ sweep lease is held return `camera_busy` (409), see
 - [x] `camera_busy` while a lease is held; `guiding/stop`, `Connected = false` and shutdown end it
 - [x] Frames sent as `UInt16`
 - [x] BDD `camera_lease.feature`, and the ImageBytes header in `camera_facade.feature`
+- [x] The lease against a live PHD2 on `pier1`, with PHD2's Simulator camera, and ConformU
 - [ ] A lease held through a sweep on `pier1` (C7d's hardware check)
 
 ## Dependencies
