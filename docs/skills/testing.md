@@ -1103,11 +1103,21 @@ loop stood still for each of those 2 s. Every other scenario's health wait
 then ran out with its service up and connected, and 48 of 58 scenarios
 failed on a service that had done nothing wrong.
 
-So steps take a port from **`bdd_infra::reserved_test_port_async`**, which
-probes on the blocking pool. `ServiceHandle`'s async starts find their
-binary and spawn their process there too: the lookup stats files and reads
+So synchronous work a scenario does goes through `off_loop`: steps take a
+port from **`bdd_infra::reserved_test_port_async`** (or keep one with
+`reserved_port_once`), `ServiceHandle`'s async starts find their binary
+and spawn their process there (the lookup stats files and reads
 `Cargo.toml`, and process creation is a synchronous call a loaded host
-makes slow.
+makes slow), and a binary run to its exit goes through `run_once_async`.
+
+Three spawns stay where they are, each rare: OmniSim's `spawn_on_port`
+(once per test process), ConformU (run by plain `#[tokio::test]`s, not by
+cucumber), and ui-htmx's geckodriver (once per `@browser` scenario, in an
+opt-in suite of four). OmniSim must stay: it is spawned with Linux's
+`PR_SET_PDEATHSIG`, which ties the child to the *thread* that forked it,
+and a blocking-pool thread retires once it has sat idle, taking the child
+with it mid-scenario. Anything spawned that way does not go through
+`off_loop`.
 
 CPU-bound setup counts as blocking, not just waiting on a child. The TLS
 fixture is the standing example: a CA keypair, a service keypair, a

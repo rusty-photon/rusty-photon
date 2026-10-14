@@ -183,7 +183,7 @@ impl BridgeWorld {
             },
             // Neither smoke imports anything, and a dead URL keeps the
             // import worker off whatever is listening on rp's real port.
-            "rp": { "mcp_server_url": SMOKE_RP_URL },
+            "rp": { "mcp_server_url": DEAD_RP_URL },
             "device": {
                 "slew_duration": "3s",
                 "assume_epoch": "j2000",
@@ -193,14 +193,11 @@ impl BridgeWorld {
         })
     }
 
-    async fn write_config(&mut self) -> String {
-        let rp_url = if let Some(url) = &self.rp_url {
-            url.clone()
-        } else {
-            let url = unreachable_rp_url().await;
-            self.rp_url = Some(url.clone());
-            url
-        };
+    fn write_config(&mut self) -> String {
+        let rp_url = self
+            .rp_url
+            .get_or_insert_with(|| DEAD_RP_URL.to_owned())
+            .clone();
         let spool_path = self.spool_path();
 
         let mut device = serde_json::Map::new();
@@ -259,7 +256,7 @@ impl BridgeWorld {
 
     /// Spawn the service binary and acquire the typed Telescope client.
     pub async fn start(&mut self) {
-        let config_path = self.write_config().await;
+        let config_path = self.write_config();
         let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
         self.handle = Some(handle);
         self.acquire().await;
@@ -420,7 +417,10 @@ pub fn ascom_code(name: &str) -> u16 {
 
 /// A URL where nothing listens — the "rp is unreachable" fixture.
 ///
-/// Ports come from a reserved band below the platform ephemeral floor,
+/// Unlike [`DEAD_RP_URL`], this port must be one the scenario can later
+/// bind: "the stub rp comes up at the configured rp address" starts a stub
+/// on it, and concurrent scenarios must not share it. So it is probed, not
+/// fixed. Ports come from a reserved band below the platform ephemeral floor,
 /// probed by *connecting* (a refused connect is the same "nobody is there"
 /// answer), never by binding and releasing — a bind probe draws from the
 /// same range the OS hands to every concurrent `bind(0)` and its listener
@@ -437,13 +437,12 @@ pub async fn unreachable_rp_url() -> String {
     format!("http://127.0.0.1:{port}/mcp")
 }
 
-/// The rp URL the doctor and TLS/auth smokes configure. Neither imports
-/// anything, so nothing needs a probed port: port 1 is reserved, nothing
-/// on a test host listens there, and the bridge's own config tests use it
-/// as their dead URL. A probe would have to run where the smokes build
-/// their config, in synchronous trait methods inside a step, and so on
-/// the poll loop.
-const SMOKE_RP_URL: &str = "http://127.0.0.1:1/mcp";
+/// The rp URL of a scenario that never brings rp up, and of the doctor and
+/// TLS/auth smokes: port 1 is reserved, nothing on a test host listens
+/// there, and the bridge's own config tests use it as their dead URL. It
+/// needs no probe, and none of these binds a stub on it: a scenario that
+/// does says "rp is unreachable" and gets [`unreachable_rp_url`] instead.
+const DEAD_RP_URL: &str = "http://127.0.0.1:1/mcp";
 
 const RESERVED_PORT_BAND_START: u16 = 23100;
 const RESERVED_PORT_BAND_LEN: u16 = 1000;

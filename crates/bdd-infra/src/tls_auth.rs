@@ -181,8 +181,8 @@ static SHARED_PKI: OnceLock<tokio::sync::Mutex<HashMap<String, Arc<PkiFixture>>>
 ///
 /// # Panics
 ///
-/// Panics if the generation task panics — any of
-/// [`PkiFixture::generate`]'s failures, re-raised here naming the service.
+/// Panics if the generation panics — any of [`PkiFixture::generate`]'s
+/// failures, re-raised here with its own message.
 pub async fn shared_pki(service_name: &str) -> Arc<PkiFixture> {
     let cache = SHARED_PKI.get_or_init(Default::default);
     let mut entries = cache.lock().await;
@@ -190,11 +190,7 @@ pub async fn shared_pki(service_name: &str) -> Arc<PkiFixture> {
         return Arc::clone(existing);
     }
     let name = service_name.to_string();
-    let fixture = Arc::new(
-        tokio::task::spawn_blocking(move || PkiFixture::generate(&name))
-            .await
-            .unwrap_or_else(|e| panic!("PKI generation for {service_name} panicked: {e}")),
-    );
+    let fixture = Arc::new(crate::off_loop(move || PkiFixture::generate(&name)).await);
     entries.insert(service_name.to_string(), Arc::clone(&fixture));
     fixture
 }

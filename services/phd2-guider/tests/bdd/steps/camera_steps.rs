@@ -72,13 +72,7 @@ async fn mock_with_disconnected_camera(world: &mut GuiderWorld, version: String)
 
 /// The `camera` block the suite runs the facade with.
 async fn camera_block(world: &mut GuiderWorld) -> serde_json::Value {
-    let port = if let Some(port) = world.camera_port {
-        port
-    } else {
-        let port = bdd_infra::reserved_test_port_async().await;
-        world.camera_port = Some(port);
-        port
-    };
+    let port = bdd_infra::reserved_port_once(&mut world.camera_port).await;
     let image_dir = world.image_dir();
     serde_json::json!({
         "enabled": true,

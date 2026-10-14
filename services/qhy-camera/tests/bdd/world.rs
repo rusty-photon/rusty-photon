@@ -139,15 +139,10 @@ impl CameraWorld {
             }
             serde_json::json!({ "devices": devices })
         });
-        let reserve = config.get("usb_devices").is_some() || self.usb_inventory.is_some();
-        let port = match (reserve, self.config_port) {
-            (false, _) => 0,
-            (true, Some(port)) => port,
-            (true, None) => {
-                let port = bdd_infra::reserved_test_port_async().await;
-                self.config_port = Some(port);
-                port
-            }
+        let port = if config.get("usb_devices").is_some() || self.usb_inventory.is_some() {
+            bdd_infra::reserved_port_once(&mut self.config_port).await
+        } else {
+            0
         };
         config
             .as_object_mut()
