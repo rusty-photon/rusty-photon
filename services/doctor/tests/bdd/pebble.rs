@@ -82,19 +82,6 @@ impl Drop for PebbleHandle {
     }
 }
 
-/// N distinct free localhost ports, held simultaneously so no two picks
-/// collide, then released for the children to claim.
-fn free_ports<const N: usize>() -> [u16; N] {
-    let listeners: Vec<std::net::TcpListener> = (0..N)
-        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").expect("bind a free port"))
-        .collect();
-    let mut ports = [0u16; N];
-    for (port, listener) in ports.iter_mut().zip(&listeners) {
-        *port = listener.local_addr().expect("bound addr").port();
-    }
-    ports
-}
-
 /// A DNS query for `readiness.probe. A IN`, wire-format per RFC 1035 §4.1.
 fn dns_query() -> Vec<u8> {
     let mut msg = Vec::new();
@@ -237,10 +224,7 @@ impl PebbleHandle {
         )
         .expect("pebble endpoint cert");
 
-        // The probe's listeners are made in two steps on some targets, so
-        // they take the lock every spawn in this test process takes.
-        let [acme_port, mgmt_port, chall_mgmt_port, dns_port] =
-            bdd_infra::with_spawn_lock(free_ports::<4>);
+        let [acme_port, mgmt_port, chall_mgmt_port, dns_port] = bdd_infra::ephemeral_ports::<4>();
         // The issued-certificate validity rides in the default profile —
         // Pebble ignores the legacy top-level certificateValidityPeriod
         // once profiles exist, and its no-profile default is 90 days.

@@ -177,16 +177,14 @@ fn spawn_mock(mut cmd: Command) -> (u16, Child) {
 }
 
 impl GuiderWorld {
-    /// Locate the in-tree `mock_phd2` binary the way
-    /// `tests/test_integration.rs` does: explicit `MOCK_PHD2_BINARY`
-    /// (set by the Bazel test target), then `CARGO_BIN_EXE_mock_phd2`
-    /// (set by Cargo for `[[test]]` crates).
+    /// Locate the in-tree `mock_phd2` binary: explicit `MOCK_PHD2_BINARY`
+    /// (set by the Bazel test target), then `CARGO_BIN_EXE_mock_phd2` (set
+    /// by Cargo for `[[test]]` crates). A set override is used as given, as
+    /// `bdd_infra`'s binary lookup uses one: a stale path fails the spawn
+    /// loudly, naming it, rather than quietly testing another build.
     pub fn mock_phd2_path() -> PathBuf {
-        if let Ok(p) = std::env::var("MOCK_PHD2_BINARY") {
-            let path = PathBuf::from(p);
-            if path.exists() {
-                return path;
-            }
+        if let Some(path) = std::env::var_os("MOCK_PHD2_BINARY") {
+            return PathBuf::from(path);
         }
         if let Some(p) = option_env!("CARGO_BIN_EXE_mock_phd2") {
             let path = PathBuf::from(p);

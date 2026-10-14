@@ -748,8 +748,10 @@ Do **not** probe by binding `:0` and releasing it. Two things go wrong:
   that suite's spawn rate. **Probe by connecting instead**: a refused connect is
   the same "nobody is there" answer and leaves nothing behind.
 
-Where a bind-and-release probe does survive (`omnisim.rs::pick_free_port`,
-`pebble.rs::free_ports`) it is paired with a retry on the lost race. Keep that
+Where a bind-and-release probe does survive, it is
+`bdd_infra::ephemeral_ports::<N>()` (or `ephemeral_ports_async`), for a child
+told its port after the probe: OmniSim's and Pebble's harnesses and
+geckodriver use it, each paired with a retry on the lost race. Keep that
 pairing if you add another — and note that the retry is worth exactly as much
 as the readiness check that fires it. Verify **every** endpoint the child was
 handed a port for, not just the one easiest to poll: a child that survives a
@@ -1126,13 +1128,18 @@ a descriptor in two steps, creating it and only then marking it
 close-on-exec, for a child's stdio pipes and for every socket alike. A
 fork that lands in between inherits it: a stray pipe write end keeps a
 child's stdout from ever reaching EOF, and a stray copy of a probe's
-listener keeps its port bound after the probe let it go. So the
-bind-and-release probes that hand a port to a child take the lock too.
-The lock covers the spawn or the probe alone, never the child's life, a
-wait or a binary lookup. `ServiceHandle`, `run_once`, phd2-guider's mock,
-doctor's Pebble pair and its port probe, OmniSim and its port probe,
-ConformU, geckodriver and its port probe, and bdd-infra's own unit tests
-all take it.
+listener keeps its port bound after the probe let it go. So the lock
+orders process creation against other process creation and against
+`ephemeral_ports`, which takes it itself. The lock covers the spawn or the
+probe alone, never the child's life, a wait or a binary lookup.
+`ServiceHandle`, `run_once`, phd2-guider's mock, doctor's Pebble pair,
+OmniSim, ConformU, geckodriver and bdd-infra's own unit tests all take it.
+
+That is all it orders. A socket made anywhere else at the instant of a fork
+(a step's stub listener, a reqwest connection, on the poll loop or a runtime
+worker) can still be inherited on macOS: std's `Command` does not expose
+`posix_spawn`'s close-every-other-descriptor default, so no lock in
+bdd-infra closes that window.
 
 Three spawns stay on the loop, each rare, taking the lock's async form:
 OmniSim's `spawn_on_port` (once per test process), ConformU (run by plain

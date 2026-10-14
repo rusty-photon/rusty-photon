@@ -428,8 +428,28 @@ mod reserved_port_tests {
     #[test]
     fn a_spawn_that_panicked_under_the_lock_does_not_fail_the_next() {
         let panicked = std::panic::catch_unwind(|| with_spawn_lock(|| panic!("the spawn blew up")));
-        assert!(panicked.is_err());
+        panicked.expect_err("a panic under the spawn lock must reach the caller");
         assert_eq!(with_spawn_lock(|| 7), 7);
+    }
+
+    #[test]
+    fn ephemeral_ports_are_distinct_and_bindable() {
+        let ports = ephemeral_ports::<3>();
+        assert!(ports.iter().all(|&port| port != 0), "{ports:?}");
+        assert!(
+            ports[0] != ports[1] && ports[1] != ports[2] && ports[0] != ports[2],
+            "{ports:?}"
+        );
+        for port in ports {
+            std::net::TcpListener::bind(("127.0.0.1", port))
+                .unwrap_or_else(|e| panic!("port {port} was not released: {e}"));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_async_form_hands_out_an_ephemeral_port() {
+        let [port] = ephemeral_ports_async::<1>().await;
+        assert_ne!(port, 0);
     }
 
     /// The async form waits for the lock without blocking the loop: on a
@@ -966,20 +986,26 @@ pub async fn off_loop<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
     }
 }
 
-/// The lock every process creation in this test process takes, and every
-/// probe that opens a listener only to hand its port to a child.
+/// The lock that orders process creation in this test process against
+/// other process creation, and against the probes that bind a port only to
+/// hand it to a child ([`ephemeral_ports`]).
 ///
 /// [`off_loop`] runs spawns in parallel on blocking-pool threads, where the
-/// single poll loop used to run them one at a time. That is not safe
-/// everywhere. On targets without `pipe2` and `SOCK_CLOEXEC` (macOS among
-/// them) std makes a descriptor in two steps, creating it and only then
-/// marking it close-on-exec, for a child's stdio pipes and for every socket
-/// alike. A fork that lands between the two steps inherits the descriptor:
-/// a stray copy of a pipe's write end keeps a child's stdout from ever
-/// reaching EOF, and a stray copy of a probe's listener keeps its port
-/// bound after the probe has let it go. Taking this lock around each
-/// process creation and each such probe puts those instants back in
-/// single file.
+/// single poll loop used to run them one at a time. On targets without
+/// `pipe2` and `SOCK_CLOEXEC` (macOS among them) std makes a descriptor in
+/// two steps, creating it and only then marking it close-on-exec, for a
+/// child's stdio pipes and for every socket alike. A fork that lands
+/// between the two steps inherits the descriptor: a stray copy of a pipe's
+/// write end keeps a child's stdout from ever reaching EOF, and a stray
+/// copy of a probe's listener keeps its port bound after the probe let it
+/// go. Spawns and those probes all take this lock, so none of them forks
+/// or makes its descriptors while another holds it.
+///
+/// That is all it orders. A socket made anywhere else at the instant of a
+/// fork (a step's stub listener, a reqwest connection, on the poll loop or
+/// a runtime worker) can still be inherited on macOS: std's `Command` does
+/// not expose `posix_spawn`'s close-every-other-descriptor default, so no
+/// lock in this crate closes that window.
 ///
 /// It covers the spawn or the probe alone: never a child's life, a wait or
 /// a binary lookup. It is tokio's mutex, so code on the poll loop waits for
@@ -1013,6 +1039,58 @@ pub fn with_spawn_lock<T>(spawn: impl FnOnce() -> T) -> T {
 pub async fn with_spawn_lock_async<T>(spawn: impl FnOnce() -> T) -> T {
     let _held = SPAWN_LOCK.lock().await;
     spawn()
+}
+
+/// `N` distinct ephemeral loopback ports, for children told their port
+/// after the probe.
+///
+/// Binds `127.0.0.1:0` `N` times, holds every listener until all `N` ports
+/// are read so no two collide, then lets them go for the children to claim.
+/// The ports come from the OS's ephemeral range, so another process can
+/// take one before its child binds it: a caller retries on that lost race.
+/// [`reserved_test_port_async`] is the other shape, a band below the
+/// ephemeral floor probed by connecting, for a port a test must know
+/// before the child starts.
+///
+/// The probe runs under the spawn lock: on some targets a socket is made in
+/// two steps, and a fork landing between them would keep a copy of a
+/// listener, and so its port, bound after the probe let it go.
+///
+/// # Panics
+///
+/// Panics if a listener cannot be bound or read back, or, as
+/// [`with_spawn_lock`] does, when called from within an async context,
+/// where [`ephemeral_ports_async`] is the form to take.
+#[must_use]
+pub fn ephemeral_ports<const N: usize>() -> [u16; N] {
+    with_spawn_lock(bind_ephemeral_ports::<N>)
+}
+
+/// [`ephemeral_ports`] for async code.
+///
+/// # Panics
+///
+/// Panics if a listener cannot be bound or read back.
+pub async fn ephemeral_ports_async<const N: usize>() -> [u16; N] {
+    with_spawn_lock_async(bind_ephemeral_ports::<N>).await
+}
+
+fn bind_ephemeral_ports<const N: usize>() -> [u16; N] {
+    let listeners: Vec<std::net::TcpListener> = (0..N)
+        .map(|_| {
+            std::net::TcpListener::bind("127.0.0.1:0")
+                .unwrap_or_else(|e| panic!("bind an ephemeral loopback port: {e}"))
+        })
+        .collect();
+    let mut ports = [0u16; N];
+    for (port, listener) in ports.iter_mut().zip(&listeners) {
+        *port = listener
+            .local_addr()
+            .unwrap_or_else(|e| panic!("read back an ephemeral port: {e}"))
+            .port();
+    }
+    debug!(?ports, "probed ephemeral ports");
+    ports
 }
 
 /// Spawn `binary`, feed it `stdin_data`, and reap its `Output`.
@@ -1368,20 +1446,25 @@ mod tests {
     /// The mutex serializes cwd-changing tests so they don't stomp each other.
     static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Spawn `program` with `args`, stdout and stderr piped, under the spawn
+    /// lock: these children's pipes are read to EOF beside tests that start
+    /// long-lived services.
+    async fn spawn_piped(program: &str, args: &[&str]) -> tokio::process::Child {
+        let mut cmd = tokio::process::Command::new(program);
+        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
+        with_spawn_lock_async(|| cmd.spawn())
+            .await
+            .unwrap_or_else(|e| panic!("spawn {program}: {e}"))
+    }
+
     // -----------------------------------------------------------------------
     // parse_bound_port tests
     // -----------------------------------------------------------------------
 
     #[tokio::test]
     async fn test_parse_bound_port_alpaca_prefix() {
-        let mut child = with_spawn_lock_async(|| {
-            tokio::process::Command::new("echo")
-                .arg("Bound Alpaca server bound_addr=0.0.0.0:54321")
-                .stdout(Stdio::piped())
-                .spawn()
-        })
-        .await
-        .unwrap();
+        let mut child =
+            spawn_piped("echo", &["Bound Alpaca server bound_addr=0.0.0.0:54321"]).await;
         let stdout = child.stdout.take().unwrap();
 
         let (port, drain) = parse_bound_port(stdout).await.unwrap();
@@ -1391,14 +1474,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_bound_port_rp_prefix() {
-        let mut child = with_spawn_lock_async(|| {
-            tokio::process::Command::new("echo")
-                .arg("Bound rp server bound_addr=127.0.0.1:9999")
-                .stdout(Stdio::piped())
-                .spawn()
-        })
-        .await
-        .unwrap();
+        let mut child = spawn_piped("echo", &["Bound rp server bound_addr=127.0.0.1:9999"]).await;
         let stdout = child.stdout.take().unwrap();
 
         let (port, drain) = parse_bound_port(stdout).await.unwrap();
@@ -1408,14 +1484,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_bound_port_arbitrary_prefix() {
-        let mut child = with_spawn_lock_async(|| {
-            tokio::process::Command::new("echo")
-                .arg("some future service bound_addr=10.0.0.1:8080")
-                .stdout(Stdio::piped())
-                .spawn()
-        })
-        .await
-        .unwrap();
+        let mut child =
+            spawn_piped("echo", &["some future service bound_addr=10.0.0.1:8080"]).await;
         let stdout = child.stdout.take().unwrap();
 
         let (port, drain) = parse_bound_port(stdout).await.unwrap();
@@ -1426,14 +1496,11 @@ mod tests {
     #[tokio::test]
     async fn test_parse_bound_port_with_preceding_lines() {
         // printf outputs multiple lines; the port line comes after noise
-        let mut child = with_spawn_lock_async(|| {
-            tokio::process::Command::new("printf")
-                .arg("starting up...\nloading config\nBound Alpaca server bound_addr=0.0.0.0:11111\n")
-                .stdout(Stdio::piped())
-                .spawn()
-        })
-        .await
-        .unwrap();
+        let mut child = spawn_piped(
+            "printf",
+            &["starting up...\nloading config\nBound Alpaca server bound_addr=0.0.0.0:11111\n"],
+        )
+        .await;
         let stdout = child.stdout.take().unwrap();
 
         let (port, drain) = parse_bound_port(stdout).await.unwrap();
@@ -1443,14 +1510,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_bound_port_no_match_returns_none() {
-        let mut child = with_spawn_lock_async(|| {
-            tokio::process::Command::new("echo")
-                .arg("no port info here")
-                .stdout(Stdio::piped())
-                .spawn()
-        })
-        .await
-        .unwrap();
+        let mut child = spawn_piped("echo", &["no port info here"]).await;
         let stdout = child.stdout.take().unwrap();
 
         let result = parse_bound_port(stdout).await;
@@ -1459,13 +1519,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_parse_bound_port_empty_output_returns_none() {
-        let mut child = with_spawn_lock_async(|| {
-            tokio::process::Command::new("true")
-                .stdout(Stdio::piped())
-                .spawn()
-        })
-        .await
-        .unwrap();
+        let mut child = spawn_piped("true", &[]).await;
         let stdout = child.stdout.take().unwrap();
 
         let result = parse_bound_port(stdout).await;
@@ -1492,15 +1546,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_stderr_forwarder_terminates_on_eof() {
-        let mut child = with_spawn_lock_async(|| {
-            tokio::process::Command::new("sh")
-                .arg("-c")
-                .arg("echo one >&2; echo two >&2")
-                .stderr(Stdio::piped())
-                .spawn()
-        })
-        .await
-        .unwrap();
+        let mut child = spawn_piped("sh", &["-c", "echo one >&2; echo two >&2"]).await;
         let stderr = child.stderr.take().unwrap();
         let handle = spawn_stderr_forwarder(stderr, "test#0".to_string());
 
