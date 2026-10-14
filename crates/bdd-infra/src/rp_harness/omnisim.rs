@@ -1051,8 +1051,9 @@ impl OmniSimProcess {
         let mut cmd = Self::command(binary, &base_url, Self::prepare_settings_dir());
         cmd.stdout(stdout_target).stderr(stderr_target);
 
-        let mut child = cmd
-            .spawn()
+        // On the poll loop (see `crate::off_loop` on `PR_SET_PDEATHSIG`),
+        // but under the lock every other spawn in this process takes.
+        let mut child = crate::with_spawn_lock(|| cmd.spawn())
             .map_err(|e| SpawnFailure::Retry(format!("spawn failed: {e}")))?;
 
         let outcome = match Self::wait_healthy(&mut child, &base_url).await {

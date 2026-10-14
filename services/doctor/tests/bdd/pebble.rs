@@ -271,7 +271,8 @@ impl PebbleHandle {
         let log = |name: &str| {
             Stdio::from(std::fs::File::create(dir.path().join(name)).expect("child log file"))
         };
-        let challtestsrv = Command::new(&challtestsrv_path)
+        let mut challtestsrv = Command::new(&challtestsrv_path);
+        challtestsrv
             .arg("-management")
             // The loopback host is spelled out: a bare ":<port>" is Go's
             // all-interfaces bind, which puts a dual-stack listener on
@@ -290,19 +291,21 @@ impl PebbleHandle {
             .arg("-tlsalpn01")
             .arg("")
             .stdout(log("challtestsrv.log"))
-            .stderr(log("challtestsrv.err.log"))
-            .spawn()
-            .expect("spawn pebble-challtestsrv");
-        let pebble = Command::new(&pebble_path)
+            .stderr(log("challtestsrv.err.log"));
+        let mut pebble = Command::new(&pebble_path);
+        pebble
             .arg("-config")
             .arg(&config_path)
             .arg("-dnsserver")
             .arg(format!("127.0.0.1:{dns_port}"))
             .env("PEBBLE_VA_NOSLEEP", "1")
             .stdout(log("pebble.log"))
-            .stderr(log("pebble.err.log"))
-            .spawn()
-            .expect("spawn pebble");
+            .stderr(log("pebble.err.log"));
+        // Each process creation under the lock every spawn in this test
+        // process shares (`bdd_infra::with_spawn_lock`).
+        let challtestsrv =
+            bdd_infra::with_spawn_lock(|| challtestsrv.spawn()).expect("spawn pebble-challtestsrv");
+        let pebble = bdd_infra::with_spawn_lock(|| pebble.spawn()).expect("spawn pebble");
 
         let handle = Self {
             // 127.0.0.1 rather than localhost: Pebble binds IPv4 loopback

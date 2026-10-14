@@ -675,6 +675,9 @@ never binds would hang the test until the Bazel timeout.
 **Binary discovery order:**
 
 1. Explicit env var `{PACKAGE_UPPER_SNAKE}_BINARY` (e.g., `FILEMONITOR_BINARY=/path/to/bin`).
+   A set override is used as given, even when nothing is at that path: a stale
+   one fails the spawn loudly, naming the path, rather than letting steps 2-3
+   quietly test some other build.
 2. `$CARGO_TARGET_DIR/debug/<pkg>` (or `$CARGO_LLVM_COV_TARGET_DIR/debug/<pkg>` under
    `cargo llvm-cov`) when either env var is set. If `CARGO_BUILD_TARGET` is also set,
    the triple is inserted: `.../<triple>/debug/<pkg>`. When one of these env vars is
@@ -1111,6 +1114,17 @@ and spawn their process there (the lookup stats files and reads
 makes slow), a binary run to its exit goes through `run_once_async`, and
 doctor's Pebble harness mints its certificates and spawns its pair there
 for every `@pebble` scenario.
+
+Off the loop, spawns run in parallel on pool threads where the loop used
+to run them one at a time, so each process creation takes
+**`bdd_infra::with_spawn_lock(|| cmd.spawn())`**. On targets without
+`pipe2` (macOS among them) std makes a child's stdio pipes with `pipe()`
+and marks them close-on-exec only afterwards, and a spawn that forks in
+between inherits the other child's pipe ends: a stray write end keeps that
+child's stdout from ever reaching EOF. The lock covers the spawn alone,
+never the child's life, a wait or a binary lookup. `ServiceHandle`,
+`run_once`, phd2-guider's mock, doctor's Pebble pair and OmniSim all take
+it.
 
 Three spawns stay where they are, each rare: OmniSim's `spawn_on_port`
 (once per test process), ConformU (run by plain `#[tokio::test]`s, not by

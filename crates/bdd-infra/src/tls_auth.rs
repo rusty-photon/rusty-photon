@@ -192,11 +192,14 @@ pub async fn shared_pki(service_name: &str) -> Arc<PkiFixture> {
     let name = service_name.to_string();
     let fixture = Arc::new(
         crate::off_loop(move || {
+            // `resume_unwind` skips the panic hook, which already reported
+            // the original panic: the failure prints once, and the step's
+            // error still names the service.
             std::panic::catch_unwind(|| PkiFixture::generate(&name)).unwrap_or_else(|payload| {
-                panic!(
+                std::panic::resume_unwind(Box::new(format!(
                     "PKI generation for {name} panicked: {}",
                     crate::panic_text(payload.as_ref())
-                )
+                )))
             })
         })
         .await,

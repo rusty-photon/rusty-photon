@@ -154,7 +154,7 @@ impl Drop for MockPhd2Handle {
 /// than hanging the suite on an endless stdout read. Blocking: run it on
 /// the blocking pool.
 fn spawn_mock(mut cmd: Command) -> (u16, Child) {
-    let mut child = cmd.spawn().expect("spawn mock_phd2");
+    let mut child = bdd_infra::with_spawn_lock(|| cmd.spawn()).expect("spawn mock_phd2");
     let stdout = child.stdout.take().expect("mock_phd2 stdout piped");
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {

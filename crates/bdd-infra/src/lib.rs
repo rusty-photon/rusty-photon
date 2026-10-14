@@ -408,6 +408,30 @@ mod reserved_port_tests {
         );
     }
 
+    /// A formatted re-raise, as `shared_pki` makes, reaches the caller as
+    /// the very `String` it was given.
+    #[tokio::test]
+    async fn off_loop_carries_a_string_payload_unchanged() {
+        let joined = tokio::spawn(off_loop::<()>(|| {
+            std::panic::resume_unwind(Box::new(String::from("PKI generation for x panicked")))
+        }))
+        .await;
+        let payload = joined
+            .expect_err("a re-raised panic must fail its caller")
+            .into_panic();
+        assert_eq!(
+            payload.downcast_ref::<String>().map(String::as_str),
+            Some("PKI generation for x panicked")
+        );
+    }
+
+    #[test]
+    fn a_spawn_that_panicked_under_the_lock_does_not_fail_the_next() {
+        let panicked = std::panic::catch_unwind(|| with_spawn_lock(|| panic!("the spawn blew up")));
+        assert!(panicked.is_err());
+        assert_eq!(with_spawn_lock(|| 7), 7);
+    }
+
     #[test]
     fn panic_text_reads_both_string_payloads() {
         let literal: Box<dyn std::any::Any + Send> = Box::new("a literal");
@@ -906,6 +930,29 @@ pub async fn off_loop<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static)
     }
 }
 
+/// Run `spawn`, one process creation, holding a lock that every spawn in
+/// this test process shares.
+///
+/// [`off_loop`] runs spawns in parallel on blocking-pool threads, where the
+/// single poll loop used to run them one at a time. That is not safe
+/// everywhere: on targets without `pipe2` (macOS among them) std creates a
+/// child's stdio pipes with `pipe()` and only then marks each end
+/// close-on-exec, so a second spawn that forks in between inherits the
+/// first child's pipe ends. A stray copy of a write end keeps the first
+/// child's stdout from ever reaching EOF. Holding this lock around each
+/// process creation puts that instant back in single file.
+///
+/// Hold it around the spawn alone: never for the child's life, a wait or a
+/// binary lookup. A spawn that panicked while holding it does not fail the
+/// ones after it, which take the poisoned lock anyway.
+pub fn with_spawn_lock<T>(spawn: impl FnOnce() -> T) -> T {
+    static SPAWN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _held = SPAWN_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    spawn()
+}
+
 /// Spawn `binary`, feed it `stdin_data`, and reap its `Output`.
 fn run_to_completion(
     package_name: &str,
@@ -926,8 +973,7 @@ fn run_to_completion(
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let mut child = cmd
-            .spawn()
+        let mut child = with_spawn_lock(|| cmd.spawn())
             .unwrap_or_else(|e| panic!("failed to spawn {package_name}: {e}"));
 
         if let Some(ref mut stdin) = child.stdin {
@@ -941,8 +987,15 @@ fn run_to_completion(
             .wait_with_output()
             .unwrap_or_else(|e| panic!("failed to wait on {package_name}: {e}"))
     } else {
-        cmd.output()
+        // `output()`'s own stdio, spawned under the lock and waited on
+        // outside it.
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        with_spawn_lock(|| cmd.spawn())
             .unwrap_or_else(|e| panic!("failed to run {package_name}: {e}"))
+            .wait_with_output()
+            .unwrap_or_else(|e| panic!("failed to wait on {package_name}: {e}"))
     }
 }
 
@@ -950,7 +1003,10 @@ fn run_to_completion(
 ///
 /// Discovery order:
 /// 1. The conventional env var `{PACKAGE_UPPER_SNAKE}_BINARY`
-///    (e.g., `FILEMONITOR_BINARY=/path/to/bin`).
+///    (e.g., `FILEMONITOR_BINARY=/path/to/bin`). A set override is used as
+///    given, even when nothing is at that path: a stale one then fails the
+///    spawn loudly, naming the path, rather than letting the search below
+///    quietly test some other build.
 /// 2. `$CARGO_TARGET_DIR/debug/<pkg>` (or `$CARGO_TARGET_DIR/$CARGO_BUILD_TARGET/debug/<pkg>`
 ///    when the latter is set). `CARGO_LLVM_COV_TARGET_DIR` is also honored.
 /// 3. Walking up from the current directory, probe `<ancestor>/target/debug/<pkg>` (and
@@ -1093,7 +1149,7 @@ async fn spawn_service(
     let mut cmd = service_command(&binary, package_name, args, envs);
     let package = package_name.to_string();
     off_loop(move || {
-        cmd.spawn()
+        with_spawn_lock(|| cmd.spawn())
             .unwrap_or_else(|e| panic!("failed to start {package} binary '{binary}': {e}"))
     })
     .await

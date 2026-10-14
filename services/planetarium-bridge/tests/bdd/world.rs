@@ -183,7 +183,7 @@ impl BridgeWorld {
             },
             // Neither smoke imports anything, and a dead URL keeps the
             // import worker off whatever is listening on rp's real port.
-            "rp": { "mcp_server_url": DEAD_RP_URL },
+            "rp": { "mcp_server_url": dead_rp_url() },
             "device": {
                 "slew_duration": "3s",
                 "assume_epoch": "j2000",
@@ -194,10 +194,7 @@ impl BridgeWorld {
     }
 
     fn write_config(&mut self) -> String {
-        let rp_url = self
-            .rp_url
-            .get_or_insert_with(|| DEAD_RP_URL.to_owned())
-            .clone();
+        let rp_url = self.rp_url.get_or_insert_with(dead_rp_url).clone();
         let spool_path = self.spool_path();
 
         let mut device = serde_json::Map::new();
@@ -417,7 +414,7 @@ pub fn ascom_code(name: &str) -> u16 {
 
 /// A URL where nothing listens — the "rp is unreachable" fixture.
 ///
-/// Unlike [`DEAD_RP_URL`], this port must be one the scenario can later
+/// Unlike [`dead_rp_url`], this port must be one the scenario can later
 /// bind: "the stub rp comes up at the configured rp address" starts a stub
 /// on it, and concurrent scenarios must not share it. So it is reserved
 /// with `bdd_infra::reserved_test_port_async` (testing.md §5.1), which
@@ -427,12 +424,15 @@ pub async fn unreachable_rp_url() -> String {
     format!("http://127.0.0.1:{port}/mcp")
 }
 
-/// The rp URL of a scenario that never brings rp up, and of the doctor and
-/// TLS/auth smokes: port 1 is reserved, nothing on a test host listens
-/// there, and the bridge's own config tests use it as their dead URL. It
-/// needs no probe, and none of these binds a stub on it: a scenario that
-/// does says "rp is unreachable" and gets [`unreachable_rp_url`] instead.
-const DEAD_RP_URL: &str = "http://127.0.0.1:1/mcp";
-
-/// [`DEAD_RP_URL`]'s port, which no scenario can bring rp up on.
+/// The port of [`dead_rp_url`], which no scenario can bring rp up on: port 1
+/// is reserved, nothing on a test host listens there, and the bridge's own
+/// config tests use it for their dead URL.
 pub const DEAD_RP_PORT: u16 = 1;
+
+/// The rp URL of a scenario that never brings rp up, and of the doctor and
+/// TLS/auth smokes. It needs no probe, and none of these binds a stub on
+/// it: a scenario that does says "rp is unreachable" and gets
+/// [`unreachable_rp_url`] instead.
+fn dead_rp_url() -> String {
+    format!("http://127.0.0.1:{DEAD_RP_PORT}/mcp")
+}
