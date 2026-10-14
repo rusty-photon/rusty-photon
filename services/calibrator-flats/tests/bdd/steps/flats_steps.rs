@@ -504,7 +504,7 @@ async fn configure_rig(world: &mut CalibratorFlatsWorld, wheel: bool) {
 /// a bind-and-drop) so the provider's config can name rp's MCP URL
 /// before rp exists.
 async fn start_provider_then_rp(world: &mut CalibratorFlatsWorld) {
-    let rp_port = bdd_infra::reserved_test_port();
+    let rp_port = bdd_infra::reserved_test_port_async().await;
     world.rp_port = Some(rp_port);
 
     let mut config = build_calibrator_flats_config(

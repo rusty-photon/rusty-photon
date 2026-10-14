@@ -59,7 +59,9 @@ impl BrowserSession {
     pub async fn start() -> Self {
         let gecko_bin =
             std::env::var("GECKODRIVER_BINARY").unwrap_or_else(|_| "geckodriver".to_string());
-        let port = free_port();
+        // The probe and the spawn below each take the lock every spawn in
+        // this test process takes (`bdd_infra::with_spawn_lock_async`).
+        let [port] = bdd_infra::ephemeral_ports_async::<1>().await;
         let mut command = Command::new(&gecko_bin);
         command
             .arg("--port")
@@ -72,8 +74,8 @@ impl BrowserSession {
         // and the orphan check is scoped to this group (plan §9 step 4 / §10).
         #[cfg(unix)]
         command.process_group(0);
-        let mut geckodriver = command
-            .spawn()
+        let mut geckodriver = bdd_infra::with_spawn_lock_async(|| command.spawn())
+            .await
             .unwrap_or_else(|e| panic!("failed to spawn geckodriver ({gecko_bin:?}): {e}"));
         let geckodriver_pid = geckodriver
             .id()
@@ -463,17 +465,6 @@ pub fn bff_profraw_flushed(coverage_dir: &OsStr) -> bool {
             // a dir's metadata len is its block size, not 0, so len()>0 alone lies.
             && entry.metadata().is_ok_and(|m| m.is_file() && m.len() > 0)
     })
-}
-
-/// Reserve an ephemeral loopback port by binding `:0` and reading it back. A
-/// tiny TOCTOU window exists before geckodriver rebinds it; negligible on a test
-/// host and far cheaper than parsing geckodriver's stdout.
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0")
-        .expect("bind an ephemeral port")
-        .local_addr()
-        .expect("read local_addr")
-        .port()
 }
 
 /// Poll geckodriver's `/status` until it reports ready (bounded ~10s); returns
