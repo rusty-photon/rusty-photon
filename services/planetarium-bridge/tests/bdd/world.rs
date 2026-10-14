@@ -183,7 +183,7 @@ impl BridgeWorld {
             },
             // Neither smoke imports anything, and a dead URL keeps the
             // import worker off whatever is listening on rp's real port.
-            "rp": { "mcp_server_url": unreachable_rp_url() },
+            "rp": { "mcp_server_url": SMOKE_RP_URL },
             "device": {
                 "slew_duration": "3s",
                 "assume_epoch": "j2000",
@@ -193,8 +193,14 @@ impl BridgeWorld {
         })
     }
 
-    fn write_config(&mut self) -> String {
-        let rp_url = self.rp_url.get_or_insert_with(unreachable_rp_url).clone();
+    async fn write_config(&mut self) -> String {
+        let rp_url = if let Some(url) = &self.rp_url {
+            url.clone()
+        } else {
+            let url = unreachable_rp_url().await;
+            self.rp_url = Some(url.clone());
+            url
+        };
         let spool_path = self.spool_path();
 
         let mut device = serde_json::Map::new();
@@ -253,7 +259,7 @@ impl BridgeWorld {
 
     /// Spawn the service binary and acquire the typed Telescope client.
     pub async fn start(&mut self) {
-        let config_path = self.write_config();
+        let config_path = self.write_config().await;
         let handle = ServiceHandle::start(env!("CARGO_PKG_NAME"), &config_path).await;
         self.handle = Some(handle);
         self.acquire().await;
@@ -421,9 +427,23 @@ pub fn ascom_code(name: &str) -> u16 {
 /// can leak into forked children (testing.md §5.1, issue #745). Band
 /// 23100–24099 stays clear of the rusty-photon service band (111xx) and
 /// phd2-guider's reserved band.
-pub fn unreachable_rp_url() -> String {
-    format!("http://127.0.0.1:{}/mcp", reserved_dead_port())
+///
+/// The probe is a synchronous `connect()`, and a refused one is not instant
+/// everywhere (about 2 s each on the Windows CI runner), so it runs on the
+/// blocking pool rather than stall every scenario in flight (testing.md
+/// §5.7).
+pub async fn unreachable_rp_url() -> String {
+    let port = bdd_infra::off_loop(reserved_dead_port).await;
+    format!("http://127.0.0.1:{port}/mcp")
 }
+
+/// The rp URL the doctor and TLS/auth smokes configure. Neither imports
+/// anything, so nothing needs a probed port: port 1 is reserved, nothing
+/// on a test host listens there, and the bridge's own config tests use it
+/// as their dead URL. A probe would have to run where the smokes build
+/// their config, in synchronous trait methods inside a step, and so on
+/// the poll loop.
+const SMOKE_RP_URL: &str = "http://127.0.0.1:1/mcp";
 
 const RESERVED_PORT_BAND_START: u16 = 23100;
 const RESERVED_PORT_BAND_LEN: u16 = 1000;

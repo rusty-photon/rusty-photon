@@ -281,15 +281,22 @@ const RESERVED_PORT_TRIES: u16 = 64;
 ///
 /// The probe is a synchronous `connect()`, and a refused connect is not
 /// instant everywhere: on the Windows CI runner each one cost about 2 s.
-/// **A cucumber step calls [`reserved_test_port_async`] instead**, for
-/// the reason [`run_once_async`] gives; this form is for plain `#[test]`s.
+/// So it runs on the blocking pool ([`off_loop`]), and the step that
+/// needs the port yields instead of stalling every scenario in flight.
+/// There is no synchronous form outside this crate.
 ///
 /// # Panics
 ///
 /// Panics if no band port answers "refused" within
 /// [`RESERVED_PORT_TRIES`] tries.
+pub async fn reserved_test_port_async() -> u16 {
+    off_loop(reserved_test_port).await
+}
+
+/// The probe behind [`reserved_test_port_async`], run on the blocking
+/// pool. It blocks, so nothing outside this crate may call it.
 #[must_use]
-pub fn reserved_test_port() -> u16 {
+pub(crate) fn reserved_test_port() -> u16 {
     static START: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
     static CURSOR: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
 
@@ -322,18 +329,6 @@ pub fn reserved_test_port() -> u16 {
     panic!("no free port in {RESERVED_PORT_TRIES} tries");
 }
 
-/// [`reserved_test_port`], probed on the blocking pool so the step that
-/// needs the port yields instead of stalling every scenario in flight.
-///
-/// # Panics
-///
-/// [`reserved_test_port`]'s panic, carried over with its message.
-pub async fn reserved_test_port_async() -> u16 {
-    tokio::task::spawn_blocking(reserved_test_port)
-        .await
-        .unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()))
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod reserved_port_tests {
@@ -351,6 +346,47 @@ mod reserved_port_tests {
             );
         }
         assert_ne!(a, b);
+    }
+
+    /// The poll loop keeps running while `f` blocks. On a single-threaded
+    /// runtime a ticker spawned beside the call must keep ticking through
+    /// the 300 ms `f` sleeps; run inline, `f` would hold the only thread
+    /// and the ticker could not tick once.
+    #[tokio::test(flavor = "current_thread")]
+    async fn off_loop_leaves_the_poll_loop_running_while_its_closure_blocks() {
+        let ticks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ticker = {
+            let ticks = std::sync::Arc::clone(&ticks);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_millis(10));
+                loop {
+                    interval.tick().await;
+                    ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            })
+        };
+        let before = ticks.load(std::sync::atomic::Ordering::Relaxed);
+        off_loop(|| std::thread::sleep(Duration::from_millis(300))).await;
+        let during = ticks
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .saturating_sub(before);
+        ticker.abort();
+        assert!(
+            during >= 5,
+            "the ticker advanced {during} times while a 300 ms closure blocked"
+        );
+    }
+
+    #[tokio::test]
+    async fn off_loop_fails_its_caller_with_the_closures_panic() {
+        let joined = tokio::spawn(off_loop::<()>(|| panic!("the probe exploded"))).await;
+        let payload = joined
+            .expect_err("a panicking closure must fail its caller")
+            .into_panic();
+        assert_eq!(
+            payload.downcast_ref::<&str>().copied(),
+            Some("the probe exploded")
+        );
     }
 
     #[tokio::test]
@@ -520,10 +556,9 @@ impl ServiceHandle {
     /// one nor exits blocks here —
     /// [`try_start_with_env`](Self::try_start_with_env) bounds the wait.
     pub async fn start_with_env(package_name: &str, args: &[&str], envs: &[(&str, &str)]) -> Self {
-        let binary = require_binary(package_name);
         let label = next_spawn_label(package_name);
 
-        let mut child = spawn_off_loop(binary, package_name, args, envs).await;
+        let mut child = spawn_service(package_name, args, envs).await;
 
         let stderr = child
             .stderr
@@ -601,10 +636,9 @@ impl ServiceHandle {
         args: &[&str],
         envs: &[(&str, &str)],
     ) -> Result<Self, String> {
-        let binary = require_binary(package_name);
         let label = next_spawn_label(package_name);
 
-        let mut child = spawn_off_loop(binary, package_name, args, envs).await;
+        let mut child = spawn_service(package_name, args, envs).await;
 
         let stderr = child
             .stderr
@@ -779,24 +813,42 @@ pub fn run_once(
 /// # Panics
 ///
 /// Panics if the binary cannot be found, spawned, fed its stdin, or waited
-/// on, or if the blocking task fails to join.
+/// on, with [`run_once`]'s message.
 pub async fn run_once_async(
     package_name: &str,
     args: &[&str],
     stdin_data: Option<&[u8]>,
 ) -> std::process::Output {
-    let binary = require_binary(package_name);
-    debug!(binary = %binary, "running {} from pre-built binary", package_name);
-
     let package = package_name.to_string();
     let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
     let stdin_data = stdin_data.map(<[u8]>::to_vec);
-    tokio::task::spawn_blocking(move || {
+    off_loop(move || {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        run_to_completion(&package, &binary, &args, stdin_data.as_deref())
+        run_once(&package, &args, stdin_data.as_deref())
     })
     .await
-    .unwrap_or_else(|e| panic!("failed to join the {package_name} run: {e}"))
+}
+
+/// Run `f` on the blocking pool and await its result, so a step that has
+/// to block (wait on a child, probe a port, stat files) yields to the
+/// poll loop every scenario shares (see [`run_once_async`]).
+///
+/// The blocking pool's threads enter the runtime, so `f` may create
+/// runtime-bound things there, such as a `tokio::process::Child` whose
+/// pipes the caller then awaits.
+///
+/// # Panics
+///
+/// Re-raises a panic in `f` with its own payload, so the step fails with
+/// `f`'s message. Panics if the runtime shut down before `f` ran.
+pub async fn off_loop<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    match tokio::task::spawn_blocking(f).await {
+        Ok(value) => value,
+        Err(e) => match e.try_into_panic() {
+            Ok(payload) => std::panic::resume_unwind(payload),
+            Err(e) => panic!("the blocking task did not run: {e}"),
+        },
+    }
 }
 
 /// Spawn `binary`, feed it `stdin_data`, and reap its `Output`.
@@ -941,17 +993,18 @@ fn require_binary(package_name: &str) -> String {
 #[cfg(windows)]
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 
-/// Spawn the service process from a pre-built binary.
+/// The service's command line, built on the poll loop: nothing here
+/// blocks.
 ///
 /// On Windows the child is spawned with [`CREATE_NEW_PROCESS_GROUP`] so that
 /// [`send_sigterm`] can deliver `CTRL_BREAK_EVENT` only to the child's group
 /// without affecting the test runner.
-fn spawn_process(
+fn service_command(
     binary: &str,
     package_name: &str,
     args: &[&str],
     envs: &[(&str, &str)],
-) -> tokio::process::Child {
+) -> tokio::process::Command {
     debug!(binary = %binary, ?args, "starting {} from pre-built binary", package_name);
     let mut cmd = tokio::process::Command::new(binary);
     cmd.args(args)
@@ -969,40 +1022,26 @@ fn spawn_process(
     {
         cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
     }
-    cmd.spawn()
-        .unwrap_or_else(|e| panic!("failed to start {package_name} binary '{binary}': {e}"))
+    cmd
 }
 
-/// [`spawn_process`] on the blocking pool, for the async start paths.
-///
-/// Creating a process is a synchronous call that a loaded host can make
-/// slow, and an async `ServiceHandle` start runs inside a cucumber step:
-/// spawning there would stall every scenario in flight (see
-/// [`run_once_async`]). The blocking pool's threads carry the runtime's
-/// context, so the `tokio::process::Child` made there registers its pipes
-/// with the same runtime the caller awaits them on.
-async fn spawn_off_loop(
-    binary: String,
+/// Find the service's binary and spawn it, both off the poll loop: the
+/// lookup stats files and reads `Cargo.toml`, and creating a process is a
+/// synchronous call a loaded host makes slow.
+async fn spawn_service(
     package_name: &str,
     args: &[&str],
     envs: &[(&str, &str)],
 ) -> tokio::process::Child {
     let package = package_name.to_string();
-    let args: Vec<String> = args.iter().map(|arg| (*arg).to_string()).collect();
-    let envs: Vec<(String, String)> = envs
-        .iter()
-        .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
-        .collect();
-    tokio::task::spawn_blocking(move || {
-        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        let envs: Vec<(&str, &str)> = envs
-            .iter()
-            .map(|(key, value)| (key.as_str(), value.as_str()))
-            .collect();
-        spawn_process(&binary, &package, &args, &envs)
+    let binary = off_loop(move || require_binary(&package)).await;
+    let mut cmd = service_command(&binary, package_name, args, envs);
+    let package = package_name.to_string();
+    off_loop(move || {
+        cmd.spawn()
+            .unwrap_or_else(|e| panic!("failed to start {package} binary '{binary}': {e}"))
     })
     .await
-    .unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()))
 }
 
 /// Forward a spawned child's stderr to this process's own stderr line by
@@ -1110,7 +1149,7 @@ compile_error!(
 /// * **Unix** — sends `SIGTERM`.
 /// * **Windows** — sends `CTRL_BREAK_EVENT` via `GenerateConsoleCtrlEvent`.
 ///   The child must have been spawned with `CREATE_NEW_PROCESS_GROUP` so the
-///   event targets only its process group (see [`spawn_process`]).
+///   event targets only its process group (see [`service_command`]).
 fn send_sigterm(pid: u32) {
     #[cfg(unix)]
     {

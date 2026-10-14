@@ -68,7 +68,7 @@ async fn configuration_edited_by_hand(world: &mut CameraWorld, step: &Step) {
     );
     // Written as a start writes it, on the scenario's port, and no reload is
     // signalled: only a reload or a restart would apply it.
-    world.write_config();
+    world.write_config().await;
 }
 
 // --- starting the service -------------------------------------------------------
@@ -112,7 +112,7 @@ async fn service_refuses_to_start(world: &mut CameraWorld, expected: String) {
         Err(why) => panic!("the start did not exit, so it was not refused: {why}"),
         Ok(()) => panic!("the service started from a configuration it should refuse"),
     }
-    let args = world.start_args();
+    let args = world.start_args().await;
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let output = bdd_infra::run_once_async(env!("CARGO_PKG_NAME"), &args, None).await;
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -269,7 +269,7 @@ async fn apply_errors_name(world: &mut CameraWorld, path: String, expected: Stri
 /// Run the service binary's `doctor` with `args`, against the scenario's
 /// configuration and, when one is staged, its USB inventory.
 async fn run_doctor(world: &mut CameraWorld, args: &[&str]) {
-    let config_path = world.write_config();
+    let config_path = world.write_config().await;
     let mut argv: Vec<String> = std::iter::once("doctor".to_string())
         .chain(args.iter().map(|a| (*a).to_string()))
         .chain(["--config".to_string(), config_path])

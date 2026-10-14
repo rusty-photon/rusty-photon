@@ -16,8 +16,8 @@ async fn stub_rp_running(world: &mut BridgeWorld) {
 }
 
 #[given("rp is unreachable")]
-fn rp_unreachable(world: &mut BridgeWorld) {
-    world.rp_url = Some(unreachable_rp_url());
+async fn rp_unreachable(world: &mut BridgeWorld) {
+    world.rp_url = Some(unreachable_rp_url().await);
 }
 
 #[given(expr = "the reported-position altitude floor is {float} degrees")]

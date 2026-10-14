@@ -259,12 +259,10 @@ impl GuiderWorld {
         apply_child_coverage_profile(&mut cmd);
         // The spawn and the wait for the port run on the blocking pool:
         // spawning is slow on a loaded Windows runner, and a step that
-        // blocks a runtime worker stalls every other scenario in flight
-        // (see `bdd_infra::run_once_async`).
-        // A panic in `spawn_mock` fails the step with its own message.
-        let (port, child) = tokio::task::spawn_blocking(move || spawn_mock(cmd))
-            .await
-            .unwrap_or_else(|e| std::panic::resume_unwind(e.into_panic()));
+        // blocks stalls the one poll loop every scenario shares (see
+        // `bdd_infra::off_loop`). A panic in `spawn_mock` fails the step
+        // with its own message.
+        let (port, child) = bdd_infra::off_loop(move || spawn_mock(cmd)).await;
         self.mock = Some(MockPhd2Handle {
             port,
             child: Some(child),

@@ -722,11 +722,11 @@ test genuinely has to know the port *first* — because the port is an input to 
 API under test, or because the test needs a port with **nothing** listening —
 take it from a reserved band **below the platform's ephemeral floor** (32768 on
 Linux, 49152 on Windows and macOS), entered at a per-process start so concurrent
-test binaries do not march in step. `bdd_infra::reserved_test_port()` is the
-shared helper for suites built on `bdd-infra` (calibrator-flats' suite pins
-rp's port with it so the provider's config can name rp before rp starts). A
-step calls its async form, `bdd_infra::reserved_test_port_async()`, which
-probes on the blocking pool
+test binaries do not march in step. `bdd_infra::reserved_test_port_async()`
+is the shared helper for suites built on `bdd-infra` (calibrator-flats' suite
+pins rp's port with it so the provider's config can name rp before rp
+starts). It probes on the blocking pool, and has no synchronous form outside
+the crate, because a probe is a wait
 ([§5.7](#57-never-block-in-a-step--the-whole-suite-shares-one-poll-loop));
 `reserved_test_port()` in `services/phd2-guider/tests/test_integration.rs` is
 the original, self-contained implementation.
@@ -1087,22 +1087,27 @@ process — cost far more than the step it sits in. While it runs:
 
 So: **`bdd_infra::run_once_async` in a step, never `run_once`** (the
 synchronous form is for plain `#[test]`s, which have no runtime to yield
-to), and any other blocking wait belongs in `tokio::task::spawn_blocking`.
-
-A wait does not have to look like one. `reserved_test_port`'s probe is a
-loopback `connect()` that is meant to be refused, and on the Windows CI
-runner each refusal took about 2 s: phd2-guider's camera-facade scenarios,
-which each probed once from a step, started their services 2.00 s apart,
-while its scenarios that probed nothing started theirs milliseconds apart.
-The poll loop stood still for each of those 2 s. Every other
-scenario's health wait then ran out with its service up and connected,
-and 48 of 58 scenarios failed on a service that had done nothing wrong. Steps call **`reserved_test_port_async`**, and
-`ServiceHandle`'s async starts spawn their process on the blocking pool
-for the same reason: process creation is a synchronous call a loaded host
-makes slow.
+to), and any other blocking wait belongs on the blocking pool:
+**`bdd_infra::off_loop(|| ...)`** runs a closure there and re-raises its
+panic with the closure's own message.
 `tokio::task::block_in_place` is *not* a fix here — it hands a worker's
 queue to a replacement thread, and the poll loop being starved is not on a
 worker.
+
+A wait does not have to look like one. A port probe is a loopback
+`connect()` that is meant to be refused, and on the Windows CI runner each
+refusal took about 2 s: phd2-guider's camera-facade scenarios, which each
+probed once from a step, started their services 2.00 s apart, while its
+scenarios that probed nothing started theirs milliseconds apart. The poll
+loop stood still for each of those 2 s. Every other scenario's health wait
+then ran out with its service up and connected, and 48 of 58 scenarios
+failed on a service that had done nothing wrong.
+
+So steps take a port from **`bdd_infra::reserved_test_port_async`**, which
+probes on the blocking pool. `ServiceHandle`'s async starts find their
+binary and spawn their process there too: the lookup stats files and reads
+`Cargo.toml`, and process creation is a synchronous call a loaded host
+makes slow.
 
 CPU-bound setup counts as blocking, not just waiting on a child. The TLS
 fixture is the standing example: a CA keypair, a service keypair, a

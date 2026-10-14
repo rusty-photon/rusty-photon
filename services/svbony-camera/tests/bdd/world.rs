@@ -118,17 +118,20 @@ impl CameraWorld {
     /// harness never learns. The port is reserved once per scenario, so a
     /// later rewrite (a doctor run, say, or a hand edit) keeps the port a
     /// reload of the running service would rebind.
-    pub fn write_config(&mut self) -> String {
+    pub async fn write_config(&mut self) -> String {
         let mut config = self
             .config_json
             .clone()
             .unwrap_or_else(|| serde_json::json!({ "devices": {} }));
-        let port = if config.get("usb_devices").is_some() || self.usb_inventory.is_some() {
-            *self
-                .config_port
-                .get_or_insert_with(bdd_infra::reserved_test_port)
-        } else {
-            0
+        let reserve = config.get("usb_devices").is_some() || self.usb_inventory.is_some();
+        let port = match (reserve, self.config_port) {
+            (false, _) => 0,
+            (true, Some(port)) => port,
+            (true, None) => {
+                let port = bdd_infra::reserved_test_port_async().await;
+                self.config_port = Some(port);
+                port
+            }
         };
         config
             .as_object_mut()
@@ -156,8 +159,8 @@ impl CameraWorld {
     }
 
     /// The service's command line for this scenario.
-    pub fn start_args(&mut self) -> Vec<String> {
-        let config_path = self.write_config();
+    pub async fn start_args(&mut self) -> Vec<String> {
+        let config_path = self.write_config().await;
         let mut args = vec!["--config".to_string(), config_path];
         if self.empty_backend {
             args.push("--simulation-empty".to_string());
@@ -175,7 +178,7 @@ impl CameraWorld {
 
     /// Spawn the service binary and acquire the typed Camera clients.
     pub async fn start(&mut self) {
-        let args = self.start_args();
+        let args = self.start_args().await;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let handle = ServiceHandle::start_with_args(env!("CARGO_PKG_NAME"), &args).await;
         self.handle = Some(handle);
@@ -185,7 +188,7 @@ impl CameraWorld {
     /// Start the service when the scenario expects it to refuse, recording
     /// how it went in [`Self::start_refusal`].
     pub async fn try_start(&mut self) {
-        let args = self.start_args();
+        let args = self.start_args().await;
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         match ServiceHandle::try_start_with_args(env!("CARGO_PKG_NAME"), &args).await {
             Ok(handle) => {
