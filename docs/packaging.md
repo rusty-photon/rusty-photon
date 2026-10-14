@@ -595,7 +595,36 @@ that driver (`qhy-camera`, `zwo-camera` or `svbony-camera`) a
 `usb_devices` list without the guide camera's port. Otherwise the driver
 and PHD2 both open it.
 
-1. **Create the shared directory** (Linux). PHD2 runs as you, under your
+1. **Give PHD2 the guide camera's port** (Linux). Every camera package's
+   udev rule gives its vendor's whole USB id to the `rusty-photon` group,
+   mode 0660, and PHD2, running as you, is not in it. PHD2 then reports
+   no camera at all ("QHY: found 0 cameras" in its debug log). A rule
+   keyed on the guide camera's port gives that one socket to your group
+   instead. Take the port from the vendor driver's `doctor --devices`
+   (its `Port` column), the same port you left off its `usb_devices`
+   list:
+
+   ```sh
+   PORT='platform-xhci-hcd.1-usbv3-0:1'   # the guide camera's port
+   echo "SUBSYSTEM==\"usb\", ENV{DEVTYPE}==\"usb_device\", ENV{ID_PATH_WITH_USB_REVISION}==\"$PORT\", GROUP=\"$(id -gn)\"" \
+     | sudo tee /etc/udev/rules.d/91-rusty-photon-phd2-guide-camera.rules
+   sudo udevadm control --reload
+   sudo udevadm trigger --action=change --settle --property-match=ID_PATH_WITH_USB_REVISION="$PORT"
+   ```
+
+   The file sorts after the packages' `90-` rules, so its group wins for
+   that port, whichever camera is plugged into it. A `change` event
+   re-applies the group without loading a QHY camera's firmware again,
+   since `85-qhyccd.rules` acts only on `add`. `ls -l /dev/bus/usb/*/*`
+   shows the camera's node with your group. Start PHD2 after this, or
+   restart it: its QHY support looks for cameras once, and does not look
+   again after finding none. On a board whose USB controller udev names
+   `xhci-hcd.N.auto` (Rockchip, i.MX), doctor's port and udev's differ
+   ([device-claims plan, D2](plans/device-claims-and-phd2-camera.md)).
+   There, take the camera's `ID_PATH_WITH_USB_REVISION` from
+   `udevadm info` instead.
+
+2. **Create the shared directory** (Linux). PHD2 runs as you, under your
    VNC session. The service runs as `rusty-photon` and may write only
    under `/var/lib/rusty-photon`, which is closed to other accounts. So
    grant your account a way through, and give the service's group read
@@ -623,9 +652,9 @@ and PHD2 both open it.
    ```
 
    The service runs as `LocalSystem`. This recipe has not yet been run on
-   a Windows host, so check step 3 there with particular care.
+   a Windows host, so check step 4 there with particular care.
 
-2. **Enable the facade** in `phd2-guider.json` and restart the service:
+3. **Enable the facade** in `phd2-guider.json` and restart the service:
 
    ```json
    "camera": {
@@ -642,7 +671,7 @@ and PHD2 both open it.
    service cannot write, stops the service with a message naming the
    field. `journalctl -u rusty-photon-phd2-guider` shows it.
 
-3. **Verify**, with PHD2 running and its camera connected:
+4. **Verify**, with PHD2 running and its camera connected:
 
    ```sh
    curl -s -X PUT -d 'Connected=true' http://127.0.0.1:11128/api/v1/camera/0/connected
