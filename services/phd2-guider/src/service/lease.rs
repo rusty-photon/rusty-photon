@@ -249,7 +249,7 @@ impl LeaseBook {
             return Err(format!(
                 "token {token} was used before ({}); a token names one lease and is never \
                  granted again",
-                used_for(ended.why)
+                what_ended(ended, now)
             ));
         }
         if self.remembered() >= TOKENS_REMEMBERED {
@@ -308,7 +308,12 @@ impl LeaseBook {
                      hour: a restart forgets every lease"
                 )
             },
-            |ended| not_held(token, ended, now),
+            |ended| {
+                format!(
+                    "token {token} holds no sweep lease: {}",
+                    what_ended(ended, now)
+                )
+            },
         ))
     }
 
@@ -348,34 +353,20 @@ impl LeaseBook {
     }
 }
 
-/// What a token was used for, for an acquire's refusal.
-const fn used_for(why: LeaseEnd) -> &'static str {
-    match why {
-        LeaseEnd::Released => "its lease was released",
-        LeaseEnd::Expired => "its lease expired",
-        LeaseEnd::Stopped => "its lease was ended by a guiding stop",
-        LeaseEnd::Disconnected => "its lease was ended when the camera was disconnected",
-        LeaseEnd::ReleasedFirst => "it was released before any acquire under it",
-    }
-}
-
-/// Why a renewal under `token` finds no lease.
-fn not_held(token: &Token, ended: &Ended, now: Instant) -> String {
+/// What became of the token `ended` records, for an acquire's or a
+/// renewal's refusal.
+fn what_ended(ended: &Ended, now: Instant) -> String {
     match ended.why {
         LeaseEnd::Expired => format!(
-            "the sweep lease under token {token} expired at {}: no renewal came within its TTL",
+            "its lease expired at {}, with no renewal within its TTL",
             when(ended.at, now)
         ),
-        LeaseEnd::Released => format!("the sweep lease under token {token} was released"),
-        LeaseEnd::Stopped => {
-            format!("the sweep lease under token {token} was ended by a guiding stop")
+        LeaseEnd::Released => "its lease was released".to_string(),
+        LeaseEnd::Stopped => "its lease was ended by a guiding stop".to_string(),
+        LeaseEnd::Disconnected => {
+            "its lease was ended when the camera was disconnected".to_string()
         }
-        LeaseEnd::Disconnected => format!(
-            "the sweep lease under token {token} was ended when the camera was disconnected"
-        ),
-        LeaseEnd::ReleasedFirst => {
-            format!("token {token} was released before any acquire under it")
-        }
+        LeaseEnd::ReleasedFirst => "it was released before any acquire under it".to_string(),
     }
 }
 

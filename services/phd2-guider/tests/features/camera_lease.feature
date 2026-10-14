@@ -20,7 +20,9 @@ Feature: The sweep lease holds guiding off for a whole focus sweep
   refused, and it ends the lease. So do a disconnect, a release and the
   TTL running out without a renewal. A renewal of a token that holds no
   lease fails saying why, and a release of one answers released false and
-  is never an error. The lease does not gate captures.
+  is never an error. The lease does not gate captures. The TTL's lapse is
+  pinned by unit tests on paused time rather than here, since the shortest
+  TTL is 10 s.
 
   ASCOM error numbers: 0x401 invalid value, 0x407 not connected, 0x40B
   invalid operation.
@@ -117,17 +119,6 @@ Feature: The sweep lease holds guiding off for a whole focus sweep
     Then the facade call should fail with ASCOM error 0x40B mentioning "disconnected"
     When the client starts guiding
     Then the response status should be 200
-
-  Scenario: A lease nobody renews lapses at its TTL
-    Given a mock PHD2 2.6.14 with an 8 x 6 camera
-    And the guider service is running with the camera facade enabled
-    And the facade camera is connected
-    When the client acquires a sweep lease under token A for 10 s
-    And the client starts guiding
-    Then the response status should be 409
-    And guiding should be accepted within 30 s
-    When the client tries to renew the sweep lease under token A
-    Then the facade call should fail with ASCOM error 0x40B mentioning "expired"
 
   Scenario: A lease is refused while PHD2 is guiding, naming its state
     Given a mock PHD2 2.6.14 with an 8 x 6 camera

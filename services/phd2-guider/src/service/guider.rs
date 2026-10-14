@@ -515,19 +515,10 @@ impl GuiderOps {
     /// slot or a sweep lease is held. Called with `op_lock` held.
     fn refuse_while_camera_held(&self) -> Result<(), ServiceError> {
         if let Some(claim) = self.capture_claim() {
-            let until = humantime::format_rfc3339_seconds(claim.deadline);
-            let message = if claim.recovered {
-                format!(
-                    "a camera-facade frame started before this service restarted may still be \
-                     exposing; guiding operations are refused until it ends, by {until} at the \
-                     latest"
-                )
-            } else {
-                format!(
-                    "the camera facade is capturing a frame; guiding operations are refused until \
-                     it ends, by {until} at the latest"
-                )
-            };
+            let message = format!(
+                "{}; guiding operations are refused until it ends",
+                claim_held(&claim)
+            );
             debug!("{message}");
             return Err(ServiceError::CameraBusy(message));
         }
@@ -1187,7 +1178,7 @@ mod tests {
         // Refused before any RPC: the test client is not even connected.
         let err = ops.pause(false).await.unwrap_err();
         assert!(
-            matches!(&err, ServiceError::CameraBusy(text) if text.contains("capturing a frame")),
+            matches!(&err, ServiceError::CameraBusy(text) if text.contains("still exposing in PHD2")),
             "unexpected error: {err:?}"
         );
         let err = ops
@@ -1332,9 +1323,42 @@ mod tests {
         claim_slot(&ops, "/images/phd2-guider-a.fits").await;
         let err = ops.resume().await.unwrap_err();
         assert!(
-            matches!(&err, ServiceError::CameraBusy(text) if text.contains("capturing a frame")),
+            matches!(&err, ServiceError::CameraBusy(text) if text.contains("still exposing in PHD2")),
             "unexpected error: {err:?}"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lease_nobody_renews_stops_refusing_guiding_at_its_ttl() {
+        let ops = test_ops();
+        let request = lease::parse_acquire(&format!(
+            r#"{{"token": "{}", "ttl_s": 10}}"#,
+            "a".repeat(32)
+        ))
+        .unwrap();
+        ops.lease_book()
+            .grant(
+                request.token.clone(),
+                request.ttl_s,
+                tokio::time::Instant::now(),
+            )
+            .unwrap();
+        tokio::time::advance(Duration::from_millis(9_999)).await;
+        let err = ops.pause(false).await.unwrap_err();
+        assert!(
+            matches!(&err, ServiceError::CameraBusy(text) if text.contains("sweep lease")),
+            "refused for the wrong reason before the TTL: {err:?}"
+        );
+        tokio::time::advance(Duration::from_millis(1)).await;
+        // Past the gate: the test client is not connected, so the pause
+        // now fails reaching PHD2 instead.
+        let err = ops.pause(false).await.unwrap_err();
+        assert!(
+            matches!(err, ServiceError::Phd2Unreachable(_)),
+            "a lapsed lease still refused guiding: {err:?}"
+        );
+        let err = ops.renew_lease(&request.token).unwrap_err();
+        assert!(err.contains("expired at"), "{err}");
     }
 
     #[tokio::test]

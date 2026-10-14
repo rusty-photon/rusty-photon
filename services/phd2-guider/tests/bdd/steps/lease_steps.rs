@@ -1,8 +1,6 @@
 //! Step definitions for the camera facade's sweep lease:
 //! `camera_lease.feature`.
 
-use std::time::Duration;
-
 use cucumber::{then, when};
 
 use super::camera_steps::{facade, record_error};
@@ -123,37 +121,4 @@ fn release_reply(world: &mut GuiderWorld, released: String) {
         &serde_json::json!({ "released": released == "true" }),
         "release reply"
     );
-}
-
-/// Ask PHD2 to guide until the service accepts it. Each refusal is a
-/// `camera_busy` answered before anything reaches PHD2, and a fetch that
-/// fails is tried again (docs/skills/testing.md section 5.9).
-#[then(expr = "guiding should be accepted within {int} s")]
-async fn guiding_accepted_within(world: &mut GuiderWorld, seconds: u64) {
-    let url = format!("{}/api/v1/guiding/start", world.service_url());
-    let give_up = tokio::time::Instant::now() + Duration::from_secs(seconds);
-    loop {
-        let sent = GuiderWorld::http_client()
-            .post(&url)
-            .json(&serde_json::json!({}))
-            .send()
-            .await;
-        let last = match sent {
-            Ok(response) if response.status().is_success() => {
-                world.record_response(response).await;
-                return;
-            }
-            Ok(response) => {
-                let status = response.status();
-                let body = response.text().await.unwrap_or_default();
-                format!("refused, HTTP {status}: {body}")
-            }
-            Err(e) => format!("not answered: {e}"),
-        };
-        assert!(
-            tokio::time::Instant::now() < give_up,
-            "guiding was not accepted within {seconds} s; the last request was {last}"
-        );
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
 }

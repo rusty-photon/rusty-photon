@@ -323,37 +323,36 @@ async fn phd2_reports_marker_frame(world: &mut GuiderWorld) {
     let give_up = tokio::time::Instant::now() + Duration::from_secs(10);
     while marker.exists() {
         if tokio::time::Instant::now() >= give_up {
-            let diagnosis = marker_diagnosis(world).await;
+            let diagnosis = marker_diagnosis(world);
             panic!("the capture marker was not removed after PHD2 reported its frame; {diagnosis}");
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
-/// What the service and the mock say once a reported marker frame was
-/// not released: the requests the mock logged, and how the service
-/// answers a guiding start now (409 while the slot is still held).
-async fn marker_diagnosis(world: &mut GuiderWorld) -> String {
+/// What can be read, without changing anything, once a reported marker
+/// frame was not released: the requests the mock logged, and whether the
+/// frame's file is gone. The service deletes it when it handles the
+/// report, before it removes the marker, so a file still there means the
+/// report was never handled.
+fn marker_diagnosis(world: &GuiderWorld) -> String {
     let logged: Vec<String> = world
         .logged_rpcs()
         .iter()
         .filter_map(|rpc| rpc["method"].as_str().map(str::to_string))
         .collect();
-    let url = format!("{}/api/v1/guiding/start", world.service_url());
-    let guiding = match GuiderWorld::http_client()
-        .post(&url)
-        .json(&serde_json::json!({}))
-        .send()
-        .await
-    {
-        Ok(response) => {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            format!("HTTP {status}: {body}")
-        }
-        Err(e) => format!("no answer: {e}"),
-    };
-    format!("the mock logged {logged:?}; a guiding start now answers {guiding}")
+    let frame = world.marker_frame.as_ref().map_or_else(
+        || "no frame staged".to_string(),
+        |frame| {
+            if frame.exists() {
+                "the frame's file is still there, so the service never handled the report"
+                    .to_string()
+            } else {
+                "the frame's file is gone, so the service handled the report".to_string()
+            }
+        },
+    );
+    format!("the mock logged {logged:?}; {frame}")
 }
 
 #[when("the client fetches the facade image as ImageBytes")]
@@ -548,7 +547,13 @@ fn image_bytes_header(world: &mut GuiderWorld, step: &cucumber::gherkin::Step) {
 fn image_bytes_data_len(world: &mut GuiderWorld, len: usize) {
     let data_start = usize::try_from(image_bytes_i32(world, 16)).expect("data_start");
     let body = world.image_bytes.as_ref().expect("no ImageBytes fetched");
-    assert_eq!(body.len() - data_start, len, "ImageBytes pixel data length");
+    let data = body.len().checked_sub(data_start).unwrap_or_else(|| {
+        panic!(
+            "the ImageBytes body is {} bytes, shorter than its data_start {data_start}",
+            body.len()
+        )
+    });
+    assert_eq!(data, len, "ImageBytes pixel data length");
 }
 
 #[then(expr = "the facade camera's last exposure should have lasted {float} s")]
