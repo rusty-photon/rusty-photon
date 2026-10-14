@@ -80,9 +80,9 @@ parsers, which its comments name.
 | `setSecret` | Mask a value in the rest of the job's log. Call it before anything can print the value. |
 | `warning`, `group`, `fail` | A warning annotation; a collapsible log group that closes however its function ends; an error annotation that fails the step on exit. |
 | `run` | Every entry file's wrapper: a throw becomes an error annotation and a failed step, with the stack in the log. |
-| `fetchWithRetry` | `fetch` with a timeout per attempt and bounded retries of 408, 429, 500, 502, 503, 504, a 403 that says how long to wait (how GitHub's API answers a rate limit), timeouts and requests that got no answer, waiting as long as a Retry-After or the GitHub API's rate-limit reset asks (a wait over two minutes is not retried). Anything else outside 2xx throws an `HttpError`. Only idempotent methods are retried by default: a POST or PATCH gets one attempt unless the caller sets `attempts`, knowing a repeat is harmless. The timeout covers reading the body too, so size it for the download. A stream body needs `attempts: 1`, since a retry would send it again. A caller's own `signal` aborts the request and ends the retries. A URL with a user or password is refused, as is one that does not parse, and neither error shows the URL. |
+| `fetchWithRetry` | `fetch` with a timeout per attempt and bounded retries of 408, 429, 500, 502, 503, 504, a 403 that says how long to wait (how GitHub's API answers a rate limit), timeouts and requests that got no answer, waiting as long as a Retry-After or the GitHub API's rate-limit reset asks, or a minute for its secondary limit, measured on the server's clock (a wait over two minutes is not retried). Each retry is a plain log line, not a warning annotation. Anything else outside 2xx throws an `HttpError`. Only idempotent methods are retried by default: a POST or PATCH gets one attempt unless the caller sets `attempts`, knowing a repeat is harmless. The timeout covers reading the body too, so size it for the download. A stream body needs `attempts: 1`, since a retry would send it again. A caller's own `signal` aborts the request and ends the retries. A URL with a user or password is refused, as is one that does not parse, and neither error shows the URL. |
 | `HttpError` | Its message holds the method, the URL without its query string (where a pre-signed URL carries its signature) and the status. `body` holds the start of the response's body, where an API says why it refused. That stays out of the message and the logged stack, since a server may echo credentials there; add it to an error of your own when you trust the server. |
-| `retry` | The same bounded retry for any other step that can fail transiently, such as a download and its checksum as one unit. Give a `fetchWithRetry` inside it `attempts: 1`, or the two retry counts multiply (3 × 3 requests). The default `isRetryable` is `isTransient`, which retries no bug in the callback. A Retry-After over two minutes is never waited out, whatever `isRetryable` says. An abort during a wait throws an AbortError whose cause is the error being retried. |
+| `retry` | The same bounded retry for any other step that can fail transiently, such as a download and its checksum as one unit. Give a `fetchWithRetry` inside it `attempts: 1`, or the two retry counts multiply (3 × 3 requests). `attempts` must be a whole number of 1 or more. The default `isRetryable` is `isTransient`, which retries no bug in the callback. A Retry-After over two minutes is never waited out, whatever `isRetryable` says. An abort during a wait throws an AbortError whose cause is the error being retried. |
 | `sha256` | The hash of a stream: a file's (`fs.createReadStream`) or a response body's. |
 | `io` | Where the helpers write. Tests swap it out (below). |
 
@@ -113,13 +113,14 @@ it stays in the action.
 - **`link_test` checks every file.** It parses each one as an ES module
   and links it without running it: every static import must be a `node:`
   built-in or a relative `.mjs` file that exists, and every name imported
-  must be exported there. It cannot follow a dynamic `import()`, so
-  actions use static imports only. Nor does it catch a name a file uses
-  without declaring or importing it (a misspelt call): that shows only
-  when the code runs. That is one more reason to keep an entry file to a
-  few lines and the logic in a module its tests import. So a misspelt import in an entry file, which no
+  must be exported there. So a misspelt import in an entry file, which no
   test imports, fails the PR instead of the runner, and so does an npm
-  package or a `.js` file.
+  package, a `.js` file or TypeScript.
+- **What `link_test` cannot catch.** It cannot follow a dynamic
+  `import()`, so actions use static imports only. Nor does it catch a
+  name a file uses without declaring or importing it (a misspelt call):
+  that shows only when the code runs. That is one more reason to keep an
+  entry file to a few lines and the logic in a module its tests import.
 - **No BUILD file below `.github/actions`.** `link_test` checks the files
   its glob sees, and a glob stops at a package boundary, so
   `node_link_test` refuses a nested BUILD file rather than lose sight of

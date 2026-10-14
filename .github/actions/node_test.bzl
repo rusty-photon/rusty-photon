@@ -100,9 +100,14 @@ def node_link_test(name, src, **kwargs):
         name = name,
         srcs = [src],
         # Each extension may match nothing; the test's own floor catches a
-        # glob that matches too little. The .js and .cjs files are there to
-        # be refused: actions are .mjs.
-        data = native.glob(["**/*.js", "**/*.mjs", "**/*.cjs"], exclude = [src], allow_empty = True),
+        # glob that matches too little. Every file but .mjs is there to be
+        # refused: actions are .mjs, and Node 24 would also run TypeScript,
+        # which ADR-022 rules out.
+        data = native.glob(
+            ["**/*.js", "**/*.mjs", "**/*.cjs", "**/*.ts", "**/*.mts", "**/*.cts"],
+            exclude = [src],
+            allow_empty = True,
+        ),
         # vm.SourceTextModule, which links a module without running it.
         node_flags = [
             "--experimental-vm-modules",

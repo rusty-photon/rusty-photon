@@ -19,7 +19,7 @@ import vm from 'node:vm';
 const ROOT = join('.github', 'actions');
 
 const files = readdirSync(ROOT, { recursive: true })
-  .filter((file) => /\.[cm]?js$/.test(file))
+  .filter((file) => /\.[cm]?[jt]s$/.test(file))
   .sort();
 
 // A module for `url`: a Node built-in's exports, or a file parsed as an ES
@@ -71,7 +71,7 @@ test('the check sees the files it is meant to', () => {
 
 for (const file of files) {
   test(`${file} parses and links`, async () => {
-    assert.ok(file.endsWith('.mjs'), `${file}: write it as an ES module, .mjs (docs/skills/ci-logic.md)`);
+    assert.ok(file.endsWith('.mjs'), `${file}: write it as a JavaScript ES module, .mjs (docs/skills/ci-logic.md)`);
     await link(file);
   });
 }

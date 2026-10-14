@@ -265,32 +265,55 @@ export class HttpError extends Error {
 }
 
 // Retry-After holds seconds or an HTTP date (RFC 9110, section 10.2.3).
-function parseRetryAfter(header) {
+// A date is measured against `now`, the server's clock.
+function parseRetryAfter(header, now) {
   if (header === null) return undefined;
   const text = header.trim();
   if (/^\d+$/.test(text)) return Number(text) * 1000;
   const date = Date.parse(text);
-  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
+  return Number.isNaN(date) ? undefined : Math.max(0, date - now);
 }
 
-// The wait a response asks for: its Retry-After, or else, from the GitHub
-// API, the time until its rate limit resets. GitHub's REST docs ("Rate
-// limits for the REST API"): with `x-ratelimit-remaining` at 0, "you
-// should not retry your request until after the time specified by the
-// `x-ratelimit-reset` header", which is in UTC epoch seconds.
-function requestedWait(headers) {
-  const retryAfter = parseRetryAfter(headers.get('retry-after'));
+// What GitHub's REST docs ("Rate limits for the REST API") say to wait
+// after a secondary rate limit that sends neither header below: "wait for
+// at least one minute before retrying".
+const SECONDARY_LIMIT_WAIT_MS = 60_000;
+
+/**
+ * The wait a response asks for, or undefined. Its Retry-After comes first.
+ * Then the GitHub API's rate limits, from the same docs: with
+ * `x-ratelimit-remaining` at 0, "you should not retry your request until
+ * after the time specified by the `x-ratelimit-reset` header" (UTC epoch
+ * seconds), and a secondary limit, which GitHub names in its error
+ * message, waits a minute. Times are measured against the response's Date
+ * header, as the runner's clock may be off, plus a second for Date's
+ * rounding to whole seconds.
+ */
+function requestedWait(headers, body) {
+  const serverNow = Date.parse(headers.get('date') ?? '');
+  const now = Number.isNaN(serverNow) ? Date.now() : serverNow;
+  const retryAfter = parseRetryAfter(headers.get('retry-after'), now);
   if (retryAfter !== undefined) return retryAfter;
   const reset = headers.get('x-ratelimit-reset');
-  if (headers.get('x-ratelimit-remaining') !== '0' || !/^\d+$/.test(reset ?? '')) return undefined;
-  return Math.max(0, Number(reset) * 1000 - Date.now());
+  if (headers.get('x-ratelimit-remaining') === '0' && /^\d+$/.test(reset ?? '')) {
+    return Math.max(0, Number(reset) * 1000 - now) + 1000;
+  }
+  if (/secondary rate limit/i.test(body)) return SECONDARY_LIMIT_WAIT_MS;
+  return undefined;
 }
 
+// How long an error body may take to arrive. The attempt's own timeout may
+// be sized for a large download, and an error body is short or not needed.
+const ERROR_BODY_TIMEOUT_MS = 2_000;
+
 // The start of an error response's body: no more of it is read than is
-// kept, and a body that breaks off keeps what arrived.
+// kept, for no longer than ERROR_BODY_TIMEOUT_MS, and a body that breaks
+// off or stalls keeps what arrived. Cancelling the reader ends a read
+// under way as done.
 async function errorBody(response) {
   if (!response.body) return '';
   const reader = response.body.getReader();
+  const timer = setTimeout(() => reader.cancel().catch(() => {}), ERROR_BODY_TIMEOUT_MS);
   const decoder = new TextDecoder();
   let text = '';
   try {
@@ -302,6 +325,7 @@ async function errorBody(response) {
   } catch {
     // Keep what arrived.
   } finally {
+    clearTimeout(timer);
     reader.cancel().catch(() => {});
   }
   return text.slice(0, ERROR_BODY_LIMIT);
@@ -368,11 +392,18 @@ export function isTransient(err) {
  * one whose `retryAfterMs` is over two minutes, or the last attempt's error
  * is thrown. Once `signal` aborts, no attempt starts and nothing is
  * retried, and a wait under way ends with an AbortError whose cause is the
- * error it was waiting to retry. `label` names the operation in the warning
+ * error it was waiting to retry. `label` names the operation in the line
  * each retry logs. A fetchWithRetry inside `fn` should get `attempts: 1`,
  * or the two retry counts multiply.
+ *
+ * A retry is logged as a plain line, not a warning annotation: one that
+ * then passes is not worth a mark on a green run, and one that does not
+ * ends in the error that fails the step.
  */
 export async function retry(fn, { attempts = 3, delayMs = 1000, isRetryable = isTransient, label = 'operation', signal } = {}) {
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new TypeError(`${label}: attempts must be a whole number, 1 or more; got ${attempts}`);
+  }
   for (let attempt = 1; ; attempt++) {
     signal?.throwIfAborted();
     try {
@@ -382,7 +413,7 @@ export async function retry(fn, { attempts = 3, delayMs = 1000, isRetryable = is
         throw err;
       }
       const wait = Math.max(delayMs * 2 ** (attempt - 1), err?.retryAfterMs ?? 0);
-      warning(`${label}: attempt ${attempt} of ${attempts} failed (${describe(err)}); retrying in ${wait} ms`);
+      io.stdout(`${label}: attempt ${attempt} of ${attempts} failed (${describe(err)}); retrying in ${wait} ms\n`);
       try {
         await sleep(wait, undefined, { signal });
       } catch (abort) {
@@ -444,9 +475,10 @@ export async function fetchWithRetry(url, { attempts, delayMs = 1000, timeoutMs 
       const signal = init.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
       const response = await fetch(target, { ...init, method, signal });
       if (!response.ok) {
+        const body = await errorBody(response);
         throw new HttpError(method, target, response.status, response.statusText, {
-          body: await errorBody(response),
-          retryAfterMs: requestedWait(response.headers),
+          body,
+          retryAfterMs: requestedWait(response.headers, body),
         });
       }
       return response;
