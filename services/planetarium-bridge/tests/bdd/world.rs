@@ -419,21 +419,11 @@ pub fn ascom_code(name: &str) -> u16 {
 ///
 /// Unlike [`DEAD_RP_URL`], this port must be one the scenario can later
 /// bind: "the stub rp comes up at the configured rp address" starts a stub
-/// on it, and concurrent scenarios must not share it. So it is probed, not
-/// fixed. Ports come from a reserved band below the platform ephemeral floor,
-/// probed by *connecting* (a refused connect is the same "nobody is there"
-/// answer), never by binding and releasing — a bind probe draws from the
-/// same range the OS hands to every concurrent `bind(0)` and its listener
-/// can leak into forked children (testing.md §5.1, issue #745). Band
-/// 23100–24099 stays clear of the rusty-photon service band (111xx) and
-/// phd2-guider's reserved band.
-///
-/// The probe is a synchronous `connect()`, and a refused one is not instant
-/// everywhere (about 2 s each on the Windows CI runner), so it runs on the
-/// blocking pool rather than stall every scenario in flight (testing.md
-/// §5.7).
+/// on it, and concurrent scenarios must not share it. So it is reserved
+/// with `bdd_infra::reserved_test_port_async` (testing.md §5.1), which
+/// probes off the poll loop (§5.7).
 pub async fn unreachable_rp_url() -> String {
-    let port = bdd_infra::off_loop(reserved_dead_port).await;
+    let port = bdd_infra::reserved_test_port_async().await;
     format!("http://127.0.0.1:{port}/mcp")
 }
 
@@ -444,30 +434,5 @@ pub async fn unreachable_rp_url() -> String {
 /// does says "rp is unreachable" and gets [`unreachable_rp_url`] instead.
 const DEAD_RP_URL: &str = "http://127.0.0.1:1/mcp";
 
-const RESERVED_PORT_BAND_START: u16 = 23100;
-const RESERVED_PORT_BAND_LEN: u16 = 1000;
-const RESERVED_PORT_TRIES: u16 = 64;
-
-fn reserved_dead_port() -> u16 {
-    static START: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
-    static CURSOR: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(0);
-
-    // Distinct per process: pids alone are too regular when a harness starts
-    // many copies at once.
-    let start = *START.get_or_init(|| {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.subsec_nanos());
-        ((std::process::id() ^ nanos) % u32::from(RESERVED_PORT_BAND_LEN)) as u16
-    });
-
-    for _ in 0..RESERVED_PORT_TRIES {
-        let step = CURSOR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let candidate =
-            RESERVED_PORT_BAND_START + (start.wrapping_add(step) % RESERVED_PORT_BAND_LEN);
-        if std::net::TcpStream::connect(("127.0.0.1", candidate)).is_err() {
-            return candidate;
-        }
-    }
-    panic!("no free reserved port in {RESERVED_PORT_TRIES} tries");
-}
+/// [`DEAD_RP_URL`]'s port, which no scenario can bring rp up on.
+pub const DEAD_RP_PORT: u16 = 1;

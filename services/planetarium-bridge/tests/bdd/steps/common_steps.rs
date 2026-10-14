@@ -4,7 +4,7 @@
 use cucumber::{given, then, when};
 
 use crate::stub_rp::StubRp;
-use crate::world::{ascom_code, unreachable_rp_url, BridgeWorld, FloorSetting};
+use crate::world::{ascom_code, unreachable_rp_url, BridgeWorld, FloorSetting, DEAD_RP_PORT};
 
 // --- Config knobs (set before the bridge starts) ---
 
@@ -88,6 +88,11 @@ async fn bridge_restarted(world: &mut BridgeWorld) {
 async fn stub_comes_up(world: &mut BridgeWorld) {
     assert!(world.stub_rp.is_none(), "a stub rp is already running");
     let port = world.configured_rp_port();
+    assert_ne!(
+        port, DEAD_RP_PORT,
+        "the configured rp address is the default dead URL, which no stub can bind: \
+         say 'rp is unreachable' first, so the scenario gets a port of its own"
+    );
     world.stub_rp = Some(StubRp::start_on(port).await);
 }
 

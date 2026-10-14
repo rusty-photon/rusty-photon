@@ -7,6 +7,7 @@
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
 use cucumber::World;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -243,26 +244,34 @@ impl GuiderWorld {
         let rpc_log = dir.join("rpc_log.jsonl");
         self.rpc_log_path = Some(rpc_log.clone());
 
-        let mut cmd = Command::new(Self::mock_phd2_path());
-        cmd.env("MOCK_PHD2_PORT", "0")
-            .env("MOCK_PHD2_SETTLE_MODE", settle_mode)
-            .env("MOCK_PHD2_STOP_MODE", stop_mode)
-            .env("MOCK_PHD2_RPC_LOG", &rpc_log);
-        for (key, value) in extra {
-            cmd.env(key, value);
-        }
-        cmd.stdout(Stdio::piped())
-            // mock_phd2 logs verbosely to stderr; discard it so a full
-            // pipe buffer can never deadlock the mock under parallel
-            // scenarios (same policy as tests/test_integration.rs).
-            .stderr(Stdio::null());
-        apply_child_coverage_profile(&mut cmd);
-        // The spawn and the wait for the port run on the blocking pool:
-        // spawning is slow on a loaded Windows runner, and a step that
-        // blocks stalls the one poll loop every scenario shares (see
-        // `bdd_infra::off_loop`). A panic in `spawn_mock` fails the step
-        // with its own message.
-        let (port, child) = bdd_infra::off_loop(move || spawn_mock(cmd)).await;
+        let mut envs: Vec<(OsString, OsString)> = vec![
+            ("MOCK_PHD2_PORT".into(), "0".into()),
+            ("MOCK_PHD2_SETTLE_MODE".into(), settle_mode.into()),
+            ("MOCK_PHD2_STOP_MODE".into(), stop_mode.into()),
+            ("MOCK_PHD2_RPC_LOG".into(), rpc_log.into_os_string()),
+        ];
+        envs.extend(
+            extra
+                .iter()
+                .map(|(key, value)| ((*key).into(), (*value).into())),
+        );
+        // The binary lookup (it stats files), the spawn and the wait for
+        // the port run on the blocking pool: spawning is slow on a loaded
+        // Windows runner, and a step that blocks stalls the one poll loop
+        // every scenario shares (see `bdd_infra::off_loop`). A panic in
+        // here fails the step with its own message.
+        let (port, child) = bdd_infra::off_loop(move || {
+            let mut cmd = Command::new(Self::mock_phd2_path());
+            cmd.envs(envs)
+                .stdout(Stdio::piped())
+                // mock_phd2 logs verbosely to stderr; discard it so a full
+                // pipe buffer can never deadlock the mock under parallel
+                // scenarios (same policy as tests/test_integration.rs).
+                .stderr(Stdio::null());
+            apply_child_coverage_profile(&mut cmd);
+            spawn_mock(cmd)
+        })
+        .await;
         self.mock = Some(MockPhd2Handle {
             port,
             child: Some(child),
@@ -314,7 +323,9 @@ impl GuiderWorld {
         let dir = self.temp_dir_path();
         let config_path = dir.join("config.json");
         self.config_path = Some(config_path.clone());
-        std::fs::write(&config_path, config.to_string()).expect("write config");
+        tokio::fs::write(&config_path, config.to_string())
+            .await
+            .expect("write config");
         let config_str = config_path.to_string_lossy().into_owned();
 
         let handle =

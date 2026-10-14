@@ -290,7 +290,9 @@ const RESERVED_PORT_TRIES: u16 = 64;
 /// Panics if no band port answers "refused" within
 /// [`RESERVED_PORT_TRIES`] tries.
 pub async fn reserved_test_port_async() -> u16 {
-    off_loop(reserved_test_port).await
+    let port = off_loop(reserved_test_port).await;
+    debug!(port, "reserved a test port");
+    port
 }
 
 /// The port in `slot`, reserving one with [`reserved_test_port_async`] the
@@ -302,6 +304,7 @@ pub async fn reserved_test_port_async() -> u16 {
 /// [`reserved_test_port_async`]'s panic.
 pub async fn reserved_port_once(slot: &mut Option<u16>) -> u16 {
     if let Some(port) = *slot {
+        debug!(port, "reusing the scenario's reserved port");
         return port;
     }
     let port = reserved_test_port_async().await;
@@ -403,6 +406,16 @@ mod reserved_port_tests {
             payload.downcast_ref::<&str>().copied(),
             Some("the probe exploded")
         );
+    }
+
+    #[test]
+    fn panic_text_reads_both_string_payloads() {
+        let literal: Box<dyn std::any::Any + Send> = Box::new("a literal");
+        let formatted: Box<dyn std::any::Any + Send> = Box::new(String::from("a formatted one"));
+        let other: Box<dyn std::any::Any + Send> = Box::new(7_u8);
+        assert_eq!(panic_text(literal.as_ref()), "a literal");
+        assert_eq!(panic_text(formatted.as_ref()), "a formatted one");
+        assert_eq!(panic_text(other.as_ref()), "a panic without a message");
     }
 
     #[tokio::test]
@@ -851,6 +864,17 @@ pub async fn run_once_async(
         run_once(&package, &args, stdin_data.as_deref())
     })
     .await
+}
+
+/// The message a panic carried, for re-raising it with more context: the
+/// text `panic!` was given, or a stand-in when the payload is not a string.
+#[cfg(any(feature = "tls-auth", test))]
+pub(crate) fn panic_text(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("a panic without a message")
 }
 
 /// Run `f` on the blocking pool and await its result, so a step that has

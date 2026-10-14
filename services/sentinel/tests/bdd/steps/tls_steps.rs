@@ -22,10 +22,11 @@ async fn generate_tls_certs(world: &mut SentinelWorld) {
     FILEMONITOR_CERT
         .get_or_init(|| async move {
             bdd_infra::off_loop(move || {
-                let ca_pem = std::fs::read_to_string(for_cert.ca_path()).unwrap();
+                let ca_pem = std::fs::read_to_string(for_cert.ca_path())
+                    .expect("read the shared CA certificate to sign filemonitor's");
                 let ca_key =
                     std::fs::read_to_string(for_cert.ca_path().with_file_name("ca-key.pem"))
-                        .unwrap();
+                        .expect("read the shared CA key to sign filemonitor's certificate");
                 let certs_dir = for_cert
                     .cert_path()
                     .parent()
@@ -37,7 +38,7 @@ async fn generate_tls_certs(world: &mut SentinelWorld) {
                     "filemonitor",
                     &certs_dir,
                 )
-                .unwrap();
+                .expect("filemonitor certificate generation failed");
             })
             .await;
         })

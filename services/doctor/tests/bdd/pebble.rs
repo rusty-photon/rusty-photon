@@ -205,6 +205,19 @@ impl PebbleHandle {
     }
 
     async fn try_start(validity_seconds: u64) -> Result<Self, String> {
+        let (mut handle, dns_port) =
+            bdd_infra::off_loop(move || Self::spawn_pair(validity_seconds)).await;
+        match handle.wait_ready(dns_port).await {
+            Ok(()) => Ok(handle),
+            Err(e) => Err(format!("{e}; children output:\n{}", handle.child_logs())),
+        }
+    }
+
+    /// The synchronous half of a start, run off the poll loop every
+    /// scenario shares (docs/skills/testing.md §5.7): mint the endpoint
+    /// certificate, pick the ports, write Pebble's config and spawn both
+    /// children. Returns the handle and the sidecar's DNS port.
+    fn spawn_pair(validity_seconds: u64) -> (Self, u16) {
         let (pebble_path, challtestsrv_path) =
             env_paths().expect("@pebble scenario ran without PEBBLE_PATH/PEBBLE_CHALLTESTSRV_PATH");
         let dir = tempfile::tempdir().expect("pebble scratch dir");
@@ -291,7 +304,7 @@ impl PebbleHandle {
             .spawn()
             .expect("spawn pebble");
 
-        let mut handle = Self {
+        let handle = Self {
             // 127.0.0.1 rather than localhost: Pebble binds IPv4 loopback
             // only, and localhost resolves to ::1 first on some hosts. The
             // endpoint cert carries loopback IP SANs, so the IP URL verifies.
@@ -302,10 +315,7 @@ impl PebbleHandle {
             pebble,
             challtestsrv,
         };
-        match handle.wait_ready(dns_port).await {
-            Ok(()) => Ok(handle),
-            Err(e) => Err(format!("{e}; children output:\n{}", handle.child_logs())),
-        }
+        (handle, dns_port)
     }
 
     /// Poll the directory (through the minted CA), the challtestsrv

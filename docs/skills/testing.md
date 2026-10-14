@@ -1108,7 +1108,9 @@ port from **`bdd_infra::reserved_test_port_async`** (or keep one with
 `reserved_port_once`), `ServiceHandle`'s async starts find their binary
 and spawn their process there (the lookup stats files and reads
 `Cargo.toml`, and process creation is a synchronous call a loaded host
-makes slow), and a binary run to its exit goes through `run_once_async`.
+makes slow), a binary run to its exit goes through `run_once_async`, and
+doctor's Pebble harness mints its certificates and spawns its pair there
+for every `@pebble` scenario.
 
 Three spawns stay where they are, each rare: OmniSim's `spawn_on_port`
 (once per test process), ConformU (run by plain `#[tokio::test]`s, not by
