@@ -596,8 +596,11 @@ that driver (`qhy-camera`, `zwo-camera` or `svbony-camera`) a
 and PHD2 both open it.
 
 1. **Give PHD2 the guide camera's port** (Linux). Every camera package's
-   udev rule gives its vendor's whole USB id to the `rusty-photon` group,
-   mode 0660, and PHD2, running as you, is not in it. PHD2 then reports
+   udev rule, and `rusty-photon-zwo-focuser`'s (ZWO's id, 03c3, which its
+   cameras share), gives its vendor's whole USB id to the `rusty-photon`
+   group, mode 0660, and PHD2, running as you, is not in it. Any one of
+   them installed for the guide camera's vendor, a camera package or not,
+   takes the camera from PHD2. PHD2 then reports
    no camera at all ("QHY: found 0 cameras" in its debug log). A rule
    keyed on the guide camera's port gives that one socket to your group
    instead. Take the port from the vendor driver's `doctor --devices`

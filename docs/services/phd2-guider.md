@@ -1077,7 +1077,8 @@ These are deployment rules. The facade checks the ones it can at load.
   because nothing tells a process that someone else wanted the device it
   already holds.
 - **PHD2's account must be able to open the guide camera** (Linux). Each
-  camera package's udev rule gives its vendor's whole USB id to the
+  camera package's udev rule, and `rusty-photon-zwo-focuser`'s (ZWO's
+  id, which its cameras share), gives its vendor's whole USB id to the
   `rusty-photon` group, so PHD2, running as the operator, finds no
   camera. A udev rule keyed on the guide camera's port gives that port to
   the operator's group
