@@ -171,7 +171,7 @@ fn doctor_config_with_camera(world: &mut GuiderWorld, block: String) {
 // ---------------------------------------------------------------------------
 
 /// The facade's Camera 0, through an Alpaca client.
-async fn facade(world: &mut GuiderWorld) -> Arc<dyn Camera> {
+pub async fn facade(world: &mut GuiderWorld) -> Arc<dyn Camera> {
     if let Some(camera) = &world.camera {
         return Arc::clone(camera);
     }
@@ -193,7 +193,7 @@ async fn facade(world: &mut GuiderWorld) -> Arc<dyn Camera> {
     camera
 }
 
-fn record_error(world: &mut GuiderWorld, result: Result<(), ASCOMError>) {
+pub fn record_error(world: &mut GuiderWorld, result: Result<(), ASCOMError>) {
     world.last_ascom_error = result.err().map(|e| (e.code.raw(), e.message.into_owned()));
 }
 
@@ -305,23 +305,81 @@ async fn phd2_reports_marker_frame(world: &mut GuiderWorld) {
         .await
         .expect("send mock_report_frame");
     let mut lines = BufReader::new(read).lines();
+    let mut answered = false;
     while let Some(line) = lines.next_line().await.expect("read the mock's reply") {
         if line.contains("\"id\":1") {
+            answered = true;
             break;
         }
     }
+    assert!(
+        answered,
+        "the mock PHD2 closed the connection without answering mock_report_frame"
+    );
     // The service removes the marker and releases the slot together,
     // under the guiding lock, so a request sent once the marker is gone
     // finds the slot released.
     let marker = world.image_dir().join("phd2-guider-capture.json");
     let give_up = tokio::time::Instant::now() + Duration::from_secs(10);
     while marker.exists() {
-        assert!(
-            tokio::time::Instant::now() < give_up,
-            "the capture marker was not removed after PHD2 reported its frame"
-        );
+        if tokio::time::Instant::now() >= give_up {
+            let diagnosis = marker_diagnosis(world);
+            panic!("the capture marker was not removed after PHD2 reported its frame; {diagnosis}");
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+/// What can be read, without changing anything, once a reported marker
+/// frame was not released: the requests the mock logged, and whether the
+/// frame's file is gone. The service deletes it when it handles the
+/// report, before it removes the marker, so a file still there means the
+/// report was never handled.
+fn marker_diagnosis(world: &GuiderWorld) -> String {
+    let logged: Vec<String> = world
+        .logged_rpcs()
+        .iter()
+        .filter_map(|rpc| rpc["method"].as_str().map(str::to_string))
+        .collect();
+    let frame = world.marker_frame.as_ref().map_or_else(
+        || "no frame staged".to_string(),
+        |frame| {
+            if frame.exists() {
+                "the frame's file is still there, so the service never handled the report"
+                    .to_string()
+            } else {
+                "the frame's file is gone, so the service handled the report".to_string()
+            }
+        },
+    );
+    format!("the mock logged {logged:?}; {frame}")
+}
+
+#[when("the client fetches the facade image as ImageBytes")]
+async fn fetch_image_bytes(world: &mut GuiderWorld) {
+    let port = world.camera_port.expect("the facade is not configured");
+    let url = format!(
+        "http://127.0.0.1:{port}/api/v1/camera/0/imagearray?ClientID=1&ClientTransactionID=1"
+    );
+    let response = GuiderWorld::http_client()
+        .get(&url)
+        .header("Accept", "application/imagebytes")
+        .send()
+        .await
+        .expect("ImageArray request failed");
+    assert_eq!(response.status().as_u16(), 200, "ImageArray status");
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert_eq!(
+        content_type, "application/imagebytes",
+        "ImageArray content type"
+    );
+    let body = response.bytes().await.expect("read the ImageBytes body");
+    world.image_bytes = Some(body.to_vec());
 }
 
 async fn config_action(world: &mut GuiderWorld, action: &str, parameters: String) {
@@ -450,6 +508,52 @@ async fn image_size(world: &mut GuiderWorld, width: usize, height: usize) {
 async fn image_pixel(world: &mut GuiderWorld, x: usize, y: usize, value: i32) {
     let image = facade(world).await.image_array().await.unwrap();
     assert_eq!(image[[x, y, 0]], value);
+}
+
+/// The little-endian 32-bit integer at `offset` of the `ImageBytes` body.
+fn image_bytes_i32(world: &GuiderWorld, offset: usize) -> i32 {
+    let body = world.image_bytes.as_ref().expect("no ImageBytes fetched");
+    let bytes: [u8; 4] = body
+        .get(offset..offset + 4)
+        .unwrap_or_else(|| {
+            panic!(
+                "ImageBytes body of {} bytes ends before offset {offset}",
+                body.len()
+            )
+        })
+        .try_into()
+        .expect("four bytes");
+    i32::from_le_bytes(bytes)
+}
+
+#[then("the ImageBytes header should match these constants (i32 little-endian):")]
+fn image_bytes_header(world: &mut GuiderWorld, step: &cucumber::gherkin::Step) {
+    let table = step.table.as_ref().expect("a table of header constants");
+    for row in table.rows.iter().skip(1) {
+        let [field, offset, value] = row.as_slice() else {
+            panic!("a header row is field, offset, value: {row:?}");
+        };
+        let offset: usize = offset.parse().expect("offset is a number");
+        let value: i32 = value.parse().expect("value is a number");
+        assert_eq!(
+            image_bytes_i32(world, offset),
+            value,
+            "{field} at offset {offset}"
+        );
+    }
+}
+
+#[then(expr = "the ImageBytes pixel data should be {int} bytes")]
+fn image_bytes_data_len(world: &mut GuiderWorld, len: usize) {
+    let data_start = usize::try_from(image_bytes_i32(world, 16)).expect("data_start");
+    let body = world.image_bytes.as_ref().expect("no ImageBytes fetched");
+    let data = body.len().checked_sub(data_start).unwrap_or_else(|| {
+        panic!(
+            "the ImageBytes body is {} bytes, shorter than its data_start {data_start}",
+            body.len()
+        )
+    });
+    assert_eq!(data, len, "ImageBytes pixel data length");
 }
 
 #[then(expr = "the facade camera's last exposure should have lasted {float} s")]

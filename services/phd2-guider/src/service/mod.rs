@@ -10,6 +10,7 @@ pub mod camera;
 pub mod capture;
 pub mod error;
 pub mod guider;
+pub mod lease;
 
 pub use camera::Phd2Camera;
 pub use error::{ErrorCode, ErrorResponse, ServiceError};

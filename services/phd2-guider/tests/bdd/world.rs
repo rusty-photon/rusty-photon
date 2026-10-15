@@ -56,6 +56,12 @@ pub struct GuiderWorld {
 
     /// The most recent `config.schema` / `config.apply` answer.
     pub config_action_reply: Option<serde_json::Value>,
+
+    /// The most recent sweep-lease Action's answer.
+    pub lease_reply: Option<serde_json::Value>,
+
+    /// The facade image as the `ImageBytes` body the client last fetched.
+    pub image_bytes: Option<Vec<u8>>,
 }
 
 impl bdd_infra::doctor_smoke::DoctorSmokeWorld for GuiderWorld {

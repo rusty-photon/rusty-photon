@@ -1,0 +1,179 @@
+{"t": 0.002, "kind": "check", "what": "PHD2 reported its version", "ok": true, "version": "2.6.14"}
+{"t": 0.0024, "kind": "rpc", "req": {"method": "get_app_state", "id": 1}, "reply": {"jsonrpc": "2.0", "result": "Stopped", "id": 1}}
+{"t": 0.0024, "kind": "check", "what": "PHD2 starts Stopped", "ok": true}
+{"t": 0.0026, "kind": "rpc", "req": {"method": "get_camera_frame_size", "id": 2}, "reply": {"jsonrpc": "2.0", "result": [752, 580], "id": 2}}
+{"t": 0.0026, "kind": "check", "what": "PHD2's camera is connected", "ok": true, "size": [752, 580]}
+{"t": 0.0165, "kind": "alpaca", "method": "PUT", "member": "connected", "form": {"Connected": "false"}, "took": 0.0136, "value": null, "error": 0, "message": ""}
+{"t": 0.0172, "kind": "alpaca", "method": "PUT", "member": "action", "form": {"Action": "rustyphoton:sweep-lease-acquire", "Parameters": "{\"token\": \"00000000000000000000000000000000\"}"}, "took": 0.0005, "value": null, "error": 1031, "message": "the camera is not connected"}
+{"t": 0.0173, "kind": "check", "what": "an acquire on a disconnected camera is NotConnected", "ok": true}
+{"t": 0.0183, "kind": "alpaca", "method": "PUT", "member": "connected", "form": {"Connected": "true"}, "took": 0.0009, "value": null, "error": 0, "message": ""}
+{"t": 0.0188, "kind": "alpaca", "method": "GET", "member": "connected", "form": null, "took": 0.0004, "value": true, "error": 0, "message": ""}
+{"t": 0.0189, "kind": "check", "what": "the facade camera connects", "ok": true}
+{"t": 0.0193, "kind": "alpaca", "method": "GET", "member": "supportedactions", "form": null, "took": 0.0003, "value": ["rustyphoton:sweep-lease-acquire", "rustyphoton:sweep-lease-renew", "rustyphoton:sweep-lease-release", "config.get", "config.apply", "config.schema"], "error": 0, "message": ""}
+{"t": 0.0193, "kind": "check", "what": "SupportedActions lists the three lease Actions first", "ok": true, "actions": ["rustyphoton:sweep-lease-acquire", "rustyphoton:sweep-lease-renew", "rustyphoton:sweep-lease-release", "config.get", "config.apply", "config.schema"]}
+{"t": 0.02, "kind": "alpaca", "method": "PUT", "member": "action", "form": {"Action": "rustyphoton:sweep-lease-acquire", "Parameters": "{\"token\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"ttl_s\": 30}"}, "took": 0.0006, "value": "{\"token\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ttl_s\":30}", "error": 0, "message": ""}
+{"t": 0.0201, "kind": "check", "what": "a lease is granted under the caller's token", "ok": true}
+{"t": 0.0205, "kind": "rest", "path": "guiding/start", "status": 409, "reply": {"error": "camera_busy", "message": "camera busy: the camera facade's sweep lease is held; guiding operations are refused until it is released or ends, by 2026-10-14T23:08:16Z unless it is renewed"}}
+{"t": 0.0206, "kind": "check", "what": "guiding/start is refused with camera_busy while the lease is held", "ok": true}
+{"t": 0.0209, "kind": "rest", "path": "guiding/pause", "status": 409, "reply": {"error": "camera_busy", "message": "camera busy: the camera facade's sweep lease is held; guiding operations are refused until it is released or ends, by 2026-10-14T23:08:16Z unless it is renewed"}}
+{"t": 0.021, "kind": "check", "what": "guiding/pause is refused with camera_busy while the lease is held", "ok": true}
+{"t": 0.0213, "kind": "rest", "path": "dither", "status": 409, "reply": {"error": "camera_busy", "message": "camera busy: the camera facade's sweep lease is held; guiding operations are refused until it is released or ends, by 2026-10-14T23:08:16Z unless it is renewed"}}
+{"t": 0.0213, "kind": "check", "what": "dither is refused with camera_busy while the lease is held", "ok": true}
+{"t": 0.0216, "kind": "rest", "path": "calibration/clear", "status": 409, "reply": {"error": "camera_busy", "message": "camera busy: the camera facade's sweep lease is held; guiding operations are refused until it is released or ends, by 2026-10-14T23:08:16Z unless it is renewed"}}
+{"t": 0.0217, "kind": "check", "what": "calibration/clear is refused with camera_busy while the lease is held", "ok": true}
+{"t": 0.0219, "kind": "rpc", "req": {"method": "get_app_state", "id": 3}, "reply": {"jsonrpc": "2.0", "result": "Stopped", "id": 3}}
+{"t": 0.0219, "kind": "check", "what": "PHD2 is still Stopped: no guiding reached it", "ok": true}
+{"t": 0.067, "kind": "alpaca", "method": "PUT", "member": "startexposure", "form": {"Duration": "1", "Light": "true"}, "took": 0.045, "value": null, "error": 0, "message": ""}
+{"t": 0.0676, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0004, "value": false, "error": 0, "message": ""}
+{"t": 0.0676, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.1181, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.1182, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.1687, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0004, "value": false, "error": 0, "message": ""}
+{"t": 0.1687, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.2192, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.2192, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.2696, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.2697, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.3201, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.3201, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.3706, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.3706, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.4211, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.4211, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.4715, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.4716, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.522, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.522, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.5726, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0004, "value": false, "error": 0, "message": ""}
+{"t": 0.5726, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.623, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.6231, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.6735, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.6735, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.7239, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.7239, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.7744, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.7744, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.8248, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.8249, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.8753, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.8753, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.9257, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.9258, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 0.9762, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 0.9762, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 1.0267, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0003, "value": false, "error": 0, "message": ""}
+{"t": 1.0267, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 1.0776, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0006, "value": false, "error": 0, "message": ""}
+{"t": 1.0777, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 1.1284, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0006, "value": true, "error": 0, "message": ""}
+{"t": 1.1285, "kind": "ready", "after": 1.0614}
+{"t": 1.1334, "kind": "alpaca", "method": "GET", "member": "imagearray", "took": 0.0048, "imagebytes": [1, 0, 30, 30, 44, 2, 8, 2, 752, 580, 0], "bytes": 872364}
+{"t": 1.1335, "kind": "check", "what": "ImageBytes sends the frame as UInt16 (type 8)", "ok": true, "transmission_element_type": 8}
+{"t": 1.1335, "kind": "check", "what": "the image is PHD2's full frame", "ok": true, "dimensions": [752, 580]}
+{"t": 1.1335, "kind": "check", "what": "two bytes a pixel", "ok": true, "data_bytes": 872320}
+{"t": 1.1341, "kind": "alpaca", "method": "PUT", "member": "action", "form": {"Action": "rustyphoton:sweep-lease-renew", "Parameters": "{\"token\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"}, "took": 0.0005, "value": "{\"token\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ttl_s\":30}", "error": 0, "message": ""}
+{"t": 1.1342, "kind": "check", "what": "the held lease renews", "ok": true}
+{"t": 1.1346, "kind": "alpaca", "method": "PUT", "member": "action", "form": {"Action": "rustyphoton:sweep-lease-acquire", "Parameters": "{\"token\": \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}"}, "took": 0.0003, "value": null, "error": 1035, "message": "a sweep lease is already held, until 2026-10-14T23:08:17Z unless it is renewed"}
+{"t": 1.1346, "kind": "check", "what": "a second lease is refused while one is held", "ok": true}
+{"t": 1.135, "kind": "alpaca", "method": "PUT", "member": "action", "form": {"Action": "rustyphoton:sweep-lease-release", "Parameters": "{\"token\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"}, "took": 0.0003, "value": "{\"released\":true}", "error": 0, "message": ""}
+{"t": 1.135, "kind": "check", "what": "the lease releases", "ok": true}
+{"t": 1.1353, "kind": "alpaca", "method": "PUT", "member": "action", "form": {"Action": "rustyphoton:sweep-lease-release", "Parameters": "{\"token\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"}, "took": 0.0003, "value": "{\"released\":false}", "error": 0, "message": ""}
+{"t": 1.1353, "kind": "check", "what": "a second release answers released false", "ok": true}
+{"t": 1.1357, "kind": "alpaca", "method": "PUT", "member": "action", "form": {"Action": "rustyphoton:sweep-lease-acquire", "Parameters": "{\"token\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"}, "took": 0.0003, "value": null, "error": 1035, "message": "token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa was used before (its lease was released); a token names one lease and is never granted again"}
+{"t": 1.1357, "kind": "check", "what": "a token is never granted twice", "ok": true}
+{"t": 1.1373, "kind": "rpc", "req": {"method": "loop", "id": 4}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 4}}
+{"t": 1.1517, "kind": "rpc", "req": {"method": "get_app_state", "id": 5}, "reply": {"jsonrpc": "2.0", "result": "Looping", "id": 5}}
+{"t": 1.1518, "kind": "check", "what": "PHD2 loops when another client asks", "ok": true}
+{"t": 1.1528, "kind": "alpaca", "method": "PUT", "member": "action", "form": {"Action": "rustyphoton:sweep-lease-acquire", "Parameters": "{\"token\": \"cccccccccccccccccccccccccccccccc\"}"}, "took": 0.0008, "value": null, "error": 1035, "message": "PHD2 is Looping; a sweep lease is granted only while PHD2 is Stopped"}
+{"t": 1.1529, "kind": "check", "what": "a lease is refused while PHD2 loops, naming the state", "ok": true}
+{"t": 1.1538, "kind": "rpc", "req": {"method": "stop_capture", "id": 6}, "reply": {"jsonrpc": "2.0", "result": 0, "id": 6}}
+{"t": 1.1544, "kind": "rpc", "req": {"method": "get_app_state", "id": 7}, "reply": {"jsonrpc": "2.0", "result": "Looping", "id": 7}}
+{"t": 1.4049, "kind": "rpc", "req": {"method": "get_app_state", "id": 8}, "reply": {"jsonrpc": "2.0", "result": "Stopped", "id": 8}}
+{"t": 1.4049, "kind": "check", "what": "PHD2 stops again", "ok": true}
+{"t": 1.4059, "kind": "alpaca", "method": "PUT", "member": "action", "form": {"Action": "rustyphoton:sweep-lease-acquire", "Parameters": "{\"token\": \"dddddddddddddddddddddddddddddddd\", \"ttl_s\": 30}"}, "took": 0.0008, "value": "{\"token\":\"dddddddddddddddddddddddddddddddd\",\"ttl_s\":30}", "error": 0, "message": ""}
+{"t": 1.4059, "kind": "check", "what": "a lease is granted", "ok": true}
+{"t": 1.4066, "kind": "rest", "path": "guiding/stop", "status": 200, "reply": {"state": "stopped"}}
+{"t": 1.4067, "kind": "check", "what": "guiding/stop is never refused", "ok": true}
+{"t": 1.4072, "kind": "alpaca", "method": "PUT", "member": "action", "form": {"Action": "rustyphoton:sweep-lease-renew", "Parameters": "{\"token\": \"dddddddddddddddddddddddddddddddd\"}"}, "took": 0.0004, "value": null, "error": 1035, "message": "the sweep lease under token dddddddddddddddddddddddddddddddd was ended by a guiding stop"}
+{"t": 1.4072, "kind": "check", "what": "a guiding stop ends the lease", "ok": true}
+{"t": 1.4079, "kind": "alpaca", "method": "PUT", "member": "action", "form": {"Action": "rustyphoton:sweep-lease-acquire", "Parameters": "{\"token\": \"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\", \"ttl_s\": 30}"}, "took": 0.0005, "value": "{\"token\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"ttl_s\":30}", "error": 0, "message": ""}
+{"t": 1.4079, "kind": "check", "what": "a lease is granted", "ok": true}
+{"t": 1.4084, "kind": "alpaca", "method": "PUT", "member": "connected", "form": {"Connected": "false"}, "took": 0.0004, "value": null, "error": 0, "message": ""}
+{"t": 1.4088, "kind": "alpaca", "method": "PUT", "member": "action", "form": {"Action": "rustyphoton:sweep-lease-renew", "Parameters": "{\"token\": \"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}"}, "took": 0.0003, "value": null, "error": 1035, "message": "the sweep lease under token eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee was ended when the camera was disconnected"}
+{"t": 1.4088, "kind": "check", "what": "a disconnect ends the lease", "ok": true}
+{"t": 1.4097, "kind": "alpaca", "method": "PUT", "member": "connected", "form": {"Connected": "true"}, "took": 0.0008, "value": null, "error": 0, "message": ""}
+{"t": 1.4104, "kind": "alpaca", "method": "PUT", "member": "action", "form": {"Action": "rustyphoton:sweep-lease-acquire", "Parameters": "{\"token\": \"ffffffffffffffffffffffffffffffff\", \"ttl_s\": 10}"}, "took": 0.0005, "value": "{\"token\":\"ffffffffffffffffffffffffffffffff\",\"ttl_s\":10}", "error": 0, "message": ""}
+{"t": 1.4104, "kind": "check", "what": "a 10 s lease is granted", "ok": true}
+{"t": 12.4116, "kind": "alpaca", "method": "PUT", "member": "action", "form": {"Action": "rustyphoton:sweep-lease-renew", "Parameters": "{\"token\": \"ffffffffffffffffffffffffffffffff\"}"}, "took": 0.0008, "value": null, "error": 1035, "message": "the sweep lease under token ffffffffffffffffffffffffffffffff expired at 2026-10-14T23:07:57Z: no renewal came within its TTL"}
+{"t": 12.4116, "kind": "check", "what": "the lease lapses at its TTL", "ok": true}
+{"t": 12.4128, "kind": "rest", "path": "calibration/clear", "status": 200, "reply": {"state": "cleared"}}
+{"t": 12.4129, "kind": "check", "what": "guiding operations are accepted once the lease has lapsed", "ok": true}
+{"t": 12.4591, "kind": "alpaca", "method": "PUT", "member": "startexposure", "form": {"Duration": "3", "Light": "true"}, "took": 0.0461, "value": null, "error": 0, "message": ""}
+{"t": 12.46, "kind": "alpaca", "method": "PUT", "member": "action", "form": {"Action": "rustyphoton:sweep-lease-acquire", "Parameters": "{\"token\": \"11111111111111111111111111111111\"}"}, "took": 0.0006, "value": null, "error": 1035, "message": "a frame is still exposing in PHD2 (<home>/c7b-validate/images/phd2-guider-b52f06bc6d4b43e49c59da28239e34ca.fits), until 2026-10-14T23:08:11Z at the latest"}
+{"t": 12.4601, "kind": "check", "what": "a lease is refused while a frame is in flight", "ok": true}
+{"t": 12.4606, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0004, "value": false, "error": 0, "message": ""}
+{"t": 12.4607, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 12.5614, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 12.5614, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 12.6621, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 12.6621, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 12.7628, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 12.7629, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 12.8635, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 12.8636, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 12.9643, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 12.9643, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 13.0652, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0006, "value": false, "error": 0, "message": ""}
+{"t": 13.0652, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 13.1662, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0007, "value": false, "error": 0, "message": ""}
+{"t": 13.1662, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 13.267, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0006, "value": false, "error": 0, "message": ""}
+{"t": 13.267, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 13.3678, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0006, "value": false, "error": 0, "message": ""}
+{"t": 13.3679, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 13.4685, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 13.4686, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 13.5693, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 13.5693, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 13.67, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 13.6701, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 13.7707, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 13.7708, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 13.8714, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0004, "value": false, "error": 0, "message": ""}
+{"t": 13.8714, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 13.9721, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 13.9722, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 14.073, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0006, "value": false, "error": 0, "message": ""}
+{"t": 14.0731, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 14.1738, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0006, "value": false, "error": 0, "message": ""}
+{"t": 14.1739, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 14.2746, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 14.2746, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 14.3753, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 14.3753, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 14.476, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 14.476, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 14.5767, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 14.5767, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 14.6774, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0004, "value": false, "error": 0, "message": ""}
+{"t": 14.6774, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 14.778, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 14.7781, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 14.8788, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 14.8788, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 14.9795, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 14.9796, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 15.0804, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0006, "value": false, "error": 0, "message": ""}
+{"t": 15.0804, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 15.1812, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 15.1812, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 15.2819, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0005, "value": false, "error": 0, "message": ""}
+{"t": 15.2819, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 15.3829, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0007, "value": false, "error": 0, "message": ""}
+{"t": 15.3829, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 15.4842, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.001, "value": false, "error": 0, "message": ""}
+{"t": 15.4844, "kind": "check", "what": "the frame is ready within 15 s", "ok": true}
+{"t": 15.5853, "kind": "alpaca", "method": "GET", "member": "imageready", "form": null, "took": 0.0007, "value": true, "error": 0, "message": ""}
+{"t": 15.5859, "kind": "alpaca", "method": "PUT", "member": "connected", "form": {"Connected": "false"}, "took": 0.0005, "value": null, "error": 0, "message": ""}
+{"t": 15.586, "kind": "done"}

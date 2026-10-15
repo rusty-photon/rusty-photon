@@ -1,0 +1,430 @@
+    Finished `release` profile [optimized] target(s) in 0.27s
+     Running `target/release/phd2-guider --config <home>/c7b-validate/phd2-guider.json serve`
+2026-10-14T23:06:05.994697Z DEBUG phd2_guider: Parsed command line arguments: host=None, port=None, log_level=Level(Info)
+2026-10-14T23:06:05.995074Z DEBUG phd2_guider: Loading configuration from "<home>/c7b-validate/phd2-guider.json"
+2026-10-14T23:06:06.003619Z DEBUG phd2_guider: minted the camera facade's UniqueID path="<home>/c7b-validate/phd2-guider.json" wrote=true filled=["/camera/unique_id"]
+2026-10-14T23:06:06.004010Z DEBUG phd2_guider::client: Connecting to PHD2 at 127.0.0.1:4400
+2026-10-14T23:06:06.004020Z DEBUG phd2_guider::io: Connecting to 127.0.0.1:4400 with timeout 10s
+bound_addr=127.0.0.1:11230
+2026-10-14T23:06:06.004065Z  INFO phd2_guider: guider service listening on 127.0.0.1:11230
+2026-10-14T23:06:06.004071Z  INFO phd2_guider: camera facade listening on 127.0.0.1:11228
+2026-10-14T23:06:06.004136Z DEBUG phd2_guider::io: TCP connection established to 127.0.0.1:4400
+2026-10-14T23:06:06.004146Z DEBUG phd2_guider::client: Connection established to PHD2
+2026-10-14T23:06:06.004160Z DEBUG phd2_guider::client: PHD2 client connected and reader task started
+2026-10-14T23:06:06.004164Z  INFO phd2_guider::service::guider: connected to PHD2
+2026-10-14T23:06:06.004360Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"Version","Timestamp":1792019166.004,"Host":"<rig-host>","Inst":1,"PHDVersion":"2.6.14","PHDSubver":"","OverlapSupport":true,"MsgVersion":1}
+2026-10-14T23:06:06.004397Z DEBUG phd2_guider::connection: PHD2 version: 2.6.14
+2026-10-14T23:06:06.004408Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"AppState","Timestamp":1792019166.004,"Host":"<rig-host>","Inst":1,"State":"Stopped"}
+2026-10-14T23:06:06.004415Z DEBUG phd2_guider::connection: PHD2 app state: Stopped
+2026-10-14T23:07:46.015607Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error NOT_CONNECTED: the camera is not connected
+2026-10-14T23:07:46.016088Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=3 server_transaction_id=3}: phd2_guider::client: Getting camera frame size
+2026-10-14T23:07:46.016102Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=3 server_transaction_id=3}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_camera_frame_size","id":1}
+2026-10-14T23:07:46.016322Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":[752,580],"id":1}
+2026-10-14T23:07:46.016360Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=3 server_transaction_id=3}: phd2_guider::client: Getting current equipment configuration
+2026-10-14T23:07:46.016369Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=3 server_transaction_id=3}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_current_equipment","id":2}
+2026-10-14T23:07:46.016629Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":{"camera":{"name":"Simulator","connected":true},"mount":{"name":"On Camera","connected":true}},"id":2}
+2026-10-14T23:07:46.016647Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=3 server_transaction_id=3}: phd2_guider::service::camera: facade camera connected width=752 height=580 sensor=Simulator
+2026-10-14T23:07:46.018196Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/action" client_id=7 client_transaction_id=6 server_transaction_id=6}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_app_state","id":3}
+2026-10-14T23:07:46.018390Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":"Stopped","id":3}
+2026-10-14T23:07:46.018414Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/action" client_id=7 client_transaction_id=6 server_transaction_id=6}: phd2_guider::service::guider: sweep lease granted token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ttl_s=30
+2026-10-14T23:07:46.018929Z DEBUG phd2_guider::service::guider: the camera facade's sweep lease is held; guiding operations are refused until it is released or ends, by 2026-10-14T23:08:16Z unless it is renewed
+2026-10-14T23:07:46.019379Z DEBUG phd2_guider::service::guider: the camera facade's sweep lease is held; guiding operations are refused until it is released or ends, by 2026-10-14T23:08:16Z unless it is renewed
+2026-10-14T23:07:46.019749Z DEBUG phd2_guider::service::guider: the camera facade's sweep lease is held; guiding operations are refused until it is released or ends, by 2026-10-14T23:08:16Z unless it is renewed
+2026-10-14T23:07:46.020089Z DEBUG phd2_guider::service::guider: the camera facade's sweep lease is held; guiding operations are refused until it is released or ends, by 2026-10-14T23:08:16Z unless it is renewed
+2026-10-14T23:07:46.020828Z DEBUG phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_app_state","id":4}
+2026-10-14T23:07:46.021008Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":"Stopped","id":4}
+2026-10-14T23:07:46.021161Z DEBUG phd2_guider::service::guider: capture slot claimed path=<home>/c7b-validate/images/phd2-guider-683fb9d45b354d22bb606fcde683816c.fits recovered=false
+2026-10-14T23:07:46.021172Z DEBUG phd2_guider::client: Capturing single frame, exposure=1000ms, saved to <home>/c7b-validate/images/phd2-guider-683fb9d45b354d22bb606fcde683816c.fits
+2026-10-14T23:07:46.021181Z DEBUG phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"capture_single_frame","params":{"exposure":1000,"path":"<home>/c7b-validate/images/phd2-guider-683fb9d45b354d22bb606fcde683816c.fits","save":true},"id":5}
+2026-10-14T23:07:46.022199Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"ConfigurationChange","Timestamp":1792019266.022,"Host":"<rig-host>","Inst":1}
+2026-10-14T23:07:46.065144Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":0,"id":5}
+2026-10-14T23:07:46.065188Z DEBUG phd2_guider::service::capture: PHD2 accepted the facade's frame path=<home>/c7b-validate/images/phd2-guider-683fb9d45b354d22bb606fcde683816c.fits exposure_ms=1000
+2026-10-14T23:07:47.090008Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"SingleFrameComplete","Timestamp":1792019267.089,"Host":"<rig-host>","Inst":1,"Success":true,"Path":"<home>/c7b-validate/images/phd2-guider-683fb9d45b354d22bb606fcde683816c.fits"}
+2026-10-14T23:07:47.090127Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"LoopingExposuresStopped","Timestamp":1792019267.090,"Host":"<rig-host>","Inst":1}
+2026-10-14T23:07:47.090206Z DEBUG phd2_guider::service::guider: capture slot released path=<home>/c7b-validate/images/phd2-guider-683fb9d45b354d22bb606fcde683816c.fits
+2026-10-14T23:07:47.092344Z DEBUG phd2_guider::service::capture: deleted the facade's frame file path=<home>/c7b-validate/images/phd2-guider-683fb9d45b354d22bb606fcde683816c.fits
+2026-10-14T23:07:47.093728Z DEBUG phd2_guider::service::camera: facade image ready shape=[752, 580, 1]
+2026-10-14T23:07:47.132488Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/action" client_id=7 client_transaction_id=31 server_transaction_id=31}: phd2_guider::service::guider: sweep lease renewed token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+2026-10-14T23:07:47.133006Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: a sweep lease is already held, until 2026-10-14T23:08:17Z unless it is renewed
+2026-10-14T23:07:47.133419Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/action" client_id=7 client_transaction_id=33 server_transaction_id=33}: phd2_guider::service::lease: the sweep lease ended token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa why=Released
+2026-10-14T23:07:47.133432Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/action" client_id=7 client_transaction_id=33 server_transaction_id=33}: phd2_guider::service::guider: sweep lease release token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa released=true
+2026-10-14T23:07:47.133791Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/action" client_id=7 client_transaction_id=34 server_transaction_id=34}: phd2_guider::service::guider: sweep lease release token=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa released=false
+2026-10-14T23:07:47.134165Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: token aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa was used before (its lease was released); a token names one lease and is never granted again
+2026-10-14T23:07:47.150916Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/action" client_id=7 client_transaction_id=36 server_transaction_id=36}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_app_state","id":6}
+2026-10-14T23:07:47.151122Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":"Looping","id":6}
+2026-10-14T23:07:47.151157Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: PHD2 is Looping; a sweep lease is granted only while PHD2 is Stopped
+2026-10-14T23:07:47.236226Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"LoopingExposuresStopped","Timestamp":1792019267.236,"Host":"<rig-host>","Inst":1}
+2026-10-14T23:07:47.403997Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/action" client_id=7 client_transaction_id=37 server_transaction_id=37}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_app_state","id":7}
+2026-10-14T23:07:47.404193Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":"Stopped","id":7}
+2026-10-14T23:07:47.404220Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/action" client_id=7 client_transaction_id=37 server_transaction_id=37}: phd2_guider::service::guider: sweep lease granted token=dddddddddddddddddddddddddddddddd ttl_s=30
+2026-10-14T23:07:47.404826Z DEBUG phd2_guider::service::lease: the sweep lease ended token=dddddddddddddddddddddddddddddddd why=Stopped
+2026-10-14T23:07:47.404836Z DEBUG phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_app_state","id":8}
+2026-10-14T23:07:47.404988Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":"Stopped","id":8}
+2026-10-14T23:07:47.405004Z DEBUG phd2_guider::service::guider: stop requested while already stopped
+2026-10-14T23:07:47.405584Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: the sweep lease under token dddddddddddddddddddddddddddddddd was ended by a guiding stop
+2026-10-14T23:07:47.406082Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/action" client_id=7 client_transaction_id=39 server_transaction_id=39}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_app_state","id":9}
+2026-10-14T23:07:47.406246Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":"Stopped","id":9}
+2026-10-14T23:07:47.406262Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/action" client_id=7 client_transaction_id=39 server_transaction_id=39}: phd2_guider::service::guider: sweep lease granted token=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee ttl_s=30
+2026-10-14T23:07:47.406750Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=40 server_transaction_id=40}: phd2_guider::service::lease: the sweep lease ended token=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee why=Disconnected
+2026-10-14T23:07:47.407260Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: the sweep lease under token eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee was ended when the camera was disconnected
+2026-10-14T23:07:47.407654Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=42 server_transaction_id=42}: phd2_guider::client: Getting camera frame size
+2026-10-14T23:07:47.407684Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=42 server_transaction_id=42}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_camera_frame_size","id":10}
+2026-10-14T23:07:47.407865Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":[752,580],"id":10}
+2026-10-14T23:07:47.407878Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=42 server_transaction_id=42}: phd2_guider::client: Getting current equipment configuration
+2026-10-14T23:07:47.407883Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=42 server_transaction_id=42}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_current_equipment","id":11}
+2026-10-14T23:07:47.408122Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":{"camera":{"name":"Simulator","connected":true},"mount":{"name":"On Camera","connected":true}},"id":11}
+2026-10-14T23:07:47.408137Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=7 client_transaction_id=42 server_transaction_id=42}: phd2_guider::service::camera: facade camera connected width=752 height=580 sensor=Simulator
+2026-10-14T23:07:47.408646Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/action" client_id=7 client_transaction_id=43 server_transaction_id=43}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_app_state","id":12}
+2026-10-14T23:07:47.408790Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":"Stopped","id":12}
+2026-10-14T23:07:47.408806Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/action" client_id=7 client_transaction_id=43 server_transaction_id=43}: phd2_guider::service::guider: sweep lease granted token=ffffffffffffffffffffffffffffffff ttl_s=10
+2026-10-14T23:07:58.409771Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/action" client_id=7 client_transaction_id=44 server_transaction_id=44}: phd2_guider::service::lease: the sweep lease expired token=ffffffffffffffffffffffffffffffff
+2026-10-14T23:07:58.409818Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: the sweep lease under token ffffffffffffffffffffffffffffffff expired at 2026-10-14T23:07:57Z: no renewal came within its TTL
+2026-10-14T23:07:58.410620Z DEBUG phd2_guider::client: Clearing calibration for Mount
+2026-10-14T23:07:58.410634Z DEBUG phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"clear_calibration","params":{"which":"mount"},"id":13}
+2026-10-14T23:07:58.411122Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":0,"id":13}
+2026-10-14T23:07:58.412038Z DEBUG phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_app_state","id":14}
+2026-10-14T23:07:58.412767Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":"Stopped","id":14}
+2026-10-14T23:07:58.412925Z DEBUG phd2_guider::service::guider: capture slot claimed path=<home>/c7b-validate/images/phd2-guider-b52f06bc6d4b43e49c59da28239e34ca.fits recovered=false
+2026-10-14T23:07:58.412937Z DEBUG phd2_guider::client: Capturing single frame, exposure=3000ms, saved to <home>/c7b-validate/images/phd2-guider-b52f06bc6d4b43e49c59da28239e34ca.fits
+2026-10-14T23:07:58.412948Z DEBUG phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"capture_single_frame","params":{"exposure":3000,"path":"<home>/c7b-validate/images/phd2-guider-b52f06bc6d4b43e49c59da28239e34ca.fits","save":true},"id":15}
+2026-10-14T23:07:58.414311Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"ConfigurationChange","Timestamp":1792019278.414,"Host":"<rig-host>","Inst":1}
+2026-10-14T23:07:58.457185Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":0,"id":15}
+2026-10-14T23:07:58.457239Z DEBUG phd2_guider::service::capture: PHD2 accepted the facade's frame path=<home>/c7b-validate/images/phd2-guider-b52f06bc6d4b43e49c59da28239e34ca.fits exposure_ms=3000
+2026-10-14T23:07:58.458329Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: a frame is still exposing in PHD2 (<home>/c7b-validate/images/phd2-guider-b52f06bc6d4b43e49c59da28239e34ca.fits), until 2026-10-14T23:08:11Z at the latest
+2026-10-14T23:08:01.486584Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"SingleFrameComplete","Timestamp":1792019281.486,"Host":"<rig-host>","Inst":1,"Success":true,"Path":"<home>/c7b-validate/images/phd2-guider-b52f06bc6d4b43e49c59da28239e34ca.fits"}
+2026-10-14T23:08:01.486708Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"LoopingExposuresStopped","Timestamp":1792019281.486,"Host":"<rig-host>","Inst":1}
+2026-10-14T23:08:01.486770Z DEBUG phd2_guider::service::guider: capture slot released path=<home>/c7b-validate/images/phd2-guider-b52f06bc6d4b43e49c59da28239e34ca.fits
+2026-10-14T23:08:01.489265Z DEBUG phd2_guider::service::capture: deleted the facade's frame file path=<home>/c7b-validate/images/phd2-guider-b52f06bc6d4b43e49c59da28239e34ca.fits
+2026-10-14T23:08:01.490591Z DEBUG phd2_guider::service::camera: facade image ready shape=[752, 580, 1]
+2026-10-14T23:10:44.443189Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=123456 client_transaction_id=67890 server_transaction_id=81}: phd2_guider::client: Getting camera frame size
+2026-10-14T23:10:44.443232Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=123456 client_transaction_id=67890 server_transaction_id=81}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_camera_frame_size","id":16}
+2026-10-14T23:10:44.443585Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":[752,580],"id":16}
+2026-10-14T23:10:44.443606Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=123456 client_transaction_id=67890 server_transaction_id=81}: phd2_guider::client: Getting current equipment configuration
+2026-10-14T23:10:44.443613Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=123456 client_transaction_id=67890 server_transaction_id=81}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_current_equipment","id":17}
+2026-10-14T23:10:44.444064Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":{"camera":{"name":"Simulator","connected":true},"mount":{"name":"On Camera","connected":true}},"id":17}
+2026-10-14T23:10:44.444084Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=123456 client_transaction_id=67890 server_transaction_id=81}: phd2_guider::service::camera: facade camera connected width=752 height=580 sensor=Simulator
+2026-10-14T23:10:44.460637Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=123456 client_transaction_id=67890 server_transaction_id=83}: phd2_guider::client: Getting camera frame size
+2026-10-14T23:10:44.460653Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=123456 client_transaction_id=67890 server_transaction_id=83}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_camera_frame_size","id":18}
+2026-10-14T23:10:44.460894Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":[752,580],"id":18}
+2026-10-14T23:10:44.460910Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=123456 client_transaction_id=67890 server_transaction_id=83}: phd2_guider::client: Getting current equipment configuration
+2026-10-14T23:10:44.460917Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=123456 client_transaction_id=67890 server_transaction_id=83}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_current_equipment","id":19}
+2026-10-14T23:10:44.461292Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":{"camera":{"name":"Simulator","connected":true},"mount":{"name":"On Camera","connected":true}},"id":19}
+2026-10-14T23:10:44.461314Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=123456 client_transaction_id=67890 server_transaction_id=83}: phd2_guider::service::camera: facade camera connected width=752 height=580 sensor=Simulator
+2026-10-14T23:10:44.482897Z  WARN handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=123456 client_transaction_id=67890 server_transaction_id=88}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.502347Z  WARN handle_alpaca_request{path="/api/v1/camera/0/description" client_id=123456 client_transaction_id=67890 server_transaction_id=95}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.520512Z  WARN handle_alpaca_request{path="/api/v1/camera/0/driverinfo" client_id=123456 client_transaction_id=67890 server_transaction_id=99}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.535475Z  WARN handle_alpaca_request{path="/api/v1/camera/0/driverversion" client_id=123456 client_transaction_id=67890 server_transaction_id=103}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.554922Z  WARN handle_alpaca_request{path="/api/v1/camera/0/interfaceversion" client_id=123456 client_transaction_id=67890 server_transaction_id=107}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.569641Z  WARN handle_alpaca_request{path="/api/v1/camera/0/name" client_id=123456 client_transaction_id=67890 server_transaction_id=111}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.584306Z  WARN handle_alpaca_request{path="/api/v1/camera/0/supportedactions" client_id=123456 client_transaction_id=67890 server_transaction_id=115}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.611927Z  WARN handle_alpaca_request{path="/api/v1/camera/0/devicestate" client_id=123456 client_transaction_id=67890 server_transaction_id=120}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.690689Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connect" client_id=123456 client_transaction_id=67890 server_transaction_id=131}: phd2_guider::client: Getting camera frame size
+2026-10-14T23:10:44.690717Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connect" client_id=123456 client_transaction_id=67890 server_transaction_id=131}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_camera_frame_size","id":20}
+2026-10-14T23:10:44.691039Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":[752,580],"id":20}
+2026-10-14T23:10:44.691065Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connect" client_id=123456 client_transaction_id=67890 server_transaction_id=131}: phd2_guider::client: Getting current equipment configuration
+2026-10-14T23:10:44.691074Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connect" client_id=123456 client_transaction_id=67890 server_transaction_id=131}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_current_equipment","id":21}
+2026-10-14T23:10:44.691496Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":{"camera":{"name":"Simulator","connected":true},"mount":{"name":"On Camera","connected":true}},"id":21}
+2026-10-14T23:10:44.691518Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connect" client_id=123456 client_transaction_id=67890 server_transaction_id=131}: phd2_guider::service::camera: facade camera connected width=752 height=580 sensor=Simulator
+2026-10-14T23:10:44.727739Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:44.729397Z  WARN handle_alpaca_request{path="/api/v1/camera/0/bayeroffsetx" client_id=123456 client_transaction_id=67890 server_transaction_id=141}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.729412Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:44.730725Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:44.731989Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:44.743210Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:44.744501Z  WARN handle_alpaca_request{path="/api/v1/camera/0/bayeroffsety" client_id=123456 client_transaction_id=67890 server_transaction_id=145}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.744512Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:44.748949Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:44.750355Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:44.763273Z  WARN handle_alpaca_request{path="/api/v1/camera/0/binx" client_id=123456 client_transaction_id=67890 server_transaction_id=149}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.780418Z  WARN handle_alpaca_request{path="/api/v1/camera/0/binx" client_id=123456 client_transaction_id=67890 server_transaction_id=154}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.784463Z  WARN handle_alpaca_request{path="/api/v1/camera/0/binx" client_transaction_id=67890 server_transaction_id=157}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:44.785778Z  WARN handle_alpaca_request{path="/api/v1/camera/0/binx" client_id=123456 server_transaction_id=158}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:44.798576Z  WARN handle_alpaca_request{path="/api/v1/camera/0/biny" client_id=123456 client_transaction_id=67890 server_transaction_id=160}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.818704Z  WARN handle_alpaca_request{path="/api/v1/camera/0/biny" client_id=123456 client_transaction_id=67890 server_transaction_id=165}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.822699Z  WARN handle_alpaca_request{path="/api/v1/camera/0/biny" client_transaction_id=67890 server_transaction_id=168}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:44.823978Z  WARN handle_alpaca_request{path="/api/v1/camera/0/biny" client_id=123456 server_transaction_id=169}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:44.836704Z  WARN handle_alpaca_request{path="/api/v1/camera/0/camerastate" client_id=123456 client_transaction_id=67890 server_transaction_id=171}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.856525Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cameraxsize" client_id=123456 client_transaction_id=67890 server_transaction_id=175}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.871490Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cameraysize" client_id=123456 client_transaction_id=67890 server_transaction_id=179}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.886406Z  WARN handle_alpaca_request{path="/api/v1/camera/0/canabortexposure" client_id=123456 client_transaction_id=67890 server_transaction_id=183}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.902478Z  WARN handle_alpaca_request{path="/api/v1/camera/0/canasymmetricbin" client_id=123456 client_transaction_id=67890 server_transaction_id=187}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.921702Z  WARN handle_alpaca_request{path="/api/v1/camera/0/canfastreadout" client_id=123456 client_transaction_id=67890 server_transaction_id=191}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.936785Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cangetcoolerpower" client_id=123456 client_transaction_id=67890 server_transaction_id=195}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.955495Z  WARN handle_alpaca_request{path="/api/v1/camera/0/canpulseguide" client_id=123456 client_transaction_id=67890 server_transaction_id=199}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.970568Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cansetccdtemperature" client_id=123456 client_transaction_id=67890 server_transaction_id=203}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:44.985295Z  WARN handle_alpaca_request{path="/api/v1/camera/0/canstopexposure" client_id=123456 client_transaction_id=67890 server_transaction_id=207}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.002092Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.003378Z  WARN handle_alpaca_request{path="/api/v1/camera/0/ccdtemperature" client_id=123456 client_transaction_id=67890 server_transaction_id=211}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.003388Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.004678Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.006000Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.019489Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.021487Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cooleron" client_id=123456 client_transaction_id=67890 server_transaction_id=215}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.021499Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.022790Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.024076Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.035249Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.042181Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.043543Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cooleron" client_id=123456 client_transaction_id=67890 server_transaction_id=220}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.043557Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.047310Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cooleron" client_transaction_id=67890 server_transaction_id=223}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:45.047327Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.048630Z  WARN handle_alpaca_request{path="/api/v1/camera/0/cooleron" client_id=123456 server_transaction_id=224}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:45.048648Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.063156Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.064424Z  WARN handle_alpaca_request{path="/api/v1/camera/0/coolerpower" client_id=123456 client_transaction_id=67890 server_transaction_id=226}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.064438Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.065704Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.066972Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.077939Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.079165Z  WARN handle_alpaca_request{path="/api/v1/camera/0/electronsperadu" client_id=123456 client_transaction_id=67890 server_transaction_id=230}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.079177Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.080408Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.081635Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.093838Z  WARN handle_alpaca_request{path="/api/v1/camera/0/exposuremax" client_id=123456 client_transaction_id=67890 server_transaction_id=234}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.109060Z  WARN handle_alpaca_request{path="/api/v1/camera/0/exposuremin" client_id=123456 client_transaction_id=67890 server_transaction_id=238}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.127411Z  WARN handle_alpaca_request{path="/api/v1/camera/0/exposureresolution" client_id=123456 client_transaction_id=67890 server_transaction_id=242}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.144368Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.145686Z  WARN handle_alpaca_request{path="/api/v1/camera/0/fastreadout" client_id=123456 client_transaction_id=67890 server_transaction_id=246}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.145707Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.147067Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.148470Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.163625Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.165189Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.166550Z  WARN handle_alpaca_request{path="/api/v1/camera/0/fastreadout" client_id=123456 client_transaction_id=67890 server_transaction_id=251}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.166566Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.170433Z  WARN handle_alpaca_request{path="/api/v1/camera/0/fastreadout" client_transaction_id=67890 server_transaction_id=254}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:45.170451Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.171715Z  WARN handle_alpaca_request{path="/api/v1/camera/0/fastreadout" client_id=123456 server_transaction_id=255}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:45.171727Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.186051Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.187337Z  WARN handle_alpaca_request{path="/api/v1/camera/0/fullwellcapacity" client_id=123456 client_transaction_id=67890 server_transaction_id=257}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.187347Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.188588Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.189823Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.200846Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.202091Z  WARN handle_alpaca_request{path="/api/v1/camera/0/gain" client_id=123456 client_transaction_id=67890 server_transaction_id=261}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.202103Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.203342Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.204560Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.216230Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.217715Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.218998Z  WARN handle_alpaca_request{path="/api/v1/camera/0/gain" client_id=123456 client_transaction_id=67890 server_transaction_id=266}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.219008Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.226921Z  WARN handle_alpaca_request{path="/api/v1/camera/0/gain" client_transaction_id=67890 server_transaction_id=269}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:45.226943Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.228344Z  WARN handle_alpaca_request{path="/api/v1/camera/0/gain" client_id=123456 server_transaction_id=270}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:45.228355Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.239482Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.240916Z  WARN handle_alpaca_request{path="/api/v1/camera/0/gainmax" client_id=123456 client_transaction_id=67890 server_transaction_id=272}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.240927Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.242191Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.243442Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.254422Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.255661Z  WARN handle_alpaca_request{path="/api/v1/camera/0/gainmin" client_id=123456 client_transaction_id=67890 server_transaction_id=276}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.255672Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.256910Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.260985Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.273325Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.274653Z  WARN handle_alpaca_request{path="/api/v1/camera/0/gains" client_id=123456 client_transaction_id=67890 server_transaction_id=280}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.274664Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.275946Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.277201Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.289588Z  WARN handle_alpaca_request{path="/api/v1/camera/0/hasshutter" client_id=123456 client_transaction_id=67890 server_transaction_id=284}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.303009Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.304251Z  WARN handle_alpaca_request{path="/api/v1/camera/0/heatsinktemperature" client_id=123456 client_transaction_id=67890 server_transaction_id=288}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.304265Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.305567Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.306820Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.319319Z  WARN handle_alpaca_request{path="/api/v1/camera/0/imageready" client_id=123456 client_transaction_id=67890 server_transaction_id=292}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.335862Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.337157Z  WARN handle_alpaca_request{path="/api/v1/camera/0/ispulseguiding" client_id=123456 client_transaction_id=67890 server_transaction_id=296}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.337170Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.338544Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.339813Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.352837Z  WARN handle_alpaca_request{path="/api/v1/camera/0/maxadu" client_id=123456 client_transaction_id=67890 server_transaction_id=300}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.371356Z  WARN handle_alpaca_request{path="/api/v1/camera/0/maxbinx" client_id=123456 client_transaction_id=67890 server_transaction_id=304}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.386640Z  WARN handle_alpaca_request{path="/api/v1/camera/0/maxbiny" client_id=123456 client_transaction_id=67890 server_transaction_id=308}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.402353Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numx" client_id=123456 client_transaction_id=67890 server_transaction_id=312}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.430277Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numx" client_id=123456 client_transaction_id=67890 server_transaction_id=318}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.434386Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numx" client_transaction_id=67890 server_transaction_id=321}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:45.435648Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numx" client_id=123456 server_transaction_id=322}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:45.448481Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numy" client_id=123456 client_transaction_id=67890 server_transaction_id=324}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.469526Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numy" client_id=123456 client_transaction_id=67890 server_transaction_id=330}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.473341Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numy" client_transaction_id=67890 server_transaction_id=333}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:45.474631Z  WARN handle_alpaca_request{path="/api/v1/camera/0/numy" client_id=123456 server_transaction_id=334}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:45.485577Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.486795Z  WARN handle_alpaca_request{path="/api/v1/camera/0/offset" client_id=123456 client_transaction_id=67890 server_transaction_id=336}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.486807Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.488030Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.489292Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.500223Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.501629Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.502910Z  WARN handle_alpaca_request{path="/api/v1/camera/0/offset" client_id=123456 client_transaction_id=67890 server_transaction_id=341}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.502922Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.506619Z  WARN handle_alpaca_request{path="/api/v1/camera/0/offset" client_transaction_id=67890 server_transaction_id=344}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:45.506635Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.507875Z  WARN handle_alpaca_request{path="/api/v1/camera/0/offset" client_id=123456 server_transaction_id=345}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:45.507887Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.518861Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.520095Z  WARN handle_alpaca_request{path="/api/v1/camera/0/offsetmax" client_id=123456 client_transaction_id=67890 server_transaction_id=347}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.520106Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.521414Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.522655Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.537219Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.538515Z  WARN handle_alpaca_request{path="/api/v1/camera/0/offsetmin" client_id=123456 client_transaction_id=67890 server_transaction_id=351}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.538527Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.539839Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.541128Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.552386Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.553695Z  WARN handle_alpaca_request{path="/api/v1/camera/0/offsets" client_id=123456 client_transaction_id=67890 server_transaction_id=355}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.553711Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.554989Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.556261Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.572032Z  WARN handle_alpaca_request{path="/api/v1/camera/0/percentcompleted" client_id=123456 client_transaction_id=67890 server_transaction_id=359}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.587414Z  WARN handle_alpaca_request{path="/api/v1/camera/0/pixelsizex" client_id=123456 client_transaction_id=67890 server_transaction_id=363}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.602588Z  WARN handle_alpaca_request{path="/api/v1/camera/0/pixelsizey" client_id=123456 client_transaction_id=67890 server_transaction_id=367}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.617041Z  WARN handle_alpaca_request{path="/api/v1/camera/0/readoutmode" client_id=123456 client_transaction_id=67890 server_transaction_id=371}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.638414Z  WARN handle_alpaca_request{path="/api/v1/camera/0/readoutmode" client_id=123456 client_transaction_id=67890 server_transaction_id=376}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.642241Z  WARN handle_alpaca_request{path="/api/v1/camera/0/readoutmode" client_transaction_id=67890 server_transaction_id=379}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:45.643529Z  WARN handle_alpaca_request{path="/api/v1/camera/0/readoutmode" client_id=123456 server_transaction_id=380}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:45.657025Z  WARN handle_alpaca_request{path="/api/v1/camera/0/readoutmodes" client_id=123456 client_transaction_id=67890 server_transaction_id=382}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.674539Z  WARN handle_alpaca_request{path="/api/v1/camera/0/sensorname" client_id=123456 client_transaction_id=67890 server_transaction_id=386}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.689587Z  WARN handle_alpaca_request{path="/api/v1/camera/0/sensortype" client_id=123456 client_transaction_id=67890 server_transaction_id=390}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.703184Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.704435Z  WARN handle_alpaca_request{path="/api/v1/camera/0/setccdtemperature" client_id=123456 client_transaction_id=67890 server_transaction_id=394}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.704445Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.705746Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.707004Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.725419Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.726902Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.728212Z  WARN handle_alpaca_request{path="/api/v1/camera/0/setccdtemperature" client_id=123456 client_transaction_id=67890 server_transaction_id=399}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.728222Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.732060Z  WARN handle_alpaca_request{path="/api/v1/camera/0/setccdtemperature" client_transaction_id=67890 server_transaction_id=402}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:45.732079Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.736246Z  WARN handle_alpaca_request{path="/api/v1/camera/0/setccdtemperature" client_id=123456 server_transaction_id=403}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:45.736260Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.751032Z  WARN handle_alpaca_request{path="/api/v1/camera/0/startx" client_id=123456 client_transaction_id=67890 server_transaction_id=405}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.768120Z  WARN handle_alpaca_request{path="/api/v1/camera/0/startx" client_id=123456 client_transaction_id=67890 server_transaction_id=410}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.775799Z  WARN handle_alpaca_request{path="/api/v1/camera/0/startx" client_transaction_id=67890 server_transaction_id=413}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:45.777083Z  WARN handle_alpaca_request{path="/api/v1/camera/0/startx" client_id=123456 server_transaction_id=414}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:45.789703Z  WARN handle_alpaca_request{path="/api/v1/camera/0/starty" client_id=123456 client_transaction_id=67890 server_transaction_id=416}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.806823Z  WARN handle_alpaca_request{path="/api/v1/camera/0/starty" client_id=123456 client_transaction_id=67890 server_transaction_id=421}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.810549Z  WARN handle_alpaca_request{path="/api/v1/camera/0/starty" client_transaction_id=67890 server_transaction_id=424}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:45.811818Z  WARN handle_alpaca_request{path="/api/v1/camera/0/starty" client_id=123456 server_transaction_id=425}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:45.822841Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.824066Z  WARN handle_alpaca_request{path="/api/v1/camera/0/subexposureduration" client_id=123456 client_transaction_id=67890 server_transaction_id=427}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.824076Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.825311Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.826556Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.843966Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.845359Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.846648Z  WARN handle_alpaca_request{path="/api/v1/camera/0/subexposureduration" client_id=123456 client_transaction_id=67890 server_transaction_id=432}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.846659Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.850437Z  WARN handle_alpaca_request{path="/api/v1/camera/0/subexposureduration" client_transaction_id=67890 server_transaction_id=435}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:45.850453Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.851788Z  WARN handle_alpaca_request{path="/api/v1/camera/0/subexposureduration" client_id=123456 server_transaction_id=436}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:45.851798Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.865077Z  WARN handle_alpaca_request{path="/api/v1/camera/0/abortexposure" client_id=123456 client_transaction_id=67890 server_transaction_id=438}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.866422Z  WARN handle_alpaca_request{path="/api/v1/camera/0/abortexposure" client_transaction_id=67890 server_transaction_id=439}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:45.867759Z  WARN handle_alpaca_request{path="/api/v1/camera/0/abortexposure" client_id=123456 server_transaction_id=440}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:45.882658Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.884005Z  WARN handle_alpaca_request{path="/api/v1/camera/0/pulseguide" client_id=123456 client_transaction_id=67890 server_transaction_id=442}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.884015Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.890309Z  WARN handle_alpaca_request{path="/api/v1/camera/0/pulseguide" client_transaction_id=67890 server_transaction_id=447}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:45.890326Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.891656Z  WARN handle_alpaca_request{path="/api/v1/camera/0/pulseguide" client_id=123456 server_transaction_id=448}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:45.891687Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.903967Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: dark frames are not supported: PHD2 has no dark-frame capture and the guide camera has no shutter
+2026-10-14T23:10:45.923730Z  WARN handle_alpaca_request{path="/api/v1/camera/0/startexposure" client_id=123456 client_transaction_id=67890 server_transaction_id=451}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.923748Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: dark frames are not supported: PHD2 has no dark-frame capture and the guide camera has no shutter
+2026-10-14T23:10:45.934471Z  WARN handle_alpaca_request{path="/api/v1/camera/0/startexposure" client_transaction_id=67890 server_transaction_id=459}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:45.934489Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: dark frames are not supported: PHD2 has no dark-frame capture and the guide camera has no shutter
+2026-10-14T23:10:45.937337Z  WARN handle_alpaca_request{path="/api/v1/camera/0/startexposure" client_id=123456 server_transaction_id=461}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:45.937353Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: dark frames are not supported: PHD2 has no dark-frame capture and the guide camera has no shutter
+2026-10-14T23:10:45.955262Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.959550Z  WARN handle_alpaca_request{path="/api/v1/camera/0/stopexposure" client_id=123456 client_transaction_id=67890 server_transaction_id=467}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:45.959567Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.963928Z  WARN handle_alpaca_request{path="/api/v1/camera/0/stopexposure" client_transaction_id=67890 server_transaction_id=470}: ascom_alpaca::server::params: Unused parameters: ["clientid"]
+2026-10-14T23:10:45.963943Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:45.967902Z  WARN handle_alpaca_request{path="/api/v1/camera/0/stopexposure" client_id=123456 server_transaction_id=473}: ascom_alpaca::server::params: Unused parameters: ["clienttransactionid"]
+2026-10-14T23:10:45.967916Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:46.019690Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: no exposure has started yet
+2026-10-14T23:10:46.020936Z  WARN handle_alpaca_request{path="/api/v1/camera/0/lastexposureduration" client_id=123456 client_transaction_id=67890 server_transaction_id=487}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:46.020948Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: no exposure has started yet
+2026-10-14T23:10:46.022202Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: no exposure has started yet
+2026-10-14T23:10:46.023474Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: no exposure has started yet
+2026-10-14T23:10:46.034359Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: no exposure has started yet
+2026-10-14T23:10:46.035625Z  WARN handle_alpaca_request{path="/api/v1/camera/0/lastexposurestarttime" client_id=123456 client_transaction_id=67890 server_transaction_id=491}: ascom_alpaca::server::params: Unused parameters: ["ExtraParameter"]
+2026-10-14T23:10:46.035636Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: no exposure has started yet
+2026-10-14T23:10:46.036875Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: no exposure has started yet
+2026-10-14T23:10:46.038136Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: no exposure has started yet
+2026-10-14T23:10:47.301930Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=1 client_transaction_id=4 server_transaction_id=505}: phd2_guider::client: Getting camera frame size
+2026-10-14T23:10:47.301963Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=1 client_transaction_id=4 server_transaction_id=505}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_camera_frame_size","id":22}
+2026-10-14T23:10:47.302280Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":[752,580],"id":22}
+2026-10-14T23:10:47.302300Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=1 client_transaction_id=4 server_transaction_id=505}: phd2_guider::client: Getting current equipment configuration
+2026-10-14T23:10:47.302307Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=1 client_transaction_id=4 server_transaction_id=505}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_current_equipment","id":23}
+2026-10-14T23:10:47.302746Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":{"camera":{"name":"Simulator","connected":true},"mount":{"name":"On Camera","connected":true}},"id":23}
+2026-10-14T23:10:47.302774Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connected" client_id=1 client_transaction_id=4 server_transaction_id=505}: phd2_guider::service::camera: facade camera connected width=752 height=580 sensor=Simulator
+2026-10-14T23:10:47.821087Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connect" client_id=1 client_transaction_id=8 server_transaction_id=509}: phd2_guider::client: Getting camera frame size
+2026-10-14T23:10:47.821127Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connect" client_id=1 client_transaction_id=8 server_transaction_id=509}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_camera_frame_size","id":24}
+2026-10-14T23:10:47.821427Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":[752,580],"id":24}
+2026-10-14T23:10:47.821454Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connect" client_id=1 client_transaction_id=8 server_transaction_id=509}: phd2_guider::client: Getting current equipment configuration
+2026-10-14T23:10:47.821463Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connect" client_id=1 client_transaction_id=8 server_transaction_id=509}: phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_current_equipment","id":25}
+2026-10-14T23:10:47.821840Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":{"camera":{"name":"Simulator","connected":true},"mount":{"name":"On Camera","connected":true}},"id":25}
+2026-10-14T23:10:47.821863Z DEBUG handle_alpaca_request{path="/api/v1/camera/0/connect" client_id=1 client_transaction_id=8 server_transaction_id=509}: phd2_guider::service::camera: facade camera connected width=752 height=580 sensor=Simulator
+2026-10-14T23:10:47.877580Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: no exposure has started yet
+2026-10-14T23:10:47.891939Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_OPERATION: no exposure has started yet
+2026-10-14T23:10:47.903848Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: bin 0 is not supported: PHD2's frames are served at bin 1
+2026-10-14T23:10:47.905416Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: bin 2 is not supported: PHD2's frames are served at bin 1
+2026-10-14T23:10:47.906878Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: bin 0 is not supported: PHD2's frames are served at bin 1
+2026-10-14T23:10:47.908278Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: bin 2 is not supported: PHD2's frames are served at bin 1
+2026-10-14T23:10:47.936477Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:47.940103Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:47.941592Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:47.943107Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:47.944580Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:47.946076Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:47.948879Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:47.964819Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:47.979343Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:47.980893Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:47.999656Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.001684Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.008512Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.010082Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.011744Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.014273Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.015987Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.017649Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.019196Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.031235Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.032785Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.034386Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.035939Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.037561Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.039125Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.040801Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.049480Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.052356Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:48.072649Z DEBUG phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"get_app_state","id":26}
+2026-10-14T23:10:48.072984Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":"Stopped","id":26}
+2026-10-14T23:10:48.073149Z DEBUG phd2_guider::service::guider: capture slot claimed path=<home>/c7b-validate/images/phd2-guider-1d1d8bd2ee994202897fd96c735f426a.fits recovered=false
+2026-10-14T23:10:48.073169Z DEBUG phd2_guider::client: Capturing single frame, exposure=2000ms, saved to <home>/c7b-validate/images/phd2-guider-1d1d8bd2ee994202897fd96c735f426a.fits
+2026-10-14T23:10:48.073182Z DEBUG phd2_guider::client: Sending RPC request: {"jsonrpc":"2.0","method":"capture_single_frame","params":{"exposure":2000,"path":"<home>/c7b-validate/images/phd2-guider-1d1d8bd2ee994202897fd96c735f426a.fits","save":true},"id":27}
+2026-10-14T23:10:48.074598Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"ConfigurationChange","Timestamp":1792019448.074,"Host":"<rig-host>","Inst":1}
+2026-10-14T23:10:48.117152Z DEBUG phd2_guider::connection: Received from PHD2: {"jsonrpc":"2.0","result":0,"id":27}
+2026-10-14T23:10:48.117199Z DEBUG phd2_guider::service::capture: PHD2 accepted the facade's frame path=<home>/c7b-validate/images/phd2-guider-1d1d8bd2ee994202897fd96c735f426a.fits exposure_ms=2000
+2026-10-14T23:10:50.146439Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"SingleFrameComplete","Timestamp":1792019450.146,"Host":"<rig-host>","Inst":1,"Success":true,"Path":"<home>/c7b-validate/images/phd2-guider-1d1d8bd2ee994202897fd96c735f426a.fits"}
+2026-10-14T23:10:50.146562Z DEBUG phd2_guider::connection: Received from PHD2: {"Event":"LoopingExposuresStopped","Timestamp":1792019450.146,"Host":"<rig-host>","Inst":1}
+2026-10-14T23:10:50.146639Z DEBUG phd2_guider::service::guider: capture slot released path=<home>/c7b-validate/images/phd2-guider-1d1d8bd2ee994202897fd96c735f426a.fits
+2026-10-14T23:10:50.149181Z DEBUG phd2_guider::service::capture: deleted the facade's frame file path=<home>/c7b-validate/images/phd2-guider-1d1d8bd2ee994202897fd96c735f426a.fits
+2026-10-14T23:10:50.150932Z DEBUG phd2_guider::service::camera: facade image ready shape=[752, 580, 1]
+2026-10-14T23:10:50.360417Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:10:50.374788Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: Parameter "Duration": cannot convert float seconds to Duration: value is negative
+2026-10-14T23:10:50.388917Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: StartX + NumX exceeds CameraXSize / BinX
+2026-10-14T23:10:50.399245Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: StartY + NumY exceeds CameraYSize / BinY
+2026-10-14T23:10:50.409131Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: StartX + NumX exceeds CameraXSize / BinX
+2026-10-14T23:10:50.419172Z ERROR ascom_alpaca::server::response: Alpaca method returned an error error=ASCOM error INVALID_VALUE: StartY + NumY exceeds CameraYSize / BinY
+2026-10-14T23:10:50.422214Z  WARN ascom_alpaca::server::response: Alpaca method is not implemented
+2026-10-14T23:11:05.018386Z  INFO rusty_photon_service_lifecycle::runner: phd2-guider: shutdown signal received, terminating

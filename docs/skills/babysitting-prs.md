@@ -20,17 +20,18 @@ latest push:
    leg still running means not done.
 2. **A clean review of the head** — the newest review ran on the current
    head SHA, and it either raised no findings or every finding it raised
-   was **declined** with the reason recorded. A decline changes no code,
-   so there is nothing new to review. A fix voids the review: the fix
-   push needs its own. Any later push needs one more review — docs
-   included, and a merge of `origin/main` too, since what landed on
-   `main` can change what the PR's code does. A review that errored,
-   was cut short, or returned no findings list reviewed nothing: run it
-   again.
-3. **Every finding has a recorded response** — a reply on every review
-   thread (the review's and any human reviewer's), an outcome for each
-   finding the review could not post inline, and an answer to every
-   human comment in the PR conversation. Check it by re-reading the PR's
+   was **declined** with the reason recorded. Once nothing rates **fix**
+   (code-review.md §Rating a finding), that is the usual outcome. A
+   decline changes no code, so there is nothing new to review. A fix
+   voids the review: the fix push needs its own. Any later push needs
+   one more review — docs included, and a merge of `origin/main` too,
+   since what landed on `main` can change what the PR's code does. A
+   review that errored, was cut short, or returned no findings list
+   reviewed nothing: run it again.
+3. **Every finding has a recorded outcome** — each review's round
+   comment (step 8) gives every finding its rating and outcome, every
+   human reviewer's thread has a reply, and every human comment in the
+   PR conversation has an answer. Check it by re-reading the PR's
    reviews, review comments and conversation comments before reporting:
    the watcher cannot see a comment from the account the loop posts as —
    on this repo that is the owner's — nor any conversation comment
@@ -54,63 +55,110 @@ reviewed under the wrong SHA. Then, for each head:
    the previous head's watcher if it is still running. Re-read the PR's
    reviews, review comments and conversation comments, since the watcher
    misses some of them (§Pacing).
-2. **Review the head** — `/code-review high <n> --comment --max-findings all`
+2. **Review the head** — `/code-review high <n> --max-findings all`
    (code-review.md §Running a review); change nothing in the checkout
-   while it runs. Compare the findings it returns with the inline
-   comments it actually posted, then record the round in one PR comment:
-   the head SHA, the level, how many findings it raised and how many
-   reached the PR inline, and every finding that did not. A review that
-   raises nothing leaves no other trace on the PR, and this comment is
-   what the merge-ready report cites:
-
-   ```sh
-   gh pr comment <n> --body "Code review (high) of <sha>: <k> findings, <j> posted inline."
-   ```
-
-3. **Triage every finding** (code-review.md §Triage), and every new
-   comment from a human reviewer:
-   - Legitimate (even partially) → fix it.
-   - Wrong → decline **in the reply**, with evidence: a code pointer,
-     doc link, or reproduction.
-   - Never fix silently, never ignore. If the same wrong claim keeps
-     recurring, consider making the code or docs unambiguous instead of
-     re-litigating — often cheaper than another round.
-   - A human reviewer you are inclined to decline: ask them rather than
+   while it runs. Its findings come back to the session, not to the PR.
+3. **Rate the findings** — hand all of them to one fresh subagent with
+   the prompt in code-review.md §The rating step, and again change
+   nothing in the checkout while it runs. It returns a realism,
+   severity and verdict for each finding. A review that raised nothing
+   skips this.
+4. **Act on each verdict** (code-review.md §Acting on a finding):
+   - **fix** → verify the claim against the code, then fix it.
+   - **optional** → fix it only if the round pushes anyway — for a
+     fix-rated finding, a CI fix or a merge — and the change is small
+     and stays in code the PR already touches; otherwise decline it.
+   - **decline** → check the code it points at for the trigger the
+     rating ruled out, then decline it, with the rating's reason as the
+     record.
+   - Overrule a verdict only with evidence, in either direction, and
+     say so in the round comment (code-review.md §The rating step).
+   - If the same wrong claim keeps recurring, consider making the code
+     or docs unambiguous instead of re-litigating — often cheaper than
+     another round.
+   - A new comment from a human reviewer is not rated: answer it on its
+     merits. One you are inclined to decline: ask them rather than
      unilaterally closing the discussion.
-4. **CI failure** → reproduce and diagnose; its fix joins the round's
+5. **CI failure** → reproduce and diagnose; its fix joins the round's
    fixes.
-5. **Merge conflict** → merge `origin/main` into the branch (don't rebase
+6. **Merge conflict** → merge `origin/main` into the branch (don't rebase
    a branch that has review history) and resolve. Conflict resolution
    can also import upstream scope changes — re-read what landed on
    `main`, don't just take "ours".
-6. **Gate and push** — the full quality gate (rule 4), one commit for the
+7. **Gate and push** — the full quality gate (rule 4), one commit for the
    round (author per rule 6), one push. Before pushing, confirm the PR is
    still open (`gh pr view <n> --json state`): with
    `delete_branch_on_merge` on, a push to a PR the owner has merged in
    the meantime silently recreates its deleted branch (`remote: Create a
-   pull request … pull/new/…` in the push output is the tell).
-7. **Reply on every thread** — what changed plus the commit SHA, or why
-   declined — and record the outcome of each finding that was not posted
-   inline in one more PR comment, naming each finding (a conversation
-   comment has no reply thread):
+   pull request … pull/new/…` in the push output is the tell). A round
+   with nothing to push — no fix, and no merge of `origin/main` — skips
+   this step.
+8. **Record the round** — one PR comment per review, posted once its
+   outcomes are settled: after the push when the round fixed something,
+   straight away when it declined everything. It is the only record of
+   the review on the PR, and what the merge-ready report cites. Every
+   finding gets a row, the review's full text goes underneath, and a
+   count that is zero is left out of the first line:
+
+   ```markdown
+   **Code review (high) of `<sha>`**, review <r> of 4: <k> findings —
+   <f> fixed in `<fix-sha>`, <d> declined, <h> held for the owner.
+
+   | # | Where | Finding | Rating | Outcome |
+   |--:|-------|---------|--------|---------|
+   | 1 | `services/rp/src/x.rs:120` | A wheel still homing reads as arrived | plausible · high · fix | Fixed: waits for the wheel to rest |
+   | 2 | `crates/bdd-infra/src/lib.rs:88` | Two blocking-pool hops where one would do | none · low · decline | Declined: no behaviour change |
+   | 3 | `docs/services/rp.md:410` | Lease renewal races the TTL boundary | remote · medium · decline | Declined, as in review 2 |
+
+   <details><summary>The review's findings in full</summary>
+
+   **1.** <the finding's full text>
+
+   **2.** …
+
+   </details>
+   ```
+
+   Post it from a file, which keeps the backticks and pipes away from
+   the shell, and escape a `|` inside a table cell as `\|`. Escape `<`
+   as `&lt;` anywhere in the comment outside backticks, table cells
+   included, or GitHub drops what reads as a tag: a bare
+   `Option<Duration>` renders as `Option`.
+   A comment
+   holds 65,536 characters; if the full text runs over, put it in a
+   second comment.
+
+   ```sh
+   gh pr comment <n> --body-file <round-comment.md>
+   ```
+
+   Reply in each human reviewer's thread too — what changed plus the
+   commit SHA, or why not:
 
    ```sh
    gh api 'repos/{owner}/{repo}/pulls/<n>/comments/<comment-id>/replies' \
        -X POST -f body="Fixed in <sha> — <what changed>."
    ```
 
-8. **Go to step 1 for the new head.** A round that declined every
-   finding pushed nothing, and its review is the clean review of the
-   head.
+9. **Go to step 1 for the new head.** A round that declined every
+   finding and had nothing else to push leaves the head where it was,
+   and its review is the clean review of the head.
 
 Each review sees the PR as it stands, not the earlier rounds, so a
-finding you declined can come back: reply with a link to the earlier
-decline, and it counts as declined. Expect the review after a fix to
-find fallout from that fix — that is convergence, not churn.
+finding you declined can come back. The rating step reads the earlier
+round comments and rates it as a repeat, and its outcome links the
+earlier round. Expect the review after a fix to find fallout from that
+fix; it is rated like any other finding. Fixing only what rates **fix**
+keeps that fallout small: on the record, fixing noise was what kept the
+rounds coming (code-review.md §What the record shows).
 
 Four reviews is the budget, not counting the re-run of a review that
-errored. If the fourth raises findings you would fix, stop and report to
-the owner, and don't start a fifth for any reason without their say.
+errored. Nothing the fourth review raises is fixed without the owner's
+say, since any fix would need a fifth review: decline what rates
+**optional** or **decline**, and if anything rates **fix**, stop and
+report to the owner, and don't start a fifth for any reason without
+their say. Post that review's round comment all the same, with "held
+for the owner" as the outcome of each finding rated **fix**.
 Findings that survive four rounds usually mean a design question that
 fixes cannot settle.
 
@@ -126,7 +174,8 @@ guessed interval, and never assume a leg's duration from memory: when a
 duration matters, measure it (`gh run list --workflow=<wf>.yml` shows
 real run times).
 
-The review needs no watcher: it runs in the loop's foreground. The CI
+The review and the rating step need no watcher: the loop waits for each
+to finish before it acts. The CI
 watcher exits on whichever comes first:
 the PR is **no longer open**, it is **conflicting**, any **check
 failed**, **no checks pending**, or a **new review from someone else**
@@ -159,11 +208,11 @@ for _ in $(seq 1 90); do   # ~90 min at the 60 s poll at the foot of the loop
   # A CONFLICTING PR gets no pull_request runs at all — see "When no
   # checks appear at all".
   mergeable=$(gh pr view "$1" --json mergeable --jq .mergeable)
-  [ "${mergeable:-UNKNOWN}" = "CONFLICTING" ] && { echo "PR is CONFLICTING: no CI will run — merge origin/main (step 5)"; exit 0; }
+  [ "${mergeable:-UNKNOWN}" = "CONFLICTING" ] && { echo "PR is CONFLICTING: no CI will run — merge origin/main (step 6)"; exit 0; }
   # Every `--paginate` read slurps (`jq -s`): gh emits one array per page,
   # and `.[][]` reaches the reviews only once those arrays are gathered into
-  # one. Your own reviews — the inline findings `--comment` posts, and the
-  # review object GitHub creates for each thread reply — are excluded by login.
+  # one. Your own reviews — the review object GitHub creates for each reply
+  # you post in a reviewer's thread — are excluded by login.
   others=$(gh api --paginate "repos/{owner}/{repo}/pulls/$1/reviews" \
     | jq -s --arg me "$me" '[.[][] | select(.user.login != $me)] | length')
   failed=$(gh pr checks "$1" --json bucket --jq '[.[] | select(.bucket == "fail")] | length')
@@ -215,9 +264,9 @@ Three things a watcher must get right:
 - **Check the PR is still open first.** A merged or closed PR never
   settles, and the loop spins to its timeout looking healthy.
 - **Exclude your own reviews from the review count.** `pulls/<n>/reviews`
-  carries a review object for every finding the review posts *and* for
-  each reply you post to a review comment; counting them fires phantom
-  "new review" events right after you finish replying.
+  carries a review object for each reply you post to a review comment;
+  counting them fires phantom "new review" events right after you finish
+  replying to a human reviewer.
 - **Green CI and a clean review are separate criteria.** Report
   readiness only when both hold on the same head; one becoming true says
   nothing about the other.
@@ -229,7 +278,7 @@ means no run was created. Check the cheap cause first: **a PR that is
 `CONFLICTING` gets no `pull_request` runs at all**, because GitHub cannot
 build the merge commit those runs check out — so the PR can look
 reviewed but is untested. `gh pr view <n> --json mergeable` answers it;
-merging `origin/main` into the branch (step 5 of the loop) makes the
+merging `origin/main` into the branch (step 6 of the loop) makes the
 next push run normally. On PR #1335 two pushes in a row went un-run this
 way after `main` moved under the branch, with other PRs' runs landing
 throughout. Only then look for an Actions-side cause: whether runs are
