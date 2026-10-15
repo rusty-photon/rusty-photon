@@ -7,6 +7,7 @@
       - Scaffolding a new long-running service binary, or touching a service's main.rs / shutdown handling: also read docs/skills/service-lifecycle.md
       - Writing or modifying tests: read docs/skills/testing.md
       - Pushing code or running CI checks: read docs/skills/pre-push.md
+      - Writing or changing CI logic (a workflow step with more than a few commands or any control flow, a local action under .github/actions, a CI tool): read docs/skills/ci-logic.md
       - Checking code coverage, or diagnosing a red coverage check: read docs/skills/coverage.md
       - Shepherding an open pull request through CI and code review to merge readiness: read docs/skills/babysitting-prs.md
       - Reviewing a pull request, or triaging review findings: read docs/skills/code-review.md
