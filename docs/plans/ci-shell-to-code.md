@@ -102,7 +102,7 @@ first in their columns.
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Not started |
 | J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Not started |
 | J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
-| J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Done (#J14PR) |
+| J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Done (#1519) |
 | R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Not started |
 | R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` | F2, R1 | Not started |
 | R3  | Bazel/Cargo target parity | — | — | Moved in review: now J11 |
@@ -498,7 +498,7 @@ push script's header for the upload order, and changes with it.
 
 ### J14 — Crates from the LAN bazel-remote
 
-Done in #J14PR, as `.github/actions/lan-crates`. The pool `stable / clippy`
+Done in #1519, as `.github/actions/lan-crates`. The pool `stable / clippy`
 reads every crates.io package `Cargo.lock` pins from the LAN bazel-remote's
 HTTP CAS, which keeps a blob under its SHA-256: for a crate, the `checksum`
 `Cargo.lock` records. The owner chose this over a new caching service on
