@@ -1,8 +1,8 @@
 # TEMPORARY: the live proof of the tracking-issue action (plan item J7).
 # Deleted before the PR merges. A workflow only on a branch cannot be
-# dispatched, so it runs on a push to the PR's branch: the action opens a
-# throwaway issue, then comments on it, and the last step closes it and
-# deletes its label.
+# dispatched, so it runs on a push to the PR's branch: it creates a
+# throwaway label, the action opens an issue with it and then comments on
+# that issue, and the last step closes the issue and deletes the label.
 name: tracking-issue proof (temporary)
 on:
   push:
@@ -26,6 +26,11 @@ jobs:
           sparse-checkout: |
             .github/actions/tracking-issue
             .github/actions/lib
+      # GitHub drops a label that does not exist from a new issue.
+      - name: Create the throwaway label
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh label create -R "$GITHUB_REPOSITORY" "$LABEL" --description "J7 proof run; deleted by the same run"
       - name: First failure opens the issue
         id: first
         uses: ./.github/actions/tracking-issue
@@ -62,8 +67,13 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          FIRST: ${{ steps.first.outputs.number }}
+          SECOND: ${{ steps.second.outputs.number }}
         run: |
-          for n in $(gh issue list -R "$GITHUB_REPOSITORY" --label "$LABEL" --state open --json number --jq '.[].number'); do
+          labelled=$(gh issue list -R "$GITHUB_REPOSITORY" --label "$LABEL" --state open --json number --jq '.[].number')
+          # Unquoted on purpose: an empty number drops out, a list splits.
+          # shellcheck disable=SC2086
+          for n in $(printf '%s\n' $FIRST $SECOND $labelled | sort -u); do
             gh issue close -R "$GITHUB_REPOSITORY" "$n" --reason "not planned" --comment "Closed by the tracking-issue proof run."
           done
           gh label delete -R "$GITHUB_REPOSITORY" "$LABEL" --yes

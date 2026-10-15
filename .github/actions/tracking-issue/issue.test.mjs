@@ -16,8 +16,9 @@ function json(res, status, value, headers = {}) {
 
 // A fake GitHub API for repository o/r. Its issue list answers `open`,
 // `pageSize` at a time, with a Link header to the next page. Opening an
-// issue answers `create(res)`, by default issue 42; a comment answers 201.
-async function fakeGitHub(open, { pageSize = 100, create } = {}) {
+// issue answers `create(res)`, by default issue 42 with those of its labels
+// that are in `labels`, as GitHub drops the others; a comment answers 201.
+async function fakeGitHub(open, { pageSize = 100, create, labels = ['check-nightly', 'ci-flake'] } = {}) {
   const server = await serve((req, res) => {
     const url = new URL(req.url, server.url);
     if (req.method === 'GET' && url.pathname === '/repos/o/r/issues') {
@@ -27,7 +28,12 @@ async function fakeGitHub(open, { pageSize = 100, create } = {}) {
       json(res, 200, open.slice((page - 1) * pageSize, page * pageSize), link);
     } else if (req.method === 'POST' && url.pathname === '/repos/o/r/issues') {
       if (create) create(res);
-      else json(res, 201, { number: 42, html_url: 'https://github.example/o/r/issues/42' });
+      else
+        json(res, 201, {
+          number: 42,
+          html_url: 'https://github.example/o/r/issues/42',
+          labels: JSON.parse(req.body).labels.filter((l) => labels.includes(l)).map((name) => ({ name })),
+        });
     } else if (req.method === 'POST' && /^\/repos\/o\/r\/issues\/\d+\/comments$/.test(url.pathname)) {
       json(res, 201, { id: 1 });
     } else {
@@ -155,6 +161,19 @@ test('a next page on another origin is refused, and the token never goes there',
 });
 
 // --- Failures -----------------------------------------------------------------
+
+test('an issue opened without its label fails the step, as the next failure would not find it', async (t) => {
+  const api = await fakeGitHub([], { labels: ['ci-flake'] });
+  t.after(api.close);
+  await assert.rejects(track(api), (err) => {
+    assert.equal(
+      describe(err),
+      '#42 was opened without the label check-nightly, which does not exist in the repository, so the next failure would open another issue: create the label',
+    );
+    return true;
+  });
+  assert.equal(posts(api).length, 1);
+});
 
 test("a failed open is sent once, and the error carries GitHub's answer", async (t) => {
   const api = await fakeGitHub([], { create: (res) => json(res, 502, { message: 'Server Error' }) });

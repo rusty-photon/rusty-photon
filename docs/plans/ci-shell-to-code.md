@@ -382,8 +382,12 @@ with their `if:`, `needs:` and runners unchanged.
   comments on the one with the exact title, or opens one. Neither POST is
   repeated on failure, since a repeat that GitHub had acted on would open
   a second issue. A next page on another origin than the API's is
-  refused, since the token goes with each request. A failure names what
-  failed and carries GitHub's answer.
+  refused, since the token goes with each request. A new issue that
+  comes back without the label fails the step: GitHub silently drops a
+  label that does not exist, and the next failure, not finding the issue,
+  would open another every time. The old blocks had that gap; the live
+  proof's first run fell into it. A failure names what failed and carries
+  GitHub's answer.
 - **Titles and labels are unchanged,** because others read them.
   `refresh-astap-shas.yml` finds install-astap's tracking issue by its
   title and its `install-astap-nightly` label to link a rotation PR to it.

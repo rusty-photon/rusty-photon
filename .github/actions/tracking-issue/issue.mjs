@@ -100,8 +100,8 @@ export async function openIssues({ api, repo, label, token, ...options }) {
  * Comments on the open issue labelled `label` and titled exactly `title`,
  * or opens one with `body` (issueBody), labelled `label` and FLAKE_LABEL.
  * Neither POST is repeated on failure, since a repeated one that GitHub had
- * acted on would open a second issue. Returns the issue's number and
- * whether it was opened now.
+ * acted on would open a second issue. An issue opened without `label`
+ * throws. Returns the issue's number and whether it was opened now.
  */
 export async function trackFailure({ api, repo, token, title, label, body, runUrl, ...options }) {
   const match = (await openIssues({ api, repo, label, token, ...options })).find((i) => i.title === title);
@@ -121,5 +121,13 @@ export async function trackFailure({ api, repo, token, title, label, body, runUr
   });
   const issue = await response.json();
   io.stdout(`Opened #${issue.number}: ${issue.html_url}\n`);
+  // GitHub opens the issue without a label that does not exist in the
+  // repository, and says nothing. The next failure would not find it, and
+  // would open another, every time.
+  if (!issue.labels?.some((l) => l.name === label)) {
+    throw new Error(
+      `#${issue.number} was opened without the label ${label}, which does not exist in the repository, so the next failure would open another issue: create the label`,
+    );
+  }
   return { number: issue.number, created: true };
 }
