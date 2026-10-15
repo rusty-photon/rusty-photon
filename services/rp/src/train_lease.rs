@@ -598,6 +598,13 @@ impl Acquiring {
 
 impl Drop for Acquiring {
     fn drop(&mut self) {
+        // An acquire that returns without its grant, a body that
+        // panicked or was dropped included, ends its lease, so the
+        // reservation never outlives it.
+        let ungranted = matches!(self.0.state().phase, Phase::Acquiring);
+        if ungranted {
+            self.0.end(LeaseEnd::AcquireFailed);
+        }
         self.0.acquire_returned();
     }
 }
@@ -1390,6 +1397,23 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(5), slot.take("focuser", "eaf"))
             .await
             .expect("the slot stayed held after the last call");
+    }
+
+    #[tokio::test]
+    async fn an_acquire_that_returns_ungranted_ends_its_lease() {
+        let leases = Arc::new(TrainLeases::default());
+        let acquiring = leases.reserve("a", plan("main")).unwrap();
+        let lease = acquiring.lease().clone();
+        let (_, released) = leases.reserving(&["eaf"]).unwrap();
+
+        // What a panicking or dropped acquire body leaves behind.
+        drop(acquiring);
+
+        assert_eq!(lease.end_reason(), Some(LeaseEnd::AcquireFailed));
+        tokio::time::timeout(Duration::from_secs(5), released.cancelled())
+            .await
+            .expect("an ungranted lease kept its reservation");
+        assert!(leases.reserving(&["eaf"]).is_none());
     }
 
     #[tokio::test]

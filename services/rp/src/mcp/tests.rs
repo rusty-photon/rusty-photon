@@ -8606,6 +8606,40 @@ async fn refocus_train_rejects_a_train_binning_before_announcing_the_refocus() {
 }
 
 #[tokio::test]
+async fn refocus_train_refuses_a_leased_step_before_announcing_the_refocus() {
+    // A guiding-coupled refocus, with guiding live, over a focuser and
+    // camera a train lease holds: refused before `refocus_started` and
+    // before the guiding handshake, which has no expectations here, so
+    // any call to the guider fails the test.
+    const STARTING_POSITION: i32 = 11_000;
+    let client: Arc<dyn rp_guider::GuiderClient> = Arc::new(MockGuiderClient::new());
+    let handler = test_handler(auto_focus_registry(STARTING_POSITION))
+        .with_guider(Some(client), GuiderDefaults::default())
+        .with_trains(fixture_trains(true));
+    let plan = crate::train_lease::LeasePlan {
+        train_id: "other".into(),
+        guiding: false,
+        camera_id: "cam".into(),
+        focuser_id: "foc".into(),
+        filter_wheel_ids: vec![],
+        held_focuser_ids: vec![],
+        held_rotator_ids: vec![],
+        drained_camera_ids: vec![],
+    };
+    let acquiring = handler.leases.reserve("held", plan).unwrap();
+    acquiring.lease().grant(Duration::from_mins(5)).unwrap();
+    let mut rx = handler.event_bus.subscribe();
+
+    let result = handler
+        .refocus_train_inner(refocus_params("main"), None, Cancel::never())
+        .await;
+
+    assert_tool_error(result, "lease 'held' reserves its camera or focuser");
+    assert_no_more_events(&mut rx).await;
+    drop(acquiring);
+}
+
+#[tokio::test]
 async fn refocus_train_success_payload_over_the_fixture_registry() {
     const STARTING_POSITION: i32 = 11_000;
     let dir = tempfile::tempdir().expect("tempdir");

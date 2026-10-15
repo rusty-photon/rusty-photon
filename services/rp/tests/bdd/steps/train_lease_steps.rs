@@ -359,17 +359,35 @@ fn facade_holds_lease(world: &mut RpWorld, ttl_s: u64) {
     assert_eq!(acquire.parameters["ttl_s"], json!(ttl_s), "{acquire:?}");
 }
 
+/// How long a step waits for rp's facade release. rp answers
+/// `release_train_lease` at once and sends the facade's release from the
+/// lease's keeper once the lease has given everything back (rp.md § Train
+/// Lease), so the release reaches the stub a moment after the tool's
+/// answer.
+const FACADE_RELEASE_WAIT: Duration = Duration::from_secs(10);
+
 #[then("the stub camera facade should hold no sweep lease")]
-fn facade_holds_no_lease(world: &mut RpWorld) {
+async fn facade_holds_no_lease(world: &mut RpWorld) {
+    let deadline = tokio::time::Instant::now() + FACADE_RELEASE_WAIT;
+    while facade(world).held_token().is_some() && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let held = facade(world).held_token();
     assert!(
         held.is_none(),
-        "the stub camera facade still holds {held:?}"
+        "the stub camera facade still holds {held:?} after {FACADE_RELEASE_WAIT:?}"
     );
 }
 
 #[then("the stub camera facade's last release should name the token it granted")]
-fn facade_release_names_granted_token(world: &mut RpWorld) {
+async fn facade_release_names_granted_token(world: &mut RpWorld) {
+    let release = "rustyphoton:sweep-lease-release";
+    let deadline = tokio::time::Instant::now() + FACADE_RELEASE_WAIT;
+    while !facade(world).calls().iter().any(|c| c.action == release)
+        && tokio::time::Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let calls = facade(world).calls();
     let granted = calls
         .iter()
@@ -377,8 +395,10 @@ fn facade_release_names_granted_token(world: &mut RpWorld) {
         .expect("the stub camera facade saw no acquire");
     let released = calls
         .iter()
-        .rfind(|c| c.action == "rustyphoton:sweep-lease-release")
-        .expect("the stub camera facade saw no release");
+        .rfind(|c| c.action == release)
+        .unwrap_or_else(|| {
+            panic!("the stub camera facade saw no release in {FACADE_RELEASE_WAIT:?}")
+        });
     assert_eq!(
         released.parameters["token"], granted.parameters["token"],
         "the release named another token than the acquire"

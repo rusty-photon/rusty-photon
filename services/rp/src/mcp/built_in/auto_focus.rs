@@ -280,6 +280,9 @@ impl McpHandler {
             Ok(planned) => planned,
             Err(e) => return Ok(*e),
         };
+        if let Err(e) = self.refuse_leased_steps(&planned) {
+            return Ok(tool_error!("refocus_train: {}", e));
+        }
 
         let metric_client = match self.refocus_metric_client(&planned).await {
             Ok(client) => client,
@@ -458,6 +461,33 @@ impl McpHandler {
             }
         }
         Ok(planned)
+    }
+
+    /// A step a train lease reserves is refused when it starts (rp.md
+    /// § Train Lease, "rp's own sweeps"). Checked here as well, before
+    /// `refocus_started` and the guiding pause, so a refocus a lease
+    /// would refuse neither announces itself nor interrupts guiding on
+    /// its way to failing. Each step's own sweep still enters the table
+    /// when it runs.
+    fn refuse_leased_steps(&self, planned: &[PlannedStep]) -> Result<(), String> {
+        for step in planned {
+            let camera_id = match step {
+                PlannedStep::Capture { camera_id, .. } => camera_id.as_str(),
+                PlannedStep::Metric { train_id, .. } => self
+                    .trains
+                    .train(train_id)
+                    .and_then(crate::equipment::trains::Train::camera_id)
+                    .unwrap_or_default(),
+            };
+            if let Some((lease_id, _)) = self.leases.reserving(&[camera_id, step.focuser_id()]) {
+                return Err(format!(
+                    "the step focusing '{}' in train '{}' is refused: lease '{lease_id}' reserves its camera or focuser",
+                    step.focuser_id(),
+                    step.train_id()
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Guiding handshake decision (rp.md §`refocus_train` Contract):

@@ -4143,7 +4143,9 @@ calls: a sweep that held slots across calls would take them in another
 order than a lease and could deadlock with one. An acquire whose
 reservation overlaps a running sweep's is refused at once, naming the
 sweep, and a sweep that overlaps a lease's reservation is refused at
-once, naming the lease, before it moves anything. Neither waits on the
+once, naming the lease, before it moves anything. `refocus_train` checks
+every planned step before it announces the refocus or pauses guiding,
+so a refocus a lease would refuse interrupts nothing. Neither waits on the
 other, so a lease is never granted between two of a sweep's moves with
 the focuser at a sample position. Two of rp's own sweeps never refuse
 each other. A sweep that another client drives move by move has no such
