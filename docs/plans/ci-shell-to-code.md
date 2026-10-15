@@ -102,7 +102,7 @@ first in their columns.
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Not started |
 | J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Not started |
 | J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
-| J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Not started |
+| J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Done (#J14PR) |
 | R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Not started |
 | R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` | F2, R1 | Not started |
 | R3  | Bazel/Cargo target parity | — | — | Moved in review: now J11 |
@@ -498,64 +498,64 @@ push script's header for the upload order, and changes with it.
 
 ### J14 — Crates from the LAN bazel-remote
 
-The pool `stable / clippy` downloads every crate it compiles from
-crates.io, over the operator's WAN. The LAN bazel-remote can serve them:
-its HTTP CAS keeps a blob under its SHA-256, which for a crate is the
-`checksum` that `Cargo.lock` records, and anyone on the runner network
-can read it. The owner chose this over a new caching service on
+Done in #J14PR, as `.github/actions/lan-crates`. The pool `stable / clippy`
+reads every crates.io package `Cargo.lock` pins from the LAN bazel-remote's
+HTTP CAS, which keeps a blob under its SHA-256: for a crate, the `checksum`
+`Cargo.lock` records. The owner chose this over a new caching service on
 2026-10-13; T1 does the same for the toolchain.
 
-- **Today the CAS holds few of them.** Bazel stores a crate there only
-  when it fetches the crate through the Remote Asset API, which only
-  authorized runs do, and only for crates the template's repository cache
-  lacks ([proxmox-runner-pool.md](../skills/proxmox-runner-pool.md)). On
-  2026-10-13 it held 60 of the 583 crates.io packages in `Cargo.lock`, and
-  it was full, evicting the least recently used. So this action fills it
-  as well as reading it.
-- **The action** (`runs.using: node24`) runs before any Cargo step. For
-  every crates.io package in `Cargo.lock` it reads `/cas/<checksum>`,
-  fetches the crate from crates.io on a miss, checks the SHA-256 against
-  `Cargo.lock` either way, and puts the file where Cargo looks for
-  downloaded crates. A cache that is down or slow is a miss, never a
-  failed job.
-- **Integrity:** every crate is checked against `Cargo.lock`, the repo's
-  own pin, whoever served it. Unlike J1's archive, the restore is
-  therefore safe in the push-to-main run too. (On a PR run, the
-  `target/` that J1 restores is unchecked either way; J1 keeps
-  `registry/src` out of its archive so the sources at least come from
-  these checked files.)
-- **Git dependencies are not crates.** The workspace's one git
-  dependency, ascom-alpaca pinned to a commit on the org fork, has no
-  crates.io checksum, so the action leaves it alone and Cargo clones it
-  from GitHub. J1's archive carries `$CARGO_HOME/git` for PR runs; a
-  push-to-main run still clones it.
-- **Filling the CAS:** on push to main only, the action uploads each crate
-  it had to fetch, with the LAN cache's write credential
-  (`BAZEL_LAN_CACHE_WRITE_AUTH`, a full `Authorization` value), passed as
-  an input with bazel.yml's push-only expression. The uploads finish
-  before any Cargo step starts, so no build script runs while the job
-  holds the credential. bazel-remote checks an uploaded CAS blob's
-  SHA-256 against its key (`sha256verifier` in its `cache/disk/disk.go`,
-  for uncompressed storage); confirm it does with the store's settings.
-  Reading the crates on every run keeps them from being evicted.
-- **Where Cargo looks:** `$CARGO_HOME/registry/cache/<index dir>/` holds
-  `<name>-<version>.crate`, under a directory name Cargo derives (today
-  `index.crates.io-1949cf8c6b5b557f`) that has changed between Cargo
-  releases. Either the action finds that name rather than hard-coding it,
-  or it unpacks the crates into a `directory` source that replaces
-  crates.io, which also spares Cargo the index requests. Decide in the
-  item.
-- **Endpoint:** `RP_LAN_CACHE_URL`, which the runner provides and the job
-  already masks; no endpoint (hosted runners, fork PRs) means the action
-  does nothing.
-- **What the PR cannot prove:** the upload runs only on push to main.
-  Tests against a fake CAS cover it before merge; after merge, watch the
-  first push to main fill the CAS and the next PR read every crate from
-  it.
-- **Done when** a pool `stable / clippy` run on a PR whose lockfile main
-  has already built downloads no crate from crates.io, and the job still
-  passes with the cache stopped. The git dependency is outside this
-  check; its clone is J1's to cache.
+- **What it does**, as a step before any Cargo step: for every crates.io
+  package in `Cargo.lock`, it reads `/cas/<checksum>` anonymously, fetches
+  the crate from crates.io on a miss (`<dl>/<name>/<version>/download`,
+  the URL Cargo uses), checks the SHA-256 against `Cargo.lock` either way,
+  and unpacks it. Bytes from the cache that do not match are a miss, with
+  a warning.
+- **Where Cargo looks: a directory source.** Each crate is unpacked into
+  `<name>-<version>/` with a `.cargo-checksum.json` whose `package` is the
+  `Cargo.lock` checksum, which Cargo compares with the lockfile, and an
+  empty `files` map, since the whole crate was checked before it was
+  unpacked. `$CARGO_HOME/config.toml` makes that directory replace
+  crates.io. Chosen over filling `registry/cache/<index dir>/` because
+  Cargo then reads no index (no WAN request at all) and nothing depends on
+  the directory name Cargo derives. The cost is unpacking every locked
+  crate, other platforms' too, as Cargo's resolve needs every package in
+  the lockfile: 583 crates, 64 MiB packed and 440 MiB on disk, in 1.5 s
+  from a local bazel-remote. The tar reader is the action's own, on Node
+  built-ins.
+- **All or nothing.** If any crate cannot be had (crates.io failing, a
+  crate whose bytes do not match `Cargo.lock`, one that does not unpack),
+  the action writes no Cargo configuration and Cargo downloads its crates
+  itself, with a warning naming the crate. A `CARGO_HOME` that already
+  configures a source is left alone, with a warning.
+- **A cache that fails** (any answer but a 404, a refused connection, no
+  answer within 10 s) is asked no more in that run; the rest come from
+  crates.io, with a warning. Never a failed step.
+- **Filling the CAS:** on push to main only, each crate fetched from
+  crates.io is uploaded with `BAZEL_LAN_CACHE_WRITE_AUTH`, passed to the
+  step as an input under bazel.yml's push-only expression. The uploads
+  finish inside the step, before any Cargo step. bazel-remote v2.6.2, the
+  NAS's version, refuses a CAS upload whose SHA-256 is not its key with
+  zstd storage, which is its default and what the NAS's `/status` shows
+  (stored size well under the uncompressed size): a 500, "checksums don't
+  match", and nothing stored, checked against a local v2.6.2 on
+  2026-10-15. Reading the crates on every run keeps them from being
+  evicted.
+- **Git dependencies are not crates.** The workspace's one git dependency,
+  ascom-alpaca pinned to a commit on the org fork, has no crates.io
+  checksum, so Cargo clones it from GitHub. Caching it is J1's.
+- **Endpoint:** `RP_LAN_CACHE_URL`, which the runner provides; without one
+  (hosted runners, fork PRs) the action does nothing. It masks the URL,
+  its host and its hostname, since fetch's errors name the host and port.
+- **On 2026-10-15 the CAS held 60 of the 583 crates.io packages in
+  `Cargo.lock`**, those Bazel had fetched through the Remote Asset API.
+- **What the PR could not prove:** the upload runs only on push to main.
+  Tests against a fake CAS and a fake crates.io cover it. Against a local
+  bazel-remote v2.6.2, the action took 582 crates from crates.io and
+  uploaded them in 2.4 s, then served all 583 from the CAS in 1.5 s; Cargo's
+  `fmt --check` and both clippy passes then ran on that directory with a
+  fresh `CARGO_HOME`, downloading nothing. After merge, watch the first
+  push to main fill the CAS and the next PR's pool `stable / clippy` take
+  every crate from it.
 
 ## Rust items
 

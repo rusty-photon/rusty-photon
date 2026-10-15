@@ -16,6 +16,25 @@ node_test(
     data = ["lib/helpers.mjs"],
 )
 
+# lan-crates: the pool `stable / clippy`'s crates from the LAN bazel-remote.
+# Reads the repository's own Cargo.lock too, so a format Cargo starts to
+# write that the action cannot read fails here rather than on the runner.
+node_test(
+    name = "lan_crates_test",
+    size = "small",
+    srcs = [
+        "lan-crates/crates.test.mjs",
+        "lan-crates/untar.test.mjs",
+    ],
+    data = [
+        "lan-crates/crates.mjs",
+        "lan-crates/fixtures.mjs",
+        "lan-crates/untar.mjs",
+        "lib/helpers.mjs",
+        "//:Cargo.lock",
+    ],
+)
+
 # Every JavaScript file in this package parses, and its imports resolve to a
 # Node built-in or a file here, with the names it imports: entry files
 # included, which no test imports, since they run on load.

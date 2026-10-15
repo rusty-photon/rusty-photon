@@ -9,6 +9,7 @@ import { inspect } from 'node:util';
 
 import {
   addPath,
+  describe,
   exportVariable,
   fail,
   fetchWithRetry,
@@ -237,6 +238,14 @@ test('run explains a cause with no message of its own, as fetch gives for a dual
     }),
   );
   assert.equal(stdout, '::error::fetch failed: connect ECONNREFUSED ::1:59999; connect ECONNREFUSED 127.0.0.1:59999\n');
+});
+
+test('describe joins the causes, and stops at one it has already seen', () => {
+  const inner = new Error('connect ETIMEDOUT');
+  const outer = new TypeError('fetch failed', { cause: inner });
+  inner.cause = outer;
+  assert.equal(describe(outer), 'fetch failed: connect ETIMEDOUT');
+  assert.equal(describe('a string'), 'a string');
 });
 
 test('run leaves a step that returns alone', async () => {
