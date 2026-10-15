@@ -108,9 +108,11 @@ export function fail(message) {
   process.exitCode = 1;
 }
 
-// An error's message followed by its causes', which is where fetch says why
-// a request failed: "fetch failed: connect ECONNREFUSED 127.0.0.1:443".
-function describe(err) {
+/**
+ * An error's message followed by its causes', which is where fetch says why
+ * a request failed: "fetch failed: connect ECONNREFUSED 127.0.0.1:443".
+ */
+export function describe(err) {
   const parts = [];
   const seen = new Set();
   for (let e = err; e !== undefined && e !== null && !seen.has(e); e = e.cause) {

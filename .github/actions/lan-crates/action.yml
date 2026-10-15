@@ -1,0 +1,24 @@
+name: Crates from the LAN cache
+description: >-
+  Fills a Cargo directory source with every crates.io package Cargo.lock pins,
+  read from the LAN bazel-remote's content-addressed store (RP_LAN_CACHE_URL,
+  set by the pool runner) and checked against Cargo.lock, and makes it replace
+  crates.io in $CARGO_HOME/config.toml. A crate the store lacks comes from
+  crates.io and, given write-auth, is uploaded to the store. Does nothing
+  without RP_LAN_CACHE_URL (hosted runners, fork PRs). Run it before any
+  Cargo step. Plan item J14 in docs/plans/ci-shell-to-code.md.
+inputs:
+  write-auth:
+    description: >-
+      The LAN cache's write credential, a whole Authorization header value
+      (BAZEL_LAN_CACHE_WRITE_AUTH). Pass it on push to main only, as bazel.yml
+      does; empty means no uploads.
+    required: false
+    default: ""
+  lockfile:
+    description: The Cargo.lock to read, relative to the workspace.
+    required: false
+    default: Cargo.lock
+runs:
+  using: node24
+  main: index.mjs

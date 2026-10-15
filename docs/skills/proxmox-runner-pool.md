@@ -263,10 +263,21 @@ Components:
   logs; changing that URL is a template rebuild (both OSes), per the
   procedure below. The **write** credential deliberately does not exist on
   the runner VM: it is a GitHub Actions secret
-  (`BAZEL_LAN_CACHE_WRITE_AUTH`) that bazel.yml attaches only on
-  push-to-main events, mirroring the cloud cache's poisoning defense
-  (ADR-020 layer 4). The cache formerly ran in a container on the Proxmox
-  host; it moved to the NAS when the 25G fabric arrived (2026-08).
+  (`BAZEL_LAN_CACHE_WRITE_AUTH`) that bazel.yml, bazel-coverage.yml and
+  check.yml's `stable / clippy` attach only on push-to-main events,
+  mirroring the cloud cache's poisoning defense (ADR-020 layer 4). The
+  cache formerly ran in a container on the Proxmox host; it moved to the
+  NAS when the 25G fabric arrived (2026-08).
+
+  The same HTTP CAS serves the pool `stable / clippy` its crates:
+  `.github/actions/lan-crates` reads every crates.io package `Cargo.lock`
+  pins from `/cas/<checksum>` (a crate's SHA-256 is its CAS key), checks
+  each against `Cargo.lock`, and makes the result a Cargo directory source
+  that replaces crates.io. A crate the cache lacks comes from crates.io and,
+  on push to main, is uploaded with the write credential; bazel-remote
+  refuses an upload whose SHA-256 is not its key. A cache that is down
+  costs the job a download from crates.io, never a failure
+  ([ci-shell-to-code.md](../plans/ci-shell-to-code.md) J14).
 
 * **Remote Asset API — repository-fetch caching, gated on the
   `RP_LAN_ASSET_API` repo variable.** The same bazel-remote can also serve
