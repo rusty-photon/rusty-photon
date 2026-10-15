@@ -40,6 +40,23 @@ jobs:
           body: |
             A throwaway issue from the tracking-issue action's live proof.
             The same run closes it.
+      # GitHub's issue list lags behind an issue just opened: on the second
+      # proof run a call 0.8 s later did not see it. A nightly's failures are
+      # a day apart; here the second call waits until the list has it.
+      - name: Wait until the list has the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FIRST: ${{ steps.first.outputs.number }}
+        run: |
+          for i in $(seq 1 60); do
+            if gh api "repos/$GITHUB_REPOSITORY/issues?state=open&labels=$LABEL&per_page=100" --jq '.[].number' | grep -qx "$FIRST"; then
+              echo "listed after $i look(s), $(((i - 1) * 2)) s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "not listed after 120 s"
+          exit 1
       - name: Second failure comments on it
         id: second
         uses: ./.github/actions/tracking-issue
