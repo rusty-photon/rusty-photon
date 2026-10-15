@@ -37,6 +37,7 @@ ask for a new shell block of more than a few lines to move.
   link.test.mjs            parses and links every JavaScript file here
   lib/helpers.mjs          the helper module every action imports
   lib/helpers.test.mjs
+  lib/testing.mjs          test fixtures every action's tests share
   <action>/action.yml      runs.using: node24, runs.main: index.mjs
   <action>/index.mjs       the entry file: inputs in, outputs out
   <action>/<logic>.mjs     what the tests import
@@ -132,10 +133,11 @@ it stays in the action.
 - **Read what an action prints through `io`**, never by replacing
   `process.stdout.write`. Under `node --test`, stdout also carries the
   test runner's reports to its parent process. Replacing it loses them,
-  and the file fails with only some of its tests reported.
-  `helpers.test.mjs`'s `capture` is the pattern.
+  and the file fails with only some of its tests reported. `capture` in
+  `lib/testing.mjs` does it; list that file in the test's `data`.
 - **Fakes.** A fake GitHub API, store or download server is a `node:http`
-  server on `127.0.0.1`, port 0 (`serve` in `helpers.test.mjs`). Command
+  server on `127.0.0.1`, port 0: `serve` in `lib/testing.mjs`, which
+  records each request with its body. Command
   files are temp files under `TEST_TMPDIR`. An environment variable a test
   sets is put back when it ends (`withEnv`).
 - Show that a test which guards a behaviour fails with the behaviour

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
 import { EOL, tmpdir } from 'node:os';
 import { delimiter as PATH_DELIMITER, join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -17,7 +16,6 @@ import {
   getInput,
   group,
   HttpError,
-  io,
   isTransient,
   retry,
   run,
@@ -26,6 +24,7 @@ import {
   sha256,
   warning,
 } from './helpers.mjs';
+import { capture, serve } from './testing.mjs';
 
 // --- Fixtures -----------------------------------------------------------------
 
@@ -51,21 +50,6 @@ function emptyFile() {
   const file = join(dir, 'command-file');
   writeFileSync(file, '');
   return file;
-}
-
-// What `fn` writes through the helpers' `io`, then puts `io` back.
-async function capture(fn) {
-  const out = [];
-  const err = [];
-  const saved = { ...io };
-  io.stdout = (text) => out.push(text);
-  io.stderr = (text) => err.push(text);
-  try {
-    const value = await fn();
-    return { value, stdout: out.join(''), stderr: err.join('') };
-  } finally {
-    Object.assign(io, saved);
-  }
 }
 
 // A port of the runner's EnvFileKeyValuePairs (actions/runner,
@@ -121,26 +105,6 @@ function parseCommandFile(text) {
     }
   }
   return entries;
-}
-
-// Serves `handler` on loopback; `requests` lists every request's URL.
-async function serve(handler) {
-  const requests = [];
-  const server = createServer((req, res) => {
-    requests.push(req.url);
-    handler(req, res, requests.length);
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address();
-  return {
-    url: `http://127.0.0.1:${port}`,
-    requests,
-    close: () =>
-      new Promise((resolve) => {
-        server.closeAllConnections();
-        server.close(resolve);
-      }),
-  };
 }
 
 // --- Inputs -------------------------------------------------------------------
@@ -708,7 +672,7 @@ test('fetchWithRetry waits out a Retry-After, and gives up on one longer than tw
 test("fetchWithRetry retries a 403 only when it says how long to wait, as the GitHub API's rate limits do", async (t) => {
   const resetNow = String(Math.floor(Date.now() / 1000));
   const server = await serve((req, res, n) => {
-    const first = server.requests.filter((url) => url === req.url).length === 1;
+    const first = server.requests.filter((r) => r.url === req.url).length === 1;
     if (req.url === '/retry-after' && first) {
       res.writeHead(403, { 'retry-after': '0' });
     } else if (req.url === '/reset' && first) {
@@ -726,7 +690,10 @@ test("fetchWithRetry retries a 403 only when it says how long to wait, as the Gi
     assert.equal((await fetchWithRetry(`${server.url}/reset`, { delayMs: 1 })).status, 200);
   });
   await assert.rejects(fetchWithRetry(`${server.url}/refused`, { delayMs: 1 }), { status: 403 });
-  assert.deepEqual(server.requests, ['/retry-after', '/retry-after', '/reset', '/reset', '/refused']);
+  assert.deepEqual(
+    server.requests.map((r) => r.url),
+    ['/retry-after', '/retry-after', '/reset', '/reset', '/refused'],
+  );
 });
 
 test('fetchWithRetry retries a request whose connection drops before an answer', async (t) => {

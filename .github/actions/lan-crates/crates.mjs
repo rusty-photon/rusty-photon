@@ -98,6 +98,25 @@ function sha256Hex(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+/**
+ * Why a request to the store failed, without the store's address: the HTTP
+ * status of an answer, or the error codes along the causes of no answer.
+ * fetch's own messages name the address it connected to ("connect
+ * ECONNREFUSED <ip>:<port>"), which the masks cover only when the URL holds
+ * that same address, not a name that resolves to it.
+ */
+export function storeFailure(err) {
+  if (err instanceof HttpError) return `HTTP ${err.status}`;
+  const codes = [];
+  const seen = new Set();
+  for (let e = err; e !== undefined && e !== null && !seen.has(e); e = e.cause) {
+    seen.add(e);
+    if (typeof e.code === 'string') codes.push(e.code);
+    else if (e.name === 'TimeoutError') codes.push('no answer in time');
+  }
+  return codes.length > 0 ? codes.join(': ') : (err?.name ?? 'an unknown error');
+}
+
 // The crate's bytes from the store, or undefined when it holds none (404).
 // Any other failure throws. One attempt: a store that fails is treated as
 // down for the rest of the run, and a retry would only slow that down.
@@ -139,15 +158,17 @@ async function download(downloads, crate, timeoutMs, delayMs) {
   );
 }
 
-// A PUT is idempotent, so fetchWithRetry repeats a transient failure.
-// bazel-remote refuses a blob whose SHA-256 is not its key.
-async function upload(storeUrl, crate, bytes, writeAuth, timeoutMs, delayMs) {
+// One attempt, like a read: the first failed upload stops the uploads for
+// the rest of the run, and a crate not uploaded now is uploaded by the next
+// push to main that fetches it. bazel-remote refuses a blob whose SHA-256 is
+// not its key.
+async function upload(storeUrl, crate, bytes, writeAuth, timeoutMs) {
   const response = await fetchWithRetry(`${storeUrl}/cas/${crate.checksum}`, {
     method: 'PUT',
     body: bytes,
     headers: { authorization: writeAuth, 'content-type': 'application/octet-stream' },
+    attempts: 1,
     timeoutMs,
-    delayMs,
   });
   await response.arrayBuffer();
 }
@@ -205,9 +226,11 @@ async function eachLimited(items, limit, fn) {
  * Fills `dir` with every crate in `crates`, from the store at `storeUrl`
  * where it holds the crate, from `downloads` (crates.io) where it does not.
  * With `writeAuth`, a crate fetched from crates.io is uploaded to the store.
- * The first failure of the store other than a 404 marks it down, and no
- * later crate asks it. Returns what happened, for the caller to report:
- * `failures` lists the crates that could not be had at all.
+ * The first failure of a read other than a 404 marks the store down
+ * (`storeDown`), and no later crate asks it; the first failed upload stops
+ * the uploads (`uploadsStopped`). Each says why, without the store's
+ * address. Returns what happened, for the caller to report: `failures`
+ * lists the crates that could not be had at all.
  */
 export async function vendorCrates({
   crates,
@@ -220,7 +243,7 @@ export async function vendorCrates({
   downloadTimeoutMs = 60_000,
   delayMs = 1000,
 }) {
-  const result = { fromStore: 0, downloaded: [], uploaded: 0, uploadFailures: [], wrongInStore: [], failures: [] };
+  const result = { fromStore: 0, downloaded: [], uploaded: 0, wrongInStore: [], failures: [] };
   await eachLimited(crates, concurrency, async (crate) => {
     try {
       let bytes;
@@ -234,18 +257,18 @@ export async function vendorCrates({
             result.wrongInStore.push(crate);
           }
         } catch (err) {
-          result.storeDown ??= describe(err);
+          result.storeDown ??= storeFailure(err);
         }
       }
       if (bytes === undefined) {
         bytes = await download(downloads, crate, downloadTimeoutMs, delayMs);
         result.downloaded.push(crate);
-        if (writeAuth !== '' && result.storeDown === undefined) {
+        if (writeAuth !== '' && result.storeDown === undefined && result.uploadsStopped === undefined) {
           try {
-            await upload(storeUrl, crate, bytes, writeAuth, storeTimeoutMs, delayMs);
+            await upload(storeUrl, crate, bytes, writeAuth, storeTimeoutMs);
             result.uploaded++;
           } catch (err) {
-            result.uploadFailures.push({ crate, reason: describe(err) });
+            result.uploadsStopped ??= storeFailure(err);
           }
         }
       }
@@ -260,8 +283,8 @@ export async function vendorCrates({
 /**
  * Points Cargo at the directory source in `dir`, in `<cargoHome>/config.toml`.
  * Returns false, changing nothing, when Cargo's configuration there already
- * names a source, or is in the older file `config`, which Cargo would read
- * instead.
+ * sets anything under `source`, or is in the older file `config`, which
+ * Cargo would read instead.
  */
 export async function replaceCratesIo(cargoHome, dir) {
   // A TOML literal string takes any character but these.
@@ -277,7 +300,9 @@ export async function replaceCratesIo(cargoHome, dir) {
   };
   if ((await read('config')) !== undefined) return false;
   const existing = (await read('config.toml')) ?? '';
-  if (/^\s*\[\s*source\s*[.\]]/m.test(existing)) return false;
+  // `source` as a table (`[source.x]`, `[ "source".x ]`), a dotted key
+  // (`source.x.replace-with = …`) or an inline table (`source = { … }`).
+  if (/^\s*(?:\[\s*)?["']?source["']?\s*[.=\]]/m.test(existing)) return false;
   const separator = existing === '' || existing.endsWith('\n') ? '' : '\n';
   await mkdir(cargoHome, { recursive: true });
   await writeFile(
@@ -300,9 +325,9 @@ function list(crates) {
 /**
  * The action: with a store URL, fills `dir` from Cargo.lock at `lockPath` and
  * points Cargo at it; without one (a hosted runner, a fork), leaves Cargo to
- * download its crates itself. Only an error in the action or in Cargo.lock
- * throws; anything the store or crates.io does is reported and leaves Cargo
- * to download what it needs.
+ * download its crates itself. Only an error in the action throws: a
+ * Cargo.lock it cannot read, and anything the store or crates.io does, is
+ * reported, and leaves Cargo to download what it needs.
  */
 export async function lanCrates({ storeUrl, writeAuth = '', lockPath, dir, cargoHome, ...options }) {
   if (!storeUrl) {
@@ -310,18 +335,27 @@ export async function lanCrates({ storeUrl, writeAuth = '', lockPath, dir, cargo
     return;
   }
   if (writeAuth !== '') setSecret(writeAuth);
-  // The store's address is the operator's LAN, and fetch's errors name its
-  // host and port ("connect ECONNREFUSED <host>:<port>"), not the URL.
+  // The store's address is the operator's LAN. What the action prints about
+  // a failure leaves it out (storeFailure); these masks are for anything
+  // else that names it, such as an error that fails the step.
   const base = storeUrl.replace(/\/+$/, '');
   setSecret(base);
   try {
     const { host, hostname } = new URL(base);
     setSecret(host);
     setSecret(hostname);
+    // An IPv6 address without its brackets, as a connect error prints it.
+    if (hostname.startsWith('[')) setSecret(hostname.slice(1, -1));
   } catch {
     throw new Error('RP_LAN_CACHE_URL does not parse as a URL (it is not shown, as it is the LAN address)');
   }
-  const crates = parseLock(await readFile(lockPath, 'utf8'));
+  let crates;
+  try {
+    crates = parseLock(await readFile(lockPath, 'utf8'));
+  } catch (err) {
+    warning(`${describe(err)}; Cargo downloads its crates itself.`);
+    return;
+  }
   await rm(dir, { recursive: true, force: true });
   await mkdir(dir, { recursive: true });
 
@@ -344,11 +378,10 @@ export async function lanCrates({ storeUrl, writeAuth = '', lockPath, dir, cargo
   if (result.wrongInStore.length > 0) {
     warning(`The LAN cache served bytes that do not match Cargo.lock for ${list(result.wrongInStore)}; those came from crates.io.`);
   }
-  if (result.uploadFailures.length > 0) {
-    const first = result.uploadFailures[0];
+  if (result.uploadsStopped !== undefined) {
     warning(
-      `${result.uploadFailures.length} crates were not uploaded to the LAN cache ` +
-        `(${first.crate.name} ${first.crate.version}: ${first.reason}).`,
+      `An upload to the LAN cache failed (${result.uploadsStopped}), so the uploads stopped: ` +
+        `${result.uploaded} of the ${result.downloaded.length} crates from crates.io were uploaded.`,
     );
   }
   if (result.failures.length > 0) {

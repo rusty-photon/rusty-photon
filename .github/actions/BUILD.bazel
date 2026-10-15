@@ -13,12 +13,16 @@ node_test(
     name = "helpers_test",
     size = "small",
     srcs = ["lib/helpers.test.mjs"],
-    data = ["lib/helpers.mjs"],
+    data = [
+        "lib/helpers.mjs",
+        "lib/testing.mjs",
+    ],
 )
 
 # lan-crates: the pool `stable / clippy`'s crates from the LAN bazel-remote.
-# Reads the repository's own Cargo.lock too, so a format Cargo starts to
-# write that the action cannot read fails here rather than on the runner.
+# Reads the repository's own Cargo.lock too: a format Cargo starts to write
+# that the action cannot read fails here, where on the runner it would only
+# be a warning, and Cargo would quietly go back to downloading every crate.
 node_test(
     name = "lan_crates_test",
     size = "small",
@@ -31,6 +35,7 @@ node_test(
         "lan-crates/fixtures.mjs",
         "lan-crates/untar.mjs",
         "lib/helpers.mjs",
+        "lib/testing.mjs",
         "//:Cargo.lock",
     ],
 )

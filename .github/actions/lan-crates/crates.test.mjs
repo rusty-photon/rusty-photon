@@ -1,14 +1,13 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 
-import { io } from '../lib/helpers.mjs';
-import { CRATES_IO, lanCrates, parseLock, replaceCratesIo, unpack } from './crates.mjs';
+import { capture, serve } from '../lib/testing.mjs';
+import { CRATES_IO, lanCrates, parseLock, replaceCratesIo, storeFailure, unpack } from './crates.mjs';
 import { crateFile, lockfile, sha256Hex, tar } from './fixtures.mjs';
 
 // --- Fixtures -----------------------------------------------------------------
@@ -17,49 +16,11 @@ function tempDir() {
   return mkdtempSync(join(process.env.TEST_TMPDIR ?? tmpdir(), 'lan-crates-'));
 }
 
-// What `fn` writes through the helpers' `io`, then puts `io` back.
-async function capture(fn) {
-  const out = [];
-  const saved = { ...io };
-  io.stdout = (text) => out.push(text);
-  io.stderr = (text) => out.push(text);
-  try {
-    const value = await fn();
-    return { value, stdout: out.join('') };
-  } finally {
-    Object.assign(io, saved);
-  }
-}
-
-// Serves `handler` on loopback; `requests` lists every request's method,
-// path, Authorization header and body.
-async function serve(handler) {
-  const requests = [];
-  const server = createServer(async (req, res) => {
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const request = { method: req.method, path: req.url, authorization: req.headers.authorization, body: Buffer.concat(chunks) };
-    requests.push(request);
-    handler(request, res, requests.length);
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address();
-  return {
-    url: `http://127.0.0.1:${port}`,
-    requests,
-    close: () =>
-      new Promise((resolve) => {
-        server.closeAllConnections();
-        server.close(resolve);
-      }),
-  };
-}
-
 // A bazel-remote HTTP CAS holding `blobs` (checksum → bytes); a PUT answers
 // `putStatus` and, on 200, stores the blob.
 function store(blobs, { putStatus = 200 } = {}) {
   return serve((req, res) => {
-    const checksum = req.path.replace(/^\/cas\//, '');
+    const checksum = req.url.replace(/^\/cas\//, '');
     if (req.method === 'PUT') {
       if (putStatus === 200) blobs.set(checksum, req.body);
       res.writeHead(putStatus).end();
@@ -74,7 +35,7 @@ function store(blobs, { putStatus = 200 } = {}) {
 // crates.io's download endpoint for `crates`.
 function cratesIo(crates) {
   return serve((req, res) => {
-    const crate = crates.find((c) => req.path === `/${c.name}/${c.version}/download`);
+    const crate = crates.find((c) => req.url === `/${c.name}/${c.version}/download`);
     if (crate) res.writeHead(200).end(crate.bytes);
     else res.writeHead(404).end();
   });
@@ -182,7 +143,7 @@ test('every crate from the store: crates.io is not asked, and Cargo reads the di
   const { stdout } = await capture(() => lanCrates({ storeUrl: cas.url, ...ws, downloads: registry.url, ...OPTIONS }));
 
   assert.equal(registry.requests.length, 0);
-  assert.deepEqual(cas.requests.map((r) => `${r.method} ${r.path}`).sort(), [`GET /cas/${ALPHA.checksum}`, `GET /cas/${BETA.checksum}`].sort());
+  assert.deepEqual(cas.requests.map((r) => `${r.method} ${r.url}`).sort(), [`GET /cas/${ALPHA.checksum}`, `GET /cas/${BETA.checksum}`].sort());
   assert.match(stdout, /^2 crates from Cargo\.lock in [\d.]+ s: 2 from the LAN cache, 0 from crates\.io\.$/m);
   assert.doesNotMatch(stdout, /::warning::/);
   assert.equal(readFileSync(join(ws.dir, 'beta-0.2.1', 'Cargo.toml'), 'utf8'), '[package]\nname = "beta"\nversion = "0.2.1"\n');
@@ -206,11 +167,11 @@ test('a crate the store lacks comes from crates.io and, with the write credentia
     lanCrates({ storeUrl: cas.url, writeAuth: 'Basic Y2k6cHc=', ...ws, downloads: registry.url, ...OPTIONS }),
   );
 
-  assert.deepEqual(registry.requests.map((r) => r.path), ['/beta/0.2.1/download']);
+  assert.deepEqual(registry.requests.map((r) => r.url), ['/beta/0.2.1/download']);
   const puts = cas.requests.filter((r) => r.method === 'PUT');
   assert.equal(puts.length, 1);
-  assert.equal(puts[0].path, `/cas/${BETA.checksum}`);
-  assert.equal(puts[0].authorization, 'Basic Y2k6cHc=');
+  assert.equal(puts[0].url, `/cas/${BETA.checksum}`);
+  assert.equal(puts[0].headers.authorization, 'Basic Y2k6cHc=');
   assert.deepEqual(puts[0].body, BETA.bytes);
   assert.match(stdout, /: 1 from the LAN cache, 1 from crates\.io, 1 of them uploaded to the LAN cache\.$/m);
   assert.match(stdout, /::group::Crates from crates\.io\nbeta 0\.2\.1\n::endgroup::/);
@@ -241,9 +202,9 @@ test('a store that fails is asked no more, and nothing is uploaded to it', async
     lanCrates({ storeUrl: cas.url, writeAuth: 'Basic Y2k6cHc=', ...ws, downloads: registry.url, ...OPTIONS, concurrency: 1 }),
   );
 
-  assert.deepEqual(cas.requests.map((r) => `${r.method} ${r.path}`), [`GET /cas/${ALPHA.checksum}`]);
+  assert.deepEqual(cas.requests.map((r) => `${r.method} ${r.url}`), [`GET /cas/${ALPHA.checksum}`]);
   assert.equal(registry.requests.length, 2);
-  assert.match(stdout, /::warning::The LAN cache failed \(GET http:\/\/127\.0\.0\.1:\d+\/cas\/[0-9a-f]+: 500 Internal Server Error\); the crates it had not served came from crates\.io\./);
+  assert.match(stdout, /::warning::The LAN cache failed \(HTTP 500\); the crates it had not served came from crates\.io\./);
   assert.match(stdout, /: 0 from the LAN cache, 2 from crates\.io, 0 of them uploaded to the LAN cache\.$/m);
   assert.match(cargoConfig(ws.cargoHome), /replace-with = "lan-crates"/);
 });
@@ -259,9 +220,24 @@ test('a store that refuses the connection is a miss, and its address is masked f
   const { stdout } = await capture(() => lanCrates({ storeUrl: `${closed.url}/`, ...ws, downloads: registry.url, ...OPTIONS }));
 
   const masks = [`::add-mask::${closed.url}`, `::add-mask::${host}`, `::add-mask::${hostname}`];
-  assert.deepEqual(stdout.split('\n').slice(0, 3), masks);
-  assert.match(stdout, /::warning::The LAN cache failed \(fetch failed: connect ECONNREFUSED/);
+  const lines = stdout.split('\n');
+  assert.deepEqual(lines.slice(0, 3), masks);
+  assert.ok(stdout.includes('::warning::The LAN cache failed (ECONNREFUSED); '), stdout);
+  // The address stays out of what is printed, masked or not: a connect
+  // error names the address a host name resolved to, which no mask covers.
+  assert.deepEqual(lines.slice(3).filter((l) => l.includes(hostname)), []);
   assert.match(cargoConfig(ws.cargoHome), /replace-with = "lan-crates"/);
+});
+
+test('an IPv6 store address is masked with and without its brackets, as a connect error prints it', async () => {
+  const ws = workspace([]);
+  const { stdout } = await capture(() => lanCrates({ storeUrl: 'http://[fd00::5]:8080', ...ws, ...OPTIONS }));
+  assert.deepEqual(stdout.split('\n').slice(0, 4), [
+    '::add-mask::http://[fd00::5]:8080',
+    '::add-mask::[fd00::5]:8080',
+    '::add-mask::[fd00::5]',
+    '::add-mask::fd00::5',
+  ]);
 });
 
 test('a store that does not answer in time is a miss', async (t) => {
@@ -276,7 +252,7 @@ test('a store that does not answer in time is a miss', async (t) => {
   );
 
   assert.ok(Date.now() - started < 5_000, 'it waited past the store timeout');
-  assert.match(stdout, /::warning::The LAN cache failed \(.*aborted due to timeout\)/);
+  assert.match(stdout, /::warning::The LAN cache failed \(no answer in time\)/);
   assert.match(stdout, /: 0 from the LAN cache, 1 from crates\.io\.$/m);
 });
 
@@ -288,7 +264,7 @@ test('bytes from the store that do not match Cargo.lock are a miss, and the stor
 
   const { stdout } = await capture(() => lanCrates({ storeUrl: cas.url, ...ws, downloads: registry.url, ...OPTIONS, concurrency: 1 }));
 
-  assert.deepEqual(registry.requests.map((r) => r.path), ['/alpha/1.0.0/download']);
+  assert.deepEqual(registry.requests.map((r) => r.url), ['/alpha/1.0.0/download']);
   assert.match(stdout, /::warning::The LAN cache served bytes that do not match Cargo\.lock for alpha 1\.0\.0; those came from crates\.io\./);
   assert.match(stdout, /: 1 from the LAN cache, 1 from crates\.io\.$/m);
   assert.equal(readFileSync(join(ws.dir, 'alpha-1.0.0', 'src', 'lib.rs'), 'utf8'), 'pub fn a() {}\n');
@@ -335,19 +311,38 @@ test('a transient failure at crates.io is retried', async (t) => {
   assert.match(stdout, /: 0 from the LAN cache, 1 from crates\.io\.$/m);
 });
 
-test('an upload the store refuses is a warning, and Cargo still reads the directory', async (t) => {
-  const cas = await store(new Map(), { putStatus: 401 });
-  const registry = await cratesIo([ALPHA]);
+test('the first failed upload stops the uploads, and Cargo still reads the directory', async (t) => {
+  const cas = await store(new Map(), { putStatus: 503 });
+  const registry = await cratesIo([ALPHA, BETA]);
   t.after(() => Promise.all([cas.close(), registry.close()]));
-  const ws = workspace([ALPHA]);
+  const ws = workspace([ALPHA, BETA]);
 
   const { stdout } = await capture(() =>
-    lanCrates({ storeUrl: cas.url, writeAuth: 'Basic d3Jvbmc=', ...ws, downloads: registry.url, ...OPTIONS }),
+    lanCrates({ storeUrl: cas.url, writeAuth: 'Basic d3Jvbmc=', ...ws, downloads: registry.url, ...OPTIONS, concurrency: 1 }),
   );
 
-  assert.equal(cas.requests.filter((r) => r.method === 'PUT').length, 1, 'a 401 was retried');
-  assert.match(stdout, /::warning::1 crates were not uploaded to the LAN cache \(alpha 1\.0\.0: PUT http:\/\/127\.0\.0\.1:\d+\/cas\/[0-9a-f]+: 401 Unauthorized\)\./);
+  assert.equal(cas.requests.filter((r) => r.method === 'PUT').length, 1, 'uploads went on after one failed, or one was retried');
+  assert.equal(cas.requests.filter((r) => r.method === 'GET').length, 2, 'a failed upload stopped the reads');
+  assert.match(stdout, /::warning::An upload to the LAN cache failed \(HTTP 503\), so the uploads stopped: 0 of the 2 crates from crates\.io were uploaded\./);
   assert.match(cargoConfig(ws.cargoHome), /replace-with = "lan-crates"/);
+});
+
+test('an upload that gets no answer in time stops the uploads without holding up the rest', async (t) => {
+  const cas = await serve((req, res) => {
+    if (req.method === 'GET') res.writeHead(404).end();
+  });
+  const registry = await cratesIo([ALPHA, BETA]);
+  t.after(() => Promise.all([cas.close(), registry.close()]));
+  const ws = workspace([ALPHA, BETA]);
+
+  const started = Date.now();
+  const { stdout } = await capture(() =>
+    lanCrates({ storeUrl: cas.url, writeAuth: 'Basic d3Jvbmc=', ...ws, downloads: registry.url, ...OPTIONS, concurrency: 1, storeTimeoutMs: 200 }),
+  );
+
+  assert.ok(Date.now() - started < 2_000, 'it waited on more than one upload');
+  assert.equal(cas.requests.filter((r) => r.method === 'PUT').length, 1);
+  assert.match(stdout, /An upload to the LAN cache failed \(no answer in time\), so the uploads stopped/);
 });
 
 test('the write credential is masked before anything else is printed', async (t) => {
@@ -363,6 +358,28 @@ test('the write credential is masked before anything else is printed', async (t)
   const lines = stdout.split('\n');
   assert.equal(lines[0], '::add-mask::Basic c2VjcmV0');
   assert.equal(lines.filter((l) => l.includes('c2VjcmV0')).length, 1);
+});
+
+test('a Cargo.lock the action cannot read is a warning, and Cargo is left alone', async (t) => {
+  const cas = await store(new Map([[ALPHA.checksum, ALPHA.bytes]]));
+  t.after(() => cas.close());
+  const ws = workspace([ALPHA]);
+  writeFileSync(ws.lockPath, lockfile([ALPHA]).replace('version = 4', 'version = 5'));
+
+  const { stdout } = await capture(() => lanCrates({ storeUrl: cas.url, ...ws, ...OPTIONS }));
+
+  assert.match(stdout, /::warning::Cargo\.lock version 5: this action reads versions 3 and 4; Cargo downloads its crates itself\./);
+  assert.equal(cas.requests.length, 0);
+  assert.equal(cargoConfig(ws.cargoHome), undefined);
+});
+
+test('storeFailure gives a status or error codes, never a message that may hold the address', () => {
+  const refused = Object.assign(new AggregateError([new Error('connect ECONNREFUSED 10.9.8.7:80')], ''), { code: 'ECONNREFUSED' });
+  assert.equal(storeFailure(new TypeError('fetch failed', { cause: refused })), 'ECONNREFUSED');
+  const reset = Object.assign(new Error('read ECONNRESET 10.9.8.7:80'), { code: 'UND_ERR_SOCKET' });
+  assert.equal(storeFailure(new TypeError('terminated', { cause: reset })), 'UND_ERR_SOCKET');
+  assert.equal(storeFailure(new DOMException('The operation was aborted due to timeout', 'TimeoutError')), 'no answer in time');
+  assert.equal(storeFailure(new RangeError('something at 10.9.8.7')), 'RangeError');
 });
 
 test('no store URL: nothing is fetched and Cargo is left alone', async () => {
@@ -397,6 +414,19 @@ test('replaceCratesIo leaves a configuration that already names a source alone',
   writeFileSync(join(cargoHome, 'config.toml'), own);
   assert.equal(await replaceCratesIo(cargoHome, '/runner/temp/lan-crates'), false);
   assert.equal(cargoConfig(cargoHome), own);
+});
+
+test('replaceCratesIo leaves a source set as a dotted key, a quoted table or an inline table alone', async () => {
+  for (const own of [
+    'source.crates-io.replace-with = "mirror"\n',
+    '[ "source".crates-io ]\nreplace-with = "mirror"\n',
+    'source = { crates-io = { replace-with = "mirror" } }\n',
+  ]) {
+    const cargoHome = tempDir();
+    writeFileSync(join(cargoHome, 'config.toml'), own);
+    assert.equal(await replaceCratesIo(cargoHome, '/runner/temp/lan-crates'), false, own);
+    assert.equal(cargoConfig(cargoHome), own);
+  }
 });
 
 test('replaceCratesIo leaves CARGO_HOME alone when it has the older file `config`', async () => {

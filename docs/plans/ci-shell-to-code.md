@@ -102,7 +102,7 @@ first in their columns.
 | J11 | Bazel/Cargo target parity | `scripts/check-bazel-cargo-parity.sh` | F1 | Not started |
 | J12 | Sharded BDD runner | `bdd-sharded`'s bash | F1 | Not started |
 | J13 | Package-repository scripts | `build-apt-repo.sh`, `build-yum-repo.sh`, `verify-packages-repo.sh`, `push-packages-repo.sh` | F1 | Not started |
-| J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Done (#1519) |
+| J14 | Crates from the LAN bazel-remote | nothing (the pool `stable / clippy` stops downloading crates from crates.io) | F1 | Merged in #1519; done when proven on main |
 | R1  | Toolchain checksums | `scripts/rust-toolchain-sha256s.sh` | F2 | Not started |
 | R2  | Bazel clippy | `tools/ci/bazel-clippy.sh` | F2, R1 | Not started |
 | R3  | Bazel/Cargo target parity | — | — | Moved in review: now J11 |
@@ -238,13 +238,15 @@ gives the pool runs a cache on the LAN; the hosted runs keep rust-cache.
   write key, or be saved back for every later PR. A cold build on main
   also means the archive holds only what the current lockfile needs.
 - **What is cached:** `target/`, with the workspace members' own outputs
-  removed (every run re-lints them anyway), plus `$CARGO_HOME/registry`'s
-  `index` and `cache` (the `.crate` files, until J14 serves those) and
-  `$CARGO_HOME/git`, for the workspace's git dependency. Not
-  `registry/src`: Cargo recreates it from the `.crate` files, which
-  rust-cache's README gives as quicker than caching it, and it is the
-  source Cargo compiles, so a restored copy would bypass the check J14
-  makes of each `.crate` file. Archived with the system `tar`. Whether to
+  removed (every run re-lints them anyway), and `$CARGO_HOME/git`, for
+  the workspace's git dependency. Not the crates.io crates: J14 serves
+  them from the LAN as a directory source, unpacked and checked against
+  `Cargo.lock` on every run, so Cargo writes nothing under
+  `$CARGO_HOME/registry` on the pool, and a restored copy of the sources
+  Cargo compiles would bypass that check. `target/` records those sources
+  by absolute path (see the spike below), so J14's directory must keep
+  one path from run to run, as `$RUNNER_TEMP/lan-crates` does on the
+  pool. Archived with the system `tar`. Whether to
   compress (system `zstd`, if present) or send it raw over the LAN is
   measured in the item; Node 24's built-in zstd is still marked
   experimental.
@@ -498,7 +500,8 @@ push script's header for the upload order, and changes with it.
 
 ### J14 — Crates from the LAN bazel-remote
 
-Done in #1519, as `.github/actions/lan-crates`. The pool `stable / clippy`
+Merged in #1519, as `.github/actions/lan-crates`; done once its proof
+runs on main (**Done when**, below). The pool `stable / clippy`
 reads every crates.io package `Cargo.lock` pins from the LAN bazel-remote's
 HTTP CAS, which keeps a blob under its SHA-256: for a crate, the `checksum`
 `Cargo.lock` records. The owner chose this over a new caching service on
@@ -529,7 +532,11 @@ HTTP CAS, which keeps a blob under its SHA-256: for a crate, the `checksum`
   configures a source is left alone, with a warning.
 - **A cache that fails** (any answer but a 404, a refused connection, no
   answer within 10 s) is asked no more in that run; the rest come from
-  crates.io, with a warning. Never a failed step.
+  crates.io, with a warning. The first failed upload likewise stops the
+  uploads, each tried once, so a cache whose writes hang costs one
+  timeout, not one per crate. Never a failed step, and neither is a
+  `Cargo.lock` the action cannot read: that is a warning, and Cargo
+  downloads as before.
 - **Filling the CAS:** on push to main only, each crate fetched from
   crates.io is uploaded with `BAZEL_LAN_CACHE_WRITE_AUTH`, passed to the
   step as an input under bazel.yml's push-only expression. The uploads
@@ -538,16 +545,22 @@ HTTP CAS, which keeps a blob under its SHA-256: for a crate, the `checksum`
   zstd storage, which is its default and what the NAS's `/status` shows
   (stored size well under the uncompressed size): a 500, "checksums don't
   match", and nothing stored, checked against a local v2.6.2 on
-  2026-10-15. Reading the crates on every run keeps them from being
+  2026-10-14. Reading the crates on every run keeps them from being
   evicted.
 - **Git dependencies are not crates.** The workspace's one git dependency,
   ascom-alpaca pinned to a commit on the org fork, has no crates.io
   checksum, so Cargo clones it from GitHub. Caching it is J1's.
 - **Endpoint:** `RP_LAN_CACHE_URL`, which the runner provides; without one
-  (hosted runners, fork PRs) the action does nothing. It masks the URL,
-  its host and its hostname, since fetch's errors name the host and port.
-- **On 2026-10-15 the CAS held 60 of the 583 crates.io packages in
-  `Cargo.lock`**, those Bazel had fetched through the Remote Asset API.
+  (hosted runners, fork PRs) the action does nothing. What it prints
+  about a failed request is the HTTP status or the error codes, never
+  fetch's message: that names the address the host resolved to, which no
+  mask of the URL covers. It masks the URL, its host and its hostname as
+  well.
+- **On 2026-10-14 the CAS held 60 of the 583 crates.io packages in
+  `Cargo.lock`**, those Bazel had fetched through the Remote Asset API,
+  and it was full (about 247 GB), evicting the least recently used. The
+  crates add at most 64 MiB to it, evicting as much of Bazel's oldest
+  entries.
 - **What the PR could not prove:** the upload runs only on push to main.
   Tests against a fake CAS and a fake crates.io cover it. Against a local
   bazel-remote v2.6.2, the action took 582 crates from crates.io and
@@ -556,6 +569,11 @@ HTTP CAS, which keeps a blob under its SHA-256: for a crate, the `checksum`
   fresh `CARGO_HOME`, downloading nothing. After merge, watch the first
   push to main fill the CAS and the next PR's pool `stable / clippy` take
   every crate from it.
+- **Done when** a pool `stable / clippy` run on a PR whose lockfile main
+  has already built downloads no crate from crates.io ("583 from the LAN
+  cache, 0 from crates.io"), and the job still passes with the cache
+  stopped. The git dependency is outside this check; its clone is J1's to
+  cache.
 
 ## Rust items
 
