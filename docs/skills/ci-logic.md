@@ -145,6 +145,27 @@ it stays in the action.
 - There is no JavaScript formatter or linter (ADR-022). Match
   `helpers.mjs`: two-space indent, single quotes, semicolons.
 
+### A job that checks nothing else out
+
+A local action is read from the checkout, so a job that needs nothing
+else from the repository, such as a nightly's tracking-issue job, checks
+out only the action's directory and `lib`, without keeping the token, and
+declares `contents: read` beside what the action needs:
+
+```yaml
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/tracking-issue
+            .github/actions/lib
+      - uses: ./.github/actions/tracking-issue
+```
+
 ### An action that needs another action
 
 A JavaScript action cannot call another action. One that needs

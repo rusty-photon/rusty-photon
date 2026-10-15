@@ -494,68 +494,39 @@ jobs:
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
     steps:
-      - name: Open or update tracking issue
-        uses: actions/github-script@v9
+      # The action and the helpers it imports, nothing else.
+      - uses: actions/checkout@v7
         with:
-          script: |
-            const title = `nightly: check clippy failing`;
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = [
-              `A clippy job in the nightly check workflow failed (\`stable /`,
-              `clippy\`, \`windows / clippy\`, \`macos / clippy\`, and/or`,
-              `\`beta / clippy\`).`,
-              ``,
-              `Which job failed says what to suspect. For \`windows / clippy\` /`,
-              `\`macos / clippy\` a *lint* IS the likely cause: those legs exist to`,
-              `catch violations in \`#[cfg(windows)]\` / \`#[cfg(target_os =`,
-              `"macos")]\` code that the required ubuntu gate never compiles`,
-              `(#984). For the other two a lint is *not* likely: \`beta / clippy\``,
-              `runs with \`--cap-lints warn\` and files one \`beta-clippy\`-labeled`,
-              `issue per lint instead of failing, so what reached here is more`,
-              `likely a compile break, a warning newly emitted by a stable`,
-              `toolchain bump, or the reporting step itself. \`stable / clippy\``,
-              `also checks formatting (\`cargo fmt --check\`) and the BDD`,
-              `runners, so a new stable rustfmt that formats some code`,
-              `differently fails it too; the failed step's name says which.`,
-              `Inspect the failed job in the linked run.`,
-              ``,
-              `Run: ${runUrl}`,
-              ``,
-              `This issue was opened automatically by a scheduled run that`,
-              `failed. While it stays open, each subsequent scheduled failure`,
-              `is appended here as a comment linking its own run. Closing it`,
-              `marks the failure handled — it is never re-opened; the next`,
-              `scheduled failure opens a fresh issue instead.`,
-            ].join("\n");
-            // Search only OPEN issues. While a tracking issue is open each
-            // failure appends a comment; once it is closed the failure is
-            // considered handled, so the next scheduled failure opens a
-            // fresh issue rather than resurrecting the closed one.
-            const existing = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: "open",
-              labels: "check-nightly",
-            });
-            const match = existing.find(i => i.title === title);
-            if (match) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: match.number,
-                body: `Failed again — run: ${runUrl}`,
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body,
-                labels: ["check-nightly", "ci-flake"],
-              });
-            }
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/tracking-issue
+            .github/actions/lib
+      - name: Open or update tracking issue
+        uses: ./.github/actions/tracking-issue
+        with:
+          title: "nightly: check clippy failing"
+          label: check-nightly
+          body: |
+            A clippy job in the nightly check workflow failed (`stable /
+            clippy`, `windows / clippy`, `macos / clippy`, and/or
+            `beta / clippy`).
+
+            Which job failed says what to suspect. For `windows / clippy` /
+            `macos / clippy` a *lint* IS the likely cause: those legs exist to
+            catch violations in `#[cfg(windows)]` / `#[cfg(target_os =
+            "macos")]` code that the required ubuntu gate never compiles
+            (#984). For the other two a lint is *not* likely: `beta / clippy`
+            runs with `--cap-lints warn` and files one `beta-clippy`-labeled
+            issue per lint instead of failing, so what reached here is more
+            likely a compile break, a warning newly emitted by a stable
+            toolchain bump, or the reporting step itself. `stable / clippy`
+            also checks formatting (`cargo fmt --check`) and the BDD
+            runners, so a new stable rustfmt that formats some code
+            differently fails it too; the failed step's name says which.
+            Inspect the failed job in the linked run.
   hack:
     # cargo-hack checks combinations of feature flags to ensure that features are
     # all additive (required for feature unification). Bazel is the per-PR build

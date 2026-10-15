@@ -1,0 +1,29 @@
+name: Tracking issue
+description: >-
+  Opens a scheduled workflow's tracking issue, or comments on it while it
+  stays open: the open issue labelled `label` and titled exactly `title`.
+  A new issue carries `label` and ci-flake, and its body is `body`, the run's
+  link and a note on how the issue works. Call it from a job that runs only
+  when a scheduled run failed. Plan item J7 in docs/plans/ci-shell-to-code.md.
+inputs:
+  title:
+    description: >-
+      The issue's exact title. Others find the issue by it, so keep it
+      unchanged.
+    required: true
+  label:
+    description: The workflow's own label, which finds the issue and goes on a new one.
+    required: true
+  body:
+    description: What failed and what to suspect, for a new issue's body.
+    required: true
+  token:
+    description: A token that can read and write the repository's issues.
+    required: false
+    default: ${{ github.token }}
+outputs:
+  number:
+    description: The issue's number.
+runs:
+  using: node24
+  main: index.mjs
