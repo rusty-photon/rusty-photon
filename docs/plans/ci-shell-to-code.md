@@ -95,7 +95,7 @@ first in their columns.
 | J4  | `install-astap` on the module | `install-astap` | J2 | Not started |
 | J5  | `install-zwo-sdk` on the module | `install-zwo-sdk` (bash + PowerShell) | J2 | Not started |
 | J6  | `install-svbony-sdk` on the module | `install-svbony-sdk` (bash + PowerShell) | J2 | Not started |
-| J7  | Nightly tracking-issue action | 10 `github-script` copies | F1 | Done (#PRNUM) |
+| J7  | Nightly tracking-issue action | 10 `github-script` copies | F1 | Done (#1527) |
 | J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Not started |
 | J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | Not started |
 | J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Not started |
@@ -361,7 +361,7 @@ not:
 
 ### J7 — Nightly tracking-issue action
 
-Done in #PRNUM, as `.github/actions/tracking-issue`. Ten workflows each
+Done in #1527, as `.github/actions/tracking-issue`. Ten workflows each
 carried a `github-script` block that opened a tracking issue when a
 scheduled run failed (safety.yml and scheduled.yml also when it was
 cancelled), or commented on the open one. Their jobs now call the action,
@@ -418,7 +418,14 @@ with their `if:`, `needs:` and runners unchanged.
   need special cases. The blocker goes with the rest of that workflow in
   J8; S1 sweeps the census.
 - **Proof:** tests against a fake GitHub API, each shown to fail with its
-  behaviour broken. PROOF-PENDING
+  behaviour broken. Live on a hosted runner, from a temporary workflow
+  that ran on a push to the PR's branch, since a workflow only on a
+  branch cannot be dispatched ("To trigger the `workflow_dispatch` event,
+  your workflow must be in the default branch", GitHub's docs): it opened
+  a throwaway issue with both labels, commented on it, and closed it. The
+  first two runs found the dropped label above, and that GitHub's issue
+  list showed a just-opened issue only after about 4 s, a lag that only
+  back-to-back calls meet.
 - **After merge:** the jobs run only after a scheduled run fails or is
   cancelled, which no PR or dispatch produces; the first such failure is
   checked for its issue or comment.
