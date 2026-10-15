@@ -3634,12 +3634,38 @@ async fn get_train_info_describes_the_members_without_touching_a_device() {
     // The last focuser in optical order is the train's own — the one
     // its sweep moves and whose probe a temperature event names.
     assert_eq!(json["terminal_focuser_id"], "helical");
+    assert_eq!(json["terminal_focuser_shared_with"], serde_json::json!([]));
     assert_eq!(json["rotator_id"], "falcon");
     assert_eq!(
         json["devices"][0],
         serde_json::json!({"id": "cc", "kind": "cover calibrator"})
     );
     assert_eq!(json["devices"][5]["kind"], "camera");
+}
+
+#[tokio::test]
+async fn get_train_info_names_the_other_trains_its_terminal_focuser_moves() {
+    use super::built_in::trains::GetTrainInfoParams;
+    // The guiding train's only focuser is the imaging train's: a
+    // training run on it would move the imaging train's focus.
+    let handler = test_handler(filter_wheel_registry(Arc::new(MockFilterWheel::default())))
+        .with_trains(fixture_trains(true));
+    for (train_id, shared_with) in [("guide", "main"), ("main", "guide")] {
+        let json = success_json(
+            handler
+                .get_train_info(Parameters(GetTrainInfoParams {
+                    train_id: train_id.into(),
+                }))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(json["terminal_focuser_id"], "foc", "{train_id}");
+        assert_eq!(
+            json["terminal_focuser_shared_with"],
+            serde_json::json!([shared_with]),
+            "{train_id}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -3664,6 +3690,7 @@ async fn get_train_info_reports_null_for_absent_or_ambiguous_members() {
     assert!(json["focal_length_mm"].is_null(), "{json}");
     assert_eq!(json["focusers"], serde_json::json!([]));
     assert!(json["terminal_focuser_id"].is_null(), "{json}");
+    assert_eq!(json["terminal_focuser_shared_with"], serde_json::json!([]));
     assert_eq!(json["purpose"], "imaging");
 
     let result = handler

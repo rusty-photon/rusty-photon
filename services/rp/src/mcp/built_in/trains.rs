@@ -40,7 +40,7 @@ pub struct GetRefocusPlanParams {
 #[tool_router(router = tool_router_trains, vis = "pub")]
 impl McpHandler {
     #[tool(
-        description = "Describe an optical train without touching any device: its terminal camera_id, the sole filter wheel (filter_wheel_id plus filters, the configured names in position order, plus filter_wavelengths_nm mapping each name to its configured wavelength or null; all three null when the train has none or several), calibrator_id (null when none), focusers in optical order plus terminal_focuser_id (the last of them, the one the train's own auto_focus sweeps and whose probe a temperature_changed names for this train; null without a focuser), the sole rotator_id (null when none or several), purpose, focal_length_mm, the ordered devices list, and optics — focal_length_mm, aperture_mm, focal_ratio, pixel_size_um (the terminal camera's x pixel), pixel_scale_arcsec_per_pixel and microns_per_step (configured, else the terminal focuser's StepSize), each null when unknown"
+        description = "Describe an optical train without touching any device: its terminal camera_id, the sole filter wheel (filter_wheel_id plus filters, the configured names in position order, plus filter_wavelengths_nm mapping each name to its configured wavelength or null; all three null when the train has none or several), calibrator_id (null when none), focusers in optical order plus terminal_focuser_id (the last of them, the one the train's own auto_focus sweeps and whose probe a temperature_changed names for this train; null without a focuser), terminal_focuser_shared_with (the ids of the other trains that focuser is a member of, in config order; empty when no other train has it or the train has no focuser), the sole rotator_id (null when none or several), purpose, focal_length_mm, the ordered devices list, and optics — focal_length_mm, aperture_mm, focal_ratio, pixel_size_um (the terminal camera's x pixel), pixel_scale_arcsec_per_pixel and microns_per_step (configured, else the terminal focuser's StepSize), each null when unknown"
     )]
     pub(crate) async fn get_train_info(
         &self,
@@ -71,6 +71,19 @@ impl McpHandler {
             serde_json::Value::Object(map)
         });
 
+        // The other trains the train's own focuser moves: a focus
+        // provider refuses a guiding train's training run on a focuser
+        // an imaging train has, whose own sweep focuses it.
+        let terminal_focuser_shared_with: Vec<&str> =
+            train.terminal_focuser().map_or_default(|focuser_id| {
+                self.trains
+                    .trains_with_device(focuser_id)
+                    .into_iter()
+                    .filter(|other| other.id != train.id)
+                    .map(|other| other.id.as_str())
+                    .collect()
+            });
+
         let devices: Vec<serde_json::Value> = train
             .devices
             .iter()
@@ -89,6 +102,7 @@ impl McpHandler {
             "calibrator_id": train.calibrator_id(),
             "focusers": train.ids_of_kind(TrainDeviceKind::Focuser),
             "terminal_focuser_id": train.terminal_focuser(),
+            "terminal_focuser_shared_with": terminal_focuser_shared_with,
             "rotator_id": train.sole_of_kind(TrainDeviceKind::Rotator),
             "devices": devices,
             "optics": self.train_optics(train),

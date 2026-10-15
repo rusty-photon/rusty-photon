@@ -15,6 +15,7 @@ use tracing::{debug, warn};
 
 use crate::config::Config;
 use crate::error::{FocusModelError, Result};
+use crate::lease;
 use crate::sizing::plan_sweep;
 use crate::store::{filter_sets_differ, fmt_filters, FocusRecord, FocusStore};
 use crate::sweep::check_span;
@@ -392,6 +393,7 @@ async fn resolve(
     params: &OffsetsParams,
 ) -> Result<Plan> {
     let ctx = resolve_train(rig, &params.train_id).await?;
+    ctx.check_training_run()?;
     let Some(wheel) = ctx.filter_wheel_id.clone() else {
         return Err(FocusModelError::Workflow(format!(
             "train '{}' has no filter wheel; an offset is a difference between filters",
@@ -441,6 +443,11 @@ async fn resolve(
         // run's to find.
         check_span(plan.half_width, plan.step_size)
             .map_err(|failure| FocusModelError::Workflow(failure.to_string()))?;
+        // So is a sweep too long for one train lease, on the guiding
+        // train where every sweep takes one.
+        if ctx.guiding {
+            lease::lease_duration(&ctx.train_id, &train, &plan)?;
+        }
     }
     Ok(Plan {
         ctx,
@@ -834,7 +841,7 @@ async fn restore(rig: Rig<'_>, plan: &Plan, started: &Started, measured: &Measur
         error: None,
     };
     if let Some(name) = &started.filter {
-        if let Err(error) = rig.cleanup.set_filter(&plan.wheel, name).await {
+        if let Err(error) = rig.cleanup.set_filter(&plan.wheel, name, None).await {
             note(&mut restored, error.tool_message());
             // The wheel is wherever the last sweep left it, so naming
             // the call's own filter would pair the reported position
@@ -920,7 +927,7 @@ async fn settle_at(
 ) -> (Option<i32>, Option<String>) {
     let mut last = None;
     for _ in 0..2 {
-        match rig.move_focuser(focuser_id, target).await {
+        match rig.move_focuser(focuser_id, target, None).await {
             Ok(reached) if reached == target => return (Some(reached), None),
             Ok(reached) => last = Some(reached),
             // A move that failed may have travelled before it did,
@@ -1081,6 +1088,12 @@ mod tests {
         /// Train reads to answer before the wheel reports the same
         /// filters in another order.
         reorders_filters_after: Arc<Mutex<Option<u32>>>,
+        /// The other trains the focuser is in, when this is the guiding
+        /// train, whose every sweep takes a train lease.
+        guiding: Arc<Mutex<Option<Vec<String>>>>,
+        /// The leases taken and released, and the lease each move and
+        /// filter change ran under, in order across both clients.
+        log: Arc<Mutex<Vec<String>>>,
     }
 
     /// How a focuser stops answering once its move budget runs out.
@@ -1116,7 +1129,19 @@ mod tests {
                 cancels_after: Arc::new(Mutex::new(None)),
                 relists_filters_after: Arc::new(Mutex::new(None)),
                 reorders_filters_after: Arc::new(Mutex::new(None)),
+                guiding: Arc::new(Mutex::new(None)),
+                log: Arc::new(Mutex::new(Vec::new())),
             }
+        }
+
+        /// Make this the guiding train, its focuser also in `shared_with`.
+        fn guides(&self, shared_with: &[&str]) {
+            *self.guiding.lock().unwrap() =
+                Some(shared_with.iter().map(|id| (*id).to_owned()).collect());
+        }
+
+        fn log(&self) -> Vec<String> {
+            self.log.lock().unwrap().clone()
         }
 
         /// The same wheel, read back in another order.
@@ -1190,6 +1215,7 @@ mod tests {
             let swaps = Arc::clone(&self.swaps_camera_after);
             let relists = Arc::clone(&self.relists_filters_after);
             let reorders = Arc::clone(&self.reorders_filters_after);
+            let guiding = Arc::clone(&self.guiding);
             rig.expect_get_train_info().returning(move |_| {
                 let seen = {
                     let mut seen = reads.lock().unwrap();
@@ -1199,8 +1225,13 @@ mod tests {
                 let swapped = swaps.lock().unwrap().is_some_and(|after| seen > after);
                 let relisted = relists.lock().unwrap().is_some_and(|after| seen > after);
                 let reordered = reorders.lock().unwrap().is_some_and(|after| seen > after);
+                let guiding = guiding.lock().unwrap().clone();
                 Box::pin(async move {
                     let mut info = train_info(true);
+                    if let Some(shared_with) = guiding {
+                        info.purpose = Some("guiding".to_owned());
+                        info.terminal_focuser_shared_with = shared_with;
+                    }
                     if swapped {
                         info.camera_id = Some("spare-cam".to_owned());
                     }
@@ -1237,13 +1268,19 @@ mod tests {
                 let seen = *reads.lock().unwrap();
                 cancels.lock().unwrap().is_some_and(|after| seen >= after)
             });
-            rig.expect_capture().returning(|_, _| {
+            rig.expect_capture().returning(|_, _, _| {
                 Box::pin(async {
                     Ok(CaptureResult {
                         document_id: "doc".to_owned(),
                     })
                 })
             });
+            let log = Arc::clone(&self.log);
+            rig.expect_acquire_train_lease()
+                .returning(move |_, lease_id, _| {
+                    log.lock().unwrap().push(format!("acquire {lease_id}"));
+                    Box::pin(async { Ok(()) })
+                });
             self.wire_focuser(&mut rig);
             self.wire_wheel(&mut rig);
             self.wire_measurement(&mut rig);
@@ -1257,6 +1294,11 @@ mod tests {
             let mut rig = MockFocusRig::new();
             self.wire_moves(&mut rig, &Arc::new(Mutex::new(None)));
             self.wire_wheel(&mut rig);
+            let log = Arc::clone(&self.log);
+            rig.expect_release_train_lease().returning(move |lease_id| {
+                log.lock().unwrap().push(format!("release {lease_id}"));
+                Box::pin(async { Ok(true) })
+            });
             let resumes = Arc::clone(&self.resumes);
             let loses_first = Arc::clone(&self.first_resume_fails);
             rig.expect_resume_guiding().returning(move || {
@@ -1294,7 +1336,11 @@ mod tests {
             let position = Arc::clone(&self.position);
             let budget = Arc::clone(budget);
             let failure_text = Arc::clone(&self.failure_text);
-            rig.expect_move_focuser().returning(move |_, to| {
+            let log = Arc::clone(&self.log);
+            rig.expect_move_focuser().returning(move |_, to, lease_id| {
+                log.lock()
+                    .unwrap()
+                    .push(format!("move {to} {}", lease_id.as_deref().unwrap_or("-")));
                 let spent = {
                     let mut budget = budget.lock().unwrap();
                     match budget.as_mut() {
@@ -1334,7 +1380,12 @@ mod tests {
                 Box::pin(async move { Ok(named.then_some(filter)) })
             });
             let filter = Arc::clone(&self.filter);
-            rig.expect_set_filter().returning(move |_, name| {
+            let log = Arc::clone(&self.log);
+            rig.expect_set_filter().returning(move |_, name, lease_id| {
+                log.lock().unwrap().push(format!(
+                    "filter {name} {}",
+                    lease_id.as_deref().unwrap_or("-")
+                ));
                 *filter.lock().unwrap() = name.to_owned();
                 Box::pin(async { Ok(()) })
             });
@@ -1373,6 +1424,8 @@ mod tests {
             filters: wheel.then(filters),
             filter_wavelengths_nm: None,
             terminal_focuser_id: Some("main-focuser".to_owned()),
+            terminal_focuser_shared_with: Vec::new(),
+            purpose: None,
             optics: Optics::default(),
         }
     }
@@ -1693,7 +1746,7 @@ mod tests {
             .returning(|_| Box::pin(async { Ok(Some("Luminance".to_owned())) }));
         cleanup
             .expect_set_filter()
-            .returning(|_, _| Box::pin(async { Ok(()) }));
+            .returning(|_, _, _| Box::pin(async { Ok(()) }));
         cleanup.expect_get_focuser_position().returning(|_| {
             Box::pin(async {
                 Ok(FocuserPosition {
@@ -1702,7 +1755,7 @@ mod tests {
                 })
             })
         });
-        cleanup.expect_move_focuser().returning(|_, _| {
+        cleanup.expect_move_focuser().returning(|_, _, _| {
             Box::pin(async {
                 Err(FocusModelError::ToolCall(
                     "move_focuser: the focuser is not responding".to_owned(),
@@ -2147,11 +2200,11 @@ mod tests {
         let mut cleanup = MockFocusRig::new();
         cleanup
             .expect_set_filter()
-            .returning(|_, _| Box::pin(async { Ok(()) }));
+            .returning(|_, _, _| Box::pin(async { Ok(()) }));
         cleanup
             .expect_get_filter()
             .returning(|_| Box::pin(async { Ok(Some("Luminance".to_owned())) }));
-        cleanup.expect_move_focuser().returning(|_, _| {
+        cleanup.expect_move_focuser().returning(|_, _, _| {
             Box::pin(async {
                 Err(FocusModelError::ToolCall(
                     "move_focuser: the focuser is not responding".to_owned(),
@@ -2418,5 +2471,100 @@ mod tests {
         assert_eq!(view.offsets.get("Ha"), Some(&0));
         assert_eq!(view.offsets.get("Luminance"), Some(&-30));
         assert_eq!(view.offsets.get("OIII"), Some(&-50));
+    }
+
+    // --- the guiding train ------------------------------------------------
+
+    /// Each sweep on the guiding train takes a lease of its own and
+    /// gives it back before the next one starts; the procedure's own
+    /// put-back, after the last of them, runs under none.
+    #[tokio::test]
+    async fn every_sweep_on_the_guiding_train_has_its_own_lease() {
+        let (store, _dir) = temp_store().await;
+        let bench = Bench::new(25_000, &[("Luminance", 25_000), ("Ha", 25_030)]);
+        bench.guides(&[]);
+        let params = OffsetsParams {
+            filters: Some(vec!["Luminance".to_owned(), "Ha".to_owned()]),
+            ..params(1)
+        };
+
+        let view = run(&bench, &store, &params).await.unwrap();
+
+        assert_eq!(view.offsets.get("Ha"), Some(&30));
+        let log = bench.log();
+        let leases: Vec<(usize, &str)> = log
+            .iter()
+            .enumerate()
+            .filter_map(|(at, entry)| entry.strip_prefix("acquire ").map(|id| (at, id)))
+            .collect();
+        assert_eq!(leases.len(), 2, "one lease per sweep: {log:?}");
+        assert_ne!(leases[0].1, leases[1].1, "a fresh id each time");
+        for (n, (at, id)) in leases.iter().enumerate() {
+            let release = log
+                .iter()
+                .position(|entry| *entry == format!("release {id}"))
+                .unwrap_or_else(|| panic!("lease {id} was never released: {log:?}"));
+            let next = leases.get(n + 1).map_or(log.len(), |(next, _)| *next);
+            assert!(release < next, "lease {id} outlived its sweep: {log:?}");
+            for entry in &log[at + 1..release] {
+                assert!(
+                    entry.ends_with(&format!(" {id}")),
+                    "{entry} ran outside {id}"
+                );
+            }
+        }
+        let last_release = log
+            .iter()
+            .rposition(|entry| entry.starts_with("release "))
+            .unwrap();
+        let put_back = &log[last_release + 1..];
+        assert!(
+            !put_back.is_empty(),
+            "the procedure put the rig back: {log:?}"
+        );
+        for entry in put_back {
+            assert!(entry.ends_with(" -"), "{entry} ran under a lease");
+        }
+    }
+
+    /// The guard and the lease's size are facts about the train, so
+    /// the procedure refuses on them before its first sweep.
+    #[tokio::test]
+    async fn the_guiding_train_is_refused_up_front_on_a_shared_focuser_or_an_oversize_lease() {
+        let (store, _dir) = temp_store().await;
+        let bench = Bench::new(25_000, &[("Luminance", 25_000)]);
+        bench.guides(&["main-imaging"]);
+        let rig = bench.rig();
+
+        let err = resolve(&rig, &store, &config(), &params(1))
+            .await
+            .unwrap_err();
+        assert!(
+            err.tool_message().contains("has no focuser of its own"),
+            "{err}"
+        );
+
+        bench.guides(&[]);
+        let long = crate::config::parse_config(
+            r#"{
+                "mcp_server_url": "http://127.0.0.1:1/mcp",
+                "trains": {
+                    "main": {
+                        "duration": "60s", "step_size": 10, "half_width": 60,
+                        "frames_per_step": 5, "max_attempts": 5
+                    }
+                }
+            }"#,
+            "test",
+        )
+        .unwrap();
+        let err = resolve(&rig, &store, &long, &params(1)).await.unwrap_err();
+        assert!(
+            err.tool_message()
+                .contains("longer than the 10m a lease may last"),
+            "{err}"
+        );
+        assert_eq!(bench.at(), 25_000, "nothing moved");
+        assert!(bench.log().is_empty(), "{:?}", bench.log());
     }
 }

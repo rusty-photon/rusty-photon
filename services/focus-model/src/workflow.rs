@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::{Config, TrainConfig};
 use crate::error::{FocusModelError, Result};
+use crate::lease;
 use crate::prediction::{predict, Bounds, Prediction};
 use crate::sizing::{plan_sweep, Optics, SweepPlan};
 use crate::store::{
@@ -52,6 +53,12 @@ pub struct TrainInfo {
     /// The focuser the train's own sweep moves; `None` without one.
     #[serde(default)]
     pub terminal_focuser_id: Option<String>,
+    /// The other trains the terminal focuser is a member of.
+    #[serde(default)]
+    pub terminal_focuser_shared_with: Vec<String>,
+    /// `"imaging"` or `"guiding"`.
+    #[serde(default)]
+    pub purpose: Option<String>,
     #[serde(default)]
     pub optics: Optics,
 }
@@ -152,6 +159,9 @@ pub struct GuideFocusResult {
 
 /// The `rp` tools the workflow drives, behind a trait so the bodies can
 /// be tested against a mock rig.
+///
+/// A move, a filter change and a capture take the train lease a
+/// training run holds (`lease_id`), and `None` everywhere else.
 #[async_trait]
 #[cfg_attr(test, mockall::automock)]
 pub trait FocusRig: Send + Sync {
@@ -160,11 +170,26 @@ pub trait FocusRig: Send + Sync {
     async fn get_focuser_position(&self, focuser_id: &str) -> Result<FocuserPosition>;
     /// `None` when the focuser implements no probe.
     async fn get_focuser_temperature(&self, focuser_id: &str) -> Result<Option<f64>>;
-    async fn move_focuser(&self, focuser_id: &str, position: i32) -> Result<i32>;
+    async fn move_focuser(
+        &self,
+        focuser_id: &str,
+        position: i32,
+        lease_id: Option<String>,
+    ) -> Result<i32>;
     /// The filter now in the path; `None` when the wheel reports none.
     async fn get_filter(&self, filter_wheel_id: &str) -> Result<Option<String>>;
-    async fn set_filter(&self, filter_wheel_id: &str, filter: &str) -> Result<()>;
-    async fn capture(&self, train_id: &str, duration: Duration) -> Result<CaptureResult>;
+    async fn set_filter(
+        &self,
+        filter_wheel_id: &str,
+        filter: &str,
+        lease_id: Option<String>,
+    ) -> Result<()>;
+    async fn capture(
+        &self,
+        train_id: &str,
+        duration: Duration,
+        lease_id: Option<String>,
+    ) -> Result<CaptureResult>;
     async fn measure_stars(
         &self,
         document_id: &str,
@@ -179,6 +204,16 @@ pub trait FocusRig: Send + Sync {
     async fn resume_guiding(&self) -> Result<()>;
     /// `rp`'s PHD2-metric sweep on the guiding train.
     async fn auto_focus_guide_train(&self, train_id: &str) -> Result<GuideFocusResult>;
+    /// Take `rp`'s train lease on `train_id` under `lease_id`, for at
+    /// most `max_duration` from its grant; answers once it is granted.
+    async fn acquire_train_lease(
+        &self,
+        train_id: &str,
+        lease_id: &str,
+        max_duration: Duration,
+    ) -> Result<()>;
+    /// Release the train lease `lease_id`; whether `rp` held it.
+    async fn release_train_lease(&self, lease_id: &str) -> Result<bool>;
     /// Whether the caller has cancelled, checked between calls.
     fn is_cancelled(&self) -> bool;
 }
@@ -351,6 +386,11 @@ pub struct TrainContext {
     pub filters: Option<Vec<String>>,
     pub wavelengths: BTreeMap<String, Option<f64>>,
     pub optics: Optics,
+    /// Whether this is the guiding train, whose training run takes
+    /// `rp`'s train lease.
+    pub guiding: bool,
+    /// The other trains the terminal focuser is a member of.
+    pub focuser_shared_with: Vec<String>,
 }
 
 impl TrainContext {
@@ -368,6 +408,37 @@ impl TrainContext {
     #[must_use]
     pub fn wavelength_of(&self, filter: Option<&str>) -> Option<f64> {
         self.wavelengths.get(filter?).copied().flatten()
+    }
+
+    /// Refuse a training run on a guiding train whose terminal focuser
+    /// another train also has. That train is an imaging train, since
+    /// `rp` allows one guiding train, and its sweep focuses the guide
+    /// path: the guide path has no focus of its own to train
+    /// (focus-model.md § Training runs on a guiding train).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FocusModelError::Workflow`] naming the other trains.
+    pub fn check_training_run(&self) -> Result<()> {
+        if !self.guiding || self.focuser_shared_with.is_empty() {
+            return Ok(());
+        }
+        let names = self
+            .focuser_shared_with
+            .iter()
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let (trains, sweep) = if self.focuser_shared_with.len() == 1 {
+            ("train", "whose sweep focuses it")
+        } else {
+            ("trains", "whose sweeps focus it")
+        };
+        Err(FocusModelError::Workflow(format!(
+            "guiding train '{}' has no focuser of its own: its terminal focuser '{}' is in \
+             {trains} {names}, {sweep}",
+            self.train_id, self.focuser_id
+        )))
     }
 
     /// Check a requested filter against the wheel.
@@ -417,6 +488,8 @@ pub async fn resolve_train(rig: &dyn FocusRig, train_id: &str) -> Result<TrainCo
         filters: info.filters,
         wavelengths: info.filter_wavelengths_nm.unwrap_or_default(),
         optics: info.optics,
+        guiding: info.purpose.as_deref() == Some("guiding"),
+        focuser_shared_with: info.terminal_focuser_shared_with,
     })
 }
 
@@ -449,6 +522,9 @@ struct RigSweep<'a> {
     rig: &'a dyn FocusRig,
     train_id: String,
     focuser_id: String,
+    /// The training run's train lease, which every move and capture
+    /// runs under.
+    lease_id: Option<String>,
     train: TrainConfig,
     progress: &'a dyn Progress,
     frames: Mutex<f64>,
@@ -478,7 +554,9 @@ pub(crate) const fn lower_middle(len: usize) -> usize {
 #[async_trait]
 impl SweepOps for RigSweep<'_> {
     async fn move_focuser(&self, position: i32) -> std::result::Result<i32, FocusModelError> {
-        self.rig.move_focuser(&self.focuser_id, position).await
+        self.rig
+            .move_focuser(&self.focuser_id, position, self.lease_id.clone())
+            .await
     }
 
     async fn measure(&self) -> std::result::Result<Measurement, FocusModelError> {
@@ -488,7 +566,7 @@ impl SweepOps for RigSweep<'_> {
         for _ in 0..self.train.frames_per_step.get() {
             let frame = self
                 .rig
-                .capture(&self.train_id, self.train.duration)
+                .capture(&self.train_id, self.train.duration, self.lease_id.clone())
                 .await?;
             let measured = self
                 .rig
@@ -552,6 +630,9 @@ struct Guard {
     focuser_id: String,
     started_at: i32,
     guiding_paused: bool,
+    /// The training run's train lease, which the put-back's move runs
+    /// under while `rp` still holds it.
+    lease_id: Option<String>,
 }
 
 impl Guard {
@@ -601,7 +682,13 @@ impl Guard {
     /// somewhere else is named rather than assumed home.
     async fn restore(&self, rig: &dyn FocusRig) -> Result<()> {
         for attempt in 0..2 {
-            rig.move_focuser(&self.focuser_id, self.started_at).await?;
+            put_back_move(
+                rig,
+                &self.focuser_id,
+                self.started_at,
+                self.lease_id.as_deref(),
+            )
+            .await?;
             let seen = rig.get_focuser_position(&self.focuser_id).await?.position;
             if seen == self.started_at {
                 return Ok(());
@@ -618,6 +705,34 @@ impl Guard {
             "the focuser did not settle at {}",
             self.started_at
         )))
+    }
+}
+
+/// A put-back's move, under the run's lease. `rp` refuses a call under a
+/// lease it no longer holds (one that ended idle, at its
+/// `max_duration`, on the safety transition, or with its facade lease
+/// lost), and the put-back is then sent again without the lease, as an
+/// ordinary move that waits its turn.
+async fn put_back_move(
+    rig: &dyn FocusRig,
+    focuser_id: &str,
+    position: i32,
+    lease_id: Option<&str>,
+) -> Result<i32> {
+    match rig
+        .move_focuser(focuser_id, position, lease_id.map(str::to_owned))
+        .await
+    {
+        Err(e) if lease_id.is_some_and(|id| lease::is_not_held(&e, id)) => {
+            debug!(
+                focuser_id,
+                position,
+                error = %e,
+                "the train lease is no longer held; putting the focuser back without it"
+            );
+            rig.move_focuser(focuser_id, position, None).await
+        }
+        moved => moved,
     }
 }
 
@@ -903,6 +1018,57 @@ pub(crate) async fn focus_one(
         let e = FocusModelError::Sweep(failure.to_string());
         return Err(refuse(session, &prepared, run_base, e).await);
     }
+    // A training run on the guiding train takes the train lease before
+    // the handshake and the first move, so a guiding PHD2 is refused
+    // here, before anything pauses or moves.
+    let lease_id = match take_lease(session, &prepared).await {
+        Ok(lease_id) => lease_id,
+        Err(e) => return Err(refuse(session, &prepared, run_base, e).await),
+    };
+    let swept = sweep_prepared(
+        session,
+        prepared,
+        run_base,
+        Under {
+            params,
+            guiding,
+            lease_id: lease_id.as_deref(),
+        },
+        progress,
+        outstanding,
+    )
+    .await;
+    // After the put-back, whatever the sweep did.
+    if let Some(lease_id) = &lease_id {
+        release_lease(session.rig.cleanup, lease_id).await;
+    }
+    swept
+}
+
+/// What a prepared sweep runs under: its grid, who owns the guiding
+/// handshake, and the training run's train lease.
+#[derive(Clone, Copy)]
+struct Under<'a> {
+    params: SweepParams,
+    guiding: Guiding,
+    lease_id: Option<&'a str>,
+}
+
+/// The sweep after its refusals and its lease: the handshake, the
+/// approach, the walk, and the put-back and record on every exit.
+async fn sweep_prepared(
+    session: Session<'_>,
+    prepared: Prepared,
+    run_base: FocusRun,
+    under: Under<'_>,
+    progress: &dyn Progress,
+    outstanding: &mut Outstanding,
+) -> Result<FocusTrainOutcome> {
+    let Under {
+        params,
+        guiding,
+        lease_id,
+    } = under;
     let guiding_paused = match guiding {
         Guiding::Own => match pause_for_sweep(session.rig.active, &prepared.ctx).await {
             Ok(paused) => paused,
@@ -916,9 +1082,10 @@ pub(crate) async fn focus_one(
         focuser_id: prepared.ctx.focuser_id.clone(),
         started_at: prepared.start.position.position,
         guiding_paused: guiding_paused && matches!(guiding, Guiding::Own),
+        lease_id: lease_id.map(str::to_owned),
     };
 
-    let centre = match approach(session.rig, &prepared).await {
+    let centre = match approach(session.rig, &prepared, lease_id).await {
         Ok(centre) => centre,
         Err(e) => return Err(abandon(session, &guard, &prepared, run_base, e, outstanding).await),
     };
@@ -927,6 +1094,7 @@ pub(crate) async fn focus_one(
         rig: session.rig.active,
         train_id: prepared.ctx.train_id.clone(),
         focuser_id: prepared.ctx.focuser_id.clone(),
+        lease_id: lease_id.map(str::to_owned),
         train: prepared.train.clone(),
         progress,
         frames: Mutex::new(0.0),
@@ -952,6 +1120,51 @@ pub(crate) async fn focus_one(
             let error = failure_error(&failure, &mut run, &prepared.prediction);
             Err(put_back_and_record(session, &guard, &prepared.ctx, run, error, outstanding).await)
         }
+    }
+}
+
+/// Take `rp`'s train lease for a training run on the guiding train,
+/// sized from its sweep: `None` for an imaging train, which takes none
+/// (focus-model.md § Training runs on a guiding train).
+///
+/// An acquire that fails is released all the same: one the caller gave
+/// up on may have been granted after it stopped waiting.
+async fn take_lease(session: Session<'_>, prepared: &Prepared) -> Result<Option<String>> {
+    if !prepared.ctx.guiding {
+        return Ok(None);
+    }
+    let train_id = &prepared.ctx.train_id;
+    let max_duration = lease::lease_duration(train_id, &prepared.train, &prepared.plan)?;
+    let lease_id = lease::fresh_id();
+    debug!(
+        train_id = %train_id,
+        lease_id = %lease_id,
+        max_duration = %humantime::format_duration(max_duration),
+        "taking the train lease for a training run"
+    );
+    if let Err(e) = session
+        .rig
+        .active
+        .acquire_train_lease(train_id, &lease_id, max_duration)
+        .await
+    {
+        release_lease(session.rig.cleanup, &lease_id).await;
+        return Err(e);
+    }
+    Ok(Some(lease_id))
+}
+
+/// Release a training run's train lease, on the cleanup rig. A release
+/// that fails is logged, not raised: the lease ends on its own 60 s
+/// after its last call.
+pub(crate) async fn release_lease(rig: &dyn FocusRig, lease_id: &str) {
+    match rig.release_train_lease(lease_id).await {
+        Ok(released) => debug!(lease_id, released, "released the train lease"),
+        Err(e) => warn!(
+            lease_id,
+            error = %e,
+            "could not release the train lease; it ends 60 s after its last call"
+        ),
     }
 }
 
@@ -982,15 +1195,21 @@ pub(crate) fn within_travel(position: &FocuserPosition) -> Result<()> {
 
 /// Move to the predicted start and put the requested filter in the
 /// path: everything between the reads and the walk.
-async fn approach(rig: Rig<'_>, prepared: &Prepared) -> Result<i32> {
+async fn approach(rig: Rig<'_>, prepared: &Prepared, lease_id: Option<&str>) -> Result<i32> {
     let ctx = &prepared.ctx;
     let centre = match (prepared.prediction.moved, prepared.prediction.start) {
-        (true, Some(start)) => rig.active.move_focuser(&ctx.focuser_id, start).await?,
+        (true, Some(start)) => {
+            rig.active
+                .move_focuser(&ctx.focuser_id, start, lease_id.map(str::to_owned))
+                .await?
+        }
         _ => prepared.start.position.position,
     };
     if let (Some(wheel), Some(name)) = (&ctx.filter_wheel_id, prepared.filter.as_deref()) {
         if prepared.start.filter.as_deref() != Some(name) {
-            rig.active.set_filter(wheel, name).await?;
+            rig.active
+                .set_filter(wheel, name, lease_id.map(str::to_owned))
+                .await?;
         }
     }
     Ok(centre)
@@ -1203,6 +1422,7 @@ async fn prepare(
     params: &FocusTrainParams,
 ) -> Result<Prepared> {
     let ctx = resolve_train(rig, &params.train_id).await?;
+    ctx.check_training_run()?;
     let start = read_start(rig, &ctx).await?;
     let filter = sweep_filter(&ctx, params, &start)?;
     let (record, stale) = load_record(store, &ctx).await?;
@@ -1809,6 +2029,8 @@ mod tests {
                 .into()
             }),
             terminal_focuser_id: focuser.then(|| "main-focuser".to_owned()),
+            terminal_focuser_shared_with: Vec::new(),
+            purpose: None,
             optics: Optics::default(),
         }
     }
@@ -1892,11 +2114,11 @@ mod tests {
             .returning(|_| Box::pin(async { Ok(Some("Luminance".to_owned())) }));
         rig.expect_is_cancelled().returning(|| false);
         let at = position.clone();
-        rig.expect_move_focuser().returning(move |_, to| {
+        rig.expect_move_focuser().returning(move |_, to, _| {
             at.set(to);
             Box::pin(async move { Ok(to) })
         });
-        rig.expect_capture().returning(|_, _| {
+        rig.expect_capture().returning(|_, _, _| {
             Box::pin(async {
                 Ok(CaptureResult {
                     document_id: "doc".to_owned(),
@@ -1939,9 +2161,9 @@ mod tests {
         let mut rig = MockFocusRig::new();
         let at = position.clone();
         rig.expect_move_focuser()
-            .withf(move |_, to| *to == restore_to)
+            .withf(move |_, to, _| *to == restore_to)
             .times(1)
-            .returning(move |_, to| {
+            .returning(move |_, to, _| {
                 at.set(to);
                 Box::pin(async move { Ok(to) })
             });
@@ -2297,7 +2519,7 @@ mod tests {
         let captures = Arc::new(Mutex::new(0_u32));
         // Registered before `base_rig`'s, so this answer wins: the first
         // walk's nine frames and one more, then the camera stops.
-        active.expect_capture().returning(move |_, _| {
+        active.expect_capture().returning(move |_, _, _| {
             let capture = {
                 let mut captures = captures.lock().unwrap();
                 *captures += 1;
@@ -2403,9 +2625,9 @@ mod tests {
         measures_a_v(&mut active, &position, 25_010);
         active
             .expect_set_filter()
-            .withf(|wheel, filter| wheel == "main-fw" && filter == "Ha")
+            .withf(|wheel, filter, _| wheel == "main-fw" && filter == "Ha")
             .times(1)
-            .returning(|_, _| Box::pin(async { Ok(()) }));
+            .returning(|_, _, _| Box::pin(async { Ok(()) }));
         let cleanup = MockFocusRig::new();
 
         let outcome = focus_train(
@@ -2965,7 +3187,7 @@ mod tests {
         store.put(record).await.unwrap();
 
         let mut active = MockFocusRig::new();
-        active.expect_move_focuser().returning(|_, _| {
+        active.expect_move_focuser().returning(|_, _, _| {
             Box::pin(async { Err(FocusModelError::ToolCall("focuser jammed".to_owned())) })
         });
         let mut active = base_rig(active, &position);
@@ -3472,7 +3694,7 @@ mod tests {
         let at = position.clone();
         let moves = Arc::new(Mutex::new(0_u32));
         let counted = Arc::clone(&moves);
-        cleanup.expect_move_focuser().returning(move |_, to| {
+        cleanup.expect_move_focuser().returning(move |_, to, _| {
             let mut count = counted.lock().unwrap();
             *count += 1;
             // The abandoned sweep move lands after the first put-back.
@@ -3709,5 +3931,386 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(runs.runs[0].curve_points.len(), 2, "the samples live here");
+    }
+
+    // --- training runs on a guiding train ---------------------------------
+
+    /// The guiding train's sweep: 9 points, one attempt.
+    const GUIDING: &str = r#"{
+        "mcp_server_url": "http://127.0.0.1:1/mcp",
+        "trains": {
+            "guide": {
+                "duration": "10ms", "step_size": 10, "half_width": 40,
+                "min_fit_points": 3, "max_attempts": 1
+            }
+        }
+    }"#;
+
+    /// The lease `GUIDING`'s sweep asks for: 10 frames at 10 ms + 2 s
+    /// and 12 moves at 2 s is 45 s, and half again is 68 s.
+    const GUIDING_LEASE: &str = "1m 8s";
+
+    fn guiding_info(shared_with: &[&str]) -> TrainInfo {
+        TrainInfo {
+            purpose: Some("guiding".to_owned()),
+            terminal_focuser_shared_with: shared_with.iter().map(|id| (*id).to_owned()).collect(),
+            ..train_info(false, true, true)
+        }
+    }
+
+    fn guide_params() -> FocusTrainParams {
+        FocusTrainParams {
+            train_id: "guide".to_owned(),
+            filter: None,
+            shared: false,
+        }
+    }
+
+    /// What the rig was asked, in order, across both clients.
+    #[derive(Clone, Default)]
+    struct Log(Arc<Mutex<Vec<String>>>);
+
+    impl Log {
+        fn push(&self, entry: String) {
+            self.0.lock().unwrap().push(entry);
+        }
+
+        fn entries(&self) -> Vec<String> {
+            self.0.lock().unwrap().clone()
+        }
+
+        /// The id the run's lease was acquired under.
+        fn lease_id(&self) -> String {
+            let entries = self.entries();
+            let acquire = entries
+                .iter()
+                .find(|entry| entry.starts_with("acquire "))
+                .unwrap_or_else(|| panic!("no lease was acquired: {entries:?}"));
+            acquire.split(' ').nth(2).unwrap().to_owned()
+        }
+    }
+
+    fn lease_name(lease_id: Option<String>) -> String {
+        lease_id.unwrap_or_else(|| "-".to_owned())
+    }
+
+    /// The guiding train's active client, logging the acquire, the
+    /// guider read, and each move and capture with the lease it ran
+    /// under. Its plan is guide-coupled, so the handshake reads the
+    /// guider, which reports no loop: PHD2 is `Stopped` under a lease.
+    /// An answer `rig` already holds keeps winning.
+    fn guiding_rig(
+        mut rig: MockFocusRig,
+        position: &Position,
+        log: &Log,
+        refusal: Option<&'static str>,
+    ) -> MockFocusRig {
+        rig.expect_get_train_info()
+            .returning(|_| Box::pin(async { Ok(guiding_info(&[])) }));
+        rig.expect_get_refocus_plan().returning(|_| {
+            Box::pin(async {
+                Ok(RefocusPlan {
+                    guide_coupled: true,
+                    ..RefocusPlan::default()
+                })
+            })
+        });
+        let seen = log.clone();
+        rig.expect_guiding_active().returning(move || {
+            seen.push("guiding?".to_owned());
+            Box::pin(async { Ok(false) })
+        });
+        let seen = log.clone();
+        rig.expect_acquire_train_lease()
+            .returning(move |train_id, lease_id, max_duration| {
+                seen.push(format!(
+                    "acquire {train_id} {lease_id} {}",
+                    humantime::format_duration(max_duration)
+                ));
+                Box::pin(async move {
+                    match refusal {
+                        Some(text) => Err(FocusModelError::ToolCall(text.to_owned())),
+                        None => Ok(()),
+                    }
+                })
+            });
+        let (seen, at) = (log.clone(), position.clone());
+        rig.expect_move_focuser().returning(move |_, to, lease_id| {
+            seen.push(format!("move {to} {}", lease_name(lease_id)));
+            at.set(to);
+            Box::pin(async move { Ok(to) })
+        });
+        let seen = log.clone();
+        rig.expect_capture().returning(move |_, _, lease_id| {
+            seen.push(format!("capture {}", lease_name(lease_id)));
+            Box::pin(async {
+                Ok(CaptureResult {
+                    document_id: "doc".to_owned(),
+                })
+            })
+        });
+        base_rig(rig, position)
+    }
+
+    /// The put-back client, logging each move with its lease and the
+    /// release. With `held` false `rp` has ended the lease, and refuses
+    /// a move under it.
+    fn guiding_cleanup(position: &Position, log: &Log, held: bool) -> MockFocusRig {
+        let mut rig = MockFocusRig::new();
+        let (seen, at) = (log.clone(), position.clone());
+        rig.expect_move_focuser().returning(move |_, to, lease_id| {
+            seen.push(format!("put back {to} {}", lease_name(lease_id.clone())));
+            if let (false, Some(id)) = (held, lease_id) {
+                let text =
+                    format!("move_focuser: lease '{id}' is not held: it reached its max_duration");
+                return Box::pin(async move { Err(FocusModelError::ToolCall(text)) });
+            }
+            at.set(to);
+            Box::pin(async move { Ok(to) })
+        });
+        let at = position.clone();
+        rig.expect_get_focuser_position().returning(move |_| {
+            let position = at.get();
+            Box::pin(async move {
+                Ok(FocuserPosition {
+                    position,
+                    ..FocuserPosition::default()
+                })
+            })
+        });
+        let seen = log.clone();
+        rig.expect_release_train_lease().returning(move |lease_id| {
+            seen.push(format!("release {lease_id}"));
+            Box::pin(async { Ok(true) })
+        });
+        rig
+    }
+
+    async fn train_guide(
+        active: &MockFocusRig,
+        cleanup: &MockFocusRig,
+        json: &str,
+        store: &FocusStore,
+    ) -> Result<FocusTrainOutcome> {
+        focus_train(
+            Rig { active, cleanup },
+            store,
+            &config(json),
+            &guide_params(),
+            &NoProgress,
+        )
+        .await
+    }
+
+    /// A guiding train whose only focuser is the imaging train's has no
+    /// focus of its own to train: refused at the train read, before the
+    /// focuser is read or anything moves, and with no run recorded.
+    #[tokio::test]
+    async fn a_guiding_train_on_an_imaging_trains_focuser_is_refused_before_anything_is_read() {
+        let mut active = MockFocusRig::new();
+        active
+            .expect_get_train_info()
+            .returning(|_| Box::pin(async { Ok(guiding_info(&["main"])) }));
+        let cleanup = MockFocusRig::new();
+        let (store, _dir) = temp_store().await;
+
+        let err = train_guide(&active, &cleanup, GUIDING, &store)
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            err.tool_message(),
+            "guiding train 'guide' has no focuser of its own: its terminal focuser \
+             'main-focuser' is in train 'main', whose sweep focuses it"
+        );
+        assert!(
+            store.get("guide").await.unwrap().is_none(),
+            "nothing recorded"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_refusal_names_every_train_that_has_the_focuser() {
+        let mut rig = MockFocusRig::new();
+        rig.expect_get_train_info()
+            .returning(|_| Box::pin(async { Ok(guiding_info(&["main", "wide"])) }));
+        let ctx = resolve_train(&rig, "guide").await.unwrap();
+        assert_eq!(
+            ctx.check_training_run().unwrap_err().tool_message(),
+            "guiding train 'guide' has no focuser of its own: its terminal focuser \
+             'main-focuser' is in trains 'main', 'wide', whose sweeps focus it"
+        );
+    }
+
+    /// The guard is the guiding train's alone: an imaging train shares
+    /// its focuser with the guiding train and is focused as ever.
+    #[tokio::test]
+    async fn an_imaging_train_sharing_its_focuser_is_no_training_run() {
+        let mut rig = MockFocusRig::new();
+        rig.expect_get_train_info().returning(|_| {
+            Box::pin(async {
+                Ok(TrainInfo {
+                    purpose: Some("imaging".to_owned()),
+                    terminal_focuser_shared_with: vec!["guide".to_owned()],
+                    ..train_info(false, true, true)
+                })
+            })
+        });
+        let ctx = resolve_train(&rig, "main").await.unwrap();
+        assert!(!ctx.guiding);
+        ctx.check_training_run().unwrap();
+    }
+
+    /// One lease covers the run: taken before the handshake, every
+    /// move and capture under it, the put-back too, and released last.
+    #[tokio::test]
+    async fn a_training_run_holds_one_lease_from_before_the_handshake_to_after_the_put_back() {
+        let position = Position::new(25_000);
+        let log = Log::default();
+        let mut active = guiding_rig(MockFocusRig::new(), &position, &log, None);
+        measures_nothing(&mut active);
+        let cleanup = guiding_cleanup(&position, &log, true);
+        let (store, _dir) = temp_store().await;
+
+        let err = train_guide(&active, &cleanup, GUIDING, &store)
+            .await
+            .unwrap_err();
+
+        assert!(err.tool_message().starts_with("not enough stars"), "{err}");
+        let id = log.lease_id();
+        assert!(id.starts_with("focus-model-"), "{id}");
+        let entries = log.entries();
+        let (head, rest) = entries.split_at(2);
+        assert_eq!(
+            head,
+            [
+                format!("acquire guide {id} {GUIDING_LEASE}"),
+                "guiding?".to_owned()
+            ],
+            "the lease comes before the handshake"
+        );
+        let (walk, tail) = rest.split_at(rest.len() - 2);
+        assert_eq!(walk.len(), 18, "a move and a capture per point: {walk:?}");
+        for entry in walk {
+            assert!(
+                entry.ends_with(&format!(" {id}")),
+                "{entry} ran outside the lease"
+            );
+        }
+        assert_eq!(
+            tail,
+            [format!("put back 25000 {id}"), format!("release {id}")]
+        );
+        assert_eq!(position.get(), 25_000);
+    }
+
+    /// A lease `rp` refuses is the run's failure: nothing pauses or
+    /// moves, the id is released all the same, and the run is recorded.
+    #[tokio::test]
+    async fn a_refused_lease_moves_nothing_is_released_and_is_recorded() {
+        let position = Position::new(25_000);
+        let log = Log::default();
+        let refusal = "acquire_train_lease: the camera facade 'guide-cam' refused the sweep \
+                       lease: PHD2 is Guiding";
+        let active = guiding_rig(MockFocusRig::new(), &position, &log, Some(refusal));
+        let cleanup = guiding_cleanup(&position, &log, true);
+        let (store, _dir) = temp_store().await;
+
+        let err = train_guide(&active, &cleanup, GUIDING, &store)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.tool_message(), refusal);
+        let id = log.lease_id();
+        assert_eq!(
+            log.entries(),
+            [
+                format!("acquire guide {id} {GUIDING_LEASE}"),
+                format!("release {id}")
+            ]
+        );
+        assert_eq!(position.get(), 25_000);
+        let record = store.get("guide").await.unwrap().unwrap();
+        assert_eq!(record.runs.len(), 1);
+        assert!(
+            record.runs[0]
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("PHD2 is Guiding")),
+            "{:?}",
+            record.runs[0].error
+        );
+    }
+
+    /// A lease that ended under the run fails its next call; the
+    /// put-back `rp` refuses under it goes again as an ordinary move.
+    #[tokio::test]
+    async fn a_put_back_the_ended_lease_refuses_is_sent_again_without_it() {
+        let position = Position::new(25_000);
+        let log = Log::default();
+        let mut active = MockFocusRig::new();
+        let seen = log.clone();
+        active.expect_capture().returning(move |_, _, lease_id| {
+            let lease = lease_name(lease_id);
+            seen.push(format!("capture {lease}"));
+            let text = format!("capture: lease '{lease}' is not held: it reached its max_duration");
+            Box::pin(async move { Err(FocusModelError::ToolCall(text)) })
+        });
+        let active = guiding_rig(active, &position, &log, None);
+        let cleanup = guiding_cleanup(&position, &log, false);
+        let (store, _dir) = temp_store().await;
+
+        let err = train_guide(&active, &cleanup, GUIDING, &store)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.tool_message()
+                .contains("is not held: it reached its max_duration"),
+            "{err}"
+        );
+        let id = log.lease_id();
+        let entries = log.entries();
+        assert_eq!(
+            entries[entries.len() - 3..],
+            [
+                format!("put back 25000 {id}"),
+                "put back 25000 -".to_owned(),
+                format!("release {id}"),
+            ]
+        );
+        assert_eq!(position.get(), 25_000);
+    }
+
+    /// A run that cannot finish inside the longest lease is refused
+    /// before the lease is asked for, and recorded.
+    #[tokio::test]
+    async fn a_run_longer_than_a_lease_is_refused_before_the_acquire() {
+        let position = Position::new(25_000);
+        let log = Log::default();
+        let active = guiding_rig(MockFocusRig::new(), &position, &log, None);
+        let cleanup = MockFocusRig::new();
+        let (store, _dir) = temp_store().await;
+        let long = r#"{
+            "mcp_server_url": "http://127.0.0.1:1/mcp",
+            "trains": {
+                "guide": {
+                    "duration": "60s", "step_size": 10, "half_width": 40,
+                    "frames_per_step": 5, "max_attempts": 5
+                }
+            }
+        }"#;
+
+        let err = train_guide(&active, &cleanup, long, &store)
+            .await
+            .unwrap_err();
+
+        assert!(
+            err.tool_message()
+                .contains("longer than the 10m a lease may last"),
+            "{err}"
+        );
+        assert!(log.entries().is_empty(), "{:?}", log.entries());
+        assert_eq!(store.get("guide").await.unwrap().unwrap().runs.len(), 1);
     }
 }

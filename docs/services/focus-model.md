@@ -95,7 +95,8 @@ emits `focus_complete` from it (or `focus_failed` from the error).
   └───────────────────┘            │                           │        └───────────────┼────────────┘
                                    │ get_train_info, get_refocus_plan, get_focuser_position, get_focuser_temperature,
                                    │ get_filter, set_filter, move_focuser, capture, measure_stars,
-                                   │ get_guiding_stats, pause_guiding, resume_guiding, auto_focus (guide step)
+                                   │ get_guiding_stats, pause_guiding, resume_guiding, auto_focus (guide step),
+                                   │ acquire_train_lease, release_train_lease (a guiding train's training run)
                                    └───────────────────────────┘
 ```
 
@@ -170,7 +171,9 @@ confirms, records.
    the sweep runs without it. A `filter` argument must name a wheel
    filter; on a train without a wheel it is an error. The sweep's
    filter is the argument when given, else the current one, else
-   null on a filterless train.
+   null on a filterless train. A guiding train whose terminal focuser
+   an imaging train also has is refused here ([Training runs on a
+   guiding train](#training-runs-on-a-guiding-train)).
 2. Loads the train's record and judges it against the live train
    ([Store](#store)). A stale record predicts nothing.
 3. Sizes the sweep ([Sweep sizing](#sweep-sizing)) for the filter's
@@ -178,6 +181,9 @@ confirms, records.
 4. Refuses, before anything moves, a focuser parked outside the
    travel `rp` reports: the sweep's grid would clamp into range and
    the put-back could not climb back out.
+   On a guiding train it then takes `rp`'s train lease, sized from the
+   sweep ([Training runs on a guiding
+   train](#training-runs-on-a-guiding-train)).
 5. Pauses guide corrections when the focuser is guide-coupled and
    guiding is active ([Guiding](#guiding)) — before anything moves, so
    no correction chases the focuser. A guider that will not pause
@@ -188,7 +194,8 @@ confirms, records.
    current one.
 7. Runs the [sweep](#the-sweep): attempts, gate, fit, confirmation.
 8. Resumes guiding, appends the run to the record, updates the
-   filter's last good focus on a confirmed result, and answers.
+   filter's last good focus on a confirmed result, releases the train
+   lease if it took one, and answers.
 
 One focus run at a time: a second `focus_train` while one is in
 flight is refused rather than queued, because the two would move the
@@ -321,7 +328,11 @@ differences.
    `focus_train` calls through `rp`: the procedure holds the
    one-run-at-a-time claim for its whole length, so reaching its own
    tool through `rp` would leave it waiting on a claim it is holding
-   itself.
+   itself. On a guiding train each sweep takes and releases its own
+   train lease ([Training runs on a guiding
+   train](#training-runs-on-a-guiding-train)), and the procedure sizes
+   every filter's lease before its first sweep, as it sizes the
+   sweeps.
 3. Differences a round contributes: each filter's confirmed position
    minus that round's confirmed reference position. A round whose
    reference sweep did not confirm contributes nothing at all, having
@@ -617,6 +628,95 @@ model. A train with no record is an error naming it, and so is a
 reset while a focus run is in flight: the sweep would append its run
 to the record the reset had just emptied.
 
+### Training runs on a guiding train
+
+A **training run** is a `focus_train` call without `shared`, or a
+`determine_filter_offsets` call, addressed to the guiding train. It
+captures through the guide camera, which `rp` reaches as the PHD2
+camera facade, under `rp`'s train lease ([rp.md § Train
+Lease](rp.md#train-lease)). The rules are O4's of the [focus-model
+plan](../plans/focus-model.md), whose table is their normative
+statement, and the leases are the [device-claims
+plan](../plans/device-claims-and-phd2-camera.md)'s D12 ("Settled in
+C7"). In-session guide focus is not a training run and is unchanged: a
+`shared: true` walk on the guiding train keeps its guide step on `rp`'s
+PHD2-metric `auto_focus`. An imaging train's run takes no lease.
+
+- **The guard.** A training run is refused, before anything moves and
+  with nothing recorded, when the guiding train's terminal focuser is a
+  member of another train. `get_train_info` names those trains in
+  `terminal_focuser_shared_with`, and any other train is an imaging
+  train, since `rp` allows one guiding train. Such a guide path has no
+  focuser of its own, and the imaging train's sweep focuses it (O4
+  rules 1 and 4): *"guiding train 'guide' has no focuser of its own:
+  its terminal focuser 'main-focuser' is in train 'main', whose sweep
+  focuses it"*. An upstream focuser the two trains share is no reason
+  to refuse. `pier1`'s guiding train sweeps its Scops OAG, and its
+  lease holds the shared EAF still.
+- **The camera.** That the guide camera is the facade, with PHD2
+  `Stopped`, is `rp`'s to check when it grants the lease (O4 rule 7). A
+  guiding train whose camera is not the facade, or whose PHD2 is
+  guiding or looping, is refused at the acquire, and the provider
+  relays `rp`'s refusal.
+- **One lease per run.** `focus_train` takes one lease for the whole
+  run, its retried attempts included, so neither guiding nor mount
+  motion can slip in between two attempts. `determine_filter_offsets`
+  takes one for each sweep, so no lease outlives a sweep. Guiding may
+  start between two sweeps, and then the next acquire is refused,
+  naming PHD2's state, before that sweep moves anything. The refusal
+  ends the procedure as a failed device does, with the rig put back.
+  The lease guarantees each sweep, not the procedure, so O4's "must not
+  run while an imaging session is using that wheel" stays an operator
+  precondition across sweeps.
+- **When.** The acquire follows the reads, the sizing, and the
+  refusals of a focuser outside its travel and of a grid that cannot
+  be walked. It comes before the guiding handshake and the first move,
+  so a guiding PHD2 is refused at the acquire before anything pauses or
+  moves, and the handshake after it meets a `Stopped` PHD2 and does
+  nothing. Each lease has a fresh id, `focus-model-` and 32 hex digits.
+- **The size.** The lease asks for the time the run needs:
+
+  ```
+  frames       = attempts × (points × frames_per_step + 1)
+  moves        = attempts × (points + 1) + 2
+  estimate     = frames × (duration + 2 s) + moves × 2 s
+  max_duration = min(1.5 × estimate, 10 min), rounded up to a whole second
+  ```
+
+  `attempts` is `max_attempts`, and `points` is the grid the sweep
+  plan holds before the focuser's bounds clamp it. Each attempt adds a
+  confirmation frame, and a move to each sample and to the vertex; the
+  run adds the move to the predicted start and the put-back. A frame
+  costs 2 s beyond its exposure and a move 2 s, the constants the
+  hardware check below measures. The half again on top covers what
+  the estimate leaves out: a filter change, the fallback frame of a
+  rejected confirmation, a slower sample. An estimate over 10 minutes,
+  the longest lease `rp` grants, is refused before anything moves and
+  recorded, naming the numbers, so a configuration that cannot finish
+  inside a lease fails at once and says why: *"a training run on
+  guiding train 'guide' needs about 10m 52s under rp's train lease,
+  longer than the 10m a lease may last: 3 attempts of 9 points × 3
+  frames + 1 at 5s + 2s a frame, and 32 moves at 2s; lower
+  max_attempts, frames_per_step or duration in trains.guide"*.
+- **Calls under the lease.** Every `capture`, `move_focuser` and
+  `set_filter` of the run carries the lease's id, the put-back's move
+  included. A put-back refused because the lease is no longer held
+  (`rp`'s `lease '<id>' is not held: …`) is sent again without the id,
+  as an ordinary call that waits its turn. A lease that ends mid-run,
+  at its `max_duration`, on the safety transition, or when the facade
+  loses its sweep lease (a `guiding/stop`, a `phd2-guider` restart),
+  fails the run's next call with `rp`'s reason, and the run puts back
+  and records like any failed run.
+- **The release.** The lease is released after the put-back on every
+  path: a run that focused, one that failed, one that was cancelled,
+  and an acquire that was refused or cancelled, so that a lease `rp`
+  granted after the caller stopped waiting goes too. The release runs
+  on the client a cancellation cannot reach. One that fails is logged,
+  not raised, because the lease ends on its own 60 s after its last
+  call.
+- **Ordering.** Focusing the guiding train after the imaging train
+  (O4 rules 2–3) is the caller's job: a training run focuses one train.
+
 ### Errors
 
 Tool errors (`isError: true`, one text block) name the cause:
@@ -650,6 +750,10 @@ Tool errors (`isError: true`, one text block) name the cause:
 | `calibrate_temperature` on a stale record | `train 'main' has a stale focus model: camera_id changed from qhy600 to asi2600; no run measured through the old rig fits this one` |
 | `calibrate_temperature` on a train with no record | `train 'main' has no focus model` |
 | `shared: true` on a plan with no capture step | `train 'x' has no capture step to focus` |
+| A training run on a guiding train whose terminal focuser an imaging train has | `guiding train 'guide' has no focuser of its own: its terminal focuser 'main-focuser' is in train 'main', whose sweep focuses it` |
+| A training run that cannot finish inside a train lease | `a training run on guiding train 'guide' needs about 10m 52s under rp's train lease, longer than the 10m a lease may last: …` |
+| `rp` refuses the train lease (the camera is not the facade, PHD2 is not `Stopped`, another lease or sweep overlaps) | `rp`'s refusal, relayed, after the run is recorded |
+| The train lease ended mid-run | the refused call's error, which carries `lease '<id>' is not held: <why>`, after the put-back |
 | `reset_focus_model` on a train without a record | `train 'x' has no focus model` |
 | `get_focus_runs` with `limit` 0 | `limit must be at least 1` |
 
@@ -676,7 +780,9 @@ failed step's focuser, and leaves a failed guide step to `rp`'s own
 rule. The guiding resume runs on the same
 uncancellable client as the put-back, after a successful sweep as well
 as a failed one, so a cancellation arriving after the last frame
-cannot leave corrections paused.
+cannot leave corrections paused. So does a training run's lease
+release, after the put-back ([Training runs on a guiding
+train](#training-runs-on-a-guiding-train)).
 
 A client cancellation (a stopped document, an operator cancel, the
 caller's connection dropping) reaches the provider as
@@ -1095,7 +1201,8 @@ events, and the dependency list:
     "get_train_info", "get_refocus_plan", "get_focuser_position",
     "get_focuser_temperature", "move_focuser", "get_filter", "set_filter",
     "capture", "measure_stars", "get_guiding_stats", "pause_guiding",
-    "resume_guiding", "auto_focus"
+    "resume_guiding", "auto_focus", "acquire_train_lease",
+    "release_train_lease"
   ]
 }
 ```
@@ -1117,6 +1224,7 @@ services/focus-model/src/
   store.rs           FocusStore (redb), FocusRecord, FocusRun, LastGood, staleness, the cap
   mcp_client.rs      McpClient: rp-mcp-client wrapper; cancellable calls; FocusRig impl
   sizing.rs          The sweep derivation from the optics (D9) and the sweep plan
+  lease.rs           A training run's train lease: its id, its size, the not-held refusal
   prediction.rs      The predicted start (D4)
   sweep.rs           Grid, gate, parabola fit, confirmation, retry — the V-curve
   offsets.rs         The offsets procedure: rounds, differences, medians
@@ -1167,6 +1275,22 @@ record's runs, writes the coefficient `get_focus_model` then reports,
 and refuses a history too short and one too narrow in temperature,
 naming each threshold.
 
+`guide_training.feature` runs training runs on a guiding train. Its
+camera is a stub of the PHD2 camera facade that answers the
+sweep-lease Actions itself, recording each, and passes every other
+Camera call through to the simulator's camera, so the sweep takes the
+simulator's starless frames. A training run on a guiding train whose
+focuser the imaging train has is refused before anything moves, for
+`focus_train` and `determine_filter_offsets` alike. A `focus_train`
+run asks the facade for one sweep lease across both its attempts,
+puts the focuser back, and the lease's token is released. PHD2
+reported guiding refuses the run at the lease before anything moves,
+and so does a guiding train whose camera is not the facade, naming the
+missing Action. A run too long for one lease is refused naming the
+numbers before the lease is asked for. The offsets procedure asks for
+one lease for each of its sweeps, releases each, and puts the wheel
+back.
+
 `auth.feature` spawns only focus-model with `server.tls` and
 `server.auth` and proves `/health` and `/mcp` both require the
 credential — and that `tools/list` answers with no `rp` running.
@@ -1192,14 +1316,27 @@ credential — and that `tools/list` answers with no `rp` running.
 - Workflow, against a `mockall` rig: the resolution errors, the filter
   switch, the guard on failure and cancellation, the guiding
   handshake and its skips, the record written for each outcome, the
-  shared walk's stop-at-failure.
+  shared walk's stop-at-failure. On a guiding train: the refusal
+  naming every train that has its focuser, and none for an imaging
+  train; the one lease taken before the handshake, every move and
+  capture under it, the put-back too, and its release last; a refused
+  lease that moves nothing, is released and is recorded; a put-back
+  the ended lease refuses, sent again without it; a run too long for a
+  lease, refused before the acquire.
+- Lease: the size of a lease from its frames and moves, the ceiling on
+  its headroom, the refusal of a run longer than a lease naming the
+  numbers, a fresh id each time, and only `rp`'s refusal of this lease
+  read as not held.
 - Offsets, against the same rig — the only place a sweep can be made
   to confirm: the median over rounds and its even-split rounding, a
   round the reference lost, a filter that never confirmed, the
   argument defaults and refusals, the restore, a subset call that
   keeps what it did not measure, a changed reference that drops what
   it invalidates, and the procedure ending on a device error or a
-  put-back that did not land rather than carrying on.
+  put-back that did not land rather than carrying on. On a guiding
+  train, one lease for each sweep, released before the next, with the
+  procedure's own put-back under none, and the guard and an oversize
+  lease refused before the first sweep.
 - Calibration, over a seeded record: the slope and the residual of a
   known line, the runs a fit leaves out and why, two filters put on
   one scale by their offsets, one filter needing none, each refusal
@@ -1241,4 +1378,9 @@ credential — and that `tools/list` answers with no `rp` running.
   the imaging train's is rules 2–3 and depends on whether the two
   share a focuser — one `focus_train` call never orders two trains
   that share none. The record shape admits a
-  filterless train, but a guiding train is not necessarily one.
+  filterless train, but a guiding train is not necessarily one. A
+  training run on a guiding train is built ([Training runs on a
+  guiding train](#training-runs-on-a-guiding-train)). What is left of
+  the plan's S10 is `rp`'s: the redundant guide step `af_sequence`
+  still yields where rule 4 holds, and the two topologies rule 2 leaves
+  open.

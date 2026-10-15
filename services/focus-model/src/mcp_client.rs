@@ -162,6 +162,15 @@ impl McpClient {
     }
 }
 
+/// A device call's arguments, with the training run's train lease
+/// added when it has one.
+fn under_lease(mut arguments: Value, lease_id: Option<&str>) -> Value {
+    if let (Some(lease_id), Some(map)) = (lease_id, arguments.as_object_mut()) {
+        map.insert("lease_id".to_owned(), Value::from(lease_id));
+    }
+    arguments
+}
+
 #[async_trait]
 impl FocusRig for McpClient {
     async fn get_train_info(&self, train_id: &str) -> Result<TrainInfo> {
@@ -198,7 +207,12 @@ impl FocusRig for McpClient {
         Ok(result.temperature_c)
     }
 
-    async fn move_focuser(&self, focuser_id: &str, position: i32) -> Result<i32> {
+    async fn move_focuser(
+        &self,
+        focuser_id: &str,
+        position: i32,
+        lease_id: Option<String>,
+    ) -> Result<i32> {
         #[derive(Deserialize)]
         struct MoveResult {
             actual_position: i32,
@@ -206,7 +220,10 @@ impl FocusRig for McpClient {
         let result: MoveResult = self
             .call(
                 "move_focuser",
-                serde_json::json!({ "focuser_id": focuser_id, "position": position }),
+                under_lease(
+                    serde_json::json!({ "focuser_id": focuser_id, "position": position }),
+                    lease_id.as_deref(),
+                ),
             )
             .await?;
         Ok(result.actual_position)
@@ -222,23 +239,39 @@ impl FocusRig for McpClient {
         Ok(result.filter_name)
     }
 
-    async fn set_filter(&self, filter_wheel_id: &str, filter: &str) -> Result<()> {
+    async fn set_filter(
+        &self,
+        filter_wheel_id: &str,
+        filter: &str,
+        lease_id: Option<String>,
+    ) -> Result<()> {
         let _: Value = self
             .call(
                 "set_filter",
-                serde_json::json!({ "filter_wheel_id": filter_wheel_id, "filter_name": filter }),
+                under_lease(
+                    serde_json::json!({ "filter_wheel_id": filter_wheel_id, "filter_name": filter }),
+                    lease_id.as_deref(),
+                ),
             )
             .await?;
         Ok(())
     }
 
-    async fn capture(&self, train_id: &str, duration: Duration) -> Result<CaptureResult> {
+    async fn capture(
+        &self,
+        train_id: &str,
+        duration: Duration,
+        lease_id: Option<String>,
+    ) -> Result<CaptureResult> {
         self.call(
             "capture",
-            serde_json::json!({
-                "train_id": train_id,
-                "duration": humantime::format_duration(duration).to_string(),
-            }),
+            under_lease(
+                serde_json::json!({
+                    "train_id": train_id,
+                    "duration": humantime::format_duration(duration).to_string(),
+                }),
+                lease_id.as_deref(),
+            ),
         )
         .await
     }
@@ -283,6 +316,39 @@ impl FocusRig for McpClient {
             .await
     }
 
+    async fn acquire_train_lease(
+        &self,
+        train_id: &str,
+        lease_id: &str,
+        max_duration: Duration,
+    ) -> Result<()> {
+        let _: Value = self
+            .call(
+                "acquire_train_lease",
+                serde_json::json!({
+                    "train_id": train_id,
+                    "lease_id": lease_id,
+                    "max_duration": humantime::format_duration(max_duration).to_string(),
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn release_train_lease(&self, lease_id: &str) -> Result<bool> {
+        #[derive(Deserialize)]
+        struct Released {
+            released: bool,
+        }
+        let result: Released = self
+            .call(
+                "release_train_lease",
+                serde_json::json!({ "lease_id": lease_id }),
+            )
+            .await?;
+        Ok(result.released)
+    }
+
     fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
     }
@@ -309,5 +375,15 @@ mod tests {
             panic!("a cancelled caller must not get a client");
         };
         assert!(err.is_cancelled(), "{err}");
+    }
+
+    #[test]
+    fn a_device_call_names_the_lease_only_under_one() {
+        let call = serde_json::json!({ "focuser_id": "foc", "position": 1 });
+        assert_eq!(
+            under_lease(call.clone(), Some("focus-model-a")),
+            serde_json::json!({ "focuser_id": "foc", "position": 1, "lease_id": "focus-model-a" })
+        );
+        assert_eq!(under_lease(call.clone(), None), call);
     }
 }
