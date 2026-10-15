@@ -135,14 +135,20 @@ Backlog (explicitly deferred, see Decisions 4 and 9):
    metrics do not recover, escalate to the full sequence — shared focusers
    first, then the guide train's own — covering the case where the shared
    focuser drifted but the main train's own trigger had not yet fired.
-   Guide-train AF never captures through the guide camera (PHD2 may own it
-   at the SDK level); it moves the focuser and reads PHD2's metric stream.
+   rp's own guide-train AF never captures through the guide camera (PHD2
+   may own it at the SDK level); it moves the focuser and reads PHD2's
+   metric stream. That rule is about rp's `auto_focus`, not a ban on a
+   client's capture through the PHD2 camera facade, which is what a
+   training run does (below).
 
    **Amended 2026-09-13 by [focus-model.md](focus-model.md) O4, and
    again 2026-09-27 to defer to
    [device-claims-and-phd2-camera.md](device-claims-and-phd2-camera.md)**
    — for a *training* run only, on a guiding train meeting the
-   focus-model plan's O4 rules 1 and 7, and not yet implemented. The
+   focus-model plan's O4 rules 1 and 7. Its leases are built (that
+   plan's C7b, the facade's sweep lease, and C7c, rp's train lease,
+   [rp.md § Train Lease](../services/rp.md#train-lease)); the training
+   run that takes them is not yet (C7d). The
    guide camera is captured through the PHD2 camera facade that plan's
    Part B adds: PHD2 keeps the camera at the SDK level, `phd2-guider`
    serves it as an Alpaca Camera, `rp` lists it like any other camera,

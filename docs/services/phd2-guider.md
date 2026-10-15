@@ -1325,7 +1325,8 @@ that check holds guiding off between two frames. A guide start that lands
 between two samples fails the next frame after the focuser has already
 moved; one that is stopped again in time leaves frames taken under other
 conditions in one V-curve. The sweep lease holds guiding off for a whole
-sweep. rp's train lease takes it for a guiding train's training run
+sweep. rp's train lease ([rp.md § Train Lease](rp.md#train-lease)) takes
+it for a guiding train's training run
 ([device-claims plan](../plans/device-claims-and-phd2-camera.md) D12,
 "Settled in C7").
 

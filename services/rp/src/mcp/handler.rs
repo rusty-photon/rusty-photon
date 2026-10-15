@@ -74,6 +74,11 @@ pub struct McpHandler {
     /// `Arc` so every clone of the handler — rmcp clones it per MCP
     /// connection — contends on the same gate.
     pub motion_gate: Arc<crate::motion_gate::MotionGate>,
+    /// The train leases (rp.md § Train Lease): the seen ids, the
+    /// reservation table leases and rp's own sweeps share, and every
+    /// live lease. Shared with the safety enforcer, whose unsafe
+    /// transition ends them, and with the server, whose shutdown does.
+    pub leases: Arc<crate::train_lease::TrainLeases>,
     /// Per-rig estimates sizing the advisory `center_on_target` deadline
     /// (§2.5) carried on `centering_started`. Wired by
     /// `with_centering_config` from the `centering` block in rp config;
@@ -151,6 +156,7 @@ impl McpHandler {
             guider_defaults: crate::config::GuiderDefaults::default(),
             trains: crate::equipment::trains::TrainModel::default(),
             motion_gate,
+            leases: Arc::new(crate::train_lease::TrainLeases::default()),
             centering: crate::config::CenteringConfig::default(),
             cooling: None,
             target_store: None,
@@ -193,6 +199,7 @@ impl McpHandler {
             + Self::tool_router_safety()
             + Self::tool_router_cooling()
             + Self::tool_router_trains()
+            + Self::tool_router_train_lease()
     }
 
     /// Wire the effective tool-class table (the built-in default with

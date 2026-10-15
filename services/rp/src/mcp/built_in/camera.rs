@@ -54,6 +54,13 @@ pub struct CaptureParams {
     /// Capture Tool Details.
     #[serde(default)]
     pub frame_type: Option<rp_vocabulary::FrameType>,
+    /// A held train lease to capture under (docs/services/rp.md § Train
+    /// Lease): the capture runs under the lease's slot for the camera
+    /// and its gate permit, and is refused when the lease is not held
+    /// or does not hold the camera. Omitted, a capture through a camera
+    /// a lease reserves waits for the lease to end.
+    #[serde(default)]
+    pub lease_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -121,6 +128,7 @@ impl McpHandler {
                     binning: params.binning.unwrap_or(DEFAULT_BINNING),
                     target: params.target.as_deref(),
                     frame_type: params.frame_type,
+                    lease_id: params.lease_id.as_deref(),
                 },
                 progress,
                 cancel,

@@ -68,16 +68,15 @@ pub struct CameraEntry {
     /// Held by a capture from its first frame-geometry write until its
     /// image is downloaded (rp.md § Capture Tool Details, "Binning" →
     /// Concurrency), so captures through one camera run one at a time
-    /// and cannot interleave their geometry writes. Tokio's mutex
-    /// queues waiters in arrival order. It lives on the entry rather
-    /// than in the session, so it outlives a reconnect: a capture still
-    /// running on the old session keeps out one started on the new.
-    capture_slot: tokio::sync::Mutex<()>,
+    /// and cannot interleave their geometry writes; held on by a
+    /// cancelled capture until its camera is idle, and by a train lease
+    /// that holds the camera (§ Train Lease).
+    capture_slot: super::DeviceSlot,
 }
 
 impl CameraEntry {
     #[must_use]
-    pub const fn new(
+    pub fn new(
         id: String,
         config: config::CameraConfig,
         session: DeviceSession<dyn Camera, CameraInvariants>,
@@ -86,19 +85,15 @@ impl CameraEntry {
             id,
             config,
             session,
-            capture_slot: tokio::sync::Mutex::const_new(()),
+            capture_slot: super::DeviceSlot::default(),
         }
     }
 
     /// Wait for this camera's capture slot. The caller races it against
     /// its own cancellation; dropping the guard hands the slot to the
     /// next waiter.
-    pub async fn capture_slot(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        if let Ok(slot) = self.capture_slot.try_lock() {
-            return slot;
-        }
-        debug!(camera_id = %self.id, "camera busy: capture queued behind the one in flight");
-        self.capture_slot.lock().await
+    pub async fn capture_slot(&self) -> super::SlotGuard {
+        self.capture_slot.take("camera", &self.id).await
     }
 
     /// The registered-but-unconnected entry every failed connect path

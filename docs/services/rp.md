@@ -1365,12 +1365,12 @@ tool across the line with `safety.gate` (§ Configuration).
 
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
-| `capture` | Ungated | camera_id *or* train_id (exactly one), duration, binning (optional `"AxB"`, default `"1x1"`), target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. Sets the binning and the full-frame subframe on the camera before every exposure, so nothing a foreign client left on it beforehand reaches the frame. `rp`'s captures through one camera run one at a time: a call through a camera `rp` is already capturing on waits its turn rather than failing (a client outside `rp` is not queued — see [Capture Tool Details](#capture-tool-details), Concurrency), and the deadlines below start once it has the camera. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating an imaging train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start) |
+| `capture` | Ungated | camera_id *or* train_id (exactly one), duration, binning (optional `"AxB"`, default `"1x1"`), target (optional slug), frame_type (optional: `Light`/`Dark`/`Flat`/`Bias`), lease_id (optional, a held [train lease](#train-lease)) — see [Capture Tool Details](#capture-tool-details) | image_path, document_id | Take an exposure, download `image_array`, save FITS file, create exposure document. Sets the binning and the full-frame subframe on the camera before every exposure, so nothing a foreign client left on it beforehand reaches the frame. `rp`'s captures through one camera run one at a time: a call through a camera `rp` is already capturing on waits its turn rather than failing (a client outside `rp` is not queued — see [Capture Tool Details](#capture-tool-details), Concurrency), and the deadlines below start once it has the camera. `train_id` resolves the train's terminal camera; everything downstream — the `optics` block, gate membership, events — follows the resolved camera. Carries an **advisory predicted deadline** on `exposure_started`: `predicted = duration + camera.readout_time_estimate` (default 15 s when unset), `max = predicted + 30 s` readout headroom. rp does **not** enforce this (the camera driver owns the exposure); it rides the envelope as `predicted_duration_ms`/`max_duration_ms` for the Sentinel watchdog. rp's own readout backstop (a separate, more generous `duration + 120 s` ceiling) is unchanged. Through a camera terminating any train, holds the [mount motion gate](#mount-motion-gate) shared for the whole pipeline (a pending mount motion delays the start). With `lease_id` it runs under the lease's camera slot and gate permit instead; without it, a capture through a camera a [train lease](#train-lease) reserves waits for the lease to end |
 | `get_camera_info` | Ungated | camera_id | max_adu, exposure_min, exposure_max, sensor_x, sensor_y, bin_x, bin_y, max_bin_x, max_bin_y, can_asymmetric_bin, gain, offset | Read camera capabilities and current settings. `max_bin_x`/`max_bin_y`/`can_asymmetric_bin` are the binning envelope a caller picks a `capture` binning inside; they are read once at connect time with the other invariant sensor properties, and are `null` when that read failed. `gain` and `offset` are read from the driver on every call, never cached by rp — for the SDK camera drivers they are the values the camera's next exposure is taken at (their GO1); `null` means exactly that the driver does not implement the property (ASCOM `NotImplemented`), and any other read failure is a tool error so a transport blip is never persisted as "no gain" — a flat-timing record is only valid at the gain it was trained at (calibrator-flats-provider plan, D4/D5) |
-| `move_focuser` | Ungated | focuser_id, position | actual_position, backlash_compensated | Move focuser to absolute position (blocks polling `is_moving` until idle **and** the read-back position equals the target; with a `backlash` block on the focuser the move arrives from the configured direction via an overshoot leg — see [Focuser Tool Details](#focuser-tool-details)). Bounded by a **predicted deadline per leg**: `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` (current position read before the move) and a compensated move is the overshoot hop then the return hop; the envelope's `predicted`/`max` are the sums over the legs. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms` |
+| `move_focuser` | Ungated | focuser_id, position, lease_id (optional, a held [train lease](#train-lease)) | actual_position, backlash_compensated | Move focuser to absolute position (blocks polling `is_moving` until idle **and** the read-back position equals the target; with a `backlash` block on the focuser the move arrives from the configured direction via an overshoot leg — see [Focuser Tool Details](#focuser-tool-details)). Bounded by a **predicted deadline per leg**: `leg_predicted = hop / focuser.steps_per_sec` and `leg_max = max(leg_predicted × 2, MIN_FOCUSER_DEADLINE = 5 s)`, where a plain move is the single hop `\|target − current\|` (current position read before the move) and a compensated move is the overshoot hop then the return hop; the envelope's `predicted`/`max` are the sums over the legs. If the pre-move read fails it falls back to a 120 s ceiling; `predicted`/`max` ride the `move_focuser_started` envelope as `predicted_duration_ms`/`max_duration_ms`. Moves through one focuser run one at a time; one that names no lease, of a focuser a [train lease](#train-lease) reserves, waits for the lease to end |
 | `get_focuser_position` | Ungated | focuser_id | position, min_position, max_position, backlash | Read the current focuser position together with the configured travel bounds and backlash block — `min_position` / `max_position` and `backlash` (`{ "approach", "steps" }`) from the focuser's config block, each `null` when the config sets none. See [Focuser Tool Details](#focuser-tool-details) |
 | `get_focuser_temperature` | Ungated | focuser_id | temperature_c | Read focuser temperature sensor |
-| `move_rotator` | Ungated | rotator_id *or* train_id (exactly one), angle | rotator_id, angle, mechanical_angle, moved_trains | Move the rotator to an absolute **sky** angle in degrees (`0.0 ≤ angle < 360.0`, the ASCOM `Position` frame), blocking on `IsMoving` until idle (fixed 120 s ceiling; no predictive deadline — there is no rotator rate config yet). `train_id` resolves the train's sole rotator. `moved_trains` lists every train containing the rotator. See [Rotator Tool Details](#rotator-tool-details) |
+| `move_rotator` | Ungated | rotator_id *or* train_id (exactly one), angle | rotator_id, angle, mechanical_angle, moved_trains | Move the rotator to an absolute **sky** angle in degrees (`0.0 ≤ angle < 360.0`, the ASCOM `Position` frame), blocking on `IsMoving` until idle (fixed 120 s ceiling; no predictive deadline — there is no rotator rate config yet). `train_id` resolves the train's sole rotator. `moved_trains` lists every train containing the rotator. Moves through one rotator run one at a time, and one of a rotator a [train lease](#train-lease) holds still waits for the lease to end. See [Rotator Tool Details](#rotator-tool-details) |
 | `get_rotator_position` | Ungated | rotator_id *or* train_id (exactly one) | rotator_id, angle, mechanical_angle, is_moving | Read the rotator's sky angle, mechanical angle, and motion state |
 | `slew` | Gated | ra, dec, settle_after (optional) | actual_ra, actual_dec | Slew the singular mount to coordinates (blocks until `Slewing == false` plus configured / per-call settle). Tracking must be on; ASCOM error propagates otherwise. Bounded by a **predicted deadline**: `predicted = great-circle(current, target) / mount.slew_rate_arcsec_per_sec + settle`; `max = max(predicted × 3, MIN_SLEW_DEADLINE = 30 s)`. The current pointing is read before the slew to size the deadline; if that read fails it falls back to a 300 s ceiling. On timeout `slew` best-effort aborts (unlike `park`); `predicted`/`max` ride the `slew_started` envelope as `predicted_duration_ms`/`max_duration_ms`. Takes the [mount motion gate](#mount-motion-gate) exclusively — in-flight imaging-train exposures complete first |
 | `sync_mount` | Ungated | ra, dec | — | Sync mount position to given coordinates |
@@ -1381,7 +1381,7 @@ tool across the line with `safety.gate` (§ Configuration).
 | `unpark` | Gated | — | — | Clear the mount's `AtPark` flag. Returns immediately. Does NOT auto-enable `Tracking`; call `set_tracking` before slewing |
 | `get_park_state` | Ungated | — | at_park, can_park, can_unpark | Read park state and capabilities; fails loud on `AtPark` read error |
 | `abort_slew` | Ungated | — | — | Abort an in-progress mount slew or park. Per ASCOM, only valid while `Slewing == true`; the natural Alpaca error propagates otherwise |
-| `set_filter` | Ungated | filter_wheel_id *or* train_id (exactly one), filter_name | filter_wheel_id, filter_name, position | Change filter wheel position: waits out a move already under way, writes the slot, and blocks until the wheel names it, each wait bounded at 60 s (see [Filter Wheel Tool Details](#filter-wheel-tool-details)). `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id` |
+| `set_filter` | Ungated | filter_wheel_id *or* train_id (exactly one), filter_name, lease_id (optional, a held [train lease](#train-lease)) | filter_wheel_id, filter_name, position | Change filter wheel position: waits out a move already under way, writes the slot, and blocks until the wheel names it, each wait bounded at 60 s (see [Filter Wheel Tool Details](#filter-wheel-tool-details)). `train_id` requires the train to contain exactly one filter wheel — none is an error naming the train, several is ambiguous and also an error (the sole-rotator rule of `move_rotator`, applied to wheels); the result and `filter_switch` event carry the resolved `filter_wheel_id`. Filter changes through one wheel run one at a time; one that names no lease, of a wheel a [train lease](#train-lease) reserves, waits for the lease to end |
 | `get_filter` | Ungated | filter_wheel_id | filter_name, position | Read current filter |
 | `get_cover_state` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, cover_state | Read the cover state (`NotPresent` \| `Closed` \| `Moving` \| `Open` \| `Unknown` \| `Error`) without actuating anything — e.g. so an orchestrator can restore the state it found. `train_id` resolves the train's cover calibrator; `trains` lists every train containing it. See [CoverCalibrator Tool Details](#covercalibrator-tool-details) |
 | `close_cover` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Close the dust cover (blocks until closed) |
@@ -1390,6 +1390,8 @@ tool across the line with `safety.gate` (§ Configuration).
 | `calibrator_off` | Ungated | calibrator_id *or* train_id (exactly one) | calibrator_id, trains, status | Turn off flat panel. Blocks until off |
 | `get_train_info` | Ungated | train_id | train_id, purpose, focal_length_mm, camera_id, filter_wheel_id, filters, filter_wavelengths_nm, calibrator_id, focusers, terminal_focuser_id, rotator_id, devices, optics | Describe an optical train without touching any device: the terminal camera, the sole filter wheel with its configured filter names in position order (`filter_wheel_id`, `filters` and `filter_wavelengths_nm` all `null` when the train has none or several; `filter_wavelengths_nm` maps each name to its configured wavelength or `null`), the cover calibrator (`null` when none), the focusers in optical order plus `terminal_focuser_id`, the last of them — the one the train's own `auto_focus` sweeps and whose probe a `temperature_changed` names for this train (`null` when the train has no focuser), the sole rotator (`null` when none or several), the ordered `devices` list as `{id, kind}`, and `optics` — `{focal_length_mm, aperture_mm, focal_ratio, pixel_size_um, pixel_scale_arcsec_per_pixel, microns_per_step}`, each `null` when unknown (see [Train optics](#train-optics)). An unknown train is an error naming it. See [Optical Trains](#optical-trains) |
 | `get_refocus_plan` | Ungated | train_id | train_id, guide_coupled, steps | The dependency-ordered refocus sequence of a train, as a read: `steps` lists `{focuser_id, run_train_id, camera_id, metric}` in run order — the train's shared focusers upstream-first, each run in the train where it is terminal, then the train's own focuser, a guiding-train step last with `metric` `"guide"` and a `null` `camera_id`; `guide_coupled` says whether a capture step moves a focuser the guiding train shares. Nothing moves. An unknown train, or one without focusers, is an error naming it. See the [`get_refocus_plan` Contract](#get_refocus_plan-contract) |
+| `acquire_train_lease` | Ungated | train_id, lease_id, max_duration (optional humantime, default `5m`, at most `10m`) | lease_id, train_id, focuser_id, filter_wheel_ids, held_focuser_ids, held_rotator_ids, cameras, facade_lease, ends_by | Take a train lease for a training run, under an id the caller names: the train's camera slots, the slots of the devices the run moves or holds still, the PHD2 camera facade's sweep lease for a guiding train, and the mount motion gate shared, held until `release_train_lease`, 60 s idle, `ends_by`, the safety transition or shutdown. An overlapping lease or `auto_focus` sweep is refused at once. See [Train Lease](#train-lease) |
+| `release_train_lease` | Ungated | lease_id | released | End a train lease, or the acquire still waiting for it. Never an error: `released` is `false` for an id that holds nothing, and an id rp has not seen is recorded so a later acquire under it is refused. See [Train Lease](#train-lease) |
 
 **Cooling** (see [Camera Cooling](#camera-cooling))
 
@@ -1471,7 +1473,7 @@ boundary — but expose the same MCP tool surface as any other tool.
 
 | Action | Class | Parameters | Returns | Description |
 |--------|-------|-----------|---------|-------------|
-| `auto_focus` | Ungated | camera_id + focuser_id *or* train_id (mutually exclusive); duration, step_size, half_width, min_area, max_area, binning (optional), threshold_sigma (optional), min_fit_points (optional), min_star_fraction (optional), confirmation_tolerance (optional), max_attempts (optional) — with train_id, per-call sweep parameters fall back field by field to the train's `auto_focus` config block | best_position, best_hfr (capture sweep) / best_hfd (metric sweep), fit_r_squared, confirmation, confirmed, final_position, final_hfr / final_hfd, samples_used, curve_points, attempts + wing_slope (capture sweep only), temperature_c | Parabolic-fit V-curve auto-focus: sweeps, gates out samples the detector could barely see, fits, then confirms the fitted position with one fresh measurement and falls back to the best measured sample when the confirmation fails. A capture sweep whose fit fails is repeated with the same parameters up to `max_attempts` times (default 2), the grid shifted toward the lowest sample after a monotonic curve; the result reports the wing slope the next sweep can be sized from. Imaging addressing drives `move_focuser` + `capture` + `measure_basic` internally; addressing the **guiding train** runs the PHD2-metric sweep instead (median HFD of fresh guide frames per position; requires active guiding; never captures through the guide camera). See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
+| `auto_focus` | Ungated | camera_id + focuser_id *or* train_id (mutually exclusive); duration, step_size, half_width, min_area, max_area, binning (optional), threshold_sigma (optional), min_fit_points (optional), min_star_fraction (optional), confirmation_tolerance (optional), max_attempts (optional) — with train_id, per-call sweep parameters fall back field by field to the train's `auto_focus` config block | best_position, best_hfr (capture sweep) / best_hfd (metric sweep), fit_r_squared, confirmation, confirmed, final_position, final_hfr / final_hfd, samples_used, curve_points, attempts + wing_slope (capture sweep only), temperature_c | Parabolic-fit V-curve auto-focus: sweeps, gates out samples the detector could barely see, fits, then confirms the fitted position with one fresh measurement and falls back to the best measured sample when the confirmation fails. A capture sweep whose fit fails is repeated with the same parameters up to `max_attempts` times (default 2), the grid shifted toward the lowest sample after a monotonic curve; the result reports the wing slope the next sweep can be sized from. Imaging addressing drives `move_focuser` + `capture` + `measure_basic` internally; addressing the **guiding train** runs the PHD2-metric sweep instead (median HFD of fresh guide frames per position; requires active guiding; never captures through the guide camera). Each sweep enters the [train lease](#train-lease) reservation table for its length, so it is refused at once when a lease holds its camera or focuser. See [`auto_focus` Contract](#auto_focus-contract). Implemented. |
 | `refocus_train` | Ungated | train_id, reason (optional) | train_id, reason, guiding_paused, steps | Expand one refocus trigger into the train model's dependency-ordered AF sequence — shared focusers upstream-first (each run in the train where it is terminal), then the train's own terminal focuser — pausing guide corrections around the sequence when a step moves a guiding-train focuser. Sweep parameters come from each run train's `auto_focus` config block. See [`refocus_train` Contract](#refocus_train-contract). |
 | `center_on_target` | Gated | camera_id *or* train_id (exactly one), ra, dec, duration, tolerance_arcsec, max_attempts, binning (optional) | final_error_arcsec, attempts, final_ra, final_dec, iterations | Iterative `capture` + `plate_solve` + `sync_mount` + `slew` loop until residual ≤ `tolerance_arcsec`. `train_id` resolves the train's terminal camera. Carries an **advisory outer-loop deadline** on `centering_started`: `per_iter = duration + centering.solve_time_estimate + centering.slew_overhead_estimate`, `predicted = per_iter`, `max = max_attempts × per_iter`. The watchdog tracks only this outer loop; each inner `slew`/`capture` carries its own deadline, and each takes the [mount motion gate](#mount-motion-gate) in its own mode (slews exclusive, imaging-train captures shared). See [`center_on_target` Contract](#center_on_target-contract). Implemented. |
 
@@ -1683,6 +1685,29 @@ Captures through different cameras never wait for each other.
   queue at once with `cancelled: <reason>` and never touches the
   camera. Stop-class commands never take the slot: the safety
   enforcer's `AbortExposure` goes straight to the device.
+- **Kept while a cancelled exposure winds down.** A capture cancelled
+  mid-exposure sends `AbortExposure`, gives its motion-gate permit
+  back at once, and answers its caller at once with
+  `cancelled: <reason>`. It keeps its camera's slot until the camera
+  reads `Idle` or `Error`, neither of which is exposing, and at most
+  until its readout backstop (`duration` + 120 s from the exposure's
+  start), reading the camera's state every 250 ms. A driver that ignores the abort,
+  as PHD2's QHY driver behind the camera facade does, goes on
+  exposing to the frame's end, and the next capture through the
+  camera would start into that frame. At the backstop the slot is
+  released with a warning naming the camera's state, so every wait
+  behind the slot stays bounded; a facade still exposing goes on
+  refusing captures through its own claim. The frame is discarded, so
+  mount motion during the rest of it harms nothing, and a recovery
+  slew after the safety transition goes at once, even on a camera
+  whose driver ignores a stop. A capture cancelled before its
+  exposure started, or after the frame was ready, has nothing to wind
+  down and gives the slot back at once.
+- **Under a train lease.** A capture that names a held
+  [train lease](#train-lease) runs under the lease's slot and gate
+  permit instead of taking them. One that names no lease, through a
+  camera a lease reserves, waits for the lease to end before it takes
+  the slot.
 - **Session read after the wait.** The camera's handle and its
   connect-time metadata are read once the capture holds the camera, so
   one queued across a reconnect exposes on the re-established session
@@ -1697,8 +1722,10 @@ Captures through different cameras never wait for each other.
   the queue.
 - **Bounded.** The wait adds no timeout of its own, and needs none:
   the capture ahead holds the slot for at most its `duration` plus the
-  readout backstop and its download. A wedged exposure therefore holds
-  up its camera's next capture for that long, and no other camera's.
+  readout backstop and its download, and a train lease holding the
+  camera for at most its `max_duration` plus its last call's own
+  deadline. A wedged exposure therefore holds up its camera's next
+  capture for that long, and no other camera's.
 
 The slot serializes `rp`'s own captures; it cannot hold a client
 outside `rp`. A NINA session, a ConformU run or a probe exposing
@@ -1879,6 +1906,15 @@ the wait for the move each have their own 60 s, so that a long wait for
 another client's move does not leave this call's own move no time. A
 call therefore answers within about two minutes.
 
+**One filter change through a wheel at a time.** Each wheel has a slot,
+and `set_filter` holds it from its first read to the end of its wait for
+the move. A second `set_filter` through the wheel waits its turn, raced
+against its own cancellation. A cancelled call gives the slot back at
+once, and the wheel finishes its move on its own; the next call's wait
+before its write covers that move. A [train lease](#train-lease) takes
+the slot of every wheel in its train: a call that names the lease runs
+under it, and one that names none waits for the lease to end.
+
 #### CoverCalibrator Tool Details
 
 The CoverCalibrator tools control flat panel devices. `calibrator_on`
@@ -1966,6 +2002,13 @@ to contain exactly one rotator: none is an error naming the train,
 and several (physically exotic, but not rejected by validation) ask
 the caller for the explicit `rotator_id`.
 
+**One rotation at a time.** Each rotator has a slot, and `move_rotator`
+holds it for the whole call, the rotate-while-guiding ladder included.
+A second `move_rotator` through the rotator waits its turn, raced
+against its own cancellation. A [train lease](#train-lease) holds every
+rotator in its train still: `move_rotator` takes no `lease_id`, and a
+rotation of a rotator a lease reserves waits for the lease to end.
+
 #### Focuser Tool Details
 
 `move_focuser` moves an absolute focuser to `position`, validated
@@ -1987,6 +2030,17 @@ logged; a device still moving at the deadline is the timeout error.
 The same settle rule governs every focuser move rp makes on its own
 behalf: the `auto_focus` sweep steps and final move, and everything
 `refocus_train` expands to.
+
+**One move through a focuser at a time.** Each focuser has a slot, and
+a move holds it from its plan (the pre-move position read) to its last
+leg's settle. A second `move_focuser`, or a step of `auto_focus` or
+`refocus_train`, through a focuser whose slot is held waits its turn,
+raced against its own cancellation as a capture's wait for its camera
+is. A cancelled move halts the focuser and gives the slot back once the
+halt has been sent, so a put-back queued behind it starts from where
+the focuser stopped. A [train lease](#train-lease) takes the slot of
+every focuser it moves or holds still: a move that names the lease runs
+under it, and one that names none waits for the lease to end.
 
 `get_focuser_position` reports those same bounds beside `position` —
 `min_position` and `max_position` — together with the focuser's
@@ -3734,14 +3788,19 @@ Consumers of the derived model:
   camera's connect-time pixel size) — see the note under the Guider
   tool table.
 - The [mount motion gate](#mount-motion-gate) admits captures as
-  shared holders based on train membership: only captures through a
-  camera terminating an imaging train contend with mount motion.
+  shared holders based on train membership: captures through a
+  camera terminating any train contend with mount motion, and only a
+  camera outside every train is exempt.
 
-Auto-focus **on the guiding train itself** never captures through
-the guide camera (PHD2 may own it at the SDK level): train-addressed
-`auto_focus` and `refocus_train` steps that run in the guiding train
-use the PHD2-metric sweep — moving the focuser and reading PHD2's
-per-frame HFD — and require an active guide loop. See the
+rp's own auto-focus **on the guiding train itself** never captures
+through the guide camera (PHD2 may own it at the SDK level):
+train-addressed `auto_focus` and `refocus_train` steps that run in
+the guiding train use the PHD2-metric sweep — moving the focuser and
+reading PHD2's per-frame HFD — and require an active guide loop. A
+client may still capture through a guiding train's camera when it is
+the PHD2 camera facade ([phd2-guider.md § Camera facade](phd2-guider.md#camera-facade-camera)): that is how
+a focus provider's training run on a guiding train samples it, under
+a [train lease](#train-lease) that holds PHD2 `Stopped`. See the
 [Guide-train sweep](#guide-train-sweep-phd2-metric-variant)
 contract, the rotate-while-guiding ladder under
 [Rotator Tool Details](#rotator-tool-details), and the
@@ -3805,12 +3864,12 @@ Dither, slews, and meridian flips move every train on the mount, and
 any of them ruins an in-flight exposure on any imaging train. The
 motion gate is an rp-internal readers-writer gate on the singular
 mount that serializes the two: mount motion takes the gate
-**exclusively**, imaging-train exposures hold it **shared**. It has
-no configuration surface — it is always on. Captures contend only
-through imaging-train cameras, so a rig with no imaging trains
-merely serializes motions against one another; and motions acquire
-before resolving the mount, so even a slew that will fail for want
-of a configured mount passes through the gate first.
+**exclusively**, exposures through a train's camera hold it
+**shared**. It has no configuration surface — it is always on.
+Captures contend only through cameras in a train, so a rig with no
+trains merely serializes motions against one another; and motions
+acquire before resolving the mount, so even a slew that will fail for
+want of a configured mount passes through the gate first.
 
 Acquisition rules:
 
@@ -3818,7 +3877,8 @@ Acquisition rules:
 |---|---|---|
 | `slew` — including `center_on_target`'s inner slews and orchestrator-driven meridian flips, which reach the mount as slews | Exclusive | Acquired before the pre-slew pointing read, so the predictive deadline never includes gate wait |
 | `dither` | Exclusive | Acquired after parameter and unit resolution (invalid calls fail fast without waiting), before the proxy call to the guider service; held through settle. A dither cancelled mid-settle answers its caller at once but hands the permit to a detached holder that keeps the gate exclusive until the guider's settle RPC ends — bounded by the settle timeout plus 15 s, or 90 s when the call named none — so no capture starts into the tail of guide pulses |
-| `capture` through a camera terminating an **imaging** train — including the internal captures of `auto_focus`, `refocus_train`, and `center_on_target` | Shared | Held for the full exposure-to-persistence pipeline; concurrent imaging-train captures share freely. A capture takes its camera's slot first and the gate second, so one queued behind another capture through the same camera holds no permit while it waits ([Capture Tool Details](#capture-tool-details), Concurrency) |
+| `capture` through a camera terminating **any** train, imaging or guiding — including the internal captures of `auto_focus`, `refocus_train`, and `center_on_target` | Shared | Held for the full exposure-to-persistence pipeline; concurrent captures share freely. A capture takes its camera's slot first and the gate second, so one queued behind another capture through the same camera holds no permit while it waits ([Capture Tool Details](#capture-tool-details), Concurrency). A capture cancelled mid-exposure gives its permit back as soon as its abort is sent. A capture under a [train lease](#train-lease) takes no permit of its own: it runs under the lease's |
+| A granted [train lease](#train-lease) | Shared | Taken after the lease's slots, held from the grant until the lease ends and no capture under it that was not cancelled is in flight. Slews, dithers and flips wait for it, so none lands between two samples of a training run |
 
 Queueing semantics (Decision 5 of the
 [optical-trains plan](../plans/optical-trains.md)):
@@ -3831,9 +3891,12 @@ Queueing semantics (Decision 5 of the
 - Waits are **transitively bounded** and the gate adds no timeout of
   its own: every holder is already deadline-bounded (captures by
   `duration` plus the readout backstop, slews and dithers by their
-  own predictive deadlines and settle timeouts), so the longest
-  possible wait is the sum of the holders' own ceilings. An
-  **aborted** exposure releases much sooner than the backstop: the
+  own predictive deadlines and settle timeouts, a train lease by its
+  `max_duration` plus its last capture's own deadline), so the
+  longest possible wait is the sum of the holders' own ceilings. A
+  **cancelled** capture gives its permit back as soon as its abort
+  is sent, whatever its camera then does (Capture Tool Details,
+  Concurrency). An **aborted** exposure releases much sooner than the backstop: the
   capture poll treats a camera back at `Idle` with no image (two
   consecutive reads, plus a final `ImageReady` re-check) as an
   aborted exposure and fails the capture promptly — otherwise the
@@ -3853,10 +3916,13 @@ Exemptions — operations that deliberately bypass the gate:
 - **Guide pulses.** PHD2 corrects the mount directly; pulses are
   sub-arcsecond by design and are the one motion imaging coexists
   with.
-- **`capture` through a camera outside any train, or in the guiding
-  train.** Trains are enrichment, not a gate (plan Decision 10): a
-  rig without trains behaves exactly as before this feature, and
-  guide-camera frames are not imaging subs.
+- **`capture` through a camera outside every train.** Trains are
+  enrichment, not a gate (plan Decision 10): a rig without trains
+  behaves exactly as before this feature. A guiding train's camera
+  is not exempt. None of rp's own operations captures through it, but
+  a client's capture through the PHD2 camera facade is a focus sample
+  that a dither or slew mid-exposure would trail, so it waits for a
+  mount motion in flight like any other train's capture.
 - **`park`.** Parking is a terminal or emergency action: the safety
   enforcer (which aborts in-flight exposures *first*, then parks
   directly against the device registry rather than through the MCP
@@ -3873,10 +3939,11 @@ Exemptions — operations that deliberately bypass the gate:
 Focuser and rotator moves are not mount motion and take no part in
 the gate: they perturb only the trains containing them, and the
 compound tools that move them (`auto_focus`, `refocus_train`)
-already sequence their own captures around the moves. Coordinating a
-manual `move_rotator` against another train's exposure remains the
-orchestrator's concern (the rotate-while-guiding ladder is plan
-phase T4).
+already sequence their own captures around the moves. A
+[train lease](#train-lease) holds them off a training run's light
+path. Otherwise, coordinating a manual `move_rotator` against
+another train's exposure remains the orchestrator's concern (the
+rotate-while-guiding ladder is plan phase T4).
 
 **Driver-internal flips.** The gate presumes rp is the sole source
 of non-guiding mount motion. A driver that moves the mount on its
@@ -3892,6 +3959,257 @@ cross-check (warn when rp orchestrates a GTi mount whose config
 enables auto-flip) is recorded as backlog in the optical-trains
 plan. When rp grows scheduled flips of its own, they will be
 rp-issued slews behind this gate like any other.
+
+### Train Lease
+
+A training run on a train is many frames with focuser moves between
+them, and three things can corrupt it in the gaps between two samples:
+PHD2 starting to guide or loop on the guide camera, rp's own work on the
+same light path (a main-camera exposure while the shared focuser moves,
+another move of a focuser the sweep relies on staying put), and a slew
+or dither between samples. The motion gate and the capture slots each
+cover one call. A **train lease** holds all three off for the whole run.
+The caller takes it before the first move, passes its id on every call
+of the run, and releases it after the put-back
+([device-claims plan](../plans/device-claims-and-phd2-camera.md) D12,
+"Settled in C7", and its decision 20). rp takes no lease on its own: it
+cannot tell a training run from the in-session walk a focus provider
+also makes through it, and that walk runs while PHD2 guides.
+
+| Action | Class | Parameters | Returns |
+|---|---|---|---|
+| `acquire_train_lease` | Ungated | train_id, lease_id, max_duration (optional humantime, default `5m`, at most `10m`) | lease_id, train_id, focuser_id, filter_wheel_ids, held_focuser_ids, held_rotator_ids, cameras, facade_lease, ends_by |
+| `release_train_lease` | Ungated | lease_id | released |
+
+**The caller names the lease.** `lease_id` is a fresh id of the caller's
+choosing, 1 to 128 printable ASCII characters without spaces; a UUID
+will do. Naming it before asking means a caller that gave up on its
+acquire (cancelled, or timed out waiting for the answer) still knows the
+id and can release what it may have been granted.
+
+- An id this rp process has seen before, granted or named in a release,
+  is refused, so an old holder's call can never land inside a new lease.
+- A release that arrives before rp has seen the acquire records the id,
+  so the acquire, when it arrives, is refused.
+- rp remembers an id while its lease lives and for an hour after it
+  ends, or after a release recorded it, and at most 4096 ids, live ones
+  included. At the cap, an acquire naming an id rp has not seen is
+  refused, naming the cap and when the oldest is forgotten, rather than
+  an id younger than an hour being forgotten. A release is never
+  refused: at the cap, a release of an unseen id answers
+  `{released: false}` without recording it, and a late acquire under
+  that id is refused anyway while the cap holds. A flood of made-up ids
+  can then deny leases for up to an hour, but never lets an id that
+  still guards a lease be granted again.
+- A restart forgets every id and every lease.
+
+**What the lease covers.** A train without a focuser is refused (every
+train has a camera). The lease **moves** what a training run on the
+train may move: its terminal focuser (`focuser_id`) and every filter
+wheel in it (`filter_wheel_ids`). It **holds still** every other focuser
+in the train (`held_focuser_ids`), such as an upstream focuser the train
+shares with an imaging train, since moving one shifts the focus the
+sweep measures. It holds still every rotator in the train too
+(`held_rotator_ids`): behind an off-axis guider a rotation moves the
+pick-off's field onto other stars, so the samples would stop measuring
+one field. `cameras` lists the cameras whose capture slots it holds:
+the train's own first, then every other camera in a train that contains
+a device the lease moves, in camera-id order. A camera behind a device
+the lease only holds still is not held: nothing in its light path moves.
+
+**The acquire reserves at once.** Before it waits on anything, the
+acquire records its train's own camera, the cameras it will hold, and
+the devices it moves or holds still. An acquire whose reservation shares
+a camera or a device with another lease's, granted or still waiting, is
+refused at once, naming that lease, rather than waiting out a sweep. So
+two leases never share a camera or a device, neither waits on a slot the
+other holds, and the order in which one takes its slots cannot deadlock.
+From the reservation on, an ordinary capture through a reserved camera,
+and an ordinary move, rotation or filter change of a reserved device,
+waits for the lease to end (below).
+
+It then takes five things, in this order. A refusal at any step, a
+cancellation, a release, the safety transition, or the facade lease
+being lost before the grant gives back what was already taken and fails
+the acquire:
+
+1. **The train's own camera's slot.** Taking it waits for rp's capture
+   in flight through that camera, if any, to finish, as a second capture
+   through it does. That includes a cancelled capture whose camera is
+   still exposing ([Capture Tool Details](#capture-tool-details),
+   Concurrency).
+2. **The facade lease**, before any wait on another camera or device or
+   on the gate, because it is the step that refuses at once (PHD2 not
+   `Stopped`) and so should cost little to learn. A train's camera is
+   the PHD2 camera facade when its `SupportedActions` lists
+   `rustyphoton:sweep-lease-acquire`
+   ([phd2-guider.md § The sweep lease](phd2-guider.md#the-sweep-lease)).
+   - A **guiding** train's lease requires the facade. A guiding train
+     whose camera does not list the Action is refused, naming what is
+     missing: *"camera 'guide-cam' of guiding train 'guide' does not
+     offer the sweep lease (rustyphoton:sweep-lease-acquire): it is not
+     the PHD2 camera facade, or its phd2-guider predates the lease"*. A
+     facade from before the lease lacks the Action too, so the message
+     points at a version skew as well as at the configuration. A camera
+     that is not connected, or whose `SupportedActions` cannot be read,
+     fails the acquire with that error.
+   - An **imaging** train's lease takes no facade lease.
+   - rp names the facade's token (32 lowercase hex digits, fresh for each
+     lease) and asks for a `ttl_s` of 60. A facade that refuses has its
+     refusal relayed: *"the camera facade 'guide-cam' refused the sweep
+     lease: …"*, naming PHD2's state when it is not `Stopped`.
+   - From the moment the facade lease is taken, through the rest of the
+     acquire's waits and the whole lease, rp renews it every 20 s. One
+     renewal can fail and the next still lands about 20 s before the
+     facade lease would lapse; two failures in a row can lose it. rp
+     releases it when the train lease has given everything back, and on
+     every failure of the acquire after it asked, including one whose
+     answer never came.
+   - Step 1 has already waited out rp's own cancelled frame. So rp meets
+     the facade's in-flight refusal only for a frame another client
+     started, or one that outlived rp's readout backstop, and the
+     refusal names when that frame ends.
+3. **The devices' slots.** A move, rotation or filter change holds its
+   device's slot for as long as it runs, as a capture holds its
+   camera's (see [Focuser](#focuser-tool-details),
+   [Filter Wheel](#filter-wheel-tool-details) and
+   [Rotator](#rotator-tool-details) Tool Details). The acquire takes the
+   slot of every device it moves or holds still, in device-id order, so
+   one already under way finishes before the lease is granted.
+4. **The drain.** The capture slot of every other camera in `cameras`,
+   in camera-id order. Taking a slot waits for that camera's capture in
+   flight to finish, and then holds new ones off until the lease ends.
+5. **The mount-motion lease.** The [motion gate](#mount-motion-gate),
+   shared, taken after the slots, which is the order a capture takes
+   them in. Slews, dithers and flips then wait for the lease to end, and
+   one already queued delays the lease as it delays a capture.
+
+The waits before the grant are bounded by the holders being waited on,
+as every gate wait is. A `release_train_lease` naming an acquire still
+waiting ends it: the acquire fails, saying it was released, and the
+release answers `{released: true}`.
+
+**`max_duration`** is the lease's life, counted from the grant: 5
+minutes by default, at most 10. `ends_by` is the grant plus
+`max_duration`, an RFC 3339 UTC time. A call under the lease is admitted
+until `ends_by`, and then runs to its own end, bounded by its own
+deadline: a capture's readout backstop, a focuser move's leg deadlines,
+a filter change's wait for the wheel to rest. The lease's slots are
+therefore held at most `max_duration` plus the last call's own deadline,
+and its gate permit at most `max_duration` plus the last capture's.
+Starting a training run no closer to the meridian flip than that is the
+session's job, as the flip's timing is.
+
+**Calls under the lease.** `capture`, `move_focuser` and `set_filter`
+take an optional `lease_id`.
+
+- A capture that carries the held lease's id through a camera in
+  `cameras` runs under the lease's slot and gate permit, and takes
+  neither again. A second shared acquire of the gate queued behind a
+  slew would deadlock on the fair gate. Captures under one lease through
+  one camera still run one at a time, as captures through a camera do.
+- A capture that carries the held lease's id through a camera not in
+  `cameras` is refused, naming the camera. Taking the gate for it would
+  be that same deadlock.
+- A move or filter change carrying the held lease's id is admitted only
+  for a device the lease moves, and runs under the lease's slot for it.
+  One that names a device the lease holds still is refused, naming the
+  device, and so is one that names a device outside the lease. Moves
+  and filter changes under one lease through one device still run one
+  at a time, so a put-back sent while a cancelled move is still being
+  halted waits for that move to end.
+- Without the id, a capture through a camera the lease reserves, and a
+  move, rotation or filter change of a device it moves or holds still,
+  waits for the lease to end, as a capture waits behind another capture
+  through its camera. The wait can be cancelled. Once the lease is
+  granted it is bounded by the lease's `max_duration` plus its last
+  call's own deadline.
+- A call whose id is not held is refused, saying why: the lease was
+  released, ended idle, reached its `max_duration`, lost its facade
+  lease, was ended by the safety transition or rp's shutdown, is still
+  being acquired, or was never granted by this process (a restart
+  forgets every lease). That is how a run learns its lease broke, and
+  no call slips past the drain on an ended lease. A put-back refused
+  that way is sent again without the id, as an ordinary call that waits
+  its turn like any other.
+
+**rp's own sweeps.** `auto_focus`, `refocus_train` and
+`center_on_target` capture and move through the internal paths, and
+meet a lease as a call without an id does. An `auto_focus` sweep, and
+each sweep of `refocus_train`, capture or metric, enters the
+reservation table for its length, put-back included: its camera and its
+focuser. It takes its slots per call, as today, and holds none across
+calls: a sweep that held slots across calls would take them in another
+order than a lease and could deadlock with one. An acquire whose
+reservation overlaps a running sweep's is refused at once, naming the
+sweep, and a sweep that overlaps a lease's reservation is refused at
+once, naming the lease, before it moves anything. `refocus_train` checks
+every planned step before it announces the refocus or pauses guiding,
+so a refocus a lease would refuse interrupts nothing. Neither waits on the
+other, so a lease is never granted between two of a sweep's moves with
+the focuser at a sample position. Two of rp's own sweeps never refuse
+each other. A sweep that another client drives move by move has no such
+guard: while a guiding train's training run holds a shared upstream
+focuser still, sole control of that focuser is an operator
+precondition, as sole control of PHD2 is.
+
+**The lease's lifetime.** It ends:
+
+- on release;
+- after 60 s with no call under it in flight, counted from the grant or
+  the last call's end;
+- at `ends_by`;
+- when the facade refuses a renewal because its lease is no longer held
+  (a `guiding/stop`, a `phd2-guider` restart). A renewal that does not
+  reach the facade (a timeout, a dropped connection) is tried again at
+  the next tick, and the facade's TTL decides;
+- on the safety transition (§ [SafetyMonitor
+  Polling](#safetymonitor-polling)), which must not leave the gate held
+  in front of a recovery slew;
+- at rp shutdown.
+
+An ending lease admits no further call at once. It keeps its slots until
+the last call under it has finished, and its gate permit only while a
+capture under it that was not cancelled is in flight: moves, rotations
+and filter changes are ungated and need no permit to finish. A capture
+under it therefore never loses its slot or the gate mid-exposure,
+whatever ended the lease, and the gate's longest hold is `max_duration`
+plus the last capture's own deadline. A cancelled capture under an
+ending lease gives the gate back at once, and keeps only its camera's
+slot until the camera is idle, as a cancelled capture outside a lease
+does ([Capture Tool Details](#capture-tool-details), Concurrency). Once
+everything is given back, rp releases the facade lease and removes the
+reservation. If rp crashes, its side ends with the process and the
+facade's at its TTL.
+
+The lease emits no events of its own. A run learns that its lease ended
+from the refusal of its next call.
+
+**Real-hardware validation.** 2026-10-14, on the field rig (Raspberry
+Pi 5, aarch64), at `1deaf8bf`: an rp built from the branch, whose
+guiding train ended in the PHD2 camera facade (`phd2-guider` from
+`main`, PHD2 2.6.14 with its Simulator camera) behind the rig's real
+EAF and Scops OAG, with the real Falcon and SV605CC in the imaging
+train. A probe that asserted every outcome passed each check:
+
+- with PHD2 looping, the acquire was refused, relaying "PHD2 is
+  Looping", and left no sweep lease behind;
+- granted, the guiding train's lease moved the Scops OAG, held the EAF
+  still and held the facade camera. `phd2-guider` then refused guiding
+  mutations with `camera_busy`, rp's own `start_guiding` included, and
+  PHD2 stayed `Stopped`;
+- the imaging train's lease was refused at once: it shares the EAF;
+- a capture, a 20-step move of the Scops OAG and its put-back ran under
+  the lease, and a move of the EAF under it was refused;
+- the lease outlived the facade's 60 s TTL through renewals, which the
+  facade logged 20.000 s apart from its grant;
+- a capture naming no lease waited until the release, then ran;
+- after a `guiding/stop`, the next renewal was refused, and the lease
+  ended with it, 22 s later;
+- a lease with nothing under it ended after 60 s and gave the facade
+  lease back;
+- at a SIGINT, rp released the facade lease within a second, instead
+  of leaving it to its TTL.
 
 ### Guider Service
 
@@ -4492,9 +4810,11 @@ without having to know the focus algorithm.
     train's terminal camera and `focuser_id` to its terminal focuser
     (error when the train has no focuser). Addressing the **guiding
     train** selects the PHD2-metric sweep instead of the capture
-    sweep — guide-train AF never captures through the guide camera
-    (PHD2 may own it at the SDK level); it moves the focuser and
-    reads PHD2's per-frame HFD. See
+    sweep — rp's guide-train AF never captures through the guide
+    camera (PHD2 may own it at the SDK level); it moves the focuser
+    and reads PHD2's per-frame HFD. A client's capture through the
+    PHD2 camera facade is not this sweep (see
+    [Train Lease](#train-lease)). See
     [Guide-train sweep](#guide-train-sweep-phd2-metric-variant).
 
   When addressed by `train_id`, every sweep parameter below
@@ -4879,8 +5199,10 @@ same V-curve algorithm with a different sample source: instead of
 `capture` + `measure_basic`, each grid position's sample is the
 **median HFD of fresh PHD2 guide frames**, read from the guider
 service's per-frame metrics window
-(phd2-guider.md § `GET /api/v1/guiding/metrics`). The guide camera
-is never captured through — PHD2 may own it at the SDK level.
+(phd2-guider.md § `GET /api/v1/guiding/metrics`). This sweep never
+captures through the guide camera — PHD2 may own it at the SDK level.
+A client's training run that captures through the PHD2 camera facade
+is a different operation, under a [train lease](#train-lease).
 
 Requirements, checked before any motion:
 
@@ -6424,7 +6746,12 @@ On the overall safe → unsafe transition:
    orchestrator such as `session-runner` pauses its run in-process and
    waits for the safe transition, keeping its persisted state
    ([session-runner.md § Safety Behavior](session-runner.md#safety-behavior)).
-2. Cancel every in-flight **gated** tool call, and every in-flight
+2. End every [train lease](#train-lease), granted or still being
+   acquired, so none holds the gate in front of the recovery slew
+   that follows: no further call under it is admitted, and it gives
+   its gate permit back once no capture under it that was not
+   cancelled is in flight. Then cancel every in-flight **gated** tool
+   call, and every in-flight
    `capture`, through the in-flight registry (§ [In-Flight Tool
    Calls](#in-flight-tool-calls)): each cancelled body issues its
    stop-class counterpart (a slew aborts, an exposure aborts, an opening
@@ -7257,8 +7584,17 @@ services/rp/src/
                         warm-up ramp (§ Camera Cooling)
   motion_gate.rs        MotionGate: the mount readers-writer gate
                         (§ Mount Motion Gate) — exclusive for
-                        slew/dither, shared for imaging-train
-                        captures, mount_motion_pending emission
+                        slew/dither, shared for captures through a
+                        train's camera and for a train lease,
+                        mount_motion_pending emission
+  train_lease.rs        TrainLeases (§ Train Lease): the seen-id
+                        memory, the reservation table leases and rp's
+                        own sweeps share, each lease's holdings and its
+                        keeper task (facade renewals, idle and
+                        max_duration ends, the give-back)
+  train_lease/
+    facade.rs           The PHD2 camera facade's sweep-lease Actions:
+                        token, acquire, renew, release
   guiding_watch.rs      Guide Focus Watch (§ Guide Focus Watch):
                         polls the guider's metrics window while
                         guiding, baseline/degrade/escalation state,
@@ -7399,6 +7735,9 @@ services/rp/src/
                           get_train_info (with the optics block),
                           get_refocus_plan (reads over the train model;
                           no device touched).
+      train_lease.rs    AcquireTrainLeaseParams, ReleaseTrainLeaseParams +
+                          acquire_train_lease (the five steps of
+                          § Train Lease), release_train_lease.
       focuser.rs        FocuserIdParams, MoveFocuserParams +
                           move_focuser, get_focuser_position,
                           get_focuser_temperature.

@@ -105,7 +105,17 @@ impl McpHandler {
                 angle
             ));
         }
-        let (_entry, rot) = resolve_device!(self, find_rotator, &rotator_id, "rotator");
+        let (entry, rot) = resolve_device!(self, find_rotator, &rotator_id, "rotator");
+        // One rotation through a rotator at a time, held for the whole
+        // call, ladder included; a rotator a train lease holds still
+        // waits for the lease to end (rp.md § Rotator Tool Details).
+        let _hold = match self
+            .device_hold(("rotator", &rotator_id), Some(&entry.slot), None, cancel)
+            .await
+        {
+            Ok(hold) => hold,
+            Err(e) => return Ok(tool_error!("{}", e)),
+        };
         let moved_trains: Vec<String> = self
             .trains
             .trains_with_device(&rotator_id)

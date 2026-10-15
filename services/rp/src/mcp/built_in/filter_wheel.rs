@@ -107,6 +107,12 @@ pub struct SetFilterParams {
     #[serde(default)]
     pub train_id: Option<String>,
     pub filter_name: String,
+    /// A held train lease to change the filter under (docs/services/rp.md
+    /// § Train Lease): admitted only for a wheel in the lease's train.
+    /// Omitted, a filter change of a wheel a lease reserves waits for
+    /// the lease to end.
+    #[serde(default)]
+    pub lease_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -140,6 +146,25 @@ impl McpHandler {
         ) {
             Ok(id) => id,
             Err(e) => return Ok(*e),
+        };
+        // One filter change through a wheel at a time, held from the
+        // first read to the end of the wait for the move (rp.md § Filter
+        // Wheel Tool Details), or the lease's hold on the wheel.
+        let slot = self
+            .equipment
+            .find_filter_wheel(&filter_wheel_id)
+            .map(|entry| &entry.slot);
+        let _hold = match self
+            .device_hold(
+                ("filter wheel", &filter_wheel_id),
+                slot,
+                params.lease_id.as_deref(),
+                cancel,
+            )
+            .await
+        {
+            Ok(hold) => hold,
+            Err(e) => return Ok(tool_error!("{}", e)),
         };
         let (fw_entry, fw) =
             resolve_device!(self, find_filter_wheel, &filter_wheel_id, "filter wheel");

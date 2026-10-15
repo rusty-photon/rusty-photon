@@ -33,6 +33,7 @@ use tracing::{debug, info, warn};
 use crate::equipment::EquipmentRegistry;
 use crate::events::EventBus;
 use crate::mcp::inflight::InFlight;
+use crate::train_lease::{LeaseEnd, TrainLeases};
 
 /// The safety state the gate and `get_safety_status` read (rp.md
 /// § Safety → In-Flight Tool Calls). Written by the enforcer on every
@@ -211,6 +212,10 @@ pub struct SafetyEnforcer<P: SafetyProbe> {
     /// The in-flight tool-call registry shared with `McpHandler`; the
     /// unsafe transition cancels its gated entries and in-flight captures.
     in_flight: Arc<InFlight>,
+    /// The train leases shared with `McpHandler`; the unsafe transition
+    /// ends every one, so none holds the gate in front of a recovery
+    /// slew (rp.md § Train Lease).
+    leases: Arc<TrainLeases>,
     equipment: Arc<EquipmentRegistry>,
     /// Guider-service client shared with `McpHandler`; the unsafe
     /// transition stops guiding through it. `None` when no `guider`
@@ -230,6 +235,7 @@ impl SafetyEnforcer<AlpacaSafetyProbe> {
         equipment: Arc<EquipmentRegistry>,
         event_bus: Arc<EventBus>,
         in_flight: Arc<InFlight>,
+        leases: Arc<TrainLeases>,
         status: Arc<SafetyStatus>,
         guider: Option<Arc<dyn rp_guider::GuiderClient>>,
         poll_interval: Duration,
@@ -251,6 +257,7 @@ impl SafetyEnforcer<AlpacaSafetyProbe> {
             poll_interval,
             event_bus,
             in_flight,
+            leases,
             equipment,
             guider,
             status,
@@ -370,6 +377,10 @@ impl<P: SafetyProbe> SafetyEnforcer<P> {
     async fn on_unsafe(&self) {
         warn!("conditions unsafe; cancelling in-flight gated work");
         self.status.set_overall(false);
+        // End every train lease first, so none admits another call while
+        // the sweep below runs, and each gives its gate permit back once
+        // no capture under it that was not cancelled is in flight.
+        self.leases.end_all(&LeaseEnd::Safety);
         let cancelled = self.in_flight.cancel_for_safety().await;
         if cancelled > 0 {
             info!(
@@ -534,6 +545,7 @@ mod tests {
             poll_interval: Duration::from_millis(1),
             event_bus,
             in_flight: Arc::new(InFlight::default()),
+            leases: Arc::new(TrainLeases::default()),
             equipment: empty_registry(),
             guider: None,
             status: Arc::new(SafetyStatus::default()),
@@ -924,6 +936,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unsafe_transition_ends_every_train_lease() {
+        let enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(false)])]);
+        let plan = crate::train_lease::LeasePlan {
+            train_id: "main".into(),
+            guiding: false,
+            camera_id: "main-cam".into(),
+            focuser_id: "eaf".into(),
+            filter_wheel_ids: vec![],
+            held_focuser_ids: vec![],
+            held_rotator_ids: vec![],
+            drained_camera_ids: vec![],
+        };
+        let acquiring = enforcer.leases.reserve("a", plan).unwrap();
+        acquiring.lease().grant(Duration::from_mins(5)).unwrap();
+        drop(acquiring);
+
+        enforcer.poll_once(&mut HashMap::new(), true).await;
+
+        let err = enforcer
+            .leases
+            .admit(
+                "a",
+                crate::train_lease::CallKind::Capture {
+                    camera_id: "main-cam",
+                },
+            )
+            .err()
+            .unwrap();
+        assert_eq!(err, "lease 'a' is not held: the safety transition ended it");
+    }
+
+    #[tokio::test]
     async fn run_stops_on_cancellation() {
         let enforcer = enforcer_with(vec![ScriptedProbe::new("sm", vec![Ok(true)])]);
         let cancel = CancellationToken::new();
@@ -989,6 +1033,7 @@ mod tests {
             empty_registry(),
             event_bus,
             Arc::new(InFlight::default()),
+            Arc::new(TrainLeases::default()),
             Arc::new(SafetyStatus::default()),
             None,
             Duration::from_secs(10),
@@ -1228,6 +1273,7 @@ mod tests {
             equipment,
             event_bus.clone(),
             Arc::new(InFlight::default()),
+            Arc::new(TrainLeases::default()),
             Arc::new(SafetyStatus::default()),
             None,
             Duration::from_millis(1),

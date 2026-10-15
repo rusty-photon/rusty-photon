@@ -11,6 +11,11 @@ pub struct FilterWheelEntry {
     pub id: String,
     pub config: config::FilterWheelConfig,
     pub session: DeviceSession<dyn FilterWheel>,
+
+    /// One filter change through the wheel at a time (rp.md § Filter
+    /// Wheel Tool Details), and a train lease's hold on it (§ Train
+    /// Lease).
+    pub slot: super::DeviceSlot,
 }
 
 impl FilterWheelEntry {
@@ -49,6 +54,7 @@ pub(super) async fn connect_filter_wheel(
                 id: config.id.clone(),
                 config: config.clone(),
                 session: DeviceSession::connected(fw),
+                slot: crate::equipment::DeviceSlot::default(),
             }
         }
         Err(msg) => {
@@ -57,6 +63,7 @@ pub(super) async fn connect_filter_wheel(
                 id: config.id.clone(),
                 config: config.clone(),
                 session: DeviceSession::disconnected(),
+                slot: crate::equipment::DeviceSlot::default(),
             }
         }
     }
