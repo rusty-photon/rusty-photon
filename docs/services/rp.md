@@ -4183,6 +4183,32 @@ facade's at its TTL.
 The lease emits no events of its own. A run learns that its lease ended
 from the refusal of its next call.
 
+**Real-hardware validation.** 2026-10-14, on the field rig (Raspberry
+Pi 5, aarch64), at `1deaf8bf`: an rp built from the branch, whose
+guiding train ended in the PHD2 camera facade (`phd2-guider` from
+`main`, PHD2 2.6.14 with its Simulator camera) behind the rig's real
+EAF and Scops OAG, with the real Falcon and SV605CC in the imaging
+train. A probe that asserted every outcome passed each check:
+
+- with PHD2 looping, the acquire was refused, relaying "PHD2 is
+  Looping", and left no sweep lease behind;
+- granted, the guiding train's lease moved the Scops OAG, held the EAF
+  still and held the facade camera. `phd2-guider` then refused guiding
+  mutations with `camera_busy`, rp's own `start_guiding` included, and
+  PHD2 stayed `Stopped`;
+- the imaging train's lease was refused at once: it shares the EAF;
+- a capture, a 20-step move of the Scops OAG and its put-back ran under
+  the lease, and a move of the EAF under it was refused;
+- the lease outlived the facade's 60 s TTL through renewals, which the
+  facade logged 20.000 s apart from its grant;
+- a capture naming no lease waited until the release, then ran;
+- after a `guiding/stop`, the next renewal was refused, and the lease
+  ended with it, 22 s later;
+- a lease with nothing under it ended after 60 s and gave the facade
+  lease back;
+- at a SIGINT, rp released the facade lease within a second, instead
+  of leaving it to its TTL.
+
 ### Guider Service
 
 The guider service is an **rp-managed service** that wraps PHD2 and
