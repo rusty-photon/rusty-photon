@@ -42,7 +42,7 @@ const PROVIDER_TOOLS: [&str; 8] = [
 ];
 
 /// The rp tools the provider calls — the registration's `requires_tools`.
-const REQUIRED_RP_TOOLS: [&str; 13] = [
+const REQUIRED_RP_TOOLS: [&str; 15] = [
     "get_train_info",
     "get_refocus_plan",
     "get_focuser_position",
@@ -56,6 +56,8 @@ const REQUIRED_RP_TOOLS: [&str; 13] = [
     "pause_guiding",
     "resume_guiding",
     "auto_focus",
+    "acquire_train_lease",
+    "release_train_lease",
 ];
 
 /// The reference train: 500 mm at f/5.
@@ -669,7 +671,7 @@ fn push_train(world: &mut FocusModelWorld, devices: Vec<String>) {
 /// reserved first (testing.md §5.1: a band port probed by connect,
 /// never a bind-and-drop) so the provider's config can name rp's MCP
 /// URL before rp exists.
-async fn start_provider_then_rp(world: &mut FocusModelWorld) {
+pub async fn start_provider_then_rp(world: &mut FocusModelWorld) {
     let rp_port = bdd_infra::reserved_test_port_async().await;
     world.rp_port = Some(rp_port);
 
@@ -708,7 +710,7 @@ async fn start_provider_then_rp(world: &mut FocusModelWorld) {
 }
 
 /// The focuser's position, read through rp like any other client.
-async fn read_focuser_position(world: &mut FocusModelWorld) -> i64 {
+pub async fn read_focuser_position(world: &mut FocusModelWorld) -> i64 {
     ensure_mcp_client(world).await;
     let result = world
         .mcp()

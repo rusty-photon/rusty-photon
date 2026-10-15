@@ -45,6 +45,7 @@ pub mod calibration;
 pub mod config;
 pub mod doctor;
 pub mod error;
+pub mod lease;
 pub mod mcp_client;
 pub mod offsets;
 pub mod prediction;

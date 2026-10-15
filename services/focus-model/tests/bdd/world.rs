@@ -12,8 +12,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bdd_infra::rp_harness::{
-    CameraConfig, FilterWheelConfig, FocuserConfig, GuiderConfig, GuiderStub, McpTestClient,
-    MountConfig, OpticalTrainConfig, ReceivedEvent, RpConfigBuilder, WebhookReceiver,
+    CameraConfig, FacadeCameraStub, FilterWheelConfig, FocuserConfig, GuiderConfig, GuiderStub,
+    McpTestClient, MountConfig, OpticalTrainConfig, ReceivedEvent, RpConfigBuilder,
+    WebhookReceiver,
 };
 use bdd_infra::tls_auth::{TlsAuthSmokeWorld, TlsAuthState};
 use bdd_infra::ServiceHandle;
@@ -48,13 +49,20 @@ pub fn build_focus_model_config(mcp_server_url: &str, store_path: &str) -> Value
         "store_path": store_path,
         "server": { "port": 0, "bind_address": "127.0.0.1" },
         "trains": {
-            "main": {
-                "duration": "100ms",
-                "min_area": 5,
-                "max_area": 65536,
-                "threshold_sigma": bdd_infra::rp_harness::STARLESS_THRESHOLD_SIGMA
-            }
+            "main": starless_train(),
+            "guide": starless_train()
         }
+    })
+}
+
+/// A train block whose frames read as starless: a short exposure and a
+/// detection threshold no simulator frame clears.
+fn starless_train() -> Value {
+    serde_json::json!({
+        "duration": "100ms",
+        "min_area": 5,
+        "max_area": 65536,
+        "threshold_sigma": bdd_infra::rp_harness::STARLESS_THRESHOLD_SIGMA
     })
 }
 
@@ -67,6 +75,9 @@ pub struct FocusModelWorld {
     pub focus_model: Option<ServiceHandle>,
     pub webhook_receiver: Option<WebhookReceiver>,
     pub guider_stub: Option<GuiderStub>,
+    /// The guiding train's PHD2 camera facade, a stub over the
+    /// simulator's camera.
+    pub facade_stub: Option<FacadeCameraStub>,
     /// The scenario's MCP client to rp. Dropped in the `after` hook
     /// *before* rp stops (testing.md §5.4).
     pub mcp_client: Option<McpTestClient>,
@@ -126,6 +137,7 @@ impl Default for FocusModelWorld {
             focus_model: None,
             webhook_receiver: None,
             guider_stub: None,
+            facade_stub: None,
             mcp_client: None,
             cameras: Vec::new(),
             filter_wheels: Vec::new(),

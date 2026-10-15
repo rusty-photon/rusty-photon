@@ -1737,7 +1737,7 @@ sweep lease is held return `camera_busy` (409), see
 - [x] Frames sent as `UInt16`
 - [x] BDD `camera_lease.feature`, and the ImageBytes header in `camera_facade.feature`
 - [x] The lease against a live PHD2 on `pier1`, with PHD2's Simulator camera, and ConformU
-- [ ] A lease held through a sweep on `pier1` (C7d's hardware check)
+- [x] A lease held through a sweep on `pier1` with the QHY5III715C (C7d's hardware check, recorded in [focus-model.md](focus-model.md) § Training runs on a guiding train)
 
 ## Dependencies
 
