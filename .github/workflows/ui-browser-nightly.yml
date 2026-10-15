@@ -145,63 +145,34 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      contents: read
       issues: write
     steps:
-      - name: Open or update tracking issue
-        uses: actions/github-script@v9
+      # The action and the helpers it imports, nothing else.
+      - uses: actions/checkout@v7
         with:
-          script: |
-            const title = `nightly: ui-htmx @browser BDD failing`;
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = [
-              `The advisory ui-htmx @browser nightly (real headless Firefox via`,
-              `geckodriver) failed. This layer is NOT a required gate — the per-PR`,
-              `P1/P2 server-bytes layers carry correctness; this run proves htmx`,
-              `actually executes in a browser.`,
-              ``,
-              `Likely causes: a browser/geckodriver regression or version-pair`,
-              `incompatibility, a Firefox upgrade changing behavior or orphan`,
-              `handling (UI-testing plan §10), an htmx-contract regression,`,
-              `genuine browser-layer flake, OR a full-workspace \`cargo build\``,
-              `failure unrelated to the browser layer (this job now builds the`,
-              `whole workspace, same as test.yml, so a broken main surfaces here`,
-              `too — check the run log's build step before assuming a browser`,
-              `regression). Inspect the failed run; failure-triage artifacts`,
-              `(screenshot + page source) are uploaded on the run when the`,
-              `failure got as far as the browser scenarios.`,
-              ``,
-              `Run: ${runUrl}`,
-              ``,
-              `This issue was opened automatically by a scheduled run that failed.`,
-              `While it stays open, each subsequent scheduled failure is appended`,
-              `here as a comment linking its own run. Closing it marks the failure`,
-              `handled — it is never re-opened; the next scheduled failure opens a`,
-              `fresh issue instead.`,
-            ].join("\n");
-            // Search only OPEN issues. While a tracking issue is open each failure
-            // appends a comment; once it is closed the failure is considered
-            // handled, so the next scheduled failure opens a fresh issue rather
-            // than resurrecting the closed one.
-            const existing = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: "open",
-              labels: "browser-nightly",
-            });
-            const match = existing.find(i => i.title === title);
-            if (match) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: match.number,
-                body: `Failed again — run: ${runUrl}`,
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body,
-                labels: ["browser-nightly", "ci-flake"],
-              });
-            }
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/tracking-issue
+            .github/actions/lib
+      - name: Open or update tracking issue
+        uses: ./.github/actions/tracking-issue
+        with:
+          title: "nightly: ui-htmx @browser BDD failing"
+          label: browser-nightly
+          body: |
+            The advisory ui-htmx @browser nightly (real headless Firefox via
+            geckodriver) failed. This layer is NOT a required gate — the per-PR
+            P1/P2 server-bytes layers carry correctness; this run proves htmx
+            actually executes in a browser.
+
+            Likely causes: a browser/geckodriver regression or version-pair
+            incompatibility, a Firefox upgrade changing behavior or orphan
+            handling (UI-testing plan §10), an htmx-contract regression,
+            genuine browser-layer flake, OR a full-workspace `cargo build`
+            failure unrelated to the browser layer (this job now builds the
+            whole workspace, same as test.yml, so a broken main surfaces here
+            too — check the run log's build step before assuming a browser
+            regression). Inspect the failed run; failure-triage artifacts
+            (screenshot + page source) are uploaded on the run when the
+            failure got as far as the browser scenarios.

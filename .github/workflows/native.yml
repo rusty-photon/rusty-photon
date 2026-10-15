@@ -185,56 +185,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      contents: read
       issues: write
     steps:
-      - name: Open or update tracking issue
-        uses: actions/github-script@v9
+      # The action and the helpers it imports, nothing else.
+      - uses: actions/checkout@v7
         with:
-          script: |
-            const title = `nightly: native SDK build failing`;
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = [
-              `The nightly \`native\` workflow failed on at least one OS.`,
-              ``,
-              `This is the only CI job that compiles + links the qhy, zwo, AND svbony`,
-              `crates' REAL (non-\`simulation\`) paths against their installed SDKs. A failure`,
-              `means a native-SDK link directive, a bindgen binding, or some`,
-              `\`#[cfg(not(feature = "simulation"))]\` FFI code no longer compiles,`,
-              `links, or loads against the SDK — the rest of CI builds the simulation`,
-              `path and would not catch this. Inspect the failed job in the linked run.`,
-              ``,
-              `Run: ${runUrl}`,
-              ``,
-              `This issue was opened automatically by a scheduled run that`,
-              `failed. While it stays open, each subsequent scheduled failure`,
-              `is appended here as a comment linking its own run. Closing it`,
-              `marks the failure handled — it is never re-opened; the next`,
-              `scheduled failure opens a fresh issue instead.`,
-            ].join("\n");
-            // Search only OPEN issues. While a tracking issue is open each
-            // failure appends a comment; once it is closed the failure is
-            // considered handled, so the next scheduled failure opens a fresh
-            // issue rather than resurrecting the closed one.
-            const existing = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: "open",
-              labels: "native-nightly",
-            });
-            const match = existing.find(i => i.title === title);
-            if (match) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: match.number,
-                body: `Failed again — run: ${runUrl}`,
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body,
-                labels: ["native-nightly", "ci-flake"],
-              });
-            }
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/tracking-issue
+            .github/actions/lib
+      - name: Open or update tracking issue
+        uses: ./.github/actions/tracking-issue
+        with:
+          title: "nightly: native SDK build failing"
+          label: native-nightly
+          body: |
+            The nightly `native` workflow failed on at least one OS.
+
+            This is the only CI job that compiles + links the qhy, zwo, AND svbony
+            crates' REAL (non-`simulation`) paths against their installed SDKs. A failure
+            means a native-SDK link directive, a bindgen binding, or some
+            `#[cfg(not(feature = "simulation"))]` FFI code no longer compiles,
+            links, or loads against the SDK — the rest of CI builds the simulation
+            path and would not catch this. Inspect the failed job in the linked run.

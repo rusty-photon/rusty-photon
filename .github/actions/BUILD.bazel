@@ -40,6 +40,19 @@ node_test(
     ],
 )
 
+# tracking-issue: a scheduled workflow's tracking issue, opened or commented on
+# when a scheduled run fails.
+node_test(
+    name = "tracking_issue_test",
+    size = "small",
+    srcs = ["tracking-issue/issue.test.mjs"],
+    data = [
+        "lib/helpers.mjs",
+        "lib/testing.mjs",
+        "tracking-issue/issue.mjs",
+    ],
+)
+
 # Every JavaScript file in this package parses, and its imports resolve to a
 # Node built-in or a file here, with the names it imports: entry files
 # included, which no test imports, since they run on load.
