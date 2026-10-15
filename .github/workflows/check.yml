@@ -142,9 +142,9 @@ jobs:
     # no rustup, so there it would add a WAN toolchain download to a job that
     # otherwise needs none, and a formatting slip on main would stop the
     # Bazel run that writes the LAN cache. This job pays for its own
-    # toolchain: on the pool, every run fetches rustup, stable and its
-    # ~500 crates over the operator's WAN (about 12 s, measured), then
-    # compiles cold.
+    # toolchain: on the pool, every run fetches rustup and stable over the
+    # operator's WAN, then compiles cold. Its crates come from the LAN
+    # bazel-remote instead (the lan-crates step below).
     #
     # Two passes, because one feature point cannot lint everything (#988):
     # `--all-features` turns `mock` / `simulation` ON, cfg'ing OUT the
@@ -206,9 +206,9 @@ jobs:
         shell: bash
     steps:
       # The pool runner's .env supplies RP_LAN_CACHE_URL (a LAN address —
-      # operator infrastructure). This job never touches the cache, but the
-      # variable sits in every step's environment, so mask it the way
-      # bazel.yml does; a no-op on hosted runners, where it is empty.
+      # operator infrastructure). The lan-crates step reads crates from it,
+      # and the variable sits in every step's environment, so mask it the
+      # way bazel.yml does; a no-op on hosted runners, where it is empty.
       - name: Mask runner-provided cache endpoint
         run: |
           if [[ -n "${RP_LAN_CACHE_URL:-}" ]]; then
@@ -224,6 +224,21 @@ jobs:
       # Stdlib-only and sub-second, so it runs before the toolchain install.
       - name: BDD runners fail on skipped steps
         run: python3 tools/ci/check_bdd_runners.py
+      # Every crates.io package Cargo.lock pins, from the LAN bazel-remote,
+      # checked against Cargo.lock and set up as a directory source that
+      # replaces crates.io, so Cargo downloads no crate and reads no index. A
+      # crate the cache lacks comes from crates.io; a cache that is down is a
+      # miss, never a failure. A no-op on hosted runners (no RP_LAN_CACHE_URL).
+      # On push to main it also uploads what it fetched, with the write
+      # credential bazel.yml uses under the same push-only expression (ADR-020
+      # layer 4). It goes to this step alone, as an input, and the uploads
+      # finish before any Cargo step, so no build script runs while a step
+      # holds it.
+      - name: Crates from the LAN cache
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/lan-crates
+        with:
+          write-auth: ${{ github.event_name == 'push' && secrets.BAZEL_LAN_CACHE_WRITE_AUTH || '' }}
       # From here on each step runs unless the run was cancelled or the
       # toolchain failed to install, so a failed check above it does not hide
       # the ones below.
@@ -237,10 +252,10 @@ jobs:
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
         run: cargo fmt --check
       # Hosted runners only. On the pool the entry (about 1.2 GB) would come
-      # from GitHub over the operator's WAN, a far larger download than the
-      # crates this job fetches anyway. Today the pool finds no entry (the
-      # key's environment hash differs there, and this job never saves), but
-      # that is incidental.
+      # from GitHub over the operator's WAN, where the crates it would save
+      # downloading come from the LAN instead (the lan-crates step). Today
+      # the pool finds no entry (the key's environment hash differs there,
+      # and this job never saves), but that is incidental.
       - uses: Swatinem/rust-cache@v2
         if: ${{ !cancelled() && steps.toolchain.outcome == 'success' && runner.environment == 'github-hosted' }}
         with:

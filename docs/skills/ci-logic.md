@@ -37,6 +37,7 @@ ask for a new shell block of more than a few lines to move.
   link.test.mjs            parses and links every JavaScript file here
   lib/helpers.mjs          the helper module every action imports
   lib/helpers.test.mjs
+  lib/testing.mjs          test fixtures every action's tests share
   <action>/action.yml      runs.using: node24, runs.main: index.mjs
   <action>/index.mjs       the entry file: inputs in, outputs out
   <action>/<logic>.mjs     what the tests import
@@ -80,6 +81,7 @@ parsers, which its comments name.
 | `setSecret` | Mask a value in the rest of the job's log. Call it before anything can print the value. |
 | `warning`, `group`, `fail` | A warning annotation; a collapsible log group that closes however its function ends; an error annotation that fails the step on exit. |
 | `run` | Every entry file's wrapper: a throw becomes an error annotation and a failed step, with the stack in the log. |
+| `describe` | An error's message followed by its causes', which is where `fetch` says why a request failed (`fetch failed: connect ECONNREFUSED …`): what `run` puts in its annotation, for an action that reports a failure without failing the step. |
 | `fetchWithRetry` | `fetch` with a timeout per attempt and bounded retries of 408, 429, 500, 502, 503, 504, a 403 that says how long to wait (how GitHub's API answers a rate limit), timeouts and requests that got no answer, waiting as long as a Retry-After or the GitHub API's rate-limit reset asks, or a minute for its secondary limit, measured on the server's clock (a wait over two minutes is not retried). Each retry is a plain log line, not a warning annotation. Anything else outside 2xx throws an `HttpError`. Only idempotent methods are retried by default: a POST or PATCH gets one attempt unless the caller sets `attempts`, knowing a repeat is harmless. The timeout covers reading the body too, so size it for the download. A stream body needs `attempts: 1`, since a retry would send it again. A caller's own `signal` aborts the request and ends the retries. A URL with a user or password is refused, as is one that does not parse, and neither error shows the URL. |
 | `HttpError` | Its message holds the method, the URL without its query string (where a pre-signed URL carries its signature) and the status. `body` holds the start of the response's body, where an API says why it refused. That stays out of the message and the logged stack, since a server may echo credentials there; add it to an error of your own when you trust the server. |
 | `retry` | The same bounded retry for any other step that can fail transiently, such as a download and its checksum as one unit. Give a `fetchWithRetry` inside it `attempts: 1`, or the two retry counts multiply (3 × 3 requests). `attempts` must be a whole number of 1 or more. The default `isRetryable` is `isTransient`, which retries no bug in the callback. A Retry-After over two minutes is never waited out, whatever `isRetryable` says. An abort during a wait throws an AbortError whose cause is the error being retried. |
@@ -131,10 +133,11 @@ it stays in the action.
 - **Read what an action prints through `io`**, never by replacing
   `process.stdout.write`. Under `node --test`, stdout also carries the
   test runner's reports to its parent process. Replacing it loses them,
-  and the file fails with only some of its tests reported.
-  `helpers.test.mjs`'s `capture` is the pattern.
+  and the file fails with only some of its tests reported. `capture` in
+  `lib/testing.mjs` does it; list that file in the test's `data`.
 - **Fakes.** A fake GitHub API, store or download server is a `node:http`
-  server on `127.0.0.1`, port 0 (`serve` in `helpers.test.mjs`). Command
+  server on `127.0.0.1`, port 0: `serve` in `lib/testing.mjs`, which
+  records each request with its body. Command
   files are temp files under `TEST_TMPDIR`. An environment variable a test
   sets is put back when it ends (`withEnv`).
 - Show that a test which guards a behaviour fails with the behaviour
