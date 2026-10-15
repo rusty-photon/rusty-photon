@@ -18,6 +18,11 @@ Feature: Camera facade — PHD2's guide frames as an ASCOM Alpaca Camera
   x, y holds (8 y + x) x 1365, so x 1, y 0 holds 1365, x 0, y 1 holds
   10920 and x 2, y 1 holds 13650.
 
+  The image goes out as unsigned 16-bit values. A client that asks for it
+  as ImageBytes (Accept: application/imagebytes) gets a 44-byte header of
+  eleven little-endian 32-bit integers, then the pixels, two bytes each:
+  transmission element type 8 is UInt16.
+
   ASCOM error numbers: 0x401 invalid value, 0x407 not connected, 0x40B
   invalid operation, 0x500 unspecified.
 
@@ -54,6 +59,25 @@ Feature: Camera facade — PHD2's guide frames as an ASCOM Alpaca Camera
     And the facade camera's last exposure should have lasted 0.5 s
     And the mock PHD2 should have received a capture of 500 ms saved under image_dir as a phd2-guider FITS file
     And image_dir should hold no phd2-guider file
+
+  Scenario: The image goes out over ImageBytes as UInt16, two bytes a pixel
+    Given a mock PHD2 2.6.14 with an 8 x 6 camera
+    And the guider service is running with the camera facade enabled
+    And the facade camera is connected
+    When the client starts a 0.1 s light exposure
+    And the facade image becomes ready within 10 s
+    And the client fetches the facade image as ImageBytes
+    Then the ImageBytes header should match these constants (i32 little-endian):
+      | field                     | offset | value |
+      | metadata_version          | 0      | 1     |
+      | error_number              | 4      | 0     |
+      | data_start                | 16     | 44    |
+      | image_element_type        | 20     | 2     |
+      | transmission_element_type | 24     | 8     |
+      | rank                      | 28     | 2     |
+      | dimension_1               | 32     | 8     |
+      | dimension_2               | 36     | 6     |
+    And the ImageBytes pixel data should be 96 bytes
 
   Scenario: A subframe is cut from PHD2's full frame
     Given a mock PHD2 2.6.14 with an 8 x 6 camera

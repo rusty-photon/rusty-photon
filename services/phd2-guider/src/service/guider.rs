@@ -12,6 +12,11 @@
 //! mutation except stop checks the claim once it holds the mutex and
 //! is refused with `camera_busy`, and the claim is released when PHD2
 //! reports the frame ended or its deadline passes.
+//!
+//! The facade's **sweep lease** (`docs/services/phd2-guider.md` § "The
+//! sweep lease") sits beside the slot: its acquire claims it as a capture
+//! does, the same mutations are refused while it is held, and a stop ends
+//! it.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -23,12 +28,21 @@ use tracing::{debug, info, warn};
 
 use crate::client::Phd2Client;
 use crate::config::SettleParams;
+use crate::error::Phd2Error;
 use crate::events::{AppState, Phd2Event};
 
 use super::error::ServiceError;
+use super::lease::{self, AcquireRequest, Granted, LeaseBook, LeaseEnd, LeaseError, Token};
 
 /// Rolling RMS window size, in guide steps.
 const RMS_WINDOW: usize = 50;
+
+/// How long each request the camera facade sends PHD2 while it holds the
+/// guiding lock may take: [`GuiderOps::lock_while_stopped`]'s
+/// `get_app_state` (a capture's and a sweep lease's), a capture's
+/// `capture_single_frame` and an abort's `stop_capture`. PHD2 answers each
+/// in milliseconds.
+pub(crate) const LOCKED_RPC_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Wall-clock grace added to the request's settle timeout for the
 /// backstop. PHD2 enforces the settle timeout itself and reports
@@ -156,6 +170,69 @@ pub struct CaptureClaim {
     pub recovered: bool,
 }
 
+/// What a failed request from the camera facade to PHD2 means, the one
+/// reading every facade request shares.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub(crate) enum RpcFailure {
+    /// PHD2 refused it because a capture is already active.
+    #[error("{0}")]
+    Busy(String),
+    /// PHD2 refused it for another reason, or answered with something this
+    /// client cannot read.
+    #[error("{0}")]
+    Refused(String),
+    /// PHD2 could not be reached, or did not answer.
+    #[error("{0}")]
+    Unreachable(String),
+}
+
+impl From<Phd2Error> for RpcFailure {
+    fn from(e: Phd2Error) -> Self {
+        match e {
+            Phd2Error::RpcError { message, .. } if message.contains("currently active") => {
+                Self::Busy(message)
+            }
+            Phd2Error::RpcError { message, .. } | Phd2Error::InvalidState(message) => {
+                Self::Refused(message)
+            }
+            other => Self::Unreachable(other.to_string()),
+        }
+    }
+}
+
+/// Why [`GuiderOps::lock_while_stopped`] did not take the guiding lock.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum StoppedLockError {
+    /// A guiding operation, or the end of an earlier frame, holds the lock.
+    #[error("the guider is busy: a guiding request, or the end of an earlier frame")]
+    Busy,
+    /// A facade frame, or a restart marker's, holds the capture slot.
+    #[error("{}", claim_held(.0))]
+    Capturing(CaptureClaim),
+    /// PHD2's `get_app_state` failed.
+    #[error("{0}")]
+    Rpc(RpcFailure),
+    /// PHD2 is not `Stopped`.
+    #[error("PHD2 is {0}; the camera facade works only while PHD2 is Stopped")]
+    NotStopped(AppState),
+}
+
+/// What holds the capture slot, and until when at the latest.
+fn claim_held(claim: &CaptureClaim) -> String {
+    let until = humantime::format_rfc3339_seconds(claim.deadline);
+    if claim.recovered {
+        format!(
+            "a camera-facade frame started before this service restarted may still be \
+             exposing, until {until} at the latest"
+        )
+    } else {
+        format!(
+            "a frame is still exposing in PHD2 ({}), until {until} at the latest",
+            claim.path.display()
+        )
+    }
+}
+
 /// Stats endpoint payload: the window snapshot plus PHD2's current
 /// application state.
 #[derive(Debug)]
@@ -207,6 +284,9 @@ pub struct GuiderOps {
     capture: std::sync::Mutex<Option<CaptureClaim>>,
     /// Fires each time the capture slot is released.
     capture_released: tokio::sync::Notify,
+    /// The camera facade's sweep lease and the tokens it was named under.
+    /// A lease is granted only while `op_lock` is held.
+    lease: std::sync::Mutex<LeaseBook>,
     default_settle: SettleParams,
     stop_timeout: Duration,
 }
@@ -228,6 +308,7 @@ impl GuiderOps {
             frame_reports: broadcast::channel(FRAME_CHANNEL_CAPACITY).0,
             capture: std::sync::Mutex::new(None),
             capture_released: tokio::sync::Notify::new(),
+            lease: std::sync::Mutex::new(LeaseBook::default()),
             default_settle,
             stop_timeout,
         }
@@ -320,26 +401,139 @@ impl GuiderOps {
         self.frame_reports.subscribe()
     }
 
+    fn lease_book(&self) -> std::sync::MutexGuard<'_, LeaseBook> {
+        self.lease
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Grant the camera facade's sweep lease: claimed under the guiding
+    /// lock with `try_lock`, as a capture is, only with no frame in
+    /// flight, no lease held, a token never seen, and PHD2 Stopped. The
+    /// caller has checked the camera is connected, and holds its
+    /// connect/disconnect lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LeaseError::NotConnected`] when PHD2 cannot be reached,
+    /// and [`LeaseError::Refused`] naming any other reason.
+    pub(crate) async fn acquire_lease(
+        &self,
+        request: &AcquireRequest,
+    ) -> Result<Granted, LeaseError> {
+        // Before the lock, so a token used before costs no RPC.
+        self.lease_book()
+            .check_grant(&request.token, tokio::time::Instant::now())
+            .map_err(LeaseError::Refused)?;
+        let _op = self.lock_while_stopped().await.map_err(|e| match e {
+            StoppedLockError::Rpc(RpcFailure::Unreachable(message)) => {
+                LeaseError::NotConnected(format!("PHD2 unreachable: {message}"))
+            }
+            StoppedLockError::Rpc(RpcFailure::Busy(message) | RpcFailure::Refused(message)) => {
+                LeaseError::Refused(format!("PHD2 refused get_app_state: {message}"))
+            }
+            StoppedLockError::NotStopped(state) => LeaseError::Refused(format!(
+                "PHD2 is {state}; a sweep lease is granted only while PHD2 is Stopped"
+            )),
+            other => LeaseError::Refused(other.to_string()),
+        })?;
+        // Checked again: a release recorded the token while PHD2 answered.
+        let granted = self
+            .lease_book()
+            .grant(
+                request.token.clone(),
+                request.ttl_s,
+                tokio::time::Instant::now(),
+            )
+            .map_err(LeaseError::Refused)?;
+        debug!(token = %request.token, ttl_s = request.ttl_s, "sweep lease granted");
+        Ok(granted)
+    }
+
+    /// Restart the held lease's TTL. Takes no guiding lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns why `token` holds no lease.
+    pub(crate) fn renew_lease(&self, token: &Token) -> Result<Granted, String> {
+        let granted = self
+            .lease_book()
+            .renew(token, tokio::time::Instant::now())?;
+        debug!(%token, "sweep lease renewed");
+        Ok(granted)
+    }
+
+    /// End the lease `token` holds. Returns whether it held one. Takes no
+    /// guiding lock.
+    pub(crate) fn release_lease(&self, token: &Token) -> bool {
+        let released = self
+            .lease_book()
+            .release(token, tokio::time::Instant::now());
+        debug!(%token, released, "sweep lease release");
+        released
+    }
+
+    /// End the held lease, if any: a guiding stop, or a disconnect.
+    pub(crate) fn end_lease(&self, why: LeaseEnd) {
+        self.lease_book().end(why, tokio::time::Instant::now());
+    }
+
+    /// Take the guiding lock for the camera facade, as a capture and a
+    /// sweep lease's acquire do: with `try_lock`, so it never queues behind
+    /// a guiding operation, and only while no facade frame holds the
+    /// capture slot and PHD2 answers `Stopped`, the one state the facade
+    /// works from. The guard is returned held.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoppedLockError`] naming the check that failed; nothing
+    /// is held then.
+    pub(crate) async fn lock_while_stopped(
+        &self,
+    ) -> Result<tokio::sync::MutexGuard<'_, ()>, StoppedLockError> {
+        let Ok(op) = self.op_lock.try_lock() else {
+            return Err(StoppedLockError::Busy);
+        };
+        if let Some(claim) = self.capture_claim() {
+            return Err(StoppedLockError::Capturing(claim));
+        }
+        let state = tokio::time::timeout(LOCKED_RPC_TIMEOUT, self.client.get_app_state())
+            .await
+            .map_err(|_| {
+                StoppedLockError::Rpc(RpcFailure::Unreachable(
+                    "PHD2 did not answer get_app_state".to_string(),
+                ))
+            })?
+            .map_err(|e| StoppedLockError::Rpc(e.into()))?;
+        if state != AppState::Stopped {
+            return Err(StoppedLockError::NotStopped(state));
+        }
+        Ok(op)
+    }
+
     /// Refuse a guiding mutation while a facade frame holds the capture
-    /// slot. Called with `op_lock` held.
-    fn refuse_while_capturing(&self) -> Result<(), ServiceError> {
-        let Some(claim) = self.capture_claim() else {
-            return Ok(());
-        };
-        let until = humantime::format_rfc3339_seconds(claim.deadline);
-        let message = if claim.recovered {
-            format!(
-                "a camera-facade frame started before this service restarted may still be \
-                 exposing; guiding operations are refused until it ends, by {until} at the latest"
-            )
-        } else {
-            format!(
-                "the camera facade is capturing a frame; guiding operations are refused until it \
-                 ends, by {until} at the latest"
-            )
-        };
-        debug!("{message}");
-        Err(ServiceError::CameraBusy(message))
+    /// slot or a sweep lease is held. Called with `op_lock` held.
+    fn refuse_while_camera_held(&self) -> Result<(), ServiceError> {
+        if let Some(claim) = self.capture_claim() {
+            let message = format!(
+                "{}; guiding operations are refused until it ends",
+                claim_held(&claim)
+            );
+            debug!("{message}");
+            return Err(ServiceError::CameraBusy(message));
+        }
+        let now = tokio::time::Instant::now();
+        let held_until = self.lease_book().held_until(now);
+        if let Some(until) = held_until {
+            let message = format!(
+                "the camera facade's sweep lease is held; guiding operations are refused until it \
+                 is released or ends, by {} unless it is renewed",
+                lease::when(until, now)
+            );
+            debug!("{message}");
+            return Err(ServiceError::CameraBusy(message));
+        }
+        Ok(())
     }
 
     fn push_metrics(&self, entry: FrameMetrics) {
@@ -497,7 +691,7 @@ impl GuiderOps {
         recalibrate: bool,
     ) -> Result<StatsSnapshot, ServiceError> {
         let _op = self.op_lock.lock().await;
-        self.refuse_while_capturing()?;
+        self.refuse_while_camera_held()?;
         // Subscribe before issuing the RPC so a fast SettleDone
         // cannot be missed.
         let rx = self.settle_events.subscribe();
@@ -545,7 +739,7 @@ impl GuiderOps {
         settle: SettleParams,
     ) -> Result<StatsSnapshot, ServiceError> {
         let _op = self.op_lock.lock().await;
-        self.refuse_while_capturing()?;
+        self.refuse_while_camera_held()?;
         let state = self
             .client
             .get_app_state()
@@ -570,6 +764,8 @@ impl GuiderOps {
     /// Never refused for a camera-facade frame: with one in flight, the
     /// stop is sent whatever PHD2's state reads, which ends the frame
     /// (`docs/services/phd2-guider.md` § "Exclusivity: the capture slot").
+    /// It ends the facade's sweep lease, if one is held, before it asks
+    /// PHD2 anything.
     ///
     /// # Errors
     ///
@@ -578,6 +774,8 @@ impl GuiderOps {
     /// within the configured stop timeout.
     pub async fn stop(&self) -> Result<(), ServiceError> {
         let _op = self.op_lock.lock().await;
+        // The privileged stop breaks a sweep lease, whatever PHD2 answers.
+        self.end_lease(LeaseEnd::Stopped);
         let state = self
             .client
             .get_app_state()
@@ -632,7 +830,7 @@ impl GuiderOps {
     /// cannot be reached, `guide_failed` when PHD2 rejects the RPC.
     pub async fn pause(&self, full: bool) -> Result<(), ServiceError> {
         let _op = self.op_lock.lock().await;
-        self.refuse_while_capturing()?;
+        self.refuse_while_camera_held()?;
         self.client.pause(full).await.map_err(ServiceError::from)
     }
 
@@ -644,7 +842,7 @@ impl GuiderOps {
     /// cannot be reached, `guide_failed` when PHD2 rejects the RPC.
     pub async fn resume(&self) -> Result<(), ServiceError> {
         let _op = self.op_lock.lock().await;
-        self.refuse_while_capturing()?;
+        self.refuse_while_camera_held()?;
         self.client.resume().await.map_err(ServiceError::from)
     }
 
@@ -718,7 +916,7 @@ impl GuiderOps {
         which: crate::types::CalibrationTarget,
     ) -> Result<(), ServiceError> {
         let _op = self.op_lock.lock().await;
-        self.refuse_while_capturing()?;
+        self.refuse_while_camera_held()?;
         self.client
             .clear_calibration(which)
             .await
@@ -734,7 +932,7 @@ impl GuiderOps {
     /// cannot be reached, `guide_failed` when PHD2 rejects the RPC.
     pub async fn reselect_star(&self) -> Result<(), ServiceError> {
         let _op = self.op_lock.lock().await;
-        self.refuse_while_capturing()?;
+        self.refuse_while_camera_held()?;
         self.client
             .find_star(None)
             .await
@@ -980,7 +1178,7 @@ mod tests {
         // Refused before any RPC: the test client is not even connected.
         let err = ops.pause(false).await.unwrap_err();
         assert!(
-            matches!(&err, ServiceError::CameraBusy(text) if text.contains("capturing a frame")),
+            matches!(&err, ServiceError::CameraBusy(text) if text.contains("still exposing in PHD2")),
             "unexpected error: {err:?}"
         );
         let err = ops
@@ -1088,6 +1286,180 @@ mod tests {
             .await;
         assert!(!released);
         assert!(ops.capture_claim().is_some());
+    }
+
+    fn acquire_request(hex: char) -> AcquireRequest {
+        lease::parse_acquire(&format!(r#"{{"token": "{}"}}"#, hex.to_string().repeat(32))).unwrap()
+    }
+
+    fn hold_lease(ops: &GuiderOps, hex: char) {
+        let request = acquire_request(hex);
+        ops.lease_book()
+            .grant(request.token, request.ttl_s, tokio::time::Instant::now())
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_guiding_mutation_is_refused_while_a_lease_is_held() {
+        let ops = test_ops();
+        hold_lease(&ops, 'a');
+        // Refused before any RPC: the test client is not even connected.
+        let err = ops.pause(true).await.unwrap_err();
+        assert!(
+            matches!(&err, ServiceError::CameraBusy(text) if text.contains("sweep lease")),
+            "unexpected error: {err:?}"
+        );
+        let err = ops.reselect_star().await.unwrap_err();
+        assert!(
+            matches!(err, ServiceError::CameraBusy(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_frame_in_the_slot_is_named_before_a_held_lease() {
+        let ops = test_ops();
+        hold_lease(&ops, 'a');
+        claim_slot(&ops, "/images/phd2-guider-a.fits").await;
+        let err = ops.resume().await.unwrap_err();
+        assert!(
+            matches!(&err, ServiceError::CameraBusy(text) if text.contains("still exposing in PHD2")),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lease_nobody_renews_stops_refusing_guiding_at_its_ttl() {
+        let ops = test_ops();
+        let request = lease::parse_acquire(&format!(
+            r#"{{"token": "{}", "ttl_s": 10}}"#,
+            "a".repeat(32)
+        ))
+        .unwrap();
+        ops.lease_book()
+            .grant(
+                request.token.clone(),
+                request.ttl_s,
+                tokio::time::Instant::now(),
+            )
+            .unwrap();
+        tokio::time::advance(Duration::from_millis(9_999)).await;
+        let err = ops.pause(false).await.unwrap_err();
+        assert!(
+            matches!(&err, ServiceError::CameraBusy(text) if text.contains("sweep lease")),
+            "refused for the wrong reason before the TTL: {err:?}"
+        );
+        tokio::time::advance(Duration::from_millis(1)).await;
+        // Past the gate: the test client is not connected, so the pause
+        // now fails reaching PHD2 instead.
+        let err = ops.pause(false).await.unwrap_err();
+        assert!(
+            matches!(err, ServiceError::Phd2Unreachable(_)),
+            "a lapsed lease still refused guiding: {err:?}"
+        );
+        let err = ops.renew_lease(&request.token).unwrap_err();
+        assert!(err.contains("expired at"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_stop_ends_the_lease_even_when_phd2_cannot_answer() {
+        let ops = test_ops();
+        hold_lease(&ops, 'a');
+        ops.stop().await.unwrap_err();
+        let token = acquire_request('a').token;
+        let err = ops.renew_lease(&token).unwrap_err();
+        assert!(err.contains("guiding stop"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_acquire_is_refused_while_a_guiding_operation_holds_the_lock() {
+        let ops = test_ops();
+        let _op = ops.op_lock().lock().await;
+        let err = ops.acquire_lease(&acquire_request('a')).await.unwrap_err();
+        assert!(
+            matches!(&err, LeaseError::Refused(text) if text.contains("guider is busy")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_acquire_is_refused_while_a_frame_holds_the_slot() {
+        let ops = test_ops();
+        claim_slot(&ops, "/images/phd2-guider-a.fits").await;
+        let err = ops.acquire_lease(&acquire_request('a')).await.unwrap_err();
+        assert!(
+            matches!(&err, LeaseError::Refused(text) if text.contains("at the latest")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_acquire_under_a_used_token_is_refused_before_phd2_is_asked() {
+        let ops = test_ops();
+        let token = acquire_request('a').token;
+        assert!(!ops.release_lease(&token));
+        // The test client is not connected: a refusal naming the token
+        // was reached before any RPC.
+        let err = ops.acquire_lease(&acquire_request('a')).await.unwrap_err();
+        assert!(
+            matches!(&err, LeaseError::Refused(text) if text.contains("used before")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_acquire_with_phd2_unreachable_is_not_connected() {
+        let ops = test_ops();
+        let err = ops.acquire_lease(&acquire_request('a')).await.unwrap_err();
+        assert!(matches!(err, LeaseError::NotConnected(_)), "{err:?}");
+        assert!(ops
+            .lease_book()
+            .held_until(tokio::time::Instant::now())
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_renewal_and_a_release_take_no_guiding_lock() {
+        let ops = test_ops();
+        hold_lease(&ops, 'a');
+        let _op = ops.op_lock().lock().await;
+        let token = acquire_request('a').token;
+        assert_eq!(ops.renew_lease(&token).unwrap().ttl_s, 60);
+        assert!(ops.release_lease(&token));
+    }
+
+    #[test]
+    fn a_restart_markers_claim_is_named_as_one() {
+        let recovered = StoppedLockError::Capturing(CaptureClaim {
+            recovered: true,
+            ..claim("/images/phd2-guider-a.fits")
+        })
+        .to_string();
+        assert!(
+            recovered.contains("before this service restarted"),
+            "{recovered}"
+        );
+        let live = StoppedLockError::Capturing(claim("/images/phd2-guider-a.fits")).to_string();
+        assert!(live.contains("still exposing in PHD2"), "{live}");
+    }
+
+    #[test]
+    fn a_phd2_request_failure_reads_as_busy_refused_or_unreachable() {
+        assert_eq!(
+            RpcFailure::from(Phd2Error::RpcError {
+                code: 1,
+                message: "cannot capture single frame when capture is currently active".into(),
+            }),
+            RpcFailure::Busy("cannot capture single frame when capture is currently active".into())
+        );
+        assert_eq!(
+            RpcFailure::from(Phd2Error::InvalidState("Unknown state: X".into())),
+            RpcFailure::Refused("Unknown state: X".into())
+        );
+        assert!(matches!(
+            RpcFailure::from(Phd2Error::NotConnected),
+            RpcFailure::Unreachable(_)
+        ));
     }
 
     #[test]
