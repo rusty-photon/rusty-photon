@@ -7,6 +7,9 @@
 - Before migrating existing integration tests to BDD
 - Before writing tests for `ui-htmx` or any other browser-facing service (see Section 10)
 
+Tests of the CI's JavaScript actions under `.github/actions` are not Rust:
+[ci-logic.md](ci-logic.md#tests) covers them.
+
 ## Prerequisites
 
 - Read the service's design document (`docs/services/<service>.md`) per AGENTS.md Rule 1a

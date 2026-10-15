@@ -1,0 +1,26 @@
+# Tests of the CI's local JavaScript actions (ADR-022), run by `bazel test
+# //...` on every OS leg, on the Node that MODULE.bazel pins.
+#
+# One package holds everything under .github/actions: an action's directory
+# gets no BUILD file of its own, and its tests are declared here, so that
+# `link_test` covers every file (node_link_test refuses a BUILD file below
+# this one). Conventions: docs/skills/ci-logic.md.
+
+load(":node_test.bzl", "node_link_test", "node_test")
+
+# The helper module every action imports.
+node_test(
+    name = "helpers_test",
+    size = "small",
+    srcs = ["lib/helpers.test.mjs"],
+    data = ["lib/helpers.mjs"],
+)
+
+# Every JavaScript file in this package parses, and its imports resolve to a
+# Node built-in or a file here, with the names it imports: entry files
+# included, which no test imports, since they run on load.
+node_link_test(
+    name = "link_test",
+    size = "small",
+    src = "link.test.mjs",
+)

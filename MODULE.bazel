@@ -35,6 +35,22 @@ bazel_dep(name = "rules_shell", version = "0.6.1")
 # is always the root module — this never needs to resolve for a downstream consumer.
 bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2", dev_dependency = True)
 
+# Node.js, for the tests of the CI's JavaScript actions under .github/actions
+# (ADR-022): `node_test` in .github/actions/node_test.bzl runs them on this
+# toolchain. Tests only — the actions themselves run on the Node the GitHub
+# runner ships (`runs.using: node24`), so this pins the same major version.
+# rules_nodejs registers a toolchain for every platform; the root module's
+# `node.toolchain` sets the version they fetch. `dev_dependency` for the same
+# reason as buildifier_prebuilt above.
+bazel_dep(name = "rules_nodejs", version = "6.7.6", dev_dependency = True)
+
+node = use_extension(
+    "@rules_nodejs//nodejs:extensions.bzl",
+    "node",
+    dev_dependency = True,
+)
+node.toolchain(node_version = "24.20.0")
+
 # Five pinned patches to rules_rust (patches 3 and 5 each span two FILES —
 # Bazel's patch applier failed a two-file unified diff with
 # CONTENT_DOES_NOT_MATCH_TARGET on whichever file section came second, while
