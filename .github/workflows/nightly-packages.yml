@@ -497,51 +497,26 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      contents: read
       issues: write
     steps:
-      - name: Open or update tracking issue
-        uses: actions/github-script@v9
+      # The action and the helpers it imports, nothing else.
+      - uses: actions/checkout@v7
         with:
-          script: |
-            const title = `nightly-packages: nightly packaging failing`;
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = [
-              `The nightly packaging workflow failed on at least one job, so no`,
-              `nightly was published tonight (the channel publishes all-or-nothing;`,
-              `the previous nightly release is untouched).`,
-              ``,
-              `Likely causes: a build or lifecycle-verification failure on one of`,
-              `the package legs, an SDK download failing its pin, or the publish`,
-              `step. Inspect the failed jobs in the linked run.`,
-              ``,
-              `Run: ${runUrl}`,
-              ``,
-              `This issue was opened automatically by a scheduled run that`,
-              `failed. While it stays open, each subsequent scheduled failure`,
-              `is appended here as a comment linking its own run. Closing it`,
-              `marks the failure handled — it is never re-opened; the next`,
-              `scheduled failure opens a fresh issue instead.`,
-            ].join("\n");
-            const existing = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: "open",
-              labels: "nightly-packages",
-            });
-            const match = existing.find(i => i.title === title);
-            if (match) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: match.number,
-                body: `Failed again — run: ${runUrl}`,
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body,
-                labels: ["nightly-packages", "ci-flake"],
-              });
-            }
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/tracking-issue
+            .github/actions/lib
+      - name: Open or update tracking issue
+        uses: ./.github/actions/tracking-issue
+        with:
+          title: "nightly-packages: nightly packaging failing"
+          label: nightly-packages
+          body: |
+            The nightly packaging workflow failed on at least one job, so no
+            nightly was published tonight (the channel publishes all-or-nothing;
+            the previous nightly release is untouched).
+
+            Likely causes: a build or lifecycle-verification failure on one of
+            the package legs, an SDK download failing its pin, or the publish
+            step. Inspect the failed jobs in the linked run.

@@ -215,58 +215,29 @@ jobs:
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
     steps:
-      - name: Open or update tracking issue
-        uses: actions/github-script@v9
+      # The action and the helpers it imports, nothing else.
+      - uses: actions/checkout@v7
         with:
-          script: |
-            const title = `nightly: pi-nightly ARM64 build failing`;
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = [
-              `The nightly Raspberry Pi 5 ARM64 verification workflow failed.`,
-              ``,
-              `Likely causes: an arch-specific regression (atomics, alignment,`,
-              `endian, SIMD intrinsics, vendored C deps such as cfitsio), a`,
-              `change that breaks cross-arch feature unification, the Pi runner`,
-              `being offline or low on disk, or an OmniSim/BDD flake. See the`,
-              `failed job for the per-step log and the uploaded OmniSim logs`,
-              `artifact (if the failure was in cargo test --test bdd).`,
-              ``,
-              `Runner setup and decommissioning: docs/skills/raspberry-pi-runner.md`,
-              ``,
-              `Run: ${runUrl}`,
-              ``,
-              `This issue was opened automatically by a scheduled run that`,
-              `failed. While it stays open, each subsequent scheduled failure`,
-              `is appended here as a comment linking its own run. Closing it`,
-              `marks the failure handled — it is never re-opened; the next`,
-              `scheduled failure opens a fresh issue instead.`,
-            ].join("\n");
-            // Search only OPEN issues. While a tracking issue is open each
-            // failure appends a comment; once it is closed the failure is
-            // considered handled, so the next scheduled failure opens a
-            // fresh issue rather than resurrecting the closed one.
-            const existing = await github.paginate(github.rest.issues.listForRepo, {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: "open",
-              labels: "pi-nightly",
-            });
-            const match = existing.find(i => i.title === title);
-            if (match) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: match.number,
-                body: `Failed again — run: ${runUrl}`,
-              });
-            } else {
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title,
-                body,
-                labels: ["pi-nightly", "ci-flake"],
-              });
-            }
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/tracking-issue
+            .github/actions/lib
+      - name: Open or update tracking issue
+        uses: ./.github/actions/tracking-issue
+        with:
+          title: "nightly: pi-nightly ARM64 build failing"
+          label: pi-nightly
+          body: |
+            The nightly Raspberry Pi 5 ARM64 verification workflow failed.
+
+            Likely causes: an arch-specific regression (atomics, alignment,
+            endian, SIMD intrinsics, vendored C deps such as cfitsio), a
+            change that breaks cross-arch feature unification, the Pi runner
+            being offline or low on disk, or an OmniSim/BDD flake. See the
+            failed job for the per-step log and the uploaded OmniSim logs
+            artifact (if the failure was in cargo test --test bdd).
+
+            Runner setup and decommissioning: docs/skills/raspberry-pi-runner.md

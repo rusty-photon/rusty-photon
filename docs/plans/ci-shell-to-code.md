@@ -95,7 +95,7 @@ first in their columns.
 | J4  | `install-astap` on the module | `install-astap` | J2 | Not started |
 | J5  | `install-zwo-sdk` on the module | `install-zwo-sdk` (bash + PowerShell) | J2 | Not started |
 | J6  | `install-svbony-sdk` on the module | `install-svbony-sdk` (bash + PowerShell) | J2 | Not started |
-| J7  | Nightly tracking-issue action | 10 `github-script` copies | F1 | Not started |
+| J7  | Nightly tracking-issue action | 10 `github-script` copies | F1 | Done (#1527) |
 | J8  | ASTAP pin refresh | `refresh-astap-shas.yml`'s bash | F1, J4 | Not started |
 | J9  | Release and nightly publishing glue | `nightly-packages.yml` / `release.yml` logic blocks | F1 | Not started |
 | J10 | Bazel remote-cache flags | `tools/ci/bazel-remote-flags.sh` | F1 | Not started |
@@ -361,14 +361,38 @@ not:
 
 ### J7 — Nightly tracking-issue action
 
-Ten workflows each carry a `github-script` block that opens a tracking
-issue when a scheduled run fails (safety.yml and scheduled.yml also when
-it is cancelled), or comments on the open one. One action with `title`,
-`labels` and `body` inputs replaces them. Each block lists the open
-issues carrying its own label, picks the one with its exact title, and
-creates with that label and `ci-flake`; triage relies on both. The labels
-follow no pattern, so the action derives nothing from a workflow's name,
-and each workflow passes the label it uses today:
+Done in #1527, as `.github/actions/tracking-issue`. Ten workflows each
+carried a `github-script` block that opened a tracking issue when a
+scheduled run failed (safety.yml and scheduled.yml also when it was
+cancelled), or commented on the open one. Their jobs now call the action,
+with their `if:`, `needs:` and runners unchanged.
+
+- **Inputs:** `title`, `label` and `body`. One label, not a list: each
+  workflow searches by its own label, and the action adds `ci-flake` to an
+  issue it opens, as every block did; triage relies on both. The labels
+  follow no pattern, so the action derives nothing from a workflow's name,
+  and each workflow passes the label it used before (below). `body` is the
+  workflow's own text, what failed and what to suspect; the action adds
+  the run's link and the note on how the issue works, which all ten
+  carried. The issues it opens are the old ones byte for byte, except
+  ui-browser-nightly's, whose note had been wrapped differently and now
+  wraps like the other nine.
+- **What it does:** lists the open issues carrying the label, every page,
+  leaving out pull requests (the issues endpoint lists them too), and
+  comments on the one with the exact title, or opens one. Neither POST is
+  repeated on failure, since a repeat that GitHub had acted on would open
+  a second issue. A next page on another origin than the API's is
+  refused, since the token goes with each request. A new issue that
+  comes back without the label fails the step: GitHub silently drops a
+  label that does not exist, and the next failure, not finding the issue,
+  would open another every time. The old blocks had that gap; the live
+  proof's first run fell into it. A failure names what failed and carries
+  GitHub's answer.
+- **Titles and labels are unchanged,** because others read them.
+  `refresh-astap-shas.yml` finds install-astap's tracking issue by its
+  title and its `install-astap-nightly` label to link a rotation PR to it.
+  `clippy-beta`'s per-lint census issues also carry `check-nightly`, so
+  only the exact title tells check.yml's tracking issue from them.
 
 | Workflow | Label |
 | -------- | ----- |
@@ -383,26 +407,28 @@ and each workflow passes the label it uses today:
 | scheduled.yml | `rolling-nightly` |
 | ui-browser-nightly.yml | `browser-nightly` |
 
-Each workflow keeps its exact title and label too, because others read
-them. `refresh-astap-shas.yml` finds install-astap's tracking issue by
-its title and its `install-astap-nightly` label to link a rotation PR to
-it. `clippy-beta`'s per-lint census issues also carry `check-nightly`, so
-only the exact title tells check.yml's tracking issue from them.
-
-Those jobs check nothing out today, and declare only `issues: write`, so
-`contents` is none. The action needs a sparse checkout of itself and of
-`.github/actions/lib`, where F1 put the helper, so each job also gets
-`contents: read`.
-`refresh-astap-shas.yml`'s rotation issue and `clippy-beta`'s per-lint
-census are different and stay out unless they fit without special
-cases.
-
-The action runs only after a scheduled run fails or is cancelled, and a
-dispatched run is never a scheduled one. Its tests run the open-or-comment logic against a fake GitHub
-API, and the PR proves it live with a temporary dispatchable workflow
-that calls the action against a throwaway title and label, then closes
-what it opened; the temporary workflow is deleted before merge. After
-merge, the first scheduled failure is checked for its issue.
+- **Checkout:** an action under `.github/actions` is read from the
+  checkout, and those jobs checked nothing out. Each now checks out the
+  action's directory and `.github/actions/lib` only (`sparse-checkout`,
+  `persist-credentials: false`), with `contents: read` beside
+  `issues: write`.
+- **Left out:** `refresh-astap-shas.yml`'s blocker issue, whose body has
+  no such note and whose comment reads differently, and `clippy-beta`'s
+  per-lint census, which opens and closes one issue per lint. Both would
+  need special cases. The blocker goes with the rest of that workflow in
+  J8; S1 sweeps the census.
+- **Proof:** tests against a fake GitHub API, each shown to fail with its
+  behaviour broken. Live on a hosted runner, from a temporary workflow
+  that ran on a push to the PR's branch, since a workflow only on a
+  branch cannot be dispatched ("To trigger the `workflow_dispatch` event,
+  your workflow must be in the default branch", GitHub's docs): it opened
+  a throwaway issue with both labels, commented on it, and closed it. The
+  first two runs found the dropped label above, and that GitHub's issue
+  list showed a just-opened issue only after about 4 s, a lag that only
+  back-to-back calls meet.
+- **After merge:** the jobs run only after a scheduled run fails or is
+  cancelled, which no PR or dispatch produces; the first such failure is
+  checked for its issue or comment.
 
 ### J8 — ASTAP pin refresh
 
