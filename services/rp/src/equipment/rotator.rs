@@ -11,6 +11,10 @@ pub struct RotatorEntry {
     pub id: String,
     pub config: config::RotatorConfig,
     pub session: DeviceSession<dyn Rotator>,
+
+    /// One rotation through the rotator at a time (rp.md § Rotator Tool
+    /// Details), and a train lease's hold on it (§ Train Lease).
+    pub slot: super::DeviceSlot,
 }
 
 impl RotatorEntry {
@@ -49,6 +53,7 @@ pub(super) async fn connect_rotator(
                 id: config.id.clone(),
                 config: config.clone(),
                 session: DeviceSession::connected(rot),
+                slot: crate::equipment::DeviceSlot::default(),
             }
         }
         Err(msg) => {
@@ -57,6 +62,7 @@ pub(super) async fn connect_rotator(
                 id: config.id.clone(),
                 config: config.clone(),
                 session: DeviceSession::disconnected(),
+                slot: crate::equipment::DeviceSlot::default(),
             }
         }
     }

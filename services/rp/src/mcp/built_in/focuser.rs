@@ -20,6 +20,11 @@ pub struct FocuserIdParams {
 pub struct MoveFocuserParams {
     pub focuser_id: String,
     pub position: i32,
+    /// A held train lease to move under (docs/services/rp.md § Train
+    /// Lease): admitted only for the focuser the lease moves. Omitted,
+    /// a move of a focuser a lease reserves waits for the lease to end.
+    #[serde(default)]
+    pub lease_id: Option<String>,
 }
 
 #[tool_router(router = tool_router_focuser, vis = "pub")]
@@ -46,7 +51,13 @@ impl McpHandler {
         cancel: &Cancel,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         match self
-            .do_move_focuser_blocking(&params.focuser_id, params.position, progress, cancel)
+            .do_move_focuser_under(
+                &params.focuser_id,
+                params.position,
+                params.lease_id.as_deref(),
+                progress,
+                cancel,
+            )
             .await
         {
             Ok(outcome) => Ok(tool_success!({

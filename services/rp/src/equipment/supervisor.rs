@@ -1099,6 +1099,7 @@ mod tests {
                     auth: None,
                 },
                 session: DeviceSession::disconnected(),
+                slot: crate::equipment::DeviceSlot::default(),
             }],
             cover_calibrators: vec![CoverCalibratorEntry {
                 id: id("cover-calibrator"),
@@ -1127,6 +1128,7 @@ mod tests {
                     auth: None,
                 },
                 session: DeviceSession::disconnected(),
+                slot: crate::equipment::DeviceSlot::default(),
             }],
             safety_monitors: vec![SafetyMonitorEntry {
                 id: id("safety-monitor"),
@@ -1162,6 +1164,7 @@ mod tests {
                     auth: None,
                 },
                 session: DeviceSession::disconnected(),
+                slot: crate::equipment::DeviceSlot::default(),
             }],
             observing_conditions: vec![ObservingConditionsEntry {
                 id: id("observing-conditions"),

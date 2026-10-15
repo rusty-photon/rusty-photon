@@ -2,8 +2,8 @@
 //! readers-writer gate on the singular mount.
 //!
 //! Slew and dither take
-//! the gate exclusively; captures through a camera terminating an
-//! imaging train hold it shared. Tokio's `RwLock` provides exactly
+//! the gate exclusively; captures through a camera terminating any
+//! train, and train leases, hold it shared. Tokio's `RwLock` provides exactly
 //! the queueing the contract requires — a fair FIFO queue where a
 //! pending exclusive blocks new shared acquires (no starvation) and
 //! queued exclusives run in arrival order.
@@ -21,7 +21,7 @@
 use std::future::Future;
 use std::sync::Arc;
 
-use tokio::sync::{OwnedRwLockWriteGuard, RwLock, RwLockReadGuard};
+use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 use tracing::debug;
 
 use crate::events::EventBus;
@@ -63,11 +63,13 @@ impl MotionGate {
         }
     }
 
-    /// Hold the gate shared for an imaging-train exposure. Blocks
-    /// while an exclusive motion holds the gate or waits in the
-    /// queue; concurrent shared holders coexist freely.
-    pub async fn shared(&self) -> RwLockReadGuard<'_, ()> {
-        self.lock.read().await
+    /// Hold the gate shared, for an exposure through a train's camera
+    /// or for a train lease. Blocks while an exclusive motion holds the
+    /// gate or waits in the queue; concurrent shared holders coexist
+    /// freely. The permit is owned, so a train lease can keep it for
+    /// its whole life.
+    pub async fn shared(&self) -> OwnedRwLockReadGuard<()> {
+        self.lock.clone().read_owned().await
     }
 }
 

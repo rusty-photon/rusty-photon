@@ -3,15 +3,17 @@ Feature: Mount motion gate
   Mount motion and in-flight imaging exposures are serialized by an
   rp-internal readers-writer gate on the singular mount: slew and
   dither take the gate exclusively, and captures through a camera
-  terminating an imaging train hold it shared. A pending motion
-  blocks new imaging-train captures (fair FIFO — no starvation):
-  in-flight subs complete, the motion runs and settles, held
-  captures then start. rp emits the point event mount_motion_pending
-  when a motion has to wait, and the motion's own *_started envelope
-  only after the gate is acquired, so predictive deadlines never
-  include gate wait. Captures through a camera outside any train or
-  in the guiding train bypass the gate (trains are enrichment, not a
-  gate). The gate is process-wide: concurrent MCP sessions — an
+  terminating any train, imaging or guiding, hold it shared. A
+  pending motion blocks new captures through a train's camera (fair
+  FIFO — no starvation): in-flight subs complete, the motion runs and
+  settles, held captures then start. rp emits the point event
+  mount_motion_pending when a motion has to wait, and the motion's
+  own *_started envelope only after the gate is acquired, so
+  predictive deadlines never include gate wait. Captures through a
+  camera outside every train bypass the gate (trains are enrichment,
+  not a gate). A guiding train's camera is not exempt: a client's
+  capture through the PHD2 camera facade is a focus sample that a
+  dither mid-exposure would trail. The gate is process-wide: concurrent MCP sessions — an
   orchestrator plus an operator UI — contend on the same gate, which
   is what these scenarios drive with a second client.
 
@@ -74,12 +76,12 @@ Feature: Mount motion gate
     And the background "dither" call should succeed
     And the test webhook receiver should not have received a "mount_motion_pending" event
 
-  Scenario: A capture through a guiding-train camera ignores an in-flight dither
+  Scenario: A capture through a guiding-train camera waits for the in-flight dither
     Given a test webhook receiver subscribed to the events "exposure_started, dither_started, dither_settled, mount_motion_pending"
     And rp is running with a camera on the simulator in guiding train "guide" and a stub guider settling after 2500 ms
     When a second MCP client starts a dither of 3.0 pixels in the background
     And the test webhook receiver has received a "dither_started" event
     And the MCP client calls "capture" with camera "main-cam" for 200 ms
-    Then the "exposure_started" event should have been emitted before the "dither_settled" event
+    Then the "dither_settled" event should have been emitted before the "exposure_started" event
     And the tool result should contain an image path
     And the background "dither" call should succeed

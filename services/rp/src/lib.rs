@@ -48,6 +48,7 @@ pub mod planner;
 pub mod routes;
 pub mod safety;
 pub mod temperature_watch;
+pub mod train_lease;
 
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -215,6 +216,8 @@ impl ServerBuilder {
 
         let temperature_watch = build_temperature_watch(&config, &equipment, &event_bus);
 
+        let leases = mcp.leases.clone();
+
         let state = AppState {
             equipment,
             mcp,
@@ -239,6 +242,7 @@ impl ServerBuilder {
             safety,
             reconnect,
             temperature_watch,
+            leases,
         })
     }
 }
@@ -326,6 +330,10 @@ fn build_class_table(
     Ok(Arc::new(classes))
 }
 
+/// How long shutdown waits for the train leases to give everything back
+/// (rp.md § Train Lease): a facade release is one bounded Alpaca call.
+const LEASE_SHUTDOWN_BOUND: std::time::Duration = std::time::Duration::from_secs(12);
+
 /// Safety enforcement (rp.md § Safety): the enforcer writes the safety
 /// status the MCP dispatch gates on, and the handler's in-flight
 /// tool-call registry is shared with it so an unsafe transition can
@@ -347,6 +355,7 @@ fn build_safety(
         mcp.equipment.clone(),
         mcp.event_bus.clone(),
         mcp.in_flight.clone(),
+        mcp.leases.clone(),
         safety_status.clone(),
         guider_client,
         config.safety.poll_interval,
@@ -791,6 +800,10 @@ pub struct BoundServer {
     /// spawned by `start()` and cancelled on shutdown. `None` when no
     /// focuser is configured.
     temperature_watch: Option<crate::temperature_watch::TemperatureWatch>,
+    /// The train leases (rp.md § Train Lease), shared with the MCP
+    /// handler: shutdown ends every one and waits, bounded, for each to
+    /// give everything back and release its facade lease.
+    leases: Arc<crate::train_lease::TrainLeases>,
 }
 
 impl BoundServer {
@@ -847,10 +860,13 @@ impl BoundServer {
         // SSE consumer would keep the server from ever shutting down. The
         // safety polling loop rides the same signal.
         let sse_shutdown = self.sse_shutdown;
+        let shutdown_leases = self.leases.clone();
         let graceful = async move {
             shutdown.await;
             sse_shutdown.cancel();
             safety_cancel.cancel();
+            // A lease admits no call once rp is shutting down.
+            shutdown_leases.end_all(&crate::train_lease::LeaseEnd::Shutdown);
         };
 
         if let Some(ref tls_config) = self.tls {
@@ -875,6 +891,10 @@ impl BoundServer {
         if let Some(task) = temperature_task {
             let _ = task.await;
         }
+        // Each ended lease releases its facade lease once nothing runs
+        // under it; one still giving back at the bound is left to the
+        // facade's TTL.
+        self.leases.settle(LEASE_SHUTDOWN_BOUND).await;
 
         debug!("rp service shut down");
         Ok(())

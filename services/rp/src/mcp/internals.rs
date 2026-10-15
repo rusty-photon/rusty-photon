@@ -18,8 +18,9 @@ use ascom_alpaca::api::camera::{CameraState, ImageArray};
 use ascom_alpaca::api::Camera;
 use chrono::{DateTime, TimeDelta, Utc};
 use rp_fits::writer::Keyword;
+use tokio::sync::OwnedRwLockReadGuard;
 use tokio::time::Instant;
-use tracing::debug;
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 use rp_vocabulary::{Binning, FrameType};
@@ -28,14 +29,25 @@ use crate::config::naming_template;
 use crate::equipment::alpaca::retry_idempotent_read;
 use crate::equipment::camera::{optional_read, CameraInvariants};
 use crate::equipment::trains::TrainDeviceKind;
+use crate::equipment::{DeviceSlot, SlotGuard};
 use crate::events::EventEnvelope;
 use crate::imaging::{self, BackgroundStats, DetectionParams, Star};
 use crate::persistence::fits_header::{self, HeaderContext};
 use crate::persistence::{self, CachedImage, CachedPixels, ExposureDocument, MountPointing};
+use crate::train_lease::{CallKind, LeaseCall};
 
 use super::handler::McpHandler;
 use super::inflight::Cancel;
 use super::progress::{ProgressEmitter, PROGRESS_INTERVAL};
+
+/// What a move, rotation or filter change holds while it runs (see
+/// [`McpHandler::device_hold`]); dropping it gives the slot back and
+/// ends the call under a lease. Empty for a device rp has no entry for.
+#[must_use = "dropping it gives the device's slot back"]
+pub(crate) struct DeviceHold {
+    _slot: Option<SlotGuard>,
+    _call: Option<LeaseCall>,
+}
 
 /// Backstop grace added to the requested exposure `duration` to bound
 /// `do_capture`'s readout wait. An Alpaca camera can *fail* an exposure
@@ -560,21 +572,80 @@ struct FrameRecord<'a> {
 
 /// What one capture holds for its pipeline: the per-exposure snapshot
 /// of connect-time invariants, the camera's capture slot (rp.md
-/// § Capture Tool Details, "Binning" → Concurrency), and — through an
-/// imaging-train camera — the shared motion-gate permit (§ Mount Motion
-/// Gate).
+/// § Capture Tool Details, "Binning" → Concurrency), and — through a
+/// train's camera — the shared motion-gate permit (§ Mount Motion
+/// Gate). A capture under a train lease holds the lease's slot for the
+/// camera and the call under the lease instead, and no permit of its
+/// own: the lease holds one (§ Train Lease).
 ///
 /// The handle and the invariants come out of the session slot
 /// together, so an exposure always runs against metadata read from the
 /// session its handle belongs to, whatever the reconnect supervisor
 /// does underneath it.
-struct CameraClaim<'a> {
+struct CameraClaim {
     cam: Arc<dyn Camera>,
     focal_length_mm: Option<f64>,
     readout_time_estimate: Duration,
     invariants: CameraInvariants,
-    slot: tokio::sync::MutexGuard<'a, ()>,
-    motion_permit: Option<tokio::sync::RwLockReadGuard<'a, ()>>,
+    slot: SlotGuard,
+    motion_permit: Option<OwnedRwLockReadGuard<()>>,
+    lease_call: Option<LeaseCall>,
+}
+
+/// How often a cancelled capture's wind-down reads its camera's state.
+const WIND_DOWN_POLL: Duration = Duration::from_millis(250);
+
+/// What a cancelled capture still held when its exposure was cancelled:
+/// its camera's slot, its gate permit, and the call under a train lease.
+type Abandoned = (
+    SlotGuard,
+    Option<OwnedRwLockReadGuard<()>>,
+    Option<LeaseCall>,
+);
+
+/// Wind down a capture cancelled mid-exposure (rp.md § Capture Tool
+/// Details, Concurrency): give the gate permit back at once, and keep
+/// the camera's slot until the camera stops exposing, and at most until
+/// its readout backstop (`duration` plus the grace from `started`). A
+/// driver that ignores the abort goes on exposing to the frame's end,
+/// and the next capture through the camera must not start into it.
+/// `Idle` and `Error` both mean the camera is not exposing. Under a
+/// train lease the call under it is kept too, so the lease keeps the
+/// camera until then, but no longer keeps an ending lease's permit.
+fn wind_down(
+    cam: &Arc<dyn Camera>,
+    camera_id: &str,
+    abandoned: Abandoned,
+    started: Instant,
+    duration: Duration,
+) {
+    let (slot, permit, mut lease_call) = abandoned;
+    drop(permit);
+    if let Some(call) = lease_call.as_mut() {
+        call.mark_cancelled();
+    }
+    let backstop = started
+        .checked_add(duration.saturating_add(CAPTURE_READOUT_GRACE))
+        .unwrap_or(started);
+    let (cam, camera_id) = (cam.clone(), camera_id.to_string());
+    tokio::spawn(async move {
+        let _held = (slot, lease_call);
+        loop {
+            let state = match cam.camera_state().await {
+                Ok(CameraState::Idle | CameraState::Error) => {
+                    debug!(%camera_id, "a cancelled capture's camera is no longer exposing; its slot is free");
+                    return;
+                }
+                Ok(state) => format!("{state:?}"),
+                Err(e) => format!("unreadable ({e})"),
+            };
+            if Instant::now() >= backstop {
+                warn!(%camera_id, %state, "a cancelled capture's camera still was not idle at its readout backstop; giving its slot back");
+                return;
+            }
+            tokio::time::sleep(WIND_DOWN_POLL).await;
+        }
+    });
 }
 
 /// Download the finished frame and give up the camera's capture slot
@@ -585,7 +656,7 @@ struct CameraClaim<'a> {
 /// the download the last camera access the slot covers.
 async fn download_frame(
     cam: &Arc<dyn Camera>,
-    slot: tokio::sync::MutexGuard<'_, ()>,
+    slot: SlotGuard,
 ) -> std::result::Result<ImageArray, String> {
     let image_array = cam
         .image_array()
@@ -677,6 +748,16 @@ fn row_major_pixels(
         .copied())
 }
 
+/// What Decision 11's `frame_type` makes of a frame: the document's
+/// `target` and `frame_type`, and the templated path when the rig names
+/// its files.
+#[derive(Default)]
+struct FrameNaming {
+    target: Option<persistence::ExposureTarget>,
+    frame_type: Option<FrameType>,
+    path: Option<String>,
+}
+
 /// The per-exposure inputs `render_templated_path` needs beyond the
 /// camera handle and target slug.
 struct TemplateRenderCtx<'a> {
@@ -707,6 +788,10 @@ pub(crate) struct CaptureRequest<'a> {
     pub(crate) binning: Binning,
     pub(crate) target: Option<&'a str>,
     pub(crate) frame_type: Option<FrameType>,
+    /// A held train lease the capture runs under (rp.md § Train Lease);
+    /// `None` for an ordinary capture, which waits out any lease that
+    /// reserves the camera.
+    pub(crate) lease_id: Option<&'a str>,
 }
 
 /// Write the frame geometry every exposure runs with, and return the
@@ -1294,21 +1379,23 @@ impl McpHandler {
         // second capture through this camera queues here rather than
         // interleaving its writes with this one's.
         //
-        // Imaging-train exposures contend with mount motion (rp.md
-        // § Mount Motion Gate): hold the gate shared for the whole
-        // pipeline, so a pending slew/dither delays this exposure's
-        // start rather than trailing its stars. Un-trained and
-        // guiding-train cameras bypass the gate — trains are
-        // enrichment, not a gate. `exposure_started` below is emitted
-        // only after both waits, keeping its deadline honest.
+        // Exposures through a train's camera contend with mount motion
+        // (rp.md § Mount Motion Gate): hold the gate shared for the
+        // whole pipeline, so a pending slew/dither delays this
+        // exposure's start rather than trailing its stars. Only a
+        // camera outside every train bypasses the gate — trains are
+        // enrichment, not a gate. Under a train lease the lease holds
+        // both. `exposure_started` below is emitted only after both
+        // waits, keeping its deadline honest.
         let CameraClaim {
             cam,
             focal_length_mm,
             readout_time_estimate,
             invariants,
             slot: camera_slot,
-            motion_permit: _motion_permit,
-        } = self.claim_camera(camera_id, cancel).await?;
+            mut motion_permit,
+            mut lease_call,
+        } = self.claim_camera(camera_id, req.lease_id, cancel).await?;
 
         // Frame geometry is written before `exposure_started` is
         // emitted: a rejected `binning` or an unreachable camera then
@@ -1356,6 +1443,8 @@ impl McpHandler {
             // § Core Fields, `exposure_started_at`).
             let start_returned_at = chrono::Utc::now();
 
+            let exposure_start = Instant::now();
+
             // The mount is read once, on its own task while the camera
             // exposes: it is never the camera, and a read still out past
             // its grace once the frame is ready is dropped, not waited
@@ -1363,7 +1452,16 @@ impl McpHandler {
             let pointing_read = self.start_pointing_read();
             // A failed or cancelled exposure returns at once, and drops
             // (so aborts) the mount read with it.
-            Self::wait_for_image_ready(&cam, duration, progress, cancel).await?;
+            if let Err(e) = Self::wait_for_image_ready(&cam, duration, progress, cancel).await {
+                // A cancelled capture gives the gate back as soon as its
+                // abort is sent, and keeps only its camera's slot while
+                // the camera winds down.
+                if cancel.is_cancelled() {
+                    let abandoned = (camera_slot, motion_permit.take(), lease_call.take());
+                    wind_down(&cam, camera_id, abandoned, exposure_start, duration);
+                }
+                return Err(e);
+            }
             let window = ExposureWindow {
                 requested: started_at,
                 start_returned: start_returned_at,
@@ -1381,37 +1479,11 @@ impl McpHandler {
                 () = cancelled_past_read_bound(cancel, deadline) => return Err(cancel.error()),
             };
 
-            // Decision 11 (rp.md § Capture Tool Details): `frame_type`
-            // stamps the document's `target`/`frame_type` fields.
-            // `None` leaves both unset. The *templated path* is a
-            // separate switch — `session.file_naming_pattern` — so a rig
-            // with no pattern configured still records what a frame is
-            // and what it is of, it just keeps the flat
-            // `<doc_uuid_8>.fits` name (and, having nothing on disk to
-            // attribute, derives no progress; rp.md § Progress
-            // derivation).
-            let mut exposure_target: Option<persistence::ExposureTarget> = None;
-            let mut resolved_frame_type: Option<FrameType> = None;
-            if let Some(frame_type) = req.frame_type {
-                let (target_field, target_slug) =
-                    self.resolve_capture_target(req.target, frame_type).await?;
-                exposure_target = Some(target_field);
-                resolved_frame_type = Some(frame_type);
-
-                if self.names_files(req.frame_type) {
-                    let ctx = TemplateRenderCtx {
-                        frame_type,
-                        duration,
-                        binning,
-                        captured_at: conditions.captured_at,
-                        sensor_temperature_c: conditions.sensor_temperature_c,
-                        filter: &filter_read,
-                        uuid8: &uuid8,
-                    };
-                    if let Some(rendered) = self.render_templated_path(target_slug, ctx).await? {
-                        image_path = rendered;
-                    }
-                }
+            let naming = self
+                .frame_naming(&req, binning, &conditions, &filter_read, &uuid8)
+                .await?;
+            if let Some(rendered) = naming.path {
+                image_path = rendered;
             }
 
             let image_array = download_frame(&cam, camera_slot).await?;
@@ -1428,8 +1500,8 @@ impl McpHandler {
                     conditions,
                     pointing,
                     filter_read,
-                    target: exposure_target,
-                    frame_type: resolved_frame_type,
+                    target: naming.target,
+                    frame_type: naming.frame_type,
                 },
                 image_array,
             )
@@ -1447,6 +1519,47 @@ impl McpHandler {
             &image_path,
         );
         capture_result.map(|()| (image_path, document_id))
+    }
+
+    /// Decision 11 (rp.md § Capture Tool Details): `frame_type` stamps
+    /// the document's `target`/`frame_type` fields. `None` leaves both
+    /// unset. The *templated path* is a separate switch —
+    /// `session.file_naming_pattern` — so a rig with no pattern
+    /// configured still records what a frame is and what it is of, it
+    /// just keeps the flat `<doc_uuid_8>.fits` name (and, having nothing
+    /// on disk to attribute, derives no progress; rp.md § Progress
+    /// derivation).
+    async fn frame_naming(
+        &self,
+        req: &CaptureRequest<'_>,
+        binning: Binning,
+        conditions: &CaptureConditions,
+        filter: &FilterRead,
+        uuid8: &str,
+    ) -> std::result::Result<FrameNaming, String> {
+        let Some(frame_type) = req.frame_type else {
+            return Ok(FrameNaming::default());
+        };
+        let (target, target_slug) = self.resolve_capture_target(req.target, frame_type).await?;
+        let path = if self.names_files(req.frame_type) {
+            let ctx = TemplateRenderCtx {
+                frame_type,
+                duration: req.duration,
+                binning,
+                captured_at: conditions.captured_at,
+                sensor_temperature_c: conditions.sensor_temperature_c,
+                filter,
+                uuid8,
+            };
+            self.render_templated_path(target_slug, ctx).await?
+        } else {
+            None
+        };
+        Ok(FrameNaming {
+            target: Some(target),
+            frame_type: Some(frame_type),
+            path,
+        })
     }
 
     /// Write a downloaded frame and its exposure document (rp.md
@@ -1540,16 +1653,16 @@ impl McpHandler {
         Ok(())
     }
 
-    /// The shared motion-gate permit an imaging-train exposure holds
-    /// (rp.md § Mount Motion Gate); `None` for a camera outside any
-    /// train or in the guiding train. A call cancelled while queued
-    /// behind a motion returns `Err` without touching the camera.
-    async fn imaging_permit(
+    /// The shared motion-gate permit an exposure through a train's
+    /// camera holds (rp.md § Mount Motion Gate); `None` for a camera
+    /// outside every train. A call cancelled while queued behind a
+    /// motion returns `Err` without touching the camera.
+    async fn train_permit(
         &self,
         camera_id: &str,
         cancel: &Cancel,
-    ) -> std::result::Result<Option<tokio::sync::RwLockReadGuard<'_, ()>>, String> {
-        if !self.trains.camera_in_imaging_train(camera_id) {
+    ) -> std::result::Result<Option<OwnedRwLockReadGuard<()>>, String> {
+        if self.trains.train_for_camera(camera_id).is_none() {
             return Ok(None);
         }
         tokio::select! {
@@ -1780,6 +1893,13 @@ impl McpHandler {
     /// cancelled in either returns `Err` without touching the camera. A
     /// camera that has never connected is refused before either wait.
     ///
+    /// Under a train lease (`lease_id`), the call is admitted first —
+    /// refused when the lease is not held or does not hold the camera —
+    /// and then takes the lease's slot for the camera and no permit: the
+    /// lease holds the camera's slot and the gate (rp.md § Train Lease).
+    /// Without one, a capture through a camera a lease reserves waits
+    /// for the lease to end before it takes the slot.
+    ///
     /// The snapshot follows the waits: the connected camera handle, the
     /// train-derived focal length, and the invariant physical-sensor
     /// properties (plus the driver name) cached at connect time, cloned
@@ -1799,22 +1919,36 @@ impl McpHandler {
     async fn claim_camera(
         &self,
         camera_id: &str,
+        lease_id: Option<&str>,
         cancel: &Cancel,
-    ) -> std::result::Result<CameraClaim<'_>, String> {
+    ) -> std::result::Result<CameraClaim, String> {
         let cam_entry = self
             .equipment
             .find_camera(camera_id)
             .ok_or_else(|| format!("camera not found: {camera_id}"))?;
+        let lease_call = lease_id
+            .map(|lease_id| self.leases.admit(lease_id, CallKind::Capture { camera_id }))
+            .transpose()?;
         let not_connected = || format!("camera not connected: {camera_id}");
         if cam_entry.device().is_none() {
             return Err(not_connected());
         }
-        let slot = tokio::select! {
-            biased;
-            () = cancel.cancelled() => return Err(cancel.error()),
-            slot = cam_entry.capture_slot() => slot,
+        let (slot, motion_permit) = if let Some(call) = &lease_call {
+            let slot = tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Err(cancel.error()),
+                slot = call.slot() => slot,
+            };
+            (slot, None)
+        } else {
+            self.wait_out_leases(&[camera_id], cancel).await?;
+            let slot = tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Err(cancel.error()),
+                slot = cam_entry.capture_slot() => slot,
+            };
+            (slot, self.train_permit(camera_id, cancel).await?)
         };
-        let motion_permit = self.imaging_permit(camera_id, cancel).await?;
         let (cam, invariants) = cam_entry.snapshot().ok_or_else(not_connected)?;
         Ok(CameraClaim {
             cam,
@@ -1826,6 +1960,74 @@ impl McpHandler {
             invariants,
             slot,
             motion_permit,
+            lease_call,
+        })
+    }
+
+    /// Wait until no train lease reserves any of `ids` (rp.md § Train
+    /// Lease, "Calls under the lease"): an ordinary call through a
+    /// camera or device a lease reserves waits for the lease to give
+    /// everything back, then takes its slot as usual. The wait is
+    /// raced against `cancel`.
+    pub(crate) async fn wait_out_leases(
+        &self,
+        ids: &[&str],
+        cancel: &Cancel,
+    ) -> std::result::Result<(), String> {
+        while let Some((lease_id, released)) = self.leases.reserving(ids) {
+            debug!(
+                ?ids,
+                lease_id, "waiting for the train lease that reserves this device to end"
+            );
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Err(cancel.error()),
+                () = released.cancelled() => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// What a move, rotation or filter change holds for its whole run:
+    /// its device's slot, or, under a held train lease, the lease's
+    /// slot for the device and the call under the lease (rp.md § Train
+    /// Lease). Without a lease it first waits out any lease that
+    /// reserves the device. A device rp has no entry for takes no slot:
+    /// the call fails on its own lookup.
+    pub(crate) async fn device_hold(
+        &self,
+        device: (&'static str, &str),
+        slot: Option<&DeviceSlot>,
+        lease_id: Option<&str>,
+        cancel: &Cancel,
+    ) -> std::result::Result<DeviceHold, String> {
+        let (kind, device_id) = device;
+        let call = lease_id
+            .map(|lease_id| {
+                self.leases
+                    .admit(lease_id, CallKind::Move { kind, device_id })
+            })
+            .transpose()?;
+        let slot = if let Some(call) = &call {
+            Some(tokio::select! {
+                biased;
+                () = cancel.cancelled() => return Err(cancel.error()),
+                slot = call.slot() => slot,
+            })
+        } else {
+            self.wait_out_leases(&[device_id], cancel).await?;
+            match slot {
+                Some(slot) => Some(tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => return Err(cancel.error()),
+                    slot = slot.take(kind, device_id) => slot,
+                }),
+                None => None,
+            }
+        };
+        Ok(DeviceHold {
+            _slot: slot,
+            _call: call,
         })
     }
 
@@ -2265,6 +2467,31 @@ impl McpHandler {
         progress: Option<&dyn ProgressEmitter>,
         cancel: &Cancel,
     ) -> std::result::Result<FocuserMoveOutcome, String> {
+        self.do_move_focuser_under(focuser_id, position, None, progress, cancel)
+            .await
+    }
+
+    /// [`Self::do_move_focuser_blocking`], under the train lease
+    /// `lease_id` names when it is `Some` (rp.md § Train Lease). The move
+    /// holds the focuser's slot, or the lease's slot for it, from its
+    /// plan to its last leg's settle (§ Focuser Tool Details), so a
+    /// lease refusal or a cancelled wait is a plain error before any
+    /// event.
+    pub(crate) async fn do_move_focuser_under(
+        &self,
+        focuser_id: &str,
+        position: i32,
+        lease_id: Option<&str>,
+        progress: Option<&dyn ProgressEmitter>,
+        cancel: &Cancel,
+    ) -> std::result::Result<FocuserMoveOutcome, String> {
+        let slot = self
+            .equipment
+            .find_focuser(focuser_id)
+            .map(|entry| &entry.slot);
+        let _hold = self
+            .device_hold(("focuser", focuser_id), slot, lease_id, cancel)
+            .await?;
         let operation_id = Uuid::new_v4().to_string();
         let started_at = chrono::Utc::now();
 

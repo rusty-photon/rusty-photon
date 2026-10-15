@@ -28,6 +28,10 @@ pub struct FocuserEntry {
     /// optics take the step size — so the entry exposes no paired
     /// accessor of its own.
     pub session: DeviceSession<dyn Focuser, FocuserInvariants>,
+
+    /// One move through the focuser at a time (rp.md § Focuser Tool
+    /// Details), and a train lease's hold on it (§ Train Lease).
+    pub slot: super::DeviceSlot,
 }
 
 impl FocuserEntry {
@@ -110,6 +114,7 @@ pub(super) async fn connect_focuser(
                 id: config.id.clone(),
                 config: config.clone(),
                 session: DeviceSession::connected_with(foc, invariants),
+                slot: crate::equipment::DeviceSlot::default(),
             }
         }
         Err(msg) => {
@@ -118,6 +123,7 @@ pub(super) async fn connect_focuser(
                 id: config.id.clone(),
                 config: config.clone(),
                 session: DeviceSession::disconnected(),
+                slot: crate::equipment::DeviceSlot::default(),
             }
         }
     }

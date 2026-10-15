@@ -142,6 +142,10 @@ pub const UNGATED: &[&str] = &[
     // optical trains
     "get_train_info",
     "get_refocus_plan",
+    // train lease: holds the gate shared, but moves and exposes
+    // nothing; the unsafe transition ends every lease
+    "acquire_train_lease",
+    "release_train_lease",
     // plan schema / validation
     "get_plan_schema",
     "validate_plan",

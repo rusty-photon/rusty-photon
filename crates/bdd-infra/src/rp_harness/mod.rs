@@ -16,6 +16,8 @@
 //! - [`McpTestClient`] — persistent rmcp client for calling rp's MCP tools.
 //! - [`ToolProviderStub`] — restartable in-process tool-provider MCP
 //!   server (`echo`, `slow_echo`) for rp's aggregation scenarios.
+//! - [`FacadeCameraStub`] — `phd2-guider`'s camera facade as far as rp's
+//!   train lease reaches it: the three sweep-lease Actions, scripted.
 //!
 //! All types emit and consume `serde_json::Value`. Nothing here depends on
 //! rp's own types, which keeps the dependency direction one-way (rp's tests
@@ -25,6 +27,7 @@ mod alpaca_stub;
 mod basic_auth;
 mod computed_sky;
 mod config;
+mod facade_stub;
 mod guider_stub;
 mod launcher;
 mod mcp_client;
@@ -47,6 +50,7 @@ pub use config::{
     RpConfigBuilder, SafetyMonitorConfig, SwitchConfig, TrainAutoFocusConfig,
     STARLESS_THRESHOLD_SIGMA,
 };
+pub use facade_stub::{FacadeCall, FacadeCameraStub, SWEEP_LEASE_ACTIONS};
 pub use guider_stub::{CannedGuiding, GuiderStub, GuiderStubBehavior};
 pub use launcher::{start_rp, wait_for_rp_healthy, write_temp_config_file};
 pub use mcp_client::McpTestClient;
