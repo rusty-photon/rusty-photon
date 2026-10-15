@@ -251,7 +251,10 @@ test('a store that does not answer in time is a miss', async (t) => {
     lanCrates({ storeUrl: cas.url, ...ws, downloads: registry.url, ...OPTIONS, storeTimeoutMs: 200 }),
   );
 
-  assert.ok(Date.now() - started < 5_000, 'it waited past the store timeout');
+  // Between the 200 ms timeout this test passes (about 0.25 s in all) and
+  // the 10 s default, which nothing else here tells apart; well clear of
+  // the first, for a loaded runner (docs/skills/testing.md, on ceilings).
+  assert.ok(Date.now() - started < 8_000, 'it waited for the default timeout, not the one given');
   assert.match(stdout, /::warning::The LAN cache failed \(no answer in time\)/);
   assert.match(stdout, /: 0 from the LAN cache, 1 from crates\.io\.$/m);
 });
@@ -340,7 +343,9 @@ test('an upload that gets no answer in time stops the uploads without holding up
     lanCrates({ storeUrl: cas.url, writeAuth: 'Basic d3Jvbmc=', ...ws, downloads: registry.url, ...OPTIONS, concurrency: 1, storeTimeoutMs: 200 }),
   );
 
-  assert.ok(Date.now() - started < 2_000, 'it waited on more than one upload');
+  // Between the 200 ms timeout this test passes and the 10 s default; the
+  // PUT count below catches an upload retried or the uploads going on.
+  assert.ok(Date.now() - started < 8_000, 'it waited for the default timeout, not the one given');
   assert.equal(cas.requests.filter((r) => r.method === 'PUT').length, 1);
   assert.match(stdout, /An upload to the LAN cache failed \(no answer in time\), so the uploads stopped/);
 });
